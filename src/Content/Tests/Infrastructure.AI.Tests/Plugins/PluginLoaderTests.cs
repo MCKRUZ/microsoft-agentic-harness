@@ -89,6 +89,36 @@ public sealed class PluginLoaderTests : IDisposable
     }
 
     [Fact]
+    public void Load_WithHttpMcpJson_MergesNamespacedHttpServerWithUrl()
+    {
+        // Root cause #1 of issue #368: PluginLoader hardcoded Stdio before McpServerDefinitionBuilder was
+        // extracted, so an Http-type entry was silently mis-built. Proves the shared builder fixed it here too.
+        var mcpConfig = new
+        {
+            mcpServers = new Dictionary<string, object>
+            {
+                ["remote"] = new { type = "http", url = "https://tools.example.com/mcp" }
+            }
+        };
+        File.WriteAllText(
+            Path.Combine(_tempDir, ".mcp.json"),
+            JsonSerializer.Serialize(mcpConfig));
+
+        var manifest = new PluginManifest
+        {
+            Name = "remote-plugin",
+            Version = "1.0.0",
+            McpServers = "./.mcp.json"
+        };
+
+        var result = _sut.Load(_tempDir, MakeDeclaration("remote-plugin"), manifest);
+
+        result.Should().NotBeNull();
+        _mcpServersConfig.Servers["remote-plugin:remote"].Type.Should().Be(McpServerType.Http);
+        _mcpServersConfig.Servers["remote-plugin:remote"].Url.Should().Be("https://tools.example.com/mcp");
+    }
+
+    [Fact]
     public void Load_EnvOverrides_MergedIntoMcpServers()
     {
         var mcpConfig = new

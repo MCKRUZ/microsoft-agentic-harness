@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Domain.Common.Config.AI.MCP;
 using FluentAssertions;
 using Infrastructure.AI.MCP.Services;
@@ -33,7 +34,7 @@ public sealed class McpConnectionManagerTests
     {
         var config = new McpServersConfig
         {
-            Servers = new Dictionary<string, McpServerDefinition>
+            Servers = new ConcurrentDictionary<string, McpServerDefinition>
             {
                 ["filesystem"] = new() { Enabled = true },
                 ["disabled-server"] = new() { Enabled = false },
@@ -92,7 +93,7 @@ public sealed class McpConnectionManagerTests
     {
         var config = new McpServersConfig
         {
-            Servers = new Dictionary<string, McpServerDefinition>
+            Servers = new ConcurrentDictionary<string, McpServerDefinition>
             {
                 ["disabled"] = new() { Enabled = false }
             }

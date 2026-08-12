@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Domain.Common.Config.AI.MCP;
 using FluentAssertions;
 using Infrastructure.AI.MCP.Services;
@@ -36,7 +37,7 @@ public sealed class McpToolProviderIntegrationTests
     {
         var config = new McpServersConfig
         {
-            Servers = new Dictionary<string, McpServerDefinition>
+            Servers = new ConcurrentDictionary<string, McpServerDefinition>
             {
                 ["bad-server"] = new()
                 {
@@ -81,7 +82,7 @@ public sealed class McpToolProviderIntegrationTests
     {
         var config = new McpServersConfig
         {
-            Servers = new Dictionary<string, McpServerDefinition>
+            Servers = new ConcurrentDictionary<string, McpServerDefinition>
             {
                 ["server-a"] = new()
                 {
@@ -123,7 +124,7 @@ public sealed class McpToolProviderIntegrationTests
     {
         var config = new McpServersConfig
         {
-            Servers = new Dictionary<string, McpServerDefinition>
+            Servers = new ConcurrentDictionary<string, McpServerDefinition>
             {
                 ["broken"] = new()
                 {
@@ -158,7 +159,7 @@ public sealed class McpToolProviderIntegrationTests
     {
         var config = new McpServersConfig
         {
-            Servers = new Dictionary<string, McpServerDefinition>
+            Servers = new ConcurrentDictionary<string, McpServerDefinition>
             {
                 ["disabled"] = new() { Enabled = false }
             }

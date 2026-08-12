@@ -116,7 +116,7 @@ public sealed class RunBundleCommandHandler
             UserMessages = request.UserMessages,
             MaxTurns = request.MaxTurns,
             ConversationId = request.ConversationId,
-            Envelope = request.Envelope,
+            Envelope = WithBundleOwnedMcpServers(request.Envelope, staged),
             Status = BundleRunStatus.Queued,
             Streaming = request.Stream,
             CreatedAt = _time.GetUtcNow()
@@ -137,6 +137,22 @@ public sealed class RunBundleCommandHandler
 
         return Result<RunBundleResult>.Success(new RunBundleResult { JobId = record.JobId });
     }
+
+    /// <summary>
+    /// Additively unions the bundle's own registered MCP server names (<see cref="StagedBundle.McpServerNames"/>)
+    /// into the caller's resolved envelope's <see cref="CapabilityEnvelope.AllowedMcpServers"/> — union
+    /// only, never replace, so the caller's own configured grant is never narrowed by running a bundle.
+    /// A bundle with no MCP servers (the common case) returns the envelope unchanged. The tool NAMES a
+    /// bundle-owned server publishes are granted separately, once the server is actually reachable — see
+    /// <c>BundleRunExecutor.RunConversationAsync</c>.
+    /// </summary>
+    private static CapabilityEnvelope WithBundleOwnedMcpServers(CapabilityEnvelope envelope, StagedBundle staged)
+        => staged.McpServerNames.Count == 0
+            ? envelope
+            : envelope with
+            {
+                AllowedMcpServers = [.. envelope.AllowedMcpServers, .. staged.McpServerNames]
+            };
 
     /// <summary>
     /// True when this caller may run against the requested conversation — either because it is theirs,

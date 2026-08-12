@@ -1,4 +1,3 @@
-using System.Text.Json;
 using Application.AI.Common.Interfaces.Plugins;
 using Domain.Common.Config.AI;
 using Domain.Common.Config.AI.MCP;
@@ -105,55 +104,21 @@ public sealed class PluginLoader : IPluginLoader
 
     private List<string> LoadMcpServers(string pluginPath, PluginDeclaration declaration, string mcpRelativePath)
     {
-        var mcpPath = Path.GetFullPath(Path.Combine(pluginPath, mcpRelativePath));
-
-        if (!IsContainedWithin(mcpPath, pluginPath))
-        {
-            _logger.LogWarning(
-                "Plugin {Name}: MCP config path {Path} escapes plugin directory, skipping",
-                declaration.Name, mcpPath);
-            return [];
-        }
-
-        if (!File.Exists(mcpPath))
-        {
-            _logger.LogDebug(
-                "Plugin {Name}: MCP config not found at {Path}",
-                declaration.Name, mcpPath);
-            return [];
-        }
-
-        return ParseAndMergeMcpServers(mcpPath, declaration);
-    }
-
-    private List<string> ParseAndMergeMcpServers(string mcpPath, PluginDeclaration declaration)
-    {
         var names = new List<string>();
 
-        try
+        using var block = McpManifestReader.ReadMcpServersBlock(
+            pluginPath, mcpRelativePath, $"Plugin {declaration.Name}", _logger);
+        if (block is null)
+            return names;
+
+        foreach (var serverProp in block.Value.ServersElement.EnumerateObject())
         {
-            var json = File.ReadAllText(mcpPath);
-            using var doc = JsonDocument.Parse(json, new JsonDocumentOptions
-            {
-                CommentHandling = JsonCommentHandling.Skip,
-                AllowTrailingCommas = true
-            });
+            var namespacedName = $"{declaration.Name}:{serverProp.Name}";
+            var definition = McpServerDefinitionBuilder.Build(
+                serverProp.Value, declaration.Env, $"[Plugin: {declaration.Name}]", serverProp.Name);
 
-            if (!doc.RootElement.TryGetProperty("mcpServers", out var serversElement))
-                return names;
-
-            foreach (var serverProp in serversElement.EnumerateObject())
-            {
-                var namespacedName = $"{declaration.Name}:{serverProp.Name}";
-                var definition = BuildServerDefinition(serverProp.Value, declaration, serverProp.Name);
-
-                _mcpServersConfig.Servers[namespacedName] = definition;
-                names.Add(namespacedName);
-            }
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Failed to parse MCP config at {Path}", mcpPath);
+            _mcpServersConfig.Servers[namespacedName] = definition;
+            names.Add(namespacedName);
         }
 
         return names;
@@ -172,38 +137,5 @@ public sealed class PluginLoader : IPluginLoader
 
         return canonicalTarget.StartsWith(canonicalBase + Path.DirectorySeparatorChar, comparison)
             || string.Equals(canonicalTarget, canonicalBase, comparison);
-    }
-
-    private static McpServerDefinition BuildServerDefinition(
-        JsonElement serverElement,
-        PluginDeclaration declaration,
-        string serverName)
-    {
-        var definition = new McpServerDefinition
-        {
-            Enabled = true,
-            Type = McpServerType.Stdio,
-            Description = $"[Plugin: {declaration.Name}] {serverName}"
-        };
-
-        if (serverElement.TryGetProperty("command", out var cmd))
-            definition.Command = cmd.GetString() ?? string.Empty;
-
-        if (serverElement.TryGetProperty("args", out var args))
-            definition.Args = args.EnumerateArray()
-                .Select(a => a.GetString() ?? string.Empty)
-                .ToList();
-
-        if (serverElement.TryGetProperty("env", out var env))
-        {
-            foreach (var envProp in env.EnumerateObject())
-                definition.Env[envProp.Name] = envProp.Value.GetString() ?? string.Empty;
-        }
-
-        // Declaration env overrides take precedence over manifest-declared env
-        foreach (var (key, value) in declaration.Env)
-            definition.Env[key] = value;
-
-        return definition;
     }
 }

@@ -1,4 +1,5 @@
 using Application.AI.Common.Interfaces;
+using Application.AI.Common.Interfaces.Bundles;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Tools;
 using Domain.Common.Config.AI;
@@ -72,6 +73,14 @@ public static class DependencyInjection
         // Auth-gated and feature-flagged via MetaHarnessConfig.EnableMcpTraceResources.
         services.AddSingleton<TraceResourceProvider>();
         services.AddSingleton<IMcpResourceProvider>(sp => sp.GetRequiredService<TraceResourceProvider>());
+
+        // Deregisters a bundle's own MCP servers (and disconnects any live client for them) when its
+        // handle is evicted. Wired to the SAME McpServersConfig instance McpConnectionManager (above) and
+        // BundleStagingService's registration use, so a removal here is visible to both (issue #368).
+        services.AddSingleton<IBundleMcpServerRegistrar>(sp => new BundleMcpServerRegistrar(
+            sp.GetRequiredService<IOptionsMonitor<AIConfig>>().CurrentValue.McpServers,
+            sp.GetRequiredService<McpConnectionManager>(),
+            sp.GetRequiredService<ILogger<BundleMcpServerRegistrar>>()));
 
         return services;
     }

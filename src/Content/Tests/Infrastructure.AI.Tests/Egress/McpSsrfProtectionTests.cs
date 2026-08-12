@@ -1,5 +1,6 @@
 using Application.AI.Common.Exceptions;
 using Domain.Common.Config;
+using System.Collections.Concurrent;
 using Domain.Common.Config.AI.MCP;
 using Infrastructure.AI.Egress;
 using Infrastructure.AI.MCP.Services;
@@ -42,7 +43,7 @@ public sealed class McpSsrfProtectionTests
 
         var config = new McpServersConfig
         {
-            Servers = new Dictionary<string, McpServerDefinition>
+            Servers = new ConcurrentDictionary<string, McpServerDefinition>
             {
                 ["internal"] = new()
                 {

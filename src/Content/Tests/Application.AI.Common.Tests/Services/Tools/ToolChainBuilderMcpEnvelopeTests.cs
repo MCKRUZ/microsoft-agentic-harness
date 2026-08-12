@@ -135,6 +135,82 @@ public sealed class ToolChainBuilderMcpEnvelopeTests
         tools.Select(t => t.Name).Should().Contain("granted_tool");
     }
 
+    // -- Namespaced-grant suffix resolution (issue #368) --
+    // A skill's declared server name is bundle-agnostic (e.g. "epr-mcp"); a bundle's own server is granted
+    // under a namespaced key ("{bundleId}:epr-mcp") the author could not have known at authoring time.
+
+    [Fact]
+    public async Task ManagedDeclaration_NamespacedGrant_ResolvesViaSuffixMatch()
+    {
+        var mcp = new Mock<IMcpToolProvider>();
+        mcp.Setup(p => p.GetToolsAsync("bundle-123:epr-mcp", It.IsAny<CancellationToken>()))
+            .ReturnsAsync([AIFunctionFactory.Create(() => "r", "epr_tool")]);
+
+        var builder = Builder(mcp.Object);
+        var skill = new SkillDefinition
+        {
+            Id = "s", Name = "s", Instructions = "x",
+            ToolDeclarations = [new ToolDeclaration { Name = "epr-mcp" }]
+        };
+
+        List<AITool> tools;
+        using (CapabilityEnvelopeAccessor.Begin(Envelope("bundle-123:epr-mcp")))
+            tools = await builder.BuildToolsAsync(skill, new SkillAgentOptions());
+
+        // Published under a NAMESPACED name, never the bare name the (untrusted, bundle-authored)
+        // server declared — see BundleOwnedMcpToolNaming for why a bare name would be exploitable.
+        tools.Select(t => t.Name).Should().Contain("bundle-123_epr-mcp__epr_tool");
+        tools.Select(t => t.Name).Should().NotContain("epr_tool",
+            "the bare, bundle-chosen name must never be the model-callable/governed name");
+        mcp.Verify(p => p.GetToolsAsync("bundle-123:epr-mcp", It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task ManagedDeclaration_ExactGrantWinsOverSuffixMatch()
+    {
+        // Both an exact grant AND a namespaced one ending in the same suffix are present. The exact grant
+        // must win outright — a host-configured, non-namespaced server is never redirected by the fallback.
+        var mcp = new Mock<IMcpToolProvider>();
+        mcp.Setup(p => p.GetToolsAsync("epr-mcp", It.IsAny<CancellationToken>()))
+            .ReturnsAsync([AIFunctionFactory.Create(() => "r", "host_tool")]);
+
+        var builder = Builder(mcp.Object);
+        var skill = new SkillDefinition
+        {
+            Id = "s", Name = "s", Instructions = "x",
+            ToolDeclarations = [new ToolDeclaration { Name = "epr-mcp" }]
+        };
+
+        List<AITool> tools;
+        using (CapabilityEnvelopeAccessor.Begin(Envelope("epr-mcp", "other-bundle:epr-mcp")))
+            tools = await builder.BuildToolsAsync(skill, new SkillAgentOptions());
+
+        tools.Select(t => t.Name).Should().Contain("host_tool");
+        mcp.Verify(p => p.GetToolsAsync("epr-mcp", It.IsAny<CancellationToken>()), Times.Once);
+        mcp.Verify(p => p.GetToolsAsync("other-bundle:epr-mcp", It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task ManagedDeclaration_AmbiguousSuffixMatch_IsDeniedNotGuessed()
+    {
+        // Two different namespaced grants end in the same declared name with no exact grant to break the
+        // tie. Guessing either one would be arbitrary, so neither is contacted.
+        var mcp = new Mock<IMcpToolProvider>();
+        var builder = Builder(mcp.Object);
+        var skill = new SkillDefinition
+        {
+            Id = "s", Name = "s", Instructions = "x",
+            ToolDeclarations = [new ToolDeclaration { Name = "epr-mcp", Optional = true }]
+        };
+
+        List<AITool> tools;
+        using (CapabilityEnvelopeAccessor.Begin(Envelope("bundle-a:epr-mcp", "bundle-b:epr-mcp")))
+            tools = await builder.BuildToolsAsync(skill, new SkillAgentOptions());
+
+        tools.Should().BeEmpty();
+        mcp.Verify(p => p.GetToolsAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
     private static CapabilityEnvelope Envelope(params string[] servers) =>
         new() { AllowedMcpServers = servers };
 }

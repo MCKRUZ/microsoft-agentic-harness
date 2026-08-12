@@ -7,9 +7,11 @@ using Domain.AI.Skills;
 using Domain.Common;
 using Domain.Common.Config;
 using Domain.Common.Config.AI.BundleExecution;
+using Domain.Common.Config.AI.MCP;
 using Domain.Common.Config.AI.Plugins;
 using Domain.Common.Helpers;
 using Infrastructure.AI.Agents;
+using Infrastructure.AI.Plugins;
 using Infrastructure.AI.Skills;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -44,6 +46,7 @@ public sealed class BundleStagingService : IBundleStagingService
     private readonly SkillMetadataParser _skillParser;
     private readonly ISkillFileReader _skillFileReader;
     private readonly IPluginManifestReader _pluginReader;
+    private readonly McpServersConfig _mcpServersConfig;
     private readonly ILogger<BundleStagingService> _logger;
 
     /// <summary>Initialises the staging service with its parsers, configuration, and logger.</summary>
@@ -56,6 +59,13 @@ public sealed class BundleStagingService : IBundleStagingService
     /// (issue #247).
     /// </param>
     /// <param name="pluginReader">Reader for a staged bundle's plugin manifest.</param>
+    /// <param name="mcpServersConfig">
+    /// The same live <see cref="McpServersConfig"/> instance <c>McpConnectionManager</c> reads (the
+    /// <c>AIConfig</c>-bound one, not the <c>AppConfig</c>-bound one — they are independent object
+    /// graphs; see the composition-root comment next to <c>PluginLoader</c>'s registration). A staged
+    /// bundle's own MCP servers are merged into it under a bundle-scoped namespaced key, mirroring how
+    /// <see cref="Infrastructure.AI.Plugins.PluginLoader"/> merges a host plugin's servers.
+    /// </param>
     /// <param name="logger">Logger for staging diagnostics.</param>
     public BundleStagingService(
         IOptionsMonitor<AppConfig> appConfig,
@@ -63,15 +73,18 @@ public sealed class BundleStagingService : IBundleStagingService
         SkillMetadataParser skillParser,
         ISkillFileReader skillFileReader,
         IPluginManifestReader pluginReader,
+        McpServersConfig mcpServersConfig,
         ILogger<BundleStagingService> logger)
     {
         ArgumentNullException.ThrowIfNull(skillFileReader);
+        ArgumentNullException.ThrowIfNull(mcpServersConfig);
 
         _appConfig = appConfig;
         _agentParser = agentParser;
         _skillParser = skillParser;
         _skillFileReader = skillFileReader;
         _pluginReader = pluginReader;
+        _mcpServersConfig = mcpServersConfig;
         _logger = logger;
     }
 
@@ -351,7 +364,7 @@ public sealed class BundleStagingService : IBundleStagingService
             return CleanupAndFail(bundleDir, "Bundle AGENT.md has no resolvable id.");
 
         var ownedSkills = ParseNestedSkills(bundleDir);
-        var manifests = ParsePluginManifests(bundleDir);
+        var (manifests, mcpServerNames) = ParsePluginManifests(bundleDir, bundleId);
 
         return Result<StagedBundle>.Success(new StagedBundle
         {
@@ -360,6 +373,7 @@ public sealed class BundleStagingService : IBundleStagingService
             Agent = agent,
             OwnedSkills = ownedSkills,
             PluginManifests = manifests,
+            McpServerNames = mcpServerNames,
         });
     }
 
@@ -382,13 +396,18 @@ public sealed class BundleStagingService : IBundleStagingService
         return [.. byId.Values];
     }
 
-    private IReadOnlyList<PluginManifest> ParsePluginManifests(string bundleDir)
+    private (IReadOnlyList<PluginManifest> Manifests, IReadOnlyList<string> McpServerNames) ParsePluginManifests(
+        string bundleDir, string bundleId)
     {
         var manifests = new List<PluginManifest>();
+        var mcpServerNames = new List<string>();
 
         var rootManifest = _pluginReader.Read(bundleDir);
         if (rootManifest is not null)
+        {
             manifests.Add(rootManifest);
+            mcpServerNames.AddRange(RegisterBundleMcpServers(bundleDir, bundleId, rootManifest));
+        }
 
         var pluginsRoot = Path.Combine(bundleDir, "plugins");
         if (Directory.Exists(pluginsRoot))
@@ -397,11 +416,70 @@ public sealed class BundleStagingService : IBundleStagingService
             {
                 var manifest = _pluginReader.Read(pluginDir);
                 if (manifest is not null)
+                {
                     manifests.Add(manifest);
+                    mcpServerNames.AddRange(RegisterBundleMcpServers(pluginDir, bundleId, manifest));
+                }
             }
         }
 
-        return manifests;
+        return (manifests, mcpServerNames);
+    }
+
+    /// <summary>
+    /// Merges one manifest's declared MCP servers into the shared <see cref="McpServersConfig"/> under
+    /// a bundle-scoped key (<c>{bundleId}:{serverName}</c>) and returns each registered key — the values
+    /// that become <see cref="StagedBundle.McpServerNames"/>, later unioned into the run's
+    /// <see cref="Domain.AI.Bundles.CapabilityEnvelope"/>. <paramref name="bundleId"/> alone (not the
+    /// manifest's own name) is the namespace, because <see cref="Domain.AI.Bundles.StagedBundle.BundleId"/>
+    /// is a fresh GUID per staging — two bundles can never collide — while a manifest's <c>Name</c> is
+    /// free text and not guaranteed unique. A malformed or missing <c>mcp.json</c> is skipped and logged,
+    /// never fails staging.
+    /// </summary>
+    private IReadOnlyList<string> RegisterBundleMcpServers(string manifestBaseDir, string bundleId, PluginManifest manifest)
+    {
+        var registered = new List<string>();
+        if (string.IsNullOrEmpty(manifest.McpServers))
+            return registered;
+
+        using var block = Infrastructure.AI.Plugins.McpManifestReader.ReadMcpServersBlock(
+            manifestBaseDir, manifest.McpServers, $"Bundle {bundleId}", _logger);
+        if (block is null)
+            return registered;
+
+        foreach (var serverProp in block.Value.ServersElement.EnumerateObject())
+        {
+            var namespacedName = $"{bundleId}:{serverProp.Name}";
+
+            McpServerDefinition definition;
+            try
+            {
+                definition = McpServerDefinitionBuilder.Build(
+                    // A bundle (unlike a host-installed plugin) has no declaration-level env overrides.
+                    serverProp.Value, new Dictionary<string, string>(), $"[Bundle: {bundleId}]", serverProp.Name);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex,
+                    "Bundle {BundleId}: failed to build MCP server definition for '{ServerName}', skipping",
+                    bundleId, serverProp.Name);
+                continue;
+            }
+
+            if (_mcpServersConfig.Servers.TryAdd(namespacedName, definition))
+            {
+                registered.Add(namespacedName);
+            }
+            else
+            {
+                _logger.LogWarning(
+                    "Bundle {BundleId}: duplicate MCP server name '{ServerName}' declared across " +
+                    "more than one plugin manifest; keeping the first",
+                    bundleId, serverProp.Name);
+            }
+        }
+
+        return registered;
     }
 
     private Result<StagedBundle> CleanupAndFail(string bundleDir, params string[] errors)

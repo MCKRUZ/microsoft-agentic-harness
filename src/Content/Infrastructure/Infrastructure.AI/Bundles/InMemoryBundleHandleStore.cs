@@ -43,14 +43,21 @@ public sealed class InMemoryBundleHandleStore : IBundleHandleStore, IDisposable
     private readonly ConcurrentDictionary<string, HandleEntry> _entries = new(StringComparer.Ordinal);
     private readonly IOptionsMonitor<AppConfig> _config;
     private readonly TimeProvider _time;
+    private readonly IBundleMcpServerRegistrar? _mcpServerRegistrar;
     private readonly ILogger<InMemoryBundleHandleStore> _logger;
     private bool _disposed;
 
     /// <summary>Initializes a new <see cref="InMemoryBundleHandleStore"/>.</summary>
+    /// <param name="mcpServerRegistrar">
+    /// Optional — null on a host with no MCP client dependencies registered. Deregisters a bundle's own
+    /// MCP servers (registered by <c>BundleStagingService</c> at staging time) whenever its handle is
+    /// evicted, so a removed/expired bundle's servers and connections do not linger (issue #368).
+    /// </param>
     public InMemoryBundleHandleStore(
         IOptionsMonitor<AppConfig> config,
         TimeProvider time,
-        ILogger<InMemoryBundleHandleStore> logger)
+        ILogger<InMemoryBundleHandleStore> logger,
+        IBundleMcpServerRegistrar? mcpServerRegistrar = null)
     {
         ArgumentNullException.ThrowIfNull(config);
         ArgumentNullException.ThrowIfNull(time);
@@ -59,6 +66,7 @@ public sealed class InMemoryBundleHandleStore : IBundleHandleStore, IDisposable
         _config = config;
         _time = time;
         _logger = logger;
+        _mcpServerRegistrar = mcpServerRegistrar;
     }
 
     private TimeSpan Ttl => _config.CurrentValue.AI.BundleExecution.HandleTtl;
@@ -201,8 +209,38 @@ public sealed class InMemoryBundleHandleStore : IBundleHandleStore, IDisposable
         if (!_entries.TryRemove(new KeyValuePair<string, HandleEntry>(handle, entry)))
             return false;
 
+        FireAndForgetMcpDeregistration(entry.Bundle.McpServerNames);
         DeleteDirectorySafely(stagedRootDirectory);
         return true;
+    }
+
+    /// <summary>
+    /// Deregisters a bundle's own MCP servers without blocking the caller — every path into
+    /// <see cref="EvictAndDelete"/> is either already synchronous-only by contract
+    /// (<see cref="Remove"/>, <see cref="SweepExpired"/>) or runs inside <c>lock (entry)</c>
+    /// (<see cref="ReleaseLease"/>), so an awaited deregistration is not an option here. A failure is
+    /// logged and swallowed — matches this store's existing posture that cleanup must never crash the
+    /// sweeper or a caller (see <see cref="DeleteDirectorySafely"/>).
+    /// </summary>
+    private void FireAndForgetMcpDeregistration(IReadOnlyList<string> mcpServerNames)
+    {
+        if (_mcpServerRegistrar is null || mcpServerNames.Count == 0)
+            return;
+
+        _ = DeregisterMcpServersSafelyAsync(mcpServerNames);
+    }
+
+    private async Task DeregisterMcpServersSafelyAsync(IReadOnlyList<string> mcpServerNames)
+    {
+        try
+        {
+            await _mcpServerRegistrar!.DeregisterAsync(mcpServerNames).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to deregister bundle MCP servers {ServerNames} during handle eviction",
+                string.Join(", ", mcpServerNames));
+        }
     }
 
     private void DeleteDirectorySafely(string path)
@@ -242,7 +280,14 @@ public sealed class InMemoryBundleHandleStore : IBundleHandleStore, IDisposable
             lock (entry)
             {
                 if (entry.LeaseCount == 0)
+                {
+                    // Best-effort only, same as the directory delete below: the process is exiting
+                    // regardless, so an MCP client's underlying process/socket is torn down by the OS
+                    // either way. This still removes the config entries and attempts a clean disconnect
+                    // for the (likely) case that shutdown is not instantaneous.
+                    FireAndForgetMcpDeregistration(entry.Bundle.McpServerNames);
                     DeleteDirectorySafely(entry.Bundle.StagedRootDirectory);
+                }
             }
         }
 

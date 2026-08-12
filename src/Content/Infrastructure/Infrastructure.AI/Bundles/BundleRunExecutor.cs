@@ -1,6 +1,8 @@
+using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Bundles;
 using Application.AI.Common.Services.Bundles;
 using Application.AI.Common.Services.Governance;
+using Application.AI.Common.Services.Tools;
 using Application.Core.CQRS.Agents.RunConversation;
 using Domain.AI.Bundles;
 using MediatR;
@@ -40,15 +42,22 @@ public sealed class BundleRunExecutor : IBundleRunExecutor
     private readonly IBundleHandleStore _handleStore;
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly TimeProvider _time;
+    private readonly IMcpToolProvider? _mcpToolProvider;
     private readonly ILogger<BundleRunExecutor> _logger;
 
     /// <summary>Initializes a new <see cref="BundleRunExecutor"/>.</summary>
+    /// <param name="mcpToolProvider">
+    /// Optional — null on a host with no MCP client dependencies registered. Used only to discover the
+    /// tool names a bundle's own registered MCP servers publish, so they can be additively granted for
+    /// invocation; see <see cref="WithBundleOwnedToolGrantsAsync"/>.
+    /// </param>
     public BundleRunExecutor(
         IBundleRunJobStore jobStore,
         IBundleHandleStore handleStore,
         IServiceScopeFactory scopeFactory,
         TimeProvider time,
-        ILogger<BundleRunExecutor> logger)
+        ILogger<BundleRunExecutor> logger,
+        IMcpToolProvider? mcpToolProvider = null)
     {
         ArgumentNullException.ThrowIfNull(jobStore);
         ArgumentNullException.ThrowIfNull(handleStore);
@@ -61,6 +70,7 @@ public sealed class BundleRunExecutor : IBundleRunExecutor
         _scopeFactory = scopeFactory;
         _time = time;
         _logger = logger;
+        _mcpToolProvider = mcpToolProvider;
     }
 
     /// <inheritdoc />
@@ -164,6 +174,9 @@ public sealed class BundleRunExecutor : IBundleRunExecutor
             OwnedSkills = staged.OwnedSkills
         };
 
+        var envelope = await WithBundleOwnedToolGrantsAsync(record.Envelope, staged, cancellationToken)
+            .ConfigureAwait(false);
+
         await using var scope = _scopeFactory.CreateAsyncScope();
         var mediator = scope.ServiceProvider.GetRequiredService<IMediator>();
 
@@ -171,7 +184,7 @@ public sealed class BundleRunExecutor : IBundleRunExecutor
         // resolve, and the envelope so the governor enforces the per-caller grant. Disposed in reverse when the
         // (materialised) conversation returns.
         using (EphemeralAgentOverlayAccessor.Begin(overlay))
-        using (CapabilityEnvelopeAccessor.Begin(record.Envelope))
+        using (CapabilityEnvelopeAccessor.Begin(envelope))
         {
             // A run that names a conversation continues it; one that does not gets an id of its own so
             // its budget and telemetry still have somewhere to accumulate. The owner rides along only in
@@ -188,6 +201,60 @@ public sealed class BundleRunExecutor : IBundleRunExecutor
 
             return await mediator.Send(command, cancellationToken).ConfigureAwait(false);
         }
+    }
+
+    /// <summary>
+    /// Additively grants the NAMESPACED tool names a bundle's own MCP servers actually publish, so
+    /// <c>ToolInvocationGovernor</c>'s invocation-time check — which matches a call against
+    /// <see cref="CapabilityEnvelope.AllowedTools"/> by name, not by originating server — does not deny
+    /// a call to a server the run's envelope already permits reaching. Contacts ONLY the bundle's own
+    /// registered servers (<see cref="StagedBundle.McpServerNames"/>), never a host-shared server, once
+    /// per run, before the envelope is armed. The stored <paramref name="envelope"/> (also used for
+    /// status reporting elsewhere) is never mutated — a new value is returned for this run's ambient
+    /// scope only. A server that fails to connect contributes zero tools this run — consistent with how
+    /// <c>ToolChainBuilder</c> already treats an unreachable granted server — rather than failing the run.
+    /// </summary>
+    /// <remarks>
+    /// <strong>Namespaced, not the bare server-declared name.</strong> Granting a bundle's self-reported
+    /// tool name verbatim would let a malicious bundle advertise a tool literally named after a real,
+    /// more privileged host tool and get it auto-granted by name coincidence — the invocation gate has
+    /// no notion of which server a call resolves through, only the name. <see cref="BundleOwnedMcpToolNaming"/>
+    /// namespaces the grant to this run's own server key, which only <c>ToolChainBuilder</c> ever
+    /// publishes a tool under (via <c>NamespacedAIFunction</c>) for a bundle-owned resolution — so the
+    /// granted name and the model-callable name always agree, and neither can ever collide with an
+    /// unrelated host tool's bare name.
+    /// </remarks>
+    private async Task<CapabilityEnvelope> WithBundleOwnedToolGrantsAsync(
+        CapabilityEnvelope envelope, StagedBundle staged, CancellationToken cancellationToken)
+    {
+        if (_mcpToolProvider is null || staged.McpServerNames.Count == 0)
+            return envelope;
+
+        // Concurrent, not sequential — a bundle that owns several servers must not pay their connect
+        // latency cumulatively at the start of every run. Mirrors ToolChainBuilder.ResolveInjectedMcpToolsAsync's
+        // Task.WhenAll fan-out over granted servers.
+        var perServerNames = await Task.WhenAll(
+            staged.McpServerNames.Select(serverName => DiscoverToolNamesAsync(serverName, cancellationToken)));
+
+        var discoveredToolNames = perServerNames.SelectMany(names => names).ToList();
+
+        return discoveredToolNames.Count == 0
+            ? envelope
+            : envelope with { AllowedTools = [.. envelope.AllowedTools, .. discoveredToolNames] };
+    }
+
+    /// <summary>
+    /// Discovers one bundle-owned server's namespaced tool names, or an empty list if the server could
+    /// not be reached — a failed server contributes zero tools rather than failing the whole run.
+    /// </summary>
+    private async Task<IReadOnlyList<string>> DiscoverToolNamesAsync(string serverName, CancellationToken cancellationToken)
+    {
+        var tools = await McpToolFetch.TryGetToolsAsync(
+            _mcpToolProvider!, serverName, "Bundle run tool discovery", _logger, cancellationToken).ConfigureAwait(false);
+
+        return tools is null
+            ? []
+            : tools.Select(tool => BundleOwnedMcpToolNaming.BuildToolName(serverName, tool.Name)).ToList();
     }
 
     private static BundleRunOutcome MapOutcome(ConversationResult result) => new()

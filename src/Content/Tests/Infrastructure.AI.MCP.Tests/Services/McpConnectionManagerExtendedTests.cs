@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Domain.Common.Config.AI.MCP;
 using FluentAssertions;
 using Infrastructure.AI.MCP.Services;
@@ -54,7 +55,7 @@ public sealed class McpConnectionManagerExtendedTests
     {
         var config = new McpServersConfig
         {
-            Servers = new Dictionary<string, McpServerDefinition>
+            Servers = new ConcurrentDictionary<string, McpServerDefinition>
             {
                 ["a"] = new() { Enabled = false },
                 ["b"] = new() { Enabled = false }
@@ -70,7 +71,7 @@ public sealed class McpConnectionManagerExtendedTests
     {
         var config = new McpServersConfig
         {
-            Servers = new Dictionary<string, McpServerDefinition>
+            Servers = new ConcurrentDictionary<string, McpServerDefinition>
             {
                 ["enabled-1"] = new() { Enabled = true },
                 ["disabled-1"] = new() { Enabled = false },
@@ -104,7 +105,7 @@ public sealed class McpConnectionManagerExtendedTests
     {
         var config = new McpServersConfig
         {
-            Servers = new Dictionary<string, McpServerDefinition>
+            Servers = new ConcurrentDictionary<string, McpServerDefinition>
             {
                 ["stdio-test"] = new()
                 {
@@ -127,7 +128,7 @@ public sealed class McpConnectionManagerExtendedTests
     {
         var config = new McpServersConfig
         {
-            Servers = new Dictionary<string, McpServerDefinition>
+            Servers = new ConcurrentDictionary<string, McpServerDefinition>
             {
                 ["http-test"] = new()
                 {

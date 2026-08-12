@@ -188,8 +188,19 @@ public static partial class DependencyInjection
         // --- Bundle execution (staging) ---
         // Off by default (AI:BundleExecution:Enabled). The staging service is passive — it does nothing
         // until an ingest call reaches it — so it is registered unconditionally; the run/API surface that
-        // invokes it is gated in a later layer.
-        services.AddSingleton<IBundleStagingService, BundleStagingService>();
+        // invokes it is gated in a later layer. Wired to the SAME McpServersConfig instance PluginLoader
+        // (below) and McpConnectionManager read — the AIConfig-bound one, not the AppConfig-bound one;
+        // see the comment on the PluginLoader registration for why that distinction matters. A staged
+        // bundle's own MCP servers are merged into that instance under a bundle-scoped key at staging
+        // time (issue #368).
+        services.AddSingleton<IBundleStagingService>(sp => new BundleStagingService(
+            sp.GetRequiredService<IOptionsMonitor<AppConfig>>(),
+            sp.GetRequiredService<AgentMetadataParser>(),
+            sp.GetRequiredService<SkillMetadataParser>(),
+            sp.GetRequiredService<ISkillFileReader>(),
+            sp.GetRequiredService<IPluginManifestReader>(),
+            sp.GetRequiredService<IOptionsMonitor<Domain.Common.Config.AI.AIConfig>>().CurrentValue.McpServers,
+            sp.GetRequiredService<ILogger<BundleStagingService>>()));
 
         // Capability-envelope resolver — maps the calling credential to its configured per-caller grant.
         // Passive like staging: it only reads config when asked, so it is registered unconditionally and

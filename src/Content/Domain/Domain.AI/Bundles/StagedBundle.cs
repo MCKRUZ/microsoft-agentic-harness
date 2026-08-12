@@ -53,8 +53,16 @@ public sealed record StagedBundle
 
     /// <summary>
     /// The plugin manifests parsed from any <c>plugin.json</c> files in the bundle. Empty when the
-    /// bundle ships no plugins. Carried through staging for completeness; wiring a bundle's plugins into
-    /// its ephemeral agent is a later concern.
+    /// bundle ships no plugins.
     /// </summary>
     public IReadOnlyList<PluginManifest> PluginManifests { get; init; } = [];
+
+    /// <summary>
+    /// The bundle-scoped, namespaced keys (<c>{BundleId}:{serverName}</c>) this bundle's own MCP
+    /// servers were registered under in the host's <c>McpServersConfig.Servers</c> during staging.
+    /// Empty when the bundle declares no MCP servers. A run unions these into its
+    /// <see cref="CapabilityEnvelope"/> so the bundle can reach the servers it shipped;
+    /// eviction of this bundle's handle deregisters exactly these names and nothing else.
+    /// </summary>
+    public IReadOnlyList<string> McpServerNames { get; init; } = [];
 }

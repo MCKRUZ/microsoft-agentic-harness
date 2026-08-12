@@ -343,18 +343,33 @@ public partial class ToolChainBuilder : IToolChainBuilder
         // Reference-only MCP: a bundle run resolves a tool from an MCP server only when the caller's
         // envelope grants that server; otherwise the MCP attempt is skipped and resolution falls through
         // to keyed DI (itself governed at invocation time). Off the bundle path every server is permitted.
-        if (_mcpToolProvider != null && IsMcpServerAllowed(declaration.Name))
+        var (effectiveServerName, isBundleOwned) = ResolveEffectiveMcpServerName(declaration.Name);
+        if (_mcpToolProvider != null && effectiveServerName is not null)
         {
             try
             {
-                // In managed mode, a ToolDeclaration's Name is the MCP server name — GetToolsAsync
-                // returns that server's whole tool list, which is why every tool it returns is
-                // attributed to declaration.Name below.
-                var mcpTools = await _mcpToolProvider.GetToolsAsync(declaration.Name, cancellationToken);
+                // In managed mode, a ToolDeclaration's Name is the MCP server name (or, on a bundle run,
+                // the bundle-agnostic name a namespaced grant resolved to) — GetToolsAsync returns that
+                // server's whole tool list, which is why every tool it returns is attributed to
+                // effectiveServerName below.
+                var mcpTools = await _mcpToolProvider.GetToolsAsync(effectiveServerName, cancellationToken);
                 if (mcpTools?.Count > 0)
                 {
-                    _logger.LogDebug("Resolved tool {ToolName} from MCP server", declaration.Name);
-                    return mcpTools.Select(t => new ProvisionedTool(t, declaration.Name)).ToList();
+                    _logger.LogDebug(
+                        "Resolved tool {ToolName} from MCP server {ServerName}", declaration.Name, effectiveServerName);
+
+                    // A bundle-owned server was reached only via the namespaced suffix fallback — its
+                    // tools are published and governed under a namespaced name (never the bare,
+                    // bundle-chosen one) so a malicious bundle cannot get a real host tool auto-granted
+                    // by advertising a same-named tool of its own. See BundleOwnedMcpToolNaming.
+                    var published = isBundleOwned
+                        ? mcpTools.Select(t => t is AIFunction fn
+                            ? (AITool)new NamespacedAIFunction(
+                                fn, BundleOwnedMcpToolNaming.BuildToolName(effectiveServerName, t.Name))
+                            : t)
+                        : mcpTools;
+
+                    return published.Select(t => new ProvisionedTool(t, effectiveServerName)).ToList();
                 }
             }
             catch (Exception ex)
@@ -430,35 +445,45 @@ public partial class ToolChainBuilder : IToolChainBuilder
     /// from the first return, which silently mistypes the failure branch's <see langword="null"/>.
     /// </summary>
     private async Task<(string Server, IList<AITool>? Tools)> FetchServerToolsAsync(string server, CancellationToken cancellationToken)
-    {
-        try
-        {
-            return (server, await _mcpToolProvider!.GetToolsAsync(server, cancellationToken));
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Capability envelope: granted MCP server '{Server}' could not be reached — skipped", server);
-            return (server, null);
-        }
-    }
+        => (server, await McpToolFetch.TryGetToolsAsync(_mcpToolProvider!, server, "Capability envelope", _logger, cancellationToken));
 
     /// <summary>
-    /// Whether the ambient capability envelope permits reaching the named MCP server on the managed
-    /// resolution path. Off the bundle path no envelope is published, so this returns
-    /// <see langword="true"/> and every server passes through unchanged. On a bundle run only servers named
-    /// in the caller's envelope are permitted; a denied server is logged and never contacted, so a bundle
-    /// can never reach a host MCP server it was not granted.
+    /// Resolves the MCP server name to actually contact for a skill's declared, bundle-agnostic server
+    /// name (e.g. <c>"epr-mcp"</c>) on the managed resolution path, and whether that resolution went
+    /// through the namespaced (bundle-owned) fallback rather than an exact grant — the caller uses that
+    /// flag to decide whether the resolved tools must be published under a namespaced name (see
+    /// <see cref="BundleOwnedMcpToolNaming"/>).
     /// </summary>
-    private bool IsMcpServerAllowed(string serverName)
+    /// <remarks>
+    /// Off the bundle path no envelope is published, so the declared name passes through unchanged
+    /// (<c>IsBundleOwnedFallback: false</c>) and every server is permitted. On a bundle run, an exact
+    /// grant for the declared name wins outright — a host-configured, non-namespaced server is unaffected
+    /// by the fallback below. A skill author cannot know their bundle's future id at authoring time, so a
+    /// bundle's own server is granted under a namespaced key (<c>{bundleId}:{declaredName}</c>) that never
+    /// exact-matches the declaration; when the armed envelope contains exactly one grant ending in
+    /// <c>:{declaredName}</c>, that full namespaced name is resolved instead, flagged
+    /// <c>IsBundleOwnedFallback: true</c>. Two or more matching suffixes is ambiguous and denied rather
+    /// than guessed. Returns a <see langword="null"/> server name when neither resolves, logged and never
+    /// contacted — a bundle can never reach a host MCP server it was not granted.
+    /// </remarks>
+    private (string? ServerName, bool IsBundleOwnedFallback) ResolveEffectiveMcpServerName(string declaredName)
     {
         var envelope = CapabilityEnvelopeAccessor.Current;
-        if (envelope is null || envelope.GrantsMcpServer(serverName))
-            return true;
+        if (envelope is null || envelope.GrantsMcpServer(declaredName))
+            return (declaredName, false);
+
+        var suffix = ":" + declaredName;
+        var matches = envelope.AllowedMcpServers
+            .Where(name => name.EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        if (matches.Count == 1)
+            return (matches[0], true);
 
         _logger.LogInformation(
             "Capability envelope: MCP server '{Server}' is outside the bundle run's grant — not contacted and its tools excluded",
-            serverName);
-        return false;
+            declaredName);
+        return (null, false);
     }
 
     private IEnumerable<AITool>? ResolveToolByName(string toolName)

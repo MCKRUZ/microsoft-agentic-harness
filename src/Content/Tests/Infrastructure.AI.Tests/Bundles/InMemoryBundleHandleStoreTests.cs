@@ -7,6 +7,7 @@ using Infrastructure.AI.Bundles;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Time.Testing;
+using Moq;
 using Xunit;
 
 namespace Infrastructure.AI.Tests.Bundles;
@@ -29,17 +30,18 @@ public sealed class InMemoryBundleHandleStoreTests : IDisposable
         public IDisposable? OnChange(Action<T, string?> listener) => null;
     }
 
-    private InMemoryBundleHandleStore BuildSut()
+    private InMemoryBundleHandleStore BuildSut(IBundleMcpServerRegistrar? mcpServerRegistrar = null)
     {
         var cfg = new AppConfig();
         cfg.AI.BundleExecution.HandleTtl = Ttl;
         return new InMemoryBundleHandleStore(
             new StaticOptionsMonitor<AppConfig>(cfg),
             _time,
-            NullLogger<InMemoryBundleHandleStore>.Instance);
+            NullLogger<InMemoryBundleHandleStore>.Instance,
+            mcpServerRegistrar);
     }
 
-    private StagedBundle StageOnDisk(string bundleId)
+    private StagedBundle StageOnDisk(string bundleId, IReadOnlyList<string>? mcpServerNames = null)
     {
         var dir = Path.Combine(Path.GetTempPath(), "bundle-handle-tests", bundleId);
         Directory.CreateDirectory(dir);
@@ -50,7 +52,8 @@ public sealed class InMemoryBundleHandleStoreTests : IDisposable
         {
             BundleId = bundleId,
             StagedRootDirectory = dir,
-            Agent = new AgentDefinition { Id = "agent-" + bundleId, Name = "Agent " + bundleId }
+            Agent = new AgentDefinition { Id = "agent-" + bundleId, Name = "Agent " + bundleId },
+            McpServerNames = mcpServerNames ?? []
         };
     }
 
@@ -201,6 +204,87 @@ public sealed class InMemoryBundleHandleStoreTests : IDisposable
 
         Directory.Exists(b1.StagedRootDirectory).Should().BeFalse();
         Directory.Exists(b2.StagedRootDirectory).Should().BeFalse();
+    }
+
+    // -- Bundle MCP server deregistration (issue #368) --
+
+    [Fact]
+    public void Remove_UnleasedWithMcpServers_DeregistersThem()
+    {
+        var registrar = new Mock<IBundleMcpServerRegistrar>();
+        registrar.Setup(r => r.DeregisterAsync(It.IsAny<IReadOnlyList<string>>())).Returns(Task.CompletedTask);
+        var sut = BuildSut(registrar.Object);
+        var bundle = StageOnDisk("b1", mcpServerNames: ["b1:echo"]);
+        var handle = sut.Register(bundle, "owner-1");
+
+        sut.Remove(handle).Should().BeTrue();
+
+        registrar.Verify(r => r.DeregisterAsync(
+            It.Is<IReadOnlyList<string>>(names => names.SequenceEqual(new[] { "b1:echo" }))), Times.Once);
+    }
+
+    [Fact]
+    public void SweepExpired_WithMcpServers_DeregistersThem()
+    {
+        var registrar = new Mock<IBundleMcpServerRegistrar>();
+        registrar.Setup(r => r.DeregisterAsync(It.IsAny<IReadOnlyList<string>>())).Returns(Task.CompletedTask);
+        var sut = BuildSut(registrar.Object);
+        var bundle = StageOnDisk("b1", mcpServerNames: ["b1:echo"]);
+        sut.Register(bundle, "owner-1");
+
+        _time.Advance(Ttl + TimeSpan.FromSeconds(1));
+        sut.SweepExpired().Should().Be(1);
+
+        registrar.Verify(r => r.DeregisterAsync(
+            It.Is<IReadOnlyList<string>>(names => names.SequenceEqual(new[] { "b1:echo" }))), Times.Once);
+    }
+
+    [Fact]
+    public void Remove_WhileLeasedWithMcpServers_DeregistersOnlyAfterRelease()
+    {
+        var registrar = new Mock<IBundleMcpServerRegistrar>();
+        registrar.Setup(r => r.DeregisterAsync(It.IsAny<IReadOnlyList<string>>())).Returns(Task.CompletedTask);
+        var sut = BuildSut(registrar.Object);
+        var bundle = StageOnDisk("b1", mcpServerNames: ["b1:echo"]);
+        var handle = sut.Register(bundle, "owner-1");
+
+        var lease = sut.Acquire(handle)!;
+        sut.Remove(handle).Should().BeTrue();
+
+        registrar.Verify(r => r.DeregisterAsync(It.IsAny<IReadOnlyList<string>>()), Times.Never,
+            "deregistration must wait for the in-flight run to release its lease");
+
+        lease.Dispose();
+
+        registrar.Verify(r => r.DeregisterAsync(
+            It.Is<IReadOnlyList<string>>(names => names.SequenceEqual(new[] { "b1:echo" }))), Times.Once);
+    }
+
+    [Fact]
+    public void Dispose_WithMcpServers_DeregistersThem()
+    {
+        var registrar = new Mock<IBundleMcpServerRegistrar>();
+        registrar.Setup(r => r.DeregisterAsync(It.IsAny<IReadOnlyList<string>>())).Returns(Task.CompletedTask);
+        var sut = BuildSut(registrar.Object);
+        var bundle = StageOnDisk("b1", mcpServerNames: ["b1:echo"]);
+        sut.Register(bundle, "owner-1");
+
+        sut.Dispose();
+
+        registrar.Verify(r => r.DeregisterAsync(
+            It.Is<IReadOnlyList<string>>(names => names.SequenceEqual(new[] { "b1:echo" }))), Times.Once);
+    }
+
+    [Fact]
+    public void Remove_WithNoMcpServers_NeverCallsRegistrar()
+    {
+        var registrar = new Mock<IBundleMcpServerRegistrar>();
+        var sut = BuildSut(registrar.Object);
+        var handle = sut.Register(StageOnDisk("b1"), "owner-1");
+
+        sut.Remove(handle).Should().BeTrue();
+
+        registrar.Verify(r => r.DeregisterAsync(It.IsAny<IReadOnlyList<string>>()), Times.Never);
     }
 
     public void Dispose()

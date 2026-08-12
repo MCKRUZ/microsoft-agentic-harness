@@ -1,3 +1,4 @@
+using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Bundles;
 using Application.Core.CQRS.Agents.RunConversation;
 using Domain.AI.Agents;
@@ -6,6 +7,7 @@ using Domain.Common.Config;
 using FluentAssertions;
 using Infrastructure.AI.Bundles;
 using MediatR;
+using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -43,7 +45,7 @@ public sealed class BundleRunExecutorTests : IDisposable
     }
 
     private (BundleRunExecutor Executor, InMemoryBundleRunJobStore JobStore, InMemoryBundleHandleStore HandleStore)
-        BuildSut(IMediator mediator)
+        BuildSut(IMediator mediator, IMcpToolProvider? mcpToolProvider = null)
     {
         var monitor = new StaticOptionsMonitor<AppConfig>(Config());
         var jobStore = new InMemoryBundleRunJobStore(monitor, _time);
@@ -54,11 +56,11 @@ public sealed class BundleRunExecutorTests : IDisposable
         var scopeFactory = services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
 
         var executor = new BundleRunExecutor(
-            jobStore, handleStore, scopeFactory, _time, NullLogger<BundleRunExecutor>.Instance);
+            jobStore, handleStore, scopeFactory, _time, NullLogger<BundleRunExecutor>.Instance, mcpToolProvider);
         return (executor, jobStore, handleStore);
     }
 
-    private StagedBundle StageOnDisk(string bundleId)
+    private StagedBundle StageOnDisk(string bundleId, IReadOnlyList<string>? mcpServerNames = null)
     {
         var dir = Path.Combine(Path.GetTempPath(), "bundle-executor-tests", bundleId);
         Directory.CreateDirectory(dir);
@@ -68,7 +70,8 @@ public sealed class BundleRunExecutorTests : IDisposable
         {
             BundleId = bundleId,
             StagedRootDirectory = dir,
-            Agent = new AgentDefinition { Id = "agent-" + bundleId, Name = "Agent " + bundleId }
+            Agent = new AgentDefinition { Id = "agent-" + bundleId, Name = "Agent " + bundleId },
+            McpServerNames = mcpServerNames ?? []
         };
     }
 
@@ -230,6 +233,79 @@ public sealed class BundleRunExecutorTests : IDisposable
         result.Record.StartedAt.Should().BeNull("a run that never started must not carry a start time");
         result.Record.Error.Should().Contain("expired");
         mediator.Verify(m => m.Send(It.IsAny<RunConversationCommand>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    // -- Bundle-owned MCP tool grants (issue #368) --
+
+    [Fact]
+    public async Task ExecuteAsync_BundleOwnsMcpServer_GrantsDiscoveredToolNamesIntoAmbientEnvelope()
+    {
+        Domain.AI.Bundles.CapabilityEnvelope? seenEnvelope = null;
+        var mediator = new Mock<IMediator>();
+        mediator.Setup(m => m.Send(It.IsAny<RunConversationCommand>(), It.IsAny<CancellationToken>()))
+            .Callback<object, CancellationToken>(
+                (_, _) => seenEnvelope = Application.AI.Common.Services.Governance.CapabilityEnvelopeAccessor.Current)
+            .ReturnsAsync(Ok());
+
+        var mcpToolProvider = new Mock<IMcpToolProvider>();
+        mcpToolProvider.Setup(p => p.GetToolsAsync("b1:echo", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<AITool> { AIFunctionFactory.Create(() => "r", "echo_tool") });
+
+        var (executor, jobStore, handleStore) = BuildSut(mediator.Object, mcpToolProvider.Object);
+        var staged = StageOnDisk("b1", mcpServerNames: ["b1:echo"]);
+        var handle = handleStore.Register(staged, "owner-1");
+        jobStore.Create(QueuedRecord("j1", handle, staged.Agent.Id)
+            with
+        { Envelope = new CapabilityEnvelope { AllowedMcpServers = ["b1:echo"] } });
+
+        await executor.ExecuteAsync("j1", CancellationToken.None);
+
+        seenEnvelope.Should().NotBeNull();
+        // Namespaced, never the bare server-declared name — see BundleOwnedMcpToolNaming.
+        seenEnvelope!.AllowedTools.Should().Contain("b1_echo__echo_tool");
+        seenEnvelope.AllowedTools.Should().NotContain("echo_tool",
+            "the bare, bundle-chosen name must never be the granted/governed name");
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_BundleOwnedServerUnreachable_GrantsNoToolsButRunStillSucceeds()
+    {
+        var mediator = MediatorReturning(Ok());
+        var mcpToolProvider = new Mock<IMcpToolProvider>();
+        mcpToolProvider.Setup(p => p.GetToolsAsync("b1:echo", It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("server unreachable"));
+
+        var (executor, jobStore, handleStore) = BuildSut(mediator.Object, mcpToolProvider.Object);
+        var staged = StageOnDisk("b1", mcpServerNames: ["b1:echo"]);
+        var handle = handleStore.Register(staged, "owner-1");
+        jobStore.Create(QueuedRecord("j1", handle, staged.Agent.Id));
+
+        var result = await executor.ExecuteAsync("j1", CancellationToken.None);
+
+        result.Status.Should().Be(BundleRunExecutionStatus.Ran);
+        result.Record!.Status.Should().Be(BundleRunStatus.Succeeded,
+            "an unreachable bundle-owned server must contribute zero tools, not fail the run");
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_BundleOwnsMcpServer_DoesNotMutateStoredRecordEnvelope()
+    {
+        var mediator = MediatorReturning(Ok());
+        var mcpToolProvider = new Mock<IMcpToolProvider>();
+        mcpToolProvider.Setup(p => p.GetToolsAsync("b1:echo", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<AITool> { AIFunctionFactory.Create(() => "r", "echo_tool") });
+
+        var (executor, jobStore, handleStore) = BuildSut(mediator.Object, mcpToolProvider.Object);
+        var staged = StageOnDisk("b1", mcpServerNames: ["b1:echo"]);
+        var handle = handleStore.Register(staged, "owner-1");
+        jobStore.Create(QueuedRecord("j1", handle, staged.Agent.Id)
+            with
+        { Envelope = new CapabilityEnvelope { AllowedMcpServers = ["b1:echo"] } });
+
+        await executor.ExecuteAsync("j1", CancellationToken.None);
+
+        jobStore.Get("j1")!.Envelope.AllowedTools.Should().BeEmpty(
+            "the stored record's envelope must not be mutated by run-scoped tool discovery");
     }
 
     public void Dispose()

@@ -3,6 +3,7 @@ using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Services.Tools;
 using Domain.AI.Governance;
 using Domain.Common.Config.AI;
+using System.Collections.Concurrent;
 using Domain.Common.Config.AI.MCP;
 using FluentAssertions;
 using Infrastructure.AI.MCP.Services;
@@ -137,7 +138,7 @@ public sealed class BehaviorRecordingMcpToolProviderTests
         {
             McpServers = new McpServersConfig
             {
-                Servers = new Dictionary<string, McpServerDefinition>
+                Servers = new ConcurrentDictionary<string, McpServerDefinition>
                 {
                     [trusted] = new() { TrustToolAnnotations = true },
                     [UnvouchedServer] = new(),

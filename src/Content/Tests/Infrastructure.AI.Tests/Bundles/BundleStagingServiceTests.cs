@@ -3,6 +3,7 @@ using System.Text;
 using Domain.Common.Config;
 using Domain.Common.Config.AI;
 using Domain.Common.Config.AI.BundleExecution;
+using Domain.Common.Config.AI.MCP;
 using FluentAssertions;
 using Infrastructure.AI.Agents;
 using Infrastructure.AI.Bundles;
@@ -49,6 +50,7 @@ public sealed class BundleStagingServiceTests : IDisposable
         bundle.Agent.Instructions.Should().Contain("Bundle instructions.");
         bundle.OwnedSkills.Select(s => s.Id).Should().ContainSingle(id => id == "greet");
         bundle.PluginManifests.Select(m => m.Name).Should().ContainSingle(n => n == "my-plugin");
+        bundle.McpServerNames.Should().BeEmpty("this bundle's plugin.json declares no mcpServers");
 
         // The staged files really live under the staging root, so disk-based skill disclosure can read them.
         Directory.Exists(bundle.StagedRootDirectory).Should().BeTrue();
@@ -71,6 +73,81 @@ public sealed class BundleStagingServiceTests : IDisposable
 
         result.IsSuccess.Should().BeTrue(string.Join("; ", result.Errors));
         result.Value!.OwnedSkills.Select(s => s.Id).Should().BeEquivalentTo(["good"]);
+    }
+
+    // --- Bundle-owned MCP servers (issue #368) -------------------------------------------------------
+
+    [Fact]
+    public async Task StageAsync_BundleWithStdioMcpServer_RegistersNamespacedServerAndPopulatesMcpServerNames()
+    {
+        using var zip = ZipOf(
+            ("AGENT.md", "---\nid: mcp-bundle\nname: MCP Bundle\n---\nx"),
+            ("plugin.json", "{ \"name\": \"root\", \"version\": \"1.0.0\", \"mcpServers\": \"./mcp.json\" }"),
+            ("mcp.json", "{ \"mcpServers\": { \"echo\": { \"command\": \"npx\", \"args\": [\"echo-mcp\"] } } }"));
+
+        var mcpServersConfig = new McpServersConfig();
+        var result = await CreateService(mcpServersConfig: mcpServersConfig).StageAsync(zip);
+
+        result.IsSuccess.Should().BeTrue(string.Join("; ", result.Errors));
+        var bundle = result.Value!;
+        var namespacedName = $"{bundle.BundleId}:echo";
+
+        bundle.McpServerNames.Should().BeEquivalentTo([namespacedName]);
+        mcpServersConfig.Servers.Should().ContainKey(namespacedName);
+        mcpServersConfig.Servers[namespacedName].Type.Should().Be(McpServerType.Stdio);
+        mcpServersConfig.Servers[namespacedName].Command.Should().Be("npx");
+    }
+
+    [Fact]
+    public async Task StageAsync_BundleWithHttpMcpServer_RegistersHttpDefinitionWithUrl()
+    {
+        using var zip = ZipOf(
+            ("AGENT.md", "---\nid: http-bundle\nname: HTTP Bundle\n---\nx"),
+            ("plugin.json", "{ \"name\": \"root\", \"version\": \"1.0.0\", \"mcpServers\": \"./mcp.json\" }"),
+            ("mcp.json", "{ \"mcpServers\": { \"remote\": { \"type\": \"http\", \"url\": \"https://tools.example.com/mcp\" } } }"));
+
+        var mcpServersConfig = new McpServersConfig();
+        var result = await CreateService(mcpServersConfig: mcpServersConfig).StageAsync(zip);
+
+        result.IsSuccess.Should().BeTrue(string.Join("; ", result.Errors));
+        var namespacedName = $"{result.Value!.BundleId}:remote";
+
+        mcpServersConfig.Servers[namespacedName].Type.Should().Be(McpServerType.Http);
+        mcpServersConfig.Servers[namespacedName].Url.Should().Be("https://tools.example.com/mcp");
+    }
+
+    [Fact]
+    public async Task StageAsync_MalformedMcpJson_DegradesGracefullyWithoutFailingStaging()
+    {
+        using var zip = ZipOf(
+            ("AGENT.md", "---\nid: bad-mcp\nname: Bad MCP\n---\nx"),
+            ("plugin.json", "{ \"name\": \"root\", \"version\": \"1.0.0\", \"mcpServers\": \"./mcp.json\" }"),
+            ("mcp.json", "{ this is not valid json"));
+
+        var mcpServersConfig = new McpServersConfig();
+        var result = await CreateService(mcpServersConfig: mcpServersConfig).StageAsync(zip);
+
+        result.IsSuccess.Should().BeTrue("a malformed mcp.json must degrade, not fail the whole bundle");
+        result.Value!.McpServerNames.Should().BeEmpty();
+        mcpServersConfig.Servers.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task StageAsync_TwoNestedPluginsDeclareSameServerName_KeepsFirstAndDoesNotThrow()
+    {
+        using var zip = ZipOf(
+            ("AGENT.md", "---\nid: dup-mcp\nname: Dup MCP\n---\nx"),
+            ("plugins/one/plugin.json", "{ \"name\": \"one\", \"version\": \"1.0.0\", \"mcpServers\": \"./mcp.json\" }"),
+            ("plugins/one/mcp.json", "{ \"mcpServers\": { \"shared\": { \"command\": \"npx\", \"args\": [\"one\"] } } }"),
+            ("plugins/two/plugin.json", "{ \"name\": \"two\", \"version\": \"1.0.0\", \"mcpServers\": \"./mcp.json\" }"),
+            ("plugins/two/mcp.json", "{ \"mcpServers\": { \"shared\": { \"command\": \"npx\", \"args\": [\"two\"] } } }"));
+
+        var mcpServersConfig = new McpServersConfig();
+        var result = await CreateService(mcpServersConfig: mcpServersConfig).StageAsync(zip);
+
+        result.IsSuccess.Should().BeTrue(string.Join("; ", result.Errors));
+        result.Value!.McpServerNames.Should().ContainSingle();
+        mcpServersConfig.Servers.Should().ContainSingle();
     }
 
     // --- Hostile-archive guards ---------------------------------------------------------------------
@@ -198,20 +275,21 @@ public sealed class BundleStagingServiceTests : IDisposable
 
     // --- Helpers ------------------------------------------------------------------------------------
 
-    private BundleStagingService CreateService(BundleExecutionConfig? overrides = null)
+    private BundleStagingService CreateService(BundleExecutionConfig? overrides = null, McpServersConfig? mcpServersConfig = null)
     {
         var cfg = overrides ?? new BundleExecutionConfig();
         cfg.TempRoot = _stagingRoot;
-        return CreateService(new AppConfig { AI = new AIConfig { BundleExecution = cfg } });
+        return CreateService(new AppConfig { AI = new AIConfig { BundleExecution = cfg } }, mcpServersConfig);
     }
 
-    private static BundleStagingService CreateService(AppConfig appConfig) =>
+    private static BundleStagingService CreateService(AppConfig appConfig, McpServersConfig? mcpServersConfig = null) =>
         new(
             new OptionsMonitorStub(appConfig),
             new AgentMetadataParser(NullLogger<AgentMetadataParser>.Instance),
             new SkillMetadataParser(NullLogger<SkillMetadataParser>.Instance, new UnsandboxedSkillFileReader()),
             new UnsandboxedSkillFileReader(),
             new PluginManifestReader(NullLogger<PluginManifestReader>.Instance),
+            mcpServersConfig ?? new McpServersConfig(),
             NullLogger<BundleStagingService>.Instance);
 
     private void NoStagedDirectoriesRemain()

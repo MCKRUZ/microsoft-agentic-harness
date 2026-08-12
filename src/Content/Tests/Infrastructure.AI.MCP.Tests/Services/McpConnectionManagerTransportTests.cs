@@ -32,7 +32,7 @@ public sealed class McpConnectionManagerTransportTests
     {
         var config = new McpServersConfig
         {
-            Servers = new Dictionary<string, McpServerDefinition>
+            Servers = new ConcurrentDictionary<string, McpServerDefinition>
             {
                 ["sse-test"] = new()
                 {
@@ -59,7 +59,7 @@ public sealed class McpConnectionManagerTransportTests
         // This tests that CreateHttpTransport doesn't throw during construction.
         var config = new McpServersConfig
         {
-            Servers = new Dictionary<string, McpServerDefinition>
+            Servers = new ConcurrentDictionary<string, McpServerDefinition>
             {
                 ["api-key-server"] = new()
                 {
@@ -89,7 +89,7 @@ public sealed class McpConnectionManagerTransportTests
     {
         var config = new McpServersConfig
         {
-            Servers = new Dictionary<string, McpServerDefinition>
+            Servers = new ConcurrentDictionary<string, McpServerDefinition>
             {
                 ["bearer-server"] = new()
                 {
@@ -119,7 +119,7 @@ public sealed class McpConnectionManagerTransportTests
         // credential. It must now fail loudly at transport build before any send.
         var config = new McpServersConfig
         {
-            Servers = new Dictionary<string, McpServerDefinition>
+            Servers = new ConcurrentDictionary<string, McpServerDefinition>
             {
                 ["entra-no-scope"] = new()
                 {
@@ -149,7 +149,7 @@ public sealed class McpConnectionManagerTransportTests
         // connecting with no Authorization header.
         var config = new McpServersConfig
         {
-            Servers = new Dictionary<string, McpServerDefinition>
+            Servers = new ConcurrentDictionary<string, McpServerDefinition>
             {
                 ["bearer-empty"] = new()
                 {
@@ -183,7 +183,7 @@ public sealed class McpConnectionManagerTransportTests
         // lifecycle of the cached client, not a successful connect.
         var config = new McpServersConfig
         {
-            Servers = new Dictionary<string, McpServerDefinition>
+            Servers = new ConcurrentDictionary<string, McpServerDefinition>
             {
                 ["entra-server"] = new()
                 {
@@ -231,7 +231,7 @@ public sealed class McpConnectionManagerTransportTests
     {
         var config = new McpServersConfig
         {
-            Servers = new Dictionary<string, McpServerDefinition>
+            Servers = new ConcurrentDictionary<string, McpServerDefinition>
             {
                 ["concurrent-test"] = new()
                 {
@@ -260,7 +260,7 @@ public sealed class McpConnectionManagerTransportTests
     {
         var config = new McpServersConfig
         {
-            Servers = new Dictionary<string, McpServerDefinition>
+            Servers = new ConcurrentDictionary<string, McpServerDefinition>
             {
                 ["bad-type"] = new()
                 {
@@ -285,7 +285,7 @@ public sealed class McpConnectionManagerTransportTests
     {
         var config = new McpServersConfig
         {
-            Servers = new Dictionary<string, McpServerDefinition>
+            Servers = new ConcurrentDictionary<string, McpServerDefinition>
             {
                 ["env-test"] = new()
                 {

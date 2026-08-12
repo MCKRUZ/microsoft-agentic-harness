@@ -1,6 +1,7 @@
 using Domain.Common.Config.AI;
 using Domain.Common.Config.AI.MCP;
 using FluentAssertions;
+using Microsoft.Extensions.Configuration;
 using Xunit;
 
 namespace Domain.Common.Tests.Config;
