@@ -49,8 +49,12 @@ public static class McpManifestReader
         {
             mcpPath = Path.GetFullPath(Path.Combine(baseDir, mcpServersRelativePath));
         }
-        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        catch (Exception ex)
         {
+            // Broad catch, matching this method's own JSON-parse guard below and the sibling
+            // PluginManifestReader.Read's path-resolution guard: a narrower filter here would silently
+            // diverge from both if a future runtime version throws a different exception type for a
+            // malformed path than the ones known today.
             logger.LogWarning(ex,
                 "{Owner}: MCP config path '{RelativePath}' is invalid, skipping",
                 ownerDescription, mcpServersRelativePath);
