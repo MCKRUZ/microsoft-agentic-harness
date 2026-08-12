@@ -42,6 +42,13 @@ public sealed class BundleStagingService : IBundleStagingService
     /// </summary>
     private const long RatioGuardFloorBytes = 1024 * 1024;
 
+    /// <summary>
+    /// A bundle (unlike a host-installed plugin) has no declaration-level env overrides — this empty,
+    /// read-only instance is reused across every server built for every bundle upload rather than
+    /// allocating a fresh empty dictionary per server.
+    /// </summary>
+    private static readonly Dictionary<string, string> NoDeclarationEnv = [];
+
     private readonly IOptionsMonitor<AppConfig> _appConfig;
     private readonly AgentMetadataParser _agentParser;
     private readonly SkillMetadataParser _skillParser;
@@ -470,7 +477,7 @@ public sealed class BundleStagingService : IBundleStagingService
         {
             definition = McpServerDefinitionBuilder.Build(
                 // A bundle (unlike a host-installed plugin) has no declaration-level env overrides.
-                serverProp.Value, new Dictionary<string, string>(), $"[Bundle: {bundleId}]", serverProp.Name);
+                serverProp.Value, NoDeclarationEnv, $"[Bundle: {bundleId}]", serverProp.Name);
         }
         catch (Exception ex)
         {
