@@ -1,4 +1,5 @@
 using System.IO.Compression;
+using System.Text.Json;
 using Application.AI.Common.Interfaces.Bundles;
 using Application.AI.Common.Interfaces.Plugins;
 using Application.AI.Common.Interfaces.Skills;
@@ -462,7 +463,7 @@ public sealed class BundleStagingService : IBundleStagingService
     /// rejecting a stdio (local-command) transport and a duplicate name — see
     /// <see cref="RegisterBundleMcpServers"/>. Returns whether registration succeeded.
     /// </summary>
-    private bool TryBuildAndRegisterOneServer(string bundleId, string namespacedName, System.Text.Json.JsonProperty serverProp)
+    private bool TryBuildAndRegisterOneServer(string bundleId, string namespacedName, JsonProperty serverProp)
     {
         McpServerDefinition definition;
         try

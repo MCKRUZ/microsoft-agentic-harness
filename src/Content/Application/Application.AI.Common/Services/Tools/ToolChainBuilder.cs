@@ -91,15 +91,15 @@ public partial class ToolChainBuilder : IToolChainBuilder
         SkillAgentOptions options,
         CancellationToken cancellationToken)
     {
-        // The authoritative source for "is this granted server bundle-owned": CapabilityEnvelope.BundleOwnedMcpServers,
-        // stamped once by RunBundleCommandHandler from the staged bundle's own registration. A server
-        // name's SHAPE cannot answer this — PluginLoader namespaces a host-installed plugin's own MCP
-        // servers under the identical "{Prefix}:{ServerName}" convention, into the same shared server
-        // config a bundle registers into, so a colon in the name is not evidence of bundle ownership.
         var envelope = CapabilityEnvelopeAccessor.Current;
         var injected = new List<ProvisionedTool>();
-        foreach (var (serverName, serverTools) in await ResolveInjectedMcpToolsAsync(cancellationToken))
+        foreach (var (serverName, serverTools) in await ResolveInjectedMcpToolsAsync(envelope, cancellationToken))
         {
+            // The authoritative source for "is this granted server bundle-owned": CapabilityEnvelope.BundleOwnedMcpServers,
+            // stamped once by RunBundleCommandHandler from the staged bundle's own registration. A server
+            // name's SHAPE cannot answer this — PluginLoader namespaces a host-installed plugin's own MCP
+            // servers under the identical "{Prefix}:{ServerName}" convention, into the same shared server
+            // config a bundle registers into, so a colon in the name is not evidence of bundle ownership.
             var isBundleOwned = envelope?.IsBundleOwnedMcpServer(serverName) ?? false;
             foreach (var t in serverTools)
                 injected.Add(new ProvisionedTool(PublishServerTool(t, serverName, isBundleOwned), serverName));
@@ -433,9 +433,13 @@ public partial class ToolChainBuilder : IToolChainBuilder
     /// is never reached at all (no side-effect connection, no tool-schema disclosure), closing
     /// SSRF-by-construction. An empty grant yields no MCP tools.
     /// </summary>
-    private async Task<IReadOnlyList<(string ServerName, IList<AITool> Tools)>> ResolveInjectedMcpToolsAsync(CancellationToken cancellationToken)
+    /// <param name="envelope">
+    /// The ambient <see cref="CapabilityEnvelopeAccessor.Current"/>, read once by the caller and passed in
+    /// rather than re-read here — both this method and the caller's own bundle-ownership check need it.
+    /// </param>
+    private async Task<IReadOnlyList<(string ServerName, IList<AITool> Tools)>> ResolveInjectedMcpToolsAsync(
+        Domain.AI.Bundles.CapabilityEnvelope? envelope, CancellationToken cancellationToken)
     {
-        var envelope = CapabilityEnvelopeAccessor.Current;
         if (envelope is null)
         {
             var allByServer = await _mcpToolProvider!.GetAllToolsAsync(cancellationToken);

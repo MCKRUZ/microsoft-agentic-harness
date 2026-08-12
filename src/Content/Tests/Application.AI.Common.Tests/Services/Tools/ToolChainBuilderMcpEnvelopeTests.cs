@@ -69,7 +69,7 @@ public sealed class ToolChainBuilderMcpEnvelopeTests
         var builder = Builder(mcp.Object);
 
         List<AITool> tools;
-        using (CapabilityEnvelopeAccessor.Begin(EnvelopeWithBundleOwned(["bundle-123:epr-mcp"], "bundle-123:epr-mcp")))
+        using (CapabilityEnvelopeAccessor.Begin(EnvelopeWithBundleOwned("bundle-123:epr-mcp")))
             tools = await builder.BuildToolsAsync(InjectedSkill(), new SkillAgentOptions());
 
         tools.Select(t => t.Name).Should().Contain("bundle-123_epr-mcp__epr_tool");
@@ -220,7 +220,7 @@ public sealed class ToolChainBuilderMcpEnvelopeTests
         };
 
         List<AITool> tools;
-        using (CapabilityEnvelopeAccessor.Begin(EnvelopeWithBundleOwned(["bundle-123:epr-mcp"], "bundle-123:epr-mcp")))
+        using (CapabilityEnvelopeAccessor.Begin(EnvelopeWithBundleOwned("bundle-123:epr-mcp")))
             tools = await builder.BuildToolsAsync(skill, new SkillAgentOptions());
 
         // Published under a NAMESPACED name, never the bare name the (untrusted, bundle-authored)
@@ -306,6 +306,6 @@ public sealed class ToolChainBuilderMcpEnvelopeTests
     private static CapabilityEnvelope Envelope(params string[] servers) =>
         new() { AllowedMcpServers = servers };
 
-    private static CapabilityEnvelope EnvelopeWithBundleOwned(string[] servers, params string[] bundleOwned) =>
-        new() { AllowedMcpServers = servers, BundleOwnedMcpServers = bundleOwned };
+    private static CapabilityEnvelope EnvelopeWithBundleOwned(params string[] bundleOwned) =>
+        new() { AllowedMcpServers = bundleOwned, BundleOwnedMcpServers = bundleOwned };
 }
