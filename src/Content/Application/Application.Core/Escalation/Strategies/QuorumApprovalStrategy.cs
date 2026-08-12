@@ -60,13 +60,16 @@ public sealed class QuorumApprovalStrategy : IApprovalStrategy
         var remainingVotes = totalApprovers - tally.Total;
         if (tally.ApproveCount + remainingVotes < quorumThreshold)
         {
-            // Quorum has become mathematically impossible. A revise appears here only when it
-            // became impossible purely through revisions, with no denial present; any denial
-            // present takes precedence.
+            // Quorum has become mathematically impossible. Deferring to VerdictTally.Resolve()
+            // rather than re-deriving deny-beats-revise here: QuorumThreshold is invariant-bounded
+            // to at most totalApprovers, so reaching this branch guarantees at least one non-approve
+            // response was cast (otherwise "impossible" could never trigger) -- Resolve() is never
+            // null here, and always agrees with what a hand-written comparison would say. One
+            // precedence rule, expressed once.
             return new ApprovalEvaluation
             {
                 IsResolved = true,
-                Verdict = tally.DenyCount > 0 ? ApproverVerdict.Deny : ApproverVerdict.Revise,
+                Verdict = tally.Resolve()!.Value,
                 PendingApprovers = pending
             };
         }

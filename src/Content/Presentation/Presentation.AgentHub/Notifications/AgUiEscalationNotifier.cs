@@ -85,7 +85,7 @@ public sealed class AgUiEscalationNotifier : IEscalationNotificationChannel
             ? outcome.Decisions.Select(d => new AgUiApproverDecision
             {
                 ApproverName = d.ApproverName,
-                Approved = d.Verdict == ApproverVerdict.Approve,
+                Approved = d.IsApproved,
                 Verdict = d.Verdict.ToString(),
                 Reason = d.Reason,
                 Instructions = d.Instructions,

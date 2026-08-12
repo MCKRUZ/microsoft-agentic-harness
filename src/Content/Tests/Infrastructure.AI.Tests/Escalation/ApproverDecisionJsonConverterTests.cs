@@ -184,8 +184,12 @@ public sealed class ApproverDecisionJsonConverterTests
         var wireType = typeof(ApproverDecisionJsonConverter).GetNestedType("Wire", BindingFlags.NonPublic);
         wireType.Should().NotBeNull("ApproverDecisionJsonConverter must declare a private Wire DTO");
 
+        // CanWrite excludes get-only computed properties (e.g. IsApproved => Verdict == Approve),
+        // which have no independent state and so never need a Wire counterpart — only real data
+        // members (an init accessor counts as writable) can silently vanish on round-trip.
         var domainPropertyNames = typeof(ApproverDecision)
             .GetProperties(BindingFlags.Public | BindingFlags.Instance)
+            .Where(p => p.CanWrite)
             .Select(p => p.Name)
             .ToHashSet(StringComparer.Ordinal);
 

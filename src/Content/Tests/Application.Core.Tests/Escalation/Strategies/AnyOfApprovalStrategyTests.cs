@@ -3,6 +3,7 @@ using Application.Core.Escalation.Strategies;
 using Domain.AI.Escalation;
 using FluentAssertions;
 using Xunit;
+using static Application.Core.Tests.Escalation.Strategies.ApproverDecisionFixtures;
 
 namespace Application.Core.Tests.Escalation.Strategies;
 
@@ -22,29 +23,6 @@ public class AnyOfApprovalStrategyTests
         ApprovalStrategy = ApprovalStrategyType.AnyOf,
         Approvers = approvers,
         RequestedAt = DateTimeOffset.UtcNow
-    };
-
-    private static ApproverDecision Approve(string name) => new()
-    {
-        ApproverName = name,
-        Verdict = ApproverVerdict.Approve,
-        RespondedAt = DateTimeOffset.UtcNow
-    };
-
-    private static ApproverDecision Deny(string name) => new()
-    {
-        ApproverName = name,
-        Verdict = ApproverVerdict.Deny,
-        Reason = "Denied",
-        RespondedAt = DateTimeOffset.UtcNow
-    };
-
-    private static ApproverDecision Revise(string name) => new()
-    {
-        ApproverName = name,
-        Verdict = ApproverVerdict.Revise,
-        Instructions = "Use the other path",
-        RespondedAt = DateTimeOffset.UtcNow
     };
 
     [Fact]

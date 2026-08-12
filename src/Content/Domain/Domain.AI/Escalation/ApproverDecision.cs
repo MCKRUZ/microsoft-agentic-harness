@@ -13,6 +13,14 @@ public sealed record ApproverDecision
     public required ApproverVerdict Verdict { get; init; }
 
     /// <summary>
+    /// Whether this decision, on its own, counts as an approval. A single source of truth for
+    /// "what does Approved mean now that there are three verdicts" — every consumer that needs
+    /// this comparison should read it here rather than re-typing <c>Verdict == Approve</c>, so a
+    /// future fourth verdict only needs this one definition to change.
+    /// </summary>
+    public bool IsApproved => Verdict == ApproverVerdict.Approve;
+
+    /// <summary>
     /// Optional reason for the decision. Especially useful for denials.
     /// Operator-facing only — like every other free-text reason in this subsystem, never relayed
     /// to the model. See <see cref="Instructions"/> for the field that deliberately is.

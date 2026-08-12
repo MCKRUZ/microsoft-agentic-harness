@@ -103,7 +103,7 @@ public sealed class MagenticHitlBridge : IMagenticPlanReviewBridge
         // Reading Reason alone would silently drop a reviewer's actual words on exactly the verdict
         // this relay exists to carry, falling back to the generic rejection string instead.
         var rawFeedback = outcome.Decisions
-            .Where(d => d.Verdict != ApproverVerdict.Approve)
+            .Where(d => !d.IsApproved)
             .Select(d => d.Instructions ?? d.Reason)
             .FirstOrDefault(r => !string.IsNullOrWhiteSpace(r))
             ?? $"Plan rejected ({outcome.ResolutionType}).";

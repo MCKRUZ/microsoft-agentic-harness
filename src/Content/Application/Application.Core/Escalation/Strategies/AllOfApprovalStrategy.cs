@@ -57,10 +57,15 @@ public sealed class AllOfApprovalStrategy : IApprovalStrategy
             };
         }
 
+        // Deferring to VerdictTally.Resolve() rather than re-deriving revise-beats-approve here:
+        // DenyCount is 0 (checked above) and nobody is pending (checked above), so the roster is
+        // non-empty and fully responded with no denial -- ApproveCount is therefore guaranteed
+        // positive whenever ReviseCount is 0, and Resolve() is never null. One precedence rule,
+        // expressed once.
         return new ApprovalEvaluation
         {
             IsResolved = true,
-            Verdict = tally.ReviseCount > 0 ? ApproverVerdict.Revise : ApproverVerdict.Approve,
+            Verdict = tally.Resolve()!.Value,
             PendingApprovers = scoped.Pending
         };
     }

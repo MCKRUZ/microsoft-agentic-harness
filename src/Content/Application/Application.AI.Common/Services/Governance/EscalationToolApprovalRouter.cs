@@ -263,7 +263,7 @@ public sealed class EscalationToolApprovalRouter : IToolApprovalRouter
             // force-approve, or a rehydrated outcome). Naming the resolution beats naming nobody:
             // an approved consequential action must never be recorded as attributable to "".
             var named = outcome.Decisions
-                .Where(d => d.Verdict == ApproverVerdict.Approve)
+                .Where(d => d.IsApproved)
                 .Select(d => d.ApproverName)
                 .ToList();
             var approvers = named.Count > 0

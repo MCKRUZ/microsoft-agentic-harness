@@ -42,7 +42,7 @@ public sealed record ApproverDecisionSummary
         return new ApproverDecisionSummary
         {
             ApproverName = decision.ApproverName,
-            Approved = decision.Verdict == ApproverVerdict.Approve,
+            Approved = decision.IsApproved,
             Verdict = decision.Verdict,
             Reason = decision.Reason,
             Instructions = decision.Instructions,
