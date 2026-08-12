@@ -52,6 +52,13 @@ public sealed class CompositeEscalationNotifier : IEscalationNotifier
             channel => channel.NotifyEscalationExpiringAsync(request, remaining, ct));
     }
 
+    /// <inheritdoc />
+    public Task NotifyExecutionReportedAsync(EscalationExecutionRecord record, CancellationToken ct)
+    {
+        return FanOutAsync(
+            channel => channel.NotifyExecutionReportedAsync(record, ct));
+    }
+
     private Task FanOutAsync(Func<IEscalationNotificationChannel, Task> action)
     {
         var tasks = _channels.Select(channel => SafeNotifyAsync(action, channel));

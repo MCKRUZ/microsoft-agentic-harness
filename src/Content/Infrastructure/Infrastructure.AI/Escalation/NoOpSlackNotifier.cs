@@ -46,4 +46,11 @@ public sealed class NoOpSlackNotifier : IEscalationNotificationChannel
         _logger.LogDebug("Slack: would notify escalation expiring for {EscalationId} ({Remaining} remaining)", request.EscalationId, remaining);
         return Task.CompletedTask;
     }
+
+    /// <inheritdoc />
+    public Task NotifyExecutionReportedAsync(EscalationExecutionRecord record, CancellationToken ct)
+    {
+        _logger.LogDebug("Slack: would notify execution {Status} for {EscalationId}", record.Status, record.EscalationId);
+        return Task.CompletedTask;
+    }
 }

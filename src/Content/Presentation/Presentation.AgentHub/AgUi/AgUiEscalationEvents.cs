@@ -39,6 +39,18 @@ public sealed record EscalationRequestedEvent : AgUiEvent
     /// <summary>Tool arguments (sanitized for display). Null when omitted.</summary>
     [JsonPropertyName("arguments")]
     public IReadOnlyDictionary<string, string>? Arguments { get; init; }
+
+    /// <summary>
+    /// Which attempt at this action this is, 1-based. Greater than 1 means a prior approved
+    /// attempt ran and failed. Optional (not required) so this event's shape stays additive
+    /// for any client that predates this field.
+    /// </summary>
+    [JsonPropertyName("attemptNumber")]
+    public int? AttemptNumber { get; init; }
+
+    /// <summary>Why the previous attempt at this action failed. Null on a first attempt.</summary>
+    [JsonPropertyName("priorFailureReason")]
+    public string? PriorFailureReason { get; init; }
 }
 
 /// <summary>
@@ -98,4 +110,42 @@ public sealed record EscalationExpiringEvent : AgUiEvent
     /// <summary>Seconds remaining before the escalation times out.</summary>
     [JsonPropertyName("remainingSeconds")]
     public required int RemainingSeconds { get; init; }
+}
+
+/// <summary>
+/// Reports what happened when an approved escalation's action was actually carried out —
+/// closes the approval loop so a failed action and a completed one no longer look identical to
+/// the approver.
+/// </summary>
+/// <remarks>
+/// Emitted inline within the same turn for a tool-call approval, so this reaches the UI live.
+/// For a plan-executor approval the plan resumes with no AG-UI run active, so this event reaches
+/// only the audit trail — the loop still closes, just not on this surface. See
+/// <c>AgUiEscalationNotifier</c>.
+/// </remarks>
+public sealed record EscalationExecutedEvent : AgUiEvent
+{
+    /// <summary>Correlates back to the originating escalation.</summary>
+    [JsonPropertyName("escalationId")]
+    public required string EscalationId { get; init; }
+
+    /// <summary>Whether the action succeeded, failed, or never ran (e.g. "Succeeded", "Failed", "NeverExecuted").</summary>
+    [JsonPropertyName("status")]
+    public required string Status { get; init; }
+
+    /// <summary>Why the action failed. Present only when <see cref="Status"/> is "Failed".</summary>
+    [JsonPropertyName("failureReason")]
+    public string? FailureReason { get; init; }
+
+    /// <summary>Why the action never ran. Present only when <see cref="Status"/> is "NeverExecuted".</summary>
+    [JsonPropertyName("notExecutedReason")]
+    public string? NotExecutedReason { get; init; }
+
+    /// <summary>When this report was produced.</summary>
+    [JsonPropertyName("reportedAt")]
+    public required DateTimeOffset ReportedAt { get; init; }
+
+    /// <summary>A stable identifier for the site that produced this report (e.g. "plan-executor").</summary>
+    [JsonPropertyName("reportedBy")]
+    public required string ReportedBy { get; init; }
 }

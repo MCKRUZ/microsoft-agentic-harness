@@ -1,3 +1,4 @@
+using Application.AI.Common.Interfaces.Escalation;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Tools;
 using Domain.AI.Governance;
@@ -29,9 +30,15 @@ public sealed partial class ToolInvocationGovernor
     /// call site.
     /// </param>
     /// <param name="Reason">Approver attribution, carried onto the final trace record.</param>
+    /// <param name="Call">
+    /// The approval, for execution reporting, when the call was approved by a routed escalation
+    /// with a known conversation. Null on a block, and null on an approval this governor cannot
+    /// attribute to a conversation.
+    /// </param>
     private readonly record struct ApprovalGate(
         ToolInvocationDecision? Block,
-        string Reason);
+        string Reason,
+        ApprovedCall? Call = null);
 
     /// <summary>
     /// Puts an approval-required verdict to a human and reports whether they allowed it.
@@ -58,7 +65,7 @@ public sealed partial class ToolInvocationGovernor
             .ConfigureAwait(false);
 
         if (approval.Outcome == ToolApprovalOutcome.Approved)
-            return new ApprovalGate(Block: null, approval.Reason);
+            return new ApprovalGate(Block: null, approval.Reason, BuildApprovedCall(agentId, toolName, approval));
 
         // Not approved. Count it against the agent exactly as an unrouted approval verdict always
         // has, so repeated attempts at a tool nobody will approve still trip the denial tracker.
@@ -68,5 +75,25 @@ public sealed partial class ToolInvocationGovernor
             requiredApproval: true, agentId);
 
         return new ApprovalGate(block, approval.Reason);
+    }
+
+    /// <summary>
+    /// Builds the execution-reporting handle for an approved call, or null when it cannot be
+    /// attributed to a conversation.
+    /// </summary>
+    /// <remarks>
+    /// A defensive check on <see cref="ToolApprovalResult.EscalationId"/>, not a null-forgiving
+    /// <c>!</c> — <see cref="ApprovalGate"/>'s own doc explains why that matters here: an approval
+    /// this governor cannot attribute must degrade to no execution report, not throw.
+    /// </remarks>
+    private ApprovedCall? BuildApprovedCall(string agentId, string toolName, ToolApprovalResult approval)
+    {
+        if (approval.EscalationId is not { } escalationId)
+            return null;
+
+        if (ApprovalFailureKey.TryCreate(_executionContext.ConversationId, agentId, toolName) is not { } key)
+            return null;
+
+        return new ApprovedCall(escalationId, key);
     }
 }

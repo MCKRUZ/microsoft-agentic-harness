@@ -11,5 +11,7 @@ public enum EscalationAuditRecordType
     /// <summary>An approver submitted a decision.</summary>
     Decision,
     /// <summary>The escalation was resolved (approved, denied, timed out, or escalated).</summary>
-    Outcome
+    Outcome,
+    /// <summary>An approved action's execution result was reported: succeeded, failed, or never ran.</summary>
+    Execution
 }

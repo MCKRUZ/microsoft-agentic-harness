@@ -1,3 +1,4 @@
+using Application.AI.Common.Interfaces.Escalation;
 using Domain.AI.Governance;
 
 namespace Application.AI.Common.Interfaces.Governance;
@@ -39,7 +40,7 @@ public interface IToolInvocationGovernor
     /// <returns>
     /// An allow decision, or a deny decision carrying a model-facing message to return in place of
     /// the tool result. When enforcement is disabled the governor records the would-be decision but
-    /// always returns <see cref="ToolInvocationDecision.Allow"/>.
+    /// always returns <see cref="ToolInvocationDecision.Allow()"/>.
     /// </returns>
     /// <remarks>
     /// <paramref name="arguments"/> is optional so the callers that authorize by capability name
@@ -67,8 +68,18 @@ public sealed record ToolInvocationDecision(bool IsAllowed, string? DeniedMessag
     // immutable and indistinguishable between calls.
     private static readonly ToolInvocationDecision AllowedDecision = new(true);
 
+    /// <summary>
+    /// The approval that permitted this call, when it was routed for human approval. Null for an
+    /// allow that needed no approval — the common case, and why <see cref="Allow()"/> keeps
+    /// returning the cached singleton rather than allocating here too.
+    /// </summary>
+    public ApprovedCall? ApprovedCall { get; init; }
+
     /// <summary>An allow decision.</summary>
     public static ToolInvocationDecision Allow() => AllowedDecision;
+
+    /// <summary>An allow decision, stamped with the human approval that permitted it.</summary>
+    public static ToolInvocationDecision Allow(ApprovedCall call) => new(true) { ApprovedCall = call };
 
     /// <summary>A deny decision carrying the model-facing explanation.</summary>
     public static ToolInvocationDecision Deny(string deniedMessage) => new(false, deniedMessage);

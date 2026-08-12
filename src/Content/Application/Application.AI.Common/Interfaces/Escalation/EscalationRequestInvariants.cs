@@ -59,6 +59,15 @@ public static class EscalationRequestInvariants
     public const int MaxTimeoutSeconds = 24 * 24 * 60 * 60;
 
     /// <summary>
+    /// Hard ceiling on <see cref="EscalationRequest.PriorFailureReason"/>, in characters. A second,
+    /// stricter layer against a hand-edited durable row — the soft producer-side truncation lives
+    /// in <c>EscalationConfig.RetryAttribution.MaxPriorFailureLength</c>, which
+    /// <c>EscalationConfigValidator</c> ties to this value so the two can never be configured into
+    /// disagreement.
+    /// </summary>
+    public const int MaxPriorFailureReasonLength = 4096;
+
+    /// <summary>
     /// Validates an escalation request against every creation-time invariant.
     /// </summary>
     /// <param name="request">The request to validate.</param>
@@ -118,6 +127,29 @@ public static class EscalationRequestInvariants
             violation =
                 "the timeout action is Approve at Critical priority — a Critical escalation must " +
                 "never auto-approve on timeout";
+            return false;
+        }
+
+        if (request.AttemptNumber < 1)
+        {
+            violation = $"the attempt number ({request.AttemptNumber}) is less than 1";
+            return false;
+        }
+
+        // Deliberately NOT the mirror check (AttemptNumber > 1 && PriorFailureReason is null) —
+        // that shape is what a legitimate LRU eviction of the failure memory produces, and
+        // rejecting it would fail-close a valid escalation for a benign memory eviction.
+        if (request.AttemptNumber == 1 && request.PriorFailureReason is not null)
+        {
+            violation = "attempt 1 carries a prior failure reason, which never happened";
+            return false;
+        }
+
+        if (request.PriorFailureReason is { Length: > MaxPriorFailureReasonLength })
+        {
+            violation =
+                $"the prior failure reason ({request.PriorFailureReason.Length} chars) exceeds the " +
+                $"maximum of {MaxPriorFailureReasonLength}";
             return false;
         }
 

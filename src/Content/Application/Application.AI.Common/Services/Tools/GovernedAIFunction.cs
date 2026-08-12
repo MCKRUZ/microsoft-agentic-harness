@@ -1,5 +1,6 @@
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Services.Governance;
+using Domain.AI.Escalation;
 using Microsoft.Extensions.AI;
 
 namespace Application.AI.Common.Services.Tools;
@@ -31,6 +32,8 @@ namespace Application.AI.Common.Services.Tools;
 /// </remarks>
 internal sealed class GovernedAIFunction : DelegatingAIFunction
 {
+    private const string ReportedBy = "agent-turn";
+
     public GovernedAIFunction(AIFunction innerFunction)
         : base(innerFunction)
     {
@@ -53,7 +56,31 @@ internal sealed class GovernedAIFunction : DelegatingAIFunction
         if (!admission.IsAllowed)
             return admission.DeniedMessage;
 
-        var result = await base.InvokeCoreAsync(arguments, cancellationToken).ConfigureAwait(false);
+        object? result;
+        try
+        {
+            result = await base.InvokeCoreAsync(arguments, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            await ApprovalExecutionReporting
+                .ReportCallDidNotCompleteAsync(admissionPipeline, admission, ReportedBy)
+                .ConfigureAwait(false);
+            throw;
+        }
+
+        // A no-throw return is reported Succeeded. This is an imprecise signal for an ITool-backed
+        // function specifically: the generic converter (AIToolConverter) flattens ToolResult.Fail
+        // into a returned "Error: ..." string rather than throwing, which this layer cannot tell
+        // apart from a genuinely successful string result — it has no structured ToolResult to
+        // inspect, only whatever object the wrapped AIFunction returns, and that wrapped function is
+        // just as often MCP- or skill-provided as ITool-backed. Fixing that precisely would mean
+        // changing what every tool converter returns on failure, which is out of scope for wiring an
+        // existing report call into this path. Documented as a known limitation rather than guessed at.
+        await admissionPipeline.ReportExecutionAsync(
+            admission,
+            new ToolExecutionReport(EscalationExecutionStatus.Succeeded, null, null),
+            ReportedBy, CancellationToken.None).ConfigureAwait(false);
 
         return admissionPipeline.ApplyOutputPolicy(admission, Name, result);
     }

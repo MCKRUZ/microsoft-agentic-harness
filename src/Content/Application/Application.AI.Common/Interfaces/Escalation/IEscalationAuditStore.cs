@@ -24,6 +24,14 @@ public interface IEscalationAuditStore
     Task RecordOutcomeAsync(EscalationOutcome outcome, CancellationToken ct);
 
     /// <summary>
+    /// Records what happened when an approved escalation's action was actually carried out.
+    /// Same fail-closed throw semantics as the other <c>Record*</c> methods here — whether a
+    /// failure to record should still be reported to the approver is the caller's decision, not
+    /// this store's.
+    /// </summary>
+    Task RecordExecutionAsync(EscalationExecutionRecord record, CancellationToken ct);
+
+    /// <summary>
     /// Returns the full audit history for a specific escalation, ordered chronologically.
     /// Returns an empty list if the escalation ID is unknown.
     /// </summary>

@@ -98,6 +98,10 @@ public class AgentPipelineIntegrationTests
             .ReturnsAsync(Application.AI.Common.Interfaces.Governance.ToolInvocationDecision.Allow());
         services.AddScoped(_ => authorizationMock.Object);
 
+        // Closes the approval loop for whichever call this chain approves — not under test here;
+        // permissive mock so the handler resolves.
+        services.AddScoped(_ => Mock.Of<Application.AI.Common.Interfaces.Escalation.IApprovalExecutionReporter>());
+
         // The REAL admission chain over the five permissive gates above, not a mock of it, built the
         // same way the production root builds it. The handler depends only on the chain now, and
         // registering the real one keeps this an end-to-end proof that the five gates are reachable

@@ -1,4 +1,5 @@
 using Application.AI.Common.Interfaces.Agent;
+using Application.AI.Common.Interfaces.Escalation;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Permissions;
 using Application.AI.Common.Interfaces.Sandbox;
@@ -335,6 +336,7 @@ public sealed partial class ToolInvocationGovernor : IToolInvocationGovernor
 
         // Nothing deterministic refuses this call. If any gate wants a human, this is the moment.
         string? approvedBy = null;
+        ApprovedCall? approvedCall = null;
         if (approvalReasons is not null)
         {
             var gate = await RequestApprovalAsync(agentId, toolName,
@@ -345,6 +347,7 @@ public sealed partial class ToolInvocationGovernor : IToolInvocationGovernor
                 return block;
 
             approvedBy = gate.Reason;
+            approvedCall = gate.Call;
         }
 
         _trace.Record(new ToolDecisionRecord(toolName, ToolDecisionOutcome.Allowed,
@@ -357,7 +360,7 @@ public sealed partial class ToolInvocationGovernor : IToolInvocationGovernor
         if (governance.EnableAudit)
             _auditService.Log(agentId, toolName, ToolDecisionOutcome.Allowed.ToString());
 
-        return ToolInvocationDecision.Allow();
+        return approvedCall is { } call ? ToolInvocationDecision.Allow(call) : ToolInvocationDecision.Allow();
     }
 
     /// <summary>

@@ -319,6 +319,13 @@ public static class DependencyInjection
         // calls this and nothing else, so a gate added here reaches all of them at once.
         services.TryAddScoped<Interfaces.Governance.IToolCallAdmissionPipeline, Services.Governance.ToolCallAdmissionPipeline>();
 
+        // Closes the approval loop (#325): reports what an approved action actually did, and
+        // attributes a corrected retry to its failed predecessor. Singleton because the failure
+        // memory must outlive any one conversation — that is the entire premise of the feature.
+        // The reporter is scoped, matching the scoped pipeline it is injected into.
+        services.TryAddSingleton<Interfaces.Escalation.IApprovalFailureMemory, Services.Escalation.InProcessApprovalFailureMemory>();
+        services.TryAddScoped<Interfaces.Escalation.IApprovalExecutionReporter, Services.Escalation.DefaultApprovalExecutionReporter>();
+
         return services;
     }
 

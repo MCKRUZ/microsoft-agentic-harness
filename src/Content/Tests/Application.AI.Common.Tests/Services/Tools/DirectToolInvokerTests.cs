@@ -1,5 +1,6 @@
 using Application.AI.Common;
 using Application.AI.Common.Interfaces.Agent;
+using Application.AI.Common.Interfaces.Escalation;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Services.Agent;
@@ -16,6 +17,7 @@ using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using Moq;
 using Xunit;
 
 namespace Application.AI.Common.Tests.Services.Tools;
@@ -58,6 +60,7 @@ public sealed class DirectToolInvokerTests
     private readonly GovernorRecord _governor = new();
     private readonly RecordingSanitizer _sanitizer = new();
     private readonly DirectToolInvocationConfig _config = new() { Enabled = true };
+    private readonly Mock<IApprovalExecutionReporter> _executionReporter = new();
     private FakeClassificationGate? _classificationGate;
     private FakeObserverChain? _observerChain;
 
@@ -641,6 +644,62 @@ public sealed class DirectToolInvokerTests
         }
     }
 
+    // ---- #325 execution reporting ----------------------------------------------------------------
+
+    private static ApprovedCall ApprovedCall() =>
+        new(Guid.NewGuid(), new ApprovalFailureKey("conv-1", Caller, "alpha"));
+
+    [Fact]
+    public async Task ToolSucceeds_WithNoApproval_ReportsNothing()
+    {
+        // Most calls need no human approval — nothing to report a loop closing on.
+        await Invoke(Request("alpha"), Tool("alpha"));
+
+        _executionReporter.Verify(r => r.ReportSucceededAsync(
+            It.IsAny<ApprovedCall>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task ToolSucceeds_WithApproval_ReportsSucceeded()
+    {
+        var call = ApprovedCall();
+        _governor.Decision = ToolInvocationDecision.Allow(call);
+
+        await Invoke(Request("alpha"), Tool("alpha"));
+
+        _executionReporter.Verify(
+            r => r.ReportSucceededAsync(call, "direct-invocation", CancellationToken.None), Times.Once);
+    }
+
+    [Fact]
+    public async Task ToolReturnsFailure_WithApproval_ReportsFailedWithTheToolsError()
+    {
+        var call = ApprovedCall();
+        _governor.Decision = ToolInvocationDecision.Allow(call);
+
+        await Invoke(Request("alpha"), Tool("alpha", result: ToolResult.Fail("permission denied")));
+
+        _executionReporter.Verify(
+            r => r.ReportFailedAsync(call, "permission denied", "direct-invocation", CancellationToken.None), Times.Once);
+    }
+
+    [Fact]
+    public async Task ToolThrows_WithApproval_ReportsFailedAndStillRethrows()
+    {
+        var call = ApprovedCall();
+        _governor.Decision = ToolInvocationDecision.Allow(call);
+
+        var outcome = await Invoke(
+            Request("alpha"),
+            Tool("alpha", onExecuteAsync: _ => throw new InvalidOperationException("boom")));
+
+        // The fault is reported (approval loop closed) but still surfaces as the invoker's own
+        // faulted outcome — reporting must never swallow or replace the caller-facing result.
+        _executionReporter.Verify(r => r.ReportFailedAsync(
+            call, It.IsAny<string>(), "direct-invocation", CancellationToken.None), Times.Once);
+        outcome.Status.Should().Be(DirectToolInvocationStatus.Faulted);
+    }
+
     // ---- fixture --------------------------------------------------------------------------------
 
     private DirectToolInvocationRequest Request(
@@ -699,6 +758,13 @@ public sealed class DirectToolInvokerTests
         // which is this fixture's composition. Registered because the chain requires it: an absent
         // gate and a switched-off one must never be confusable at runtime.
         services.AddSingleton(AdmissionHarness.PermissiveAuthorizationGate());
+
+        // Closes the approval loop for whichever call this chain approves. Substituted here for the
+        // same reason RecordingGovernor substitutes the real governor above: the real implementation
+        // needs the escalation subsystem's Infrastructure registrations, which this Application-layer
+        // fixture does not build — the chain still requires SOME registration, an absent one and a
+        // no-op one must never be confusable at runtime.
+        services.AddSingleton(_executionReporter.Object);
 
         // The real chain, not a mock of it, built the same way the production root builds it. This
         // suite's whole subject is what the Execution API does before, during and after a tool call,

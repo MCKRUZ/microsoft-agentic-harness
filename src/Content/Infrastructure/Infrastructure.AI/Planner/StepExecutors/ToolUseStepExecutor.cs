@@ -5,6 +5,7 @@ using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Planner;
 using Application.AI.Common.Services.Governance;
 using Application.AI.Common.Interfaces.Sandbox;
+using Domain.AI.Escalation;
 using Domain.AI.Governance;
 using Domain.AI.Planner;
 using Domain.AI.Sandbox;
@@ -28,6 +29,8 @@ namespace Infrastructure.AI.Planner.StepExecutors;
 /// </remarks>
 public sealed class ToolUseStepExecutor : IPlanStepExecutor
 {
+    private const string ReportedBy = "plan-executor";
+
     private readonly ICapabilityEnforcer _capabilityEnforcer;
     // Required, not optional-with-a-null-default, and deliberately so. An omitted admission chain is
     // indistinguishable at runtime from a host whose gates are all off, so a default would let a
@@ -91,21 +94,67 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
         var profile = await _capabilityEnforcer.ResolveProfileAsync(config.ToolName, ct);
         var isolationLevel = DetermineIsolation(config, profile, step);
 
-        var input = JsonSerializer.Serialize(arguments);
+        var (sandboxResult, sandboxFailure) = await RunSandboxAsync(
+            config, step, profile, isolationLevel, arguments, admission, sw, ct);
+        if (sandboxFailure is not null)
+            return sandboxFailure;
+
+        var attestationFailure = await VerifyAttestationAsync(sandboxResult!, admission, config, step, sw, ct);
+        if (attestationFailure is not null)
+            return attestationFailure;
+
+        sw.Stop();
+
+        await _notifier.NotifySandboxStatusAsync(
+            _executionContext.CurrentPlanId ?? new PlanId(Guid.Empty), step.Id, config.ToolName, isolationLevel,
+            sandboxResult!.ResourceUsage ?? new ResourceUsage(),
+            sandboxResult.Attestation?.Signature, ct);
+
+        return sandboxResult.Success
+            ? await HandleSuccessAsync(admission, config, sandboxResult, sw)
+            : await HandleFailureAsync(admission, config, step, sandboxResult, sw);
+    }
+
+    /// <summary>
+    /// Runs the tool in its sandbox. Returns the result, or — on a thrown fault — a failed step
+    /// result and no sandbox result. A cancellation is neither: it rethrows after reporting
+    /// <see cref="EscalationExecutionStatus.NeverExecuted"/>, so it is not shaped as either tuple case.
+    /// </summary>
+    private async Task<(SandboxExecutionResult? Result, StepExecutionResult? Failure)> RunSandboxAsync(
+        ToolUseConfig config,
+        PlanStep step,
+        ToolPermissionProfile profile,
+        SandboxIsolationLevel isolationLevel,
+        IReadOnlyDictionary<string, object?> arguments,
+        ToolCallAdmission admission,
+        Stopwatch sw,
+        CancellationToken ct)
+    {
         var request = new SandboxExecutionRequest
         {
             ToolName = config.ToolName,
-            Input = input,
+            Input = JsonSerializer.Serialize(arguments),
             Limits = new ResourceLimits(),
             PermissionProfile = profile,
             Timeout = step.Timeout
         };
 
         var executor = _serviceProvider.GetRequiredKeyedService<ISandboxExecutor>(isolationLevel);
-        SandboxExecutionResult sandboxResult;
         try
         {
-            sandboxResult = await executor.ExecuteAsync(request, ct);
+            return (await executor.ExecuteAsync(request, ct), null);
+        }
+        catch (OperationCanceledException)
+        {
+            // The one place #325 execution reporting needs a third outcome, not two. A plan run is
+            // checkpointed and resumable, so "cancelled mid-call" is not the same claim as "failed" —
+            // the step may still succeed when the plan resumes and re-admits it, and telling the
+            // approver it failed would be a false report the resume then contradicts. Reported before
+            // rethrowing so ExecuteStepAsync's own Cancelled/Failed step-status decision is untouched.
+            await ReportExecutionAsync(
+                admission, EscalationExecutionStatus.NeverExecuted, failureReason: null,
+                notExecutedReason: EscalationNotExecutedReason.RunCancelled);
+            throw;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -114,84 +163,108 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
             // because step error state is returned to callers and sandbox exceptions carry host paths,
             // container ids, and mount configuration.
             _logger.LogError(ex, "Sandbox execution threw for tool {Tool} in step {Step}", config.ToolName, step.Name);
-            return new StepExecutionResult
+            await ReportExecutionAsync(
+                admission, EscalationExecutionStatus.Failed, PlanStepErrors.SandboxFailed);
+            return (null, new StepExecutionResult
             {
                 Status = StepExecutionStatus.Failed,
                 ErrorMessage = PlanStepErrors.SandboxFailed,
                 Duration = sw.Elapsed
-            };
+            });
         }
+    }
 
-        if (sandboxResult.Attestation is not null)
-        {
-            // When the attestation carries an output hash, verify BOUND to the actual
-            // returned output — signature-only verification cannot detect a result whose
-            // Output was tampered after signing. Legacy/output-less attestations (timeouts,
-            // spawn refusals) have nothing to bind and fall back to signature verification.
-            var verified = sandboxResult.Attestation.OutputHash is not null
-                ? await _attestationService.VerifyBoundAsync(
-                    sandboxResult.Attestation, sandboxResult.Output ?? string.Empty, ct)
-                : await _attestationService.VerifyAsync(sandboxResult.Attestation, ct);
-            if (!verified)
-            {
-                sw.Stop();
-                _logger.LogWarning("Attestation verification failed for tool {Tool} in step {Step}",
-                    config.ToolName, step.Name);
-                return new StepExecutionResult
-                {
-                    Status = StepExecutionStatus.Failed,
-                    ErrorMessage = "Attestation verification failed: possible tampering detected.",
-                    Duration = sw.Elapsed,
-                    Attestation = sandboxResult.Attestation
-                };
-            }
-        }
+    /// <summary>
+    /// Verifies the sandbox result's attestation, when it carries one. Returns null when verification
+    /// passed (or nothing needed verifying); otherwise the failed step result to return.
+    /// </summary>
+    private async Task<StepExecutionResult?> VerifyAttestationAsync(
+        SandboxExecutionResult sandboxResult,
+        ToolCallAdmission admission,
+        ToolUseConfig config,
+        PlanStep step,
+        Stopwatch sw,
+        CancellationToken ct)
+    {
+        if (sandboxResult.Attestation is null)
+            return null;
+
+        // When the attestation carries an output hash, verify BOUND to the actual returned output —
+        // signature-only verification cannot detect a result whose Output was tampered after signing.
+        // Legacy/output-less attestations (timeouts, spawn refusals) have nothing to bind and fall
+        // back to signature verification.
+        var verified = sandboxResult.Attestation.OutputHash is not null
+            ? await _attestationService.VerifyBoundAsync(
+                sandboxResult.Attestation, sandboxResult.Output ?? string.Empty, ct)
+            : await _attestationService.VerifyAsync(sandboxResult.Attestation, ct);
+        if (verified)
+            return null;
 
         sw.Stop();
-
-        await _notifier.NotifySandboxStatusAsync(
-            _executionContext.CurrentPlanId ?? new PlanId(Guid.Empty), step.Id, config.ToolName, isolationLevel,
-            sandboxResult.ResourceUsage ?? new ResourceUsage(),
-            sandboxResult.Attestation?.Signature, ct);
-
-        if (sandboxResult.Success)
+        _logger.LogWarning("Attestation verification failed for tool {Tool} in step {Step}",
+            config.ToolName, step.Name);
+        await ReportExecutionAsync(
+            admission, EscalationExecutionStatus.Failed,
+            "attestation verification failed: possible tampering detected");
+        return new StepExecutionResult
         {
-            // Admission is not finished when the tool returns: a classified asset can be allowed
-            // through and have its output scrubbed instead of being refused outright. Skipping this
-            // would leave the gate's audit line and metric asserting a redaction that never happened,
-            // while the raw content went back to the caller — a worse failure than not classifying at
-            // all, because it reports itself as safe.
-            if (!_admissionPipeline.TryApplyTextOutputPolicy(
-                    admission, config.ToolName, sandboxResult.Output, out var content))
-            {
-                return new StepExecutionResult
-                {
-                    Status = StepExecutionStatus.Failed,
-                    ErrorMessage = GovernanceDenials.NotPermitted(config.ToolName),
-                    Duration = sw.Elapsed,
-                    IsPolicyDenial = true,
-                    Attestation = sandboxResult.Attestation
-                };
-            }
+            Status = StepExecutionStatus.Failed,
+            ErrorMessage = "Attestation verification failed: possible tampering detected.",
+            Duration = sw.Elapsed,
+            Attestation = sandboxResult.Attestation
+        };
+    }
 
-            if (!string.IsNullOrEmpty(content))
-                content = _responseSanitizer.Sanitize(content, config.ToolName).SanitizedContent;
-
+    /// <summary>Shapes a successful sandbox result into the step's completed (or policy-denied) outcome.</summary>
+    private async Task<StepExecutionResult> HandleSuccessAsync(
+        ToolCallAdmission admission, ToolUseConfig config, SandboxExecutionResult sandboxResult, Stopwatch sw)
+    {
+        // Admission is not finished when the tool returns: a classified asset can be allowed through
+        // and have its output scrubbed instead of being refused outright. Skipping this would leave
+        // the gate's audit line and metric asserting a redaction that never happened, while the raw
+        // content went back to the caller — a worse failure than not classifying at all, because it
+        // reports itself as safe.
+        if (!_admissionPipeline.TryApplyTextOutputPolicy(
+                admission, config.ToolName, sandboxResult.Output, out var content))
+        {
+            await ReportExecutionAsync(
+                admission, EscalationExecutionStatus.Failed, GovernanceDenials.NotPermitted(config.ToolName));
             return new StepExecutionResult
             {
-                Status = StepExecutionStatus.Completed,
-                Output = content,
+                Status = StepExecutionStatus.Failed,
+                ErrorMessage = GovernanceDenials.NotPermitted(config.ToolName),
                 Duration = sw.Elapsed,
+                IsPolicyDenial = true,
                 Attestation = sandboxResult.Attestation
             };
         }
 
-        // Same treatment as the throw path above: the sandbox's failure text is raw process stderr, a
-        // raw exception message, or raw container logs, and step error state is persisted and returned to
-        // callers. Log it in full, persist only the stable code.
+        if (!string.IsNullOrEmpty(content))
+            content = _responseSanitizer.Sanitize(content, config.ToolName).SanitizedContent;
+
+        await ReportExecutionAsync(admission, EscalationExecutionStatus.Succeeded, failureReason: null);
+
+        return new StepExecutionResult
+        {
+            Status = StepExecutionStatus.Completed,
+            Output = content,
+            Duration = sw.Elapsed,
+            Attestation = sandboxResult.Attestation
+        };
+    }
+
+    /// <summary>Shapes a failed sandbox result into the step's failed outcome.</summary>
+    private async Task<StepExecutionResult> HandleFailureAsync(
+        ToolCallAdmission admission, ToolUseConfig config, PlanStep step, SandboxExecutionResult sandboxResult, Stopwatch sw)
+    {
+        // Same treatment as the throw path in RunSandboxAsync: the sandbox's failure text is raw
+        // process stderr, a raw exception message, or raw container logs, and step error state is
+        // persisted and returned to callers. Log it in full, persist only the stable code.
         _logger.LogWarning(
             "Tool {Tool} in step {Step} failed in the sandbox: {SandboxError}",
             config.ToolName, step.Name, sandboxResult.ErrorMessage ?? "(no detail reported)");
+
+        await ReportExecutionAsync(admission, EscalationExecutionStatus.Failed, PlanStepErrors.ToolFailed);
 
         return new StepExecutionResult
         {
@@ -201,6 +274,24 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
             Attestation = sandboxResult.Attestation
         };
     }
+
+    /// <summary>
+    /// Closes the approval loop for this step's call, when it was one a human approved. A no-op for
+    /// every other call — see <see cref="IToolCallAdmissionPipeline.ReportExecutionAsync"/>.
+    /// </summary>
+    /// <remarks>
+    /// Reported on <see cref="CancellationToken.None"/>, not the step's own token: by the time this
+    /// runs the outcome is already known, and a plan-level cancellation racing the report must not be
+    /// the reason an approver never learns whether their approved action actually ran.
+    /// </remarks>
+    private ValueTask ReportExecutionAsync(
+        ToolCallAdmission admission,
+        EscalationExecutionStatus status,
+        string? failureReason,
+        EscalationNotExecutedReason? notExecutedReason = null) =>
+        _admissionPipeline.ReportExecutionAsync(
+            admission, new ToolExecutionReport(status, failureReason, notExecutedReason),
+            ReportedBy, CancellationToken.None);
 
     /// <summary>
     /// Runs the tool call through the admission chain and, when refused, produces the failed step

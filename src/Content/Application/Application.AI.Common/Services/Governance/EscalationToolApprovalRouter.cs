@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Escalation;
 using Application.AI.Common.Interfaces.Governance;
 using Domain.Common.Helpers;
@@ -40,6 +41,8 @@ public sealed class EscalationToolApprovalRouter : IToolApprovalRouter
     private readonly IEscalationService _escalationService;
     private readonly ICompositeResponseSanitizer _sanitizer;
     private readonly IOptionsMonitor<GovernanceConfig> _governanceConfig;
+    private readonly IAgentExecutionContext _executionContext;
+    private readonly IApprovalFailureMemory _failureMemory;
     private readonly ILogger<EscalationToolApprovalRouter> _logger;
 
     // A misconfigured roster is a standing condition, not a per-call event. Warning once keeps the
@@ -56,16 +59,22 @@ public sealed class EscalationToolApprovalRouter : IToolApprovalRouter
         IEscalationService escalationService,
         ICompositeResponseSanitizer sanitizer,
         IOptionsMonitor<GovernanceConfig> governanceConfig,
+        IAgentExecutionContext executionContext,
+        IApprovalFailureMemory failureMemory,
         ILogger<EscalationToolApprovalRouter> logger)
     {
         ArgumentNullException.ThrowIfNull(escalationService);
         ArgumentNullException.ThrowIfNull(sanitizer);
         ArgumentNullException.ThrowIfNull(governanceConfig);
+        ArgumentNullException.ThrowIfNull(executionContext);
+        ArgumentNullException.ThrowIfNull(failureMemory);
         ArgumentNullException.ThrowIfNull(logger);
 
         _escalationService = escalationService;
         _sanitizer = sanitizer;
         _governanceConfig = governanceConfig;
+        _executionContext = executionContext;
+        _failureMemory = failureMemory;
         _logger = logger;
     }
 
@@ -132,6 +141,13 @@ public sealed class EscalationToolApprovalRouter : IToolApprovalRouter
             return ToolApprovalResult.NotRouted("no approvers configured");
         }
 
+        // Computed once and reused for both the recall (below) and the clear-on-explicit-denial
+        // (in Interpret) — the two must agree on identity, or a retry could recall under one key
+        // and clear under another. Null when the turn has no known conversation (e.g. a
+        // console-hosted run with no durable identity); attempt attribution then simply
+        // degrades to "always attempt 1", the same behaviour as before this feature existed.
+        var failureKey = ApprovalFailureKey.TryCreate(_executionContext.ConversationId, agentId, toolName);
+
         EscalationRequest request;
         try
         {
@@ -140,7 +156,7 @@ public sealed class EscalationToolApprovalRouter : IToolApprovalRouter
             // the JSON writer's depth limit, and a host sanitizer may throw for its own reasons. The
             // class promises to fail closed at every exit; leaving construction outside the try made
             // that promise false for exactly the inputs an adversarial turn would choose.
-            request = BuildRequest(agentId, toolName, reason, radius, arguments, governance, roster);
+            request = BuildRequest(agentId, toolName, reason, radius, arguments, governance, roster, failureKey);
         }
         catch (Exception ex)
         {
@@ -155,7 +171,7 @@ public sealed class EscalationToolApprovalRouter : IToolApprovalRouter
                 .RequestEscalationAsync(request, cancellationToken)
                 .ConfigureAwait(false);
 
-            return Interpret(outcome, toolName, request.EscalationId);
+            return Interpret(outcome, toolName, request.EscalationId, failureKey);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -184,7 +200,8 @@ public sealed class EscalationToolApprovalRouter : IToolApprovalRouter
         BlastRadius radius,
         IReadOnlyDictionary<string, object?>? arguments,
         GovernanceConfig governance,
-        IReadOnlyList<string> roster)
+        IReadOnlyList<string> roster,
+        ApprovalFailureKey? failureKey)
     {
         var approval = governance.ToolApproval;
         var escalation = governance.Escalation;
@@ -194,6 +211,12 @@ public sealed class EscalationToolApprovalRouter : IToolApprovalRouter
         var priority = radius >= ParseCriticalThreshold(approval.CriticalAtBlastRadius)
             ? EscalationPriority.Critical
             : EscalationPriority.Blocking;
+
+        // #325 retry attribution: recall a prior failed attempt at this exact (conversation, agent,
+        // tool) so the next approver sees "this failed last time, here's why" instead of asking the
+        // same question cold. No recall — no known conversation, first attempt, or an LRU eviction —
+        // leaves the request at its record defaults (attempt 1, no prior failure).
+        var recall = failureKey is { } key ? _failureMemory.TryRecall(key) : null;
 
         return new EscalationRequest
         {
@@ -209,11 +232,28 @@ public sealed class EscalationToolApprovalRouter : IToolApprovalRouter
             Approvers = [.. roster],
             TimeoutSeconds = approval.TimeoutSeconds ?? escalation.DefaultTimeoutSeconds,
             TimeoutAction = TimeoutAction,
-            RequestedAt = DateTimeOffset.UtcNow
+            RequestedAt = DateTimeOffset.UtcNow,
+            AttemptNumber = recall is { } r ? r.PriorAttemptCount + 1 : 1,
+            PriorFailureReason = recall is { } r2
+                ? TruncatePriorFailureReason(r2.FailureReason, escalation.RetryAttribution.MaxPriorFailureLength)
+                : null,
+            PredecessorEscalationId = recall?.EscalationId
         };
     }
 
-    private ToolApprovalResult Interpret(EscalationOutcome outcome, string toolName, Guid escalationId)
+    /// <summary>
+    /// Interprets an escalation outcome as a routed result, and — for an explicit human denial only
+    /// — clears the retry-attribution memory for this action.
+    /// </summary>
+    /// <remarks>
+    /// Cleared on <see cref="EscalationResolutionType.Denied"/> alone, never on
+    /// <see cref="EscalationResolutionType.TimedOut"/> or <see cref="EscalationResolutionType.Escalated"/>.
+    /// "The reviewer ended this line of retries" presupposes a reviewer actually looked; a timeout
+    /// means nobody did, and erasing the context the next approver needs on a mere timeout would
+    /// invert the feature this memory exists for.
+    /// </remarks>
+    private ToolApprovalResult Interpret(
+        EscalationOutcome outcome, string toolName, Guid escalationId, ApprovalFailureKey? failureKey)
     {
         if (outcome.IsApproved)
         {
@@ -243,7 +283,35 @@ public sealed class EscalationToolApprovalRouter : IToolApprovalRouter
             _ => "an approver refused the call"
         };
 
+        if (outcome.ResolutionType == EscalationResolutionType.Denied && failureKey is { } key)
+            _failureMemory.Clear(key);
+
         return ToolApprovalResult.Denied(why, escalationId);
+    }
+
+    /// <summary>
+    /// Truncates a recalled failure reason to the configured display bound, defensively re-clamped
+    /// to always stay under <see cref="EscalationRequestInvariants.MaxPriorFailureReasonLength"/>
+    /// even including the truncation suffix.
+    /// </summary>
+    /// <remarks>
+    /// The soft cap is operator config (<c>EscalationConfig.RetryAttribution.MaxPriorFailureLength</c>,
+    /// default 512) and the hard cap is the invariant (4096). <c>GovernanceConfigValidator</c> ties
+    /// the two together at boot so they cannot be configured into disagreement — but this clamp does
+    /// not trust that validator to have run: a misconfigured soft cap above the hard cap must
+    /// degrade to a shorter card, never to a request that fails <see cref="EscalationRequestInvariants"/>
+    /// and gets fail-closed at the top of <see cref="RequestApprovalAsync"/> for reasons an operator
+    /// would have no way to connect to this setting.
+    /// </remarks>
+    private static string TruncatePriorFailureReason(string reason, int configuredMaxLength)
+    {
+        const string suffix = "… (truncated)";
+        var cap = Math.Clamp(
+            configuredMaxLength, 1, EscalationRequestInvariants.MaxPriorFailureReasonLength - suffix.Length);
+
+        return reason.Length > cap
+            ? string.Concat(reason.AsSpan(0, cap), suffix)
+            : reason;
     }
 
     /// <summary>

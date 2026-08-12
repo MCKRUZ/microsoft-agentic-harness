@@ -3,7 +3,9 @@ using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Services.Governance;
+using Domain.AI.Escalation;
 using Domain.AI.Governance;
+using Domain.AI.Models;
 using Domain.Common.Config.AI.DirectToolInvocation;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -131,8 +133,19 @@ public sealed partial class DirectToolInvoker : IDirectToolInvoker
         {
             // Identity and envelope. Both must be in place before AuthorizeAsync — see the type
             // remarks for what the governor reads, and when.
+            //
+            // The conversation id is deliberately NOT agentId. #325's retry-attribution memory is
+            // keyed on (conversation, agent, tool) precisely so it expires — but agentId here is
+            // the caller's stable synthetic identity, reused for every direct invocation that
+            // caller ever makes. Passing it as the conversation id too would give the failure-memory
+            // key no expiry at all: two calls to the same tool by the same caller, hours apart and
+            // sharing nothing else, would be mislabeled as the same retry sequence forever. A direct
+            // invocation is a single, standalone call with no request-level session concept to key
+            // on, so each one mints its own one-shot id — TryRecall can then never find a match for
+            // it, which is the correct behaviour (retry attribution genuinely does not apply here),
+            // achieved without a special case rather than through an accidental permanent one.
             var executionContext = scope.ServiceProvider.GetRequiredService<IAgentExecutionContext>();
-            executionContext.Initialize(agentId, agentId, turnNumber: 1);
+            executionContext.Initialize(agentId, conversationId: Guid.NewGuid().ToString(), turnNumber: 1);
 
             // Required, not GetService: the chain is registered unconditionally, and an absent one is
             // indistinguishable at runtime from a host whose gates all happen to be off — so tolerating
@@ -234,13 +247,53 @@ public sealed partial class DirectToolInvoker : IDirectToolInvoker
             return Refused(DirectToolInvocationStatus.NotFound, DirectToolInvocationErrors.NoSuchTool, sw);
         }
 
-        var result = await tool
-            .ExecuteAsync(armed.Request.Operation, armed.Request.Parameters, deadline.Token)
+        ToolResult result;
+        try
+        {
+            result = await tool
+                .ExecuteAsync(armed.Request.Operation, armed.Request.Parameters, deadline.Token)
+                .ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            // Reported before rethrowing so the deadline/cancellation/fault handling in
+            // RunArmedAsync is unchanged — this only adds the approval-loop close, never
+            // replaces the caller-facing outcome.
+            await ApprovalExecutionReporting
+                .ReportCallDidNotCompleteAsync(armed.AdmissionPipeline, admission, ReportedBy)
+                .ConfigureAwait(false);
+            throw;
+        }
+
+        await ReportExecutionAsync(
+            armed.AdmissionPipeline, admission,
+            result.Success
+                ? new ToolExecutionReport(EscalationExecutionStatus.Succeeded, null, null)
+                : new ToolExecutionReport(
+                    EscalationExecutionStatus.Failed,
+                    result.Error ?? "the tool reported failure with no message", null))
             .ConfigureAwait(false);
 
         sw.Stop();
         return Shape(result, armed, admission, sw.Elapsed);
     }
+
+    /// <summary>
+    /// Closes the approval loop for this call, when it was one a human approved.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately reported on <see cref="CancellationToken.None"/>, not the deadline or caller
+    /// token — both are typically already fired by the time this runs (a fault means the deadline
+    /// elapsed, or the caller went away), and a report cancelled by the same token that caused the
+    /// failure would silently drop exactly the report that failure needs to reach the approver.
+    /// <see cref="IToolCallAdmissionPipeline.ReportExecutionAsync"/> never throws — see its own
+    /// must-not-throw contract — so this is not itself a new fault surface.
+    /// </remarks>
+    private const string ReportedBy = "direct-invocation";
+
+    private static ValueTask ReportExecutionAsync(
+        IToolCallAdmissionPipeline pipeline, ToolCallAdmission admission, ToolExecutionReport report) =>
+        pipeline.ReportExecutionAsync(admission, report, ReportedBy, CancellationToken.None);
 
     /// <summary>
     /// Builds a refusal and stops the clock. This method owns stopping it, so callers must not — a

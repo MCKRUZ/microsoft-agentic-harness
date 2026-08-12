@@ -139,4 +139,114 @@ public sealed class EscalationRequestInvariantsTests
         isValid.Should().BeTrue();
         violation.Should().BeNull();
     }
+
+    // ===== #325 retry attribution: AttemptNumber / PriorFailureReason =====
+
+    [Fact]
+    public void TryValidate_AttemptNumberZero_IsRejected()
+    {
+        var request = CreateValidRequest() with { AttemptNumber = 0 };
+
+        var isValid = EscalationRequestInvariants.TryValidate(request, out var violation);
+
+        isValid.Should().BeFalse();
+        violation.Should().Contain("attempt number");
+    }
+
+    [Fact]
+    public void TryValidate_AttemptNumberNegative_IsRejected()
+    {
+        var request = CreateValidRequest() with { AttemptNumber = -1 };
+
+        var isValid = EscalationRequestInvariants.TryValidate(request, out var violation);
+
+        isValid.Should().BeFalse();
+        violation.Should().Contain("attempt number");
+    }
+
+    [Fact]
+    public void TryValidate_AttemptNumberOneWithNoPriorFailureReason_IsAccepted()
+    {
+        // Mutation control: a first attempt (the default shape) must not be rejected by the
+        // attempt-number floor.
+        var request = CreateValidRequest() with { AttemptNumber = 1, PriorFailureReason = null };
+
+        var isValid = EscalationRequestInvariants.TryValidate(request, out var violation);
+
+        isValid.Should().BeTrue();
+        violation.Should().BeNull();
+    }
+
+    [Fact]
+    public void TryValidate_AttemptOneWithPriorFailureReason_IsRejected()
+    {
+        // A first attempt cannot have failed before — a prior failure reason on attempt 1 is
+        // internally incoherent, reachable only via a hand-edited or corrupted durable row.
+        var request = CreateValidRequest() with { AttemptNumber = 1, PriorFailureReason = "boom" };
+
+        var isValid = EscalationRequestInvariants.TryValidate(request, out var violation);
+
+        isValid.Should().BeFalse();
+        violation.Should().Contain("attempt 1");
+    }
+
+    [Fact]
+    public void TryValidate_AttemptTwoWithPriorFailureReason_IsAccepted()
+    {
+        // Mutation control: the coherent retry shape (attempt > 1, reason present) must pass.
+        var request = CreateValidRequest() with { AttemptNumber = 2, PriorFailureReason = "boom" };
+
+        var isValid = EscalationRequestInvariants.TryValidate(request, out var violation);
+
+        isValid.Should().BeTrue();
+        violation.Should().BeNull();
+    }
+
+    [Fact]
+    public void TryValidate_AttemptTwoWithNoPriorFailureReason_IsAccepted()
+    {
+        // The deliberately-NOT-rejected shape: an attempt count above 1 with no prior failure
+        // reason is what a benign LRU eviction of the failure memory produces (the recall came
+        // back null, so AttemptNumber stayed effectively re-derivable as "still a retry" while
+        // the reason itself was gone). Rejecting this would fail-close a valid escalation purely
+        // because the bounded memory it depends on evicted an entry.
+        var request = CreateValidRequest() with { AttemptNumber = 2, PriorFailureReason = null };
+
+        var isValid = EscalationRequestInvariants.TryValidate(request, out var violation);
+
+        isValid.Should().BeTrue();
+        violation.Should().BeNull();
+    }
+
+    [Fact]
+    public void TryValidate_PriorFailureReasonExceedsMaxLength_IsRejected()
+    {
+        var request = CreateValidRequest() with
+        {
+            AttemptNumber = 2,
+            PriorFailureReason = new string('x', EscalationRequestInvariants.MaxPriorFailureReasonLength + 1)
+        };
+
+        var isValid = EscalationRequestInvariants.TryValidate(request, out var violation);
+
+        isValid.Should().BeFalse();
+        violation.Should().Contain("exceeds the");
+    }
+
+    [Fact]
+    public void TryValidate_PriorFailureReasonAtMaxLength_IsAccepted()
+    {
+        // Boundary control: exactly at the ceiling must still pass — only exceeding it is a
+        // violation.
+        var request = CreateValidRequest() with
+        {
+            AttemptNumber = 2,
+            PriorFailureReason = new string('x', EscalationRequestInvariants.MaxPriorFailureReasonLength)
+        };
+
+        var isValid = EscalationRequestInvariants.TryValidate(request, out var violation);
+
+        isValid.Should().BeTrue();
+        violation.Should().BeNull();
+    }
 }

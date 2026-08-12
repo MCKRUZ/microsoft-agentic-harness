@@ -1,9 +1,11 @@
 using Application.AI.Common.Interfaces.Attestation;
+using Application.AI.Common.Interfaces.Escalation;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Planner;
 using Application.AI.Common.Interfaces.Sandbox;
 using Application.AI.Common.Services.Governance;
 using Domain.AI.Attestation;
+using Domain.AI.Escalation;
 using Domain.AI.Governance;
 using Domain.AI.Planner;
 using Domain.Common.Config.AI;
@@ -25,6 +27,7 @@ public sealed class ToolUseStepExecutorTests
     private readonly Mock<ICompositeResponseSanitizer> _responseSanitizer = new();
     private readonly Mock<IPlanProgressNotifier> _notifier = new();
     private readonly Mock<ISandboxExecutor> _sandboxExecutor = new();
+    private readonly Mock<IApprovalExecutionReporter> _executionReporter = new();
     private readonly PlanExecutionContext _context = new() { CurrentPlanId = new PlanId(Guid.NewGuid()) };
     private readonly ToolUseStepExecutor _sut;
 
@@ -482,6 +485,7 @@ public sealed class ToolUseStepExecutorTests
             observers,
             PermissiveAdmission.ProgressGuard(),
             PermissiveAdmission.TraceRecorder(),
+            _executionReporter.Object,
             NullLogger<ToolCallAdmissionPipeline>.Instance);
 
     /// <summary>
@@ -535,5 +539,93 @@ public sealed class ToolUseStepExecutorTests
         Assert.Contains("\"op\"", captured!.Input);
         Assert.Contains("5", captured.Input);
         Assert.Contains("3", captured.Input);
+    }
+
+    // ===== #325 execution reporting =====
+
+    private static readonly ApprovedCall Call = new(
+        Guid.NewGuid(), new ApprovalFailureKey("conv-1", "plan-executor", "file_system"));
+
+    private void GovernorApproves() =>
+        _toolGovernor
+            .Setup(g => g.AuthorizeAsync(It.IsAny<string>(), It.IsAny<CancellationToken>(), It.IsAny<IReadOnlyDictionary<string, object?>?>()))
+            .Returns(ValueTask.FromResult(ToolInvocationDecision.Allow(Call)));
+
+    [Fact]
+    public async Task ExecuteAsync_NoApproval_ReportsNothing()
+    {
+        _sandboxExecutor.Setup(s => s.ExecuteAsync(It.IsAny<SandboxExecutionRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new SandboxExecutionResult { Success = true, Output = "ok", ResourceUsage = new ResourceUsage() });
+
+        await _sut.ExecuteAsync(CreateStep(new ToolUseConfig { ToolName = "file_system" }),
+            new Dictionary<PlanStepId, string>(), CancellationToken.None);
+
+        _executionReporter.Verify(
+            r => r.ReportSucceededAsync(It.IsAny<ApprovedCall>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_ApprovedCallSucceeds_ReportsSucceeded()
+    {
+        GovernorApproves();
+        _sandboxExecutor.Setup(s => s.ExecuteAsync(It.IsAny<SandboxExecutionRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new SandboxExecutionResult { Success = true, Output = "ok", ResourceUsage = new ResourceUsage() });
+
+        await _sut.ExecuteAsync(CreateStep(new ToolUseConfig { ToolName = "file_system" }),
+            new Dictionary<PlanStepId, string>(), CancellationToken.None);
+
+        _executionReporter.Verify(
+            r => r.ReportSucceededAsync(Call, "plan-executor", CancellationToken.None), Times.Once);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_ApprovedCallSandboxReportsFailure_ReportsFailed()
+    {
+        GovernorApproves();
+        _sandboxExecutor.Setup(s => s.ExecuteAsync(It.IsAny<SandboxExecutionRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new SandboxExecutionResult { Success = false, ErrorMessage = "container OOM-killed" });
+
+        await _sut.ExecuteAsync(CreateStep(new ToolUseConfig { ToolName = "file_system" }),
+            new Dictionary<PlanStepId, string>(), CancellationToken.None);
+
+        _executionReporter.Verify(
+            r => r.ReportFailedAsync(Call, It.IsAny<string>(), "plan-executor", CancellationToken.None), Times.Once);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_ApprovedCallSandboxThrows_ReportsFailedAndStillFailsTheStep()
+    {
+        GovernorApproves();
+        _sandboxExecutor.Setup(s => s.ExecuteAsync(It.IsAny<SandboxExecutionRequest>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("sandbox host unreachable"));
+
+        var result = await _sut.ExecuteAsync(CreateStep(new ToolUseConfig { ToolName = "file_system" }),
+            new Dictionary<PlanStepId, string>(), CancellationToken.None);
+
+        Assert.Equal(StepExecutionStatus.Failed, result.Status);
+        _executionReporter.Verify(
+            r => r.ReportFailedAsync(Call, It.IsAny<string>(), "plan-executor", CancellationToken.None), Times.Once);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_ApprovedCallCancelledDuringSandbox_ReportsNeverExecuted_NotFailed()
+    {
+        // The #325 gap only the plan-executor path has a producer for: a plan run is checkpointed
+        // and resumable, so "cancelled mid-call" must not be reported as "failed" — the step may
+        // still succeed once the plan resumes and re-admits it.
+        GovernorApproves();
+        _sandboxExecutor.Setup(s => s.ExecuteAsync(It.IsAny<SandboxExecutionRequest>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new OperationCanceledException());
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => _sut.ExecuteAsync(
+            CreateStep(new ToolUseConfig { ToolName = "file_system" }),
+            new Dictionary<PlanStepId, string>(), CancellationToken.None));
+
+        _executionReporter.Verify(
+            r => r.ReportNotExecutedAsync(Call, EscalationNotExecutedReason.RunCancelled, "plan-executor", CancellationToken.None),
+            Times.Once);
+        _executionReporter.Verify(
+            r => r.ReportFailedAsync(It.IsAny<ApprovedCall>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            Times.Never);
     }
 }
