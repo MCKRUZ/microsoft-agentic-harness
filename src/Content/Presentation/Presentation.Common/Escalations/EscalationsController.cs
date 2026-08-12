@@ -184,7 +184,9 @@ public sealed class EscalationsController : ControllerBase
             EscalationId = id,
             ApproverName = approverName,
             Approve = request.Approve,
-            Reason = request.Reason
+            Verdict = request.Verdict,
+            Reason = request.Reason,
+            Instructions = request.Instructions
         }, cancellationToken).ConfigureAwait(false);
 
         return result.IsSuccess ? MapDecisionStatus(result.Value!) : MapFailure(result);
@@ -313,13 +315,25 @@ public sealed class EscalationsController : ControllerBase
 // application models, and reading them next to the actions that bind them is the point.
 
 /// <summary>Request body for <c>POST /api/escalations/{id}/decision</c>.</summary>
-/// <param name="Approve">Whether the caller approves the escalated action.</param>
+/// <param name="Approve">
+/// Whether the caller approves the escalated action. Kept for callers written before
+/// <paramref name="Verdict"/> existed; a request carrying only this field keeps working.
+/// </param>
 /// <param name="Reason">Optional free-text reason recorded with the decision (max 2000 characters).</param>
+/// <param name="Verdict">
+/// The caller's three-way verdict (#321). Optional and additive — when present it is preferred
+/// over <paramref name="Approve"/>, and the two must agree or the request is rejected.
+/// </param>
+/// <param name="Instructions">
+/// Steering instructions for the agent's next attempt, required when <paramref name="Verdict"/>
+/// is <see cref="ApproverVerdict.Revise"/> (max 1024 characters).
+/// </param>
 /// <remarks>
 /// Deliberately carries no approver-name field: the deciding identity always comes from the
 /// authenticated token's configured claim, so it cannot be spoofed through the body.
 /// </remarks>
-public sealed record SubmitEscalationDecisionRequest(bool Approve, string? Reason = null);
+public sealed record SubmitEscalationDecisionRequest(
+    bool Approve, string? Reason = null, ApproverVerdict? Verdict = null, string? Instructions = null);
 
 /// <summary>Request body for <c>POST /api/escalations/{id}/cancel</c>.</summary>
 /// <param name="Reason">Required free-text reason for the cancellation (max 2000 characters).</param>

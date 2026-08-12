@@ -38,7 +38,7 @@ internal static class EscalationTestData
             new ApproverDecision
             {
                 ApproverName = "alice@contoso.com",
-                Approved = approved,
+                Verdict = approved ? ApproverVerdict.Approve : ApproverVerdict.Deny,
                 Reason = approved ? "looks safe" : "too risky",
                 RespondedAt = DateTimeOffset.UtcNow
             }

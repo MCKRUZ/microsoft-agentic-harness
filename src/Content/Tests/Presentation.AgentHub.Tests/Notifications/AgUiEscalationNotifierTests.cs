@@ -59,7 +59,7 @@ public class AgUiEscalationNotifierTests
                 new ApproverDecision
                 {
                     ApproverName = "admin",
-                    Approved = true,
+                    Verdict = ApproverVerdict.Approve,
                     Reason = "Looks good",
                     RespondedAt = DateTimeOffset.UtcNow,
                 },

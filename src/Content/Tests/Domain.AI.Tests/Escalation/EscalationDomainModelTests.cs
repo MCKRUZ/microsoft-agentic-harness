@@ -89,7 +89,7 @@ public sealed class EscalationDomainModelTests
             Decisions = [new ApproverDecision
             {
                 ApproverName = "admin",
-                Approved = true,
+                Verdict = ApproverVerdict.Approve,
                 RespondedAt = DateTimeOffset.UtcNow
             }],
             ResolutionType = EscalationResolutionType.Approved,
@@ -110,7 +110,7 @@ public sealed class EscalationDomainModelTests
             Decisions = [new ApproverDecision
             {
                 ApproverName = "admin",
-                Approved = false,
+                Verdict = ApproverVerdict.Deny,
                 Reason = "Too risky",
                 RespondedAt = DateTimeOffset.UtcNow
             }],
@@ -193,7 +193,7 @@ public sealed class EscalationDomainModelTests
         var evaluation = new ApprovalEvaluation
         {
             IsResolved = true,
-            IsApproved = true,
+            Verdict = ApproverVerdict.Approve,
             PendingApprovers = []
         };
 
@@ -207,7 +207,7 @@ public sealed class EscalationDomainModelTests
         var evaluation = new ApprovalEvaluation
         {
             IsResolved = false,
-            IsApproved = false,
+            Verdict = ApproverVerdict.Deny,
             PendingApprovers = ["admin", "dba"]
         };
 
@@ -226,12 +226,12 @@ public sealed class EscalationDomainModelTests
         var decision = new ApproverDecision
         {
             ApproverName = "admin",
-            Approved = true,
+            Verdict = ApproverVerdict.Approve,
             RespondedAt = now
         };
 
         Assert.Equal("admin", decision.ApproverName);
-        Assert.True(decision.Approved);
+        Assert.Equal(ApproverVerdict.Approve, decision.Verdict);
         Assert.Equal(now, decision.RespondedAt);
         Assert.Null(decision.Reason);
     }
@@ -242,12 +242,12 @@ public sealed class EscalationDomainModelTests
         var decision = new ApproverDecision
         {
             ApproverName = "security-lead",
-            Approved = false,
+            Verdict = ApproverVerdict.Deny,
             Reason = "Too risky",
             RespondedAt = DateTimeOffset.UtcNow
         };
 
-        Assert.False(decision.Approved);
+        Assert.Equal(ApproverVerdict.Deny, decision.Verdict);
         Assert.Equal("Too risky", decision.Reason);
     }
 }

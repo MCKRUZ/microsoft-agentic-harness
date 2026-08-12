@@ -256,6 +256,12 @@ public sealed partial class DefaultEscalationService
 	/// </remarks>
 	/// <param name="state">The timing-out escalation.</param>
 	/// <returns>Whether the timeout grants approval.</returns>
+	/// <remarks>
+	/// Deliberately stays boolean, not the three-way <see cref="ApproverVerdict"/>: a timeout is
+	/// silence, and silence can only ever mean approve or deny per <see cref="EscalationTimeoutAction"/>
+	/// — there is no reviewer present to have asked for a revision, so a timeout can never produce
+	/// <see cref="EscalationResolutionType.Revised"/>.
+	/// </remarks>
 	private bool ResolveTimeoutApproval(EscalationState state)
 	{
 		var wouldApprove = state.Request.TimeoutAction == EscalationTimeoutAction.Approve;

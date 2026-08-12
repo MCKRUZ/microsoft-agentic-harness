@@ -29,14 +29,14 @@ public sealed class JsonlEscalationAuditStore : IEscalationAuditStore, IVerifiab
     {
         PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
         WriteIndented = false,
-        Converters = { new JsonStringEnumConverter() }
+        Converters = { new JsonStringEnumConverter(), new ApproverDecisionJsonConverter() }
     };
 
     private static readonly JsonSerializerOptions DeserializeOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
         PropertyNameCaseInsensitive = true,
-        Converters = { new JsonStringEnumConverter() }
+        Converters = { new JsonStringEnumConverter(), new ApproverDecisionJsonConverter() }
     };
 
     private readonly string _filePath;

@@ -55,6 +55,8 @@ public sealed class AgUiEscalationNotifier : IEscalationNotificationChannel
                 : null,
             AttemptNumber = request.AttemptNumber,
             PriorFailureReason = request.PriorFailureReason,
+            RevisionRound = request.RevisionRound,
+            PriorRevisionInstructions = request.PriorRevisionInstructions,
         };
 
         try
@@ -83,8 +85,10 @@ public sealed class AgUiEscalationNotifier : IEscalationNotificationChannel
             ? outcome.Decisions.Select(d => new AgUiApproverDecision
             {
                 ApproverName = d.ApproverName,
-                Approved = d.Approved,
+                Approved = d.IsApproved,
+                Verdict = d.Verdict.ToString(),
                 Reason = d.Reason,
+                Instructions = d.Instructions,
             }).ToList()
             : null;
 

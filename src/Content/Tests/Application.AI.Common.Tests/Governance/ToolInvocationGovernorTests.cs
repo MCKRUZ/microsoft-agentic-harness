@@ -460,6 +460,25 @@ public sealed class ToolInvocationGovernorTests
     }
 
     [Fact]
+    public async Task AuthorizeAsync_ReviseVerdict_ModelFacingMessageStaysExactlyTheGenericDenial()
+    {
+        // The central safety claim of #321's semantics PR (3a): a Revised resolution is not-
+        // approved and blocks exactly like a denial, with NO relay of any operator-facing text —
+        // including the router's own "asked for the call to be revised" wording — into the
+        // model-facing message. The carve-out that puts sanitized reviewer instructions into
+        // this message is a separate, explicitly config-gated change (3b), not implied by the
+        // Revised resolution type existing.
+        AskingPermission();
+        RouterAnswers(ToolApprovalResult.Denied("an approver asked for the call to be revised", Guid.NewGuid()));
+        var governor = Build();
+
+        var decision = await governor.AuthorizeAsync(Tool, CancellationToken.None);
+
+        Assert.False(decision.IsAllowed);
+        Assert.Equal(GovernanceDenials.NotPermitted(Tool), decision.DeniedMessage);
+    }
+
+    [Fact]
     public async Task AuthorizeAsync_ApprovalVerdict_PassesTheCallArgumentsToTheApprover()
     {
         // Without the arguments an approver is being asked to sign off on a tool name alone.

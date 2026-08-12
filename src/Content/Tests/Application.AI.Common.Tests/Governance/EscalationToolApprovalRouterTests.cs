@@ -78,7 +78,7 @@ public sealed class EscalationToolApprovalRouterTests
                 new ApproverDecision
                 {
                     ApproverName = approver,
-                    Approved = approved,
+                    Verdict = approved ? ApproverVerdict.Approve : ApproverVerdict.Deny,
                     RespondedAt = DateTimeOffset.UtcNow
                 }
             ],
@@ -147,6 +147,7 @@ public sealed class EscalationToolApprovalRouterTests
     [InlineData(EscalationResolutionType.Denied)]
     [InlineData(EscalationResolutionType.TimedOut)]
     [InlineData(EscalationResolutionType.Escalated)]
+    [InlineData(EscalationResolutionType.Revised)] // #321: not-approved, blocks exactly like Denied
     public async Task RequestApprovalAsync_AnythingOtherThanApproval_BlocksTheCall(
         EscalationResolutionType resolution)
     {
@@ -592,12 +593,14 @@ public sealed class EscalationToolApprovalRouterTests
     [Theory]
     [InlineData(EscalationResolutionType.TimedOut)]
     [InlineData(EscalationResolutionType.Escalated)]
+    [InlineData(EscalationResolutionType.Revised)] // #321: a revise round is not an explicit denial
     public async Task RequestApprovalAsync_NonDenialRefusal_DoesNotClearFailureMemory(
         EscalationResolutionType resolution)
     {
         // "The user ended that sequence" presupposes a user; a timeout means nobody looked, and an
         // escalation is still in flight elsewhere — erasing the next approver's context on either
-        // would invert the feature.
+        // would invert the feature. A revise round means a reviewer DID look but is asking for
+        // another attempt, not ending the line of retries either.
         _escalation
             .Setup(x => x.RequestEscalationAsync(It.IsAny<EscalationRequest>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(Outcome(approved: false, resolution));

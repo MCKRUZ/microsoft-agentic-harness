@@ -200,7 +200,7 @@ public sealed class CompositeEscalationNotifierTests
         Decisions = [new ApproverDecision
         {
             ApproverName = "admin@test.com",
-            Approved = true,
+            Verdict = ApproverVerdict.Approve,
             RespondedAt = DateTimeOffset.UtcNow
         }],
         ResolutionType = EscalationResolutionType.Approved,

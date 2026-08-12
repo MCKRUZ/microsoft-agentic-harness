@@ -5,7 +5,7 @@ namespace Application.Core.Escalation.Strategies;
 
 /// <summary>
 /// N-of-M threshold approval. Resolves as soon as the outcome is mathematically determined --
-/// either enough approvals to meet quorum, or enough denials to make quorum impossible.
+/// either enough approvals to meet quorum, or enough non-approvals to make quorum impossible.
 /// </summary>
 public sealed class QuorumApprovalStrategy : IApprovalStrategy
 {
@@ -21,7 +21,6 @@ public sealed class QuorumApprovalStrategy : IApprovalStrategy
         // Votes from non-listed identities must not satisfy quorum nor corrupt the
         // remaining-vote math (shared with AnyOf/AllOf via ApproverRoster.Scope).
         var scoped = ApproverRoster.Scope(request, decisions);
-        var deduplicated = scoped.Decisions;
         var pending = scoped.Pending;
 
         var quorumThreshold = request.QuorumThreshold;
@@ -33,32 +32,44 @@ public sealed class QuorumApprovalStrategy : IApprovalStrategy
             return new ApprovalEvaluation
             {
                 IsResolved = true,
-                IsApproved = false,
+                Verdict = ApproverVerdict.Deny,
                 PendingApprovers = pending
             };
         }
 
-        var approvedCount = deduplicated.Count(d => d.Approved);
-        var deniedCount = deduplicated.Count(d => !d.Approved);
+        var tally = new VerdictTally(scoped.Decisions);
         var totalApprovers = request.Approvers.Count;
 
-        if (approvedCount >= quorumThreshold)
+        // Meeting the approval threshold wins even with denies or revises also present. This is
+        // not a precedence violation -- deny > revise > approve orders competing verdicts for an
+        // UNDETERMINED outcome, and here the threshold is already met. Consistency demands it:
+        // today a single deny cannot block a met quorum, so a single revise must not gain a veto
+        // power a denier does not have either.
+        if (tally.ApproveCount >= quorumThreshold)
         {
             return new ApprovalEvaluation
             {
                 IsResolved = true,
-                IsApproved = true,
+                Verdict = ApproverVerdict.Approve,
                 PendingApprovers = pending
             };
         }
 
-        var remainingVotes = totalApprovers - approvedCount - deniedCount;
-        if (approvedCount + remainingVotes < quorumThreshold)
+        // A revise is a cast vote, not a pending one -- it can never turn into an approval within
+        // this escalation, so it counts against the remaining pool exactly like a deny does.
+        var remainingVotes = totalApprovers - tally.Total;
+        if (tally.ApproveCount + remainingVotes < quorumThreshold)
         {
+            // Quorum has become mathematically impossible. Deferring to VerdictTally.Resolve()
+            // rather than re-deriving deny-beats-revise here: QuorumThreshold is invariant-bounded
+            // to at most totalApprovers, so reaching this branch guarantees at least one non-approve
+            // response was cast (otherwise "impossible" could never trigger) -- Resolve() is never
+            // null here, and always agrees with what a hand-written comparison would say. One
+            // precedence rule, expressed once.
             return new ApprovalEvaluation
             {
                 IsResolved = true,
-                IsApproved = false,
+                Verdict = tally.Resolve()!.Value,
                 PendingApprovers = pending
             };
         }
@@ -66,7 +77,7 @@ public sealed class QuorumApprovalStrategy : IApprovalStrategy
         return new ApprovalEvaluation
         {
             IsResolved = false,
-            IsApproved = false,
+            Verdict = ApproverVerdict.Deny,
             PendingApprovers = pending
         };
     }

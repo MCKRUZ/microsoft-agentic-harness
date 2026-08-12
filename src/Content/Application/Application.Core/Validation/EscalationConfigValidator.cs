@@ -110,6 +110,18 @@ public sealed class EscalationConfigValidator : AbstractValidator<EscalationConf
                 "RetryAttribution.MaxPriorFailureLength must be between 1 and " +
                 $"{EscalationRequestInvariants.MaxPriorFailureReasonLength} — " +
                 "EscalationRequestInvariants' hard ceiling on EscalationRequest.PriorFailureReason.");
+
+        // Ties the #321 revision-round cap to EscalationRequestInvariants' absolute ceiling on
+        // EscalationRequest.RevisionRound, the same pattern as RetryAttribution above: a
+        // configured cap higher than the runtime ceiling could never be reached in practice (the
+        // ceiling would fail-close first), which is a configuration error worth surfacing at boot
+        // rather than a live escalation discovering it.
+        RuleFor(x => x.Revision.MaxRounds)
+            .InclusiveBetween(1, EscalationRequestInvariants.MaxRevisionRound)
+            .WithMessage(
+                "Revision.MaxRounds must be between 1 and " +
+                $"{EscalationRequestInvariants.MaxRevisionRound} — " +
+                "EscalationRequestInvariants' absolute ceiling on EscalationRequest.RevisionRound.");
     }
 
     private static bool CriticalPriorityAutoApprovesOnTimeout(EscalationConfig config) =>

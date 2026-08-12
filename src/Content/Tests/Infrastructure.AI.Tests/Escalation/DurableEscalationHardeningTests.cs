@@ -44,8 +44,10 @@ public sealed class DurableEscalationHardeningTests : IDisposable
 			.Returns((EscalationRequest request, IReadOnlyList<ApproverDecision> decisions) =>
 				new ApprovalEvaluation
 				{
-					IsResolved = decisions.Count >= request.Approvers.Count && decisions.All(d => d.Approved),
-					IsApproved = decisions.Count >= request.Approvers.Count && decisions.All(d => d.Approved),
+					IsResolved = decisions.Count >= request.Approvers.Count && decisions.All(d => d.Verdict == ApproverVerdict.Approve),
+					Verdict = decisions.Count >= request.Approvers.Count && decisions.All(d => d.Verdict == ApproverVerdict.Approve)
+						? ApproverVerdict.Approve
+						: ApproverVerdict.Deny,
 					PendingApprovers = []
 				});
 
@@ -127,7 +129,7 @@ public sealed class DurableEscalationHardeningTests : IDisposable
 	private static ApproverDecision Approval(string approverName) => new()
 	{
 		ApproverName = approverName,
-		Approved = true,
+		Verdict = ApproverVerdict.Approve,
 		RespondedAt = DateTimeOffset.UtcNow
 	};
 

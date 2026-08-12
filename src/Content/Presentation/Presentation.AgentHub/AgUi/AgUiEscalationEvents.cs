@@ -51,6 +51,19 @@ public sealed record EscalationRequestedEvent : AgUiEvent
     /// <summary>Why the previous attempt at this action failed. Null on a first attempt.</summary>
     [JsonPropertyName("priorFailureReason")]
     public string? PriorFailureReason { get; init; }
+
+    /// <summary>
+    /// Which round of reviewer revision this is, 1-based. Greater than 1 means a prior escalation
+    /// for this action resolved with a revise verdict. Optional (not required) so this event's
+    /// shape stays additive for any client that predates this field, matching the
+    /// <see cref="AttemptNumber"/> precedent.
+    /// </summary>
+    [JsonPropertyName("revisionRound")]
+    public int? RevisionRound { get; init; }
+
+    /// <summary>The reviewer's instructions from the prior revision round. Null on round 1.</summary>
+    [JsonPropertyName("priorRevisionInstructions")]
+    public string? PriorRevisionInstructions { get; init; }
 }
 
 /// <summary>
@@ -88,13 +101,33 @@ public sealed record AgUiApproverDecision
     [JsonPropertyName("approverName")]
     public required string ApproverName { get; init; }
 
-    /// <summary>Whether the approver granted approval.</summary>
+    /// <summary>
+    /// Whether the approver granted approval. Derived from <see cref="Verdict"/> — true only for
+    /// an Approve verdict; false for both a denial and a revision. Kept for clients written
+    /// before <see cref="Verdict"/> existed.
+    /// </summary>
     [JsonPropertyName("approved")]
     public required bool Approved { get; init; }
+
+    /// <summary>
+    /// The approver's verdict ("Deny", "Approve", or "Revise"). Optional so this event's shape
+    /// stays additive for any client that predates it.
+    /// </summary>
+    [JsonPropertyName("verdict")]
+    public string? Verdict { get; init; }
 
     /// <summary>Optional reason for the decision.</summary>
     [JsonPropertyName("reason")]
     public string? Reason { get; init; }
+
+    /// <summary>
+    /// The reviewer's steering instructions, present when <see cref="Verdict"/> is "Revise".
+    /// Without this a dashboard client subscribed only to the push channel could see that a
+    /// revision was requested but never the reviewer's actual words — the one piece of data the
+    /// Revise verdict exists to carry.
+    /// </summary>
+    [JsonPropertyName("instructions")]
+    public string? Instructions { get; init; }
 }
 
 /// <summary>

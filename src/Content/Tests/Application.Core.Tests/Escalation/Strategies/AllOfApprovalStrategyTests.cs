@@ -3,6 +3,7 @@ using Application.Core.Escalation.Strategies;
 using Domain.AI.Escalation;
 using FluentAssertions;
 using Xunit;
+using static Application.Core.Tests.Escalation.Strategies.ApproverDecisionFixtures;
 
 namespace Application.Core.Tests.Escalation.Strategies;
 
@@ -24,21 +25,6 @@ public class AllOfApprovalStrategyTests
         RequestedAt = DateTimeOffset.UtcNow
     };
 
-    private static ApproverDecision Approve(string name) => new()
-    {
-        ApproverName = name,
-        Approved = true,
-        RespondedAt = DateTimeOffset.UtcNow
-    };
-
-    private static ApproverDecision Deny(string name) => new()
-    {
-        ApproverName = name,
-        Approved = false,
-        Reason = "Denied",
-        RespondedAt = DateTimeOffset.UtcNow
-    };
-
     [Fact]
     public void EvaluateDecision_AllApproved_ResolvesApproved()
     {
@@ -48,7 +34,7 @@ public class AllOfApprovalStrategyTests
         var result = _sut.EvaluateDecision(request, decisions);
 
         result.IsResolved.Should().BeTrue();
-        result.IsApproved.Should().BeTrue();
+        result.Verdict.Should().Be(ApproverVerdict.Approve);
         result.PendingApprovers.Should().BeEmpty();
     }
 
@@ -61,7 +47,7 @@ public class AllOfApprovalStrategyTests
         var result = _sut.EvaluateDecision(request, decisions);
 
         result.IsResolved.Should().BeTrue();
-        result.IsApproved.Should().BeFalse();
+        result.Verdict.Should().Be(ApproverVerdict.Deny);
     }
 
     [Fact]
@@ -85,7 +71,7 @@ public class AllOfApprovalStrategyTests
         var result = _sut.EvaluateDecision(request, decisions);
 
         result.IsResolved.Should().BeTrue();
-        result.IsApproved.Should().BeTrue();
+        result.Verdict.Should().Be(ApproverVerdict.Approve);
     }
 
     [Fact]
@@ -115,7 +101,7 @@ public class AllOfApprovalStrategyTests
         var result = _sut.EvaluateDecision(request, new[] { Approve("alice"), Deny("mallory") });
 
         result.IsResolved.Should().BeTrue();
-        result.IsApproved.Should().BeTrue("a non-roster denial must not override the sole listed approver's approval");
+        result.Verdict.Should().Be(ApproverVerdict.Approve, "a non-roster denial must not override the sole listed approver's approval");
     }
 
     // ---- empty-roster fail-closed (security fix) ----
@@ -128,7 +114,7 @@ public class AllOfApprovalStrategyTests
         var result = _sut.EvaluateDecision(request, new[] { Approve("mallory") });
 
         result.IsResolved.Should().BeTrue();
-        result.IsApproved.Should().BeFalse("an escalation with no approvers must never auto-approve");
+        result.Verdict.Should().Be(ApproverVerdict.Deny, "an escalation with no approvers must never auto-approve");
     }
 
     [Fact]
@@ -139,6 +125,93 @@ public class AllOfApprovalStrategyTests
         var result = _sut.EvaluateDecision(request, Array.Empty<ApproverDecision>());
 
         result.IsResolved.Should().BeTrue();
-        result.IsApproved.Should().BeFalse("an empty roster must fail closed, not auto-approve as vacuously unanimous");
+        result.Verdict.Should().Be(ApproverVerdict.Deny, "an empty roster must fail closed, not auto-approve as vacuously unanimous");
+    }
+
+    // ---- revise does NOT short-circuit while approvers are pending, unlike deny ----
+
+    [Fact]
+    public void EvaluateDecision_OneRevisesOthersPending_NotResolved()
+    {
+        // A pending approver may yet deny. Resolving Revise here — the way a deny resolves
+        // immediately — would soften that possible hard no into "try again" before it had a
+        // chance to land.
+        var request = CreateRequest("alice", "bob", "carol");
+        var decisions = new[] { Revise("alice") };
+
+        var result = _sut.EvaluateDecision(request, decisions);
+
+        result.IsResolved.Should().BeFalse();
+        result.PendingApprovers.Should().BeEquivalentTo(["bob", "carol"]);
+    }
+
+    [Fact]
+    public void EvaluateDecision_ReviseThenDeny_ResolvesDeniedNotRevised()
+    {
+        // Mutation control for the test above: once the LAST pending vote lands as a deny, the
+        // escalation resolves — and it resolves Denied, not Revised, because deny outranks revise.
+        var request = CreateRequest("alice", "bob");
+        var decisions = new[] { Revise("alice"), Deny("bob") };
+
+        var result = _sut.EvaluateDecision(request, decisions);
+
+        result.IsResolved.Should().BeTrue();
+        result.Verdict.Should().Be(ApproverVerdict.Deny);
+    }
+
+    [Fact]
+    public void EvaluateDecision_AllReviseOrApprove_NoDenials_ResolvesRevised()
+    {
+        // Every approver has responded, nobody denied, at least one asked to revise: the
+        // escalation resolves Revised, not Approved — unanimity alone is not enough when a
+        // revision was requested.
+        var request = CreateRequest("alice", "bob", "carol");
+        var decisions = new[] { Approve("alice"), Revise("bob"), Approve("carol") };
+
+        var result = _sut.EvaluateDecision(request, decisions);
+
+        result.IsResolved.Should().BeTrue();
+        result.Verdict.Should().Be(ApproverVerdict.Revise);
+    }
+
+    // ---- undefined verdict fails closed, does not silently vanish (code-review regression) ----
+
+    [Fact]
+    public void EvaluateDecision_UndefinedVerdictAmongApprovals_ResolvesDenied_NotApproved()
+    {
+        // Before the fix, an undefined verdict was counted nowhere by VerdictTally, so a roster
+        // of [Approve, <undefined>] looked identical to a roster of [Approve] alone — the second
+        // approver's actual response silently disappeared and the escalation resolved Approved
+        // as if only one approver had ever been asked.
+        var request = CreateRequest("alice", "bob");
+        var decisions = new[]
+        {
+            Approve("alice"),
+            new ApproverDecision
+            {
+                ApproverName = "bob",
+                Verdict = (ApproverVerdict)42,
+                RespondedAt = DateTimeOffset.UtcNow
+            }
+        };
+
+        var result = _sut.EvaluateDecision(request, decisions);
+
+        result.IsResolved.Should().BeTrue();
+        result.Verdict.Should().Be(ApproverVerdict.Deny, "an undefined verdict must fail closed, never silently vanish into an approval");
+    }
+
+    [Fact]
+    public void EvaluateDecision_AllApproveNoRevise_ResolvesApproved()
+    {
+        // Mutation control for the test above: with the sole revise swapped for an approve, the
+        // same roster resolves Approved instead.
+        var request = CreateRequest("alice", "bob", "carol");
+        var decisions = new[] { Approve("alice"), Approve("bob"), Approve("carol") };
+
+        var result = _sut.EvaluateDecision(request, decisions);
+
+        result.IsResolved.Should().BeTrue();
+        result.Verdict.Should().Be(ApproverVerdict.Approve);
     }
 }

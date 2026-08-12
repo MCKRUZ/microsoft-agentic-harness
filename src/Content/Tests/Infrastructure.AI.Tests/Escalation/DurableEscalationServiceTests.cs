@@ -41,9 +41,9 @@ public sealed class DurableEscalationServiceTests : IDisposable
 				It.IsAny<EscalationRequest>(),
 				It.IsAny<IReadOnlyList<ApproverDecision>>()))
 			.Returns((EscalationRequest _, IReadOnlyList<ApproverDecision> decisions) =>
-				decisions.Any(d => d.Approved)
-					? new ApprovalEvaluation { IsResolved = true, IsApproved = true, PendingApprovers = [] }
-					: new ApprovalEvaluation { IsResolved = false, IsApproved = false, PendingApprovers = ["pending"] });
+				decisions.Any(d => d.Verdict == ApproverVerdict.Approve)
+					? new ApprovalEvaluation { IsResolved = true, Verdict = ApproverVerdict.Approve, PendingApprovers = [] }
+					: new ApprovalEvaluation { IsResolved = false, Verdict = ApproverVerdict.Deny, PendingApprovers = ["pending"] });
 
 		var services = new ServiceCollection();
 		services.AddKeyedSingleton<IApprovalStrategy>(
@@ -124,7 +124,7 @@ public sealed class DurableEscalationServiceTests : IDisposable
 	private static ApproverDecision CreateApproval(string approverName = "approver-1") => new()
 	{
 		ApproverName = approverName,
-		Approved = true,
+		Verdict = ApproverVerdict.Approve,
 		Reason = "Looks good",
 		RespondedAt = DateTimeOffset.UtcNow
 	};

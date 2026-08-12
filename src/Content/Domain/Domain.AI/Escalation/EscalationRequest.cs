@@ -71,8 +71,29 @@ public sealed record EscalationRequest
     public string? PriorFailureReason { get; init; }
 
     /// <summary>
-    /// The escalation id of the failed prior attempt this one follows, when
-    /// <see cref="AttemptNumber"/> is greater than 1. Null on a first attempt.
+    /// The escalation id of the failed prior attempt or the prior revision round this one
+    /// follows, when <see cref="AttemptNumber"/> is greater than 1 or <see cref="RevisionRound"/>
+    /// is greater than 1. Null on a first attempt. Shared correlation link between the two
+    /// independent counters — they track different things (a prior <em>approved</em> attempt that
+    /// failed at runtime, versus a prior round of reviewer-requested revision) and must not be
+    /// merged into one.
     /// </summary>
     public Guid? PredecessorEscalationId { get; init; }
+
+    /// <summary>
+    /// Which round of reviewer revision this is, 1-based. Greater than 1 means a prior escalation
+    /// for the same action resolved <see cref="EscalationResolutionType.Revised"/> and this
+    /// request is the retry that followed. Defaults to 1 so every existing caller is unaffected.
+    /// Distinct from <see cref="AttemptNumber"/>: a revision means the action never ran, so it
+    /// must never advance the attempt counter.
+    /// </summary>
+    public int RevisionRound { get; init; } = 1;
+
+    /// <summary>
+    /// The reviewer's instructions from the prior revision round, when <see cref="RevisionRound"/>
+    /// is greater than 1. Null on round 1. Unlike <see cref="PriorFailureReason"/>, this text is
+    /// designed to be model-visible by the time it reaches an agent — the reviewer wrote it to
+    /// steer the retry.
+    /// </summary>
+    public string? PriorRevisionInstructions { get; init; }
 }

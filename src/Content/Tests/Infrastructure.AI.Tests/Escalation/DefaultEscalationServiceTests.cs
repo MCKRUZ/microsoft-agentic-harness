@@ -85,7 +85,7 @@ public sealed class DefaultEscalationServiceTests : IDisposable
 		new()
 		{
 			ApproverName = approverName,
-			Approved = true,
+			Verdict = ApproverVerdict.Approve,
 			Reason = "Looks good",
 			RespondedAt = DateTimeOffset.UtcNow
 		};
@@ -94,7 +94,7 @@ public sealed class DefaultEscalationServiceTests : IDisposable
 		new()
 		{
 			ApproverName = approverName,
-			Approved = false,
+			Verdict = ApproverVerdict.Deny,
 			Reason = "Too risky",
 			RespondedAt = DateTimeOffset.UtcNow
 		};
@@ -106,17 +106,17 @@ public sealed class DefaultEscalationServiceTests : IDisposable
 				It.IsAny<EscalationRequest>(),
 				It.IsAny<IReadOnlyList<ApproverDecision>>()))
 			.Returns((EscalationRequest _, IReadOnlyList<ApproverDecision> decisions) =>
-				decisions.Any(d => d.Approved)
+				decisions.Any(d => d.Verdict == ApproverVerdict.Approve)
 					? new ApprovalEvaluation
 					{
 						IsResolved = true,
-						IsApproved = true,
+						Verdict = ApproverVerdict.Approve,
 						PendingApprovers = []
 					}
 					: new ApprovalEvaluation
 					{
 						IsResolved = false,
-						IsApproved = false,
+						Verdict = ApproverVerdict.Deny,
 						PendingApprovers = ["pending"]
 					});
 	}
@@ -156,7 +156,7 @@ public sealed class DefaultEscalationServiceTests : IDisposable
 			.Returns(new ApprovalEvaluation
 			{
 				IsResolved = false,
-				IsApproved = false,
+				Verdict = ApproverVerdict.Deny,
 				PendingApprovers = ["pending"]
 			});
 	}
@@ -443,6 +443,87 @@ public sealed class DefaultEscalationServiceTests : IDisposable
 
 		await act.Should().ThrowAsync<InvalidOperationException>(
 			"a blocking escalation with no approvers must fail closed rather than await an unapprovable request");
+	}
+
+	// ===== #321 revision round cap =====
+
+	private static ApproverDecision CreateRevision(string approverName = "approver-1") =>
+		new()
+		{
+			ApproverName = approverName,
+			Verdict = ApproverVerdict.Revise,
+			Instructions = "Use the other path",
+			RespondedAt = DateTimeOffset.UtcNow
+		};
+
+	private void SetupStrategyResolvesRevised()
+	{
+		_anyOfStrategy
+			.Setup(s => s.EvaluateDecision(
+				It.IsAny<EscalationRequest>(),
+				It.IsAny<IReadOnlyList<ApproverDecision>>()))
+			.Returns(new ApprovalEvaluation
+			{
+				IsResolved = true,
+				Verdict = ApproverVerdict.Revise,
+				PendingApprovers = []
+			});
+	}
+
+	[Fact]
+	public async Task SubmitDecisionAsync_ReviseBelowMaxRounds_ResolvesRevised_NotApproved()
+	{
+		var request = CreateTestRequest() with { RevisionRound = 1 };
+		SetupStrategyResolvesRevised();
+
+		var task = Task.Run(() => _sut.RequestEscalationAsync(request, CancellationToken.None));
+		await WaitForRegistrationAsync(request.EscalationId);
+
+		await _sut.SubmitDecisionAsync(request.EscalationId, CreateRevision(), CancellationToken.None);
+		var outcome = await task;
+
+		outcome.ResolutionType.Should().Be(EscalationResolutionType.Revised);
+		// The whole safety argument for #321: the outcome stays not-approved regardless of
+		// resolution type, so every existing IsApproved-only consumer needs zero code change.
+		outcome.IsApproved.Should().BeFalse();
+	}
+
+	[Fact]
+	public async Task SubmitDecisionAsync_ReviseAtMaxRounds_DegradesToDenied_NotRevised()
+	{
+		// The default MaxRounds is 2 (EscalationConfig.Revision.MaxRounds, unset in this test's
+		// config so the class default applies). RevisionRound == MaxRounds means this round is
+		// already the last permitted one — a further Revise verdict must not open a round beyond
+		// the cap, so it degrades to a denial instead.
+		var request = CreateTestRequest() with { RevisionRound = 2 };
+		SetupStrategyResolvesRevised();
+
+		var task = Task.Run(() => _sut.RequestEscalationAsync(request, CancellationToken.None));
+		await WaitForRegistrationAsync(request.EscalationId);
+
+		await _sut.SubmitDecisionAsync(request.EscalationId, CreateRevision(), CancellationToken.None);
+		var outcome = await task;
+
+		outcome.ResolutionType.Should().Be(EscalationResolutionType.Denied);
+		outcome.IsApproved.Should().BeFalse();
+	}
+
+	[Fact]
+	public async Task SubmitDecisionAsync_ReviseOneRoundBelowMaxRounds_StillResolvesRevised()
+	{
+		// Mutation control for the cap test above: at MaxRounds - 1 the cap must NOT have
+		// tripped yet — proving the prior test's Denied result came from the cap, not from
+		// Revise being unconditionally downgraded.
+		var request = CreateTestRequest() with { RevisionRound = 1 };
+		SetupStrategyResolvesRevised();
+
+		var task = Task.Run(() => _sut.RequestEscalationAsync(request, CancellationToken.None));
+		await WaitForRegistrationAsync(request.EscalationId);
+
+		await _sut.SubmitDecisionAsync(request.EscalationId, CreateRevision(), CancellationToken.None);
+		var outcome = await task;
+
+		outcome.ResolutionType.Should().Be(EscalationResolutionType.Revised);
 	}
 
 	// ===== Timeout =====
