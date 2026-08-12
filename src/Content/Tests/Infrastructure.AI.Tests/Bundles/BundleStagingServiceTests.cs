@@ -134,6 +134,26 @@ public sealed class BundleStagingServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task StageAsync_McpServersPropertyIsNotAnObject_DegradesGracefullyWithoutFailingStaging()
+    {
+        // Regression test: mcp.json's "mcpServers" property parses as VALID json but the wrong shape (a
+        // string here, not an object) — EnumerateObject() on a non-object JsonElement throws, which used
+        // to propagate out of ReadMcpServersBlock uncaught and fail the whole bundle upload, contradicting
+        // this method's own documented "never fails staging" contract.
+        using var zip = ZipOf(
+            ("AGENT.md", "---\nid: wrong-shape-mcp\nname: Wrong Shape MCP\n---\nx"),
+            ("plugin.json", "{ \"name\": \"root\", \"version\": \"1.0.0\", \"mcpServers\": \"./mcp.json\" }"),
+            ("mcp.json", "{ \"mcpServers\": \"not-an-object\" }"));
+
+        var mcpServersConfig = new McpServersConfig();
+        var result = await CreateService(mcpServersConfig: mcpServersConfig).StageAsync(zip);
+
+        result.IsSuccess.Should().BeTrue("a non-object mcpServers value must degrade, not fail the whole bundle");
+        result.Value!.McpServerNames.Should().BeEmpty();
+        mcpServersConfig.Servers.Should().BeEmpty();
+    }
+
+    [Fact]
     public async Task StageAsync_TwoNestedPluginsDeclareSameServerName_KeepsFirstAndDoesNotThrow()
     {
         using var zip = ZipOf(

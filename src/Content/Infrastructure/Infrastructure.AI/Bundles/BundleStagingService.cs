@@ -495,9 +495,9 @@ public sealed class BundleStagingService : IBundleStagingService
             // for both cases, not assert an explicit stdio declaration that may not exist.
             _logger.LogWarning(
                 "Bundle {BundleId}: MCP server '{ServerName}' resolved to a stdio (local-command) " +
-                "transport — either explicitly declared, or its 'type' was missing/unrecognized (only " +
-                "'http' and 'sse' are supported) and defaulted to stdio — which is not permitted for " +
-                "bundle-owned servers; rejected, not registered.",
+                "transport, which is not permitted for bundle-owned servers — rejected, not registered. " +
+                "The transport was either explicitly declared, or defaulted to stdio because 'type' was " +
+                "missing or unrecognized (only 'http'/'sse' are supported).",
                 bundleId, serverProp.Name);
             return false;
         }

@@ -30,8 +30,12 @@ public static class McpManifestReader
     /// <summary>
     /// Resolves <paramref name="mcpServersRelativePath"/> against <paramref name="baseDir"/>, verifies it
     /// does not escape that directory, and parses its <c>mcpServers</c> object. Returns
-    /// <see langword="null"/> when the path escapes, the file is missing, the JSON is malformed, or it
-    /// has no <c>mcpServers</c> property.
+    /// <see langword="null"/> when the path escapes, the file is missing, the JSON is malformed, it has no
+    /// <c>mcpServers</c> property, or that property is not a JSON object (e.g. a string, array, or number)
+    /// — every caller enumerates <see cref="McpServersBlock.ServersElement"/> as an object's properties,
+    /// which throws <see cref="InvalidOperationException"/> on any other <see cref="JsonValueKind"/>; that
+    /// exception must never propagate out of a manifest-parsing path this type exists to make degrade
+    /// gracefully.
     /// </summary>
     /// <param name="baseDir">The directory the manifest declaring <paramref name="mcpServersRelativePath"/> lives in.</param>
     /// <param name="mcpServersRelativePath">The manifest's own <c>mcpServers</c> path (e.g. <c>"./mcp.json"</c>).</param>
@@ -40,7 +44,19 @@ public static class McpManifestReader
     public static McpServersBlock? ReadMcpServersBlock(
         string baseDir, string mcpServersRelativePath, string ownerDescription, ILogger logger)
     {
-        var mcpPath = Path.GetFullPath(Path.Combine(baseDir, mcpServersRelativePath));
+        string mcpPath;
+        try
+        {
+            mcpPath = Path.GetFullPath(Path.Combine(baseDir, mcpServersRelativePath));
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            logger.LogWarning(ex,
+                "{Owner}: MCP config path '{RelativePath}' is invalid, skipping",
+                ownerDescription, mcpServersRelativePath);
+            return null;
+        }
+
         var normalizedBase = PathScope.Normalize(baseDir);
         if (!PathScope.IsSameOrUnderNormalized(PathScope.Normalize(mcpPath), normalizedBase))
         {
@@ -69,7 +85,14 @@ public static class McpManifestReader
         }
 
         if (doc.RootElement.TryGetProperty("mcpServers", out var serversElement))
-            return new McpServersBlock(doc, serversElement);
+        {
+            if (serversElement.ValueKind == JsonValueKind.Object)
+                return new McpServersBlock(doc, serversElement);
+
+            logger.LogWarning(
+                "{Owner}: 'mcpServers' in {Path} is a {Kind}, not a JSON object — skipping",
+                ownerDescription, mcpPath, serversElement.ValueKind);
+        }
 
         doc.Dispose();
         return null;
