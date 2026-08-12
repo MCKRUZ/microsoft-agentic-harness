@@ -94,21 +94,9 @@ public partial class ToolChainBuilder : IToolChainBuilder
         var injected = new List<ProvisionedTool>();
         foreach (var (serverName, serverTools) in await ResolveInjectedMcpToolsAsync(cancellationToken))
         {
-            // Mirrors ProvisionToolAsync's Managed-mode wrapping: a bundle-owned server's tools must be
-            // published under a namespaced name (never the bare, bundle-chosen one a malicious bundle
-            // controls), because that published name is exactly what gets checked against
-            // CapabilityEnvelope.AllowedTools at invocation time. BundleRunExecutor grants the namespaced
-            // name via this same BundleOwnedMcpToolNaming.BuildToolName; publishing the bare name here
-            // would both deny every legitimate call (never in AllowedTools) and reopen the name-collision
-            // privilege escalation ProvisionToolAsync already closes on the Managed path.
             var isBundleOwned = BundleOwnedMcpToolNaming.IsNamespacedServerName(serverName);
             foreach (var t in serverTools)
-            {
-                var published = isBundleOwned && t is AIFunction fn
-                    ? (AITool)new NamespacedAIFunction(fn, BundleOwnedMcpToolNaming.BuildToolName(serverName, t.Name))
-                    : t;
-                injected.Add(new ProvisionedTool(published, serverName));
-            }
+                injected.Add(new ProvisionedTool(PublishServerTool(t, serverName, isBundleOwned), serverName));
         }
 
         if (options.AdditionalTools?.Count > 0)
@@ -204,6 +192,23 @@ public partial class ToolChainBuilder : IToolChainBuilder
         var survivorSet = new HashSet<AITool>(survivors, ReferenceEqualityComparer.Instance);
         return provisioned.Where(p => survivorSet.Contains(p.Tool)).ToList();
     }
+
+    /// <summary>
+    /// Publishes one server-resolved tool under its governed name. A bundle-owned server's
+    /// <see cref="AIFunction"/> tools are wrapped in <see cref="NamespacedAIFunction"/> under
+    /// <see cref="BundleOwnedMcpToolNaming.BuildToolName"/> — never the bare, bundle-chosen name a
+    /// malicious bundle controls — because that published name is exactly what gets checked against
+    /// <c>CapabilityEnvelope.AllowedTools</c> at invocation time; <c>BundleRunExecutor</c> grants the
+    /// SAME namespaced name via this same function, so the two can never drift apart. Everything else
+    /// (a non-bundle-owned server, or a non-<see cref="AIFunction"/> tool) passes through unchanged.
+    /// Shared by both MCP resolution paths — <see cref="BuildInjectedModeToolsAsync"/> and
+    /// <see cref="ProvisionToolAsync"/> — so this decision is made in exactly one place, never
+    /// independently re-decided (and potentially missed) per call site.
+    /// </summary>
+    private static AITool PublishServerTool(AITool tool, string serverName, bool isBundleOwned) =>
+        isBundleOwned && tool is AIFunction fn
+            ? new NamespacedAIFunction(fn, BundleOwnedMcpToolNaming.BuildToolName(serverName, tool.Name))
+            : tool;
 
     /// <summary>
     /// The single exit every resolution path in <em>this builder</em> returns through: drops tools whose
@@ -377,14 +382,9 @@ public partial class ToolChainBuilder : IToolChainBuilder
                     // tools are published and governed under a namespaced name (never the bare,
                     // bundle-chosen one) so a malicious bundle cannot get a real host tool auto-granted
                     // by advertising a same-named tool of its own. See BundleOwnedMcpToolNaming.
-                    var published = isBundleOwned
-                        ? mcpTools.Select(t => t is AIFunction fn
-                            ? (AITool)new NamespacedAIFunction(
-                                fn, BundleOwnedMcpToolNaming.BuildToolName(effectiveServerName, t.Name))
-                            : t)
-                        : mcpTools;
-
-                    return published.Select(t => new ProvisionedTool(t, effectiveServerName)).ToList();
+                    return mcpTools
+                        .Select(t => new ProvisionedTool(PublishServerTool(t, effectiveServerName, isBundleOwned), effectiveServerName))
+                        .ToList();
                 }
             }
             catch (Exception ex)

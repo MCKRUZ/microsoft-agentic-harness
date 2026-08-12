@@ -473,7 +473,7 @@ public sealed class BundleStagingService : IBundleStagingService
             // (PluginLoader) are a different trust tier and are unaffected: only this bundle path rejects
             // Stdio. Tracked follow-up to run a bundle's stdio server inside the existing process/Docker
             // sandbox instead of rejecting it outright: #371.
-            if (definition.Type == McpServerType.Stdio)
+            if (!definition.IsRemoteServer)
             {
                 _logger.LogWarning(
                     "Bundle {BundleId}: MCP server '{ServerName}' declares a stdio (local command) " +
