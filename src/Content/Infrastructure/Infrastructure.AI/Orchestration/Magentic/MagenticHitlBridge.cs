@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using Application.AI.Common.Interfaces.Escalation;
+using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Orchestration.Magentic;
 using Domain.AI.Escalation;
 using Microsoft.Extensions.Logging;
@@ -28,22 +29,34 @@ namespace Infrastructure.AI.Orchestration.Magentic;
 /// <item><description>Revision feedback: first denial decision's <see cref="ApproverDecision.Reason"/>.</description></item>
 /// </list>
 /// </para>
+/// <para>
+/// <b><c>RevisionFeedback</c> is relayed straight to the Magentic manager model</b> (it drives
+/// <c>review.Revise(...)</c> downstream in the orchestrator's event subscriber) — unlike the
+/// tool-call approval path, where an approver's free text is deliberately never relayed to the
+/// model. This bridge is the one place in the harness where a human's own words are handed to
+/// an LLM by design, so the text is run through <see cref="ICompositeResponseSanitizer"/> —
+/// the same chain that scrubs tool output — before it leaves this method.
+/// </para>
 /// </remarks>
 public sealed class MagenticHitlBridge : IMagenticPlanReviewBridge
 {
     private readonly IEscalationService _escalationService;
+    private readonly ICompositeResponseSanitizer _sanitizer;
     private readonly ILogger<MagenticHitlBridge> _logger;
     private readonly TimeProvider _timeProvider;
     private const string DefaultApprover = "magentic.plan_review.approver";
     private const int DefaultTimeoutSeconds = 1800;
+    private const string ToolName = "magentic.plan_review";
 
     /// <summary>Creates a bridge backed by the harness escalation service.</summary>
     public MagenticHitlBridge(
         IEscalationService escalationService,
+        ICompositeResponseSanitizer sanitizer,
         ILogger<MagenticHitlBridge> logger,
         TimeProvider timeProvider)
     {
         _escalationService = escalationService;
+        _sanitizer = sanitizer;
         _logger = logger;
         _timeProvider = timeProvider;
     }
@@ -58,7 +71,7 @@ public sealed class MagenticHitlBridge : IMagenticPlanReviewBridge
         {
             EscalationId = Guid.NewGuid(),
             AgentId = $"magentic:{input.WorkflowName}",
-            ToolName = "magentic.plan_review",
+            ToolName = ToolName,
             Arguments = BuildArguments(input),
             Description = BuildDescription(input),
             RiskLevel = input.IsStalled ? RiskLevel.High : RiskLevel.Medium,
@@ -84,11 +97,15 @@ public sealed class MagenticHitlBridge : IMagenticPlanReviewBridge
             return new MagenticPlanReviewOutcome { Approved = true };
         }
 
-        var revisionFeedback = outcome.Decisions
+        var rawFeedback = outcome.Decisions
             .Where(d => !d.Approved)
             .Select(d => d.Reason)
             .FirstOrDefault(r => !string.IsNullOrWhiteSpace(r))
             ?? $"Plan rejected ({outcome.ResolutionType}).";
+
+        // The fallback string above is ours, not human-authored, but it is cheaper to run every
+        // path through one sanitizer call than to reason about which branch needs it.
+        var revisionFeedback = _sanitizer.Sanitize(rawFeedback, ToolName).SanitizedContent;
 
         return new MagenticPlanReviewOutcome
         {

@@ -179,9 +179,24 @@ public sealed partial class DefaultEscalationService : IEscalationService, IEsca
 			return EscalationDecisionResult.DecisionRecorded();
 		}
 
-		await SafeExecuteAsync(
-			() => _auditStore.RecordDecisionAsync(escalationId, decision, ct),
-			"record decision", escalationId);
+		// Fail-CLOSED, unlike notification: a decision must never be able to resolve an
+		// escalation with a gap in the compliance audit trail behind it. This runs before the
+		// decision reaches the strategy or the working-state store, so a failure here means the
+		// decision was never applied and never counted — the approver may retry once the store
+		// recovers. Matches RecordRequestAsync and RecordOutcomeAsync: audit-store failures
+		// propagate the provider's own exception rather than being wrapped — wrapping is
+		// reserved for the working-state store (see SaveDecisionsAsync below).
+		try
+		{
+			await _auditStore.RecordDecisionAsync(escalationId, decision, ct);
+		}
+		catch (Exception ex)
+		{
+			_logger.LogError(ex,
+				"Decision audit write failed for escalation {EscalationId}; failing closed (decision not recorded)",
+				escalationId);
+			throw;
+		}
 
 		var elapsed = DateTimeOffset.UtcNow - state.CreatedAt;
 		EscalationMetrics.ApproverResponseMs.Record(elapsed.TotalMilliseconds,

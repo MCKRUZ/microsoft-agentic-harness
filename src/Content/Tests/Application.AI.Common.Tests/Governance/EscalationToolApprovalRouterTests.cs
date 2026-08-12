@@ -332,8 +332,9 @@ public sealed class EscalationToolApprovalRouterTests
         // the enum value as the key, so an undefined value has no registered service and throws at
         // resolution — which this router's own fail-closed catch turns into a block. One mistyped
         // character would have refused every approval-required tool call for the life of the process.
-        // EscalationRequestInvariants does not catch it: it checks the quorum threshold, not that the
-        // strategy names a defined member.
+        // ParseStrategy's config-string fallback is what keeps this router from ever constructing a
+        // request with an undefined value in the first place; EscalationRequestInvariants rejects one
+        // too, but only once a request already carries it (e.g. a hand-edited durable row).
         EscalationRequest? captured = null;
         _escalation
             .Setup(x => x.RequestEscalationAsync(It.IsAny<EscalationRequest>(), It.IsAny<CancellationToken>()))

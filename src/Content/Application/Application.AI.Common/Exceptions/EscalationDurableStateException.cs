@@ -16,8 +16,8 @@ namespace Application.AI.Common.Exceptions;
 public sealed class EscalationDurableStateException : ApplicationExceptionBase
 {
     /// <summary>
-    /// A decision could not be durably recorded. The decision was not accepted; the approver
-    /// may retry once the store recovers.
+    /// A decision could not be durably recorded in the working-state store. The decision was
+    /// not accepted; the approver may retry once the store recovers.
     /// </summary>
     public const string DurableWriteFailedCode = "escalation.durable_write_failed";
 

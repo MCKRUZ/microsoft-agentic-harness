@@ -343,9 +343,11 @@ public sealed class EscalationToolApprovalRouter : IToolApprovalRouter
     /// string has no registered service, so <c>GetRequiredKeyedService</c> throws — and this class's
     /// own fail-closed catch converts that into a block. One mistyped character would refuse every
     /// approval-required tool call for the life of the process, leaving nothing behind but a per-call
-    /// error log. Note that <c>EscalationRequestInvariants</c> does <em>not</em> catch this: it
-    /// checks the quorum threshold, not that the strategy names a defined member. Rejecting the
-    /// value here turns the whole failure into one warning and a documented default (#296).
+    /// error log. <c>EscalationRequestInvariants</c> now also rejects a request whose
+    /// <c>ApprovalStrategy</c> is not a defined member — but only once a value has already reached
+    /// the request, which is exactly what this fallback prevents: rejecting a bad config string
+    /// here keeps the tool-call path from ever constructing a request that needs that later check.
+    /// Turning the whole config-string failure into one warning and a documented default (#296).
     /// </remarks>
     private static ApprovalStrategyType ParseStrategy(string configured) =>
         EnumNameHelper.TryParseName<ApprovalStrategyType>(configured, out var parsed)
