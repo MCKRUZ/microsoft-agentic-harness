@@ -1,6 +1,8 @@
 using System.Collections.ObjectModel;
 using System.Text.Json;
+using Application.AI.Common.Interfaces.Escalation;
 using Application.AI.Common.Interfaces.Governance;
+using Domain.AI.Escalation;
 using Domain.AI.Governance;
 using Microsoft.Extensions.Logging;
 
@@ -49,6 +51,7 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
     private readonly IToolCallObserverChain _observers;
     private readonly IProgressEvaluator _progressEvaluator;
     private readonly IGovernanceTraceRecorder _trace;
+    private readonly IApprovalExecutionReporter _executionReporter;
     private readonly ILogger<ToolCallAdmissionPipeline> _logger;
 
     /// <summary>Initializes a new instance of the <see cref="ToolCallAdmissionPipeline"/> class.</summary>
@@ -69,6 +72,9 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
     /// </param>
     /// <param name="progressEvaluator">Stage 5 — the loop guard.</param>
     /// <param name="trace">The turn's governance trail, which the stages write to and this type snapshots.</param>
+    /// <param name="executionReporter">
+    /// Closes the approval loop for a call this pipeline approved — see <see cref="ReportExecutionAsync"/>.
+    /// </param>
     /// <param name="logger">Records a redaction that could not be applied.</param>
     public ToolCallAdmissionPipeline(
         IAgentToolAuthorizationGate authorizationGate,
@@ -77,6 +83,7 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
         IToolCallObserverChain observers,
         IProgressEvaluator progressEvaluator,
         IGovernanceTraceRecorder trace,
+        IApprovalExecutionReporter executionReporter,
         ILogger<ToolCallAdmissionPipeline> logger)
     {
         ArgumentNullException.ThrowIfNull(authorizationGate);
@@ -85,6 +92,7 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
         ArgumentNullException.ThrowIfNull(observers);
         ArgumentNullException.ThrowIfNull(progressEvaluator);
         ArgumentNullException.ThrowIfNull(trace);
+        ArgumentNullException.ThrowIfNull(executionReporter);
         ArgumentNullException.ThrowIfNull(logger);
 
         _authorizationGate = authorizationGate;
@@ -93,6 +101,7 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
         _observers = observers;
         _progressEvaluator = progressEvaluator;
         _trace = trace;
+        _executionReporter = executionReporter;
         _logger = logger;
     }
 
@@ -185,9 +194,15 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
                 return Refuse(verdict.HaltMessage, toolName);
         }
 
-        return classification.Outcome == ClassificationGateOutcome.RedactOutput
+        var admission = classification.Outcome == ClassificationGateOutcome.RedactOutput
             ? ToolCallAdmission.AllowWithOutputRedaction()
             : ToolCallAdmission.Allow();
+
+        // Stamp the approval that permitted this call, when there was one, so the caller can
+        // close the loop on it after the tool runs. An approval only ever loosens THIS gate — a
+        // later gate above still refused the call outright above, so a call that reaches here
+        // with an approval genuinely proceeded because a human said yes.
+        return decision.ApprovedCall is { } call ? admission.WithApproval(call) : admission;
     }
 
     /// <inheritdoc />
@@ -231,6 +246,35 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
 
         result = null;
         return false;
+    }
+
+    /// <inheritdoc />
+    public ValueTask ReportExecutionAsync(
+        ToolCallAdmission admission, ToolExecutionReport report, string reportedBy, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(admission);
+
+        // Not validated eagerly with a throw: this method's own contract is "never throws" (see
+        // the interface doc), matching the must-not-throw guarantee of everything it delegates
+        // to. A blank reportedBy from a broken caller is a caller bug — EscalationExecutionRecord's
+        // factories still reject it, but inside DefaultApprovalExecutionReporter's own try/catch,
+        // where it is logged rather than thrown, consistent with every other failure on this path.
+        if (admission.ApprovedCall is not { } call)
+            return ValueTask.CompletedTask;
+
+        return report switch
+        {
+            { Status: EscalationExecutionStatus.Succeeded } =>
+                _executionReporter.ReportSucceededAsync(call, reportedBy, cancellationToken),
+            { Status: EscalationExecutionStatus.Failed, FailureReason: { } reason } =>
+                _executionReporter.ReportFailedAsync(call, reason, reportedBy, cancellationToken),
+            { Status: EscalationExecutionStatus.NeverExecuted, NotExecutedReason: { } notExecuted } =>
+                _executionReporter.ReportNotExecutedAsync(call, notExecuted, reportedBy, cancellationToken),
+            // An incoherent report (Failed with no reason, NeverExecuted with no reason) is a
+            // caller bug, not something to guess at or throw over — this is the one place in the
+            // execution-reporting path with no must-not-throw contract protecting it yet.
+            _ => ValueTask.CompletedTask
+        };
     }
 
     /// <inheritdoc />

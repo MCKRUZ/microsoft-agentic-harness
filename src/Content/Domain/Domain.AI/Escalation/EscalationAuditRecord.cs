@@ -26,6 +26,7 @@ public sealed record EscalationAuditRecord
     /// <item><see cref="EscalationAuditRecordType.Request"/> → <see cref="EscalationRequest"/></item>
     /// <item><see cref="EscalationAuditRecordType.Decision"/> → <see cref="ApproverDecision"/></item>
     /// <item><see cref="EscalationAuditRecordType.Outcome"/> → <see cref="EscalationOutcome"/></item>
+    /// <item><see cref="EscalationAuditRecordType.Execution"/> → <see cref="EscalationExecutionRecord"/></item>
     /// </list>
     /// </remarks>
     public required string Payload { get; init; }

@@ -25,4 +25,7 @@ public interface IEscalationNotifier
 
     /// <summary>Warns approvers that an escalation is about to expire.</summary>
     Task NotifyEscalationExpiringAsync(EscalationRequest request, TimeSpan remaining, CancellationToken ct);
+
+    /// <summary>Reports what happened when an approved action was actually carried out.</summary>
+    Task NotifyExecutionReportedAsync(EscalationExecutionRecord record, CancellationToken ct);
 }

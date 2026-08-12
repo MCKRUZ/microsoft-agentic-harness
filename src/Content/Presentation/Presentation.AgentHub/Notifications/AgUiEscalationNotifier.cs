@@ -53,6 +53,8 @@ public sealed class AgUiEscalationNotifier : IEscalationNotificationChannel
             Arguments = request.Arguments.Count > 0
                 ? request.Arguments
                 : null,
+            AttemptNumber = request.AttemptNumber,
+            PriorFailureReason = request.PriorFailureReason,
         };
 
         try
@@ -131,6 +133,44 @@ public sealed class AgUiEscalationNotifier : IEscalationNotificationChannel
         {
             _logger.LogWarning(ex, "Failed to write escalation-expiring event for {EscalationId}.",
                 request.EscalationId);
+        }
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// This channel no-ops when no AG-UI run is active — the honest limitation documented on
+    /// <see cref="EscalationExecutedEvent"/>: a tool-call approval's report fires inline within
+    /// the same turn, so this reaches the UI live, but a plan-executor approval resumes with no
+    /// run active, so that report reaches only the audit trail.
+    /// </remarks>
+    public async Task NotifyExecutionReportedAsync(EscalationExecutionRecord record, CancellationToken ct)
+    {
+        var writer = _writerAccessor.Writer;
+        if (writer is null)
+        {
+            _logger.LogDebug("No AG-UI writer active; skipping execution-reported event for {EscalationId}.",
+                record.EscalationId);
+            return;
+        }
+
+        var evt = new EscalationExecutedEvent
+        {
+            EscalationId = record.EscalationId.ToString(),
+            Status = record.Status.ToString(),
+            FailureReason = record.FailureReason,
+            NotExecutedReason = record.NotExecutedReason?.ToString(),
+            ReportedAt = record.ReportedAt,
+            ReportedBy = record.ReportedBy,
+        };
+
+        try
+        {
+            await writer.WriteAsync(evt, ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Failed to write execution-reported event for {EscalationId}.",
+                record.EscalationId);
         }
     }
 }

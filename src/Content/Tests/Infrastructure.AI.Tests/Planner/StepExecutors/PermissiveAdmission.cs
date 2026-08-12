@@ -1,3 +1,4 @@
+using Application.AI.Common.Interfaces.Escalation;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Services.Governance;
@@ -52,6 +53,7 @@ internal static class PermissiveAdmission
             observers ?? Mock.Of<IToolCallObserverChain>(),
             ProgressGuard(),
             TraceRecorder(),
+            Mock.Of<IApprovalExecutionReporter>(),
             NullLogger<ToolCallAdmissionPipeline>.Instance);
 
     /// <summary>A loop guard that never halts — what the real one answers while switched off.</summary>

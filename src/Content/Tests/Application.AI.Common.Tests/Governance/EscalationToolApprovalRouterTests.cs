@@ -1,3 +1,4 @@
+using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Escalation;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Services.Governance;
@@ -32,6 +33,11 @@ public sealed class EscalationToolApprovalRouterTests
     private readonly ICompositeResponseSanitizer _sanitizer =
         Mock.Of<ICompositeResponseSanitizer>(s =>
             s.Sanitize(It.IsAny<string>(), It.IsAny<string?>()) == SanitizationResult.Clean("scrubbed"));
+    private readonly Mock<IAgentExecutionContext> _executionContext = new();
+    private readonly Mock<IApprovalFailureMemory> _failureMemory = new();
+
+    public EscalationToolApprovalRouterTests() =>
+        _executionContext.SetupGet(c => c.ConversationId).Returns("test-conversation");
 
     private static GovernanceConfig Config(
         bool approvalEnabled = true,
@@ -57,6 +63,8 @@ public sealed class EscalationToolApprovalRouterTests
         _escalation.Object,
         _sanitizer,
         Mock.Of<IOptionsMonitor<GovernanceConfig>>(m => m.CurrentValue == config),
+        _executionContext.Object,
+        _failureMemory.Object,
         NullLogger<EscalationToolApprovalRouter>.Instance);
 
     private static EscalationOutcome Outcome(
@@ -438,5 +446,176 @@ public sealed class EscalationToolApprovalRouterTests
 
         Assert.NotNull(captured);
         Assert.Equal(120, captured.TimeoutSeconds);
+    }
+
+    // ===== #325 retry attribution: recall on build, clear on explicit denial =====
+
+    private void CaptureRequest(out Func<EscalationRequest?> captured)
+    {
+        EscalationRequest? request = null;
+        _escalation
+            .Setup(x => x.RequestEscalationAsync(It.IsAny<EscalationRequest>(), It.IsAny<CancellationToken>()))
+            .Callback<EscalationRequest, CancellationToken>((r, _) => request = r)
+            .ReturnsAsync(Outcome(approved: true, EscalationResolutionType.Approved));
+        captured = () => request;
+    }
+
+    // Moq's argument matcher does not bind It.IsAny<T>() through an `in` parameter in this
+    // version, so every TryRecall setup below matches the literal key the router is expected to
+    // build rather than a wildcard — that literal match doubles as the assertion that the router
+    // built the right key (a wrong key would fall through to the loose mock's default null).
+    private static readonly ApprovalFailureKey ExpectedKey = new("test-conversation", Agent, Tool);
+
+    [Fact]
+    public async Task RequestApprovalAsync_NoRecall_IsAttemptOneWithNoPriorFailure()
+    {
+        CaptureRequest(out var captured);
+        // No setup for ExpectedKey: the loose mock's default (null) is exactly the "nothing
+        // recorded" case this test exists to pin.
+
+        await Route(Config());
+
+        Assert.NotNull(captured());
+        Assert.Equal(1, captured()!.AttemptNumber);
+        Assert.Null(captured()!.PriorFailureReason);
+        Assert.Null(captured()!.PredecessorEscalationId);
+    }
+
+    [Fact]
+    public async Task RequestApprovalAsync_RecallExists_PopulatesAttemptAttributionFields()
+    {
+        CaptureRequest(out var captured);
+        var predecessorId = Guid.NewGuid();
+        _failureMemory
+            .Setup(m => m.TryRecall(ExpectedKey))
+            .Returns(new ApprovalFailureRecall(PriorAttemptCount: 1, FailureReason: "permission denied", predecessorId));
+
+        await Route(Config());
+
+        Assert.NotNull(captured());
+        Assert.Equal(2, captured()!.AttemptNumber);
+        Assert.Equal("permission denied", captured()!.PriorFailureReason);
+        Assert.Equal(predecessorId, captured()!.PredecessorEscalationId);
+    }
+
+    [Fact]
+    public async Task RequestApprovalAsync_RecallLookup_UsesConversationAgentAndToolAsTheKey()
+    {
+        // Pinned deliberately: arguments are excluded from the key by design (a corrected retry
+        // has different arguments by definition), and this is the test that would catch a
+        // regression back toward keying on them — a key built any other way (e.g. including
+        // arguments) would miss this setup and TryRecall would return the loose mock's default
+        // null, which the assertion below would catch.
+        var predecessorId = Guid.NewGuid();
+        _failureMemory
+            .Setup(m => m.TryRecall(ExpectedKey))
+            .Returns(new ApprovalFailureRecall(1, "boom", predecessorId));
+        CaptureRequest(out var captured);
+
+        await Route(Config());
+
+        Assert.NotNull(captured());
+        Assert.Equal(predecessorId, captured()!.PredecessorEscalationId);
+    }
+
+    [Fact]
+    public async Task RequestApprovalAsync_NoKnownConversation_SkipsRecallEntirely()
+    {
+        // Missing conversation identity must degrade to "always attempt 1, recall nothing" — never
+        // a shared sentinel key that would let one caller's failure label another's card.
+        _executionContext.SetupGet(c => c.ConversationId).Returns((string?)null);
+        CaptureRequest(out var captured);
+
+        await Route(Config());
+
+        _failureMemory.Verify(m => m.TryRecall(ExpectedKey), Times.Never);
+        Assert.NotNull(captured());
+        Assert.Equal(1, captured()!.AttemptNumber);
+    }
+
+    [Fact]
+    public async Task RequestApprovalAsync_RecalledReasonExceedsConfiguredCap_IsTruncated()
+    {
+        CaptureRequest(out var captured);
+        _failureMemory
+            .Setup(m => m.TryRecall(ExpectedKey))
+            .Returns(new ApprovalFailureRecall(1, new string('x', 1000), Guid.NewGuid()));
+
+        var config = Config();
+        var narrowCap = new GovernanceConfig
+        {
+            Escalation = new EscalationConfig
+            {
+                Enabled = config.Escalation.Enabled,
+                DefaultTimeoutSeconds = config.Escalation.DefaultTimeoutSeconds,
+                DefaultTimeoutAction = config.Escalation.DefaultTimeoutAction,
+                RetryAttribution = new EscalationRetryAttributionConfig { MaxPriorFailureLength = 20 }
+            },
+            ToolApproval = config.ToolApproval
+        };
+
+        await Route(narrowCap);
+
+        Assert.NotNull(captured());
+        Assert.True(captured()!.PriorFailureReason!.Length <= 20 + "… (truncated)".Length);
+        Assert.Contains("truncated", captured()!.PriorFailureReason);
+    }
+
+    [Fact]
+    public async Task RequestApprovalAsync_RecalledReasonWithinCap_IsNotTruncated()
+    {
+        // Mutation control: a reason already under the configured cap must survive unchanged.
+        CaptureRequest(out var captured);
+        _failureMemory
+            .Setup(m => m.TryRecall(ExpectedKey))
+            .Returns(new ApprovalFailureRecall(1, "short reason", Guid.NewGuid()));
+
+        await Route(Config());
+
+        Assert.NotNull(captured());
+        Assert.Equal("short reason", captured()!.PriorFailureReason);
+    }
+
+    [Fact]
+    public async Task RequestApprovalAsync_ExplicitDenial_ClearsFailureMemory()
+    {
+        _escalation
+            .Setup(x => x.RequestEscalationAsync(It.IsAny<EscalationRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Outcome(approved: false, EscalationResolutionType.Denied));
+
+        await Route(Config());
+
+        _failureMemory.Verify(
+            m => m.Clear(new ApprovalFailureKey("test-conversation", Agent, Tool)), Times.Once);
+    }
+
+    [Theory]
+    [InlineData(EscalationResolutionType.TimedOut)]
+    [InlineData(EscalationResolutionType.Escalated)]
+    public async Task RequestApprovalAsync_NonDenialRefusal_DoesNotClearFailureMemory(
+        EscalationResolutionType resolution)
+    {
+        // "The user ended that sequence" presupposes a user; a timeout means nobody looked, and an
+        // escalation is still in flight elsewhere — erasing the next approver's context on either
+        // would invert the feature.
+        _escalation
+            .Setup(x => x.RequestEscalationAsync(It.IsAny<EscalationRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Outcome(approved: false, resolution));
+
+        await Route(Config());
+
+        _failureMemory.Verify(m => m.Clear(It.IsAny<ApprovalFailureKey>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task RequestApprovalAsync_Approved_DoesNotClearFailureMemory()
+    {
+        // Clearing on success is DefaultApprovalExecutionReporter's job, once the approved action
+        // actually runs — not the router's, which only knows the call was approved, not executed.
+        SetupEscalation(Outcome(approved: true, EscalationResolutionType.Approved));
+
+        await Route(Config());
+
+        _failureMemory.Verify(m => m.Clear(It.IsAny<ApprovalFailureKey>()), Times.Never);
     }
 }

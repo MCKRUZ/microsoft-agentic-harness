@@ -1,3 +1,4 @@
+using Application.AI.Common.Interfaces.Escalation;
 using Domain.AI.Escalation;
 using Domain.Common.Config.AI.Governance;
 using FluentValidation;
@@ -95,6 +96,20 @@ public sealed class EscalationConfigValidator : AbstractValidator<EscalationConf
                 "Critical escalation must never auto-approve on timeout. Change DefaultTimeoutAction " +
                 "or remove the Critical entry.")
             .WithName("DefaultTimeoutAction");
+
+        // Ties the #325 retry-attribution card's soft, operator-configured display cap to
+        // EscalationRequestInvariants' hard runtime ceiling, so the two can never disagree. A soft
+        // cap above the hard ceiling is not a display-only mistake: EscalationToolApprovalRouter
+        // truncates defensively to the hard ceiling regardless (see
+        // EscalationToolApprovalRouter.TruncatePriorFailureReason), so the practical effect of a
+        // misconfigured value here is a silently shorter card, not a broken one — but it is still a
+        // configuration error worth surfacing at boot rather than masking behind that fallback.
+        RuleFor(x => x.RetryAttribution.MaxPriorFailureLength)
+            .InclusiveBetween(1, EscalationRequestInvariants.MaxPriorFailureReasonLength)
+            .WithMessage(
+                "RetryAttribution.MaxPriorFailureLength must be between 1 and " +
+                $"{EscalationRequestInvariants.MaxPriorFailureReasonLength} — " +
+                "EscalationRequestInvariants' hard ceiling on EscalationRequest.PriorFailureReason.");
     }
 
     private static bool CriticalPriorityAutoApprovesOnTimeout(EscalationConfig config) =>

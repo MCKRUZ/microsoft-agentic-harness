@@ -15,7 +15,7 @@ namespace Presentation.AgentHub.AgUi;
 /// <list type="bullet">
 ///   <item><description><c>AgUiRunEvents.cs</c> — Run lifecycle and text message streaming</description></item>
 ///   <item><description><c>AgUiPlanEvents.cs</c> — Plan execution, steps, state deltas, sandbox</description></item>
-///   <item><description><c>AgUiEscalationEvents.cs</c> — Escalation request/resolve/expiry</description></item>
+///   <item><description><c>AgUiEscalationEvents.cs</c> — Escalation request/resolve/expiry/execution</description></item>
 ///   <item><description><c>AgUiDriftEvents.cs</c> — Quality drift detection and resolution</description></item>
 ///   <item><description><c>AgUiLearningEvents.cs</c> — Learning capture, application, forgetting</description></item>
 /// </list>
@@ -37,6 +37,7 @@ namespace Presentation.AgentHub.AgUi;
 [JsonDerivedType(typeof(EscalationRequestedEvent), AgUiEventType.EscalationRequested)]
 [JsonDerivedType(typeof(EscalationResolvedEvent), AgUiEventType.EscalationResolved)]
 [JsonDerivedType(typeof(EscalationExpiringEvent), AgUiEventType.EscalationExpiring)]
+[JsonDerivedType(typeof(EscalationExecutedEvent), AgUiEventType.EscalationExecuted)]
 // Drift detection
 [JsonDerivedType(typeof(DriftWarnEvent), AgUiEventType.DriftWarn)]
 [JsonDerivedType(typeof(DriftAlertEvent), AgUiEventType.DriftAlert)]

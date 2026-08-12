@@ -1,3 +1,6 @@
+using Application.AI.Common.Interfaces.Escalation;
+using Domain.AI.Escalation;
+
 namespace Application.AI.Common.Interfaces.Governance;
 
 /// <summary>
@@ -119,6 +122,29 @@ public interface IToolCallAdmissionPipeline
         ToolCallAdmission admission, string toolName, string? content, out string? result);
 
     /// <summary>
+    /// Reports what happened when a call this pipeline approved was actually carried out, closing
+    /// the approval loop for whichever approver granted it.
+    /// </summary>
+    /// <param name="admission">The verdict returned by <see cref="AdmitAsync"/> for this same call.</param>
+    /// <param name="report">The outcome to report.</param>
+    /// <param name="reportedBy">
+    /// A stable identifier for the calling site (e.g. <c>"direct-invocation"</c>,
+    /// <c>"agent-turn"</c>, <c>"plan-executor"</c>) — the pipeline is one shared, scoped instance
+    /// reached from all three, so it cannot infer this from anything of its own; the caller knows
+    /// which of the three it is and must say so. Carried onto the audit record so a future auditor
+    /// can tell which raising sites implement execution reporting and which don't.
+    /// </param>
+    /// <remarks>
+    /// A no-op when <paramref name="admission"/> carries no <see cref="ToolCallAdmission.ApprovedCall"/>
+    /// — most calls need no human approval, and there is nothing to report a loop closing on.
+    /// Never throws: delegates to <see cref="IApprovalExecutionReporter"/>, whose own contract is
+    /// the same must-not-throw guarantee, for the same reason — this runs after the call already
+    /// completed.
+    /// </remarks>
+    ValueTask ReportExecutionAsync(
+        ToolCallAdmission admission, ToolExecutionReport report, string reportedBy, CancellationToken cancellationToken);
+
+    /// <summary>
     /// The turn's governance trace: every decision the chain's stages recorded, as one record.
     /// </summary>
     /// <remarks>
@@ -181,14 +207,15 @@ public sealed record ToolCallAdmissionRequest(
 /// </remarks>
 public sealed record ToolCallAdmission
 {
-    private static readonly ToolCallAdmission AllowedDecision = new(true, null, false);
-    private static readonly ToolCallAdmission AllowedRedactingDecision = new(true, null, true);
+    private static readonly ToolCallAdmission AllowedDecision = new(true, null, false, null);
+    private static readonly ToolCallAdmission AllowedRedactingDecision = new(true, null, true, null);
 
-    private ToolCallAdmission(bool isAllowed, string? deniedMessage, bool redactsOutput)
+    private ToolCallAdmission(bool isAllowed, string? deniedMessage, bool redactsOutput, ApprovedCall? approvedCall)
     {
         IsAllowed = isAllowed;
         DeniedMessage = deniedMessage;
         RedactsOutput = redactsOutput;
+        ApprovedCall = approvedCall;
     }
 
     /// <summary>Whether the call may proceed to the tool.</summary>
@@ -206,11 +233,31 @@ public sealed record ToolCallAdmission
     /// </summary>
     public bool RedactsOutput { get; }
 
+    /// <summary>
+    /// The approval that permitted this call, when a human approved it. Null on every other allow
+    /// and on every refusal. Set via <see cref="WithApproval"/>, never in the constructor directly,
+    /// so the two cached singletons below never need a variant for every approval.
+    /// </summary>
+    public ApprovedCall? ApprovedCall { get; private init; }
+
     /// <summary>The call may proceed and its output is returned as-is.</summary>
     public static ToolCallAdmission Allow() => AllowedDecision;
 
     /// <summary>The call may proceed, but its output must be scrubbed before it leaves.</summary>
     public static ToolCallAdmission AllowWithOutputRedaction() => AllowedRedactingDecision;
+
+    /// <summary>
+    /// Returns this allow, stamped with the human approval that permitted it. Preserves
+    /// <see cref="RedactsOutput"/>.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">This admission is a refusal.</exception>
+    public ToolCallAdmission WithApproval(ApprovedCall call)
+    {
+        if (!IsAllowed)
+            throw new InvalidOperationException("Cannot attach an approval to a refused admission.");
+
+        return this with { ApprovedCall = call };
+    }
 
     /// <summary>The call is refused, carrying the caller-facing text.</summary>
     /// <param name="deniedMessage">
@@ -220,6 +267,12 @@ public sealed record ToolCallAdmission
     public static ToolCallAdmission Deny(string deniedMessage)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(deniedMessage);
-        return new ToolCallAdmission(false, deniedMessage, false);
+        return new ToolCallAdmission(false, deniedMessage, false, null);
     }
 }
+
+/// <summary>The execution outcome to report for a call the admission chain approved.</summary>
+public readonly record struct ToolExecutionReport(
+    EscalationExecutionStatus Status,
+    string? FailureReason,
+    EscalationNotExecutedReason? NotExecutedReason);

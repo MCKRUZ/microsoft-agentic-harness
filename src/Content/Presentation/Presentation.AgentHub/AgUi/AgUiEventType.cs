@@ -68,6 +68,9 @@ public static class AgUiEventType
     /// <summary>Warns that a pending escalation is approaching its timeout deadline.</summary>
     public const string EscalationExpiring = "ESCALATION_EXPIRING";
 
+    /// <summary>Reports what happened when an approved escalation's action was actually carried out.</summary>
+    public const string EscalationExecuted = "ESCALATION_EXECUTED";
+
     /// <summary>Signals that drift was detected at warn severity.</summary>
     public const string DriftWarn = "DRIFT_WARN";
 

@@ -206,6 +206,57 @@ public class EscalationConfigValidatorTests
         result.IsValid.Should().BeTrue();
     }
 
+    [Fact]
+    public async Task Validate_DefaultRetryAttributionCap_NoErrors()
+    {
+        // Mutation control: the class default (512) must pass without the test having to know its
+        // exact value — a default (or omitted) section always passes.
+        var config = CreateValidConfig();
+
+        var result = await _validator.ValidateAsync(config);
+
+        result.IsValid.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Validate_RetryAttributionCapZero_HasError()
+    {
+        var config = CreateValidConfig();
+        config.RetryAttribution.MaxPriorFailureLength = 0;
+
+        var result = await _validator.ValidateAsync(config);
+
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.PropertyName == "RetryAttribution.MaxPriorFailureLength");
+    }
+
+    [Fact]
+    public async Task Validate_RetryAttributionCapAboveTheHardCeiling_HasError()
+    {
+        // A soft cap above EscalationRequestInvariants.MaxPriorFailureReasonLength (4096) could
+        // never be honoured — every retry-attribution request would fail that invariant instead
+        // of showing a shorter card.
+        var config = CreateValidConfig();
+        config.RetryAttribution.MaxPriorFailureLength = 5000;
+
+        var result = await _validator.ValidateAsync(config);
+
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.PropertyName == "RetryAttribution.MaxPriorFailureLength");
+    }
+
+    [Fact]
+    public async Task Validate_RetryAttributionCapAtTheHardCeiling_NoErrors()
+    {
+        // Boundary control: exactly at the ceiling must still pass.
+        var config = CreateValidConfig();
+        config.RetryAttribution.MaxPriorFailureLength = 4096;
+
+        var result = await _validator.ValidateAsync(config);
+
+        result.IsValid.Should().BeTrue();
+    }
+
     private static EscalationConfig CreateValidConfig() => new()
     {
         Enabled = true,

@@ -14,6 +14,8 @@ namespace Domain.Common.Config.AI.Governance;
 /// ├── DefaultTimeoutAction     — Deny / DenyAndEscalate / Approve / Escalate
 /// ├── DefaultApprovalStrategy  — AnyOf / AllOf / Quorum
 /// ├── AuditStoragePath          — Directory for JSONL audit log
+/// ├── RetryAttribution          — Retry-attribution card sizing (#325)
+/// │   └── MaxPriorFailureLength — Soft producer-side cap on the prior-failure text
 /// └── PriorityLevels{}         — Per-priority overrides keyed by EscalationPriority name
 ///     ├── TimeoutSeconds       — Override timeout for this level
 ///     ├── Async                — Non-blocking mode (informational)
@@ -88,4 +90,21 @@ public class EscalationConfig
     /// </para>
     /// </remarks>
     public string ApproverClaimType { get; set; } = "preferred_username";
+
+    /// <summary>
+    /// Sizing for the retry-attribution card (#325): when a corrected retry follows a failed
+    /// approved attempt, how much of the prior failure's text is shown to the next approver.
+    /// </summary>
+    public EscalationRetryAttributionConfig RetryAttribution { get; set; } = new();
+}
+
+/// <summary>Sizing for the retry-attribution text shown on a second-or-later approval attempt.</summary>
+public sealed class EscalationRetryAttributionConfig
+{
+    /// <summary>
+    /// Soft producer-side cap, in characters, on <c>EscalationRequest.PriorFailureReason</c>. Tied
+    /// by <c>EscalationConfigValidator</c> to <c>EscalationRequestInvariants.MaxPriorFailureReasonLength</c>
+    /// (the hard runtime ceiling) so the two can never be configured into disagreement.
+    /// </summary>
+    public int MaxPriorFailureLength { get; set; } = 512;
 }

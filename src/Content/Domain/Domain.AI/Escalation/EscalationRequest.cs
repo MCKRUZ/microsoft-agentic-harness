@@ -53,4 +53,26 @@ public sealed record EscalationRequest
     /// by an <see cref="AutonomyExceededResult"/> from the supervisor.
     /// </summary>
     public GovernanceDecision? OriginatingDecision { get; init; }
+
+    /// <summary>
+    /// Which attempt at this action this is, 1-based. Greater than 1 means a prior
+    /// <em>approved</em> attempt at the same action in the same conversation ran and failed —
+    /// not a revision, not a resubmission of an unresolved request. Defaults to 1 so every
+    /// existing caller is unaffected; only <c>EscalationToolApprovalRouter</c> currently
+    /// populates a higher value, from bounded conversation-scoped failure memory.
+    /// </summary>
+    public int AttemptNumber { get; init; } = 1;
+
+    /// <summary>
+    /// Why the previous attempt at this action failed, shown to the approver so a corrected
+    /// retry is never indistinguishable from being asked the same question twice. Null on a
+    /// first attempt. Approver-facing only — never relayed to the model.
+    /// </summary>
+    public string? PriorFailureReason { get; init; }
+
+    /// <summary>
+    /// The escalation id of the failed prior attempt this one follows, when
+    /// <see cref="AttemptNumber"/> is greater than 1. Null on a first attempt.
+    /// </summary>
+    public Guid? PredecessorEscalationId { get; init; }
 }

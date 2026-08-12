@@ -1,6 +1,8 @@
+using Application.AI.Common.Interfaces.Escalation;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Services.Governance;
 using Domain.AI.Changes;
+using Domain.AI.Escalation;
 using Domain.AI.Governance;
 using Microsoft.Extensions.Logging.Abstractions;
 using FluentAssertions;
@@ -383,6 +385,104 @@ public sealed class ToolCallAdmissionPipelineTests
         return new ToolCallAdmissionPipeline(
             authorizationGate.Object, governor.Object, classificationGate.Object, observers.Object,
             progress.Object, AdmissionHarness.TraceRecorder(),
+            new Mock<IApprovalExecutionReporter>().Object,
             NullLogger<ToolCallAdmissionPipeline>.Instance);
+    }
+
+    // ===== ReportExecutionAsync: #325 execution reporting dispatch =====
+
+    private static ToolCallAdmissionPipeline WithReporter(Mock<IApprovalExecutionReporter> reporter) => new(
+        Mock.Of<IAgentToolAuthorizationGate>(), Mock.Of<IToolInvocationGovernor>(),
+        Mock.Of<IToolClassificationGate>(), Mock.Of<IToolCallObserverChain>(), Mock.Of<IProgressEvaluator>(),
+        AdmissionHarness.TraceRecorder(), reporter.Object, NullLogger<ToolCallAdmissionPipeline>.Instance);
+
+    private static ApprovedCall Call() =>
+        new(Guid.NewGuid(), new ApprovalFailureKey("conv-1", "agent-1", Tool));
+
+    [Fact]
+    public async Task ReportExecutionAsync_NoApprovedCall_IsANoOp()
+    {
+        // Most calls need no human approval — nothing to report a loop closing on.
+        var reporter = new Mock<IApprovalExecutionReporter>();
+        var admission = ToolCallAdmission.Allow();
+
+        await WithReporter(reporter).ReportExecutionAsync(
+            admission, new ToolExecutionReport(EscalationExecutionStatus.Succeeded, null, null), "test-site", CancellationToken.None);
+
+        reporter.Verify(r => r.ReportSucceededAsync(It.IsAny<ApprovedCall>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+        reporter.Verify(r => r.ReportFailedAsync(It.IsAny<ApprovedCall>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+        reporter.Verify(r => r.ReportNotExecutedAsync(It.IsAny<ApprovedCall>(), It.IsAny<EscalationNotExecutedReason>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task ReportExecutionAsync_Succeeded_DispatchesToReportSucceededAsync()
+    {
+        var reporter = new Mock<IApprovalExecutionReporter>();
+        var call = Call();
+        var admission = ToolCallAdmission.Allow().WithApproval(call);
+
+        await WithReporter(reporter).ReportExecutionAsync(
+            admission, new ToolExecutionReport(EscalationExecutionStatus.Succeeded, null, null), "test-site", CancellationToken.None);
+
+        reporter.Verify(r => r.ReportSucceededAsync(call, It.IsAny<string>(), CancellationToken.None), Times.Once);
+    }
+
+    [Fact]
+    public async Task ReportExecutionAsync_FailedWithReason_DispatchesToReportFailedAsync()
+    {
+        var reporter = new Mock<IApprovalExecutionReporter>();
+        var call = Call();
+        var admission = ToolCallAdmission.Allow().WithApproval(call);
+
+        await WithReporter(reporter).ReportExecutionAsync(
+            admission, new ToolExecutionReport(EscalationExecutionStatus.Failed, "permission denied", null), "test-site", CancellationToken.None);
+
+        reporter.Verify(r => r.ReportFailedAsync(call, "permission denied", It.IsAny<string>(), CancellationToken.None), Times.Once);
+    }
+
+    [Fact]
+    public async Task ReportExecutionAsync_FailedWithNoReason_IsANoOp()
+    {
+        // An incoherent report (Failed with no reason) is a caller bug, not something to guess at —
+        // this is the one place in the reporting path with no must-not-throw contract protecting it,
+        // so it must not throw either; it simply reports nothing.
+        var reporter = new Mock<IApprovalExecutionReporter>();
+        var admission = ToolCallAdmission.Allow().WithApproval(Call());
+
+        await WithReporter(reporter).ReportExecutionAsync(
+            admission, new ToolExecutionReport(EscalationExecutionStatus.Failed, null, null), "test-site", CancellationToken.None);
+
+        reporter.Verify(r => r.ReportFailedAsync(It.IsAny<ApprovedCall>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task ReportExecutionAsync_NeverExecutedWithReason_DispatchesToReportNotExecutedAsync()
+    {
+        var reporter = new Mock<IApprovalExecutionReporter>();
+        var call = Call();
+        var admission = ToolCallAdmission.Allow().WithApproval(call);
+
+        await WithReporter(reporter).ReportExecutionAsync(
+            admission,
+            new ToolExecutionReport(EscalationExecutionStatus.NeverExecuted, null, EscalationNotExecutedReason.RunCancelled),
+            "test-site", CancellationToken.None);
+
+        reporter.Verify(
+            r => r.ReportNotExecutedAsync(call, EscalationNotExecutedReason.RunCancelled, It.IsAny<string>(), CancellationToken.None),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task ReportExecutionAsync_NeverExecutedWithNoReason_IsANoOp()
+    {
+        var reporter = new Mock<IApprovalExecutionReporter>();
+        var admission = ToolCallAdmission.Allow().WithApproval(Call());
+
+        await WithReporter(reporter).ReportExecutionAsync(
+            admission, new ToolExecutionReport(EscalationExecutionStatus.NeverExecuted, null, null), "test-site", CancellationToken.None);
+
+        reporter.Verify(
+            r => r.ReportNotExecutedAsync(It.IsAny<ApprovedCall>(), It.IsAny<EscalationNotExecutedReason>(), It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            Times.Never);
     }
 }

@@ -1,3 +1,4 @@
+using Application.AI.Common.Interfaces.Escalation;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Services.Governance;
@@ -34,6 +35,7 @@ internal static class AdmissionHarness
             observers ?? Mock.Of<IToolCallObserverChain>(),
             progressEvaluator ?? PermissiveProgressEvaluator(),
             trace ?? TraceRecorder(),
+            Mock.Of<IApprovalExecutionReporter>(),
             NullLogger<ToolCallAdmissionPipeline>.Instance);
 
     /// <summary>

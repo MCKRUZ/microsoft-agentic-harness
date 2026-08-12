@@ -91,6 +91,20 @@ public sealed class DriftEscalationBridge : IEscalationNotificationChannel
         return Task.CompletedTask;
     }
 
+    /// <inheritdoc />
+    /// <remarks>
+    /// No-op by design, not an oversight. This bridge's tracking dictionary is populated at
+    /// request time and already removed by <see cref="NotifyEscalationResolvedAsync"/> the
+    /// moment an escalation resolves — before execution ever happens — so there is no reliable
+    /// way to re-derive "was this originally drift-tagged?" from here. It doesn't need one: no
+    /// drift-remediation call site reports execution results in this codebase today, so this
+    /// method is never actually invoked for a real drift escalation. Wiring drift remediation
+    /// into execution reporting is a deferred follow-up, not something this method should guess
+    /// at.
+    /// </remarks>
+    public Task NotifyExecutionReportedAsync(EscalationExecutionRecord record, CancellationToken ct) =>
+        Task.CompletedTask;
+
     private async Task NotifyDriftResolvedAsync(
         EscalationRequest request, EscalationOutcome outcome, CancellationToken ct)
     {

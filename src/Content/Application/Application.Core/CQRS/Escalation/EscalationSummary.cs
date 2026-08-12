@@ -53,6 +53,27 @@ public sealed record EscalationSummary
     /// <summary>Action the service takes if the escalation times out undecided.</summary>
     public required EscalationTimeoutAction TimeoutAction { get; init; }
 
+    /// <summary>
+    /// 1 for a first attempt; N for the Nth time this exact (conversation, agent, tool) action has
+    /// been asked, per <c>EscalationRequest.AttemptNumber</c>. The retry-attribution card (#325)
+    /// this and the two fields below carry only renders when this is greater than 1 — an approver
+    /// reading a first attempt sees nothing different from before this feature existed.
+    /// </summary>
+    public required int AttemptNumber { get; init; }
+
+    /// <summary>
+    /// Why the prior attempt at this action failed, truncated to
+    /// <c>EscalationConfig.RetryAttribution.MaxPriorFailureLength</c>. Null on a first attempt or
+    /// when the failure memory that would have supplied it was evicted or never recorded.
+    /// </summary>
+    public string? PriorFailureReason { get; init; }
+
+    /// <summary>
+    /// The escalation that approved the prior attempt this one retries, letting an approver open
+    /// the earlier record for full context. Null on a first attempt.
+    /// </summary>
+    public Guid? PredecessorEscalationId { get; init; }
+
     /// <summary>Projects a domain <see cref="EscalationRequest"/> to the wire-safe shape.</summary>
     /// <param name="request">The pending escalation request to project. Must not be null.</param>
     public static EscalationSummary FromRequest(EscalationRequest request)
@@ -72,7 +93,10 @@ public sealed record EscalationSummary
             Approvers = request.Approvers,
             RequestedAt = request.RequestedAt,
             TimeoutSeconds = request.TimeoutSeconds,
-            TimeoutAction = request.TimeoutAction
+            TimeoutAction = request.TimeoutAction,
+            AttemptNumber = request.AttemptNumber,
+            PriorFailureReason = request.PriorFailureReason,
+            PredecessorEscalationId = request.PredecessorEscalationId
         };
     }
 }

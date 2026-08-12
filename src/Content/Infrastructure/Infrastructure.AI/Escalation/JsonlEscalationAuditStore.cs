@@ -111,6 +111,22 @@ public sealed class JsonlEscalationAuditStore : IEscalationAuditStore, IVerifiab
     }
 
     /// <inheritdoc />
+    public async Task RecordExecutionAsync(EscalationExecutionRecord record, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(record);
+
+        var auditRecord = new EscalationAuditRecord
+        {
+            RecordType = EscalationAuditRecordType.Execution,
+            EscalationId = record.EscalationId,
+            Timestamp = DateTimeOffset.UtcNow,
+            Payload = JsonSerializer.Serialize(record, SerializeOptions)
+        };
+
+        await AppendRecordAsync(auditRecord, ct);
+    }
+
+    /// <inheritdoc />
     public async Task<IReadOnlyList<EscalationAuditRecord>> GetHistoryAsync(
         Guid escalationId,
         CancellationToken ct)

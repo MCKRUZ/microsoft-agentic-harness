@@ -1,6 +1,8 @@
+using Application.AI.Common.Interfaces.Escalation;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Services.Governance;
 using Application.AI.Common.Services.Tools;
+using Domain.AI.Escalation;
 using Microsoft.Extensions.AI;
 using Moq;
 using Xunit;
@@ -86,6 +88,68 @@ public sealed class GovernedAIFunctionTests
         Assert.NotNull(seen);
         Assert.True(seen!.CountsTowardLoopDetection);
         Assert.Equal("file_system", seen.ToolName);
+    }
+
+    // ===== #325 execution reporting =====
+
+    private static ApprovedCall ApprovedCall() =>
+        new(Guid.NewGuid(), new ApprovalFailureKey("conv-1", "agent-1", "file_system"));
+
+    private static Mock<IToolCallAdmissionPipeline> ApprovingPipeline(ApprovedCall call)
+    {
+        var pipeline = new Mock<IToolCallAdmissionPipeline>();
+        pipeline
+            .Setup(p => p.AdmitAsync(It.IsAny<ToolCallAdmissionRequest>(), It.IsAny<CancellationToken>()))
+            .Returns(ValueTask.FromResult(ToolCallAdmission.Allow().WithApproval(call)));
+        pipeline
+            .Setup(p => p.ApplyOutputPolicy(It.IsAny<ToolCallAdmission>(), It.IsAny<string>(), It.IsAny<object?>()))
+            .Returns<ToolCallAdmission, string, object?>((_, _, result) => result);
+        return pipeline;
+    }
+
+    // GovernedAIFunction does not itself decide whether an approval exists to report against —
+    // that no-op belongs to IToolCallAdmissionPipeline.ReportExecutionAsync (pinned in
+    // ToolCallAdmissionPipelineTests), so this layer's contract is simply "always ask" on every
+    // admitted call. The two tests below, against a raw mocked pipeline that has no such no-op
+    // built in, are what prove the call happens on every path (success and failure).
+
+    [Fact]
+    public async Task InvokeAsync_ToolSucceeds_WithApproval_ReportsSucceeded()
+    {
+        var (inner, _) = MakeInner();
+        var call = ApprovedCall();
+        var pipeline = ApprovingPipeline(call);
+
+        await InvokeUnder(pipeline.Object, inner);
+
+        pipeline.Verify(
+            p => p.ReportExecutionAsync(
+                It.IsAny<ToolCallAdmission>(),
+                It.Is<ToolExecutionReport>(r => r.Status == EscalationExecutionStatus.Succeeded),
+                "agent-turn", CancellationToken.None),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task InvokeAsync_ToolThrows_WithApproval_ReportsFailedAndStillRethrows()
+    {
+        Func<string> throwing = () => throw new InvalidOperationException("boom");
+        var inner = AIFunctionFactory.Create(
+            throwing, new AIFunctionFactoryOptions { Name = "file_system", Description = "test tool" });
+        var call = ApprovedCall();
+        var pipeline = ApprovingPipeline(call);
+
+        Func<Task> act = () => InvokeUnder(pipeline.Object, inner);
+
+        // MEAI's AIFunctionFactory wraps the delegate's throw in an AIFunctionArgumentException; the
+        // wiring under test only needs to prove the report happened and something still escaped.
+        await Assert.ThrowsAnyAsync<Exception>(act);
+        pipeline.Verify(
+            p => p.ReportExecutionAsync(
+                It.IsAny<ToolCallAdmission>(),
+                It.Is<ToolExecutionReport>(r => r.Status == EscalationExecutionStatus.Failed),
+                "agent-turn", CancellationToken.None),
+            Times.Once);
     }
 
     [Fact]

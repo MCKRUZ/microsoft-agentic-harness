@@ -1,6 +1,7 @@
 using Application.AI.Common;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Attestation;
+using Application.AI.Common.Interfaces.Escalation;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Planner;
 using Application.AI.Common.Interfaces.Sandbox;
@@ -266,6 +267,7 @@ public sealed class PlannerDiRegistrationTests : IDisposable
         services.AddScoped(_ => StepExecutors.PermissiveAdmission.ProgressGuard());
         services.AddScoped(_ => StepExecutors.PermissiveAdmission.TraceRecorder());
         services.AddScoped(_ => new Mock<IAgentToolAuthorizationGate>().Object);
+        services.AddScoped(_ => new Mock<IApprovalExecutionReporter>().Object);
         // Step executors take the admission chain as a required dependency, deliberately: an omitted
         // chain is indistinguishable at runtime from a host whose gates are all off, so a nullable
         // default would let a composition silently run the plan path unguarded. The real composition

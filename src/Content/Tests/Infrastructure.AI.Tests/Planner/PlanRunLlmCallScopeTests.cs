@@ -1,6 +1,7 @@
 using Application.AI.Common;
 using Application.AI.Common.Interfaces.AI;
 using Application.AI.Common.Interfaces.Agent;
+using Application.AI.Common.Interfaces.Escalation;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Planner;
 using Application.AI.Common.Services.AI;
@@ -156,6 +157,7 @@ public sealed class PlanRunLlmCallScopeTests
         services.AddSingleton(StepExecutors.PermissiveAdmission.AuthorizationGate());
         services.AddSingleton(StepExecutors.PermissiveAdmission.ProgressGuard());
         services.AddSingleton(StepExecutors.PermissiveAdmission.TraceRecorder());
+        services.AddSingleton(Mock.Of<IApprovalExecutionReporter>());
         // Step executors require the admission chain rather than defaulting it to null, so that a
         // composition which forgets it fails at resolution instead of running unguarded. The real
         // chain over the gates above, built the same way the production root builds it — a mock of
