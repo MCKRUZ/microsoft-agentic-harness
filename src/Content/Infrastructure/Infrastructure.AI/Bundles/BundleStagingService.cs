@@ -68,12 +68,9 @@ public sealed class BundleStagingService : IBundleStagingService
     /// </param>
     /// <param name="pluginReader">Reader for a staged bundle's plugin manifest.</param>
     /// <param name="bundleOwnedMcpServers">
-    /// The shared, singleton <see cref="BundleOwnedMcpServerRegistry"/> — a bundle's own MCP servers are
-    /// merged into it under a bundle-scoped namespaced key, deliberately NOT into the trusted, host-admin
-    /// <c>McpServersConfig</c> <c>McpConnectionManager</c> enumerates: an uploaded bundle is untrusted
-    /// content, and registering it into the same dictionary the host enumerates would let it leak into
-    /// every ordinary, non-bundle conversation. <c>McpConnectionManager</c> consults this registry only
-    /// by exact name, as a fallback after its host dictionary misses — never by enumeration.
+    /// The shared, singleton <see cref="BundleOwnedMcpServerRegistry"/> a bundle's own MCP servers are
+    /// merged into under a bundle-scoped namespaced key — deliberately NOT the trusted, host-admin
+    /// <c>McpServersConfig</c>; see <see cref="BundleOwnedMcpServerRegistry"/>'s own doc comment for why.
     /// </param>
     /// <param name="logger">Logger for staging diagnostics.</param>
     public BundleStagingService(

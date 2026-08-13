@@ -190,11 +190,8 @@ public static partial class DependencyInjection
         // until an ingest call reaches it — so it is registered unconditionally; the run/API surface that
         // invokes it is gated in a later layer. Wired to the SAME BundleOwnedMcpServerRegistry instance
         // McpConnectionManager (Infrastructure.AI.MCP) reads — deliberately NOT the trusted, AIConfig-bound
-        // McpServersConfig PluginLoader (below) writes into: a staged bundle's own MCP servers are
-        // untrusted, uploader-supplied content and must never land in the same registry the host
-        // enumerates for an ordinary conversation (issue #368's original design; isolated in #370 after a
-        // security review found the shared-registry version let a bundle's tools leak into every
-        // non-bundle conversation on the host).
+        // McpServersConfig PluginLoader (below) writes into; see BundleOwnedMcpServerRegistry's own doc
+        // comment for why.
         services.AddSingleton<IBundleStagingService>(sp => new BundleStagingService(
             sp.GetRequiredService<IOptionsMonitor<AppConfig>>(),
             sp.GetRequiredService<AgentMetadataParser>(),

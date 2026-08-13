@@ -27,6 +27,11 @@ public sealed class McpConnectionManager : IAsyncDisposable
     private readonly HttpClient _httpClient;
     private readonly McpServersConfig _config;
     private readonly BundleOwnedMcpServerRegistry _bundleOwnedServers;
+
+    // A single flat cache keyed by bare serverName, shared across BOTH _config and _bundleOwnedServers —
+    // safe today because the two namespacing schemes never collide (host names are plain or
+    // {pluginName}:{name}; bundle names are {bundleId GUID}:{name}). A future change that restructures
+    // these into per-source caches should preserve that invariant, not merely mirror the field shapes.
     private readonly ConcurrentDictionary<string, McpClient> _clients = new();
     private readonly ConcurrentDictionary<string, HttpClient> _entraClients = new();
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _connectionLocks = new();
@@ -138,14 +143,9 @@ public sealed class McpConnectionManager : IAsyncDisposable
     /// </summary>
     /// <remarks>
     /// <strong>Deliberately host-only.</strong> This enumerates <em>only</em> <see cref="_config"/> —
-    /// never <see cref="_bundleOwnedServers"/>. Every consumer built on this method
-    /// (<c>McpToolProvider.GetAllToolsAsync</c>/<c>GetToolByNameAsync</c>, and through them the MCP REST
-    /// endpoints, and <c>ToolChainBuilder</c>'s no-envelope resolution path — i.e. every ORDINARY,
-    /// non-bundle agent conversation) publishes whatever this returns with no further bundle-provenance
-    /// check. If a bundle-owned server were ever enumerable here, its tools would reach every other
-    /// conversation on the host under their bare, attacker-chosen names. Do not add
-    /// <see cref="_bundleOwnedServers"/> to this method; see <see cref="BundleOwnedMcpServerRegistry"/>'s
-    /// own doc comment for why it is a separate type instead of a filtered flag on this one.
+    /// never <see cref="_bundleOwnedServers"/>. Do not add it here; see
+    /// <see cref="BundleOwnedMcpServerRegistry"/>'s own doc comment for why a bundle-owned server must
+    /// never be reachable from this method.
     /// </remarks>
     public IEnumerable<string> GetConfiguredServerNames()
     {
@@ -161,10 +161,6 @@ public sealed class McpConnectionManager : IAsyncDisposable
         // a bundle run's own already-envelope-gated resolution (ToolChainBuilder.ProvisionToolAsync,
         // ResolveInjectedMcpToolsAsync's envelope-armed branch, BundleRunExecutor.DiscoverToolNamesAsync)
         // reaches its own server; without it, a bundle run could never use its own registered tools.
-        // _clients/_connectionLocks/_entraClients below are a single flat cache keyed by bare serverName
-        // across BOTH sources — safe today because the two namespacing schemes never collide (host names
-        // are plain or {pluginName}:{name}; bundle names are {bundleId GUID}:{name}), documented here
-        // rather than restructured into per-source caches.
         if (!_config.Servers.TryGetValue(serverName, out var definition)
             && !_bundleOwnedServers.Servers.TryGetValue(serverName, out definition))
             throw new McpConnectionException($"MCP server '{serverName}' is not configured.");

@@ -13,11 +13,13 @@ namespace Domain.Common.Config.AI.MCP;
 /// </para>
 /// <para>
 /// <see cref="ConcurrentDictionary{TKey,TValue}"/> rather than a plain dictionary: server registration
-/// is no longer a startup-only write. A staged bundle registers its own namespaced servers at request
-/// time (<c>BundleStagingService</c>), concurrently with reads that hold an enumerator open across
-/// network I/O (<c>McpToolProvider.GetToolByNameAsync</c>) — a plain <see cref="Dictionary{TKey,TValue}"/>
-/// is unsafe under that mix of concurrent read/write. Confirmed to bind identically to a plain dictionary
-/// from real <c>IConfiguration</c> (<c>McpServersConfigBindingTests.Bind_JsonConfiguredServers_AlsoPopulatesConcurrentDictionary</c>)
+/// is no longer a startup-only write. A host-installed plugin registers its own namespaced servers at
+/// load time (<c>PluginLoader</c>), concurrently with reads that hold an enumerator open across network
+/// I/O (<c>McpToolProvider.GetToolByNameAsync</c>) — a plain <see cref="Dictionary{TKey,TValue}"/> is
+/// unsafe under that mix of concurrent read/write. (A staged bundle's own servers are registered into
+/// the separate <c>BundleOwnedMcpServerRegistry</c> instead, not here — see its own doc comment.)
+/// Confirmed to bind identically to a plain dictionary from real <c>IConfiguration</c>
+/// (<c>McpServersConfigBindingTests.Bind_JsonConfiguredServers_AlsoPopulatesConcurrentDictionary</c>)
 /// — an earlier, incorrectly-shaped binding test wrongly suggested otherwise; see that test's remarks.
 /// </para>
 /// </remarks>
