@@ -36,12 +36,9 @@ public static class DependencyInjection
     public static IServiceCollection AddMcpClientDependencies(this IServiceCollection services)
     {
         // The runtime-only store for a bundle's own (untrusted, uploaded) MCP server definitions —
-        // deliberately never the AIConfig-bound McpServersConfig below. See its own doc comment for why
-        // this is a distinct type rather than a second McpServersConfig instance.
-        // TryAddSingleton, not AddSingleton: BundleStagingService (Infrastructure.AI) also needs this
-        // instance and registers it the same idempotent way, so whichever of AddInfrastructureAIDependencies
-        // / AddMcpClientDependencies runs first wins and both layers share the one instance regardless of
-        // call order — neither extension method depends on the other having run first.
+        // deliberately never the AIConfig-bound McpServersConfig below. See its own doc comment for why.
+        // TryAddSingleton (not AddSingleton) — also registered by AddInfrastructureAIDependencies, so
+        // call order between the two extension methods is irrelevant.
         services.TryAddSingleton<BundleOwnedMcpServerRegistry>();
 
         // Connection manager — singleton, manages MCP client lifecycles.

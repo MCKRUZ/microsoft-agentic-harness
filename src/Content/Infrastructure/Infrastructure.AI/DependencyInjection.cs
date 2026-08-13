@@ -193,10 +193,8 @@ public static partial class DependencyInjection
         // McpConnectionManager (Infrastructure.AI.MCP) reads — deliberately NOT the trusted, AIConfig-bound
         // McpServersConfig PluginLoader (below) writes into; see BundleOwnedMcpServerRegistry's own doc
         // comment for why.
-        // TryAddSingleton (not AddSingleton), and this layer registers it too, not just
-        // Infrastructure.AI.MCP: BundleStagingService needs this instance regardless of whether
-        // AddMcpClientDependencies has run, so AddInfrastructureAIDependencies must not silently depend
-        // on registration order between the two layers to resolve IBundleStagingService.
+        // TryAddSingleton (not AddSingleton) — also registered by AddMcpClientDependencies, so call order
+        // between the two extension methods is irrelevant.
         services.TryAddSingleton<Domain.Common.Config.AI.MCP.BundleOwnedMcpServerRegistry>();
         services.AddSingleton<IBundleStagingService>(sp => new BundleStagingService(
             sp.GetRequiredService<IOptionsMonitor<AppConfig>>(),

@@ -31,6 +31,30 @@ public sealed class BundleMcpServerIsolationTests
             bundleOwned);
 
     [Fact]
+    public void BundleOwnedMcpServerRegistry_ExposesNoEnumerationSurface()
+    {
+        // Mechanical guard for the doc comment's own claim: "no enumeration API at all". A future
+        // convenience method (a Keys property, a GetAll(bundleId) helper, implementing IEnumerable) would
+        // silently reopen exactly the leak this whole fix exists to prevent, since ANY enumerable surface
+        // on this type is one careless foreach away from becoming a second GetConfiguredServerNames-style
+        // chokepoint. This test fails the build the moment that happens, rather than relying on a
+        // reviewer noticing.
+        var type = typeof(BundleOwnedMcpServerRegistry);
+
+        type.Should().NotBeAssignableTo<System.Collections.IEnumerable>(
+            "the registry must never be directly enumerable");
+
+        var publicMemberNames = type
+            .GetMethods(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.DeclaredOnly)
+            .Select(m => m.Name)
+            .ToList();
+        publicMemberNames.Should().BeEquivalentTo(
+            [nameof(BundleOwnedMcpServerRegistry.TryAdd), nameof(BundleOwnedMcpServerRegistry.TryRemove), nameof(BundleOwnedMcpServerRegistry.TryGetValue)],
+            "the only way to read this registry is an exact-name lookup — adding any other public member " +
+            "(Keys, Values, Count, GetEnumerator, ...) needs a deliberate, reviewed decision, not an accident");
+    }
+
+    [Fact]
     public void GetConfiguredServerNames_NeverReturnsBundleOwnedServers()
     {
         // The assertion that encodes the fix: a bundle-owned server, even enabled, is invisible to the
