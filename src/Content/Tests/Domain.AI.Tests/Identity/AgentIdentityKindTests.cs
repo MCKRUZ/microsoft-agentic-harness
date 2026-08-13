@@ -31,6 +31,7 @@ public sealed class AgentIdentityKindTests
     [InlineData(AgentIdentityKind.Certificate, 3)]
     [InlineData(AgentIdentityKind.ClientSecret, 4)]
     [InlineData(AgentIdentityKind.Development, 5)]
+    [InlineData(AgentIdentityKind.System, 6)]
     public void Enum_HasExpectedNumericValues(AgentIdentityKind kind, int expectedValue)
     {
         ((int)kind).Should().Be(expectedValue);
@@ -41,7 +42,11 @@ public sealed class AgentIdentityKindTests
     {
         // The credential hierarchy per PR-1: federated -> managed identity -> certificate
         // -> client secret. Development is a test-only escape hatch. Unspecified is the
-        // default sentinel.
+        // default sentinel. System (#370's security fix) is the one deliberate non-credential
+        // exception: internal/host-generated attribution (e.g. a bundle's own outbound MCP
+        // connections) with no live agent turn to derive identity from — backed by no Entra
+        // credential and carrying no token, so it sits outside the credential hierarchy
+        // itself while still being a real, auditable identity kind.
         var values = Enum.GetValues<AgentIdentityKind>();
 
         values.Should().BeEquivalentTo(new[]
@@ -51,7 +56,8 @@ public sealed class AgentIdentityKindTests
             AgentIdentityKind.ManagedIdentity,
             AgentIdentityKind.Certificate,
             AgentIdentityKind.ClientSecret,
-            AgentIdentityKind.Development
+            AgentIdentityKind.Development,
+            AgentIdentityKind.System
         });
     }
 }
