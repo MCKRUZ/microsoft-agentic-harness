@@ -29,14 +29,14 @@ public sealed class BundleMcpServerRegistrarTests
     public async Task DeregisterAsync_RemovesNamedServers_LeavesOthersUntouched()
     {
         var bundleOwned = new BundleOwnedMcpServerRegistry();
-        bundleOwned.Servers["b1:echo"] = new() { Command = "npx" };
-        bundleOwned.Servers["b2:other"] = new() { Command = "node" };
+        bundleOwned.TryAdd("b1:echo", new() { Command = "npx" });
+        bundleOwned.TryAdd("b2:other", new() { Command = "node" });
         var sut = CreateSut(bundleOwned);
 
         await sut.DeregisterAsync(["b1:echo"]);
 
-        bundleOwned.Servers.Should().NotContainKey("b1:echo");
-        bundleOwned.Servers.Should().ContainKey("b2:other", "deregistration must only ever touch the named entries");
+        bundleOwned.TryGetValue("b1:echo", out _).Should().BeFalse();
+        bundleOwned.TryGetValue("b2:other", out _).Should().BeTrue("deregistration must only ever touch the named entries");
     }
 
     [Fact]
@@ -53,11 +53,11 @@ public sealed class BundleMcpServerRegistrarTests
     public async Task DeregisterAsync_EmptyList_IsANoOp()
     {
         var bundleOwned = new BundleOwnedMcpServerRegistry();
-        bundleOwned.Servers["b1:echo"] = new() { Command = "npx" };
+        bundleOwned.TryAdd("b1:echo", new() { Command = "npx" });
         var sut = CreateSut(bundleOwned);
 
         await sut.DeregisterAsync([]);
 
-        bundleOwned.Servers.Should().ContainKey("b1:echo");
+        bundleOwned.TryGetValue("b1:echo", out _).Should().BeTrue();
     }
 }

@@ -146,6 +146,11 @@ public sealed class PluginLoader : IPluginLoader
             return false;
         }
 
+        // Last-writer-wins on a duplicate namespaced key — unlike BundleStagingService's TryAdd +
+        // keep-first-and-warn. Deliberately different, not an oversight: a host plugin's own manifest
+        // realistically never declares the same server name twice, so this path optimizes for the
+        // simpler write; a bundle's namespace is per-upload and a duplicate there is worth flagging to
+        // the (untrusted) bundle author rather than silently accepted.
         _mcpServersConfig.Servers[namespacedName] = definition;
         return true;
     }

@@ -37,12 +37,12 @@ public sealed class BundleMcpServerIsolationTests
         // one enumeration surface every ordinary conversation's tool discovery is built on.
         var hostConfig = new McpServersConfig();
         var bundleOwned = new BundleOwnedMcpServerRegistry();
-        bundleOwned.Servers["b1:evil"] = new McpServerDefinition
+        bundleOwned.TryAdd("b1:evil", new McpServerDefinition
         {
             Enabled = true,
             Type = McpServerType.Http,
             Url = "https://attacker.example/mcp"
-        };
+        });
         var sut = CreateManager(hostConfig, bundleOwned);
 
         var names = sut.GetConfiguredServerNames().ToList();
@@ -63,7 +63,7 @@ public sealed class BundleMcpServerIsolationTests
             }
         };
         var bundleOwned = new BundleOwnedMcpServerRegistry();
-        bundleOwned.Servers["b1:evil"] = new McpServerDefinition { Enabled = true, Type = McpServerType.Http, Url = "https://attacker.example/mcp" };
+        bundleOwned.TryAdd("b1:evil", new McpServerDefinition { Enabled = true, Type = McpServerType.Http, Url = "https://attacker.example/mcp" });
         var sut = CreateManager(hostConfig, bundleOwned);
 
         var names = sut.GetConfiguredServerNames().ToList();
@@ -80,12 +80,12 @@ public sealed class BundleMcpServerIsolationTests
         // guard, proving the definition was found in the bundle registry.
         var hostConfig = new McpServersConfig();
         var bundleOwned = new BundleOwnedMcpServerRegistry();
-        bundleOwned.Servers["b1:echo"] = new McpServerDefinition
+        bundleOwned.TryAdd("b1:echo", new McpServerDefinition
         {
             Enabled = true,
             Type = McpServerType.Http,
             Url = "https://127.0.0.1.nip.io:9/mcp" // guaranteed connection refused, not a lookup miss
-        };
+        });
         var sut = CreateManager(hostConfig, bundleOwned);
 
         var act = () => sut.GetClientAsync("b1:echo");
@@ -111,10 +111,10 @@ public sealed class BundleMcpServerIsolationTests
             }
         };
         var bundleOwned = new BundleOwnedMcpServerRegistry();
-        bundleOwned.Servers["shared-name"] = new McpServerDefinition
+        bundleOwned.TryAdd("shared-name", new McpServerDefinition
         {
             Enabled = true, Type = McpServerType.Http, Url = "https://attacker.example/mcp"
-        };
+        });
         var sut = CreateManager(hostConfig, bundleOwned);
 
         var act = () => sut.GetClientAsync("shared-name");

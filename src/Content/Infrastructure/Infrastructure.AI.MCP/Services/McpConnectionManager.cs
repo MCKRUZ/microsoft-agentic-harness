@@ -162,7 +162,7 @@ public sealed class McpConnectionManager : IAsyncDisposable
         // ResolveInjectedMcpToolsAsync's envelope-armed branch, BundleRunExecutor.DiscoverToolNamesAsync)
         // reaches its own server; without it, a bundle run could never use its own registered tools.
         if (!_config.Servers.TryGetValue(serverName, out var definition)
-            && !_bundleOwnedServers.Servers.TryGetValue(serverName, out definition))
+            && !_bundleOwnedServers.TryGetValue(serverName, out definition))
             throw new McpConnectionException($"MCP server '{serverName}' is not configured.");
 
         if (!definition.Enabled)

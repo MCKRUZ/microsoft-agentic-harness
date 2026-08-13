@@ -508,7 +508,7 @@ public sealed class BundleStagingService : IBundleStagingService
             return false;
         }
 
-        if (_bundleOwnedMcpServers.Servers.TryAdd(namespacedName, definition))
+        if (_bundleOwnedMcpServers.TryAdd(namespacedName, definition))
             return true;
 
         _logger.LogWarning(

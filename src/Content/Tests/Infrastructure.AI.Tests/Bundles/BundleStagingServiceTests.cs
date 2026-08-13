@@ -96,7 +96,7 @@ public sealed class BundleStagingServiceTests : IDisposable
         var namespacedName = $"{bundle.BundleId}:echo";
 
         bundle.McpServerNames.Should().BeEmpty("a stdio server must be rejected, not registered");
-        bundleOwnedMcpServers.Servers.Should().NotContainKey(namespacedName);
+        bundleOwnedMcpServers.TryGetValue(namespacedName, out _).Should().BeFalse();
     }
 
     [Fact]
@@ -113,8 +113,9 @@ public sealed class BundleStagingServiceTests : IDisposable
         result.IsSuccess.Should().BeTrue(string.Join("; ", result.Errors));
         var namespacedName = $"{result.Value!.BundleId}:remote";
 
-        bundleOwnedMcpServers.Servers[namespacedName].Type.Should().Be(McpServerType.Http);
-        bundleOwnedMcpServers.Servers[namespacedName].Url.Should().Be("https://tools.example.com/mcp");
+        bundleOwnedMcpServers.TryGetValue(namespacedName, out var definition).Should().BeTrue();
+        definition!.Type.Should().Be(McpServerType.Http);
+        definition.Url.Should().Be("https://tools.example.com/mcp");
     }
 
     [Fact]
@@ -129,8 +130,9 @@ public sealed class BundleStagingServiceTests : IDisposable
         var result = await CreateService(bundleOwnedMcpServers: bundleOwnedMcpServers).StageAsync(zip);
 
         result.IsSuccess.Should().BeTrue("a malformed mcp.json must degrade, not fail the whole bundle");
-        result.Value!.McpServerNames.Should().BeEmpty();
-        bundleOwnedMcpServers.Servers.Should().BeEmpty();
+        result.Value!.McpServerNames.Should().BeEmpty(
+            "TryBuildAndRegisterOneServer only ever adds a name here on a successful registry TryAdd, " +
+            "so an empty list already proves nothing reached bundleOwnedMcpServers");
     }
 
     [Fact]
@@ -149,8 +151,9 @@ public sealed class BundleStagingServiceTests : IDisposable
         var result = await CreateService(bundleOwnedMcpServers: bundleOwnedMcpServers).StageAsync(zip);
 
         result.IsSuccess.Should().BeTrue("a non-object mcpServers value must degrade, not fail the whole bundle");
-        result.Value!.McpServerNames.Should().BeEmpty();
-        bundleOwnedMcpServers.Servers.Should().BeEmpty();
+        result.Value!.McpServerNames.Should().BeEmpty(
+            "TryBuildAndRegisterOneServer only ever adds a name here on a successful registry TryAdd, " +
+            "so an empty list already proves nothing reached bundleOwnedMcpServers");
     }
 
     [Fact]
@@ -167,8 +170,9 @@ public sealed class BundleStagingServiceTests : IDisposable
         var result = await CreateService(bundleOwnedMcpServers: bundleOwnedMcpServers).StageAsync(zip);
 
         result.IsSuccess.Should().BeTrue(string.Join("; ", result.Errors));
-        result.Value!.McpServerNames.Should().ContainSingle();
-        bundleOwnedMcpServers.Servers.Should().ContainSingle();
+        result.Value!.McpServerNames.Should().ContainSingle(
+            "TryBuildAndRegisterOneServer only ever adds a name here on a successful registry TryAdd, " +
+            "so a single returned name already proves exactly one entry reached bundleOwnedMcpServers");
     }
 
     // --- Hostile-archive guards ---------------------------------------------------------------------

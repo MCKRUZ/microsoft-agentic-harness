@@ -8,6 +8,7 @@ using Infrastructure.AI.Egress;
 using Infrastructure.AI.MCP.Resources;
 using Infrastructure.AI.MCP.Services;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -37,7 +38,11 @@ public static class DependencyInjection
         // The runtime-only store for a bundle's own (untrusted, uploaded) MCP server definitions —
         // deliberately never the AIConfig-bound McpServersConfig below. See its own doc comment for why
         // this is a distinct type rather than a second McpServersConfig instance.
-        services.AddSingleton<BundleOwnedMcpServerRegistry>();
+        // TryAddSingleton, not AddSingleton: BundleStagingService (Infrastructure.AI) also needs this
+        // instance and registers it the same idempotent way, so whichever of AddInfrastructureAIDependencies
+        // / AddMcpClientDependencies runs first wins and both layers share the one instance regardless of
+        // call order — neither extension method depends on the other having run first.
+        services.TryAddSingleton<BundleOwnedMcpServerRegistry>();
 
         // Connection manager — singleton, manages MCP client lifecycles.
         // Resolving AntiSsrfHandlerFactory makes the SSRF guard a mandatory dependency:

@@ -37,7 +37,7 @@ public sealed class BundleMcpServerRegistrar : IBundleMcpServerRegistrar
     {
         foreach (var serverName in serverNames)
         {
-            _bundleOwnedMcpServers.Servers.TryRemove(serverName, out _);
+            _bundleOwnedMcpServers.TryRemove(serverName, out _);
 
             try
             {

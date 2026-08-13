@@ -49,6 +49,7 @@ using Infrastructure.AI.Tools;
 using Infrastructure.AI.Traces;
 using Domain.Common.Config.Infrastructure;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -192,6 +193,11 @@ public static partial class DependencyInjection
         // McpConnectionManager (Infrastructure.AI.MCP) reads — deliberately NOT the trusted, AIConfig-bound
         // McpServersConfig PluginLoader (below) writes into; see BundleOwnedMcpServerRegistry's own doc
         // comment for why.
+        // TryAddSingleton (not AddSingleton), and this layer registers it too, not just
+        // Infrastructure.AI.MCP: BundleStagingService needs this instance regardless of whether
+        // AddMcpClientDependencies has run, so AddInfrastructureAIDependencies must not silently depend
+        // on registration order between the two layers to resolve IBundleStagingService.
+        services.TryAddSingleton<Domain.Common.Config.AI.MCP.BundleOwnedMcpServerRegistry>();
         services.AddSingleton<IBundleStagingService>(sp => new BundleStagingService(
             sp.GetRequiredService<IOptionsMonitor<AppConfig>>(),
             sp.GetRequiredService<AgentMetadataParser>(),

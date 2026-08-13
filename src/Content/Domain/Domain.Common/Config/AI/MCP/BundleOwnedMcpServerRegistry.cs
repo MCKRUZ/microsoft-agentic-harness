@@ -29,17 +29,43 @@ namespace Domain.Common.Config.AI.MCP;
 /// invite a silent swap in a future refactor.
 /// </para>
 /// <para>
-/// <strong>Never config-bound.</strong> <see cref="Servers"/> is get-only and starts empty — unlike
+/// <strong>No enumeration surface, deliberately.</strong> Unlike <see cref="McpServersConfig.Servers"/>
+/// (a public, directly-enumerable <see cref="ConcurrentDictionary{TKey,TValue}"/>), this type exposes only
+/// <see cref="TryAdd"/>/<see cref="TryRemove"/>/<see cref="TryGetValue"/> — no <c>Keys</c>, <c>Values</c>,
+/// or enumerator. "Never reachable from an enumeration chokepoint" must hold for every future consumer
+/// this registry is ever injected into, not just the ones reviewed today; a raw dictionary property would
+/// make that merely a documented promise a future caller could break with a casual <c>foreach</c>. A
+/// narrow, name-only API makes it true by type instead.
+/// </para>
+/// <para>
+/// <strong>Never config-bound.</strong> Starts empty and is never touched by the options binder — unlike
 /// <see cref="McpServersConfig"/>, which doubles as both an <c>appsettings.json</c>-bound options object
 /// and a runtime-mutated registry, this type has exactly one role.
 /// </para>
 /// </remarks>
 public sealed class BundleOwnedMcpServerRegistry
 {
+    private readonly ConcurrentDictionary<string, McpServerDefinition> _servers = new();
+
     /// <summary>
-    /// The dictionary of bundle-owned MCP server definitions, keyed by their bundle-scoped namespaced
-    /// name (<c>{BundleId}:{ServerName}</c>). Never enumerated by anything that publishes tools to an
-    /// ordinary, non-bundle conversation — only resolved by exact name from an envelope-gated caller.
+    /// Registers <paramref name="definition"/> under <paramref name="namespacedName"/>
+    /// (<c>{BundleId}:{ServerName}</c>). Returns <see langword="false"/> without replacing anything if
+    /// that name is already registered — the caller decides how to report a duplicate.
     /// </summary>
-    public ConcurrentDictionary<string, McpServerDefinition> Servers { get; } = new();
+    public bool TryAdd(string namespacedName, McpServerDefinition definition) =>
+        _servers.TryAdd(namespacedName, definition);
+
+    /// <summary>
+    /// Removes the entry registered under <paramref name="namespacedName"/>, if any. Idempotent: removing
+    /// an unregistered name is a no-op that returns <see langword="false"/>, never an error.
+    /// </summary>
+    public bool TryRemove(string namespacedName, out McpServerDefinition? definition) =>
+        _servers.TryRemove(namespacedName, out definition);
+
+    /// <summary>
+    /// Resolves <paramref name="namespacedName"/> to its registered definition, if any — the ONLY way to
+    /// read from this registry. There is no enumeration method by design; see this type's own remarks.
+    /// </summary>
+    public bool TryGetValue(string namespacedName, out McpServerDefinition? definition) =>
+        _servers.TryGetValue(namespacedName, out definition);
 }
