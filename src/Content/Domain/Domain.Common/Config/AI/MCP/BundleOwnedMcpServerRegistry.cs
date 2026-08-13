@@ -57,10 +57,11 @@ public sealed class BundleOwnedMcpServerRegistry
 
     /// <summary>
     /// Removes the entry registered under <paramref name="namespacedName"/>, if any. Idempotent: removing
-    /// an unregistered name is a no-op that returns <see langword="false"/>, never an error.
+    /// an unregistered name is a no-op that returns <see langword="false"/>, never an error. No caller
+    /// needs the removed definition, so this returns only whether an entry was removed — not the value
+    /// itself, matching this type's stated goal of exposing the narrowest usable surface.
     /// </summary>
-    public bool TryRemove(string namespacedName, out McpServerDefinition? definition) =>
-        _servers.TryRemove(namespacedName, out definition);
+    public bool TryRemove(string namespacedName) => _servers.TryRemove(namespacedName, out _);
 
     /// <summary>
     /// Resolves <paramref name="namespacedName"/> to its registered definition, if any — the ONLY way to
