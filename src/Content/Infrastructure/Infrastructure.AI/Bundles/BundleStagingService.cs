@@ -4,6 +4,7 @@ using Application.AI.Common.Interfaces.Bundles;
 using Application.AI.Common.Interfaces.Plugins;
 using Application.AI.Common.Interfaces.Skills;
 using Domain.AI.Bundles;
+using Domain.AI.Egress;
 using Domain.AI.Skills;
 using Domain.Common;
 using Domain.Common.Config;
@@ -12,6 +13,7 @@ using Domain.Common.Config.AI.MCP;
 using Domain.Common.Config.AI.Plugins;
 using Domain.Common.Helpers;
 using Infrastructure.AI.Agents;
+using Infrastructure.AI.Egress;
 using Infrastructure.AI.Plugins;
 using Infrastructure.AI.Skills;
 using Microsoft.Extensions.Logging;
@@ -449,15 +451,33 @@ public sealed class BundleStagingService : IBundleStagingService
         if (string.IsNullOrEmpty(manifest.McpServers))
             return registered;
 
+        // A bundle is untrusted, externally-authored input. Honouring its own declared MCP servers means
+        // the host makes outbound connections a caller's CapabilityEnvelope never authorized — off by
+        // default until an operator opts in. The manifest is never even opened when off, so a disabled
+        // host pays no parsing cost for a capability it doesn't have.
+        if (!_appConfig.CurrentValue.AI.BundleExecution.AllowBundleDeclaredMcpServers)
+        {
+            _logger.LogInformation(
+                "Bundle {BundleId}: declares MCP servers but AllowBundleDeclaredMcpServers is disabled — " +
+                "skipping, none registered. Set AppConfig:AI:BundleExecution:AllowBundleDeclaredMcpServers " +
+                "= true to enable this capability.",
+                bundleId);
+            return registered;
+        }
+
         using var block = Infrastructure.AI.Plugins.McpManifestReader.ReadMcpServersBlock(
             manifestBaseDir, manifest.McpServers, $"Bundle {bundleId}", _logger);
         if (block is null)
             return registered;
 
+        // Loop-invariant: every server this manifest declares is checked against the SAME harness-wide
+        // allowlist, so it is mapped from config once here rather than re-derived on every iteration.
+        var allowlist = EgressAllowlistMapper.Map(_appConfig.CurrentValue.AI.Egress.DefaultAllowlist);
+
         foreach (var serverProp in block.Value.ServersElement.EnumerateObject())
         {
             var namespacedName = $"{bundleId}:{serverProp.Name}";
-            if (TryBuildAndRegisterOneServer(bundleId, namespacedName, serverProp))
+            if (TryBuildAndRegisterOneServer(bundleId, namespacedName, serverProp, allowlist))
                 registered.Add(namespacedName);
         }
 
@@ -466,10 +486,11 @@ public sealed class BundleStagingService : IBundleStagingService
 
     /// <summary>
     /// Builds one manifest-declared server and registers it under <paramref name="namespacedName"/>,
-    /// rejecting a stdio (local-command) transport and a duplicate name — see
+    /// rejecting a stdio (local-command) transport, a disallowed destination, and a duplicate name — see
     /// <see cref="RegisterBundleMcpServers"/>. Returns whether registration succeeded.
     /// </summary>
-    private bool TryBuildAndRegisterOneServer(string bundleId, string namespacedName, JsonProperty serverProp)
+    private bool TryBuildAndRegisterOneServer(
+        string bundleId, string namespacedName, JsonProperty serverProp, IReadOnlyList<EgressAllowlistEntry> allowlist)
     {
         McpServerDefinition definition;
         try
@@ -486,27 +507,14 @@ public sealed class BundleStagingService : IBundleStagingService
             return false;
         }
 
-        // A bundle is untrusted, uploader-supplied content. A stdio server's Command/Args/Env come
-        // straight from the bundle's own manifest, and connecting to it launches that command as a
-        // real host process (via McpConnectionManager -> StdioClientTransport) — arbitrary command
-        // execution on the harness host, gated only by upload permission. Host-installed plugins
-        // (PluginLoader) are a different trust tier and are unaffected: only this bundle path rejects
-        // Stdio. Tracked follow-up to run a bundle's stdio server inside the existing process/Docker
-        // sandbox instead of rejecting it outright: #371.
         if (!definition.IsRemoteServer)
         {
-            // "resolved to", not "declares": McpServerDefinitionBuilder.ParseType defaults an ABSENT or
-            // UNRECOGNIZED 'type' value to Stdio too (only "http"/"sse" are matched), so a bundle author
-            // who misspells a real remote transport lands here as well — this message must stay accurate
-            // for both cases, not assert an explicit stdio declaration that may not exist.
-            _logger.LogWarning(
-                "Bundle {BundleId}: MCP server '{ServerName}' resolved to a stdio (local-command) " +
-                "transport, which is not permitted for bundle-owned servers — rejected, not registered. " +
-                "The transport was either explicitly declared, or defaulted to stdio because 'type' was " +
-                "missing or unrecognized (only 'http'/'sse' are supported).",
-                bundleId, serverProp.Name);
+            LogStdioRejected(bundleId, serverProp.Name);
             return false;
         }
+
+        if (!IsUrlAllowlisted(bundleId, serverProp.Name, definition.Url, allowlist))
+            return false;
 
         if (_bundleOwnedMcpServers.TryAdd(namespacedName, definition))
             return true;
@@ -515,6 +523,65 @@ public sealed class BundleStagingService : IBundleStagingService
             "Bundle {BundleId}: duplicate MCP server name '{ServerName}' declared across " +
             "more than one plugin manifest; keeping the first",
             bundleId, serverProp.Name);
+        return false;
+    }
+
+    // A bundle is untrusted, uploader-supplied content. A stdio server's Command/Args/Env come
+    // straight from the bundle's own manifest, and connecting to it launches that command as a
+    // real host process (via McpConnectionManager -> StdioClientTransport) — arbitrary command
+    // execution on the harness host, gated only by upload permission. Host-installed plugins
+    // (PluginLoader) are a different trust tier and are unaffected: only this bundle path rejects
+    // Stdio. Tracked follow-up to run a bundle's stdio server inside the existing process/Docker
+    // sandbox instead of rejecting it outright: #371.
+    private void LogStdioRejected(string bundleId, string serverName)
+    {
+        // "resolved to", not "declares": McpServerDefinitionBuilder.ParseType defaults an ABSENT or
+        // UNRECOGNIZED 'type' value to Stdio too (only "http"/"sse" are matched), so a bundle author
+        // who misspells a real remote transport lands here as well — this message must stay accurate
+        // for both cases, not assert an explicit stdio declaration that may not exist.
+        _logger.LogWarning(
+            "Bundle {BundleId}: MCP server '{ServerName}' resolved to a stdio (local-command) " +
+            "transport, which is not permitted for bundle-owned servers — rejected, not registered. " +
+            "The transport was either explicitly declared, or defaulted to stdio because 'type' was " +
+            "missing or unrecognized (only 'http'/'sse' are supported).",
+            bundleId, serverName);
+    }
+
+    /// <summary>
+    /// Registration-time pre-check against the SAME harness-wide allowlist a bundle-owned server's live
+    /// connections are evaluated against (<c>McpConnectionManager</c>'s per-request egress policy —
+    /// Infrastructure.AI.MCP, a different project this one does not reference), sharing
+    /// <see cref="DefaultEgressPolicy.MatchesAnyEntry"/>'s matching loop directly with the live decision
+    /// (<see cref="DefaultEgressPolicy.AllowAsync"/>) so the two matching primitives can never
+    /// independently drift on what "host/scheme/port matches THIS list" means. This is deliberately NOT a
+    /// claim that this check and the live decision always agree: the live path resolves its policy
+    /// per-identity via <c>IEgressPolicyResolver</c>, which can source a different, wider, or differently
+    /// cached allowlist than the one read fresh from config here — the two can diverge on WHICH list
+    /// applies, even though they never diverge on what matching against a given list means. This is a
+    /// fast, synchronous, no-DNS gate at upload time so an obviously-disallowed (or unparsable)
+    /// destination is rejected before a bundle handle ever exists — not a replacement for the audited,
+    /// per-request enforcement every actual connection still goes through, and not a guarantee that
+    /// passing this gate implies the live connection will also be allowed.
+    /// </summary>
+    private bool IsUrlAllowlisted(
+        string bundleId, string serverName, string? url, IReadOnlyList<EgressAllowlistEntry> allowlist)
+    {
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
+        {
+            _logger.LogWarning(
+                "Bundle {BundleId}: MCP server '{ServerName}' declares an unparsable or missing URL " +
+                "'{Url}' — rejected, not registered.",
+                bundleId, serverName, url);
+            return false;
+        }
+
+        if (DefaultEgressPolicy.MatchesAnyEntry(allowlist, uri))
+            return true;
+
+        _logger.LogWarning(
+            "Bundle {BundleId}: MCP server '{ServerName}' declares URL '{Url}', whose host is not on " +
+            "AppConfig:AI:Egress:DefaultAllowlist — rejected, not registered.",
+            bundleId, serverName, url);
         return false;
     }
 

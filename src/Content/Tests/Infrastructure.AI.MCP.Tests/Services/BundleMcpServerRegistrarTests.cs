@@ -14,16 +14,18 @@ namespace Infrastructure.AI.MCP.Tests.Services;
 /// </summary>
 public sealed class BundleMcpServerRegistrarTests
 {
-    private static BundleMcpServerRegistrar CreateSut(BundleOwnedMcpServerRegistry bundleOwned) =>
-        new(
+    private static BundleMcpServerRegistrar CreateSut(BundleOwnedMcpServerRegistry bundleOwned)
+    {
+        return new(
             bundleOwned,
-            new McpConnectionManager(
+            McpConnectionManagerBundleEgressSupport.CreateManager(
                 Mock.Of<ILogger<McpConnectionManager>>(),
                 new Mock<ILoggerFactory>().Object,
                 TestSsrf.HandlerFactory(),
                 new McpServersConfig(),
                 bundleOwned),
             Mock.Of<ILogger<BundleMcpServerRegistrar>>());
+    }
 
     [Fact]
     public async Task DeregisterAsync_RemovesNamedServers_LeavesOthersUntouched()

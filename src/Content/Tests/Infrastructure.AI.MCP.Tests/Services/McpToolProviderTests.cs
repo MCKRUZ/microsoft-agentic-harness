@@ -83,7 +83,7 @@ public sealed class McpToolProviderTests
 
     private static McpConnectionManager CreateConnectionManager()
     {
-        return new McpConnectionManager(
+        return McpConnectionManagerBundleEgressSupport.CreateManager(
             Mock.Of<ILogger<McpConnectionManager>>(),
             new Mock<ILoggerFactory>().Object,
             TestSsrf.HandlerFactory(),

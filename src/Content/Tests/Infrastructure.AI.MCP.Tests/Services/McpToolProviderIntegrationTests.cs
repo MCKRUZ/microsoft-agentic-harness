@@ -17,7 +17,7 @@ public sealed class McpToolProviderIntegrationTests
     private static (McpToolProvider Provider, McpConnectionManager Manager) CreateProvider(
         McpServersConfig? config = null)
     {
-        var manager = new McpConnectionManager(
+        var manager = McpConnectionManagerBundleEgressSupport.CreateManager(
             Mock.Of<ILogger<McpConnectionManager>>(),
             new Mock<ILoggerFactory>().Object,
             TestSsrf.HandlerFactory(),

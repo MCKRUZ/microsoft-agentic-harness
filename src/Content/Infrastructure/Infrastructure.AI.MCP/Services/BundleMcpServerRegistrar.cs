@@ -1,3 +1,4 @@
+using System.Linq;
 using Application.AI.Common.Interfaces.Bundles;
 using Domain.Common.Config.AI.MCP;
 using Microsoft.Extensions.Logging;
@@ -35,24 +36,31 @@ public sealed class BundleMcpServerRegistrar : IBundleMcpServerRegistrar
     /// <inheritdoc />
     public async Task DeregisterAsync(IReadOnlyList<string> serverNames)
     {
-        foreach (var serverName in serverNames)
-        {
-            _bundleOwnedMcpServers.TryRemove(serverName);
+        // Independent per-server teardown (each disconnect is real network/process I/O against a
+        // distinct entry) — fanned out with Task.WhenAll rather than paid cumulatively one server at a
+        // time, mirroring BundleRunExecutor.WithBundleOwnedToolGrantsAsync's discovery fan-out for the
+        // same reason. Each task catches its own failure, so one server's teardown error can never stop
+        // another's from running or from being cleaned up from the registry.
+        await Task.WhenAll(serverNames.Select(DeregisterOneAsync)).ConfigureAwait(false);
+    }
 
-            try
-            {
-                // Idempotent for a name with no active client (McpConnectionManager.DisconnectAsync is a
-                // no-op TryRemove) — safe to call even if this bundle's server was never actually
-                // contacted during its run.
-                await _connectionManager.DisconnectAsync(serverName).ConfigureAwait(false);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex,
-                    "Failed to disconnect MCP client for deregistered bundle server '{Server}'; " +
-                    "the connection will be cleaned up on host shutdown",
-                    serverName);
-            }
+    private async Task DeregisterOneAsync(string serverName)
+    {
+        _bundleOwnedMcpServers.TryRemove(serverName);
+
+        try
+        {
+            // Idempotent for a name with no active client (McpConnectionManager.DisconnectAsync is a
+            // no-op TryRemove) — safe to call even if this bundle's server was never actually
+            // contacted during its run.
+            await _connectionManager.DisconnectAsync(serverName).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex,
+                "Failed to disconnect MCP client for deregistered bundle server '{Server}'; " +
+                "the connection will be cleaned up on host shutdown",
+                serverName);
         }
     }
 }

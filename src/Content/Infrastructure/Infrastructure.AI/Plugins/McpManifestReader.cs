@@ -70,7 +70,10 @@ public static class McpManifestReader
         }
 
         if (!File.Exists(mcpPath))
+        {
+            logger.LogWarning("{Owner}: MCP config not found at {Path}, skipping", ownerDescription, mcpPath);
             return null;
+        }
 
         JsonDocument doc;
         try

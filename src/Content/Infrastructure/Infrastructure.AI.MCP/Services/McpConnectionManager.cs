@@ -1,8 +1,12 @@
 using System.Collections.Concurrent;
 using Application.AI.Common.Exceptions;
+using Application.AI.Common.Interfaces;
+using Application.AI.Common.Interfaces.Egress;
 using Domain.Common.Config.AI.MCP;
 using Infrastructure.AI.Egress;
 using Infrastructure.AI.Identity;
+using Infrastructure.AI.MCP.Egress;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Client;
 
@@ -27,6 +31,12 @@ public sealed class McpConnectionManager : IAsyncDisposable
     private readonly HttpClient _httpClient;
     private readonly McpServersConfig _config;
     private readonly BundleOwnedMcpServerRegistry _bundleOwnedServers;
+    private readonly IServiceScopeFactory _scopeFactory;
+    private readonly IAmbientRequestScope _ambientScope;
+    private readonly IServiceProvider _rootServices;
+    private readonly IEgressAuditWriter _egressAuditWriter;
+    private readonly ILogger<EgressPolicyDelegatingHandler> _egressHandlerLogger;
+    private readonly TimeProvider _timeProvider;
 
     // A single flat cache keyed by bare serverName, shared across BOTH _config and _bundleOwnedServers —
     // safe today because the two namespacing schemes never collide (host names are plain or
@@ -34,6 +44,18 @@ public sealed class McpConnectionManager : IAsyncDisposable
     // these into per-source caches should preserve that invariant, not merely mirror the field shapes.
     private readonly ConcurrentDictionary<string, McpClient> _clients = new();
     private readonly ConcurrentDictionary<string, HttpClient> _entraClients = new();
+
+    /// <summary>
+    /// Per-bundle-server clients whose handler chain is <see cref="BundleMcpEgressAttributionHandler"/> →
+    /// a dedicated <see cref="EgressPolicyDelegatingHandler"/> → the shared <see cref="_antiSsrfHandler"/>
+    /// — see <see cref="ResolveBundleEgressClient"/>. Kept separate from <see cref="_entraClients"/> even
+    /// though both are per-server client caches: an Entra client wraps only a lightweight token handler
+    /// around the SAME shared terminal handler, while a bundle-egress client owns two additional handler
+    /// instances of its own (still never the shared AntiSSRF handler itself — see the disposal remarks on
+    /// <see cref="DisposeAsync"/>).
+    /// </summary>
+    private readonly ConcurrentDictionary<string, HttpClient> _bundleEgressClients = new();
+
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _connectionLocks = new();
     private bool _disposed;
 
@@ -41,20 +63,21 @@ public sealed class McpConnectionManager : IAsyncDisposable
     /// Initializes a new instance of the <see cref="McpConnectionManager"/> class.
     /// </summary>
     /// <remarks>
-    /// The SSRF defense is a hard dependency, not a configuration option: the single
-    /// shared <see cref="HttpClient"/> used for every HTTP/SSE transport is built on the
-    /// <c>AntiSSRFHandler</c> produced by <paramref name="antiSsrfHandlerFactory"/>, which
-    /// performs connect-time IP filtering (RFC 1918, loopback, link-local, IMDS, IPv6 ULA)
-    /// and redirect re-validation. There is no code path that constructs an unguarded
-    /// client, so SSRF protection cannot be silently omitted by misconfiguration.
+    /// The SSRF defense is a hard dependency, not a configuration option: every HTTP/SSE transport this
+    /// manager builds — host-configured or bundle-owned — is built on the <c>AntiSSRFHandler</c> produced
+    /// by <paramref name="antiSsrfHandlerFactory"/>, which performs connect-time IP filtering (RFC 1918,
+    /// loopback, link-local, IMDS, IPv6 ULA) and redirect re-validation. There is no code path that
+    /// constructs an unguarded client, so SSRF protection cannot be silently omitted by misconfiguration.
     /// <para>
-    /// This deliberately applies only the AntiSSRF ring, NOT the outer
-    /// <c>EgressPolicyDelegatingHandler</c> (per-skill hostname allowlist + JSONL audit)
-    /// that the general egress <see cref="HttpClient"/> composes. MCP servers are
-    /// explicitly admin-configured, and connections are established outside an agent turn
-    /// (e.g. startup tool discovery) where that handler's required agent identity is
-    /// absent — it would deny every connection. SSRF filtering, the security-critical
-    /// ring, applies unconditionally.
+    /// A host-configured server's shared client applies only the AntiSSRF ring, not the outer
+    /// <c>EgressPolicyDelegatingHandler</c> (hostname allowlist + JSONL audit) the general egress
+    /// <see cref="HttpClient"/> composes — those servers are explicitly admin-configured, and connections
+    /// are established outside an agent turn (e.g. startup tool discovery) where that handler's required
+    /// agent identity would be absent. A <strong>bundle-owned</strong> server is different: it is
+    /// untrusted, uploader-declared input, so its connections go through a dedicated, per-server chain
+    /// (<see cref="ResolveBundleEgressClient"/>) that applies BOTH rings on every request, attributing
+    /// each one to the owning bundle via <see cref="BundleMcpEgressAttributionHandler"/> rather than
+    /// depending on whatever ambient identity the calling code happens to have.
     /// </para>
     /// </remarks>
     public McpConnectionManager(
@@ -62,12 +85,15 @@ public sealed class McpConnectionManager : IAsyncDisposable
         ILoggerFactory loggerFactory,
         AntiSsrfHandlerFactory antiSsrfHandlerFactory,
         McpServersConfig config,
-        BundleOwnedMcpServerRegistry bundleOwnedServers)
+        BundleOwnedMcpServerRegistry bundleOwnedServers,
+        IServiceScopeFactory scopeFactory,
+        IAmbientRequestScope ambientScope,
+        IServiceProvider rootServices)
     {
         _logger = logger;
         _loggerFactory = loggerFactory;
-        // The shared SSRF-guard terminal handler. Captured so Entra connections can wrap
-        // it with a per-server token-injecting handler while still routing through the
+        // The shared SSRF-guard terminal handler. Captured so Entra connections and bundle-egress
+        // connections can each wrap it with their own outer handler(s) while still routing through the
         // same connect-time IP filter.
         _antiSsrfHandler = antiSsrfHandlerFactory.GetOrCreate();
         // disposeHandler: false — the AntiSSRF handler is a shared singleton owned by
@@ -75,6 +101,22 @@ public sealed class McpConnectionManager : IAsyncDisposable
         _httpClient = new HttpClient(_antiSsrfHandler, disposeHandler: false);
         _config = config;
         _bundleOwnedServers = bundleOwnedServers;
+        _scopeFactory = scopeFactory;
+        _ambientScope = ambientScope;
+        _rootServices = rootServices;
+        // Resolved ONCE here — all three are singleton registrations, so the container returns the SAME
+        // cached instance on every call and this costs nothing beyond construction. This is deliberately
+        // NOT done by resolving EgressPolicyDelegatingHandler itself from rootServices per bundle-owned
+        // server in ResolveBundleEgressClient: that type is registered transient, and a transient
+        // IDisposable resolved directly from the ROOT container (not a scope) is tracked by the container
+        // and never released until process shutdown — the container leaks one handler per distinct
+        // bundle-owned server name for the remainder of the host's lifetime. Resolving these three
+        // singleton dependencies here and constructing EgressPolicyDelegatingHandler by hand keeps this
+        // manager the sole owner of every instance it builds, exactly like the pre-existing Entra client
+        // cache below.
+        _egressAuditWriter = rootServices.GetRequiredService<IEgressAuditWriter>();
+        _egressHandlerLogger = rootServices.GetRequiredService<ILogger<EgressPolicyDelegatingHandler>>();
+        _timeProvider = rootServices.GetService<TimeProvider>() ?? TimeProvider.System;
     }
 
     /// <summary>
@@ -128,14 +170,30 @@ public sealed class McpConnectionManager : IAsyncDisposable
             _logger.LogInformation("Disconnected from MCP server '{ServerName}'", serverName);
         }
 
-        // Release the per-server Entra client (and its pooled sockets) on explicit
-        // disconnect, mirroring the cleanup of _clients above. disposeHandler:false leaves
-        // the shared AntiSSRF handler intact; a later reconnect recreates a fresh
-        // token-injecting client.
-        if (_entraClients.TryRemove(serverName, out var entraClient))
+        // Release the per-server Entra and bundle-egress clients (and their pooled sockets) on explicit
+        // disconnect, mirroring the cleanup of _clients above. Both caches were built with
+        // disposeHandler:false, so this leaves the shared AntiSSRF handler intact; a later reconnect
+        // recreates a fresh token-injecting or attribution+egress-policy handler pair as needed.
+        TryDisposeCachedClient(_entraClients, serverName);
+        TryDisposeCachedClient(_bundleEgressClients, serverName);
+    }
+
+    private static void TryDisposeCachedClient(ConcurrentDictionary<string, HttpClient> cache, string serverName)
+    {
+        if (cache.TryRemove(serverName, out var client))
         {
-            entraClient.Dispose();
+            client.Dispose();
         }
+    }
+
+    private static void DisposeCachedClients(ConcurrentDictionary<string, HttpClient> cache)
+    {
+        foreach (var kvp in cache)
+        {
+            kvp.Value.Dispose();
+        }
+
+        cache.Clear();
     }
 
     /// <summary>
@@ -161,9 +219,14 @@ public sealed class McpConnectionManager : IAsyncDisposable
         // a bundle run's own already-envelope-gated resolution (ToolChainBuilder.ProvisionToolAsync,
         // ResolveInjectedMcpToolsAsync's envelope-armed branch, BundleRunExecutor.DiscoverToolNamesAsync)
         // reaches its own server; without it, a bundle run could never use its own registered tools.
-        if (!_config.Servers.TryGetValue(serverName, out var definition)
-            && !_bundleOwnedServers.TryGetValue(serverName, out definition))
-            throw new McpConnectionException($"MCP server '{serverName}' is not configured.");
+        // Whichever branch resolves the definition also tells us which egress treatment it gets below.
+        var isBundleOwned = false;
+        if (!_config.Servers.TryGetValue(serverName, out var definition))
+        {
+            if (!_bundleOwnedServers.TryGetValue(serverName, out definition))
+                throw new McpConnectionException($"MCP server '{serverName}' is not configured.");
+            isBundleOwned = true;
+        }
 
         if (!definition.Enabled)
             throw new McpConnectionException($"MCP server '{serverName}' is disabled.");
@@ -174,7 +237,7 @@ public sealed class McpConnectionManager : IAsyncDisposable
 
         try
         {
-            var transport = CreateTransport(serverName, definition);
+            var transport = CreateTransport(serverName, definition, isBundleOwned);
 
             var client = await McpClient.CreateAsync(
                 transport,
@@ -195,7 +258,7 @@ public sealed class McpConnectionManager : IAsyncDisposable
         }
     }
 
-    private IClientTransport CreateTransport(string serverName, McpServerDefinition definition)
+    private IClientTransport CreateTransport(string serverName, McpServerDefinition definition, bool isBundleOwned)
     {
         return definition.Type switch
         {
@@ -209,12 +272,12 @@ public sealed class McpConnectionManager : IAsyncDisposable
                     ? definition.Env.ToDictionary(kvp => kvp.Key, kvp => (string?)kvp.Value)
                     : null
             }),
-            McpServerType.Http or McpServerType.Sse => CreateHttpTransport(serverName, definition),
+            McpServerType.Http or McpServerType.Sse => CreateHttpTransport(serverName, definition, isBundleOwned),
             _ => throw new McpConnectionException($"Unsupported MCP transport type: {definition.Type}")
         };
     }
 
-    private HttpClientTransport CreateHttpTransport(string serverName, McpServerDefinition definition)
+    private HttpClientTransport CreateHttpTransport(string serverName, McpServerDefinition definition, bool isBundleOwned)
     {
         var uri = new Uri(definition.Url ?? throw new McpConnectionException(
             $"MCP server '{serverName}' is configured as {definition.Type} but has no URL."));
@@ -233,21 +296,53 @@ public sealed class McpConnectionManager : IAsyncDisposable
         // token in front of the same SSRF guard. All paths still route through the
         // connect-time IP filter, so a URL resolving to an internal/metadata address is
         // refused at the socket. The transport does not own the supplied client.
-        var httpClient = ResolveTransportHttpClient(serverName, definition.Auth, options);
+        var httpClient = ResolveTransportHttpClient(serverName, definition.Auth, options, isBundleOwned);
 
         return new HttpClientTransport(options, httpClient, _loggerFactory);
     }
 
     /// <summary>
-    /// Resolves the <see cref="HttpClient"/> for a server's transport and applies any
-    /// static auth headers to <paramref name="options"/>. Throws when auth is configured
-    /// but incomplete — a half-configured server must fail loudly rather than connect
-    /// with no credential.
+    /// Thin dispatcher to the host-configured or bundle-owned resolution path — the two share no logic
+    /// (different credential model, different handler chain), so each gets its own method rather than
+    /// one method with two unrelated bodies stitched together by an <c>if</c>.
     /// </summary>
     private HttpClient ResolveTransportHttpClient(
         string serverName,
         McpServerAuthConfig? auth,
-        HttpClientTransportOptions options)
+        HttpClientTransportOptions options,
+        bool isBundleOwned)
+    {
+        return isBundleOwned
+            ? ResolveBundleOwnedTransportHttpClient(serverName, auth)
+            : ResolveHostConfiguredTransportHttpClient(serverName, auth, options);
+    }
+
+    /// <summary>
+    /// Resolves the client for a bundle-owned server. Bundle manifests can never populate <c>Auth</c>
+    /// (see the guard below), so there are no static headers to apply — the credential-free,
+    /// egress-attributed handler chain lives entirely in <see cref="ResolveBundleEgressClient"/>.
+    /// </summary>
+    private HttpClient ResolveBundleOwnedTransportHttpClient(string serverName, McpServerAuthConfig? auth)
+    {
+        // A bundle's own MCP server definition never carries Auth — McpServerDefinitionBuilder does
+        // not populate it for bundle-declared servers, so a bundle cannot induce the host to attach
+        // a credential to its own endpoint. Fail loudly rather than silently skip the egress-attributed
+        // path below if that invariant is ever violated by a future change.
+        if (auth is { IsConfigured: true })
+            throw new McpConnectionException(
+                $"Bundle-owned MCP server '{serverName}' has auth configured, which bundle-declared " +
+                "servers do not support.");
+
+        return ResolveBundleEgressClient(serverName);
+    }
+
+    /// <summary>
+    /// Resolves the client for a host-configured (admin-declared) server and applies any static auth
+    /// headers to <paramref name="options"/>. Throws when auth is configured but incomplete — a
+    /// half-configured server must fail loudly rather than connect with no credential.
+    /// </summary>
+    private HttpClient ResolveHostConfiguredTransportHttpClient(
+        string serverName, McpServerAuthConfig? auth, HttpClientTransportOptions options)
     {
         if (auth is not { IsConfigured: true })
             return _httpClient;
@@ -282,6 +377,44 @@ public sealed class McpConnectionManager : IAsyncDisposable
                 throw new McpConnectionException(
                     $"MCP server '{serverName}' uses unsupported auth type '{auth.Type}'.");
         }
+    }
+
+    /// <summary>
+    /// Builds (or returns the cached) egress-attributed client for one bundle-owned server. The handler
+    /// chain is <see cref="BundleMcpEgressAttributionHandler"/> (outer — stamps every request with a
+    /// synthetic identity scoped to this exact server) → a dedicated <see cref="EgressPolicyDelegatingHandler"/>
+    /// built from the SAME singleton dependencies (<see cref="_egressAuditWriter"/>, <see cref="_egressHandlerLogger"/>,
+    /// <see cref="_timeProvider"/>) production's own "egress" named <see cref="HttpClient"/> registration
+    /// (<c>Infrastructure.AI/DependencyInjection.Egress.cs</c>) resolves its handler from — wrapping
+    /// <see cref="_antiSsrfHandler"/> (inner/terminal, the SAME shared singleton every other path uses —
+    /// SSRF protection is never weakened or duplicated).
+    /// <c>disposeHandler</c> is deliberately <see langword="false"/>, mirroring the Entra client cache:
+    /// <see cref="DelegatingHandler"/>'s own disposal cascades into its
+    /// <see cref="DelegatingHandler.InnerHandler"/>, so <see langword="true"/> here would eventually
+    /// dispose the SHARED AntiSSRF handler out from under every other connection this manager owns.
+    /// <c>EgressPolicyDelegatingHandler</c> is built with <see langword="new"/> rather than resolved from
+    /// <see cref="_rootServices"/>, deliberately: that type is registered transient, and a transient
+    /// <see cref="IDisposable"/> resolved directly from the ROOT container is tracked and never released
+    /// by the container until process shutdown — one handler would leak per distinct bundle-owned server
+    /// name for the life of the host. Manually constructing it keeps this manager the sole owner of every
+    /// instance it builds, so the two handler instances this method allocates hold no unmanaged resources
+    /// and are safe to leave to the GC once the cache entry is dropped, exactly as before.
+    /// </summary>
+    private HttpClient ResolveBundleEgressClient(string serverName)
+    {
+        return _bundleEgressClients.GetOrAdd(serverName, name =>
+        {
+            var egressHandler = new EgressPolicyDelegatingHandler(
+                _rootServices, _ambientScope, _egressAuditWriter, _egressHandlerLogger, _timeProvider)
+            {
+                InnerHandler = _antiSsrfHandler
+            };
+            var attributionHandler = new BundleMcpEgressAttributionHandler(name, _scopeFactory, _ambientScope)
+            {
+                InnerHandler = egressHandler
+            };
+            return new HttpClient(attributionHandler, disposeHandler: false);
+        });
     }
 
     private static readonly HashSet<string> BlockedHosts = new(StringComparer.OrdinalIgnoreCase)
@@ -319,16 +452,12 @@ public sealed class McpConnectionManager : IAsyncDisposable
 
         _clients.Clear();
 
-        // Per-server Entra clients were built with disposeHandler:false, so disposing them
-        // releases the client wrapper without touching the shared AntiSSRF handler their
-        // token handlers wrap. The token handlers hold only a managed TokenCredential and
-        // are reclaimed by the GC.
-        foreach (var kvp in _entraClients)
-        {
-            kvp.Value.Dispose();
-        }
-
-        _entraClients.Clear();
+        // Both per-server client caches were built with disposeHandler:false, so disposing each client
+        // releases the wrapper only, without touching the shared AntiSSRF handler its own handler(s)
+        // wrap — the credential/attribution handlers each one owns hold no unmanaged resources and are
+        // reclaimed by the GC.
+        DisposeCachedClients(_entraClients);
+        DisposeCachedClients(_bundleEgressClients);
 
         foreach (var kvp in _connectionLocks)
         {

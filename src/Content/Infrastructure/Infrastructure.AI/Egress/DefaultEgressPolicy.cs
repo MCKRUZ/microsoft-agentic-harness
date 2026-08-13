@@ -98,24 +98,10 @@ public sealed class DefaultEgressPolicy : IEgressPolicy
             };
         }
 
-        foreach (var entry in _entries)
+        var match = FindMatch(_entries, target);
+        if (match is not null)
         {
-            if (!HostMatches(entry, target.Host))
-            {
-                continue;
-            }
-
-            if (!SchemeMatches(entry, target.Scheme))
-            {
-                continue;
-            }
-
-            if (!PortMatches(entry, target.Port))
-            {
-                continue;
-            }
-
-            var matched = entry.Host ?? entry.HostPattern ?? "(unknown)";
+            var matched = match.Host ?? match.HostPattern ?? "(unknown)";
             var resolvedIp = await TryResolveAsync(target.Host, cancellationToken).ConfigureAwait(false);
 
             return new EgressDecision
@@ -141,6 +127,36 @@ public sealed class DefaultEgressPolicy : IEgressPolicy
     private static bool IsHttpScheme(string scheme) =>
         string.Equals(scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase)
         || string.Equals(scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Pure, synchronous "does any entry match this target" check — no DNS resolution, no audit, no
+    /// identity. Used by <see cref="AllowAsync"/> for the live decision, and reused directly by
+    /// <c>BundleStagingService</c> as an early, registration-time pre-check against the same allowlist a
+    /// bundle-declared server's live connections will be evaluated against, through the SAME
+    /// <see cref="FindMatch"/> loop <see cref="AllowAsync"/> itself calls — so the two checks are provably
+    /// the same host/scheme/port decision, not two independently-maintained copies of it.
+    /// </summary>
+    internal static bool MatchesAnyEntry(IReadOnlyList<EgressAllowlistEntry> entries, Uri target)
+    {
+        ArgumentNullException.ThrowIfNull(entries);
+        ArgumentNullException.ThrowIfNull(target);
+
+        if (!target.IsAbsoluteUri || !IsHttpScheme(target.Scheme))
+            return false;
+
+        return FindMatch(entries, target) is not null;
+    }
+
+    private static EgressAllowlistEntry? FindMatch(IReadOnlyList<EgressAllowlistEntry> entries, Uri target)
+    {
+        foreach (var entry in entries)
+        {
+            if (HostMatches(entry, target.Host) && SchemeMatches(entry, target.Scheme) && PortMatches(entry, target.Port))
+                return entry;
+        }
+
+        return null;
+    }
 
     private static bool HostMatches(EgressAllowlistEntry entry, string requestHost)
     {

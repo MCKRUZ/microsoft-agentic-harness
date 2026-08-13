@@ -19,7 +19,7 @@ public sealed class McpConnectionManagerTransportTests
     private static McpConnectionManager CreateManager(
         McpServersConfig? config = null, BundleOwnedMcpServerRegistry? bundleOwned = null)
     {
-        return new McpConnectionManager(
+        return McpConnectionManagerBundleEgressSupport.CreateManager(
             Mock.Of<ILogger<McpConnectionManager>>(),
             new Mock<ILoggerFactory>().Object,
             TestSsrf.HandlerFactory(),

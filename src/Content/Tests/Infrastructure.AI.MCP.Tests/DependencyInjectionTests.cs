@@ -41,6 +41,12 @@ public sealed class DependencyInjectionTests : IAsyncLifetime
         // wired it would publish MCP tools with nothing on file about what they do, which the
         // behaviour posture reads as "unknown" for every one of them.
         services.AddSingleton(Mock.Of<IToolBehaviorRegistry>());
+        // McpConnectionManager's bundle-egress-attribution chain (#370 security fix) has a hard
+        // constructor-time dependency on IAmbientRequestScope and IEgressAuditWriter — normally
+        // registered by the egress layer. Same reasoning as the SSRF guard above: an unwired egress layer
+        // must fail resolution, not silently produce an unattributed bundle connection.
+        services.AddSingleton(Mock.Of<IAmbientRequestScope>());
+        services.AddSingleton(Mock.Of<Application.AI.Common.Interfaces.Egress.IEgressAuditWriter>());
 
         services.AddMcpClientDependencies();
 
@@ -94,6 +100,8 @@ public sealed class DependencyInjectionTests : IAsyncLifetime
         services.Configure<Domain.Common.Config.MetaHarness.MetaHarnessConfig>(_ => { });
         services.AddSingleton(TestSsrf.HandlerFactory());
         services.AddSingleton(Mock.Of<IMcpSecurityScanner>());
+        services.AddSingleton(Mock.Of<IAmbientRequestScope>());
+        services.AddSingleton(Mock.Of<Application.AI.Common.Interfaces.Egress.IEgressAuditWriter>());
         // Deliberately no IToolBehaviorRegistry.
 
         services.AddMcpClientDependencies();
@@ -115,6 +123,8 @@ public sealed class DependencyInjectionTests : IAsyncLifetime
         services.Configure<AIConfig>(_ => { });
         services.Configure<Domain.Common.Config.MetaHarness.MetaHarnessConfig>(_ => { });
         services.AddSingleton(TestSsrf.HandlerFactory());
+        services.AddSingleton(Mock.Of<IAmbientRequestScope>());
+        services.AddSingleton(Mock.Of<Application.AI.Common.Interfaces.Egress.IEgressAuditWriter>());
         // Deliberately no IMcpSecurityScanner — this is the ungoverned-host composition.
 
         services.AddMcpClientDependencies();

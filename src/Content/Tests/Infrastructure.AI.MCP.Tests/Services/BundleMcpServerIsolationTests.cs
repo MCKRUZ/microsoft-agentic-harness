@@ -22,13 +22,15 @@ namespace Infrastructure.AI.MCP.Tests.Services;
 /// </summary>
 public sealed class BundleMcpServerIsolationTests
 {
-    private static McpConnectionManager CreateManager(McpServersConfig hostConfig, BundleOwnedMcpServerRegistry bundleOwned) =>
-        new(
+    private static McpConnectionManager CreateManager(McpServersConfig hostConfig, BundleOwnedMcpServerRegistry bundleOwned)
+    {
+        return McpConnectionManagerBundleEgressSupport.CreateManager(
             Mock.Of<ILogger<McpConnectionManager>>(),
             new Mock<ILoggerFactory>().Object,
             TestSsrf.HandlerFactory(),
             hostConfig,
             bundleOwned);
+    }
 
     [Fact]
     public void BundleOwnedMcpServerRegistry_ExposesNoEnumerationSurface()

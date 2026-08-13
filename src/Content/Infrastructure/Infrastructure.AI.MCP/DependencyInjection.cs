@@ -52,8 +52,16 @@ public static class DependencyInjection
             var loggerFactory = sp.GetRequiredService<Microsoft.Extensions.Logging.ILoggerFactory>();
             var antiSsrfHandlerFactory = sp.GetRequiredService<AntiSsrfHandlerFactory>();
             var bundleOwnedServers = sp.GetRequiredService<BundleOwnedMcpServerRegistry>();
+            // The bundle-owned egress-attribution chain (see McpConnectionManager.ResolveBundleEgressClient)
+            // resolves the SAME registered EgressPolicyDelegatingHandler the "egress" named HttpClient uses
+            // (Infrastructure.AI/DependencyInjection.Egress.cs) from the root provider it is handed below —
+            // making an unwired egress layer a startup failure, on the same reasoning as AntiSsrfHandlerFactory
+            // above, rather than a silently unattributed bundle connection.
+            var scopeFactory = sp.GetRequiredService<IServiceScopeFactory>();
+            var ambientScope = sp.GetRequiredService<IAmbientRequestScope>();
             return new McpConnectionManager(
-                logger, loggerFactory, antiSsrfHandlerFactory, aiConfig.CurrentValue.McpServers, bundleOwnedServers);
+                logger, loggerFactory, antiSsrfHandlerFactory, aiConfig.CurrentValue.McpServers, bundleOwnedServers,
+                scopeFactory, ambientScope, sp);
         });
 
         // Tool provider — singleton wrapping connection manager. Only the scanning decorator is

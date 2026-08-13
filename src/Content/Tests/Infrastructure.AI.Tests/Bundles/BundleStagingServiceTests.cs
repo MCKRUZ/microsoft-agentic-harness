@@ -89,7 +89,11 @@ public sealed class BundleStagingServiceTests : IDisposable
             ("mcp.json", "{ \"mcpServers\": { \"echo\": { \"command\": \"npx\", \"args\": [\"echo-mcp\"] } } }"));
 
         var bundleOwnedMcpServers = new BundleOwnedMcpServerRegistry();
-        var result = await CreateService(bundleOwnedMcpServers: bundleOwnedMcpServers).StageAsync(zip);
+        // AllowBundleDeclaredMcpServers must be ON here — otherwise the flag-off guard short-circuits
+        // RegisterBundleMcpServers before mcp.json is even parsed, and this test would pass for that
+        // reason instead of exercising the stdio-transport rejection it names and documents.
+        var appConfig = AllowlistedAppConfig();
+        var result = await CreateService(appConfig, bundleOwnedMcpServers).StageAsync(zip);
 
         result.IsSuccess.Should().BeTrue(string.Join("; ", result.Errors));
         var bundle = result.Value!;
@@ -108,7 +112,8 @@ public sealed class BundleStagingServiceTests : IDisposable
             ("mcp.json", "{ \"mcpServers\": { \"remote\": { \"type\": \"http\", \"url\": \"https://tools.example.com/mcp\" } } }"));
 
         var bundleOwnedMcpServers = new BundleOwnedMcpServerRegistry();
-        var result = await CreateService(bundleOwnedMcpServers: bundleOwnedMcpServers).StageAsync(zip);
+        var appConfig = AllowlistedAppConfig("tools.example.com");
+        var result = await CreateService(appConfig, bundleOwnedMcpServers).StageAsync(zip);
 
         result.IsSuccess.Should().BeTrue(string.Join("; ", result.Errors));
         var namespacedName = $"{result.Value!.BundleId}:remote";
@@ -116,6 +121,31 @@ public sealed class BundleStagingServiceTests : IDisposable
         bundleOwnedMcpServers.TryGetValue(namespacedName, out var definition).Should().BeTrue();
         definition!.Type.Should().Be(McpServerType.Http);
         definition.Url.Should().Be("https://tools.example.com/mcp");
+    }
+
+    [Fact]
+    public async Task StageAsync_BundleHttpMcpServerWithUnparsableUrl_IsRejectedNotSilentlyAllowlistedThrough()
+    {
+        // Regression test: an http/sse server whose declared "url" is not a valid absolute URI must be
+        // REJECTED by the registration-time allowlist gate, not fall through it unchecked. Uri.TryCreate
+        // failing used to skip the whole allowlist-check block (including the rejection), silently
+        // registering an unvalidated destination.
+        using var zip = ZipOf(
+            ("AGENT.md", "---\nid: bad-url-bundle\nname: Bad URL Bundle\n---\nx"),
+            ("plugin.json", "{ \"name\": \"root\", \"version\": \"1.0.0\", \"mcpServers\": \"./mcp.json\" }"),
+            ("mcp.json", "{ \"mcpServers\": { \"remote\": { \"type\": \"http\", \"url\": \"not-a-valid-absolute-uri\" } } }"));
+
+        var bundleOwnedMcpServers = new BundleOwnedMcpServerRegistry();
+        // Allowlist is irrelevant to this test's assertion — even a wide-open allowlist must not rescue
+        // a URL that never resolved to a checkable host in the first place.
+        var appConfig = AllowlistedAppConfig("not-a-valid-absolute-uri");
+        var result = await CreateService(appConfig, bundleOwnedMcpServers).StageAsync(zip);
+
+        result.IsSuccess.Should().BeTrue(string.Join("; ", result.Errors));
+        result.Value!.McpServerNames.Should().BeEmpty(
+            "an unparsable URL must be rejected at registration time, not silently registered");
+        var namespacedName = $"{result.Value.BundleId}:remote";
+        bundleOwnedMcpServers.TryGetValue(namespacedName, out _).Should().BeFalse();
     }
 
     [Fact]
@@ -167,7 +197,8 @@ public sealed class BundleStagingServiceTests : IDisposable
             ("plugins/two/mcp.json", "{ \"mcpServers\": { \"shared\": { \"type\": \"http\", \"url\": \"https://two.example.com/mcp\" } } }"));
 
         var bundleOwnedMcpServers = new BundleOwnedMcpServerRegistry();
-        var result = await CreateService(bundleOwnedMcpServers: bundleOwnedMcpServers).StageAsync(zip);
+        var appConfig = AllowlistedAppConfig("one.example.com", "two.example.com");
+        var result = await CreateService(appConfig, bundleOwnedMcpServers).StageAsync(zip);
 
         result.IsSuccess.Should().BeTrue(string.Join("; ", result.Errors));
         result.Value!.McpServerNames.Should().ContainSingle(
@@ -307,6 +338,35 @@ public sealed class BundleStagingServiceTests : IDisposable
         cfg.TempRoot = _stagingRoot;
         return CreateService(new AppConfig { AI = new AIConfig { BundleExecution = cfg } }, bundleOwnedMcpServers);
     }
+
+    /// <summary>
+    /// An <see cref="AppConfig"/> that opts into bundle-declared remote MCP servers
+    /// (<see cref="BundleExecutionConfig.AllowBundleDeclaredMcpServers"/>) and allowlists the given hosts on
+    /// <c>AI.Egress.DefaultAllowlist</c> — the registration-time destination check added for the PR #370
+    /// security fix rejects any bundle-declared server whose host isn't present here.
+    /// </summary>
+    private AppConfig AllowlistedAppConfig(params string[] hosts) => new()
+    {
+        AI = new AIConfig
+        {
+            BundleExecution = new BundleExecutionConfig
+            {
+                TempRoot = _stagingRoot,
+                AllowBundleDeclaredMcpServers = true,
+            },
+            Egress = new EgressConfig
+            {
+                DefaultAllowlist = hosts
+                    .Select(host => new EgressAllowlistConfigEntry
+                    {
+                        Host = host,
+                        Schemes = ["https"],
+                        Ports = [443],
+                    })
+                    .ToList(),
+            },
+        },
+    };
 
     private static BundleStagingService CreateService(
         AppConfig appConfig, BundleOwnedMcpServerRegistry? bundleOwnedMcpServers = null) =>
