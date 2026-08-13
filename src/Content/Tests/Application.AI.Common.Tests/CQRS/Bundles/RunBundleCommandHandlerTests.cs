@@ -45,11 +45,12 @@ public sealed class RunBundleCommandHandlerTests
             NullLogger<RunBundleCommandHandler>.Instance);
     }
 
-    private static StagedBundle Staged() => new()
+    private static StagedBundle Staged(IReadOnlyList<string>? mcpServerNames = null) => new()
     {
         BundleId = "b1",
         StagedRootDirectory = "/tmp/b1",
-        Agent = new AgentDefinition { Id = "the-agent", Name = "The Agent" }
+        Agent = new AgentDefinition { Id = "the-agent", Name = "The Agent" },
+        McpServerNames = mcpServerNames ?? []
     };
 
     private static RunBundleCommand Command() => new()
@@ -223,6 +224,44 @@ public sealed class RunBundleCommandHandlerTests
         created!.Streaming.Should().BeTrue();
         created.Status.Should().Be(BundleRunStatus.Queued);
         _queue.Verify(q => q.EnqueueAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    // -- Bundle-owned MCP servers (issue #368) --
+
+    [Fact]
+    public async Task Handle_StagedBundleWithMcpServerNames_UnionsIntoEnvelopeAllowedMcpServers()
+    {
+        _handleStore.Setup(h => h.GetOwner("handle-1")).Returns("owner-1");
+        _handleStore.Setup(h => h.TryGet("handle-1")).Returns(Staged(mcpServerNames: ["b1:echo"]));
+        BundleRunRecord? created = null;
+        _jobStore.Setup(j => j.Create(It.IsAny<BundleRunRecord>())).Callback<BundleRunRecord>(r => created = r);
+
+        var callerEnvelope = new CapabilityEnvelope { AllowedMcpServers = ["host-server"] };
+        var result = await BuildSut(enabled: true)
+            .Handle(Command() with { Envelope = callerEnvelope }, CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue();
+        created!.Envelope.AllowedMcpServers.Should().BeEquivalentTo(["host-server", "b1:echo"],
+            "the bundle's own server must be additively granted, never replacing the caller's own grant");
+        created.Envelope.BundleOwnedMcpServers.Should().BeEquivalentTo(["b1:echo"],
+            "the authoritative bundle-ownership record must be stamped at the same point the grant is made, " +
+            "not left for a downstream caller to re-derive from the server name's shape");
+    }
+
+    [Fact]
+    public async Task Handle_StagedBundleWithNoMcpServerNames_LeavesEnvelopeUnchanged()
+    {
+        _handleStore.Setup(h => h.GetOwner("handle-1")).Returns("owner-1");
+        _handleStore.Setup(h => h.TryGet("handle-1")).Returns(Staged());
+        BundleRunRecord? created = null;
+        _jobStore.Setup(j => j.Create(It.IsAny<BundleRunRecord>())).Callback<BundleRunRecord>(r => created = r);
+
+        var callerEnvelope = new CapabilityEnvelope { AllowedMcpServers = ["host-server"] };
+        var result = await BuildSut(enabled: true)
+            .Handle(Command() with { Envelope = callerEnvelope }, CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue();
+        created!.Envelope.Should().BeSameAs(callerEnvelope, "a bundle with no MCP servers must not allocate a new envelope");
     }
 
     [Fact]

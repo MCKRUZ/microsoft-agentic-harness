@@ -67,7 +67,7 @@ public class McpToolsExample
         }
     }
 
-    private static void DisplayServerTable(Dictionary<string, Domain.Common.Config.AI.MCP.McpServerDefinition> servers)
+    private static void DisplayServerTable(IReadOnlyDictionary<string, Domain.Common.Config.AI.MCP.McpServerDefinition> servers)
     {
         var table = new Table().Border(TableBorder.Rounded);
         table.AddColumn("[bold]Name[/]");
@@ -133,7 +133,7 @@ public class McpToolsExample
     }
 
     private async Task TestServerConnectionAsync(
-        Dictionary<string, Domain.Common.Config.AI.MCP.McpServerDefinition> servers,
+        IReadOnlyDictionary<string, Domain.Common.Config.AI.MCP.McpServerDefinition> servers,
         CancellationToken cancellationToken)
     {
         var serverName = AnsiConsole.Prompt(

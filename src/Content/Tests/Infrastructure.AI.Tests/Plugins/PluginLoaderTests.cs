@@ -89,6 +89,36 @@ public sealed class PluginLoaderTests : IDisposable
     }
 
     [Fact]
+    public void Load_WithHttpMcpJson_MergesNamespacedHttpServerWithUrl()
+    {
+        // Root cause #1 of issue #368: PluginLoader hardcoded Stdio before McpServerDefinitionBuilder was
+        // extracted, so an Http-type entry was silently mis-built. Proves the shared builder fixed it here too.
+        var mcpConfig = new
+        {
+            mcpServers = new Dictionary<string, object>
+            {
+                ["remote"] = new { type = "http", url = "https://tools.example.com/mcp" }
+            }
+        };
+        File.WriteAllText(
+            Path.Combine(_tempDir, ".mcp.json"),
+            JsonSerializer.Serialize(mcpConfig));
+
+        var manifest = new PluginManifest
+        {
+            Name = "remote-plugin",
+            Version = "1.0.0",
+            McpServers = "./.mcp.json"
+        };
+
+        var result = _sut.Load(_tempDir, MakeDeclaration("remote-plugin"), manifest);
+
+        result.Should().NotBeNull();
+        _mcpServersConfig.Servers["remote-plugin:remote"].Type.Should().Be(McpServerType.Http);
+        _mcpServersConfig.Servers["remote-plugin:remote"].Url.Should().Be("https://tools.example.com/mcp");
+    }
+
+    [Fact]
     public void Load_EnvOverrides_MergedIntoMcpServers()
     {
         var mcpConfig = new
@@ -153,6 +183,48 @@ public sealed class PluginLoaderTests : IDisposable
 
         result.Should().NotBeNull();
         result!.SkillPaths.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Load_OneMalformedMcpServerEntry_SkipsItButLoadsTheRest()
+    {
+        // Regression test: a per-entry build failure used to propagate out of LoadMcpServers
+        // uncaught, through Load's outer catch, marking the WHOLE plugin Failed with empty
+        // skill/server lists -- discarding a skill path already collected in the same call and
+        // orphaning any server registered by an earlier, good entry in the same mcpServers block.
+        var skillsDir = Path.Combine(_tempDir, "skills");
+        Directory.CreateDirectory(skillsDir);
+
+        var mcpConfig = new
+        {
+            mcpServers = new Dictionary<string, object>
+            {
+                ["good"] = new { command = "npx", args = new[] { "good-mcp" } },
+                ["bad"] = new { type = "http" } // no url -> McpServerDefinitionBuilder.Build throws
+            }
+        };
+        File.WriteAllText(
+            Path.Combine(_tempDir, ".mcp.json"),
+            JsonSerializer.Serialize(mcpConfig));
+
+        var manifest = new PluginManifest
+        {
+            Name = "mixed-plugin",
+            Version = "1.0.0",
+            Skills = "./skills/",
+            McpServers = "./.mcp.json"
+        };
+
+        var result = _sut.Load(_tempDir, MakeDeclaration("mixed-plugin"), manifest);
+
+        result.Should().NotBeNull();
+        result!.Status.Should().Be(PluginLoadStatus.Loaded,
+            "one malformed MCP server entry must not fail the whole plugin");
+        result.SkillPaths.Should().ContainSingle(skillsDir,
+            "skills already collected before the malformed entry must not be discarded");
+        result.McpServerNames.Should().ContainSingle("mixed-plugin:good");
+        _mcpServersConfig.Servers.Should().ContainKey("mixed-plugin:good");
+        _mcpServersConfig.Servers.Should().NotContainKey("mixed-plugin:bad");
     }
 
     [Fact]

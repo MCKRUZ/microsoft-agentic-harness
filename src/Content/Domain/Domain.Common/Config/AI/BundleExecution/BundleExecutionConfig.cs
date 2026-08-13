@@ -138,4 +138,17 @@ public class BundleExecutionConfig
     /// anonymous serving is explicitly opted into. Only consulted by the bundle API host.
     /// </summary>
     public BundleApiAuthConfig Auth { get; set; } = new();
+
+    /// <summary>
+    /// Whether a bundle's own manifest may declare a remote (http/sse) MCP server that the host will connect
+    /// to on the bundle's behalf. Off by default: a bundle is untrusted, externally-authored input, and
+    /// honouring its own declared network endpoints means the host makes outbound requests a caller's
+    /// <c>CapabilityEnvelope</c> never authorized. When disabled, a bundle's declared <c>mcp.json</c> is
+    /// ignored entirely at staging time — the bundle registers no MCP servers, staging does not fail. Even
+    /// when enabled, a declared server's URL must still match <c>AppConfig.AI.Egress.DefaultAllowlist</c>
+    /// (checked at registration) and every connection is attributed and audited like any other outbound
+    /// request (checked live, on every call) — this flag only controls whether the capability exists at all.
+    /// </summary>
+    /// <value>Default: false</value>
+    public bool AllowBundleDeclaredMcpServers { get; set; }
 }

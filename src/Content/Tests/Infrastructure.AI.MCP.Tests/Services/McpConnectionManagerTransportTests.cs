@@ -16,13 +16,15 @@ namespace Infrastructure.AI.MCP.Tests.Services;
 /// </summary>
 public sealed class McpConnectionManagerTransportTests
 {
-    private static McpConnectionManager CreateManager(McpServersConfig? config = null)
+    private static McpConnectionManager CreateManager(
+        McpServersConfig? config = null, BundleOwnedMcpServerRegistry? bundleOwned = null)
     {
-        return new McpConnectionManager(
+        return McpConnectionManagerBundleEgressSupport.CreateManager(
             Mock.Of<ILogger<McpConnectionManager>>(),
             new Mock<ILoggerFactory>().Object,
             TestSsrf.HandlerFactory(),
-            config ?? new McpServersConfig());
+            config ?? new McpServersConfig(),
+            bundleOwned ?? new BundleOwnedMcpServerRegistry());
     }
 
     // -- SSE transport --
@@ -32,7 +34,7 @@ public sealed class McpConnectionManagerTransportTests
     {
         var config = new McpServersConfig
         {
-            Servers = new Dictionary<string, McpServerDefinition>
+            Servers = new ConcurrentDictionary<string, McpServerDefinition>
             {
                 ["sse-test"] = new()
                 {
@@ -59,7 +61,7 @@ public sealed class McpConnectionManagerTransportTests
         // This tests that CreateHttpTransport doesn't throw during construction.
         var config = new McpServersConfig
         {
-            Servers = new Dictionary<string, McpServerDefinition>
+            Servers = new ConcurrentDictionary<string, McpServerDefinition>
             {
                 ["api-key-server"] = new()
                 {
@@ -89,7 +91,7 @@ public sealed class McpConnectionManagerTransportTests
     {
         var config = new McpServersConfig
         {
-            Servers = new Dictionary<string, McpServerDefinition>
+            Servers = new ConcurrentDictionary<string, McpServerDefinition>
             {
                 ["bearer-server"] = new()
                 {
@@ -119,7 +121,7 @@ public sealed class McpConnectionManagerTransportTests
         // credential. It must now fail loudly at transport build before any send.
         var config = new McpServersConfig
         {
-            Servers = new Dictionary<string, McpServerDefinition>
+            Servers = new ConcurrentDictionary<string, McpServerDefinition>
             {
                 ["entra-no-scope"] = new()
                 {
@@ -149,7 +151,7 @@ public sealed class McpConnectionManagerTransportTests
         // connecting with no Authorization header.
         var config = new McpServersConfig
         {
-            Servers = new Dictionary<string, McpServerDefinition>
+            Servers = new ConcurrentDictionary<string, McpServerDefinition>
             {
                 ["bearer-empty"] = new()
                 {
@@ -183,7 +185,7 @@ public sealed class McpConnectionManagerTransportTests
         // lifecycle of the cached client, not a successful connect.
         var config = new McpServersConfig
         {
-            Servers = new Dictionary<string, McpServerDefinition>
+            Servers = new ConcurrentDictionary<string, McpServerDefinition>
             {
                 ["entra-server"] = new()
                 {
@@ -231,7 +233,7 @@ public sealed class McpConnectionManagerTransportTests
     {
         var config = new McpServersConfig
         {
-            Servers = new Dictionary<string, McpServerDefinition>
+            Servers = new ConcurrentDictionary<string, McpServerDefinition>
             {
                 ["concurrent-test"] = new()
                 {
@@ -260,7 +262,7 @@ public sealed class McpConnectionManagerTransportTests
     {
         var config = new McpServersConfig
         {
-            Servers = new Dictionary<string, McpServerDefinition>
+            Servers = new ConcurrentDictionary<string, McpServerDefinition>
             {
                 ["bad-type"] = new()
                 {
@@ -285,7 +287,7 @@ public sealed class McpConnectionManagerTransportTests
     {
         var config = new McpServersConfig
         {
-            Servers = new Dictionary<string, McpServerDefinition>
+            Servers = new ConcurrentDictionary<string, McpServerDefinition>
             {
                 ["env-test"] = new()
                 {

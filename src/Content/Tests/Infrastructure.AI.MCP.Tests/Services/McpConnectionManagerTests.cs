@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Domain.Common.Config.AI.MCP;
 using FluentAssertions;
 using Infrastructure.AI.MCP.Services;
@@ -9,13 +10,15 @@ namespace Infrastructure.AI.MCP.Tests.Services;
 
 public sealed class McpConnectionManagerTests
 {
-    private static McpConnectionManager CreateManager(McpServersConfig? config = null)
+    private static McpConnectionManager CreateManager(
+        McpServersConfig? config = null, BundleOwnedMcpServerRegistry? bundleOwned = null)
     {
-        return new McpConnectionManager(
+        return McpConnectionManagerBundleEgressSupport.CreateManager(
             Mock.Of<ILogger<McpConnectionManager>>(),
             new Mock<ILoggerFactory>().Object,
             TestSsrf.HandlerFactory(),
-            config ?? new McpServersConfig());
+            config ?? new McpServersConfig(),
+            bundleOwned ?? new BundleOwnedMcpServerRegistry());
     }
 
     [Fact]
@@ -33,7 +36,7 @@ public sealed class McpConnectionManagerTests
     {
         var config = new McpServersConfig
         {
-            Servers = new Dictionary<string, McpServerDefinition>
+            Servers = new ConcurrentDictionary<string, McpServerDefinition>
             {
                 ["filesystem"] = new() { Enabled = true },
                 ["disabled-server"] = new() { Enabled = false },
@@ -92,7 +95,7 @@ public sealed class McpConnectionManagerTests
     {
         var config = new McpServersConfig
         {
-            Servers = new Dictionary<string, McpServerDefinition>
+            Servers = new ConcurrentDictionary<string, McpServerDefinition>
             {
                 ["disabled"] = new() { Enabled = false }
             }

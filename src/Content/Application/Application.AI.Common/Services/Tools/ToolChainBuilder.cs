@@ -91,10 +91,19 @@ public partial class ToolChainBuilder : IToolChainBuilder
         SkillAgentOptions options,
         CancellationToken cancellationToken)
     {
+        var envelope = CapabilityEnvelopeAccessor.Current;
         var injected = new List<ProvisionedTool>();
-        foreach (var (serverName, serverTools) in await ResolveInjectedMcpToolsAsync(cancellationToken))
+        foreach (var (serverName, serverTools) in await ResolveInjectedMcpToolsAsync(envelope, cancellationToken))
+        {
+            // The authoritative source for "is this granted server bundle-owned": CapabilityEnvelope.BundleOwnedMcpServers,
+            // stamped once by RunBundleCommandHandler from the staged bundle's own registration. A server
+            // name's SHAPE cannot answer this — PluginLoader namespaces a host-installed plugin's own MCP
+            // servers under the identical "{Prefix}:{ServerName}" convention, into the same shared server
+            // config a bundle registers into, so a colon in the name is not evidence of bundle ownership.
+            var isBundleOwned = envelope?.IsBundleOwnedMcpServer(serverName) ?? false;
             foreach (var t in serverTools)
-                injected.Add(new ProvisionedTool(t, serverName));
+                injected.Add(new ProvisionedTool(PublishServerTool(t, serverName, isBundleOwned), serverName));
+        }
 
         if (options.AdditionalTools?.Count > 0)
             foreach (var t in options.AdditionalTools)
@@ -189,6 +198,23 @@ public partial class ToolChainBuilder : IToolChainBuilder
         var survivorSet = new HashSet<AITool>(survivors, ReferenceEqualityComparer.Instance);
         return provisioned.Where(p => survivorSet.Contains(p.Tool)).ToList();
     }
+
+    /// <summary>
+    /// Publishes one server-resolved tool under its governed name. A bundle-owned server's
+    /// <see cref="AIFunction"/> tools are wrapped in <see cref="NamespacedAIFunction"/> under
+    /// <see cref="BundleOwnedMcpToolNaming.BuildToolName"/> — never the bare, bundle-chosen name a
+    /// malicious bundle controls — because that published name is exactly what gets checked against
+    /// <c>CapabilityEnvelope.AllowedTools</c> at invocation time; <c>BundleRunExecutor</c> grants the
+    /// SAME namespaced name via this same function, so the two can never drift apart. Everything else
+    /// (a non-bundle-owned server, or a non-<see cref="AIFunction"/> tool) passes through unchanged.
+    /// Shared by both MCP resolution paths — <see cref="BuildInjectedModeToolsAsync"/> and
+    /// <see cref="ProvisionToolAsync"/> — so this decision is made in exactly one place, never
+    /// independently re-decided (and potentially missed) per call site.
+    /// </summary>
+    private static AITool PublishServerTool(AITool tool, string serverName, bool isBundleOwned) =>
+        isBundleOwned && tool is AIFunction fn
+            ? new NamespacedAIFunction(fn, BundleOwnedMcpToolNaming.BuildToolName(serverName, tool.Name))
+            : tool;
 
     /// <summary>
     /// The single exit every resolution path in <em>this builder</em> returns through: drops tools whose
@@ -343,18 +369,28 @@ public partial class ToolChainBuilder : IToolChainBuilder
         // Reference-only MCP: a bundle run resolves a tool from an MCP server only when the caller's
         // envelope grants that server; otherwise the MCP attempt is skipped and resolution falls through
         // to keyed DI (itself governed at invocation time). Off the bundle path every server is permitted.
-        if (_mcpToolProvider != null && IsMcpServerAllowed(declaration.Name))
+        var (effectiveServerName, isBundleOwned) = ResolveEffectiveMcpServerName(declaration.Name);
+        if (_mcpToolProvider != null && effectiveServerName is not null)
         {
             try
             {
-                // In managed mode, a ToolDeclaration's Name is the MCP server name — GetToolsAsync
-                // returns that server's whole tool list, which is why every tool it returns is
-                // attributed to declaration.Name below.
-                var mcpTools = await _mcpToolProvider.GetToolsAsync(declaration.Name, cancellationToken);
+                // In managed mode, a ToolDeclaration's Name is the MCP server name (or, on a bundle run,
+                // the bundle-agnostic name a namespaced grant resolved to) — GetToolsAsync returns that
+                // server's whole tool list, which is why every tool it returns is attributed to
+                // effectiveServerName below.
+                var mcpTools = await _mcpToolProvider.GetToolsAsync(effectiveServerName, cancellationToken);
                 if (mcpTools?.Count > 0)
                 {
-                    _logger.LogDebug("Resolved tool {ToolName} from MCP server", declaration.Name);
-                    return mcpTools.Select(t => new ProvisionedTool(t, declaration.Name)).ToList();
+                    _logger.LogDebug(
+                        "Resolved tool {ToolName} from MCP server {ServerName}", declaration.Name, effectiveServerName);
+
+                    // A bundle-owned server's tools are published and governed under a namespaced name
+                    // (never the bare, bundle-chosen one) so a malicious bundle cannot get a real host
+                    // tool auto-granted by advertising a same-named tool of its own. See
+                    // CapabilityEnvelope.IsBundleOwnedMcpServer and BundleOwnedMcpToolNaming.
+                    return mcpTools
+                        .Select(t => new ProvisionedTool(PublishServerTool(t, effectiveServerName, isBundleOwned), effectiveServerName))
+                        .ToList();
                 }
             }
             catch (Exception ex)
@@ -397,9 +433,13 @@ public partial class ToolChainBuilder : IToolChainBuilder
     /// is never reached at all (no side-effect connection, no tool-schema disclosure), closing
     /// SSRF-by-construction. An empty grant yields no MCP tools.
     /// </summary>
-    private async Task<IReadOnlyList<(string ServerName, IList<AITool> Tools)>> ResolveInjectedMcpToolsAsync(CancellationToken cancellationToken)
+    /// <param name="envelope">
+    /// The ambient <see cref="CapabilityEnvelopeAccessor.Current"/>, read once by the caller and passed in
+    /// rather than re-read here — both this method and the caller's own bundle-ownership check need it.
+    /// </param>
+    private async Task<IReadOnlyList<(string ServerName, IList<AITool> Tools)>> ResolveInjectedMcpToolsAsync(
+        Domain.AI.Bundles.CapabilityEnvelope? envelope, CancellationToken cancellationToken)
     {
-        var envelope = CapabilityEnvelopeAccessor.Current;
         if (envelope is null)
         {
             var allByServer = await _mcpToolProvider!.GetAllToolsAsync(cancellationToken);
@@ -430,35 +470,68 @@ public partial class ToolChainBuilder : IToolChainBuilder
     /// from the first return, which silently mistypes the failure branch's <see langword="null"/>.
     /// </summary>
     private async Task<(string Server, IList<AITool>? Tools)> FetchServerToolsAsync(string server, CancellationToken cancellationToken)
-    {
-        try
-        {
-            return (server, await _mcpToolProvider!.GetToolsAsync(server, cancellationToken));
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Capability envelope: granted MCP server '{Server}' could not be reached — skipped", server);
-            return (server, null);
-        }
-    }
+        => (server, await McpToolFetch.TryGetToolsAsync(_mcpToolProvider!, server, "Capability envelope", _logger, cancellationToken));
 
     /// <summary>
-    /// Whether the ambient capability envelope permits reaching the named MCP server on the managed
-    /// resolution path. Off the bundle path no envelope is published, so this returns
-    /// <see langword="true"/> and every server passes through unchanged. On a bundle run only servers named
-    /// in the caller's envelope are permitted; a denied server is logged and never contacted, so a bundle
-    /// can never reach a host MCP server it was not granted.
+    /// Resolves the MCP server name to actually contact for a skill's declared, bundle-agnostic server
+    /// name (e.g. <c>"epr-mcp"</c>) on the managed resolution path, and whether that resolved server is
+    /// this run's own bundle-owned one — the caller uses that flag to decide whether the resolved tools
+    /// must be published under a namespaced name (see <see cref="BundleOwnedMcpToolNaming"/>).
     /// </summary>
-    private bool IsMcpServerAllowed(string serverName)
+    /// <remarks>
+    /// Off the bundle path no envelope is published, so the declared name passes through unchanged
+    /// (<c>IsBundleOwned: false</c>) and every server is permitted. On a bundle run, an exact grant for
+    /// the declared name wins outright — a host-configured, non-namespaced server is unaffected by the
+    /// fallback below. A skill author cannot know their bundle's future id at authoring time, so a
+    /// bundle's own server is granted under a namespaced key (<c>{bundleId}:{declaredName}</c>) that never
+    /// exact-matches the declaration; when the armed envelope contains exactly one grant ending in
+    /// <c>:{declaredName}</c>, that full namespaced name is resolved to contact. When more than one grant
+    /// shares the suffix, the bundle-owned one wins if exactly one of the matches is bundle-owned
+    /// (safe only because every skill resolved during a bundle run is one of that bundle's own — see the
+    /// resolution-time comment below); any other multi-match shape is still ambiguous and denied rather
+    /// than guessed. <c>IsBundleOwned</c> is decided from
+    /// <see cref="Domain.AI.Bundles.CapabilityEnvelope.IsBundleOwnedMcpServer"/> — the run's own authoritative record,
+    /// itself populated by a single writer (<c>RunBundleCommandHandler.WithBundleOwnedMcpServers</c>) —
+    /// never from the suffix match alone: a host-installed plugin's own MCP server is namespaced under
+    /// the identical <c>{Prefix}:{ServerName}</c> shape, so a suffix match can legitimately resolve to an
+    /// explicitly-granted plugin server that is NOT bundle-owned and must NOT be renamed. Returns a
+    /// <see langword="null"/> server name when nothing resolves, logged and never contacted — a bundle can
+    /// never reach a host MCP server it was not granted.
+    /// </remarks>
+    private (string? ServerName, bool IsBundleOwned) ResolveEffectiveMcpServerName(string declaredName)
     {
         var envelope = CapabilityEnvelopeAccessor.Current;
-        if (envelope is null || envelope.GrantsMcpServer(serverName))
-            return true;
+        if (envelope is null || envelope.GrantsMcpServer(declaredName))
+            return (declaredName, false);
+
+        var suffix = ":" + declaredName;
+        var matches = envelope.AllowedMcpServers
+            .Where(name => name.EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        if (matches.Count == 1)
+            return (matches[0], envelope.IsBundleOwnedMcpServer(matches[0]));
+
+        // More than one namespaced grant shares this bare server name — an unrelated host- or
+        // plugin-granted server (see CapabilityEnvelope.BundleOwnedMcpServers remarks: both use the
+        // identical {Prefix}:{ServerName} shape) coincidentally ends in the same suffix as THIS run's own
+        // bundle-owned server. Every skill resolved while running a bundle is one of that bundle's OWN
+        // OwnedSkills — OverlayAwareAgentOwnedSkillStore is authoritative for the ephemeral agent and never
+        // falls through to a caller's other skills — so a declaredName reaching this method during a
+        // bundle run can only ever mean the bundle's own server, never the unrelated grant it happens to
+        // collide with. Preferring the bundle-owned candidate therefore only makes the bundle's own
+        // already-granted access reliable against an incidental name clash; it can never resolve to the
+        // caller's separate grant instead, so it cannot escalate what this run can reach. Staging rejects
+        // duplicate server names within one bundle's own manifest set, so at most one match here is ever
+        // bundle-owned.
+        var bundleOwnedMatches = matches.Where(envelope.IsBundleOwnedMcpServer).ToList();
+        if (bundleOwnedMatches.Count == 1)
+            return (bundleOwnedMatches[0], true);
 
         _logger.LogInformation(
             "Capability envelope: MCP server '{Server}' is outside the bundle run's grant — not contacted and its tools excluded",
-            serverName);
-        return false;
+            declaredName);
+        return (null, false);
     }
 
     private IEnumerable<AITool>? ResolveToolByName(string toolName)

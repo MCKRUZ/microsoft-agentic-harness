@@ -56,6 +56,31 @@ public sealed record CapabilityEnvelope
     public IReadOnlyList<string> AllowedMcpServers { get; init; } = [];
 
     /// <summary>
+    /// The subset of <see cref="AllowedMcpServers"/> that are this run's OWN bundle-owned servers (i.e.
+    /// <c>StagedBundle.McpServerNames</c>) rather than a host-configured or plugin-configured server the
+    /// envelope separately grants. Both use the identical <c>{Prefix}:{ServerName}</c> namespaced-key
+    /// shape (plugins are namespaced by <c>PluginLoader</c> under <c>{PluginName}:{ServerName}</c>, into
+    /// the SAME shared server config bundles register into), so a server name's shape alone can never
+    /// distinguish the two — only the run's own provenance can. Populated once, at the point the run's
+    /// envelope is built from the staged bundle, and never re-derived downstream from string shape.
+    /// Empty (the default) means no bundle-owned server is granted this run.
+    /// </summary>
+    /// <remarks>
+    /// <strong>Invariant callers must preserve:</strong> this list is always a subset of
+    /// <see cref="AllowedMcpServers"/>, and the two are kept in sync by a SINGLE writer today
+    /// (<c>RunBundleCommandHandler.WithBundleOwnedMcpServers</c>), which unions the same
+    /// <c>staged.McpServerNames</c> into both in one <c>with</c> expression. Nothing in the type system
+    /// enforces this — a future call site that adds a bundle-owned name to <see cref="AllowedMcpServers"/>
+    /// without adding it here as well would silently make that server's tools resolve as NOT bundle-owned
+    /// (falling through to <see cref="IsBundleOwnedMcpServer"/> returning <see langword="false"/>), which
+    /// is fail-closed on the namespacing decision but reintroduces the exact "trust a server based on
+    /// incomplete provenance" defect this field exists to prevent. Any new writer of
+    /// <see cref="AllowedMcpServers"/> for a bundle-owned server MUST update this list in the same
+    /// operation.
+    /// </remarks>
+    public IReadOnlyList<string> BundleOwnedMcpServers { get; init; } = [];
+
+    /// <summary>
     /// The highest autonomy tier this caller's bundle run may act under. Enforced as a ceiling: the
     /// effective autonomy is the most restrictive of this value, the host's own graded-autonomy gate, and
     /// each tool's blast radius — this can only tighten, never loosen. Defaults to the most restrictive
@@ -78,12 +103,29 @@ public sealed record CapabilityEnvelope
     /// resolver and tool-chain builder match tool names.
     /// </summary>
     /// <param name="toolName">The tool name being checked.</param>
-    public bool GrantsTool(string toolName) => AllowedTools.Contains(toolName, StringComparer.OrdinalIgnoreCase);
+    public bool GrantsTool(string toolName) => Contains(AllowedTools, toolName);
 
     /// <summary>
     /// Whether this envelope grants access to the named MCP server. Case-insensitive, mirroring how the
     /// MCP tool provider keys servers by name.
     /// </summary>
     /// <param name="serverName">The MCP server name being checked.</param>
-    public bool GrantsMcpServer(string serverName) => AllowedMcpServers.Contains(serverName, StringComparer.OrdinalIgnoreCase);
+    public bool GrantsMcpServer(string serverName) => Contains(AllowedMcpServers, serverName);
+
+    /// <summary>
+    /// Whether the named, already-resolved MCP server is this run's own bundle-owned server (see
+    /// <see cref="BundleOwnedMcpServers"/>) rather than a host- or plugin-granted one — the authoritative
+    /// check callers must use to decide whether a resolved tool needs bundle-owned namespacing, instead
+    /// of inferring ownership from the server name's shape.
+    /// </summary>
+    /// <param name="serverName">The MCP server name being checked.</param>
+    public bool IsBundleOwnedMcpServer(string serverName) => Contains(BundleOwnedMcpServers, serverName);
+
+    /// <summary>
+    /// Shared case-insensitive membership check backing every <c>Grants*</c>/<c>Is*</c> predicate on this
+    /// envelope, so the comparison rule (ordinal, case-insensitive) is expressed once rather than
+    /// independently re-typed on every grant list this record accumulates.
+    /// </summary>
+    private static bool Contains(IReadOnlyList<string> names, string name) =>
+        names.Contains(name, StringComparer.OrdinalIgnoreCase);
 }

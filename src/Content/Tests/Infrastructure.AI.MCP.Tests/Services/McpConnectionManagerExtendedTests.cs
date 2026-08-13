@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Domain.Common.Config.AI.MCP;
 using FluentAssertions;
 using Infrastructure.AI.MCP.Services;
@@ -13,13 +14,15 @@ namespace Infrastructure.AI.MCP.Tests.Services;
 /// </summary>
 public sealed class McpConnectionManagerExtendedTests
 {
-    private static McpConnectionManager CreateManager(McpServersConfig? config = null)
+    private static McpConnectionManager CreateManager(
+        McpServersConfig? config = null, BundleOwnedMcpServerRegistry? bundleOwned = null)
     {
-        return new McpConnectionManager(
+        return McpConnectionManagerBundleEgressSupport.CreateManager(
             Mock.Of<ILogger<McpConnectionManager>>(),
             new Mock<ILoggerFactory>().Object,
             TestSsrf.HandlerFactory(),
-            config ?? new McpServersConfig());
+            config ?? new McpServersConfig(),
+            bundleOwned ?? new BundleOwnedMcpServerRegistry());
     }
 
     // -- GetClientAsync after dispose --
@@ -54,7 +57,7 @@ public sealed class McpConnectionManagerExtendedTests
     {
         var config = new McpServersConfig
         {
-            Servers = new Dictionary<string, McpServerDefinition>
+            Servers = new ConcurrentDictionary<string, McpServerDefinition>
             {
                 ["a"] = new() { Enabled = false },
                 ["b"] = new() { Enabled = false }
@@ -70,7 +73,7 @@ public sealed class McpConnectionManagerExtendedTests
     {
         var config = new McpServersConfig
         {
-            Servers = new Dictionary<string, McpServerDefinition>
+            Servers = new ConcurrentDictionary<string, McpServerDefinition>
             {
                 ["enabled-1"] = new() { Enabled = true },
                 ["disabled-1"] = new() { Enabled = false },
@@ -104,7 +107,7 @@ public sealed class McpConnectionManagerExtendedTests
     {
         var config = new McpServersConfig
         {
-            Servers = new Dictionary<string, McpServerDefinition>
+            Servers = new ConcurrentDictionary<string, McpServerDefinition>
             {
                 ["stdio-test"] = new()
                 {
@@ -127,7 +130,7 @@ public sealed class McpConnectionManagerExtendedTests
     {
         var config = new McpServersConfig
         {
-            Servers = new Dictionary<string, McpServerDefinition>
+            Servers = new ConcurrentDictionary<string, McpServerDefinition>
             {
                 ["http-test"] = new()
                 {

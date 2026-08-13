@@ -105,58 +105,54 @@ public sealed class PluginLoader : IPluginLoader
 
     private List<string> LoadMcpServers(string pluginPath, PluginDeclaration declaration, string mcpRelativePath)
     {
-        var mcpPath = Path.GetFullPath(Path.Combine(pluginPath, mcpRelativePath));
-
-        if (!IsContainedWithin(mcpPath, pluginPath))
-        {
-            _logger.LogWarning(
-                "Plugin {Name}: MCP config path {Path} escapes plugin directory, skipping",
-                declaration.Name, mcpPath);
-            return [];
-        }
-
-        if (!File.Exists(mcpPath))
-        {
-            _logger.LogDebug(
-                "Plugin {Name}: MCP config not found at {Path}",
-                declaration.Name, mcpPath);
-            return [];
-        }
-
-        return ParseAndMergeMcpServers(mcpPath, declaration);
-    }
-
-    private List<string> ParseAndMergeMcpServers(string mcpPath, PluginDeclaration declaration)
-    {
         var names = new List<string>();
 
-        try
+        using var block = McpManifestReader.ReadMcpServersBlock(
+            pluginPath, mcpRelativePath, $"Plugin {declaration.Name}", _logger);
+        if (block is null)
+            return names;
+
+        foreach (var serverProp in block.Value.ServersElement.EnumerateObject())
         {
-            var json = File.ReadAllText(mcpPath);
-            using var doc = JsonDocument.Parse(json, new JsonDocumentOptions
-            {
-                CommentHandling = JsonCommentHandling.Skip,
-                AllowTrailingCommas = true
-            });
-
-            if (!doc.RootElement.TryGetProperty("mcpServers", out var serversElement))
-                return names;
-
-            foreach (var serverProp in serversElement.EnumerateObject())
-            {
-                var namespacedName = $"{declaration.Name}:{serverProp.Name}";
-                var definition = BuildServerDefinition(serverProp.Value, declaration, serverProp.Name);
-
-                _mcpServersConfig.Servers[namespacedName] = definition;
+            var namespacedName = $"{declaration.Name}:{serverProp.Name}";
+            if (TryBuildAndRegisterOneServer(declaration, namespacedName, serverProp))
                 names.Add(namespacedName);
-            }
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Failed to parse MCP config at {Path}", mcpPath);
         }
 
         return names;
+    }
+
+    /// <summary>
+    /// Builds one manifest-declared server and registers it under <paramref name="namespacedName"/>.
+    /// A malformed entry (e.g. a non-string <c>args</c> element) is skipped and logged rather than
+    /// thrown — <see cref="Load"/>'s outer catch would otherwise mark the WHOLE plugin
+    /// <see cref="PluginLoadStatus.Failed"/> over one bad server, discarding the skill paths already
+    /// collected in the same call and leaving any server registered by an earlier entry in this same
+    /// loop orphaned (absent from the returned names, so nothing can deregister it later).
+    /// </summary>
+    private bool TryBuildAndRegisterOneServer(PluginDeclaration declaration, string namespacedName, JsonProperty serverProp)
+    {
+        McpServerDefinition definition;
+        try
+        {
+            definition = McpServerDefinitionBuilder.Build(
+                serverProp.Value, declaration.Env, $"[Plugin: {declaration.Name}]", serverProp.Name);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex,
+                "Plugin {Name}: failed to build MCP server definition for '{ServerName}', skipping",
+                declaration.Name, serverProp.Name);
+            return false;
+        }
+
+        // Last-writer-wins on a duplicate namespaced key — unlike BundleStagingService's TryAdd +
+        // keep-first-and-warn. Deliberately different, not an oversight: a host plugin's own manifest
+        // realistically never declares the same server name twice, so this path optimizes for the
+        // simpler write; a bundle's namespace is per-upload and a duplicate there is worth flagging to
+        // the (untrusted) bundle author rather than silently accepted.
+        _mcpServersConfig.Servers[namespacedName] = definition;
+        return true;
     }
 
     private static bool IsContainedWithin(string resolvedPath, string basePath)
@@ -172,38 +168,5 @@ public sealed class PluginLoader : IPluginLoader
 
         return canonicalTarget.StartsWith(canonicalBase + Path.DirectorySeparatorChar, comparison)
             || string.Equals(canonicalTarget, canonicalBase, comparison);
-    }
-
-    private static McpServerDefinition BuildServerDefinition(
-        JsonElement serverElement,
-        PluginDeclaration declaration,
-        string serverName)
-    {
-        var definition = new McpServerDefinition
-        {
-            Enabled = true,
-            Type = McpServerType.Stdio,
-            Description = $"[Plugin: {declaration.Name}] {serverName}"
-        };
-
-        if (serverElement.TryGetProperty("command", out var cmd))
-            definition.Command = cmd.GetString() ?? string.Empty;
-
-        if (serverElement.TryGetProperty("args", out var args))
-            definition.Args = args.EnumerateArray()
-                .Select(a => a.GetString() ?? string.Empty)
-                .ToList();
-
-        if (serverElement.TryGetProperty("env", out var env))
-        {
-            foreach (var envProp in env.EnumerateObject())
-                definition.Env[envProp.Name] = envProp.Value.GetString() ?? string.Empty;
-        }
-
-        // Declaration env overrides take precedence over manifest-declared env
-        foreach (var (key, value) in declaration.Env)
-            definition.Env[key] = value;
-
-        return definition;
     }
 }

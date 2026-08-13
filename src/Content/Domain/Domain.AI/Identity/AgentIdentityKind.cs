@@ -51,5 +51,14 @@ public enum AgentIdentityKind
     /// Development/test escape hatch. Returns a fixture identity without contacting
     /// Entra. Never resolved when the host environment is not Development.
     /// </summary>
-    Development = 5
+    Development = 5,
+
+    /// <summary>
+    /// Not backed by any Entra credential and never resolved by <c>IAgentIdentityResolver</c> — used for
+    /// internal, host-generated attribution where there is no live agent turn to derive an identity from
+    /// (e.g. a bundle's own outbound MCP connections, attributed to the bundle itself so egress allowlist
+    /// decisions and the audit trail have something real to key on). Carries no token and acquires
+    /// nothing from a credential provider.
+    /// </summary>
+    System = 6
 }

@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Domain.Common.Config.AI.MCP;
 using FluentAssertions;
 using Infrastructure.AI.MCP.Services;
@@ -16,11 +17,12 @@ public sealed class McpToolProviderExtendedTests
     private static (McpToolProvider Provider, McpConnectionManager Manager) CreateSut(
         McpServersConfig? config = null)
     {
-        var manager = new McpConnectionManager(
+        var manager = McpConnectionManagerBundleEgressSupport.CreateManager(
             Mock.Of<ILogger<McpConnectionManager>>(),
             new Mock<ILoggerFactory>().Object,
             TestSsrf.HandlerFactory(),
-            config ?? new McpServersConfig());
+            config ?? new McpServersConfig(),
+            new BundleOwnedMcpServerRegistry());
 
         var provider = new McpToolProvider(
             Mock.Of<ILogger<McpToolProvider>>(), manager);
@@ -76,7 +78,7 @@ public sealed class McpToolProviderExtendedTests
     {
         var config = new McpServersConfig
         {
-            Servers = new Dictionary<string, McpServerDefinition>
+            Servers = new ConcurrentDictionary<string, McpServerDefinition>
             {
                 ["broken"] = new() { Enabled = true, Type = McpServerType.Stdio, Command = "" }
             }
@@ -93,7 +95,7 @@ public sealed class McpToolProviderExtendedTests
     {
         var config = new McpServersConfig
         {
-            Servers = new Dictionary<string, McpServerDefinition>
+            Servers = new ConcurrentDictionary<string, McpServerDefinition>
             {
                 ["broken"] = new() { Enabled = true, Type = McpServerType.Stdio, Command = "" }
             }
@@ -125,7 +127,7 @@ public sealed class McpToolProviderExtendedTests
     {
         var config = new McpServersConfig
         {
-            Servers = new Dictionary<string, McpServerDefinition>
+            Servers = new ConcurrentDictionary<string, McpServerDefinition>
             {
                 ["only-server"] = new() { Enabled = true, Type = McpServerType.Stdio, Command = "" }
             }
