@@ -55,25 +55,6 @@ jobs:
       - name: Build
         run: dotnet build src/AgenticHarness.slnx --no-restore --configuration Release
 
-      # owasp-agentic-gate (below, needs: build-and-test) used to run its own dotnet restore +
-      # dotnet build --configuration Release from scratch before this step existed — a second
-      # full-solution build in sequence on every PR, purely to run one project's filtered test
-      # subset with a build it already has sitting in this job's workspace. Uploading the exact
-      # output lets that gate skip straight to `dotnet test --no-build`.
-      #
-      # Both bin/ and obj/ are included, not just bin/ — obj/ carries project.assets.json and
-      # the source-generator output some projects need even under --no-build, and a narrower
-      # glob risks silently missing one of them on a project that happens to use one.
-      - name: Upload build output for owasp-agentic-gate
-        uses: actions/upload-artifact@v7
-        with:
-          name: release-build-output
-          path: |
-            src/**/bin/Release/**
-            src/**/obj/**
-          retention-days: 1
-          if-no-files-found: error
-
       # Output is tee'd to a file so the step below can explain a failure the summary lines hide.
       # `set -o pipefail` is what stops tee from swallowing dotnet's exit code — without it this
       # step reports success whenever the tests fail, which is the opposite of a gate.
@@ -195,15 +176,11 @@ jobs:
         with:
           dotnet-version: '10.x'
 
-      # Reuses build-and-test's own Release build instead of restoring and building the whole
-      # solution again — see the matching upload step's comment in that job. This job still needs
-      # its own checkout (for the source files dotnet test discovers tests from, and for
-      # explain-runner-crash.sh below) — only the restore/build work is skipped.
-      - name: Download build output from build-and-test
-        uses: actions/download-artifact@v7
-        with:
-          name: release-build-output
-          path: .
+      - name: Restore
+        run: dotnet restore src/AgenticHarness.slnx
+
+      - name: Build
+        run: dotnet build src/AgenticHarness.slnx --no-restore --configuration Release
 
       - name: Run OWASP Agentic eval fixtures (hard gate)
         id: owasp-tests
