@@ -285,8 +285,9 @@ public sealed class ToolChainBuilderMcpEnvelopeTests
     [Fact]
     public async Task ManagedDeclaration_AmbiguousSuffixMatch_IsDeniedNotGuessed()
     {
-        // Two different namespaced grants end in the same declared name with no exact grant to break the
-        // tie. Guessing either one would be arbitrary, so neither is contacted.
+        // Two different namespaced grants end in the same declared name, and NEITHER is recorded as this
+        // run's own bundle-owned server (BundleOwnedMcpServers is empty). Guessing either one would be
+        // arbitrary, so neither is contacted.
         var mcp = new Mock<IMcpToolProvider>();
         var builder = Builder(mcp.Object);
         var skill = new SkillDefinition
@@ -301,6 +302,43 @@ public sealed class ToolChainBuilderMcpEnvelopeTests
 
         tools.Should().BeEmpty();
         mcp.Verify(p => p.GetToolsAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task ManagedDeclaration_SuffixCollidesWithUnrelatedGrant_StillResolvesThisRunsOwnBundleServer()
+    {
+        // Regression test for a correctness-review finding: the caller's PRE-EXISTING, unrelated grant
+        // ("corp-tools:epr-mcp" — e.g. an admin-configured plugin) and THIS run's own bundle-owned server
+        // ("bundle-123:epr-mcp") coincidentally share the same bare suffix after RunBundleCommandHandler
+        // unions them into one flat AllowedMcpServers list. Since every skill resolved during a bundle run
+        // is one of that bundle's own OwnedSkills (never a mix with the caller's other skills — see
+        // OverlayAwareAgentOwnedSkillStore), this declaration can only ever mean the bundle's own server:
+        // an untrusted bundle picking a colliding name must not be able to break its own already-granted
+        // access, and it must not resolve to the caller's separate grant either.
+        var mcp = new Mock<IMcpToolProvider>();
+        mcp.Setup(p => p.GetToolsAsync("bundle-123:epr-mcp", It.IsAny<CancellationToken>()))
+            .ReturnsAsync([AIFunctionFactory.Create(() => "r", "epr_tool")]);
+
+        var builder = Builder(mcp.Object);
+        var skill = new SkillDefinition
+        {
+            Id = "s", Name = "s", Instructions = "x",
+            ToolDeclarations = [new ToolDeclaration { Name = "epr-mcp" }]
+        };
+        var envelope = new CapabilityEnvelope
+        {
+            AllowedMcpServers = ["corp-tools:epr-mcp", "bundle-123:epr-mcp"],
+            BundleOwnedMcpServers = ["bundle-123:epr-mcp"]
+        };
+
+        List<AITool> tools;
+        using (CapabilityEnvelopeAccessor.Begin(envelope))
+            tools = await builder.BuildToolsAsync(skill, new SkillAgentOptions());
+
+        tools.Select(t => t.Name).Should().Contain("bundle-123_epr-mcp__epr_tool");
+        mcp.Verify(p => p.GetToolsAsync("bundle-123:epr-mcp", It.IsAny<CancellationToken>()), Times.Once);
+        mcp.Verify(p => p.GetToolsAsync("corp-tools:epr-mcp", It.IsAny<CancellationToken>()), Times.Never,
+            "the unrelated grant must never be contacted for a bundle skill's own declared server");
     }
 
     private static CapabilityEnvelope Envelope(params string[] servers) =>

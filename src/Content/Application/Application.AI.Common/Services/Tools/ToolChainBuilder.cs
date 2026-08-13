@@ -485,13 +485,17 @@ public partial class ToolChainBuilder : IToolChainBuilder
     /// fallback below. A skill author cannot know their bundle's future id at authoring time, so a
     /// bundle's own server is granted under a namespaced key (<c>{bundleId}:{declaredName}</c>) that never
     /// exact-matches the declaration; when the armed envelope contains exactly one grant ending in
-    /// <c>:{declaredName}</c>, that full namespaced name is resolved to contact. Two or more matching
-    /// suffixes is ambiguous and denied rather than guessed. <c>IsBundleOwned</c> is decided from
-    /// <see cref="Domain.AI.Bundles.CapabilityEnvelope.IsBundleOwnedMcpServer"/> — the run's own authoritative record —
+    /// <c>:{declaredName}</c>, that full namespaced name is resolved to contact. When more than one grant
+    /// shares the suffix, the bundle-owned one wins if exactly one of the matches is bundle-owned
+    /// (safe only because every skill resolved during a bundle run is one of that bundle's own — see the
+    /// resolution-time comment below); any other multi-match shape is still ambiguous and denied rather
+    /// than guessed. <c>IsBundleOwned</c> is decided from
+    /// <see cref="Domain.AI.Bundles.CapabilityEnvelope.IsBundleOwnedMcpServer"/> — the run's own authoritative record,
+    /// itself populated by a single writer (<c>RunBundleCommandHandler.WithBundleOwnedMcpServers</c>) —
     /// never from the suffix match alone: a host-installed plugin's own MCP server is namespaced under
     /// the identical <c>{Prefix}:{ServerName}</c> shape, so a suffix match can legitimately resolve to an
     /// explicitly-granted plugin server that is NOT bundle-owned and must NOT be renamed. Returns a
-    /// <see langword="null"/> server name when neither resolves, logged and never contacted — a bundle can
+    /// <see langword="null"/> server name when nothing resolves, logged and never contacted — a bundle can
     /// never reach a host MCP server it was not granted.
     /// </remarks>
     private (string? ServerName, bool IsBundleOwned) ResolveEffectiveMcpServerName(string declaredName)
@@ -507,6 +511,22 @@ public partial class ToolChainBuilder : IToolChainBuilder
 
         if (matches.Count == 1)
             return (matches[0], envelope.IsBundleOwnedMcpServer(matches[0]));
+
+        // More than one namespaced grant shares this bare server name — an unrelated host- or
+        // plugin-granted server (see CapabilityEnvelope.BundleOwnedMcpServers remarks: both use the
+        // identical {Prefix}:{ServerName} shape) coincidentally ends in the same suffix as THIS run's own
+        // bundle-owned server. Every skill resolved while running a bundle is one of that bundle's OWN
+        // OwnedSkills — OverlayAwareAgentOwnedSkillStore is authoritative for the ephemeral agent and never
+        // falls through to a caller's other skills — so a declaredName reaching this method during a
+        // bundle run can only ever mean the bundle's own server, never the unrelated grant it happens to
+        // collide with. Preferring the bundle-owned candidate therefore only makes the bundle's own
+        // already-granted access reliable against an incidental name clash; it can never resolve to the
+        // caller's separate grant instead, so it cannot escalate what this run can reach. Staging rejects
+        // duplicate server names within one bundle's own manifest set, so at most one match here is ever
+        // bundle-owned.
+        var bundleOwnedMatches = matches.Where(envelope.IsBundleOwnedMcpServer).ToList();
+        if (bundleOwnedMatches.Count == 1)
+            return (bundleOwnedMatches[0], true);
 
         _logger.LogInformation(
             "Capability envelope: MCP server '{Server}' is outside the bundle run's grant — not contacted and its tools excluded",
