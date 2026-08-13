@@ -40,6 +40,7 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 	private readonly IContextSnapshotNotifier _snapshotNotifier;
 	private readonly TimeProvider _timeProvider;
 	private readonly ILogger<ExecuteAgentTurnCommandHandler> _logger;
+	private readonly ISecretRedactor? _redactor;
 
 	public ExecuteAgentTurnCommandHandler(
 		IAgentConversationCache agentCache,
@@ -52,7 +53,8 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 		IContextSnapshotComputer snapshotComputer,
 		IContextSnapshotNotifier snapshotNotifier,
 		TimeProvider timeProvider,
-		ILogger<ExecuteAgentTurnCommandHandler> logger)
+		ILogger<ExecuteAgentTurnCommandHandler> logger,
+		ISecretRedactor? redactor = null)
 	{
 		_agentCache = agentCache;
 		_admissionPipeline = admissionPipeline;
@@ -65,6 +67,7 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 		_snapshotNotifier = snapshotNotifier;
 		_timeProvider = timeProvider;
 		_logger = logger;
+		_redactor = redactor;
 	}
 
 	public async Task<AgentTurnResult> Handle(ExecuteAgentTurnCommand request, CancellationToken cancellationToken)
@@ -143,7 +146,7 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 					// sink (tests, batch callers) fall back to a single blocking call.
 					var streamSink = AgentTurnStreamSink.Current;
 					response = streamSink is not null
-						? await RunStreamingTurnAsync(agent, messages, streamSink, cancellationToken)
+						? await RunStreamingTurnAsync(agent, messages, streamSink, _redactor, _logger, cancellationToken)
 						: await agent.RunAsync(messages, cancellationToken: cancellationToken);
 					turnSw.Stop();
 				}
@@ -339,29 +342,84 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 	/// <summary>
 	/// Runs the turn in streaming mode, emitting each assistant text delta to
 	/// <paramref name="sink"/> as it arrives and returning the concatenated full text.
-	/// Tool invocation, usage, and tool-call capture happen transparently in the
-	/// chat-client middleware pipeline (which instruments the streaming path), so the
-	/// caller's post-turn accounting is unchanged. The same <paramref name="cancellationToken"/>
-	/// flows to <c>RunStreamingAsync</c>, so a disconnected consumer aborts the model call.
+	/// Also forwards tool-call activity — <see cref="FunctionCallContent"/> (the model's decision to
+	/// call a tool) and <see cref="FunctionResultContent"/> (the tool's output, once
+	/// <c>FunctionInvokingChatClient</c> has actually invoked it) both arrive as part of the same
+	/// <c>update.Contents</c> stream. Both are redacted via <see cref="ToolPayloadRedactor"/> before
+	/// reaching the sink — the same treatment <c>ToolDiagnosticsMiddleware</c> applies before the
+	/// identical data is persisted, since a live SSE stream is just as much an exposure point for
+	/// secrets as the observability store is. Arguments are redacted only, never truncated —
+	/// <see cref="IAgentTurnStreamSink.EmitToolCallAsync"/> documents its JSON as always complete, and a
+	/// preview-length cap would silently hand a client invalid, unparseable JSON instead; the result
+	/// text has no such contract and gets the same redact-and-truncate preview treatment the middleware
+	/// uses. Usage and tool-call capture still flow through the chat-client middleware, so the caller's
+	/// post-turn accounting is unchanged. The same <paramref name="cancellationToken"/> flows to
+	/// <c>RunStreamingAsync</c>, so a disconnected consumer aborts the model call.
 	/// </summary>
 	private static async Task<string> RunStreamingTurnAsync(
 		AIAgent agent,
 		IReadOnlyList<ChatMessage> messages,
 		IAgentTurnStreamSink sink,
+		ISecretRedactor? redactor,
+		ILogger logger,
 		CancellationToken cancellationToken)
 	{
 		var builder = new StringBuilder();
 		await foreach (var update in agent.RunStreamingAsync(messages, cancellationToken: cancellationToken))
 		{
 			var delta = update.Text;
-			if (string.IsNullOrEmpty(delta))
-				continue;
+			if (!string.IsNullOrEmpty(delta))
+			{
+				builder.Append(delta);
+				await sink.EmitAsync(delta, cancellationToken);
+			}
 
-			builder.Append(delta);
-			await sink.EmitAsync(delta, cancellationToken);
+			foreach (var content in update.Contents)
+			{
+				switch (content)
+				{
+					case FunctionCallContent call when !string.IsNullOrEmpty(call.Name):
+						await sink.EmitToolCallAsync(
+							call.CallId, call.Name, RedactedArgsJson(call, redactor, logger), cancellationToken);
+						break;
+
+					// Guards on CallId, mirroring the FunctionCallContent case's guard on Name: a result
+					// with no id cannot be matched to the call it belongs to, so emitting it would only
+					// produce an orphaned frame a client cannot place.
+					case FunctionResultContent { CallId.Length: > 0 } result:
+						var resultText = result.Result?.ToString() ?? string.Empty;
+						await sink.EmitToolCallResultAsync(
+							result.CallId, ToolPayloadRedactor.RedactAndTruncate(resultText, redactor), cancellationToken);
+						break;
+				}
+			}
 		}
 
 		return builder.ToString();
+	}
+
+	/// <summary>
+	/// Serializes and redacts a tool call's arguments for streaming. Mirrors
+	/// <c>ToolDiagnosticsMiddleware.LogToolCallsInResponse</c>'s own try/catch around the identical
+	/// serialize call: an unserializable argument value (an unsupported CLR type from a poorly-behaved
+	/// tool) must degrade to a logged warning, not abort the whole turn — text already streamed to the
+	/// client before this tool call must not be thrown away over a JSON-serialization failure.
+	/// </summary>
+	private static string RedactedArgsJson(FunctionCallContent call, ISecretRedactor? redactor, ILogger logger)
+	{
+		if (call.Arguments is not { Count: > 0 } args)
+			return "{}";
+
+		try
+		{
+			return ToolPayloadRedactor.Redact(JsonSerializer.Serialize(args), redactor);
+		}
+		catch (Exception ex)
+		{
+			logger.LogWarning(ex,
+				"Failed to serialize streamed tool-call arguments for {Tool} CallId={CallId}", call.Name, call.CallId);
+			return "{}";
+		}
 	}
 
 	private static void RecordTurnError(string agentName)

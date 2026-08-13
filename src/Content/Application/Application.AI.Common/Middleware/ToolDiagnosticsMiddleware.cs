@@ -1,3 +1,4 @@
+using Application.AI.Common.Helpers;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Traces;
 using Application.AI.Common.Services;
@@ -21,7 +22,6 @@ public sealed class ToolDiagnosticsMiddleware : DelegatingChatClient
 {
     private const int MaxToolsToLog = 5;
     private const int MaxPreviewLength = 200;
-    private const int MaxPayloadSummaryLength = 500;
 
     private readonly ILogger _logger;
     private readonly ITraceWriter? _traceWriter;
@@ -88,10 +88,7 @@ public sealed class ToolDiagnosticsMiddleware : DelegatingChatClient
         foreach (var result in functionResults)
         {
             var rawPayload = result.Result?.ToString() ?? string.Empty;
-            var redactedPayload = _redactor?.Redact(rawPayload) ?? rawPayload;
-            var trimmedPayload = redactedPayload.Length > MaxPayloadSummaryLength
-                ? redactedPayload[..MaxPayloadSummaryLength]
-                : redactedPayload;
+            var trimmedPayload = ToolPayloadRedactor.RedactAndTruncate(rawPayload, _redactor);
 
             // Always record the stdout against the matching call id so the
             // observability pipeline can render it on the per-invocation page
@@ -221,11 +218,7 @@ public sealed class ToolDiagnosticsMiddleware : DelegatingChatClient
             {
                 try
                 {
-                    argsJson = System.Text.Json.JsonSerializer.Serialize(args);
-                    if (_redactor is not null)
-                        argsJson = _redactor.Redact(argsJson);
-                    if (argsJson is not null && argsJson.Length > MaxPayloadSummaryLength)
-                        argsJson = argsJson[..MaxPayloadSummaryLength];
+                    argsJson = ToolPayloadRedactor.RedactAndTruncate(System.Text.Json.JsonSerializer.Serialize(args), _redactor);
                 }
                 catch (Exception ex)
                 {
