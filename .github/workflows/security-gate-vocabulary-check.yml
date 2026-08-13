@@ -1,0 +1,46 @@
+name: Security Gate Vocabulary Check
+
+# Non-blocking, scheduled replay of security-gate-scope.test.sh's historical-PR
+# regression suite. The content-based security-review trigger (security-review.yml,
+# via security-gate-scope.sh) has missed a category of risk five separate times since
+# it was built — filesystem paths, egress/SSRF, raw SQL, a rewritten security control
+# whose own type names weren't in the vocabulary, conversation ownership — and every
+# one was only caught after the fact, sometimes by a manual review the automated gate
+# itself had skipped.
+#
+# This adds no new detection. It catches the SAME test suite silently rotting between
+# those discoveries — a marker that stops matching, a replay case someone deletes, a
+# regex that becomes uncompilable — on a schedule, instead of waiting for the next
+# missed category to surface as a real near-incident.
+#
+# Deliberately NOT a required check and NOT triggered on pull_request: it replays
+# FIXED historical PRs by merge-base, so nothing about a new PR's own content changes
+# the outcome. A failure here means the vocabulary/harness itself needs attention, not
+# that any specific PR did something wrong — see .github/scripts/security-gate-scope.test.sh
+# for what each case proves.
+
+on:
+  schedule:
+    # 1st of every month, 06:00 UTC. A failure here shows up the same way any other
+    # failed scheduled workflow does — GitHub notifies the repo's watchers by default;
+    # no separate issue-filing step, to keep this addition small and dependency-free.
+    - cron: '0 6 1 * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  replay:
+    name: Replay security-gate-scope.sh against recent history
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The replay harness merge-bases against real historical commits without
+          # checking them out — it needs full history to do that, not the default
+          # shallow clone.
+          fetch-depth: 0
+
+      - name: Run the vocabulary regression suite
+        run: bash .github/scripts/security-gate-scope.test.sh
