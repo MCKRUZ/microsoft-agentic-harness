@@ -65,14 +65,31 @@ public sealed class McpServerDefinitionBuilderTests
         definition.Url.Should().Be("https://tools.example.com/sse");
     }
 
-    [Fact]
-    public void Build_HttpTypeWithNoUrl_LeavesUrlNull()
+    [Theory]
+    [InlineData("""{ "type": "http" }""")]
+    [InlineData("""{ "type": "http", "url": null }""")]
+    [InlineData("""{ "type": "http", "url": "" }""")]
+    [InlineData("""{ "type": "http", "url": "   " }""")]
+    public void Build_HttpTypeWithNoUsableUrl_Throws(string json)
     {
-        var element = Parse("""{ "type": "http" }""");
+        // Regression test: a remote server with no usable url used to register with
+        // IsRemoteServer == true and Url == null, passing the bundle-path stdio-rejection
+        // gate and squatting a name that only fails much later, at connect time.
+        var element = Parse(json);
 
-        var definition = McpServerDefinitionBuilder.Build(element, NoEnv, "[Bundle: b1]", "remote");
+        var act = () => McpServerDefinitionBuilder.Build(element, NoEnv, "[Bundle: b1]", "remote");
 
-        definition.Url.Should().BeNull();
+        act.Should().Throw<InvalidOperationException>();
+    }
+
+    [Fact]
+    public void Build_SseTypeWithNoUrl_Throws()
+    {
+        var element = Parse("""{ "type": "sse" }""");
+
+        var act = () => McpServerDefinitionBuilder.Build(element, NoEnv, "[Bundle: b1]", "remote");
+
+        act.Should().Throw<InvalidOperationException>();
     }
 
     [Fact]

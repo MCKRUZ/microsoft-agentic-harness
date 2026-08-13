@@ -54,7 +54,7 @@ public sealed class BundleStagingService : IBundleStagingService
     private readonly SkillMetadataParser _skillParser;
     private readonly ISkillFileReader _skillFileReader;
     private readonly IPluginManifestReader _pluginReader;
-    private readonly McpServersConfig _mcpServersConfig;
+    private readonly BundleOwnedMcpServerRegistry _bundleOwnedMcpServers;
     private readonly ILogger<BundleStagingService> _logger;
 
     /// <summary>Initialises the staging service with its parsers, configuration, and logger.</summary>
@@ -67,12 +67,13 @@ public sealed class BundleStagingService : IBundleStagingService
     /// (issue #247).
     /// </param>
     /// <param name="pluginReader">Reader for a staged bundle's plugin manifest.</param>
-    /// <param name="mcpServersConfig">
-    /// The same live <see cref="McpServersConfig"/> instance <c>McpConnectionManager</c> reads (the
-    /// <c>AIConfig</c>-bound one, not the <c>AppConfig</c>-bound one — they are independent object
-    /// graphs; see the composition-root comment next to <c>PluginLoader</c>'s registration). A staged
-    /// bundle's own MCP servers are merged into it under a bundle-scoped namespaced key, mirroring how
-    /// <see cref="Infrastructure.AI.Plugins.PluginLoader"/> merges a host plugin's servers.
+    /// <param name="bundleOwnedMcpServers">
+    /// The shared, singleton <see cref="BundleOwnedMcpServerRegistry"/> — a bundle's own MCP servers are
+    /// merged into it under a bundle-scoped namespaced key, deliberately NOT into the trusted, host-admin
+    /// <c>McpServersConfig</c> <c>McpConnectionManager</c> enumerates: an uploaded bundle is untrusted
+    /// content, and registering it into the same dictionary the host enumerates would let it leak into
+    /// every ordinary, non-bundle conversation. <c>McpConnectionManager</c> consults this registry only
+    /// by exact name, as a fallback after its host dictionary misses — never by enumeration.
     /// </param>
     /// <param name="logger">Logger for staging diagnostics.</param>
     public BundleStagingService(
@@ -81,18 +82,18 @@ public sealed class BundleStagingService : IBundleStagingService
         SkillMetadataParser skillParser,
         ISkillFileReader skillFileReader,
         IPluginManifestReader pluginReader,
-        McpServersConfig mcpServersConfig,
+        BundleOwnedMcpServerRegistry bundleOwnedMcpServers,
         ILogger<BundleStagingService> logger)
     {
         ArgumentNullException.ThrowIfNull(skillFileReader);
-        ArgumentNullException.ThrowIfNull(mcpServersConfig);
+        ArgumentNullException.ThrowIfNull(bundleOwnedMcpServers);
 
         _appConfig = appConfig;
         _agentParser = agentParser;
         _skillParser = skillParser;
         _skillFileReader = skillFileReader;
         _pluginReader = pluginReader;
-        _mcpServersConfig = mcpServersConfig;
+        _bundleOwnedMcpServers = bundleOwnedMcpServers;
         _logger = logger;
     }
 
@@ -435,9 +436,10 @@ public sealed class BundleStagingService : IBundleStagingService
     }
 
     /// <summary>
-    /// Merges one manifest's declared MCP servers into the shared <see cref="McpServersConfig"/> under
-    /// a bundle-scoped key (<c>{bundleId}:{serverName}</c>) and returns each registered key — the values
-    /// that become <see cref="StagedBundle.McpServerNames"/>, later unioned into the run's
+    /// Merges one manifest's declared MCP servers into the shared <see cref="BundleOwnedMcpServerRegistry"/>
+    /// — deliberately NOT the trusted, host-admin <c>McpServersConfig</c> — under a bundle-scoped key
+    /// (<c>{bundleId}:{serverName}</c>) and returns each registered key — the values that become
+    /// <see cref="StagedBundle.McpServerNames"/>, later unioned into the run's
     /// <see cref="Domain.AI.Bundles.CapabilityEnvelope"/>. <paramref name="bundleId"/> alone (not the
     /// manifest's own name) is the namespace, because <see cref="Domain.AI.Bundles.StagedBundle.BundleId"/>
     /// is a fresh GUID per staging — two bundles can never collide — while a manifest's <c>Name</c> is
@@ -509,7 +511,7 @@ public sealed class BundleStagingService : IBundleStagingService
             return false;
         }
 
-        if (_mcpServersConfig.Servers.TryAdd(namespacedName, definition))
+        if (_bundleOwnedMcpServers.Servers.TryAdd(namespacedName, definition))
             return true;
 
         _logger.LogWarning(

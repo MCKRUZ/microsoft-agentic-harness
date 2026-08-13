@@ -26,6 +26,7 @@ public sealed class McpConnectionManager : IAsyncDisposable
     private readonly HttpMessageHandler _antiSsrfHandler;
     private readonly HttpClient _httpClient;
     private readonly McpServersConfig _config;
+    private readonly BundleOwnedMcpServerRegistry _bundleOwnedServers;
     private readonly ConcurrentDictionary<string, McpClient> _clients = new();
     private readonly ConcurrentDictionary<string, HttpClient> _entraClients = new();
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _connectionLocks = new();
@@ -55,7 +56,8 @@ public sealed class McpConnectionManager : IAsyncDisposable
         ILogger<McpConnectionManager> logger,
         ILoggerFactory loggerFactory,
         AntiSsrfHandlerFactory antiSsrfHandlerFactory,
-        McpServersConfig config)
+        McpServersConfig config,
+        BundleOwnedMcpServerRegistry bundleOwnedServers)
     {
         _logger = logger;
         _loggerFactory = loggerFactory;
@@ -67,6 +69,7 @@ public sealed class McpConnectionManager : IAsyncDisposable
         // the factory; this client must not dispose it.
         _httpClient = new HttpClient(_antiSsrfHandler, disposeHandler: false);
         _config = config;
+        _bundleOwnedServers = bundleOwnedServers;
     }
 
     /// <summary>
@@ -133,6 +136,17 @@ public sealed class McpConnectionManager : IAsyncDisposable
     /// <summary>
     /// Gets the names of all configured and enabled servers.
     /// </summary>
+    /// <remarks>
+    /// <strong>Deliberately host-only.</strong> This enumerates <em>only</em> <see cref="_config"/> —
+    /// never <see cref="_bundleOwnedServers"/>. Every consumer built on this method
+    /// (<c>McpToolProvider.GetAllToolsAsync</c>/<c>GetToolByNameAsync</c>, and through them the MCP REST
+    /// endpoints, and <c>ToolChainBuilder</c>'s no-envelope resolution path — i.e. every ORDINARY,
+    /// non-bundle agent conversation) publishes whatever this returns with no further bundle-provenance
+    /// check. If a bundle-owned server were ever enumerable here, its tools would reach every other
+    /// conversation on the host under their bare, attacker-chosen names. Do not add
+    /// <see cref="_bundleOwnedServers"/> to this method; see <see cref="BundleOwnedMcpServerRegistry"/>'s
+    /// own doc comment for why it is a separate type instead of a filtered flag on this one.
+    /// </remarks>
     public IEnumerable<string> GetConfiguredServerNames()
     {
         return _config.Servers
@@ -142,7 +156,17 @@ public sealed class McpConnectionManager : IAsyncDisposable
 
     private async Task<McpClient> CreateClientAsync(string serverName, CancellationToken cancellationToken)
     {
-        if (!_config.Servers.TryGetValue(serverName, out var definition))
+        // Host dictionary first (trusted source wins outright), then the bundle-owned registry as a
+        // fallback for an exact-name lookup only — never enumerated, only resolved by name. This is how
+        // a bundle run's own already-envelope-gated resolution (ToolChainBuilder.ProvisionToolAsync,
+        // ResolveInjectedMcpToolsAsync's envelope-armed branch, BundleRunExecutor.DiscoverToolNamesAsync)
+        // reaches its own server; without it, a bundle run could never use its own registered tools.
+        // _clients/_connectionLocks/_entraClients below are a single flat cache keyed by bare serverName
+        // across BOTH sources — safe today because the two namespacing schemes never collide (host names
+        // are plain or {pluginName}:{name}; bundle names are {bundleId GUID}:{name}), documented here
+        // rather than restructured into per-source caches.
+        if (!_config.Servers.TryGetValue(serverName, out var definition)
+            && !_bundleOwnedServers.Servers.TryGetValue(serverName, out definition))
             throw new McpConnectionException($"MCP server '{serverName}' is not configured.");
 
         if (!definition.Enabled)

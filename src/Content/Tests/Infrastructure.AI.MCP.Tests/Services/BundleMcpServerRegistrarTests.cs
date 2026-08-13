@@ -14,40 +14,35 @@ namespace Infrastructure.AI.MCP.Tests.Services;
 /// </summary>
 public sealed class BundleMcpServerRegistrarTests
 {
-    private static BundleMcpServerRegistrar CreateSut(McpServersConfig config) =>
+    private static BundleMcpServerRegistrar CreateSut(BundleOwnedMcpServerRegistry bundleOwned) =>
         new(
-            config,
+            bundleOwned,
             new McpConnectionManager(
                 Mock.Of<ILogger<McpConnectionManager>>(),
                 new Mock<ILoggerFactory>().Object,
                 TestSsrf.HandlerFactory(),
-                config),
+                new McpServersConfig(),
+                bundleOwned),
             Mock.Of<ILogger<BundleMcpServerRegistrar>>());
 
     [Fact]
     public async Task DeregisterAsync_RemovesNamedServers_LeavesOthersUntouched()
     {
-        var config = new McpServersConfig
-        {
-            Servers = new ConcurrentDictionary<string, McpServerDefinition>
-            {
-                ["b1:echo"] = new() { Command = "npx" },
-                ["host-configured"] = new() { Command = "node" }
-            }
-        };
-        var sut = CreateSut(config);
+        var bundleOwned = new BundleOwnedMcpServerRegistry();
+        bundleOwned.Servers["b1:echo"] = new() { Command = "npx" };
+        bundleOwned.Servers["b2:other"] = new() { Command = "node" };
+        var sut = CreateSut(bundleOwned);
 
         await sut.DeregisterAsync(["b1:echo"]);
 
-        config.Servers.Should().NotContainKey("b1:echo");
-        config.Servers.Should().ContainKey("host-configured", "deregistration must only ever touch the named entries");
+        bundleOwned.Servers.Should().NotContainKey("b1:echo");
+        bundleOwned.Servers.Should().ContainKey("b2:other", "deregistration must only ever touch the named entries");
     }
 
     [Fact]
     public async Task DeregisterAsync_UnknownServerName_IsANoOpAndDoesNotThrow()
     {
-        var config = new McpServersConfig();
-        var sut = CreateSut(config);
+        var sut = CreateSut(new BundleOwnedMcpServerRegistry());
 
         var act = async () => await sut.DeregisterAsync(["never-registered"]);
 
@@ -57,14 +52,12 @@ public sealed class BundleMcpServerRegistrarTests
     [Fact]
     public async Task DeregisterAsync_EmptyList_IsANoOp()
     {
-        var config = new McpServersConfig
-        {
-            Servers = new ConcurrentDictionary<string, McpServerDefinition> { ["b1:echo"] = new() { Command = "npx" } }
-        };
-        var sut = CreateSut(config);
+        var bundleOwned = new BundleOwnedMcpServerRegistry();
+        bundleOwned.Servers["b1:echo"] = new() { Command = "npx" };
+        var sut = CreateSut(bundleOwned);
 
         await sut.DeregisterAsync([]);
 
-        config.Servers.Should().ContainKey("b1:echo");
+        bundleOwned.Servers.Should().ContainKey("b1:echo");
     }
 }

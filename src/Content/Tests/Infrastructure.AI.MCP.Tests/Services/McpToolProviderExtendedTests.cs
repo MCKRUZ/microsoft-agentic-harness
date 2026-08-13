@@ -21,7 +21,8 @@ public sealed class McpToolProviderExtendedTests
             Mock.Of<ILogger<McpConnectionManager>>(),
             new Mock<ILoggerFactory>().Object,
             TestSsrf.HandlerFactory(),
-            config ?? new McpServersConfig());
+            config ?? new McpServersConfig(),
+            new BundleOwnedMcpServerRegistry());
 
         var provider = new McpToolProvider(
             Mock.Of<ILogger<McpToolProvider>>(), manager);

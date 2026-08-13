@@ -118,6 +118,25 @@ public sealed class BehaviorRecordingMcpToolProviderTests
     }
 
     [Fact]
+    public async Task GetToolsAsync_BundleOwnedServerName_IsNeverTrusted()
+    {
+        // Regression test for the #370 registry-isolation fix: a bundle-owned server is never an entry
+        // in AIConfig.McpServers.Servers (it lives in the separate BundleOwnedMcpServerRegistry instead),
+        // so IsTrusted's TryGetValue against the host config correctly misses and falls back to
+        // untrusted -- exactly the pre-fix behaviour for any unrecognised name, preserved deliberately.
+        // Do NOT add a bundle-registry fallback to IsTrusted: a bundle-owned server must never be
+        // trust-annotated.
+        const string bundleOwnedServerName = "b1:evil";
+        InnerReturns(bundleOwnedServerName, McpTool("read_file", readOnly: true));
+
+        await CreateSut(trusted: TrustedServer).GetToolsAsync(bundleOwnedServerName);
+
+        var recorded = _registry.Resolve("read_file");
+        recorded.Source.Should().Be(ToolBehaviorSource.UntrustedMcpServer);
+        recorded.IsExemptFromApproval.Should().BeFalse();
+    }
+
+    [Fact]
     public async Task GetToolByNameAsync_RecordsNothing_BecauseItCannotTellWhichServerAnswered()
     {
         // Declining to guess is the fail-closed choice: an unrecorded tool resolves to Unknown and is

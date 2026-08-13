@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Application.AI.Common.Interfaces.Plugins;
 using Domain.Common.Config.AI;
 using Domain.Common.Config.AI.MCP;
@@ -114,14 +115,39 @@ public sealed class PluginLoader : IPluginLoader
         foreach (var serverProp in block.Value.ServersElement.EnumerateObject())
         {
             var namespacedName = $"{declaration.Name}:{serverProp.Name}";
-            var definition = McpServerDefinitionBuilder.Build(
-                serverProp.Value, declaration.Env, $"[Plugin: {declaration.Name}]", serverProp.Name);
-
-            _mcpServersConfig.Servers[namespacedName] = definition;
-            names.Add(namespacedName);
+            if (TryBuildAndRegisterOneServer(declaration, namespacedName, serverProp))
+                names.Add(namespacedName);
         }
 
         return names;
+    }
+
+    /// <summary>
+    /// Builds one manifest-declared server and registers it under <paramref name="namespacedName"/>.
+    /// A malformed entry (e.g. a non-string <c>args</c> element) is skipped and logged rather than
+    /// thrown — <see cref="Load"/>'s outer catch would otherwise mark the WHOLE plugin
+    /// <see cref="PluginLoadStatus.Failed"/> over one bad server, discarding the skill paths already
+    /// collected in the same call and leaving any server registered by an earlier entry in this same
+    /// loop orphaned (absent from the returned names, so nothing can deregister it later).
+    /// </summary>
+    private bool TryBuildAndRegisterOneServer(PluginDeclaration declaration, string namespacedName, JsonProperty serverProp)
+    {
+        McpServerDefinition definition;
+        try
+        {
+            definition = McpServerDefinitionBuilder.Build(
+                serverProp.Value, declaration.Env, $"[Plugin: {declaration.Name}]", serverProp.Name);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex,
+                "Plugin {Name}: failed to build MCP server definition for '{ServerName}', skipping",
+                declaration.Name, serverProp.Name);
+            return false;
+        }
+
+        _mcpServersConfig.Servers[namespacedName] = definition;
+        return true;
     }
 
     private static bool IsContainedWithin(string resolvedPath, string basePath)

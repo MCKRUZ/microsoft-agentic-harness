@@ -42,8 +42,12 @@ public static class McpServerDefinitionBuilder
 
         if (type is McpServerType.Http or McpServerType.Sse)
         {
-            if (serverElement.TryGetProperty("url", out var url))
-                definition.Url = url.GetString();
+            var url = serverElement.TryGetProperty("url", out var urlElement) ? urlElement.GetString() : null;
+            if (string.IsNullOrWhiteSpace(url))
+                throw new InvalidOperationException(
+                    $"'{serverName}' declares a {type} transport with no 'url' — a remote server must declare one.");
+
+            definition.Url = url;
         }
         else
         {

@@ -188,18 +188,20 @@ public static partial class DependencyInjection
         // --- Bundle execution (staging) ---
         // Off by default (AI:BundleExecution:Enabled). The staging service is passive — it does nothing
         // until an ingest call reaches it — so it is registered unconditionally; the run/API surface that
-        // invokes it is gated in a later layer. Wired to the SAME McpServersConfig instance PluginLoader
-        // (below) and McpConnectionManager read — the AIConfig-bound one, not the AppConfig-bound one;
-        // see the comment on the PluginLoader registration for why that distinction matters. A staged
-        // bundle's own MCP servers are merged into that instance under a bundle-scoped key at staging
-        // time (issue #368).
+        // invokes it is gated in a later layer. Wired to the SAME BundleOwnedMcpServerRegistry instance
+        // McpConnectionManager (Infrastructure.AI.MCP) reads — deliberately NOT the trusted, AIConfig-bound
+        // McpServersConfig PluginLoader (below) writes into: a staged bundle's own MCP servers are
+        // untrusted, uploader-supplied content and must never land in the same registry the host
+        // enumerates for an ordinary conversation (issue #368's original design; isolated in #370 after a
+        // security review found the shared-registry version let a bundle's tools leak into every
+        // non-bundle conversation on the host).
         services.AddSingleton<IBundleStagingService>(sp => new BundleStagingService(
             sp.GetRequiredService<IOptionsMonitor<AppConfig>>(),
             sp.GetRequiredService<AgentMetadataParser>(),
             sp.GetRequiredService<SkillMetadataParser>(),
             sp.GetRequiredService<ISkillFileReader>(),
             sp.GetRequiredService<IPluginManifestReader>(),
-            sp.GetRequiredService<IOptionsMonitor<Domain.Common.Config.AI.AIConfig>>().CurrentValue.McpServers,
+            sp.GetRequiredService<Domain.Common.Config.AI.MCP.BundleOwnedMcpServerRegistry>(),
             sp.GetRequiredService<ILogger<BundleStagingService>>()));
 
         // Capability-envelope resolver — maps the calling credential to its configured per-caller grant.

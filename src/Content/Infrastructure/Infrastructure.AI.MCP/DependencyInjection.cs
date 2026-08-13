@@ -3,6 +3,7 @@ using Application.AI.Common.Interfaces.Bundles;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Tools;
 using Domain.Common.Config.AI;
+using Domain.Common.Config.AI.MCP;
 using Infrastructure.AI.Egress;
 using Infrastructure.AI.MCP.Resources;
 using Infrastructure.AI.MCP.Services;
@@ -33,6 +34,11 @@ public static class DependencyInjection
     /// <returns>The service collection for chaining.</returns>
     public static IServiceCollection AddMcpClientDependencies(this IServiceCollection services)
     {
+        // The runtime-only store for a bundle's own (untrusted, uploaded) MCP server definitions —
+        // deliberately never the AIConfig-bound McpServersConfig below. See its own doc comment for why
+        // this is a distinct type rather than a second McpServersConfig instance.
+        services.AddSingleton<BundleOwnedMcpServerRegistry>();
+
         // Connection manager — singleton, manages MCP client lifecycles.
         // Resolving AntiSsrfHandlerFactory makes the SSRF guard a mandatory dependency:
         // if the egress layer (Infrastructure.AI RegisterEgressServices) was not wired,
@@ -43,7 +49,9 @@ public static class DependencyInjection
             var logger = sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<McpConnectionManager>>();
             var loggerFactory = sp.GetRequiredService<Microsoft.Extensions.Logging.ILoggerFactory>();
             var antiSsrfHandlerFactory = sp.GetRequiredService<AntiSsrfHandlerFactory>();
-            return new McpConnectionManager(logger, loggerFactory, antiSsrfHandlerFactory, aiConfig.CurrentValue.McpServers);
+            var bundleOwnedServers = sp.GetRequiredService<BundleOwnedMcpServerRegistry>();
+            return new McpConnectionManager(
+                logger, loggerFactory, antiSsrfHandlerFactory, aiConfig.CurrentValue.McpServers, bundleOwnedServers);
         });
 
         // Tool provider — singleton wrapping connection manager. Only the scanning decorator is
@@ -75,10 +83,11 @@ public static class DependencyInjection
         services.AddSingleton<IMcpResourceProvider>(sp => sp.GetRequiredService<TraceResourceProvider>());
 
         // Deregisters a bundle's own MCP servers (and disconnects any live client for them) when its
-        // handle is evicted. Wired to the SAME McpServersConfig instance McpConnectionManager (above) and
-        // BundleStagingService's registration use, so a removal here is visible to both (issue #368).
+        // handle is evicted. Wired to the SAME BundleOwnedMcpServerRegistry instance McpConnectionManager
+        // (above) and BundleStagingService's registration use, so a removal here is visible to both
+        // (issue #368; isolated from the trusted registry per the security fix in #370).
         services.AddSingleton<IBundleMcpServerRegistrar>(sp => new BundleMcpServerRegistrar(
-            sp.GetRequiredService<IOptionsMonitor<AIConfig>>().CurrentValue.McpServers,
+            sp.GetRequiredService<BundleOwnedMcpServerRegistry>(),
             sp.GetRequiredService<McpConnectionManager>(),
             sp.GetRequiredService<ILogger<BundleMcpServerRegistrar>>()));
 

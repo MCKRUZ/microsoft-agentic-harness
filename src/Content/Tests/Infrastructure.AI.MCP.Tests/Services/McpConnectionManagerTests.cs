@@ -10,13 +10,15 @@ namespace Infrastructure.AI.MCP.Tests.Services;
 
 public sealed class McpConnectionManagerTests
 {
-    private static McpConnectionManager CreateManager(McpServersConfig? config = null)
+    private static McpConnectionManager CreateManager(
+        McpServersConfig? config = null, BundleOwnedMcpServerRegistry? bundleOwned = null)
     {
         return new McpConnectionManager(
             Mock.Of<ILogger<McpConnectionManager>>(),
             new Mock<ILoggerFactory>().Object,
             TestSsrf.HandlerFactory(),
-            config ?? new McpServersConfig());
+            config ?? new McpServersConfig(),
+            bundleOwned ?? new BundleOwnedMcpServerRegistry());
     }
 
     [Fact]

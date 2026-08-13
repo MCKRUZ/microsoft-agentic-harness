@@ -6,27 +6,28 @@ namespace Infrastructure.AI.MCP.Services;
 
 /// <summary>
 /// Default <see cref="IBundleMcpServerRegistrar"/>. Removes a bundle's namespaced entries from the
-/// shared <see cref="McpServersConfig"/> and disconnects any live <see cref="McpConnectionManager"/>
-/// client for each — the deregistration counterpart to the registration <c>BundleStagingService</c>
-/// performs at staging time, against the SAME <see cref="McpServersConfig"/> instance.
+/// shared <see cref="BundleOwnedMcpServerRegistry"/> and disconnects any live
+/// <see cref="McpConnectionManager"/> client for each — the deregistration counterpart to the
+/// registration <c>BundleStagingService</c> performs at staging time, against the SAME
+/// <see cref="BundleOwnedMcpServerRegistry"/> instance.
 /// </summary>
 public sealed class BundleMcpServerRegistrar : IBundleMcpServerRegistrar
 {
-    private readonly McpServersConfig _mcpServersConfig;
+    private readonly BundleOwnedMcpServerRegistry _bundleOwnedMcpServers;
     private readonly McpConnectionManager _connectionManager;
     private readonly ILogger<BundleMcpServerRegistrar> _logger;
 
     /// <summary>Initializes a new <see cref="BundleMcpServerRegistrar"/>.</summary>
     public BundleMcpServerRegistrar(
-        McpServersConfig mcpServersConfig,
+        BundleOwnedMcpServerRegistry bundleOwnedMcpServers,
         McpConnectionManager connectionManager,
         ILogger<BundleMcpServerRegistrar> logger)
     {
-        ArgumentNullException.ThrowIfNull(mcpServersConfig);
+        ArgumentNullException.ThrowIfNull(bundleOwnedMcpServers);
         ArgumentNullException.ThrowIfNull(connectionManager);
         ArgumentNullException.ThrowIfNull(logger);
 
-        _mcpServersConfig = mcpServersConfig;
+        _bundleOwnedMcpServers = bundleOwnedMcpServers;
         _connectionManager = connectionManager;
         _logger = logger;
     }
@@ -36,7 +37,7 @@ public sealed class BundleMcpServerRegistrar : IBundleMcpServerRegistrar
     {
         foreach (var serverName in serverNames)
         {
-            _mcpServersConfig.Servers.TryRemove(serverName, out _);
+            _bundleOwnedMcpServers.Servers.TryRemove(serverName, out _);
 
             try
             {

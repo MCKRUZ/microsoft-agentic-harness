@@ -59,6 +59,7 @@ public sealed class McpSsrfProtectionTests
             NullLogger<McpConnectionManager>.Instance,
             NullLoggerFactory.Instance,
             antiSsrf,
-            config);
+            config,
+            new BundleOwnedMcpServerRegistry());
     }
 }
