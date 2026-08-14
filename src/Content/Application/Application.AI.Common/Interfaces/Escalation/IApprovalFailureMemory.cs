@@ -31,8 +31,50 @@ public interface IApprovalFailureMemory
     /// <summary>Records a failed approved attempt against this key.</summary>
     void RecordFailure(in ApprovalFailureKey key, string failureReason, Guid escalationId);
 
-    /// <summary>Clears any recorded failure for this key.</summary>
+    /// <summary>
+    /// Clears any recorded failure for this key — and, as a side effect, any recorded revision
+    /// state for the same key too (see <see cref="ClearRevision"/>'s remarks). This removes the
+    /// whole per-key entry, not just its failure half, so a future caller must not assume it can
+    /// clear failure state alone without disturbing a still-live revision round.
+    /// </summary>
+    /// <remarks>
+    /// Safe on both of today's production callers, for different reasons: an explicit human denial
+    /// means any revision conversation for the key is genuinely over too, so the wider clear is
+    /// exactly right; a successfully executed approved call runs this only after the router's own
+    /// approval path already called <see cref="ClearRevision"/> at decision time, so the side effect
+    /// here is redundant, not destructive. A new caller with neither property must call
+    /// <see cref="ClearRevision"/> instead if it needs to leave failure state untouched.
+    /// </remarks>
     void Clear(in ApprovalFailureKey key);
+
+    /// <summary>
+    /// Returns the recalled prior-revision state for this key, or null if none is recorded.
+    /// </summary>
+    /// <remarks>
+    /// A wholly independent piece of state from <see cref="TryRecall"/>'s failed-attempt tracking,
+    /// sharing this same bounded cache rather than a second one with its own cap — see
+    /// <see cref="RecordRevision"/> for why the two must never share a clear rule.
+    /// </remarks>
+    ApprovalRevisionRecall? TryRecallRevision(in ApprovalFailureKey key);
+
+    /// <summary>
+    /// Records that this key's escalation resolved with a Revise verdict, so the next attempt at
+    /// the same action can carry the round number forward and show the reviewer's instructions.
+    /// </summary>
+    void RecordRevision(in ApprovalFailureKey key, int revisionRound, string instructions, Guid escalationId);
+
+    /// <summary>
+    /// Clears any recorded revision state for this key, independently of <see cref="Clear"/>.
+    /// </summary>
+    /// <remarks>
+    /// Callers must invoke this whenever an escalation for the key resolves Approved or Denied —
+    /// the revise conversation is over at that decision, not at whatever the approved call later
+    /// does. Never call this from a runtime execution outcome: a revision that led to an approved
+    /// call which later fails at runtime is <see cref="RecordFailure"/>'s concern, not this one's,
+    /// and clearing revision state on that failure would let a still-live round's instructions and
+    /// round count silently vanish before the reviewer's cap is reached.
+    /// </remarks>
+    void ClearRevision(in ApprovalFailureKey key);
 }
 
 /// <summary>
@@ -56,3 +98,11 @@ public readonly record struct ApprovalFailureKey(string ConversationId, string A
 
 /// <summary>A recalled prior failure: how many times it has failed, why, and which escalation last approved it.</summary>
 public readonly record struct ApprovalFailureRecall(int PriorAttemptCount, string FailureReason, Guid EscalationId);
+
+/// <summary>
+/// A recalled prior revision: which round the next attempt continues, what the reviewer asked for
+/// last time, and the escalation that asked for it. Independent of <see cref="ApprovalFailureRecall"/>
+/// — see <see cref="IApprovalFailureMemory.ClearRevision"/> for why the two must never share a
+/// clear rule despite sharing a cache.
+/// </summary>
+public readonly record struct ApprovalRevisionRecall(int RevisionRound, string Instructions, Guid EscalationId);

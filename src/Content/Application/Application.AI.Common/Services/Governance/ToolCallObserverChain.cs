@@ -100,12 +100,21 @@ public sealed class ToolCallObserverChain : IToolCallObserverChain
 
             if (verdict.Outcome == ToolCallOutcome.RequireApproval)
             {
+                var approval = await RouteForApprovalAsync(
+                    observer, toolName, verdict.Reason, arguments, cancellationToken).ConfigureAwait(false);
+
                 // Approved: this observer is satisfied, but the rest have not spoken. Keep going.
-                if (await RouteForApprovalAsync(observer, toolName, verdict.Reason, arguments, cancellationToken)
-                        .ConfigureAwait(false))
+                if (approval.Outcome == ToolApprovalOutcome.Approved)
                     continue;
 
-                return Blocked(observer.Name, toolName, "escalated and not approved");
+                var block = Blocked(observer.Name, toolName, "escalated and not approved");
+
+                // The #321 revise carve-out's second production wiring — see
+                // ToolInvocationGovernor.Approval.cs for the first and the fuller explanation.
+                // Applied after Blocked() has already recorded the trace/audit/log, so every other
+                // observer-triggered block stays exactly as generic as before this feature existed.
+                // ApplyModelFacingOverride is shared between both wiring sites.
+                return approval.ApplyModelFacingOverride(block);
             }
 
             // Block, and anything this chain does not recognise. Falling through to a refusal means a
@@ -146,8 +155,13 @@ public sealed class ToolCallObserverChain : IToolCallObserverChain
     /// <summary>
     /// Puts an escalating observer's objection to a human via the configured approval workflow.
     /// </summary>
-    /// <returns><c>true</c> only when a human approved the call.</returns>
-    private async ValueTask<bool> RouteForApprovalAsync(
+    /// <returns>
+    /// The full routed result, so a caller who cares only about the yes/no can still read
+    /// <see cref="ToolApprovalResult.Outcome"/> — returning just a bool discarded
+    /// <see cref="ToolApprovalResult.ModelFacingInstructions"/> and silently made the #321 revise
+    /// carve-out inert on every call routed through this chain.
+    /// </returns>
+    private async ValueTask<ToolApprovalResult> RouteForApprovalAsync(
         IToolCallObserver observer,
         string toolName,
         string? reason,
@@ -162,7 +176,7 @@ public sealed class ToolCallObserverChain : IToolCallObserverChain
             _logger.LogWarning(
                 "Observer '{Observer}' escalated {ToolName} but the turn carries no agent identity — call blocked.",
                 observer.Name, toolName);
-            return false;
+            return ToolApprovalResult.Denied("no agent identity to attribute the escalation to");
         }
 
         var radius = _riskClassifier.Classify(toolName).Radius;
@@ -179,15 +193,17 @@ public sealed class ToolCallObserverChain : IToolCallObserverChain
             _logger.LogInformation(
                 "Observer '{Observer}' escalated {ToolName}; a human approved it ({Reason}).",
                 observer.Name, toolName, result.Reason);
-            return true;
+        }
+        else
+        {
+            // NotRouted means the host never configured an approval route. The observer asked for
+            // a human and there is none, so the call is refused — never quietly allowed.
+            _logger.LogWarning(
+                "Observer '{Observer}' escalated {ToolName} and it was not approved ({Reason}) — call blocked.",
+                observer.Name, toolName, result.Reason);
         }
 
-        // NotRouted means the host never configured an approval route. The observer asked for a
-        // human and there is none, so the call is refused — never quietly allowed.
-        _logger.LogWarning(
-            "Observer '{Observer}' escalated {ToolName} and it was not approved ({Reason}) — call blocked.",
-            observer.Name, toolName, result.Reason);
-        return false;
+        return result;
     }
 
     /// <summary>

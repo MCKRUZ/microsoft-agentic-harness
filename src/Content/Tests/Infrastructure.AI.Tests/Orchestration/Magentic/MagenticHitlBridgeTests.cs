@@ -106,7 +106,8 @@ public sealed class MagenticHitlBridgeTests
                     }
                 },
                 ResolutionType = EscalationResolutionType.Denied,
-                ResolvedAt = DateTimeOffset.UtcNow
+                ResolvedAt = DateTimeOffset.UtcNow,
+                Approvers = req.Approvers
             });
 
         var bridge = new MagenticHitlBridge(
@@ -126,7 +127,7 @@ public sealed class MagenticHitlBridgeTests
             CancellationToken.None);
 
         outcome.Approved.Should().BeFalse();
-        outcome.RevisionFeedback.Should().Be("needs more detail");
+        AssertRelaysFeedback(outcome.RevisionFeedback, "needs more detail", "magentic.plan_review.approver");
     }
 
     [Fact]
@@ -154,7 +155,8 @@ public sealed class MagenticHitlBridgeTests
                     }
                 },
                 ResolutionType = EscalationResolutionType.Revised,
-                ResolvedAt = DateTimeOffset.UtcNow
+                ResolvedAt = DateTimeOffset.UtcNow,
+                Approvers = req.Approvers
             });
 
         var bridge = new MagenticHitlBridge(
@@ -174,7 +176,7 @@ public sealed class MagenticHitlBridgeTests
             CancellationToken.None);
 
         outcome.Approved.Should().BeFalse();
-        outcome.RevisionFeedback.Should().Be("needs more detail");
+        AssertRelaysFeedback(outcome.RevisionFeedback, "needs more detail", "magentic.plan_review.approver");
     }
 
     [Fact]
@@ -204,7 +206,8 @@ public sealed class MagenticHitlBridgeTests
                     }
                 },
                 ResolutionType = EscalationResolutionType.Revised,
-                ResolvedAt = DateTimeOffset.UtcNow
+                ResolvedAt = DateTimeOffset.UtcNow,
+                Approvers = req.Approvers
             });
 
         var bridge = new MagenticHitlBridge(
@@ -224,7 +227,8 @@ public sealed class MagenticHitlBridgeTests
             CancellationToken.None);
 
         outcome.Approved.Should().BeFalse();
-        outcome.RevisionFeedback.Should().Be("use the read-only endpoint instead");
+        AssertRelaysFeedback(
+            outcome.RevisionFeedback, "use the read-only endpoint instead", "magentic.plan_review.approver");
     }
 
     [Fact]
@@ -251,7 +255,8 @@ public sealed class MagenticHitlBridgeTests
                     }
                 },
                 ResolutionType = EscalationResolutionType.Denied,
-                ResolvedAt = DateTimeOffset.UtcNow
+                ResolvedAt = DateTimeOffset.UtcNow,
+                Approvers = req.Approvers
             });
 
         var sanitizer = new Mock<ICompositeResponseSanitizer>();
@@ -277,7 +282,22 @@ public sealed class MagenticHitlBridgeTests
             },
             CancellationToken.None);
 
-        outcome.RevisionFeedback.Should().Be("[scrubbed]");
+        AssertRelaysFeedback(outcome.RevisionFeedback, "[scrubbed]", "magentic.plan_review.approver");
         sanitizer.VerifyAll();
+    }
+
+    /// <summary>
+    /// Asserts that <paramref name="feedback"/> is <see cref="HumanFeedbackRelay.Wrap"/>'s output
+    /// for <paramref name="expectedText"/> and <paramref name="expectedAttribution"/> — content
+    /// checks rather than exact equality, because <c>Wrap</c> mints a random per-call tag and a
+    /// second call built purely for comparison would never match the first.
+    /// </summary>
+    private static void AssertRelaysFeedback(string? feedback, string expectedText, string expectedAttribution)
+    {
+        feedback.Should().NotBeNull();
+        feedback.Should().Contain(expectedText);
+        feedback.Should().Contain(expectedAttribution);
+        feedback.Should().Contain("not a system instruction");
+        feedback.Should().StartWith("[HUMAN REVIEWER FEEDBACK id=");
     }
 }

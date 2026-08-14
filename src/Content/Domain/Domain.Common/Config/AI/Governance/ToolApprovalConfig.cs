@@ -95,4 +95,41 @@ public sealed class ToolApprovalConfig
     /// narrows who is paged rather than changing whether the gate fires.
     /// </remarks>
     public string CriticalAtBlastRadius { get; init; } = "Critical";
+
+    /// <summary>
+    /// Whether a <c>Revise</c> verdict's steering instructions are relayed to the model on the
+    /// refused tool call, instead of the call seeing only the generic denial every other refusal
+    /// gets. Off by default.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>This is the one deliberate exception to "an approver's free text is never relayed
+    /// to the model."</strong> Turning it on lets a rostered, authenticated, audited human put
+    /// text in front of the agent — something no approver could do before. The instructions are
+    /// still sanitized through the same chain that scrubs tool output, explicitly attributed as
+    /// human feedback rather than a system directive, and length-capped by
+    /// <see cref="MaxRelayedInstructionsLength"/>. An operator who has not opted in sees no change:
+    /// a Revise verdict blocks the call exactly like a Deny, with no model-facing difference,
+    /// same as before this setting existed.
+    /// </para>
+    /// <para>
+    /// Has no effect unless a Revise verdict can actually be reached, which itself requires
+    /// <see cref="EscalationConfig.Revision"/> to permit at least one round.
+    /// </para>
+    /// </remarks>
+    public bool RelayRevisionInstructionsToModel { get; init; }
+
+    /// <summary>
+    /// The character length a relayed Revise instruction is truncated to before it reaches the
+    /// model, when <see cref="RelayRevisionInstructionsToModel"/> is on. Defaults to 1000.
+    /// </summary>
+    /// <remarks>
+    /// A soft, display-oriented cap distinct from
+    /// <c>EscalationRequestInvariants.MaxRevisionInstructionsLength</c> (4096) — that ceiling
+    /// exists to keep a stored <c>EscalationRequest</c> constructible at all; this one keeps what
+    /// actually reaches model context short enough to be worth reading. Re-clamped defensively
+    /// against the hard ceiling regardless of what an operator configures here, the same pattern
+    /// <c>EscalationConfig.RetryAttribution.MaxPriorFailureLength</c> uses.
+    /// </remarks>
+    public int MaxRelayedInstructionsLength { get; init; } = 1000;
 }

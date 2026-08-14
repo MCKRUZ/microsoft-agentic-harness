@@ -479,6 +479,69 @@ public sealed class ToolInvocationGovernorTests
     }
 
     [Fact]
+    public async Task AuthorizeAsync_ReviseVerdictWithModelFacingInstructions_ModelFacingMessageIsTheRelayText()
+    {
+        // The 3b carve-out: when the router hands back a Revise result carrying
+        // ModelFacingInstructions (config-gated, built by EscalationToolApprovalRouter), the
+        // governor's model-facing message becomes exactly that text instead of the generic denial.
+        AskingPermission();
+        RouterAnswers(ToolApprovalResult.Revised(
+            "an approver asked for the call to be revised", Guid.NewGuid(), "[HUMAN REVIEWER FEEDBACK] use X instead"));
+        var governor = Build();
+
+        var decision = await governor.AuthorizeAsync(Tool, CancellationToken.None);
+
+        Assert.False(decision.IsAllowed);
+        Assert.Equal("[HUMAN REVIEWER FEEDBACK] use X instead", decision.DeniedMessage);
+        Assert.NotEqual(GovernanceDenials.NotPermitted(Tool), decision.DeniedMessage);
+    }
+
+    [Fact]
+    public async Task AuthorizeAsync_ReviseVerdictWithModelFacingInstructions_TraceAndAuditStillRecordTheOperatorReason()
+    {
+        // The override touches only the model-facing message returned from RequestApprovalAsync —
+        // Blocked() has already recorded the trace/audit/log with the operator-facing reason by the
+        // time it runs. This is the structural proof that the carve-out is applied after Blocked(),
+        // not inside it: the trace's Reason must stay the "requires approval: ..." wording, never
+        // the relayed instructions text.
+        AskingPermission();
+        RouterAnswers(ToolApprovalResult.Revised(
+            "an approver asked for the call to be revised", Guid.NewGuid(), "use X instead"));
+        var governor = Build();
+
+        await governor.AuthorizeAsync(Tool, CancellationToken.None);
+
+        var record = Assert.Single(Trace.ToolDecisions);
+        Assert.Contains("requires approval", record.Reason, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("use X instead", record.Reason, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task AuthorizeAsync_OrdinaryDenial_NeverReadsModelFacingInstructions()
+    {
+        // Structural proof for the other five Blocked() call sites: none of them go through
+        // ToolApprovalResult at all, so there is no ModelFacingInstructions field for them to read
+        // — the #321 override lives solely in ToolInvocationGovernor.Approval.cs's one call site,
+        // never inside Blocked() itself. A policy-engine denial exercises one of the five directly.
+        var governance = new GovernanceConfig { EnforceToolInvocation = true, Enabled = true, EnableAudit = true };
+        _policyEngine.SetupGet(x => x.HasPolicies).Returns(true);
+        _policyEngine
+            .Setup(x => x.EvaluateToolCall(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<IReadOnlyDictionary<string, object?>?>()))
+            .Returns(new GovernanceDecision(
+                IsAllowed: false, Action: GovernancePolicyAction.Deny, Reason: "denied by policy",
+                MatchedRule: "rule-1", PolicyName: "default-policy"));
+        var governor = Build(governance);
+
+        var decision = await governor.AuthorizeAsync(Tool, CancellationToken.None);
+
+        Assert.False(decision.IsAllowed);
+        Assert.Equal(GovernanceDenials.NotPermitted(Tool), decision.DeniedMessage);
+        _approvalRouter.Verify(x => x.RequestApprovalAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
+            It.IsAny<BlastRadius>(), It.IsAny<IReadOnlyDictionary<string, object?>?>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    [Fact]
     public async Task AuthorizeAsync_ApprovalVerdict_PassesTheCallArgumentsToTheApprover()
     {
         // Without the arguments an approver is being asked to sign off on a tool name alone.

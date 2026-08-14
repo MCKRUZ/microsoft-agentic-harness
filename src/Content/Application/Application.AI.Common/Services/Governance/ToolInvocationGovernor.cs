@@ -380,9 +380,15 @@ public sealed partial class ToolInvocationGovernor : IToolInvocationGovernor
             "Tool governance blocked agent {AgentId} tool {ToolName}: {Outcome} — {Reason}",
             agentId, toolName, outcome, reason);
 
-        // Model-facing message is deliberately generic: the detailed reason (rule ids, paths,
+        // Model-facing message is deliberately generic here: the detailed reason (rule ids, paths,
         // capability internals) stays in the structured log and the GovernanceTrace, never relayed
         // to the LLM — avoids leaking operator-authored policy detail into model-visible content.
+        // This method itself has no exception to that. The one narrow, config-gated exception in
+        // the whole governor lives one layer up, at ToolInvocationGovernor.Approval.cs's sole
+        // caller of this method: on a #321 revise verdict with the relay enabled, that caller
+        // overwrites this return value's message after Blocked() has already recorded the trace,
+        // audit, and log above unchanged. Every other call site — the five in this file — gets
+        // exactly the generic denial below, always.
         return ToolInvocationDecision.Deny(GovernanceDenials.NotPermitted(toolName));
     }
 

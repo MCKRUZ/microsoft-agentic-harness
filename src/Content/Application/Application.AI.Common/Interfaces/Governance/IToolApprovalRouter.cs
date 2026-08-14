@@ -78,17 +78,27 @@ public enum ToolApprovalOutcome
 /// <param name="Outcome">What became of the request.</param>
 /// <param name="Reason">
 /// Operator-facing explanation for the trace and audit — an approver's identity, "timed out", or the
-/// reason routing was skipped. Never relayed to the model.
+/// reason routing was skipped. Never relayed to the model. See <see cref="ModelFacingInstructions"/>
+/// for the one field on this type that deliberately is.
 /// </param>
 /// <param name="EscalationId">
 /// The escalation raised, when one was. Null when <see cref="Outcome"/> is
 /// <see cref="ToolApprovalOutcome.NotRouted"/>, and null when the request failed before an
 /// escalation existed.
 /// </param>
+/// <param name="ModelFacingInstructions">
+/// A reviewer's steering instructions on a Revise verdict, already sanitized, attributed, and
+/// delimited by <see cref="Domain.AI.Escalation.HumanFeedbackRelay.Wrap"/> — ready to relay to the
+/// model verbatim as the refused call's own result text. Null on every other outcome, and null on
+/// a Revise verdict too unless <c>ToolApprovalConfig.RelayRevisionInstructionsToModel</c> is on.
+/// This is the single deliberate exception to <see cref="Reason"/>'s contract above; only
+/// <see cref="Revised"/> ever sets it.
+/// </param>
 public sealed record ToolApprovalResult(
     ToolApprovalOutcome Outcome,
     string Reason,
-    Guid? EscalationId = null)
+    Guid? EscalationId = null,
+    string? ModelFacingInstructions = null)
 {
     /// <summary>Routing did not run; the caller keeps its own blocking behaviour.</summary>
     public static ToolApprovalResult NotRouted(string reason) =>
@@ -101,4 +111,28 @@ public sealed record ToolApprovalResult(
     /// <summary>The call was refused, timed out, or could not obtain a decision.</summary>
     public static ToolApprovalResult Denied(string reason, Guid? escalationId = null) =>
         new(ToolApprovalOutcome.Denied, reason, escalationId);
+
+    /// <summary>
+    /// A human asked for the call to be revised. Still a block — <see cref="Outcome"/> stays
+    /// <see cref="ToolApprovalOutcome.Denied"/>, deliberately: every consumer that only checks for
+    /// an approval keeps blocking with zero code change. <paramref name="modelFacingInstructions"/>
+    /// is the one place this differs from an ordinary denial, and is the only factory on this type
+    /// allowed to set it.
+    /// </summary>
+    public static ToolApprovalResult Revised(string reason, Guid escalationId, string? modelFacingInstructions) =>
+        new(ToolApprovalOutcome.Denied, reason, escalationId, modelFacingInstructions);
+
+    /// <summary>
+    /// Substitutes <see cref="ModelFacingInstructions"/> for <paramref name="fallback"/>'s message
+    /// when present, otherwise returns <paramref name="fallback"/> unchanged.
+    /// </summary>
+    /// <remarks>
+    /// Shared by every caller of <see cref="IToolApprovalRouter.RequestApprovalAsync"/> that wires
+    /// in the #321 revise relay after building its own generic denial (<c>ToolInvocationGovernor</c>
+    /// and <c>ToolCallObserverChain</c> — search for callers before adding a third). Applied to an
+    /// already-built decision rather than to the denial-construction step itself, so the caller's
+    /// own trace/audit/log recording stays untouched — only the model-facing message changes.
+    /// </remarks>
+    public ToolInvocationDecision ApplyModelFacingOverride(ToolInvocationDecision fallback) =>
+        ModelFacingInstructions is { } instructions ? ToolInvocationDecision.Deny(instructions) : fallback;
 }
