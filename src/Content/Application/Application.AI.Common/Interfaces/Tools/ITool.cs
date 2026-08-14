@@ -1,5 +1,6 @@
 using Domain.AI.Changes;
 using Domain.AI.Models;
+using Domain.Common.Config.AI.Governance;
 
 namespace Application.AI.Common.Interfaces.Tools;
 
@@ -129,6 +130,25 @@ public interface ITool
     /// to <c>ToolOutputCompressionConfig.DefaultTokenThreshold</c>.
     /// </summary>
     int? CompressionTokenThreshold => null;
+
+    /// <summary>
+    /// What this tool can do with the data that flows through it — bringing untrusted or sensitive
+    /// content into the conversation, or acting on that content in a costly way. Feeds the tool
+    /// composition check (<c>IToolCompositionAnalyzer</c>), which flags an agent holding both a source
+    /// and a sink capability across its assembled tool set as an indirect-prompt-injection exfiltration
+    /// primitive — see <see cref="ToolCompositionCapability"/>.
+    /// </summary>
+    /// <remarks>
+    /// Default is <see cref="ToolCompositionCapability.None"/> — unlike
+    /// <see cref="IsReadOnly"/> and <see cref="IsConcurrencySafe"/>, this default is NOT fail-closed.
+    /// An unclassified tool contributes no capability bits at all, deliberately, because the
+    /// composition check treats "unknown" as neither a source nor a sink: a fail-closed default here
+    /// (unknown means both) would flag every agent holding two or more undeclared tools, which is the
+    /// "universal taint destroys signal" failure the check exists to avoid. Declare this only where the
+    /// answer is unambiguous; an ambiguous tool is better left undeclared than guessed at, and the
+    /// composition analyzer's unclassified-tool count makes that gap visible rather than silent.
+    /// </remarks>
+    ToolCompositionCapability Capabilities => ToolCompositionCapability.None;
 
     /// <summary>
     /// Executes a tool operation with the given parameters.

@@ -2,6 +2,7 @@ using Application.AI.Common.Interfaces.Sandbox;
 using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Interfaces.Workspace;
 using Domain.AI.Changes;
+using Domain.Common.Config.AI.Governance;
 using Domain.AI.Models;
 using Domain.AI.Sandbox;
 using Microsoft.Extensions.DependencyInjection;
@@ -63,6 +64,9 @@ public sealed class WorkspaceRunLintTool : ITool
 
     /// <inheritdoc />
     public BlastRadius RiskTier => BlastRadius.Low;
+
+    /// <inheritdoc />
+    public ToolCompositionCapability Capabilities => ToolCompositionCapability.ExecutesCode;
 
     /// <inheritdoc />
     public string Description =>

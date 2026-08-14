@@ -3,6 +3,7 @@ using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Plugins;
 using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Services.Governance;
+using Domain.AI.Governance;
 using Domain.AI.Skills;
 using Domain.Common.Config.AI;
 using Domain.Common.Config.AI.Plugins;
@@ -27,6 +28,8 @@ public partial class ToolChainBuilder : IToolChainBuilder
     private readonly IMcpToolProvider? _mcpToolProvider;
     private readonly IMcpToolSurfaceScanner? _surfaceScanner;
     private readonly IOptionsMonitor<AIConfig>? _aiConfig;
+    private readonly IToolCompositionAnalyzer? _compositionAnalyzer;
+    private readonly ToolCompositionReporter? _compositionReporter;
 
     public ToolChainBuilder(
         ILogger<ToolChainBuilder> logger,
@@ -34,7 +37,9 @@ public partial class ToolChainBuilder : IToolChainBuilder
         IToolConverter? toolConverter = null,
         IMcpToolProvider? mcpToolProvider = null,
         IMcpToolSurfaceScanner? surfaceScanner = null,
-        IOptionsMonitor<AIConfig>? aiConfig = null)
+        IOptionsMonitor<AIConfig>? aiConfig = null,
+        IToolCompositionAnalyzer? compositionAnalyzer = null,
+        ToolCompositionReporter? compositionReporter = null)
     {
         _logger = logger;
         _serviceProvider = serviceProvider;
@@ -42,6 +47,8 @@ public partial class ToolChainBuilder : IToolChainBuilder
         _mcpToolProvider = mcpToolProvider;
         _surfaceScanner = surfaceScanner;
         _aiConfig = aiConfig;
+        _compositionAnalyzer = compositionAnalyzer;
+        _compositionReporter = compositionReporter;
     }
 
     /// <summary>
@@ -75,7 +82,13 @@ public partial class ToolChainBuilder : IToolChainBuilder
     {
         var provisioned = await BuildProvisionedToolsAsync(skill, options, cancellationToken);
         var (tools, _) = ResolveSurvivingTools(provisioned);
-        return tools;
+
+        // The third whole-agent-set exit — see ApplyCompositionTaint's remarks. Unlike the per-skill
+        // BuildInjectedModeToolsAsync/BuildManagedModeToolsAsync it is built from, this method's return
+        // value IS the complete agent tool set whenever a caller resolves an agent from a single skill,
+        // so it gets the same treatment as the two multi-skill exits rather than being left uncovered.
+        var agentName = options.AgentNameOverride ?? skill.Name;
+        return ApplyCompositionTaint(tools, agentName);
     }
 
     private Task<List<ProvisionedTool>> BuildProvisionedToolsAsync(
@@ -271,7 +284,7 @@ public partial class ToolChainBuilder : IToolChainBuilder
             .ToList();
 
     /// <inheritdoc />
-    public List<AITool> BuildToolsByName(IReadOnlyList<string> toolNames)
+    public List<AITool> BuildToolsByName(IReadOnlyList<string> toolNames, string? agentName = null)
     {
         var tools = new List<AITool>();
         foreach (var name in toolNames)
@@ -283,7 +296,12 @@ public partial class ToolChainBuilder : IToolChainBuilder
 
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var provisioned = tools.Where(t => seen.Add(t.Name)).Select(t => new ProvisionedTool(t, null)).ToList();
-        return FinalizeChain(provisioned, "keyed-DI resolution by name").ConvertAll(p => p.Tool);
+        var finalized = FinalizeChain(provisioned, "keyed-DI resolution by name").ConvertAll(p => p.Tool);
+
+        // One of the three whole-agent-set exits — see ApplyCompositionTaint's remarks: a delegated
+        // subagent's tool set is fully known only here, exactly like the merged path's is only known
+        // after ResolveSurvivingTools.
+        return ApplyCompositionTaint(finalized, agentName ?? "unknown-agent");
     }
 
     /// <inheritdoc />
@@ -325,7 +343,79 @@ public partial class ToolChainBuilder : IToolChainBuilder
             attributedMcp.IntersectWith(deduplicated.Select(t => t.Name));
         }
 
-        return new MergedToolChain(deduplicated, attributedMcp);
+        // One of the three whole-agent-set exits — see ApplyCompositionTaint's remarks. This is the
+        // real, cross-skill tool set an agent runs with; a per-skill check earlier in this method's own
+        // call chain (BuildProvisionedToolsAsync → BuildInjectedModeToolsAsync/BuildManagedModeToolsAsync
+        // → FinalizeChain) would only ever see one skill's tools and could never confirm or rule out a
+        // pairing that spans two skills — exactly the shape of the realistic exfiltration case (a
+        // web-fetch skill plus an email skill on the same agent).
+        var agentName = options.AgentNameOverride ?? skills.FirstOrDefault()?.Name ?? "unknown-agent";
+        var taintedTools = ApplyCompositionTaint(deduplicated, agentName);
+
+        return new MergedToolChain(taintedTools, attributedMcp);
+    }
+
+    /// <summary>
+    /// Runs tool-composition analysis over a whole agent's assembled tool set and re-wraps each
+    /// implicated sink's <see cref="GovernedAIFunction"/> with the findings that name it, so
+    /// <c>ToolInvocationGovernor</c> can enforce a RequireApproval posture at call time without needing
+    /// to see the rest of the agent's tool set. Also reports the assessment through
+    /// <see cref="ToolCompositionReporter"/> — build-time reporting and call-time enforcement are stamped
+    /// from the exact same analysis run, so they can never describe two different tool sets.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>Runs at exactly three places: here, <see cref="BuildToolsAsync"/>, and
+    /// <see cref="BuildToolsByName"/>.</strong> All three are genuine whole-agent-set exits — the point
+    /// past which no more tools are added for that agent build. The per-skill
+    /// <c>BuildInjectedModeToolsAsync</c>/<c>BuildManagedModeToolsAsync</c> that feed into
+    /// <see cref="BuildToolsAsync"/> and this method are not: each only ever sees a fragment of the
+    /// eventual set and is not a valid vantage point for a cross-skill composition check.
+    /// </para>
+    /// <para>
+    /// <strong>Degrades to a no-op when analysis is unavailable</strong> (a null <c>_compositionAnalyzer</c>,
+    /// the same optional-collaborator pattern this class already applies to <c>_surfaceScanner</c> and
+    /// <c>_aiConfig</c>) — every production host registers the analyzer unconditionally, so this only
+    /// matters for a test fixture that constructs <see cref="ToolChainBuilder"/> directly without it.
+    /// </para>
+    /// </remarks>
+    private List<AITool> ApplyCompositionTaint(List<AITool> tools, string agentName)
+    {
+        if (_compositionAnalyzer is null)
+            return tools;
+
+        var assessment = _compositionAnalyzer.Analyze(tools);
+        _compositionReporter?.Report(agentName, assessment);
+
+        if (assessment.Findings.Count == 0)
+            return tools;
+
+        // Grouped so a sink implicated by more than one finding is re-wrapped exactly once, carrying
+        // every finding that names it — never overwritten by a second, later finding for the same sink.
+        var findingsBySink = new Dictionary<string, List<ToolCompositionFinding>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var finding in assessment.Findings)
+        {
+            if (!findingsBySink.TryGetValue(finding.SinkTool, out var forSink))
+                findingsBySink[finding.SinkTool] = forSink = [];
+            forSink.Add(finding);
+        }
+
+        return tools.Select(t =>
+        {
+            // Every tool reaching this point that can carry a taint is already a GovernedAIFunction —
+            // WrapGoverned (via FinalizeChain, upstream of all three call sites) wraps every AIFunction
+            // tool unconditionally. A tool that is not one (a rare non-AIFunction AITool) cannot carry a
+            // taint and passes through unchanged; it is also, by construction, never a sink an operator
+            // could have classified, since first-party capability declarations live on ITool, resolved
+            // only for keyed-DI tools that ARE AIFunctions once converted.
+            if (t is not GovernedAIFunction governed || !findingsBySink.TryGetValue(t.Name, out var findings))
+                return t;
+
+            // Re-wrap rather than mutate: the taint is set once, in the constructor, so carrying a
+            // finding discovered by THIS analysis means unwrapping to the same inner function and
+            // rewrapping — never double-governing, since InnerFunction always points at the real tool.
+            return (AITool)new GovernedAIFunction(governed.Inner, new ToolCompositionTaint(findings));
+        }).ToList();
     }
 
     /// <summary>

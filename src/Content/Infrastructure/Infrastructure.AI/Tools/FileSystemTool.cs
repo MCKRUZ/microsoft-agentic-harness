@@ -1,5 +1,6 @@
 using Application.AI.Common.Interfaces.Tools;
 using Domain.AI.Changes;
+using Domain.Common.Config.AI.Governance;
 using Domain.AI.Models;
 
 namespace Infrastructure.AI.Tools;
@@ -47,6 +48,16 @@ public sealed class FileSystemTool : ITool
 
     /// <inheritdoc />
     public BlastRadius RiskTier => BlastRadius.High;
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// Both a source and a sink: <c>read</c>/<c>search</c> can surface content this agent did not
+    /// author (a file another actor wrote into the sandbox), and <c>write</c> mutates it. Declared as
+    /// both rather than left ambiguous — the composition analyzer excludes self-pairs, so this alone
+    /// never produces a finding, but genuinely combines with a different tool on either side.
+    /// </remarks>
+    public ToolCompositionCapability Capabilities =>
+        ToolCompositionCapability.IngestsUntrustedInput | ToolCompositionCapability.WritesFiles;
 
     /// <inheritdoc />
     public string Description => "Reads, writes, lists, and searches files within the project sandbox.";

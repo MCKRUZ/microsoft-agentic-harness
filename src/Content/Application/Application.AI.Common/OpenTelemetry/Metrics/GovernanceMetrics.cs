@@ -108,4 +108,21 @@ public static class GovernanceMetrics
     /// </summary>
     public static Counter<long> SpinInterventions { get; } =
         AppInstrument.Meter.CreateCounter<long>(GovernanceConventions.SpinInterventions, "{intervention}", "Spin / no-progress guard interventions");
+
+    /// <summary>
+    /// Tool-composition findings — an untrusted-input or credential-reading tool co-resident with a
+    /// file-write, code-execution, or outbound-send tool, under a posture that is not Allow. Tags:
+    /// agent.governance.composition.source_capability, agent.governance.composition.sink_capability,
+    /// agent.governance.composition.posture. No tool-name tag — see <see cref="McpToolCollisions"/>'s
+    /// remarks for the same cardinality rule.
+    /// </summary>
+    public static Counter<long> ToolCompositionFindings { get; } =
+        AppInstrument.Meter.CreateCounter<long>(GovernanceConventions.ToolCompositionFindings, "{finding}", "Tool composition findings");
+
+    /// <summary>
+    /// Tools a composition analysis could not classify as either a source or a sink — the coverage gap
+    /// this check's deliberate fail-open produces, made visible rather than silent. Untagged.
+    /// </summary>
+    public static Counter<long> ToolCompositionUnclassified { get; } =
+        AppInstrument.Meter.CreateCounter<long>(GovernanceConventions.ToolCompositionUnclassified, "{tool}", "Tools unclassified by composition analysis");
 }

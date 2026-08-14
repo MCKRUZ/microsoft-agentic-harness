@@ -3,6 +3,7 @@ using Application.AI.Common.Interfaces.GitOps;
 using Application.AI.Common.Interfaces.Tools;
 using Domain.AI.Changes;
 using Domain.AI.Models;
+using Domain.Common.Config.AI.Governance;
 
 namespace Infrastructure.AI.Tools.GitOps;
 
@@ -66,6 +67,15 @@ public sealed class GitOpsProposeRemediationTool : ITool
 
     /// <inheritdoc />
     public bool IsConcurrencySafe => false;
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// Routes through change-proposal governance rather than writing directly — the same shape as
+    /// <c>WorkspaceWriteFileTool</c>, and classified identically for the same reason: the approval gate
+    /// on the proposal is a separate control, not a substitute for this tool being a sink for
+    /// composition purposes.
+    /// </remarks>
+    public ToolCompositionCapability Capabilities => ToolCompositionCapability.WritesFiles;
 
     /// <inheritdoc />
     public async Task<ToolResult> ExecuteAsync(

@@ -3,6 +3,7 @@ using System.Text.Json;
 using Application.AI.Common.Interfaces.RAG;
 using Application.AI.Common.Interfaces.Tools;
 using Domain.AI.Changes;
+using Domain.Common.Config.AI.Governance;
 using Domain.AI.Models;
 using Domain.AI.RAG.Enums;
 
@@ -75,6 +76,14 @@ public sealed class DocumentSearchTool : ITool
 
     /// <inheritdoc />
     public BlastRadius RiskTier => BlastRadius.Low;
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// The index this searches can contain documents nobody on this agent's side authored — the RAG
+    /// poisoning shape: an attacker who can get a document indexed controls what a later search
+    /// returns, exactly like a web-fetch tool controls what a page returns.
+    /// </remarks>
+    public ToolCompositionCapability Capabilities => ToolCompositionCapability.IngestsUntrustedInput;
 
     /// <inheritdoc />
     public bool IsConcurrencySafe => true;

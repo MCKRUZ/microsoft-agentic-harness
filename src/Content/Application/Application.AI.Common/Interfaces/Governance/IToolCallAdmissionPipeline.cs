@@ -1,5 +1,6 @@
 using Application.AI.Common.Interfaces.Escalation;
 using Domain.AI.Escalation;
+using Domain.AI.Governance;
 
 namespace Application.AI.Common.Interfaces.Governance;
 
@@ -188,10 +189,19 @@ public interface IToolCallAdmissionPipeline
 /// work. A single Execution API invocation has no sequence to evaluate, and a plan DAG has its own
 /// retry and recovery — counting either would be machinery that could not fire, or could only misfire.
 /// </param>
+/// <param name="CompositionTaint">
+/// The tool-composition findings that implicate <see cref="ToolName"/> as a sink, stamped at agent
+/// build time by <c>ToolChainBuilder</c> and carried here by <c>GovernedAIFunction</c> — the only
+/// carrier that reaches every execution path, since neither <c>AgentExecutionContext</c> type is both
+/// populated with the tool set and reachable from a freshly-scoped plan step. Null for every call this
+/// wrapper did not stamp, which the governor reads identically to "no findings". See
+/// <c>ToolInvocationGovernor.RequiresApprovalForToolComposition</c>.
+/// </param>
 public sealed record ToolCallAdmissionRequest(
     string ToolName,
     IReadOnlyDictionary<string, object?>? Arguments = null,
-    bool CountsTowardLoopDetection = false);
+    bool CountsTowardLoopDetection = false,
+    ToolCompositionTaint? CompositionTaint = null);
 
 /// <summary>
 /// The admission chain's verdict for one tool call.

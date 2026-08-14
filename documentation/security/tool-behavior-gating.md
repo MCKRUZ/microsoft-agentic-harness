@@ -110,4 +110,4 @@ An exemption is honoured even for a tool that declares itself destructive, provi
 | Applying the posture | `ToolInvocationGovernor.RequiresApprovalForDeclaredBehavior` |
 | Refusing an inert configuration at boot | `GovernanceConfigValidator` |
 
-Related: [`mcp-tool-definition-scanning.md`](./mcp-tool-definition-scanning.md) governs what an MCP server is allowed to put in the model's context. This document governs what it is allowed to do once it is there.
+Related: [`mcp-tool-definition-scanning.md`](./mcp-tool-definition-scanning.md) governs what an MCP server is allowed to put in the model's context. This document governs what a single tool is allowed to do once it is there. [`tool-composition-analysis.md`](./tool-composition-analysis.md) governs what an agent's *combination* of tools may do together — a risk no per-tool control, this one included, can represent.

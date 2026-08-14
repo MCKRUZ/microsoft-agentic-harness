@@ -275,4 +275,232 @@ public class GovernanceConfigValidatorTests
         result.IsValid.Should().BeTrue();
         result.Errors.Should().BeEmpty();
     }
+
+    [Fact]
+    public async Task Validate_DefaultConfig_LeavesCompositionPostureOff()
+    {
+        // A default is untested unless a test builds the config with nothing set. The acceptance
+        // criteria for #332 require this explicitly.
+        var config = new GovernanceConfig();
+
+        config.ToolCompositionGating.DefaultPosture.Should().Be(CompositionPosture.Allow);
+        config.ToolCompositionGating.Pairings.Should().BeEmpty();
+
+        var result = await _validator.ValidateAsync(config);
+        result.IsValid.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Validate_CompositionPairingRequireApprovalWithoutInvocationEnforcement_HasError()
+    {
+        // Same dead-control shape as the tool-behaviour posture guard above: composition RequireApproval
+        // is applied inside the same governor, so it needs the same company.
+        var config = new GovernanceConfig
+        {
+            EnforceToolInvocation = false,
+            ToolCompositionGating = new ToolCompositionGatingConfig
+            {
+                Pairings =
+                [
+                    new ToolCompositionPairing
+                    {
+                        Source = ToolCompositionCapability.IngestsUntrustedInput,
+                        Sink = ToolCompositionCapability.SendsOutbound,
+                        Posture = CompositionPosture.RequireApproval,
+                    },
+                ],
+            },
+        };
+
+        var result = await _validator.ValidateAsync(config);
+
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.PropertyName == nameof(GovernanceConfig.EnforceToolInvocation));
+    }
+
+    [Fact]
+    public async Task Validate_CompositionPairingRequireApprovalWithInvocationEnforcement_IsValid()
+    {
+        // The control: the rule must reject only the inert combination, not the working one.
+        var config = new GovernanceConfig
+        {
+            EnforceToolInvocation = true,
+            ToolCompositionGating = new ToolCompositionGatingConfig
+            {
+                Pairings =
+                [
+                    new ToolCompositionPairing
+                    {
+                        Source = ToolCompositionCapability.IngestsUntrustedInput,
+                        Sink = ToolCompositionCapability.SendsOutbound,
+                        Posture = CompositionPosture.RequireApproval,
+                    },
+                ],
+            },
+        };
+
+        var result = await _validator.ValidateAsync(config);
+
+        result.IsValid.Should().BeTrue();
+        result.Errors.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Validate_CompositionPairingWithSourceAndSinkSwapped_HasError()
+    {
+        // A pairing names one source bit and one sink bit — a swapped entry would never match anything
+        // the analyzer produces, silently doing nothing while looking configured.
+        var config = new GovernanceConfig
+        {
+            ToolCompositionGating = new ToolCompositionGatingConfig
+            {
+                Pairings =
+                [
+                    new ToolCompositionPairing
+                    {
+                        Source = ToolCompositionCapability.SendsOutbound,
+                        Sink = ToolCompositionCapability.IngestsUntrustedInput,
+                        Posture = CompositionPosture.Warn,
+                    },
+                ],
+            },
+        };
+
+        var result = await _validator.ValidateAsync(config);
+
+        result.IsValid.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Validate_DuplicateCompositionPairing_HasError()
+    {
+        var config = new GovernanceConfig
+        {
+            ToolCompositionGating = new ToolCompositionGatingConfig
+            {
+                Pairings =
+                [
+                    new ToolCompositionPairing
+                    {
+                        Source = ToolCompositionCapability.IngestsUntrustedInput,
+                        Sink = ToolCompositionCapability.SendsOutbound,
+                        Posture = CompositionPosture.Warn,
+                    },
+                    new ToolCompositionPairing
+                    {
+                        Source = ToolCompositionCapability.IngestsUntrustedInput,
+                        Sink = ToolCompositionCapability.SendsOutbound,
+                        Posture = CompositionPosture.RequireApproval,
+                    },
+                ],
+            },
+        };
+
+        var result = await _validator.ValidateAsync(config);
+
+        result.IsValid.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Validate_ToolCapabilityOverrideClearingBitsWithNoServer_HasError()
+    {
+        // Mirrors ToolBehaviorExemption.Server: clearing a name-keyed tool's capabilities without
+        // naming its server hands back the bypass that rule exists to prevent.
+        var config = new GovernanceConfig
+        {
+            ToolCompositionGating = new ToolCompositionGatingConfig
+            {
+                ToolCapabilities =
+                [
+                    new ToolCapabilityOverride
+                    {
+                        Tool = "notion_search",
+                        Capabilities = [],
+                        Reason = "verified it does not ingest untrusted content",
+                    },
+                ],
+            },
+        };
+
+        var result = await _validator.ValidateAsync(config);
+
+        result.IsValid.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Validate_ToolCapabilityOverrideClearingBitsWithServerNamed_IsValid()
+    {
+        var config = new GovernanceConfig
+        {
+            ToolCompositionGating = new ToolCompositionGatingConfig
+            {
+                ToolCapabilities =
+                [
+                    new ToolCapabilityOverride
+                    {
+                        Tool = "notion_search",
+                        Server = "notion",
+                        Capabilities = [],
+                        Reason = "verified it does not ingest untrusted content",
+                    },
+                ],
+            },
+        };
+
+        var result = await _validator.ValidateAsync(config);
+
+        result.IsValid.Should().BeTrue();
+        result.Errors.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Validate_ServerCapabilityOverrideWithEmptyCapabilities_HasError()
+    {
+        // A server override may only ADD bits — an empty list adds nothing, so the entry does nothing
+        // while looking configured.
+        var config = new GovernanceConfig
+        {
+            ToolCompositionGating = new ToolCompositionGatingConfig
+            {
+                ServerCapabilities =
+                [
+                    new ToolCapabilityServerOverride
+                    {
+                        Server = "web",
+                        Capabilities = [],
+                        Reason = "every tool on this server returns fetched page content",
+                    },
+                ],
+            },
+        };
+
+        var result = await _validator.ValidateAsync(config);
+
+        result.IsValid.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Validate_FullyStatedServerCapabilityOverride_IsValid()
+    {
+        var config = new GovernanceConfig
+        {
+            ToolCompositionGating = new ToolCompositionGatingConfig
+            {
+                ServerCapabilities =
+                [
+                    new ToolCapabilityServerOverride
+                    {
+                        Server = "web",
+                        Capabilities = [ToolCompositionCapability.IngestsUntrustedInput],
+                        Reason = "every tool on this server returns fetched page content",
+                    },
+                ],
+            },
+        };
+
+        var result = await _validator.ValidateAsync(config);
+
+        result.IsValid.Should().BeTrue();
+        result.Errors.Should().BeEmpty();
+    }
 }
