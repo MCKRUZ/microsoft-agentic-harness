@@ -31,7 +31,9 @@ public sealed class SkillMetadataRegistryTests
         };
         var optionsMonitor = new OptionsMonitorStub(appConfig);
         var logger = NullLogger<SkillMetadataRegistry>.Instance;
-        var parser = new SkillMetadataParser(NullLogger<SkillMetadataParser>.Instance, new UnsandboxedSkillFileReader());
+        var parser = new SkillMetadataParser(
+            NullLogger<SkillMetadataParser>.Instance, new UnsandboxedSkillFileReader(),
+            TestMcpSecurityScanner.AlwaysSafe(), TestMcpSecurityScanner.DefaultConfig());
 
         return new SkillMetadataRegistry(logger, optionsMonitor, parser, new UnsandboxedSkillFileReader());
     }
@@ -58,7 +60,9 @@ public sealed class SkillMetadataRegistryTests
         var registry = new SkillMetadataRegistry(
             NullLogger<SkillMetadataRegistry>.Instance,
             new OptionsMonitorStub(appConfig),
-            new SkillMetadataParser(NullLogger<SkillMetadataParser>.Instance, new UnsandboxedSkillFileReader()),
+            new SkillMetadataParser(
+            NullLogger<SkillMetadataParser>.Instance, new UnsandboxedSkillFileReader(),
+            TestMcpSecurityScanner.AlwaysSafe(), TestMcpSecurityScanner.DefaultConfig()),
             new UnsandboxedSkillFileReader(),
             pluginRegistry: null);
 
@@ -166,6 +170,8 @@ public sealed class SkillMetadataRegistryTests
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddSingleton<IOptionsMonitor<AppConfig>>(new OptionsMonitorStub(new AppConfig()));
+        services.AddSingleton(TestMcpSecurityScanner.AlwaysSafe());
+        services.AddSingleton(TestMcpSecurityScanner.DefaultConfig());
         services.AddSingleton<Application.AI.Common.Interfaces.Skills.ISkillFileReader,
             Infrastructure.AI.Skills.SkillFileReader>();
         services.AddSingleton<SkillMetadataParser>();

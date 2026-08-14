@@ -257,6 +257,12 @@ public sealed class PlannerDiRegistrationTests : IDisposable
             }));
 
         // External dependencies not registered by Infrastructure.AI
+        // SkillMetadataParser / AgentMetadataParser depend on IMcpSecurityScanner + IOptionsMonitor
+        // <AIConfig> (#331); the real composition root registers both via
+        // AddGovernanceDependencies / AddGovernanceNoOpDependencies, called separately from
+        // AddInfrastructureAIDependencies.
+        services.AddSingleton(TestMcpSecurityScanner.AlwaysSafe());
+        services.AddSingleton(TestMcpSecurityScanner.DefaultConfig());
         // IAgentExecutionContext comes from Application.AI.Common's DI in production; the
         // knowledge-scope accessor (now consumed by EfCorePlanStateStore for plan ownership)
         // delegates agent identity to it.

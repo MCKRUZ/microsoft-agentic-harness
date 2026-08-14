@@ -2,6 +2,8 @@ using System.Threading.RateLimiting;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Skills;
 using Domain.Common.Config;
+using Domain.Common.Config.AI;
+using Infrastructure.AI.Governance;
 using Infrastructure.AI.MCPServer.Extensions;
 using Infrastructure.AI.Skills;
 using Infrastructure.Common.Middleware.Security;
@@ -37,6 +39,12 @@ public class Program
         // Bind AppConfig
         builder.Services.Configure<AppConfig>(
             builder.Configuration.GetSection("AppConfig"));
+        // SkillMetadataParser reads its scanning policy from IOptionsMonitor<AIConfig> directly
+        // (issue #331), so the AI subsection needs its own binding — mirrors
+        // Presentation.Common.RegisterConfigSections, which this Infrastructure-layer host cannot
+        // call (it must not take a Presentation dependency).
+        builder.Services.Configure<AIConfig>(
+            builder.Configuration.GetSection("AppConfig:AI"));
 
         // Add MCP server services
         var appConfig = builder.Configuration
@@ -52,6 +60,17 @@ public class Program
         // services rather than calling AddAIDependencies, so it registers the discovery trio through
         // the shared entry point instead of by hand (issue #247).
         builder.Services.AddSkillDiscovery();
+
+        // SkillMetadataParser now depends on IMcpSecurityScanner to screen a skill manifest for
+        // prompt-injection payloads before trusting it (issue #331). This host composes its own
+        // services rather than calling the shared Presentation composition root, so it must make the
+        // same Enabled-gated choice that root does — real AGT-backed scanning when governance is on,
+        // the no-op passthrough otherwise — or ValidateOnBuild fails at boot with an unresolved
+        // IMcpSecurityScanner the moment the skill catalog is constructed.
+        if (appConfig.AI?.Governance is { Enabled: true } govConfig)
+            builder.Services.AddGovernanceDependencies(govConfig);
+        else
+            builder.Services.AddGovernanceNoOpDependencies();
 
         // Rate limiting
         builder.Services.AddRateLimiter(options =>

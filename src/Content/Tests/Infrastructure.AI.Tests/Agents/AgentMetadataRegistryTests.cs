@@ -39,8 +39,11 @@ public sealed class AgentMetadataRegistryTests
         return new AgentMetadataRegistry(
             NullLogger<AgentMetadataRegistry>.Instance,
             new OptionsMonitorStub(appConfig),
-            new AgentMetadataParser(NullLogger<AgentMetadataParser>.Instance),
-            new SkillMetadataParser(NullLogger<SkillMetadataParser>.Instance, new UnsandboxedSkillFileReader()),
+            new AgentMetadataParser(
+                NullLogger<AgentMetadataParser>.Instance, TestMcpSecurityScanner.AlwaysSafe(), TestMcpSecurityScanner.DefaultConfig()),
+            new SkillMetadataParser(
+                NullLogger<SkillMetadataParser>.Instance, new UnsandboxedSkillFileReader(),
+                TestMcpSecurityScanner.AlwaysSafe(), TestMcpSecurityScanner.DefaultConfig()),
             new UnsandboxedSkillFileReader(),
             ownedSkills);
     }
@@ -135,6 +138,8 @@ public sealed class AgentMetadataRegistryTests
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddSingleton<IOptionsMonitor<AppConfig>>(new OptionsMonitorStub(new AppConfig()));
+        services.AddSingleton(TestMcpSecurityScanner.AlwaysSafe());
+        services.AddSingleton(TestMcpSecurityScanner.DefaultConfig());
         services.AddSingleton<AgentMetadataParser>();
         services.AddSingleton<Application.AI.Common.Interfaces.Skills.ISkillFileReader,
             Infrastructure.AI.Skills.SkillFileReader>();

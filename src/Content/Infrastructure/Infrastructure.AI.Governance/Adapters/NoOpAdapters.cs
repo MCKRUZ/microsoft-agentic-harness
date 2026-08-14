@@ -33,6 +33,8 @@ internal sealed class NoOpMcpScanner : IMcpSecurityScanner
         McpToolScanResult.Safe(toolName);
     public IReadOnlyList<McpToolScanResult> ScanTools(IEnumerable<(string Name, string Description, string? Schema)> tools) =>
         tools.Select(t => McpToolScanResult.Safe(t.Name)).ToList().AsReadOnly();
+    public McpToolScanResult ScanContent(string sourceName, string content, bool includeLengthSensitiveRules) =>
+        McpToolScanResult.Safe(sourceName);
 }
 
 /// <summary>No-op MCP tool-surface scanner used when governance is disabled.</summary>

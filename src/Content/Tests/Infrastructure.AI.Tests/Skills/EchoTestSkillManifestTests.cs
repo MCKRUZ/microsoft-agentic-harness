@@ -29,7 +29,9 @@ public sealed class EchoTestSkillManifestTests
     [Fact]
     public void EchoTestSkillManifest_FrameworkTypeIsNestedUnderMetadata_SoItIsActuallyRead()
     {
-        var parser = new SkillMetadataParser(NullLogger<SkillMetadataParser>.Instance, new UnsandboxedSkillFileReader());
+        var parser = new SkillMetadataParser(
+            NullLogger<SkillMetadataParser>.Instance, new UnsandboxedSkillFileReader(),
+            TestMcpSecurityScanner.AlwaysSafe(), TestMcpSecurityScanner.DefaultConfig());
         var skillPath = RepoRoot.Combine("skills", "echo-test");
         var filePath = Path.Combine(skillPath, "SKILL.md");
 

@@ -1,5 +1,7 @@
 using System.IO.Compression;
 using System.Text;
+using Application.AI.Common.Interfaces.Governance;
+using Domain.AI.Governance;
 using Domain.Common.Config;
 using Domain.Common.Config.AI;
 using Domain.Common.Config.AI.BundleExecution;
@@ -11,6 +13,7 @@ using Infrastructure.AI.Plugins;
 using Infrastructure.AI.Skills;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using Moq;
 using Xunit;
 
 namespace Infrastructure.AI.Tests.Bundles;
@@ -73,6 +76,85 @@ public sealed class BundleStagingServiceTests : IDisposable
 
         result.IsSuccess.Should().BeTrue(string.Join("; ", result.Errors));
         result.Value!.OwnedSkills.Select(s => s.Id).Should().BeEquivalentTo(["good"]);
+    }
+
+    // --- Manifest injection scanning (issue #331) ----------------------------------------------------
+
+    /// <summary>
+    /// Unlike a flagged skill (skip-and-continue, above), a flagged AGENT.md fails the whole bundle —
+    /// deliberately: the agent manifest is the bundle's identity, so there is no sensible "continue
+    /// without it" outcome. <see cref="AgentMetadataParser.ParseFromFile"/> throws
+    /// <c>ManifestRefusedException</c>, which is not caught inside <c>ParseStagedBundle</c> and
+    /// propagates to <c>StageAsync</c>'s outer catch, which cleans up and fails the bundle.
+    /// </summary>
+    [Fact]
+    public async Task StageAsync_PoisonedAgentMd_FailsTheWholeBundleAndCleansUp()
+    {
+        using var zip = ZipOf(
+            ("AGENT.md", "---\nid: poisoned\nname: Poisoned\n---\nx"),
+            ("skills/greet/SKILL.md", "---\nid: greet\nname: greet\n---\nA valid skill."));
+
+        var appConfig = new AppConfig
+        {
+            AI = new AIConfig
+            {
+                BundleExecution = new BundleExecutionConfig { TempRoot = _stagingRoot },
+                Governance = new GovernanceConfig { EnableMcpSecurity = true },
+            }
+        };
+        var result = await CreateService(appConfig, agentScanner: WithheldScanner()).StageAsync(zip);
+
+        result.IsSuccess.Should().BeFalse("a poisoned agent manifest is the bundle's identity — there is no sensible partial outcome");
+        result.Errors.Should().ContainMatch("*Bundle staging failed*");
+        NoStagedDirectoriesRemain();
+    }
+
+    /// <summary>
+    /// A flagged skill inside an otherwise-clean bundle is skipped, not fatal — the same
+    /// skip-and-continue behaviour <see cref="StageAsync_NestedSkillDirWithoutSkillMd_IsSkippedNotFatal"/>
+    /// already covers for an unreadable skill, now proven for a scan refusal specifically:
+    /// <c>NestedSkillScanner</c> catches <c>SkillMetadataParser.ParseFromFile</c>'s exception
+    /// (any type other than <c>SkillPathRefusedException</c>) before it can reach the bundle-level catch.
+    /// </summary>
+    [Fact]
+    public async Task StageAsync_PoisonedSkillInBundle_IsSkippedRestOfBundleStages()
+    {
+        using var zip = ZipOf(
+            ("AGENT.md", "---\nid: b\nname: B\n---\nx"),
+            ("skills/good/SKILL.md", "---\nid: good\nname: good\n---\nA valid skill."),
+            ("skills/bad/SKILL.md", "---\nid: bad\nname: bad\n---\nA flagged skill."));
+
+        var appConfig = new AppConfig
+        {
+            AI = new AIConfig
+            {
+                BundleExecution = new BundleExecutionConfig { TempRoot = _stagingRoot },
+                Governance = new GovernanceConfig { EnableMcpSecurity = true },
+            }
+        };
+        var result = await CreateService(appConfig, skillScanner: WithheldScannerForSource("bad")).StageAsync(zip);
+
+        result.IsSuccess.Should().BeTrue(string.Join("; ", result.Errors));
+        result.Value!.OwnedSkills.Select(s => s.Id).Should().BeEquivalentTo(["good"]);
+    }
+
+    private static IMcpSecurityScanner WithheldScanner()
+    {
+        var mock = new Mock<IMcpSecurityScanner>();
+        mock.Setup(s => s.ScanContent(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<bool>()))
+            .Returns((string name, string _, bool _) =>
+                new McpToolScanResult(name, false, [new McpToolThreat(McpThreatType.InstructionPoisoning, ThreatLevel.High, "test finding", 0.9)]));
+        return mock.Object;
+    }
+
+    private static IMcpSecurityScanner WithheldScannerForSource(string sourceName)
+    {
+        var mock = new Mock<IMcpSecurityScanner>();
+        mock.Setup(s => s.ScanContent(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<bool>()))
+            .Returns((string name, string _, bool _) => name == sourceName
+                ? new McpToolScanResult(name, false, [new McpToolThreat(McpThreatType.InstructionPoisoning, ThreatLevel.High, "test finding", 0.9)])
+                : McpToolScanResult.Safe(name));
+        return mock.Object;
     }
 
     // --- Bundle-owned MCP servers (issue #368) -------------------------------------------------------
@@ -369,11 +451,19 @@ public sealed class BundleStagingServiceTests : IDisposable
     };
 
     private static BundleStagingService CreateService(
-        AppConfig appConfig, BundleOwnedMcpServerRegistry? bundleOwnedMcpServers = null) =>
+        AppConfig appConfig,
+        BundleOwnedMcpServerRegistry? bundleOwnedMcpServers = null,
+        IMcpSecurityScanner? agentScanner = null,
+        IMcpSecurityScanner? skillScanner = null) =>
         new(
             new OptionsMonitorStub(appConfig),
-            new AgentMetadataParser(NullLogger<AgentMetadataParser>.Instance),
-            new SkillMetadataParser(NullLogger<SkillMetadataParser>.Instance, new UnsandboxedSkillFileReader()),
+            new AgentMetadataParser(
+                NullLogger<AgentMetadataParser>.Instance, agentScanner ?? TestMcpSecurityScanner.AlwaysSafe(),
+                Mock.Of<IOptionsMonitor<AIConfig>>(m => m.CurrentValue == appConfig.AI)),
+            new SkillMetadataParser(
+                NullLogger<SkillMetadataParser>.Instance, new UnsandboxedSkillFileReader(),
+                skillScanner ?? TestMcpSecurityScanner.AlwaysSafe(),
+                Mock.Of<IOptionsMonitor<AIConfig>>(m => m.CurrentValue == appConfig.AI)),
             new UnsandboxedSkillFileReader(),
             new PluginManifestReader(NullLogger<PluginManifestReader>.Instance),
             bundleOwnedMcpServers ?? new BundleOwnedMcpServerRegistry(),

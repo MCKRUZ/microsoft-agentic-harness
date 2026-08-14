@@ -3,6 +3,7 @@ using Application.AI.Common.Helpers;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.OpenTelemetry.Metrics;
+using Domain.AI.Governance;
 using Domain.AI.Telemetry.Conventions;
 using Domain.Common.Config.AI;
 using Microsoft.Extensions.AI;
@@ -144,17 +145,18 @@ public sealed class ScanningMcpToolProvider : IMcpToolProvider
 
         // The threat-count check is not redundant with IsSafe. IMcpSecurityScanner is a public
         // contract a consumer can implement, and one returning IsSafe=false with no threats listed
-        // would make the Max below throw on an empty sequence.
+        // would make HighestSeverity's null-check below moot but is still worth admitting outright —
+        // IsSafe=true is the implementer's own attestation and wins regardless of what Threats holds.
         if (result.IsSafe || result.Threats.Count == 0)
             return true;
 
-        var highest = result.Threats.Max(threat => threat.Severity);
-        var withheld = highest >= policy.McpToolBlockThreshold;
+        var highest = result.HighestSeverity!.Value; // safe: Threats.Count > 0 is guaranteed above
+        var withheld = highest >= policy.McpToolBlockThreshold; // same comparison IsWithheld makes, without a second Max() over Threats
 
         // Findings are reported as threat-type/severity pairs only. The description that triggered
         // them is attacker-supplied text, and copying it into the log would move the injection
         // payload into whatever reads the logs next.
-        var findings = string.Join(", ", result.Threats.Select(threat => $"{threat.ThreatType}/{threat.Severity}"));
+        var findings = string.Join(", ", result.Threats.ToFindingLabels());
 
         if (withheld)
         {

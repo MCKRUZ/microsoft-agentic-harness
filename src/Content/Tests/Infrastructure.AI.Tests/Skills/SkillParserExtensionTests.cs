@@ -11,7 +11,8 @@ namespace Infrastructure.AI.Tests.Skills;
 public sealed class SkillParserExtensionTests
 {
     private static SkillMetadataParser CreateParser() =>
-        new(NullLogger<SkillMetadataParser>.Instance, new UnsandboxedSkillFileReader());
+        new(NullLogger<SkillMetadataParser>.Instance, new UnsandboxedSkillFileReader(),
+            TestMcpSecurityScanner.AlwaysSafe(), TestMcpSecurityScanner.DefaultConfig());
 
     [Fact]
     public void SkillParser_WithObjectivesSection_ExtractsObjectivesContent()

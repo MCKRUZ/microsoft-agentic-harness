@@ -30,7 +30,9 @@ public sealed class SkillMetadataParserFrontmatterDelimiterTests : IDisposable
 
     public SkillMetadataParserFrontmatterDelimiterTests()
     {
-        _sut = new SkillMetadataParser(NullLogger<SkillMetadataParser>.Instance, new UnsandboxedSkillFileReader());
+        _sut = new SkillMetadataParser(
+            NullLogger<SkillMetadataParser>.Instance, new UnsandboxedSkillFileReader(),
+            TestMcpSecurityScanner.AlwaysSafe(), TestMcpSecurityScanner.DefaultConfig());
         _tempDir = Path.Combine(Path.GetTempPath(), $"skill-parser-delimiter-tests-{Guid.NewGuid():N}");
         Directory.CreateDirectory(_tempDir);
     }

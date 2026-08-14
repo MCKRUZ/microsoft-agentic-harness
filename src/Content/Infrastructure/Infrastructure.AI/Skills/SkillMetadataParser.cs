@@ -1,9 +1,14 @@
 using Application.AI.Common.Exceptions;
+using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Skills;
 using Application.Common.Helpers;
 using Domain.AI.Egress;
 using Domain.AI.Skills;
+using Domain.AI.Tools;
+using Domain.Common.Config.AI;
+using Infrastructure.AI.Governance;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace Infrastructure.AI.Skills;
 
@@ -32,6 +37,8 @@ public sealed partial class SkillMetadataParser
 {
     private readonly ILogger<SkillMetadataParser> _logger;
     private readonly ISkillFileReader _fileReader;
+    private readonly IMcpSecurityScanner _scanner;
+    private readonly IOptionsMonitor<AIConfig> _config;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="SkillMetadataParser"/> class.
@@ -41,13 +48,31 @@ public sealed partial class SkillMetadataParser
     /// Sandboxed, read-only access to skill content. Every manifest read goes through it so a
     /// <c>SKILL.md</c> outside the configured skill roots cannot be loaded (issue #247).
     /// </param>
-    public SkillMetadataParser(ILogger<SkillMetadataParser> logger, ISkillFileReader fileReader)
+    /// <param name="scanner">
+    /// Screens a skill's name, description, and instructions for prompt-injection payloads before
+    /// <see cref="Build"/> constructs the <see cref="SkillDefinition"/> — a plugin-sourced skill is
+    /// third-party content by definition (issue #331).
+    /// </param>
+    /// <param name="config">
+    /// Supplies the scanning policy (<see cref="GovernanceConfig.EnableMcpSecurity"/>,
+    /// <see cref="GovernanceConfig.McpToolBlockThreshold"/>); read per call so a config reload takes
+    /// effect, matching <c>ScanningMcpToolProvider</c>'s convention for the same policy.
+    /// </param>
+    public SkillMetadataParser(
+        ILogger<SkillMetadataParser> logger,
+        ISkillFileReader fileReader,
+        IMcpSecurityScanner scanner,
+        IOptionsMonitor<AIConfig> config)
     {
         ArgumentNullException.ThrowIfNull(logger);
         ArgumentNullException.ThrowIfNull(fileReader);
+        ArgumentNullException.ThrowIfNull(scanner);
+        ArgumentNullException.ThrowIfNull(config);
 
         _logger = logger;
         _fileReader = fileReader;
+        _scanner = scanner;
+        _config = config;
     }
 
     /// <summary>
@@ -125,7 +150,7 @@ public sealed partial class SkillMetadataParser
     /// both entry points so the two cannot drift apart on which fields they promote — a drift that
     /// previously left one overload silently missing a field the other had.
     /// </summary>
-    private static SkillDefinition Build(
+    private SkillDefinition Build(
         SkillFrontmatter frontmatter,
         string body,
         string fallbackName,
@@ -139,6 +164,10 @@ public sealed partial class SkillMetadataParser
         var name = explicitDescription is null
             ? frontmatter.String("name") ?? fallbackName
             : fallbackName;
+        var description = explicitDescription ?? frontmatter.String("description") ?? string.Empty;
+        var toolDeclarations = frontmatter.ToolDeclarations();
+
+        ScanOrRefuse(name, description, body, toolDeclarations, skillFilePath);
 
         var metaBlock = frontmatter.ScalarBlock("metadata");
 
@@ -146,7 +175,7 @@ public sealed partial class SkillMetadataParser
         {
             Id = name,
             Name = name,
-            Description = explicitDescription ?? frontmatter.String("description") ?? string.Empty,
+            Description = description,
             Instructions = instructions,
             Objectives = objectives,
             TraceFormat = traceFormat,
@@ -157,7 +186,7 @@ public sealed partial class SkillMetadataParser
             AgentId = frontmatter.String("agent-id"),
             Tags = frontmatter.StringList("tags"),
             AllowedTools = frontmatter.StringList("allowed-tools"),
-            ToolDeclarations = frontmatter.ToolDeclarations(),
+            ToolDeclarations = toolDeclarations,
             Prerequisites = frontmatter.StringList("prerequisites"),
             CompletionTool = frontmatter.String("completion_tool"),
             Metadata = metaBlock?.ToDictionary(kv => kv.Key, kv => (object)kv.Value),
@@ -169,6 +198,46 @@ public sealed partial class SkillMetadataParser
             PluginSource = pluginSource,
             Egress = frontmatter.Egress(),
         };
+    }
+
+    /// <summary>
+    /// Screens a skill's name/description, its full markdown body, and its declared tools'
+    /// human-readable guidance for prompt-injection payloads before <see cref="Build"/> constructs
+    /// the <see cref="SkillDefinition"/> — a plugin-sourced skill is third-party content by
+    /// definition, screened the same way an MCP tool description already is (issue #331). No
+    /// exemption for first-party skills shipped in this template: "it came from our own directory"
+    /// is exactly the assumption an attacker with file-write access defeats for free.
+    /// </summary>
+    /// <remarks>
+    /// Name/description are short fields, scanned with the full rule set (same shape as a tool
+    /// description). The body is scanned whole — not the post-<see cref="StripSections"/>
+    /// <c>instructions</c> value — because <c>## Objectives</c> and <c>## Trace Format</c> are
+    /// stripped out of <c>instructions</c> for a different reason (they're surfaced to callers as
+    /// separate fields, not concatenated into the instructions the agent reads) and are just as
+    /// agent-facing as the rest of the body; scanning only the stripped remainder would leave those
+    /// two sections as an unscreened injection channel. Tool-declaration guidance
+    /// (<c>Description</c>/<c>WhenToUse</c>/<c>WhenNotToUse</c>) is prose of unbounded length, same
+    /// as the body, and is joined onto it into one scan — both already run with the length-sensitive
+    /// rules excluded (a multi-thousand-token manifest routinely contains a legitimate 40+ character
+    /// token — a hash, a UUID — that the base64-block rule cannot distinguish from an encoded
+    /// payload), so combining them costs nothing and halves the long-form scan count.
+    /// </remarks>
+    private void ScanOrRefuse(
+        string name, string description, string body, IList<ToolDeclaration>? toolDeclarations, string skillFilePath)
+    {
+        var toolGuidance = toolDeclarations is { Count: > 0 }
+            ? string.Join(
+                '\n',
+                toolDeclarations
+                    .SelectMany(t => new[] { t.Description, t.WhenToUse, t.WhenNotToUse })
+                    .Where(s => !string.IsNullOrWhiteSpace(s)))
+            : null;
+        var longForm = string.IsNullOrWhiteSpace(toolGuidance) ? body : $"{body}\n{toolGuidance}";
+
+        ManifestSecurityGate.ScanOrRefuse(
+            _scanner, _logger, _config.CurrentValue.Governance, name, "skill", skillFilePath,
+            shortFieldsContent: $"{name}\n{description}",
+            longForm);
     }
 
     /// <remarks>

@@ -22,7 +22,9 @@ public sealed class WorkspaceSkillManifestTests
         File.Exists(skillPath).Should().BeTrue(
             $"the workspace SKILL.md must ship in the repo at {skillPath}");
 
-        var parser = new SkillMetadataParser(NullLogger<SkillMetadataParser>.Instance, new UnsandboxedSkillFileReader());
+        var parser = new SkillMetadataParser(
+            NullLogger<SkillMetadataParser>.Instance, new UnsandboxedSkillFileReader(),
+            TestMcpSecurityScanner.AlwaysSafe(), TestMcpSecurityScanner.DefaultConfig());
         var skill = parser.ParseFromFile(skillPath, Path.GetDirectoryName(skillPath)!, pluginSource: "workspace-skill");
 
         skill.Name.Should().Be("workspace");
