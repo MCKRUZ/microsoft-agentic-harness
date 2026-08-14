@@ -29,10 +29,7 @@ public static class DependencyInjection
         this IServiceCollection services,
         GovernanceConfig config)
     {
-        var resolvedPaths = config.PolicyPaths
-            .Select(p => Path.IsPathRooted(p) ? p : Path.Combine(AppContext.BaseDirectory, p))
-            .Where(File.Exists)
-            .ToList();
+        var policyContents = ReadAndValidatePolicyFiles(config.PolicyPaths);
 
         var options = new GovernanceOptions
         {
@@ -42,16 +39,21 @@ public static class DependencyInjection
             ConflictStrategy = (AgentGovernance.Policy.ConflictResolutionStrategy)(int)config.ConflictStrategy
         };
 
-        foreach (var path in resolvedPaths)
-            options.PolicyPaths.Add(path);
-
+        // PolicyPaths deliberately left empty: GovernanceKernel's constructor would otherwise re-read
+        // and re-parse every path itself via PolicyEngine.LoadYamlFile, duplicating the read
+        // ReadAndValidatePolicyFiles already did. LoadPolicyFromYaml below reuses that same content.
         var kernel = new GovernanceKernel(options);
+        foreach (var content in policyContents)
+            kernel.LoadPolicyFromYaml(content);
 
         services.AddSingleton(kernel);
-        services.AddSingleton(kernel.PolicyEngine);
         services.AddSingleton<AuditLogger>();
 
-        services.AddSingleton<IGovernancePolicyEngine, AgtPolicyEngineAdapter>();
+        // Deliberately not registering the raw PolicyEngine as its own resolvable service (unlike
+        // AuditLogger above): PolicyEngine.LoadYamlFile/LoadYaml/LoadPolicy all bypass PolicyYamlGuard,
+        // so a consumer that could resolve PolicyEngine directly and load its own YAML through it would
+        // reintroduce #384. Only the adapter needs it, so it's captured in this factory instead.
+        services.AddSingleton<IGovernancePolicyEngine>(_ => new AgtPolicyEngineAdapter(kernel.PolicyEngine));
 
         // Prompt-injection detection is optional. The AGT kernel only builds an InjectionDetector when
         // GovernanceConfig.EnablePromptInjectionDetection is true, so registering kernel.InjectionDetector
@@ -94,6 +96,38 @@ public static class DependencyInjection
         AddDataClassificationProvider(services, config.DataClassification);
 
         return services;
+    }
+
+    /// <summary>
+    /// Resolves every configured policy path, then reads and validates each one via
+    /// <see cref="PolicyYamlGuard"/> — the guard-covered replacement for the read
+    /// <see cref="GovernanceKernel"/>'s constructor would otherwise perform itself.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">
+    /// A configured path doesn't resolve to a real file. A missing entry used to be silently dropped
+    /// (<c>.Where(File.Exists)</c>), which could leave the whole declarative policy layer un-loaded —
+    /// <c>HasPolicies</c> false, every tool call skipping this layer entirely — with no signal beyond a
+    /// quieter-than-expected policy set. Fail loudly instead: the same silent-degradation class this
+    /// method's other guard (mis-cased <c>default_action</c>, #384) exists to kill.
+    /// </exception>
+    private static List<string> ReadAndValidatePolicyFiles(IReadOnlyList<string> configuredPaths)
+    {
+        var resolvedPaths = configuredPaths
+            .Select(p => Path.IsPathRooted(p) ? p : Path.Combine(AppContext.BaseDirectory, p))
+            .ToList();
+
+        // ReadAndValidate below re-checks File.Exists per path, so a fully-present config pays one
+        // redundant stat call per file — accepted deliberately, since this check's value isn't the
+        // stat itself, it's reporting every missing path in one message instead of failing on the
+        // first one ReadAndValidate happens to hit.
+        var missing = resolvedPaths.Where(p => !File.Exists(p)).ToList();
+        if (missing.Count > 0)
+            throw new InvalidOperationException(
+                "GovernanceConfig.PolicyPaths references files that do not exist: " +
+                $"{string.Join(", ", missing)}. Refusing to start with a configured policy layer that " +
+                "would silently load nothing.");
+
+        return resolvedPaths.Select(PolicyYamlGuard.ReadAndValidate).ToList();
     }
 
     /// <summary>

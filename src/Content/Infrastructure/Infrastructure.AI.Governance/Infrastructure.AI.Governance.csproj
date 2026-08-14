@@ -14,6 +14,9 @@
          (Microsoft.AgentGovernance.Extensions.Microsoft.Agents / .ModelContextProtocol) do not yet
          exist on NuGet; adapter wiring for those surfaces will be hand-rolled until packages publish. -->
     <PackageReference Include="Microsoft.AgentGovernance" />
+    <!-- Direct reference (not just AgentGovernance's transitive one) so PolicyYamlGuard can parse a
+         policy document's raw top-level keys structurally instead of text-scanning for a known mistake. -->
+    <PackageReference Include="YamlDotNet" />
   </ItemGroup>
 
   <ItemGroup>

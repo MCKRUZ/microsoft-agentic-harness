@@ -48,13 +48,17 @@ public sealed class GovernanceConfigValidator : AbstractValidator<GovernanceConf
             .IsInEnum()
             .WithMessage("McpToolBlockThreshold must be a defined ThreatLevel value.");
 
-        // A blank policy path can never resolve to a file — the DI registration filters it out via
-        // File.Exists, so it never loads. Surface it as a typo rather than silently dropping it.
+        // A blank policy path can never resolve to a file. AddGovernanceDependencies now throws on any
+        // configured path (blank or not) that doesn't resolve to a real file (#384) — but that call runs
+        // eagerly during service registration (BuildGlobalSolutionServices), before ValidateOnStart()'s
+        // deferred check ever runs at IHost.StartAsync(), so in practice the construction-time exception
+        // fires first for this exact case. This rule still adds value for any caller that validates
+        // GovernanceConfig without going through AddGovernanceDependencies at all.
         RuleForEach(x => x.PolicyPaths)
             .Must(path => !string.IsNullOrWhiteSpace(path))
             .WithMessage(
-                "PolicyPaths contains a blank entry. A blank path resolves to no file and is silently " +
-                "dropped — remove it or supply the policy file path.");
+                "PolicyPaths contains a blank entry. A blank path never resolves to a file — remove it " +
+                "or supply the policy file path.");
 
         // Landmine guard: these sub-features only run through the AGT kernel path, which the composition
         // root wires exclusively when Enabled=true. Turning one on while governance is disabled is a
