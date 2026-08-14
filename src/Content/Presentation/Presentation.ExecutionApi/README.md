@@ -104,7 +104,7 @@ The disjointness check exists because the global registries scan discovery roots
 
 ### Streaming transport
 
-`BundleRunStreamer` adds only the transport concern: it arms `AgentTurnStreamSink` so token deltas become `TEXT_MESSAGE_CONTENT` frames, and clears it in a `finally` so it can never leak onto a later request on the same thread. `BundleStreamEventWriter` serializes against the `BundleStreamEvent` *base type* so `[JsonPolymorphic]` emits the `type` discriminator -- serializing by runtime type silently drops it. The six event records deliberately duplicate a small subset of AG-UI rather than referencing the dashboard's 25-event vocabulary; if a third host needs them, extract a shared SSE primitive then.
+`BundleRunStreamer` adds only the transport concern: it arms `AgentTurnStreamSink` so token deltas become `TEXT_MESSAGE_CONTENT` frames, and clears it in a `finally` so it can never leak onto a later request on the same thread. `BundleStreamEventWriter` serializes against the `BundleStreamEvent` *base type* so `[JsonPolymorphic]` emits the `type` discriminator -- serializing by runtime type silently drops it. The ten event records deliberately duplicate a small subset of AG-UI rather than referencing the dashboard's 25-event vocabulary; if a third host needs them, extract a shared SSE primitive then.
 
 ### Fail-closed authentication, own audience
 
@@ -150,7 +150,7 @@ Presentation.ExecutionApi/
 ├── Streaming/
 │   ├── BundleRunStreamer.cs         Arms the text sink, calls IBundleRunExecutor, emits lifecycle frames
 │   ├── BundleStreamEventWriter.cs   `data: {json}\n\n`, flushed, write-serialized
-│   └── BundleStreamEvents.cs        The six AG-UI-shaped event records
+│   └── BundleStreamEvents.cs        The ten AG-UI-shaped event records
 ├── appsettings.json                 Enables BundleExecution; Auth intentionally empty
 └── appsettings.Development.json     Local opt-in (anonymous auth)
 ```

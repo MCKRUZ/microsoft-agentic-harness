@@ -1,3 +1,4 @@
+using Application.AI.Common.Helpers;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Traces;
 using Application.AI.Common.Services;
@@ -21,7 +22,6 @@ public sealed class ToolDiagnosticsMiddleware : DelegatingChatClient
 {
     private const int MaxToolsToLog = 5;
     private const int MaxPreviewLength = 200;
-    private const int MaxPayloadSummaryLength = 500;
 
     private readonly ILogger _logger;
     private readonly ITraceWriter? _traceWriter;
@@ -87,11 +87,19 @@ public sealed class ToolDiagnosticsMiddleware : DelegatingChatClient
 
         foreach (var result in functionResults)
         {
-            var rawPayload = result.Result?.ToString() ?? string.Empty;
-            var redactedPayload = _redactor?.Redact(rawPayload) ?? rawPayload;
-            var trimmedPayload = redactedPayload.Length > MaxPayloadSummaryLength
-                ? redactedPayload[..MaxPayloadSummaryLength]
-                : redactedPayload;
+            // A failed call's Result already carries the raw exception message baked in by
+            // IncludeDetailedErrors (see ExecuteAgentTurnCommandHandler.RedactedResultPreview) — this
+            // trace record feeds the dashboard's per-invocation page via ToolInvocationDetailDto,
+            // which is just as much an exposure point as the streamed SSE frame, so it gets the same
+            // generic-message substitution, not just redaction of the raw text.
+            var rawPayload = ToolPayloadRedactor.SafeResultText(result);
+            // A redaction-contract violation from _redactor must degrade this trace record, not
+            // abort the chat call this diagnostics middleware is only observing.
+            var trimmedPayload = ToolPayloadRedactor.TryOrFallback(
+                () => ToolPayloadRedactor.RedactAndTruncate(rawPayload, _redactor),
+                _logger,
+                $"[ToolDiag] Failed to redact tool result for CallId={result.CallId}",
+                fallback: "[unavailable]");
 
             // Always record the stdout against the matching call id so the
             // observability pipeline can render it on the per-invocation page
@@ -109,7 +117,10 @@ public sealed class ToolDiagnosticsMiddleware : DelegatingChatClient
                     Type = TraceRecordTypes.ToolResult,
                     ExecutionRunId = _traceWriter.Scope.ExecutionRunId.ToString("D"),
                     TurnId = result.CallId ?? Guid.NewGuid().ToString("D"),
-                    ResultCategory = TraceResultCategories.Success,
+                    // SafeResultText strips the raw exception text from PayloadSummary on failure — that
+                    // text used to be the only signal a reader had that the call failed at all, so
+                    // ResultCategory must now carry that signal structurally instead.
+                    ResultCategory = result.Exception is not null ? TraceResultCategories.Error : TraceResultCategories.Success,
                     PayloadSummary = trimmedPayload
                 };
 
@@ -221,11 +232,7 @@ public sealed class ToolDiagnosticsMiddleware : DelegatingChatClient
             {
                 try
                 {
-                    argsJson = System.Text.Json.JsonSerializer.Serialize(args);
-                    if (_redactor is not null)
-                        argsJson = _redactor.Redact(argsJson);
-                    if (argsJson is not null && argsJson.Length > MaxPayloadSummaryLength)
-                        argsJson = argsJson[..MaxPayloadSummaryLength];
+                    argsJson = ToolPayloadRedactor.RedactAndTruncate(System.Text.Json.JsonSerializer.Serialize(args), _redactor);
                 }
                 catch (Exception ex)
                 {

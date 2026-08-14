@@ -95,6 +95,72 @@ public sealed class ToolDiagnosticsMiddlewareTests
     }
 
     [Fact]
+    public async Task InvokeNext_FunctionResultHasException_TraceRecordDoesNotContainRawExceptionText()
+    {
+        // FunctionInvokingChatClient's IncludeDetailedErrors option (set unconditionally by
+        // AgentFactory) bakes Exception.Message verbatim into Result — this trace record feeds the
+        // dashboard's per-invocation page via ToolInvocationDetailDto, an exposure point just as real
+        // as the streamed SSE frame ExecuteAgentTurnCommandHandler.RedactedResultPreview sanitizes.
+        var innerClient = MakeChatClient();
+        var (writerMock, middleware) = MakeMiddlewareWithWriter(innerClient);
+
+        var failure = new FunctionResultContent("call-1", "Error: Function failed. Exception: /etc/shadow not found")
+        {
+            Exception = new InvalidOperationException("/etc/shadow not found")
+        };
+        var messages = new ChatMessage[] { new(ChatRole.Tool, [failure]) };
+
+        await middleware.GetResponseAsync(messages, null, CancellationToken.None);
+
+        writerMock.Verify(
+            w => w.AppendTraceAsync(
+                It.Is<ExecutionTraceRecord>(r => r.PayloadSummary != null && !r.PayloadSummary.Contains("/etc/shadow")),
+                It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task InvokeNext_FunctionResultHasException_TraceRecordCategoryIsError()
+    {
+        // SafeResultText strips the raw exception text (the only signal a reader previously had that
+        // the call failed) out of PayloadSummary — ResultCategory must carry that signal structurally
+        // instead of silently staying hard-coded Success for a call that actually failed.
+        var innerClient = MakeChatClient();
+        var (writerMock, middleware) = MakeMiddlewareWithWriter(innerClient);
+
+        var failure = new FunctionResultContent("call-1", "irrelevant")
+        {
+            Exception = new InvalidOperationException("boom")
+        };
+        var messages = new ChatMessage[] { new(ChatRole.Tool, [failure]) };
+
+        await middleware.GetResponseAsync(messages, null, CancellationToken.None);
+
+        writerMock.Verify(
+            w => w.AppendTraceAsync(
+                It.Is<ExecutionTraceRecord>(r => r.ResultCategory == TraceResultCategories.Error),
+                It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task InvokeNext_FunctionResultSucceeded_TraceRecordCategoryIsSuccess()
+    {
+        var innerClient = MakeChatClient();
+        var (writerMock, middleware) = MakeMiddlewareWithWriter(innerClient);
+
+        var messages = new ChatMessage[] { new(ChatRole.Tool, [new FunctionResultContent("call-1", "42 results")]) };
+
+        await middleware.GetResponseAsync(messages, null, CancellationToken.None);
+
+        writerMock.Verify(
+            w => w.AppendTraceAsync(
+                It.Is<ExecutionTraceRecord>(r => r.ResultCategory == TraceResultCategories.Success),
+                It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    [Fact]
     public async Task InvokeNext_AppendTraceThrows_DoesNotRethrow()
     {
         var innerClient = MakeChatClient();

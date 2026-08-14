@@ -25,18 +25,40 @@ public sealed class AgentTurnStreamSink : IAgentTurnStreamSink
     }
 
     private readonly Func<string, CancellationToken, Task> _onDelta;
+    private readonly Func<string, string, string, CancellationToken, Task>? _onToolCall;
+    private readonly Func<string, string, CancellationToken, Task>? _onToolCallResult;
 
     /// <summary>
-    /// Creates a sink that forwards each assistant text delta to <paramref name="onDelta"/>.
+    /// Creates a sink that forwards each assistant text delta to <paramref name="onDelta"/>, each
+    /// complete tool call to <paramref name="onToolCall"/>, and each tool result to
+    /// <paramref name="onToolCallResult"/>. A transport that only cares about text (e.g.
+    /// <c>ConversationOrchestrator</c>'s SignalR path) can omit the tool-call callbacks entirely; the
+    /// corresponding <see cref="IAgentTurnStreamSink"/> methods then no-op, identical to this type's
+    /// behaviour before tool-call streaming existed.
     /// </summary>
     /// <param name="onDelta">The transport callback invoked per text delta.</param>
-    public AgentTurnStreamSink(Func<string, CancellationToken, Task> onDelta)
+    /// <param name="onToolCall">Invoked with a complete tool call (id, name, arguments), or <see langword="null"/> to ignore it.</param>
+    /// <param name="onToolCallResult">Invoked with a tool call's result, or <see langword="null"/> to ignore it.</param>
+    public AgentTurnStreamSink(
+        Func<string, CancellationToken, Task> onDelta,
+        Func<string, string, string, CancellationToken, Task>? onToolCall = null,
+        Func<string, string, CancellationToken, Task>? onToolCallResult = null)
     {
         ArgumentNullException.ThrowIfNull(onDelta);
         _onDelta = onDelta;
+        _onToolCall = onToolCall;
+        _onToolCallResult = onToolCallResult;
     }
 
     /// <inheritdoc />
     public Task EmitAsync(string delta, CancellationToken cancellationToken) =>
         string.IsNullOrEmpty(delta) ? Task.CompletedTask : _onDelta(delta, cancellationToken);
+
+    /// <inheritdoc />
+    public Task EmitToolCallAsync(string toolCallId, string toolCallName, string argsJson, CancellationToken cancellationToken) =>
+        _onToolCall?.Invoke(toolCallId, toolCallName, argsJson, cancellationToken) ?? Task.CompletedTask;
+
+    /// <inheritdoc />
+    public Task EmitToolCallResultAsync(string toolCallId, string result, CancellationToken cancellationToken) =>
+        _onToolCallResult?.Invoke(toolCallId, result, cancellationToken) ?? Task.CompletedTask;
 }

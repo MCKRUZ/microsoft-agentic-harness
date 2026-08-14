@@ -120,6 +120,394 @@ public class ExecuteAgentTurnCommandHandlerTests
     }
 
     [Fact]
+    public async Task Handle_ActiveStreamSink_ToolCallActivity_EmitsInOrderAroundText()
+    {
+        // Arrange — text, then a tool call, then its result, then more text; the sink's tool-call
+        // methods must fire in order and interleaved correctly with the text deltas.
+        var agent = TestableAIAgent.StreamingContent(
+            [new TextContent("Looking that up")],
+            [new FunctionCallContent("call-1", "search", new Dictionary<string, object?> { ["q"] = "docs" })],
+            [new FunctionResultContent("call-1", "42 results")],
+            [new TextContent(" — found it.")]);
+        _agentCache
+            .Setup(c => c.GetOrCreateAsync(
+                It.IsAny<string>(),
+                It.IsAny<IReadOnlyList<string>>(),
+                It.IsAny<SkillAgentOptions>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(agent);
+
+        var events = new List<string>();
+        Application.AI.Common.Services.AgentTurnStreamSink.Current =
+            new Application.AI.Common.Services.AgentTurnStreamSink(
+                onDelta: (delta, _) => { events.Add($"delta:{delta}"); return Task.CompletedTask; },
+                onToolCall: (id, name, args, _) => { events.Add($"call:{id}:{name}:{args}"); return Task.CompletedTask; },
+                onToolCallResult: (id, result, _) => { events.Add($"result:{id}:{result}"); return Task.CompletedTask; });
+
+        try
+        {
+            // Act
+            var result = await _handler.Handle(CreateCommand(), CancellationToken.None);
+
+            // Assert
+            events.Should().Equal(
+                "delta:Looking that up",
+                "call:call-1:search:{\"q\":\"docs\"}",
+                "result:call-1:42 results",
+                "delta: — found it.");
+            result.Success.Should().BeTrue();
+        }
+        finally
+        {
+            Application.AI.Common.Services.AgentTurnStreamSink.Current = null;
+        }
+    }
+
+    [Fact]
+    public async Task Handle_ActiveStreamSink_DuplicateFunctionCallContentForSameCallId_EmitsToolCallStartOnce()
+    {
+        // A provider connector surfacing the same FunctionCallContent twice for one CallId (a
+        // duplicate update, a retry-shaped delta) must not double-emit a TOOL_CALL_START/ARGS triple
+        // to the client — startedCallIds.Add's bool return gates the second occurrence.
+        var duplicateCall = new FunctionCallContent("call-1", "search", new Dictionary<string, object?> { ["q"] = "docs" });
+        var agent = TestableAIAgent.StreamingContent([duplicateCall], [duplicateCall]);
+        _agentCache
+            .Setup(c => c.GetOrCreateAsync(
+                It.IsAny<string>(),
+                It.IsAny<IReadOnlyList<string>>(),
+                It.IsAny<SkillAgentOptions>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(agent);
+
+        var callStarts = 0;
+        Application.AI.Common.Services.AgentTurnStreamSink.Current =
+            new Application.AI.Common.Services.AgentTurnStreamSink(
+                onDelta: (_, _) => Task.CompletedTask,
+                onToolCall: (_, _, _, _) => { callStarts++; return Task.CompletedTask; });
+
+        try
+        {
+            // Act
+            await _handler.Handle(CreateCommand(), CancellationToken.None);
+
+            // Assert
+            callStarts.Should().Be(1);
+        }
+        finally
+        {
+            Application.AI.Common.Services.AgentTurnStreamSink.Current = null;
+        }
+    }
+
+    /// <summary>A value that throws when JSON-serialized, to prove a bad tool argument degrades the
+    /// streamed args to a warning rather than aborting the whole turn.</summary>
+    private sealed class UnserializableArgValue
+    {
+        public string Poison => throw new InvalidOperationException("cannot serialize this value");
+    }
+
+    [Fact]
+    public async Task Handle_ActiveStreamSink_UnserializableToolArgs_DoesNotAbortTheTurn()
+    {
+        // A tool call whose Arguments dictionary holds a value System.Text.Json can't serialize must
+        // degrade gracefully (like ToolDiagnosticsMiddleware's identical serialize call does), not
+        // throw out of the streaming loop and lose text already streamed to the client.
+        var agent = TestableAIAgent.StreamingContent(
+            [new TextContent("Looking that up")],
+            [new FunctionCallContent("call-1", "search", new Dictionary<string, object?> { ["bad"] = new UnserializableArgValue() })],
+            [new TextContent(" — done.")]);
+        _agentCache
+            .Setup(c => c.GetOrCreateAsync(
+                It.IsAny<string>(),
+                It.IsAny<IReadOnlyList<string>>(),
+                It.IsAny<SkillAgentOptions>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(agent);
+
+        var toolCallArgs = string.Empty;
+        Application.AI.Common.Services.AgentTurnStreamSink.Current =
+            new Application.AI.Common.Services.AgentTurnStreamSink(
+                onDelta: (_, _) => Task.CompletedTask,
+                onToolCall: (_, _, args, _) => { toolCallArgs = args; return Task.CompletedTask; });
+
+        try
+        {
+            // Act
+            var result = await _handler.Handle(CreateCommand(), CancellationToken.None);
+
+            // Assert — the turn still completes and streams the surrounding text; the tool call is
+            // reported with a safe fallback instead of the handler throwing.
+            result.Success.Should().BeTrue();
+            result.Response.Should().Be("Looking that up — done.");
+            toolCallArgs.Should().Be("{}");
+        }
+        finally
+        {
+            Application.AI.Common.Services.AgentTurnStreamSink.Current = null;
+        }
+    }
+
+    [Fact]
+    public async Task Handle_ActiveStreamSink_LongToolCallArgs_AreNotTruncated()
+    {
+        // BundleToolCallArgsEvent.Delta is documented as always carrying the complete JSON payload.
+        // Truncating it at the same preview-length cap used for log strings would hand a client
+        // invalid, unparseable JSON — arguments must be redacted only, never truncated.
+        var longValue = new string('x', 600);
+        var agent = TestableAIAgent.StreamingContent(
+            [new FunctionCallContent("call-1", "search", new Dictionary<string, object?> { ["q"] = longValue })]);
+        _agentCache
+            .Setup(c => c.GetOrCreateAsync(
+                It.IsAny<string>(),
+                It.IsAny<IReadOnlyList<string>>(),
+                It.IsAny<SkillAgentOptions>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(agent);
+
+        var toolCallArgs = string.Empty;
+        Application.AI.Common.Services.AgentTurnStreamSink.Current =
+            new Application.AI.Common.Services.AgentTurnStreamSink(
+                onDelta: (_, _) => Task.CompletedTask,
+                onToolCall: (_, _, args, _) => { toolCallArgs = args; return Task.CompletedTask; });
+
+        try
+        {
+            // Act
+            await _handler.Handle(CreateCommand(), CancellationToken.None);
+
+            // Assert
+            toolCallArgs.Length.Should().BeGreaterThan(500);
+            var act = () => System.Text.Json.JsonDocument.Parse(toolCallArgs);
+            act.Should().NotThrow("the streamed args must remain valid, complete JSON");
+        }
+        finally
+        {
+            Application.AI.Common.Services.AgentTurnStreamSink.Current = null;
+        }
+    }
+
+    [Fact]
+    public async Task Handle_ActiveStreamSink_ToolResultWithNoCallId_IsNotStreamed()
+    {
+        // A FunctionResultContent with no CallId can never be matched back to a TOOL_CALL_START, so
+        // streaming it would only produce an orphaned frame a client cannot place.
+        var agent = TestableAIAgent.StreamingContent(
+            [new FunctionResultContent(string.Empty, "orphaned result")]);
+        _agentCache
+            .Setup(c => c.GetOrCreateAsync(
+                It.IsAny<string>(),
+                It.IsAny<IReadOnlyList<string>>(),
+                It.IsAny<SkillAgentOptions>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(agent);
+
+        var resultFired = false;
+        Application.AI.Common.Services.AgentTurnStreamSink.Current =
+            new Application.AI.Common.Services.AgentTurnStreamSink(
+                onDelta: (_, _) => Task.CompletedTask,
+                onToolCallResult: (_, _, _) => { resultFired = true; return Task.CompletedTask; });
+
+        try
+        {
+            // Act
+            await _handler.Handle(CreateCommand(), CancellationToken.None);
+
+            // Assert
+            resultFired.Should().BeFalse();
+        }
+        finally
+        {
+            Application.AI.Common.Services.AgentTurnStreamSink.Current = null;
+        }
+    }
+
+    [Fact]
+    public async Task Handle_ActiveStreamSink_ToolCallWithNoCallId_IsNotStreamed()
+    {
+        // A FunctionCallContent with a valid Name but no CallId used to stream anyway (the guard only
+        // checked Name), producing a frame with an empty toolCallId that violates the wire contract's
+        // required field. Guard on both now, mirroring the FunctionResultContent guard below it.
+        var agent = TestableAIAgent.StreamingContent(
+            [new FunctionCallContent(string.Empty, "search", new Dictionary<string, object?> { ["q"] = "docs" })]);
+        _agentCache
+            .Setup(c => c.GetOrCreateAsync(
+                It.IsAny<string>(),
+                It.IsAny<IReadOnlyList<string>>(),
+                It.IsAny<SkillAgentOptions>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(agent);
+
+        var callFired = false;
+        Application.AI.Common.Services.AgentTurnStreamSink.Current =
+            new Application.AI.Common.Services.AgentTurnStreamSink(
+                onDelta: (_, _) => Task.CompletedTask,
+                onToolCall: (_, _, _, _) => { callFired = true; return Task.CompletedTask; });
+
+        try
+        {
+            // Act
+            await _handler.Handle(CreateCommand(), CancellationToken.None);
+
+            // Assert
+            callFired.Should().BeFalse();
+        }
+        finally
+        {
+            Application.AI.Common.Services.AgentTurnStreamSink.Current = null;
+        }
+    }
+
+    [Fact]
+    public async Task Handle_ActiveStreamSink_CallWithEmptyNameButValidCallId_ResultIsAlsoNotStreamed()
+    {
+        // The asymmetry this guards against: a call skipped for having no Name (so no TOOL_CALL_START
+        // ever fires) must not let its later result — which shares the same, valid CallId — stream
+        // anyway. Before the fix, only the call side was skipped; the result side's independent
+        // CallId-only guard let it through, producing a TOOL_CALL_RESULT with no preceding START.
+        var agent = TestableAIAgent.StreamingContent(
+            [new FunctionCallContent("call-1", string.Empty, new Dictionary<string, object?> { ["q"] = "docs" })],
+            [new FunctionResultContent("call-1", "should not stream either")]);
+        _agentCache
+            .Setup(c => c.GetOrCreateAsync(
+                It.IsAny<string>(),
+                It.IsAny<IReadOnlyList<string>>(),
+                It.IsAny<SkillAgentOptions>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(agent);
+
+        var events = new List<string>();
+        Application.AI.Common.Services.AgentTurnStreamSink.Current =
+            new Application.AI.Common.Services.AgentTurnStreamSink(
+                onDelta: (_, _) => Task.CompletedTask,
+                onToolCall: (id, name, args, _) => { events.Add($"call:{id}:{name}:{args}"); return Task.CompletedTask; },
+                onToolCallResult: (id, result, _) => { events.Add($"result:{id}:{result}"); return Task.CompletedTask; });
+
+        try
+        {
+            // Act
+            await _handler.Handle(CreateCommand(), CancellationToken.None);
+
+            // Assert — the call is skipped (empty Name) and its result must be too, since streaming it
+            // alone would be an orphaned TOOL_CALL_RESULT with no preceding TOOL_CALL_START.
+            events.Should().BeEmpty();
+        }
+        finally
+        {
+            Application.AI.Common.Services.AgentTurnStreamSink.Current = null;
+        }
+    }
+
+    [Fact]
+    public async Task Handle_ActiveStreamSink_ToolCallArgsAndResult_AreRedactedBeforeStreaming()
+    {
+        // The same payloads ToolDiagnosticsMiddleware redacts before persisting must also be
+        // redacted before they reach a live SSE client — this handler is a second exposure point
+        // for the identical sensitive data.
+        var agent = TestableAIAgent.StreamingContent(
+            [new FunctionCallContent("call-1", "search", new Dictionary<string, object?> { ["token"] = "secret-value" })],
+            [new FunctionResultContent("call-1", "secret-value")]);
+        _agentCache
+            .Setup(c => c.GetOrCreateAsync(
+                It.IsAny<string>(),
+                It.IsAny<IReadOnlyList<string>>(),
+                It.IsAny<SkillAgentOptions>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(agent);
+
+        var redactor = new Mock<ISecretRedactor>();
+        redactor.Setup(r => r.Redact(It.Is<string>(s => s.Contains("secret-value"))))
+            .Returns<string>(s => s.Replace("secret-value", "[REDACTED]"));
+        var handlerWithRedactor = new ExecuteAgentTurnCommandHandler(
+            _agentCache.Object,
+            Mock.Of<Application.AI.Common.Interfaces.Governance.IToolCallAdmissionPipeline>(
+                p => p.GetTrace() == Domain.AI.Governance.GovernanceTrace.Empty),
+            _agentRegistry.Object,
+            new Mock<ISkillMetadataRegistry>().Object,
+            new Application.AI.Common.Services.Context.ConversationRegistrationTracker(),
+            new Mock<IObservabilityStore>().Object,
+            Mock.Of<ILlmUsageCapture>(c => c.TakeSnapshot() == new LlmUsageSnapshot(0, 0, 0, 0, null, 0m, 0m, Array.Empty<string>())),
+            new DefaultContextSnapshotComputer(),
+            new NullContextSnapshotNotifier(),
+            TimeProvider.System,
+            NullLogger<ExecuteAgentTurnCommandHandler>.Instance,
+            redactor.Object);
+
+        var args = string.Empty;
+        var toolResult = string.Empty;
+        Application.AI.Common.Services.AgentTurnStreamSink.Current =
+            new Application.AI.Common.Services.AgentTurnStreamSink(
+                onDelta: (_, _) => Task.CompletedTask,
+                onToolCall: (_, _, a, _) => { args = a; return Task.CompletedTask; },
+                onToolCallResult: (_, r, _) => { toolResult = r; return Task.CompletedTask; });
+
+        try
+        {
+            // Act
+            await handlerWithRedactor.Handle(CreateCommand(), CancellationToken.None);
+
+            // Assert
+            args.Should().NotContain("secret-value").And.Contain("[REDACTED]");
+            toolResult.Should().Be("[REDACTED]");
+            // TOOL_CALL_ARGS.delta is documented as always-complete, parseable JSON — a redactor that
+            // corrupts the surrounding structure (e.g. a greedy value matcher, see
+            // PatternSecretRedactorTests.Redact_SecretKeywordInsideJsonStringValue_DoesNotConsumeRestOfDocument
+            // in Infrastructure.AI.Tests for the concrete regex bug this guards against) would break
+            // this contract silently.
+            var act = () => System.Text.Json.JsonDocument.Parse(args);
+            act.Should().NotThrow();
+        }
+        finally
+        {
+            Application.AI.Common.Services.AgentTurnStreamSink.Current = null;
+        }
+    }
+
+    [Fact]
+    public async Task Handle_ActiveStreamSink_ToolCallFailed_StreamsGenericMessageNotRawException()
+    {
+        // FunctionInvokingChatClient's IncludeDetailedErrors option (set unconditionally by
+        // AgentFactory) bakes Exception.Message verbatim into FunctionResultContent.Result — e.g.
+        // "Error: Function failed. Exception: could not open '/etc/shadow'". That text can carry file
+        // paths, connection details, or other internals that must never reach a browser, so a failed
+        // call streams a generic message instead of the raw Result text.
+        var failure = new FunctionResultContent("call-1", "Error: Function failed. Exception: /etc/shadow not found")
+        {
+            Exception = new InvalidOperationException("/etc/shadow not found")
+        };
+        var agent = TestableAIAgent.StreamingContent(
+            [new FunctionCallContent("call-1", "read_file", new Dictionary<string, object?> { ["path"] = "x" })],
+            [failure]);
+        _agentCache
+            .Setup(c => c.GetOrCreateAsync(
+                It.IsAny<string>(),
+                It.IsAny<IReadOnlyList<string>>(),
+                It.IsAny<SkillAgentOptions>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(agent);
+
+        var toolResult = string.Empty;
+        Application.AI.Common.Services.AgentTurnStreamSink.Current =
+            new Application.AI.Common.Services.AgentTurnStreamSink(
+                onDelta: (_, _) => Task.CompletedTask,
+                onToolCall: (_, _, _, _) => Task.CompletedTask,
+                onToolCallResult: (_, r, _) => { toolResult = r; return Task.CompletedTask; });
+
+        try
+        {
+            // Act
+            await _handler.Handle(CreateCommand(), CancellationToken.None);
+
+            // Assert
+            toolResult.Should().NotContain("/etc/shadow");
+            toolResult.Should().NotBeEmpty();
+        }
+        finally
+        {
+            Application.AI.Common.Services.AgentTurnStreamSink.Current = null;
+        }
+    }
+
+    [Fact]
     public async Task Handle_CallerCancelled_ReturnsCancelledErrorKind()
     {
         // A cancellation via the caller's token (e.g. client disconnect) is routine — it must

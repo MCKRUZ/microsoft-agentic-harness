@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Bundles;
 using Application.AI.Common.Services;
 using Domain.AI.Bundles;
@@ -16,20 +17,38 @@ namespace Presentation.ExecutionApi.Tests;
 /// </summary>
 public sealed class BundleRunStreamerTests
 {
-    /// <summary>A fake executor that records whether the ambient sink was armed, optionally emits deltas through
-    /// it, then returns a configured outcome.</summary>
-    private sealed class FakeExecutor(BundleRunExecution result, params string[] deltas) : IBundleRunExecutor
+    /// <summary>A fake executor that records whether the ambient sink was armed, optionally drives it through
+    /// a caller-supplied script (deltas and/or tool-call events, in any order), then returns a configured
+    /// outcome.</summary>
+    private sealed class FakeExecutor : IBundleRunExecutor
     {
+        private readonly BundleRunExecution _result;
+        private readonly Func<IAgentTurnStreamSink, CancellationToken, Task> _script;
+
         public bool SinkArmedDuringRun { get; private set; }
+
+        public FakeExecutor(BundleRunExecution result, params string[] deltas)
+            : this(result, async (sink, ct) =>
+            {
+                foreach (var delta in deltas)
+                    await sink.EmitAsync(delta, ct);
+            })
+        {
+        }
+
+        public FakeExecutor(BundleRunExecution result, Func<IAgentTurnStreamSink, CancellationToken, Task> script)
+        {
+            _result = result;
+            _script = script;
+        }
 
         public async Task<BundleRunExecution> ExecuteAsync(string jobId, CancellationToken cancellationToken)
         {
             var sink = AgentTurnStreamSink.Current;
             SinkArmedDuringRun = sink is not null;
             if (sink is not null)
-                foreach (var delta in deltas)
-                    await sink.EmitAsync(delta, cancellationToken);
-            return result;
+                await _script(sink, cancellationToken);
+            return _result;
         }
     }
 
@@ -111,6 +130,50 @@ public sealed class BundleRunStreamerTests
         var frames = await RunAndParseAsync(executor, Record());
 
         frames.Select(Type).Should().Equal("RUN_STARTED", "RUN_FINISHED");
+    }
+
+    [Fact]
+    public async Task StreamAsync_ToolCallActivity_EmitsInterleavedWithText()
+    {
+        var executor = new FakeExecutor(BundleRunExecution.Ran(Record(BundleRunStatus.Succeeded)), async (sink, ct) =>
+        {
+            await sink.EmitAsync("Looking that up", ct);
+            await sink.EmitToolCallAsync("call-1", "search", "{\"q\":\"docs\"}", ct);
+            await sink.EmitToolCallResultAsync("call-1", "42 results", ct);
+            await sink.EmitAsync(" — found it.", ct);
+        });
+
+        var frames = await RunAndParseAsync(executor, Record());
+
+        frames.Select(Type).Should().Equal(
+            "RUN_STARTED", "TEXT_MESSAGE_START", "TEXT_MESSAGE_CONTENT",
+            "TOOL_CALL_START", "TOOL_CALL_ARGS", "TOOL_CALL_END", "TOOL_CALL_RESULT",
+            "TEXT_MESSAGE_CONTENT", "TEXT_MESSAGE_END", "RUN_FINISHED");
+
+        var start = frames.Single(f => Type(f) == "TOOL_CALL_START");
+        start.GetProperty("toolCallId").GetString().Should().Be("call-1");
+        start.GetProperty("toolCallName").GetString().Should().Be("search");
+
+        frames.Single(f => Type(f) == "TOOL_CALL_ARGS").GetProperty("delta").GetString()
+            .Should().Be("{\"q\":\"docs\"}");
+        frames.Single(f => Type(f) == "TOOL_CALL_END").GetProperty("toolCallId").GetString()
+            .Should().Be("call-1");
+        frames.Single(f => Type(f) == "TOOL_CALL_RESULT").GetProperty("result").GetString()
+            .Should().Be("42 results");
+    }
+
+    [Fact]
+    public async Task StreamAsync_ToolCallBeforeAnyText_DoesNotOpenAStrayTextMessage()
+    {
+        var executor = new FakeExecutor(BundleRunExecution.Ran(Record(BundleRunStatus.Succeeded)), async (sink, ct) =>
+        {
+            await sink.EmitToolCallAsync("call-1", "search", "{}", ct);
+        });
+
+        var frames = await RunAndParseAsync(executor, Record());
+
+        frames.Select(Type).Should().Equal(
+            "RUN_STARTED", "TOOL_CALL_START", "TOOL_CALL_ARGS", "TOOL_CALL_END", "RUN_FINISHED");
     }
 
     [Fact]
