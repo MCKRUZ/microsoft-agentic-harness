@@ -286,6 +286,82 @@ public class ExecuteAgentTurnCommandHandlerTests
     }
 
     [Fact]
+    public async Task Handle_ActiveStreamSink_ToolCallWithNoCallId_IsNotStreamed()
+    {
+        // A FunctionCallContent with a valid Name but no CallId used to stream anyway (the guard only
+        // checked Name), producing a frame with an empty toolCallId that violates the wire contract's
+        // required field. Guard on both now, mirroring the FunctionResultContent guard below it.
+        var agent = TestableAIAgent.StreamingContent(
+            [new FunctionCallContent(string.Empty, "search", new Dictionary<string, object?> { ["q"] = "docs" })]);
+        _agentCache
+            .Setup(c => c.GetOrCreateAsync(
+                It.IsAny<string>(),
+                It.IsAny<IReadOnlyList<string>>(),
+                It.IsAny<SkillAgentOptions>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(agent);
+
+        var callFired = false;
+        Application.AI.Common.Services.AgentTurnStreamSink.Current =
+            new Application.AI.Common.Services.AgentTurnStreamSink(
+                onDelta: (_, _) => Task.CompletedTask,
+                onToolCall: (_, _, _, _) => { callFired = true; return Task.CompletedTask; });
+
+        try
+        {
+            // Act
+            await _handler.Handle(CreateCommand(), CancellationToken.None);
+
+            // Assert
+            callFired.Should().BeFalse();
+        }
+        finally
+        {
+            Application.AI.Common.Services.AgentTurnStreamSink.Current = null;
+        }
+    }
+
+    [Fact]
+    public async Task Handle_ActiveStreamSink_CallWithEmptyNameButValidCallId_ResultIsAlsoNotStreamed()
+    {
+        // The asymmetry this guards against: a call skipped for having no Name (so no TOOL_CALL_START
+        // ever fires) must not let its later result — which shares the same, valid CallId — stream
+        // anyway. Before the fix, only the call side was skipped; the result side's independent
+        // CallId-only guard let it through, producing a TOOL_CALL_RESULT with no preceding START.
+        var agent = TestableAIAgent.StreamingContent(
+            [new FunctionCallContent("call-1", string.Empty, new Dictionary<string, object?> { ["q"] = "docs" })],
+            [new FunctionResultContent("call-1", "should not stream either")]);
+        _agentCache
+            .Setup(c => c.GetOrCreateAsync(
+                It.IsAny<string>(),
+                It.IsAny<IReadOnlyList<string>>(),
+                It.IsAny<SkillAgentOptions>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(agent);
+
+        var events = new List<string>();
+        Application.AI.Common.Services.AgentTurnStreamSink.Current =
+            new Application.AI.Common.Services.AgentTurnStreamSink(
+                onDelta: (_, _) => Task.CompletedTask,
+                onToolCall: (id, name, args, _) => { events.Add($"call:{id}:{name}:{args}"); return Task.CompletedTask; },
+                onToolCallResult: (id, result, _) => { events.Add($"result:{id}:{result}"); return Task.CompletedTask; });
+
+        try
+        {
+            // Act
+            await _handler.Handle(CreateCommand(), CancellationToken.None);
+
+            // Assert — the call is skipped (empty Name) and its result must be too, since streaming it
+            // alone would be an orphaned TOOL_CALL_RESULT with no preceding TOOL_CALL_START.
+            events.Should().BeEmpty();
+        }
+        finally
+        {
+            Application.AI.Common.Services.AgentTurnStreamSink.Current = null;
+        }
+    }
+
+    [Fact]
     public async Task Handle_ActiveStreamSink_ToolCallArgsAndResult_AreRedactedBeforeStreaming()
     {
         // The same payloads ToolDiagnosticsMiddleware redacts before persisting must also be

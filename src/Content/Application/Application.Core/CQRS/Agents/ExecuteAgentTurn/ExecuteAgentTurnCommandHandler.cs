@@ -365,6 +365,12 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 		CancellationToken cancellationToken)
 	{
 		var builder = new StringBuilder();
+		// Tracks which CallIds actually got a TOOL_CALL_START streamed, so a matching result can't
+		// stream on its own merits (a non-empty CallId) alone — the two guards below check different
+		// fields (Name vs nothing further), so a call skipped for missing Name but carrying a valid
+		// CallId would otherwise leave its result to stream unmatched: a TOOL_CALL_RESULT with no
+		// preceding TOOL_CALL_START a client could place.
+		var startedCallIds = new HashSet<string>();
 		await foreach (var update in agent.RunStreamingAsync(messages, cancellationToken: cancellationToken))
 		{
 			var delta = update.Text;
@@ -378,15 +384,19 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 			{
 				switch (content)
 				{
-					case FunctionCallContent call when !string.IsNullOrEmpty(call.Name):
+					// Guards on both CallId and Name: a call with no id can't be matched to its later
+					// result (an empty toolCallId would violate the wire contract's required field), and
+					// a call with no name has nothing meaningful to announce.
+					case FunctionCallContent { CallId.Length: > 0 } call when !string.IsNullOrEmpty(call.Name):
+						startedCallIds.Add(call.CallId);
 						await sink.EmitToolCallAsync(
 							call.CallId, call.Name, RedactedArgsJson(call, redactor, logger), cancellationToken);
 						break;
 
-					// Guards on CallId, mirroring the FunctionCallContent case's guard on Name: a result
-					// with no id cannot be matched to the call it belongs to, so emitting it would only
-					// produce an orphaned frame a client cannot place.
-					case FunctionResultContent { CallId.Length: > 0 } result:
+					// Guards on CallId AND on having actually streamed a matching TOOL_CALL_START — a
+					// non-empty CallId alone isn't enough, since the call side can be skipped (e.g. empty
+					// Name) while still carrying a CallId this result shares.
+					case FunctionResultContent { CallId.Length: > 0 } result when startedCallIds.Contains(result.CallId):
 						var resultText = result.Result?.ToString() ?? string.Empty;
 						await sink.EmitToolCallResultAsync(
 							result.CallId, ToolPayloadRedactor.RedactAndTruncate(resultText, redactor), cancellationToken);

@@ -7,12 +7,12 @@ namespace Presentation.ExecutionApi.Streaming;
 /// </summary>
 /// <remarks>
 /// <para>
-/// These records reproduce the subset of the AG-UI protocol a bundle run needs — run lifecycle plus assistant
-/// text streaming — so any AG-UI client library consumes the feed unchanged. The bundle API deliberately ships
-/// its <em>own</em> small copy rather than referencing the dashboard's full AG-UI vocabulary: this is a lean,
-/// isolated host for externally-authored agents, and coupling it to the dashboard's 25-event protocol (plan,
-/// drift, learning, escalation events it will never emit) would defeat that isolation. If a third host ever
-/// needs this, extract a shared Server-Sent-Events primitive then.
+/// These records reproduce the subset of the AG-UI protocol a bundle run needs — run lifecycle, assistant
+/// text streaming, and tool-call activity — so any AG-UI client library consumes the feed unchanged. The
+/// bundle API deliberately ships its <em>own</em> small copy rather than referencing the dashboard's full
+/// AG-UI vocabulary: this is a lean, isolated host for externally-authored agents, and coupling it to the
+/// dashboard's 25-event protocol (plan, drift, learning, escalation events it will never emit) would defeat
+/// that isolation. If a third host ever needs this, extract a shared Server-Sent-Events primitive then.
 /// </para>
 /// <para>
 /// The <c>type</c> property is the polymorphic discriminator on the wire. Frames MUST be serialized against

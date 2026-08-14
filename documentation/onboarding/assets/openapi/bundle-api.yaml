@@ -352,6 +352,11 @@ paths:
         the AG-UI wire vocabulary, so an AG-UI client library consumes the feed unchanged. Exactly
         one terminal frame is emitted: `RUN_FINISHED` or `RUN_ERROR`.
 
+        A tool call interleaves as `TOOL_CALL_START` → `TOOL_CALL_ARGS` → `TOOL_CALL_END`, then
+        `TOOL_CALL_RESULT` once the tool has run — freely interleaved with `TEXT_MESSAGE_*` frames,
+        and possibly *before* the first `TEXT_MESSAGE_START` if the agent calls a tool before
+        producing any text. A client must not assume the assistant message opens first.
+
         **Concurrency limit, not a rate limit.** Each open stream holds a permit for its lifetime;
         a caller may hold `MaxConcurrentStreamsPerCaller` (default 4) at once. Excess connections
         are rejected outright with `429`, never queued.
@@ -373,6 +378,14 @@ paths:
                   summary: A complete streamed run
                   value: |
                     data: {"type":"RUN_STARTED","threadId":"h-9f3c...","runId":"0b8f1c2d..."}
+
+                    data: {"type":"TOOL_CALL_START","toolCallId":"c-1a2b...","toolCallName":"query_knowledge_graph"}
+
+                    data: {"type":"TOOL_CALL_ARGS","toolCallId":"c-1a2b...","delta":"{\"query\":\"HPWH A004\"}"}
+
+                    data: {"type":"TOOL_CALL_END","toolCallId":"c-1a2b..."}
+
+                    data: {"type":"TOOL_CALL_RESULT","toolCallId":"c-1a2b...","result":"3 matching entries"}
 
                     data: {"type":"TEXT_MESSAGE_START","messageId":"7e2a...","role":"assistant"}
 
@@ -1235,6 +1248,10 @@ components:
         - $ref: "#/components/schemas/TextMessageStartEvent"
         - $ref: "#/components/schemas/TextMessageContentEvent"
         - $ref: "#/components/schemas/TextMessageEndEvent"
+        - $ref: "#/components/schemas/ToolCallStartEvent"
+        - $ref: "#/components/schemas/ToolCallArgsEvent"
+        - $ref: "#/components/schemas/ToolCallEndEvent"
+        - $ref: "#/components/schemas/ToolCallResultEvent"
         - $ref: "#/components/schemas/RunFinishedEvent"
         - $ref: "#/components/schemas/RunErrorEvent"
       discriminator:
@@ -1280,6 +1297,52 @@ components:
       properties:
         type: { type: string, const: TEXT_MESSAGE_END }
         messageId: { type: string }
+
+    ToolCallStartEvent:
+      type: object
+      description: Emitted when the agent decides to call a tool.
+      required: [type, toolCallId, toolCallName]
+      properties:
+        type: { type: string, const: TOOL_CALL_START }
+        toolCallId:
+          type: string
+          description: The provider-assigned id for this call, shared by every event for it.
+        toolCallName: { type: string }
+
+    ToolCallArgsEvent:
+      type: object
+      description: >-
+        Carries a tool call's arguments. Unlike `TextMessageContentEvent`, `delta` is NOT an
+        incremental delta — the underlying model-provider integration only ever exposes a tool
+        call's arguments once fully assembled, so this frame always carries the complete JSON
+        payload in one shot, immediately followed by `TOOL_CALL_END`. The field is still named
+        `delta` to match the AG-UI wire vocabulary exactly.
+      required: [type, toolCallId, delta]
+      properties:
+        type: { type: string, const: TOOL_CALL_ARGS }
+        toolCallId: { type: string }
+        delta:
+          type: string
+          description: The tool call's complete arguments, serialized as JSON.
+
+    ToolCallEndEvent:
+      type: object
+      description: Signals that a tool call's arguments are complete.
+      required: [type, toolCallId]
+      properties:
+        type: { type: string, const: TOOL_CALL_END }
+        toolCallId: { type: string }
+
+    ToolCallResultEvent:
+      type: object
+      description: Emitted once a tool call has actually run and produced a result.
+      required: [type, toolCallId, result]
+      properties:
+        type: { type: string, const: TOOL_CALL_RESULT }
+        toolCallId: { type: string }
+        result:
+          type: string
+          description: The tool's output.
 
     RunFinishedEvent:
       type: object

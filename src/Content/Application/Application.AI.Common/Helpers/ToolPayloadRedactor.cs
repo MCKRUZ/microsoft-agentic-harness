@@ -34,5 +34,20 @@ public static class ToolPayloadRedactor
     /// consumer needs it intact, e.g. tool-call arguments a client parses as JSON, where truncation
     /// would silently hand back invalid data instead of what was documented as the complete payload.
     /// </summary>
-    public static string Redact(string payload, ISecretRedactor? redactor) => redactor?.Redact(payload) ?? payload;
+    /// <exception cref="InvalidOperationException">
+    /// <paramref name="redactor"/> is non-null but returned <see langword="null"/>.
+    /// <see cref="ISecretRedactor.Redact"/> documents that as valid only for a null input, and
+    /// <paramref name="payload"/> here is non-nullable — so it can only mean the redactor is violating
+    /// its own contract. Falling back to the raw payload in that case (as a bare <c>??</c> would) is a
+    /// silent unredacted leak past a redaction boundary; fail loudly instead.
+    /// </exception>
+    public static string Redact(string payload, ISecretRedactor? redactor)
+    {
+        if (redactor is null)
+            return payload;
+
+        return redactor.Redact(payload) ?? throw new InvalidOperationException(
+            $"{redactor.GetType().Name}.Redact(string) returned null for non-null input, violating " +
+            $"{nameof(ISecretRedactor)}'s contract.");
+    }
 }
