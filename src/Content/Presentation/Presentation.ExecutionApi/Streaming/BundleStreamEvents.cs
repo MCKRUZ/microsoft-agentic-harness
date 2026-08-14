@@ -96,7 +96,10 @@ public sealed record BundleToolCallEndEvent(
 public sealed record BundleToolCallResultEvent(
     /// <summary>The call this result belongs to.</summary>
     [property: JsonPropertyName("toolCallId")] string ToolCallId,
-    /// <summary>The tool's output.</summary>
+    /// <summary>
+    /// A redacted, truncated preview of the tool's output — never the raw payload. On failure this is a
+    /// generic message, not the underlying exception text.
+    /// </summary>
     [property: JsonPropertyName("result")] string Result) : BundleStreamEvent;
 
 /// <summary>Emitted once on successful completion of a streamed run. Terminal; no further frames follow.</summary>

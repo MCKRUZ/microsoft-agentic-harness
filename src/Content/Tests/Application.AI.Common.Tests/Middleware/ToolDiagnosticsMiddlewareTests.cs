@@ -95,6 +95,31 @@ public sealed class ToolDiagnosticsMiddlewareTests
     }
 
     [Fact]
+    public async Task InvokeNext_FunctionResultHasException_TraceRecordDoesNotContainRawExceptionText()
+    {
+        // FunctionInvokingChatClient's IncludeDetailedErrors option (set unconditionally by
+        // AgentFactory) bakes Exception.Message verbatim into Result — this trace record feeds the
+        // dashboard's per-invocation page via ToolInvocationDetailDto, an exposure point just as real
+        // as the streamed SSE frame ExecuteAgentTurnCommandHandler.RedactedResultPreview sanitizes.
+        var innerClient = MakeChatClient();
+        var (writerMock, middleware) = MakeMiddlewareWithWriter(innerClient);
+
+        var failure = new FunctionResultContent("call-1", "Error: Function failed. Exception: /etc/shadow not found")
+        {
+            Exception = new InvalidOperationException("/etc/shadow not found")
+        };
+        var messages = new ChatMessage[] { new(ChatRole.Tool, [failure]) };
+
+        await middleware.GetResponseAsync(messages, null, CancellationToken.None);
+
+        writerMock.Verify(
+            w => w.AppendTraceAsync(
+                It.Is<ExecutionTraceRecord>(r => r.PayloadSummary != null && !r.PayloadSummary.Contains("/etc/shadow")),
+                It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    [Fact]
     public async Task InvokeNext_AppendTraceThrows_DoesNotRethrow()
     {
         var innerClient = MakeChatClient();

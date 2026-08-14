@@ -161,4 +161,88 @@ public class PatternSecretRedactorTests
         sut.IsSecretKey("DbPassword").Should().BeTrue();
         sut.IsSecretKey("MaxIterations").Should().BeFalse();
     }
+
+    /// <summary>
+    /// A JSON-quoted secret key/value pair — the shape tool call arguments and results are routinely
+    /// serialized as — is redacted. The pre-existing generic key=value/key:value pattern requires an
+    /// unquoted value and never matches this shape, so a distinct pattern is required.
+    /// </summary>
+    [Fact]
+    public void Redact_JsonQuotedApiKey_RedactsValue()
+    {
+        var sut = CreateRedactor();
+        var input = """{"toolName":"http_call","api_key":"sk-superSecret123","timeout":30}""";
+
+        var result = sut.Redact(input);
+
+        result.Should().Contain("""api_key":"[REDACTED]""");
+        result.Should().NotContain("sk-superSecret123");
+    }
+
+    /// <summary>
+    /// Calling Redact twice on a JSON-quoted secret is idempotent — the "[REDACTED]" placeholder
+    /// must not itself match the JSON-shaped pattern on a second pass.
+    /// </summary>
+    [Fact]
+    public void Redact_AlreadyRedactedJsonQuotedSecret_ReturnsUnchanged()
+    {
+        var sut = CreateRedactor();
+        var input = """{"password":"[REDACTED]"}""";
+
+        var result = sut.Redact(input);
+
+        result.Should().Be(input);
+    }
+
+    /// <summary>
+    /// A JSON-quoted secret value containing an escaped quote (e.g. the actual value is <c>ab"cd</c>,
+    /// serialized as <c>"ab\"cd"</c>) is redacted in full. A plain <c>[^"]*</c> value matcher stops at
+    /// the escaped quote character regardless of the preceding backslash, truncating the match mid-value
+    /// and leaking the remainder of the secret in plaintext while corrupting the surrounding JSON.
+    /// </summary>
+    [Fact]
+    public void Redact_JsonQuotedSecretWithEscapedQuote_RedactsEntireValue()
+    {
+        var sut = CreateRedactor();
+        var input = """{"password":"ab\"cd"}""";
+
+        var result = sut.Redact(input);
+
+        result.Should().Be("""{"password":"[REDACTED]"}""");
+        result.Should().NotContain("ab");
+        result.Should().NotContain("cd");
+    }
+
+    /// <summary>
+    /// An unquoted "client_secret=" pair — not covered by any pattern before this fix, since the
+    /// connection-string pattern's alternation omits client_secret and the generic key=value pattern's
+    /// alternation only covered api_key/access_token/secret_key.
+    /// </summary>
+    [Fact]
+    public void Redact_UnquotedClientSecret_RedactsValue()
+    {
+        var sut = CreateRedactor();
+        var input = "client_secret=superSecret123";
+
+        var result = sut.Redact(input);
+
+        result.Should().Contain("[REDACTED]");
+        result.Should().NotContain("superSecret123");
+    }
+
+    /// <summary>
+    /// An unquoted "password:" pair (colon form) — the pre-existing connection-string pattern only
+    /// matched "Password=" (equals form), leaving the colon form of the same key unredacted.
+    /// </summary>
+    [Fact]
+    public void Redact_UnquotedPasswordWithColon_RedactsValue()
+    {
+        var sut = CreateRedactor();
+        var input = "password: superSecret123";
+
+        var result = sut.Redact(input);
+
+        result.Should().Contain("[REDACTED]");
+        result.Should().NotContain("superSecret123");
+    }
 }

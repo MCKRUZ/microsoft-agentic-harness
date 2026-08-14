@@ -87,8 +87,19 @@ public sealed class ToolDiagnosticsMiddleware : DelegatingChatClient
 
         foreach (var result in functionResults)
         {
-            var rawPayload = result.Result?.ToString() ?? string.Empty;
-            var trimmedPayload = ToolPayloadRedactor.RedactAndTruncate(rawPayload, _redactor);
+            // A failed call's Result already carries the raw exception message baked in by
+            // IncludeDetailedErrors (see ExecuteAgentTurnCommandHandler.RedactedResultPreview) — this
+            // trace record feeds the dashboard's per-invocation page via ToolInvocationDetailDto,
+            // which is just as much an exposure point as the streamed SSE frame, so it gets the same
+            // generic-message substitution, not just redaction of the raw text.
+            var rawPayload = ToolPayloadRedactor.SafeResultText(result);
+            // A redaction-contract violation from _redactor must degrade this trace record, not
+            // abort the chat call this diagnostics middleware is only observing.
+            var trimmedPayload = ToolPayloadRedactor.TryOrFallback(
+                () => ToolPayloadRedactor.RedactAndTruncate(rawPayload, _redactor),
+                _logger,
+                $"[ToolDiag] Failed to redact tool result for CallId={result.CallId}",
+                fallback: "[unavailable]");
 
             // Always record the stdout against the matching call id so the
             // observability pipeline can render it on the per-invocation page

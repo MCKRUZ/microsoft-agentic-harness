@@ -352,8 +352,11 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 	/// <see cref="IAgentTurnStreamSink.EmitToolCallAsync"/> documents its JSON as always complete, and a
 	/// preview-length cap would silently hand a client invalid, unparseable JSON instead; the result
 	/// text has no such contract and gets the same redact-and-truncate preview treatment the middleware
-	/// uses. Usage and tool-call capture still flow through the chat-client middleware, so the caller's
-	/// post-turn accounting is unchanged. The same <paramref name="cancellationToken"/> flows to
+	/// uses — except when the tool failed, where a generic message is streamed instead of
+	/// <see cref="FunctionResultContent.Result"/>'s raw text, since <c>IncludeDetailedErrors</c> bakes
+	/// the exception message into that string (see <see cref="RedactedResultPreview"/>). Usage and
+	/// tool-call capture still flow through the chat-client middleware, so the caller's post-turn
+	/// accounting is unchanged. The same <paramref name="cancellationToken"/> flows to
 	/// <c>RunStreamingAsync</c>, so a disconnected consumer aborts the model call.
 	/// </summary>
 	private static async Task<string> RunStreamingTurnAsync(
@@ -369,7 +372,9 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 		// stream on its own merits (a non-empty CallId) alone — the two guards below check different
 		// fields (Name vs nothing further), so a call skipped for missing Name but carrying a valid
 		// CallId would otherwise leave its result to stream unmatched: a TOOL_CALL_RESULT with no
-		// preceding TOOL_CALL_START a client could place.
+		// preceding TOOL_CALL_START a client could place. Deliberately scoped to this one call — the
+		// invariant it enforces (no orphaned RESULT) is local to a single turn's stream, not something
+		// a second IAgentTurnStreamSink elsewhere in the codebase needs to share.
 		var startedCallIds = new HashSet<string>();
 		await foreach (var update in agent.RunStreamingAsync(messages, cancellationToken: cancellationToken))
 		{
@@ -381,55 +386,85 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 			}
 
 			foreach (var content in update.Contents)
-			{
-				switch (content)
-				{
-					// Guards on both CallId and Name: a call with no id can't be matched to its later
-					// result (an empty toolCallId would violate the wire contract's required field), and
-					// a call with no name has nothing meaningful to announce.
-					case FunctionCallContent { CallId.Length: > 0 } call when !string.IsNullOrEmpty(call.Name):
-						startedCallIds.Add(call.CallId);
-						await sink.EmitToolCallAsync(
-							call.CallId, call.Name, RedactedArgsJson(call, redactor, logger), cancellationToken);
-						break;
-
-					// Guards on CallId AND on having actually streamed a matching TOOL_CALL_START — a
-					// non-empty CallId alone isn't enough, since the call side can be skipped (e.g. empty
-					// Name) while still carrying a CallId this result shares.
-					case FunctionResultContent { CallId.Length: > 0 } result when startedCallIds.Contains(result.CallId):
-						var resultText = result.Result?.ToString() ?? string.Empty;
-						await sink.EmitToolCallResultAsync(
-							result.CallId, ToolPayloadRedactor.RedactAndTruncate(resultText, redactor), cancellationToken);
-						break;
-				}
-			}
+				await EmitToolCallActivityAsync(content, sink, startedCallIds, redactor, logger, cancellationToken);
 		}
 
 		return builder.ToString();
 	}
 
 	/// <summary>
-	/// Serializes and redacts a tool call's arguments for streaming. Mirrors
-	/// <c>ToolDiagnosticsMiddleware.LogToolCallsInResponse</c>'s own try/catch around the identical
-	/// serialize call: an unserializable argument value (an unsupported CLR type from a poorly-behaved
-	/// tool) must degrade to a logged warning, not abort the whole turn — text already streamed to the
-	/// client before this tool call must not be thrown away over a JSON-serialization failure.
+	/// Handles one item from a streaming update's <c>Contents</c> — a tool-call decision or a tool's
+	/// result — forwarding it to <paramref name="sink"/> when it's one of the two content types this
+	/// stream cares about. Extracted from <see cref="RunStreamingTurnAsync"/> to keep that method under
+	/// the 50-line convention.
+	/// </summary>
+	private static async Task EmitToolCallActivityAsync(
+		AIContent content,
+		IAgentTurnStreamSink sink,
+		HashSet<string> startedCallIds,
+		ISecretRedactor? redactor,
+		ILogger logger,
+		CancellationToken cancellationToken)
+	{
+		switch (content)
+		{
+			// Guards on both CallId and Name: a call with no id can't be matched to its later
+			// result (an empty toolCallId would violate the wire contract's required field), and
+			// a call with no name has nothing meaningful to announce.
+			case FunctionCallContent { CallId.Length: > 0 } call when !string.IsNullOrEmpty(call.Name):
+				startedCallIds.Add(call.CallId);
+				await sink.EmitToolCallAsync(
+					call.CallId, call.Name, RedactedArgsJson(call, redactor, logger), cancellationToken);
+				break;
+
+			// Guards on CallId AND on having actually streamed a matching TOOL_CALL_START — a
+			// non-empty CallId alone isn't enough, since the call side can be skipped (e.g. empty
+			// Name) while still carrying a CallId this result shares.
+			case FunctionResultContent { CallId.Length: > 0 } result when startedCallIds.Contains(result.CallId):
+				await sink.EmitToolCallResultAsync(
+					result.CallId, RedactedResultPreview(result, redactor, logger), cancellationToken);
+				break;
+		}
+	}
+
+	/// <summary>
+	/// Serializes and redacts a tool call's arguments for streaming. An unserializable argument value
+	/// (an unsupported CLR type from a poorly-behaved tool), or a redaction-contract violation from
+	/// <paramref name="redactor"/>, must degrade to a logged warning via
+	/// <see cref="ToolPayloadRedactor.TryOrFallback"/>, not abort the whole turn — text already
+	/// streamed to the client before this tool call must not be thrown away over either failure.
 	/// </summary>
 	private static string RedactedArgsJson(FunctionCallContent call, ISecretRedactor? redactor, ILogger logger)
 	{
 		if (call.Arguments is not { Count: > 0 } args)
 			return "{}";
 
-		try
-		{
-			return ToolPayloadRedactor.Redact(JsonSerializer.Serialize(args), redactor);
-		}
-		catch (Exception ex)
-		{
-			logger.LogWarning(ex,
-				"Failed to serialize streamed tool-call arguments for {Tool} CallId={CallId}", call.Name, call.CallId);
-			return "{}";
-		}
+		return ToolPayloadRedactor.TryOrFallback(
+			() => ToolPayloadRedactor.Redact(JsonSerializer.Serialize(args), redactor),
+			logger,
+			$"Failed to serialize or redact streamed tool-call arguments for {call.Name} CallId={call.CallId}",
+			fallback: "{}");
+	}
+
+	/// <summary>
+	/// Builds a safe, streamable preview of a tool's result. <see cref="ToolPayloadRedactor.SafeResultText"/>
+	/// substitutes a generic message when the call failed, since <c>FunctionInvokingChatClient</c>'s
+	/// <c>IncludeDetailedErrors</c> option (set unconditionally by <c>AgentFactory</c>) bakes the raw
+	/// exception message into <see cref="FunctionResultContent.Result"/> — the same substitution
+	/// <c>ToolDiagnosticsMiddleware</c> applies before persisting to the trace store a dashboard later
+	/// renders, since that is just as much an exposure point as this client-facing SSE frame. A
+	/// redaction-contract violation from <paramref name="redactor"/> degrades the same way, via
+	/// <see cref="ToolPayloadRedactor.TryOrFallback"/>.
+	/// </summary>
+	private static string RedactedResultPreview(FunctionResultContent result, ISecretRedactor? redactor, ILogger logger)
+	{
+		var resultText = ToolPayloadRedactor.SafeResultText(result);
+
+		return ToolPayloadRedactor.TryOrFallback(
+			() => ToolPayloadRedactor.RedactAndTruncate(resultText, redactor),
+			logger,
+			$"Failed to redact streamed tool-call result for CallId={result.CallId}",
+			fallback: "[unavailable]");
 	}
 
 	private static void RecordTurnError(string agentName)

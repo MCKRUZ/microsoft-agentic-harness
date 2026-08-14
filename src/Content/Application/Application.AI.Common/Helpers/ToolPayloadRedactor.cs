@@ -1,4 +1,6 @@
 using Application.AI.Common.Interfaces;
+using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Logging;
 
 namespace Application.AI.Common.Helpers;
 
@@ -50,4 +52,49 @@ public static class ToolPayloadRedactor
             $"{redactor.GetType().Name}.Redact(string) returned null for non-null input, violating " +
             $"{nameof(ISecretRedactor)}'s contract.");
     }
+
+    /// <summary>
+    /// Guarded variant of <paramref name="produce"/> — typically a call to <see cref="Redact"/> or
+    /// <see cref="RedactAndTruncate"/>, optionally preceded by payload preparation such as JSON
+    /// serialization. Catches any exception (a redaction-contract violation from a misbehaving
+    /// <see cref="ISecretRedactor"/>, or a serialization failure), logs it as a warning via
+    /// <paramref name="logger"/>, and returns <paramref name="fallback"/> instead of propagating —
+    /// so a redaction failure degrades the one payload it affects rather than aborting the caller.
+    /// Centralizes the identical try/catch/log/fallback shape every exposure point around a
+    /// redaction call otherwise has to hand-roll — the same "one place" reasoning behind this class
+    /// applies to the failure path, not just the success path.
+    /// </summary>
+    /// <remarks>
+    /// Logs <paramref name="failureMessage"/> as a single plain string rather than a structured
+    /// template — this failure path is rare (a misbehaving redactor or an unserializable value) and
+    /// shared across call sites with different natural template arguments, so a caller-formatted
+    /// message is simpler than plumbing per-call structured fields through a generic helper.
+    /// </remarks>
+    public static string TryOrFallback(Func<string> produce, ILogger logger, string failureMessage, string fallback)
+    {
+        try
+        {
+            return produce();
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "{FailureMessage}", failureMessage);
+            return fallback;
+        }
+    }
+
+    /// <summary>
+    /// Returns the text of a tool result, substituting <paramref name="genericFailureMessage"/> when
+    /// <see cref="FunctionResultContent.Exception"/> is set. On failure, <see cref="FunctionResultContent.Result"/>
+    /// already carries the raw exception message baked into a human-readable string —
+    /// <c>FunctionInvokingChatClient</c>'s <c>IncludeDetailedErrors</c> option (set unconditionally by
+    /// <c>AgentFactory</c>) appends <see cref="Exception.Message"/> verbatim, which can surface file
+    /// paths, connection details, or other internals. None of <see cref="Redact"/>'s patterns are
+    /// shaped to catch free-form exception prose, so redaction alone does not close this gap — every
+    /// consumer of a tool result's text (a live SSE stream, or the persisted trace store a dashboard
+    /// later renders) must call this before <see cref="Redact"/>/<see cref="RedactAndTruncate"/>, not
+    /// just the one exposure point that happened to be reviewed first.
+    /// </summary>
+    public static string SafeResultText(FunctionResultContent result, string genericFailureMessage = "Error: tool call failed.") =>
+        result.Exception is not null ? genericFailureMessage : result.Result?.ToString() ?? string.Empty;
 }

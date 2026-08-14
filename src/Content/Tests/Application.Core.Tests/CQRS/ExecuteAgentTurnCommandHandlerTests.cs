@@ -420,6 +420,51 @@ public class ExecuteAgentTurnCommandHandlerTests
     }
 
     [Fact]
+    public async Task Handle_ActiveStreamSink_ToolCallFailed_StreamsGenericMessageNotRawException()
+    {
+        // FunctionInvokingChatClient's IncludeDetailedErrors option (set unconditionally by
+        // AgentFactory) bakes Exception.Message verbatim into FunctionResultContent.Result — e.g.
+        // "Error: Function failed. Exception: could not open '/etc/shadow'". That text can carry file
+        // paths, connection details, or other internals that must never reach a browser, so a failed
+        // call streams a generic message instead of the raw Result text.
+        var failure = new FunctionResultContent("call-1", "Error: Function failed. Exception: /etc/shadow not found")
+        {
+            Exception = new InvalidOperationException("/etc/shadow not found")
+        };
+        var agent = TestableAIAgent.StreamingContent(
+            [new FunctionCallContent("call-1", "read_file", new Dictionary<string, object?> { ["path"] = "x" })],
+            [failure]);
+        _agentCache
+            .Setup(c => c.GetOrCreateAsync(
+                It.IsAny<string>(),
+                It.IsAny<IReadOnlyList<string>>(),
+                It.IsAny<SkillAgentOptions>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(agent);
+
+        var toolResult = string.Empty;
+        Application.AI.Common.Services.AgentTurnStreamSink.Current =
+            new Application.AI.Common.Services.AgentTurnStreamSink(
+                onDelta: (_, _) => Task.CompletedTask,
+                onToolCall: (_, _, _, _) => Task.CompletedTask,
+                onToolCallResult: (_, r, _) => { toolResult = r; return Task.CompletedTask; });
+
+        try
+        {
+            // Act
+            await _handler.Handle(CreateCommand(), CancellationToken.None);
+
+            // Assert
+            toolResult.Should().NotContain("/etc/shadow");
+            toolResult.Should().NotBeEmpty();
+        }
+        finally
+        {
+            Application.AI.Common.Services.AgentTurnStreamSink.Current = null;
+        }
+    }
+
+    [Fact]
     public async Task Handle_CallerCancelled_ReturnsCancelledErrorKind()
     {
         // A cancellation via the caller's token (e.g. client disconnect) is routine — it must

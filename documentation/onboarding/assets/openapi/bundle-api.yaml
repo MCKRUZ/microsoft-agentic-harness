@@ -1342,7 +1342,10 @@ components:
         toolCallId: { type: string }
         result:
           type: string
-          description: The tool's output.
+          description: >-
+            A redacted, truncated preview of the tool's output — never the raw payload. Secret-shaped
+            values are replaced with "[REDACTED]" before truncation. If the tool call failed, this is a
+            generic failure message, not the underlying exception text.
 
     RunFinishedEvent:
       type: object

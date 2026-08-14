@@ -98,13 +98,31 @@ public sealed class PatternSecretRedactor : ISecretRedactor
             "$1=[REDACTED]"
         ),
 
-        // Generic key=value / key:value secret pairs.
+        // Generic key=value / key:value secret pairs. Key alternation matches the JSON-quoted pattern
+        // below — client_secret/password/pwd only had "=" coverage via the connection-string pattern
+        // above, never ":", and client_secret had neither; keeping the two alternations in sync avoids
+        // a key being redacted in one shape (quoted JSON) but not another (bare key: value).
         // Negative lookahead (?!\[REDACTED\]) ensures idempotency.
         (
             new Regex(
-                @"(?i)(api[_-]?key|access[_-]?token|secret[_-]?key)\s*[=:]\s*(?!\[REDACTED\])\S+",
+                @"(?i)(api[_-]?key|access[_-]?token|secret[_-]?key|client[_-]?secret|password|pwd)\s*[=:]\s*(?!\[REDACTED\])\S+",
                 RegexOptions.Compiled),
             "$1=[REDACTED]"
+        ),
+
+        // JSON-quoted key/value secret pairs: "api_key":"value". The generic pattern above requires
+        // an unquoted \S+ value, so it never matches this shape — and tool payloads streamed to
+        // clients are routinely JSON (function-call arguments, tool results serialized as objects).
+        // The value matcher (?:\\.|[^"\\])* is escape-aware — it treats "\"" as part of the value
+        // rather than ending the match there, unlike a plain [^"]* which stops at the first quote
+        // character regardless of the preceding backslash and truncates the match mid-value, leaking
+        // the remainder of an escaped secret and corrupting the surrounding JSON in the output.
+        // Negative lookahead (?!\[REDACTED\]) ensures idempotency.
+        (
+            new Regex(
+                @"(?i)""(api[_-]?key|access[_-]?token|secret[_-]?key|client[_-]?secret|password|pwd)""\s*:\s*""(?!\[REDACTED\])(?:\\.|[^""\\])*""",
+                RegexOptions.Compiled),
+            @"""$1"":""[REDACTED]"""
         ),
     ];
 }
