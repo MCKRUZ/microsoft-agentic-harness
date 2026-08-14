@@ -154,7 +154,8 @@ public sealed partial class ToolInvocationGovernor : IToolInvocationGovernor
     public async ValueTask<ToolInvocationDecision> AuthorizeAsync(
         string toolName,
         CancellationToken cancellationToken,
-        IReadOnlyDictionary<string, object?>? arguments = null)
+        IReadOnlyDictionary<string, object?>? arguments = null,
+        ToolCompositionTaint? composition = null)
     {
         // Opt-in: when enforcement is off the governor never engages — pure pass-through, no record,
         // no behaviour change for existing deployments. Read live rather than from the trace's sticky
@@ -203,7 +204,8 @@ public sealed partial class ToolInvocationGovernor : IToolInvocationGovernor
 
         // Every gate that can decide on its own runs first; the human is asked last, once.
         // See AuthorizeInOrderAsync for why that ordering is the design and not an accident.
-        return await AuthorizeInOrderAsync(agentId, toolName, permission, profile, arguments, cancellationToken)
+        return await AuthorizeInOrderAsync(
+                agentId, toolName, permission, profile, arguments, composition, cancellationToken)
             .ConfigureAwait(false);
     }
 
@@ -238,7 +240,8 @@ public sealed partial class ToolInvocationGovernor : IToolInvocationGovernor
     /// </remarks>
     private async ValueTask<ToolInvocationDecision> AuthorizeInOrderAsync(
         string agentId, string toolName, PermissionDecision permission, ToolRiskProfile profile,
-        IReadOnlyDictionary<string, object?>? arguments, CancellationToken cancellationToken)
+        IReadOnlyDictionary<string, object?>? arguments, ToolCompositionTaint? composition,
+        CancellationToken cancellationToken)
     {
         // One snapshot for the whole decision. Two stages read this config, and reading the monitor
         // twice would let a reload land between them — deciding half the call under one policy and
@@ -277,6 +280,12 @@ public sealed partial class ToolInvocationGovernor : IToolInvocationGovernor
         // one call is exactly the shape this method exists to prevent.
         if (RequiresApprovalForDeclaredBehavior(toolName, governance.ToolBehaviorGating, out var behaviorReason))
             (approvalReasons ??= []).Add(behaviorReason);
+
+        // Composition posture: is this call the sink half of a dangerous tool combination stamped at
+        // build time. A fourth source of approval reasons, folded into the same accumulator as the
+        // three above for the identical reason — see AuthorizeInOrderAsync's remarks.
+        if (RequiresApprovalForToolComposition(composition, governance.ToolCompositionGating, out var compositionReason))
+            (approvalReasons ??= []).Add(compositionReason);
 
         // Independent envelope confirmation. Defence in depth against a resolver arbitration bug —
         // see EnvelopeGrantsToolWhenArmed's remarks for the two occasions that arbitration was wrong.
@@ -471,6 +480,58 @@ public sealed partial class ToolInvocationGovernor : IToolInvocationGovernor
         => behavior.IsVouchedFor
            || (!string.IsNullOrWhiteSpace(exemption.Server)
                && string.Equals(exemption.Server, behavior.ServerName, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// Whether this call is the sink half of a tool combination flagged at agent build time, under a
+    /// pairing posture that requires human approval.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>Reads a fact stamped at build time, decides against config read live.</strong>
+    /// <paramref name="composition"/> carries only which source tools are co-resident with this sink —
+    /// a fact about the tool set, fixed once the agent is assembled. Whether that fact currently
+    /// requires approval is read fresh from <paramref name="gating"/> every call, so a config reload
+    /// changes enforcement immediately without rebuilding any agent, and no factory ever decides a
+    /// per-run posture at construction time — see <c>NoFactoryDecidesAPerRunFactAtConstructionTime</c>.
+    /// </para>
+    /// <para>
+    /// <strong>Null composition is not "unclassified", it is "nothing to say".</strong> A caller that
+    /// did not stamp a taint (a plan step, the Execution API, or a build whose analysis found nothing
+    /// for this tool) is read identically to an empty finding list — there is no separate "unknown"
+    /// outcome here, unlike <see cref="RequiresApprovalForDeclaredBehavior"/>'s treatment of an
+    /// unrecorded tool behaviour. The composition check's own fail-open (an unclassified tool is
+    /// neither a source nor a sink) already happened when the taint was computed.
+    /// </para>
+    /// </remarks>
+    /// <param name="composition">The taint stamped on this call's <c>GovernedAIFunction</c> wrapper, or
+    /// null when nothing was stamped.</param>
+    /// <param name="gating">The posture config, from the same snapshot the rest of the decision uses.</param>
+    /// <param name="reason">The approver-facing reason, when one is needed.</param>
+    /// <returns>True when a human must rule on this call because of a tool combination it completes.</returns>
+    private static bool RequiresApprovalForToolComposition(
+        ToolCompositionTaint? composition, ToolCompositionGatingConfig gating, out string reason)
+    {
+        reason = string.Empty;
+
+        if (composition is not { Findings.Count: > 0 })
+            return false;
+
+        // Posture resolved live, per finding, against this call's own config snapshot — never trusted
+        // from the finding, which carries none. See ToolCompositionFinding's remarks: this is what
+        // lets an operator's config change take effect on an already-built agent without a rebuild.
+        var requiring = composition.Findings
+            .Where(f => ToolCompositionPostureResolver.Resolve(gating, f.SourceCapability, f.SinkCapability)
+                        == CompositionPosture.RequireApproval)
+            .ToList();
+        if (requiring.Count == 0)
+            return false;
+
+        // Every implicated pairing goes into one reason string, for the same "show the approver
+        // everything actually being decided" argument AuthorizeInOrderAsync's remarks make about
+        // accumulating reasons across gates — here it is one gate accumulating across findings.
+        reason = "tool composition: " + string.Join("; ", requiring.Select(f => f.Path));
+        return true;
+    }
 
     /// <summary>
     /// Applies the graded-autonomy risk gate to an Allow decision. Tightens Allow → Ask/Deny when the

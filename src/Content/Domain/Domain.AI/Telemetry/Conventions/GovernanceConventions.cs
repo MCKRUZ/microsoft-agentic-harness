@@ -48,6 +48,26 @@ public static class GovernanceConventions
     public const string ClassificationModeTag = "agent.governance.classification.mode";
     public const string EnforcedTag = "agent.governance.enforced";
 
+    /// <summary>
+    /// Tool-composition findings emitted at agent build time — a source-capable tool co-resident with a
+    /// sink-capable tool under a posture that is not Allow. Tags: <see cref="CompositionSourceCapabilityTag"/>,
+    /// <see cref="CompositionSinkCapabilityTag"/>, <see cref="CompositionPostureTag"/>. Deliberately
+    /// carries no tool-name or agent-name tag — both are attacker-influenced strings of unbounded
+    /// cardinality, the same rule <see cref="McpToolCollisions"/> already applies.
+    /// </summary>
+    public const string ToolCompositionFindings = "agent.governance.tool_composition_findings";
+
+    /// <summary>
+    /// Tools an agent's composition analysis could not classify as either a source or a sink. Untagged —
+    /// this is a coverage metric, not a per-tool one. A rising count relative to tool-set size is the
+    /// signal that the check's blind spot (see <c>ToolCapabilityProfile.Unclassified</c>) is growing.
+    /// </summary>
+    public const string ToolCompositionUnclassified = "agent.governance.tool_composition_unclassified";
+
+    public const string CompositionSourceCapabilityTag = "agent.governance.composition.source_capability";
+    public const string CompositionSinkCapabilityTag = "agent.governance.composition.sink_capability";
+    public const string CompositionPostureTag = "agent.governance.composition.posture";
+
     /// <summary>Tag values for <see cref="SpinReasonTag"/> — why the spin guard broke the loop.</summary>
     public static class SpinReasonValues
     {

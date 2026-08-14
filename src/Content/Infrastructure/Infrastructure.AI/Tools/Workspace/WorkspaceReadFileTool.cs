@@ -1,6 +1,7 @@
 using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Interfaces.Workspace;
 using Domain.AI.Changes;
+using Domain.Common.Config.AI.Governance;
 using Domain.AI.Models;
 
 namespace Infrastructure.AI.Tools.Workspace;
@@ -55,6 +56,14 @@ public sealed class WorkspaceReadFileTool : ITool
 
     /// <inheritdoc />
     public BlastRadius RiskTier => BlastRadius.Low;
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// A file in the working copy is content this agent did not necessarily author — cloned
+    /// repository content, a downloaded dependency, or a file another tool wrote in the same turn —
+    /// so reading it is the classic untrusted-input shape even though the tool itself is read-only.
+    /// </remarks>
+    public ToolCompositionCapability Capabilities => ToolCompositionCapability.IngestsUntrustedInput;
 
     /// <inheritdoc />
     public bool IsConcurrencySafe => true;

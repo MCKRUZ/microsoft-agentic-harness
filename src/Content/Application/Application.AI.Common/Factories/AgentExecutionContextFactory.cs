@@ -370,7 +370,7 @@ public partial class AgentExecutionContextFactory
             : requested;
 
         if (toolNames.Count > 0)
-            context.Tools = _toolChainBuilder.BuildToolsByName(toolNames);
+            context.Tools = _toolChainBuilder.BuildToolsByName(toolNames, context.Name);
 
         return context;
     }

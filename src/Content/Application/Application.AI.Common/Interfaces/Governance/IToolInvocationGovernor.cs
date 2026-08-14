@@ -37,6 +37,12 @@ public interface IToolInvocationGovernor
     /// risk, capability, envelope, and policy checks all key off the tool name alone, so passing
     /// arguments cannot change whether a call is allowed.
     /// </param>
+    /// <param name="composition">
+    /// The tool-composition findings that implicate this tool as a sink, when the caller has them —
+    /// see <see cref="ToolCallAdmissionRequest.CompositionTaint"/>. Null when the caller did not stamp
+    /// one (a plan step, the Execution API, or a turn where composition analysis found nothing), which
+    /// the governor reads identically to an empty finding list.
+    /// </param>
     /// <returns>
     /// An allow decision, or a deny decision carrying a model-facing message to return in place of
     /// the tool result. When enforcement is disabled the governor records the would-be decision but
@@ -49,7 +55,8 @@ public interface IToolInvocationGovernor
     ValueTask<ToolInvocationDecision> AuthorizeAsync(
         string toolName,
         CancellationToken cancellationToken,
-        IReadOnlyDictionary<string, object?>? arguments = null);
+        IReadOnlyDictionary<string, object?>? arguments = null,
+        ToolCompositionTaint? composition = null);
 }
 
 /// <summary>

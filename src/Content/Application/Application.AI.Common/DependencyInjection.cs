@@ -26,6 +26,7 @@ using FluentValidation;
 using MediatR;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Options;
 
 namespace Application.AI.Common;
 
@@ -157,6 +158,35 @@ public static class DependencyInjection
         // unconditionally: recording costs nothing, and only the posture in
         // GovernanceConfig.ToolBehaviorGating turns the recordings into a decision.
         services.AddSingleton<Interfaces.Tools.IToolBehaviorRegistry, Services.Tools.ToolBehaviorRegistry>();
+
+        // Tool capability resolver — what a tool can do with the data that flows through it (source of
+        // untrusted/sensitive content, or a costly sink), for the tool-composition check. A sibling to
+        // the behaviour registry above, answering a different question. Registered unconditionally, like
+        // it: resolving costs nothing, and only ToolCompositionGatingConfig's pairings turn a resolved
+        // profile into a reported or enforced posture.
+        //
+        // The bounded registered-key set is supplied explicitly (the same KeyedToolRegistrationKeys(services)
+        // call IToolCatalog's registration below already makes) rather than left to a DI-resolved
+        // IReadOnlySet<string>, which nothing else registers. The resolver is called with every tool
+        // name in an agent's set, including MCP and bundle-owned names that are never registration
+        // keys — probing IServiceProvider.GetKeyedService with a name outside this bounded set would
+        // teach the root container's key-accessor cache a new, permanently-retained entry per distinct
+        // unregistered name, which is unbounded growth for a bundle-owned name space. See
+        // ToolCapabilityResolver's remarks.
+        services.AddSingleton<Interfaces.Tools.IToolCapabilityResolver>(sp => new Services.Tools.ToolCapabilityResolver(
+            sp,
+            sp.GetRequiredService<Interfaces.Tools.IToolBehaviorRegistry>(),
+            sp.GetRequiredService<IOptionsMonitor<Domain.Common.Config.AI.GovernanceConfig>>(),
+            new HashSet<string>(KeyedToolRegistrationKeys(services), StringComparer.Ordinal)));
+
+        // Tool composition analyzer + reporter — flags an agent's assembled tool set for an
+        // untrusted-input/credential-reading tool co-resident with a file-write/code-exec/outbound-send
+        // tool. Registered unconditionally and passively, like the capability resolver above; the
+        // reporter is a concrete class rather than an interface because it has exactly one production
+        // consumer (ToolChainBuilder) and exists only to keep that consumer's three call sites reporting
+        // through the same channels identically — see its own remarks.
+        services.AddSingleton<Interfaces.Governance.IToolCompositionAnalyzer, Services.Governance.ToolCompositionAnalyzer>();
+        services.AddSingleton<Services.Governance.ToolCompositionReporter>();
 
         // Tool catalog — enumerates the host's keyed ITool registrations for callers that need to
         // discover what they may invoke. Singleton because the registrations cannot change once the

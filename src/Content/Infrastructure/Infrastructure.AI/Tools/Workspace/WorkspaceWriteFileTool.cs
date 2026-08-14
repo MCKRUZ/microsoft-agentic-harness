@@ -3,6 +3,7 @@ using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Interfaces.Workspace;
 using Domain.Common.Helpers;
 using Domain.AI.Changes;
+using Domain.Common.Config.AI.Governance;
 using Domain.AI.Models;
 using Domain.AI.SkillTraining;
 using MediatR;
@@ -73,6 +74,15 @@ public sealed class WorkspaceWriteFileTool : ITool
 
     /// <inheritdoc />
     public BlastRadius RiskTier => BlastRadius.High;
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// Routes through change-proposal governance rather than writing directly, but its effect — file
+    /// content leaving the agent's control and landing in the workspace — is exactly the sink shape
+    /// this capability names. The approval gate on the proposal is a separate control, not a
+    /// substitute for this tool being classified as a sink for composition purposes.
+    /// </remarks>
+    public ToolCompositionCapability Capabilities => ToolCompositionCapability.WritesFiles;
 
     /// <inheritdoc />
     public bool IsConcurrencySafe => false;

@@ -2,6 +2,7 @@ using System.Text.Json;
 using Application.AI.Common.Interfaces.Tools;
 using Application.Core.CQRS.RAG.IngestDocument;
 using Domain.AI.Changes;
+using Domain.Common.Config.AI.Governance;
 using Domain.AI.Models;
 using MediatR;
 using Microsoft.Extensions.DependencyInjection;
@@ -71,6 +72,15 @@ public sealed class DocumentIngestTool : ITool
 
     /// <inheritdoc />
     public BlastRadius RiskTier => BlastRadius.Medium;
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// The document being ingested is, by definition, content this agent did not author — the
+    /// canonical untrusted-input shape, whether or not the document's own contents are later flagged
+    /// by anything else. Not also declared <c>WritesFiles</c>: it mutates vector/BM25 index state, not
+    /// the file system, and the narrow vocabulary does not have an "index write" bit of its own.
+    /// </remarks>
+    public ToolCompositionCapability Capabilities => ToolCompositionCapability.IngestsUntrustedInput;
 
     /// <inheritdoc />
     public bool IsConcurrencySafe => false;

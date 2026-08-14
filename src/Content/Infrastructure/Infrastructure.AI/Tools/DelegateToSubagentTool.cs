@@ -3,6 +3,7 @@ using Application.AI.Common.Interfaces.Tools;
 using Domain.Common.Helpers;
 using Domain.AI.Changes;
 using Domain.AI.Governance;
+using Domain.Common.Config.AI.Governance;
 using Domain.AI.Models;
 using Microsoft.Extensions.Logging;
 
@@ -78,6 +79,15 @@ public sealed class DelegateToSubagentTool : ITool
 
     /// <inheritdoc />
     public BlastRadius RiskTier => BlastRadius.High;
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// Delegation is the closest fit among the three sink bits: it initiates further autonomous
+    /// behaviour with the subagent's own tool access, which is what a supplied task description built
+    /// from untrusted content would actually exploit — not a literal code-execution call, but the same
+    /// shape of "content this agent read now drives further action."
+    /// </remarks>
+    public ToolCompositionCapability Capabilities => ToolCompositionCapability.ExecutesCode;
 
     /// <inheritdoc />
     public bool IsConcurrencySafe => false;

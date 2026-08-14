@@ -32,8 +32,14 @@ public interface IToolChainBuilder
     /// rather than sourced from a skill. Names that resolve to no registered tool are skipped.
     /// </summary>
     /// <param name="toolNames">The keyed-DI tool names to resolve.</param>
+    /// <param name="agentName">
+    /// The resolved agent's name, for tool-composition reporting only — see
+    /// <c>ToolCompositionReporter</c>. Optional because not every caller has assigned a name yet;
+    /// falls back to a generic label rather than throwing when omitted, since the composition analysis
+    /// itself still runs and stamps enforcement regardless of what the report is labelled with.
+    /// </param>
     /// <returns>The resolved, converted, governance-wrapped tools (empty when none resolve).</returns>
-    List<AITool> BuildToolsByName(IReadOnlyList<string> toolNames);
+    List<AITool> BuildToolsByName(IReadOnlyList<string> toolNames, string? agentName = null);
 
     /// <summary>
     /// Merges and deduplicates tools from multiple skills, applying an optional whitelist.

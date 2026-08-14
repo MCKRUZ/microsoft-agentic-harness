@@ -1,6 +1,7 @@
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Services.Governance;
 using Domain.AI.Escalation;
+using Domain.AI.Governance;
 using Microsoft.Extensions.AI;
 
 namespace Application.AI.Common.Services.Tools;
@@ -29,15 +30,39 @@ namespace Application.AI.Common.Services.Tools;
 /// This is the invocation-time chokepoint for the agent's autonomous tool calls, applied to every
 /// converted tool regardless of source (keyed-DI, MCP, or skill-provided).
 /// </para>
+/// <para>
+/// <strong>Also the carrier for tool-composition findings.</strong> <c>ToolChainBuilder</c> stamps a
+/// <see cref="ToolCompositionTaint"/> onto a sink tool's wrapper at agent build time, when its
+/// composition analysis found a co-resident source tool in the same tool set — see
+/// <see cref="ToolChainBuilder.ApplyCompositionTaint"/>. This instance carries that fact from build
+/// time to call time; the wrapper's per-agent lifetime (a fresh instance per build, even though
+/// <c>ToolChainBuilder</c> itself is a singleton) is what makes per-instance state here safe, unlike
+/// the ambient ownership on <see cref="ToolAdmissionAccessor"/> or scoped state on
+/// <c>AgentExecutionContext</c>, neither of which is populated in every execution path that can reach
+/// a governed call — see the type's own remarks for why those two carriers were rejected.
+/// </para>
 /// </remarks>
 internal sealed class GovernedAIFunction : DelegatingAIFunction
 {
     private const string ReportedBy = "agent-turn";
 
-    public GovernedAIFunction(AIFunction innerFunction)
+    private readonly ToolCompositionTaint? _compositionTaint;
+
+    public GovernedAIFunction(AIFunction innerFunction, ToolCompositionTaint? compositionTaint = null)
         : base(innerFunction)
     {
+        _compositionTaint = compositionTaint;
     }
+
+    /// <summary>
+    /// The wrapped function, for <c>ToolChainBuilder.ApplyCompositionTaint</c> to unwrap and re-wrap
+    /// with a later-discovered taint. <see cref="DelegatingAIFunction.InnerFunction"/> is
+    /// <see langword="protected"/>, inaccessible from the builder even though both types share this
+    /// assembly — <see langword="protected"/> restricts to the declaring type and its subclasses, not
+    /// to the assembly, so this internal accessor is what makes re-wrapping possible without widening
+    /// the base member itself.
+    /// </summary>
+    internal AIFunction Inner => InnerFunction;
 
     protected override async ValueTask<object?> InvokeCoreAsync(
         AIFunctionArguments arguments,
@@ -49,7 +74,8 @@ internal sealed class GovernedAIFunction : DelegatingAIFunction
 
         var admission = await admissionPipeline
             .AdmitAsync(
-                new ToolCallAdmissionRequest(Name, arguments, CountsTowardLoopDetection: true),
+                new ToolCallAdmissionRequest(
+                    Name, arguments, CountsTowardLoopDetection: true, CompositionTaint: _compositionTaint),
                 cancellationToken)
             .ConfigureAwait(false);
 

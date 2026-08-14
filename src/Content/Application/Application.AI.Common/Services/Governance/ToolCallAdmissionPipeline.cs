@@ -142,7 +142,7 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
         // null included: the governor distinguishes "no arguments were available" from "the call had
         // none", and narrows its argument-conditioned rules accordingly.
         var decision = await _governor
-            .AuthorizeAsync(toolName, cancellationToken, request.Arguments)
+            .AuthorizeAsync(toolName, cancellationToken, request.Arguments, request.CompositionTaint)
             .ConfigureAwait(false);
         if (!decision.IsAllowed)
             return Refuse(decision.DeniedMessage, toolName);

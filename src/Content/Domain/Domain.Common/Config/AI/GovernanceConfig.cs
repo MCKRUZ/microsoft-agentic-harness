@@ -151,6 +151,15 @@ public sealed class GovernanceConfig
     public ToolBehaviorGatingConfig ToolBehaviorGating { get; init; } = new();
 
     /// <summary>
+    /// Governs tool <em>combinations</em> — an untrusted-input tool co-resident with a high-impact sink
+    /// — rather than individual tools. Every pairing defaults to
+    /// <see cref="CompositionPosture.Allow"/>, so a host that configures nothing here reports
+    /// and enforces nothing; a pairing set to <see cref="CompositionPosture.RequireApproval"/>
+    /// is, like <see cref="ToolBehaviorGating"/>, inert without <see cref="EnforceToolInvocation"/>.
+    /// </summary>
+    public ToolCompositionGatingConfig ToolCompositionGating { get; init; } = new();
+
+    /// <summary>
     /// Posture for the MCP tool surface scan — collision, shadowing, and definition drift — layered
     /// on top of the per-tool content rules. Gated by <see cref="EnableMcpSecurity"/>, the same flag
     /// that gates the per-tool scanner, rather than a second switch: a control an operator believes is
