@@ -81,6 +81,55 @@ public sealed class DependencyInjectionTests
         registry.Should().NotBeNull();
     }
 
+    /// <summary>
+    /// Proves FoundryDirectResponses (issue #382) is wired through the real composition root, not
+    /// just a hand-rolled test ServiceCollection — the standing lesson that a registration is
+    /// untested unless a test resolves it from the real composition root.
+    /// </summary>
+    [Fact]
+    public void AddInfrastructureAIDependencies_FoundryDirectResponsesConfigured_IsAvailableThroughRealCompositionRoot()
+    {
+        var config = IsolatedAppConfig.Isolate(new Domain.Common.Config.AppConfig
+        {
+            AI = new Domain.Common.Config.AI.AIConfig
+            {
+                AIFoundry = new Domain.Common.Config.AI.AIFoundry.AIFoundryConfig
+                {
+                    ResourceEndpoint = "https://myresource.services.ai.azure.com"
+                }
+            }
+        });
+        var services = CreateBaseServices(config);
+        services.AddInfrastructureAIDependencies(config);
+        using var provider = services.BuildServiceProvider();
+
+        var factory = provider.GetRequiredService<IChatClientFactory>();
+
+        factory.IsAvailable(Domain.Common.Config.AI.AIAgentFrameworkClientType.FoundryDirectResponses)
+            .Should().BeTrue();
+    }
+
+    [Fact]
+    public void AddInfrastructureAIDependencies_FoundryDirectResponsesMalformedResourceEndpoint_ThrowsAtRegistration()
+    {
+        var config = IsolatedAppConfig.Isolate(new Domain.Common.Config.AppConfig
+        {
+            AI = new Domain.Common.Config.AI.AIConfig
+            {
+                AIFoundry = new Domain.Common.Config.AI.AIFoundry.AIFoundryConfig
+                {
+                    ResourceEndpoint = "not-a-valid-uri"
+                }
+            }
+        });
+        var services = CreateBaseServices(config);
+
+        var act = () => services.AddInfrastructureAIDependencies(config);
+
+        act.Should().Throw<InvalidOperationException>()
+            .WithMessage("*AppConfig:AI:AIFoundry:ResourceEndpoint*");
+    }
+
     [Fact]
     public void RegisterAIClients_UnconfiguredConfig_DoesNotRegisterAnyClients()
     {

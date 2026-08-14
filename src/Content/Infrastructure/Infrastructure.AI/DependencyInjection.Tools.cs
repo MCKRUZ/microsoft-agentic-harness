@@ -388,22 +388,58 @@ public static partial class DependencyInjection
     }
 
     /// <summary>
-    /// Registers Azure AI Foundry persistent agents administration client when configured.
+    /// Registers Azure AI Foundry persistent agents administration client when configured, and the
+    /// direct-endpoint Responses client independently (issue #382).
     /// </summary>
     private static void RegisterAIFoundryAgents(IServiceCollection services, AppConfig appConfig)
     {
-        if (appConfig.AI.AIFoundry.IsConfigured)
+        var foundry = appConfig.AI.AIFoundry;
+
+        if (!foundry.IsConfigured && !foundry.IsDirectResponsesConfigured)
+            return;
+
+        // Shared across both branches below: same resource, same tenant, same Entra credential
+        // either way (AIFoundryConfig.Entra's own doc), so a consumer configuring both
+        // ProjectEndpoint and ResourceEndpoint gets one credential chain, not two.
+        var credential = AzureCredentialFactory.CreateTokenCredential(foundry.Entra);
+
+        if (foundry.IsConfigured)
         {
-            var credential = AzureCredentialFactory.CreateTokenCredential(appConfig.AI.AIFoundry.Entra);
             services.AddSingleton(new PersistentAgentsAdministrationClient(
-                appConfig.AI.AIFoundry.ProjectEndpoint, credential));
+                foundry.ProjectEndpoint, credential));
 
             // Foundry Responses agent (direct inference) — AIProjectClient drives the project's
             // Responses API; FoundryAgentProvider builds the non-versioned ChatClientAgent for the
             // FoundryResponses client type. Both gated on the project endpoint being configured.
             services.AddSingleton(new AIProjectClient(
-                new Uri(appConfig.AI.AIFoundry.ProjectEndpoint), credential));
+                new Uri(foundry.ProjectEndpoint), credential));
             services.AddSingleton<IFoundryAgentProvider, FoundryAgentProvider>();
+        }
+
+        if (foundry.IsDirectResponsesConfigured)
+        {
+            // FoundryDirectResponses (issue #382): bypasses AIProjectClient's Project-scoped
+            // routing — measured ~15x slower than calling the same model/tenant/credential via the
+            // bare resource endpoint — using a plain AzureOpenAIClient against ResourceEndpoint.
+            // Gated independently of IsConfigured/ProjectEndpoint: a consumer may configure only
+            // this direct path, only the Project-scoped path, or both.
+            if (!Uri.TryCreate(foundry.ResourceEndpoint, UriKind.Absolute, out var resourceUri))
+            {
+                throw new InvalidOperationException(
+                    $"AppConfig:AI:AIFoundry:ResourceEndpoint '{foundry.ResourceEndpoint}' is not a " +
+                    "valid absolute URI.");
+            }
+
+            services.AddKeyedSingleton(
+                AgentFrameworkHelper.FoundryDirectResponsesClientKey,
+                (_, _) => new AzureOpenAIClient(
+                    resourceUri, credential, AgentFrameworkHelper.GetAzureOpenAIClientOptions()));
+
+            services.AddKeyedSingleton(
+                AgentFrameworkHelper.FoundryDirectResponsesNoRetryClientKey,
+                (_, _) => new AzureOpenAIClient(
+                    resourceUri, credential,
+                    AgentFrameworkHelper.GetAzureOpenAIClientOptions(disableProviderRetry: true)));
         }
     }
 }

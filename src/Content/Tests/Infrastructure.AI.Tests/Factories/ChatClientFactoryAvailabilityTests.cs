@@ -1,7 +1,11 @@
+using Azure;
+using Azure.AI.OpenAI;
 using Domain.Common.Config;
 using Domain.Common.Config.AI;
+using Domain.Common.Config.AI.AIFoundry;
 using FluentAssertions;
 using Infrastructure.AI.Factories;
+using Infrastructure.AI.Helpers;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using Moq;
@@ -42,6 +46,22 @@ public sealed class ChatClientFactoryAvailabilityTests : IDisposable
 
         return new ChatClientFactory(options, sp);
     }
+
+    private const string FoundryDirectResponsesResourceEndpoint = "https://myresource.services.ai.azure.com";
+
+    private static AppConfig CreateFoundryDirectResponsesConfig() => new()
+    {
+        AI = new AIConfig
+        {
+            AgentFramework = new AgentFrameworkConfig(),
+            AIFoundry = new AIFoundryConfig { ResourceEndpoint = FoundryDirectResponsesResourceEndpoint }
+        }
+    };
+
+    private static void RegisterFakeFoundryDirectResponsesClient(ServiceCollection services) =>
+        services.AddKeyedSingleton(
+            AgentFrameworkHelper.FoundryDirectResponsesClientKey,
+            new AzureOpenAIClient(new Uri(FoundryDirectResponsesResourceEndpoint), new AzureKeyCredential("fake")));
 
     [Fact]
     public void IsAvailable_AzureOpenAI_NoClient_ReturnsFalse()
@@ -126,6 +146,80 @@ public sealed class ChatClientFactoryAvailabilityTests : IDisposable
     }
 
     [Fact]
+    public void IsAvailable_FoundryDirectResponses_NoConfig_ReturnsFalse()
+    {
+        using var factory = CreateFactory();
+
+        factory.IsAvailable(AIAgentFrameworkClientType.FoundryDirectResponses).Should().BeFalse();
+    }
+
+    /// <summary>
+    /// The config flag alone is not enough — <c>IsAvailable</c> must also confirm the keyed
+    /// <see cref="AzureOpenAIClient"/> DI registration actually exists, the same "config says yes,
+    /// but was it actually registered" split every other provider check makes.
+    /// </summary>
+    [Fact]
+    public void IsAvailable_FoundryDirectResponses_ConfiguredButClientNotRegistered_ReturnsFalse()
+    {
+        using var factory = CreateFactory(CreateFoundryDirectResponsesConfig());
+
+        factory.IsAvailable(AIAgentFrameworkClientType.FoundryDirectResponses).Should().BeFalse();
+    }
+
+    [Fact]
+    public void IsAvailable_FoundryDirectResponses_ConfiguredWithClientRegistered_ReturnsTrue()
+    {
+        var services = new ServiceCollection();
+        RegisterFakeFoundryDirectResponsesClient(services);
+
+        using var factory = CreateFactory(CreateFoundryDirectResponsesConfig(), services);
+
+        factory.IsAvailable(AIAgentFrameworkClientType.FoundryDirectResponses).Should().BeTrue();
+    }
+
+    [Fact]
+    public void GetProviderStatus_FoundryDirectResponses_Unconfigured_ReportsMissingResourceEndpoint()
+    {
+        var config = new AppConfig
+        {
+            AI = new AIConfig
+            {
+                AgentFramework = new AgentFrameworkConfig { ClientType = AIAgentFrameworkClientType.FoundryDirectResponses }
+            }
+        };
+
+        using var factory = CreateFactory(config);
+
+        var status = factory.GetProviderStatus();
+
+        status.IsConfigured.Should().BeFalse();
+        status.MissingSettings.Should().ContainSingle().Which.Should().Be("AppConfig:AI:AIFoundry:ResourceEndpoint");
+    }
+
+    [Fact]
+    public async Task GetChatClientAsync_FoundryDirectResponses_NotConfigured_ThrowsAiProviderNotConfiguredException()
+    {
+        using var factory = CreateFactory();
+
+        var act = () => factory.GetChatClientAsync(AIAgentFrameworkClientType.FoundryDirectResponses, "my-deployment");
+
+        await act.Should().ThrowAsync<Application.AI.Common.Exceptions.AiProviderNotConfiguredException>();
+    }
+
+    [Fact]
+    public async Task GetChatClientAsync_FoundryDirectResponses_Configured_ReturnsChatClient()
+    {
+        var services = new ServiceCollection();
+        RegisterFakeFoundryDirectResponsesClient(services);
+
+        using var factory = CreateFactory(CreateFoundryDirectResponsesConfig(), services);
+
+        var chatClient = await factory.GetChatClientAsync(AIAgentFrameworkClientType.FoundryDirectResponses, "my-deployment");
+
+        chatClient.Should().NotBeNull();
+    }
+
+    [Fact]
     public void IsAvailable_UnknownType_ReturnsFalse()
     {
         using var factory = CreateFactory();
@@ -134,19 +228,20 @@ public sealed class ChatClientFactoryAvailabilityTests : IDisposable
     }
 
     [Fact]
-    public void GetAvailableProviders_ReturnsAllSevenTypes()
+    public void GetAvailableProviders_ReturnsAllEightTypes()
     {
         using var factory = CreateFactory();
 
         var providers = factory.GetAvailableProviders();
 
-        providers.Should().HaveCount(7);
+        providers.Should().HaveCount(8);
         providers.Should().ContainKey(AIAgentFrameworkClientType.AzureOpenAI);
         providers.Should().ContainKey(AIAgentFrameworkClientType.OpenAI);
         providers.Should().ContainKey(AIAgentFrameworkClientType.AzureAIInference);
         providers.Should().ContainKey(AIAgentFrameworkClientType.PersistentAgents);
         providers.Should().ContainKey(AIAgentFrameworkClientType.Anthropic);
         providers.Should().ContainKey(AIAgentFrameworkClientType.FoundryResponses);
+        providers.Should().ContainKey(AIAgentFrameworkClientType.FoundryDirectResponses);
         providers.Should().ContainKey(AIAgentFrameworkClientType.Echo);
     }
 
@@ -167,6 +262,7 @@ public sealed class ChatClientFactoryAvailabilityTests : IDisposable
         providers[AIAgentFrameworkClientType.PersistentAgents].Should().BeFalse();
         providers[AIAgentFrameworkClientType.Anthropic].Should().BeFalse();
         providers[AIAgentFrameworkClientType.FoundryResponses].Should().BeFalse();
+        providers[AIAgentFrameworkClientType.FoundryDirectResponses].Should().BeFalse();
     }
 
     [Fact]

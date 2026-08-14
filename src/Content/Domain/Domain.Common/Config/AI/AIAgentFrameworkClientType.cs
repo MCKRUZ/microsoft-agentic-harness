@@ -46,6 +46,7 @@ public enum AIAgentFrameworkClientType
 	/// and tools at runtime. No server-managed agent resource is created.
 	/// </summary>
 	/// <remarks>
+	/// <para>
 	/// Unlike the other client types, this provider yields an <c>AIAgent</c> rather than an
 	/// <c>IChatClient</c>, so it is constructed at the agent-factory level rather than via
 	/// <c>IChatClientFactory</c>. The harness middleware pipeline (OpenTelemetry, function
@@ -55,10 +56,34 @@ public enum AIAgentFrameworkClientType
 	/// an API key. Plain chat-completions inference against Foundry models is already available via
 	/// <see cref="AzureAIInference"/> / <see cref="AzureOpenAI"/>; this type adds the Foundry
 	/// Responses agent semantics.
-	/// </remarks>
-	/// <remarks>
+	/// </para>
+	/// <para>
 	/// Appended last to preserve the existing integer ordinals of the other members (enum values
 	/// may be persisted). New members must be added at the end for the same reason.
+	/// </para>
 	/// </remarks>
 	FoundryResponses,
+
+	/// <summary>
+	/// Azure AI Foundry Responses (direct inference) — same model and credential as
+	/// <see cref="FoundryResponses"/>, but calls the bare resource endpoint
+	/// (<c>AppConfig:AI:AIFoundry:ResourceEndpoint</c>) via a plain
+	/// <c>AzureOpenAIClient.GetResponsesClient().AsIChatClient(...)</c> instead of routing through
+	/// <c>AIProjectClient</c>'s Project-scoped endpoint.
+	/// </summary>
+	/// <remarks>
+	/// <para>
+	/// Exists because Project-scoped Responses routing measured ~15x higher per-call latency than
+	/// the identical model/tenant/credential called directly against the resource endpoint — a
+	/// real service-side cost of the extra routing hop, not a client-framework artifact (issue
+	/// #382). Unlike <see cref="FoundryResponses"/>, this type yields a plain <c>IChatClient</c>
+	/// and is constructed via <c>IChatClientFactory</c> like the other <c>IChatClient</c>
+	/// providers — no <c>IFoundryAgentProvider</c> involved.
+	/// </para>
+	/// <para>
+	/// Appended last to preserve the existing integer ordinals of the other members (enum values
+	/// may be persisted). New members must be added at the end for the same reason.
+	/// </para>
+	/// </remarks>
+	FoundryDirectResponses,
 }
