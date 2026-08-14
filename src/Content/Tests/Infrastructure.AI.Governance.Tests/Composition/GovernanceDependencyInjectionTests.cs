@@ -52,4 +52,56 @@ public sealed class GovernanceDependencyInjectionTests
             .Should().BeOfType<AgtPromptInjectionAdapter>(
                 "with detection on the scanner must wrap the AGT PromptInjectionDetector");
     }
+
+    // #384: GovernanceKernel's constructor loads every configured PolicyPaths entry itself
+    // (PolicyEngine.LoadYamlFile in its own loop) — this is the actual path that loaded the harness's
+    // own miscased default-policy.yaml, entirely bypassing AgtPolicyEngineAdapter.LoadPolicyFile. A
+    // guard that only lives on the adapter's method never runs here, so this proves the guard fires on
+    // the real startup path, not only on the separate runtime-load API a production host never calls.
+    [Fact]
+    public void AddGovernanceDependencies_ConfiguredPolicyPathUsesMisCasedDefaultAction_ThrowsBeforeKernelConstruction()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.yaml");
+        File.WriteAllText(path, """
+            name: casing-mistake
+            defaultAction: allow
+            rules:
+              - name: block-exec
+                condition: "tool == 'execute_command'"
+                action: deny
+            """);
+
+        try
+        {
+            var config = new GovernanceConfig { Enabled = true, PolicyPaths = [path] };
+            var services = new ServiceCollection();
+            services.AddLogging();
+
+            var act = () => services.AddGovernanceDependencies(config);
+
+            act.Should().Throw<InvalidOperationException>()
+                .WithMessage("*defaultAction*default_action*");
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    // A configured-but-missing path used to be silently dropped via .Where(File.Exists) — the whole
+    // declarative policy layer could end up unloaded with no signal beyond a quieter-than-expected
+    // policy set. Fail loudly instead, before GovernanceKernel is even constructed.
+    [Fact]
+    public void AddGovernanceDependencies_ConfiguredPolicyPathDoesNotExist_ThrowsBeforeKernelConstruction()
+    {
+        var missingPath = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.yaml");
+        var config = new GovernanceConfig { Enabled = true, PolicyPaths = [missingPath] };
+        var services = new ServiceCollection();
+        services.AddLogging();
+
+        var act = () => services.AddGovernanceDependencies(config);
+
+        act.Should().Throw<InvalidOperationException>()
+            .WithMessage($"*{missingPath}*");
+    }
 }

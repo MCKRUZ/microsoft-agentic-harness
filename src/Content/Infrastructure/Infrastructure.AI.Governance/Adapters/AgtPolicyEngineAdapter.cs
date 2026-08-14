@@ -71,7 +71,12 @@ internal sealed class AgtPolicyEngineAdapter : IGovernancePolicyEngine
         return GovernanceDecision.Allowed(ms);
     }
 
-    public void LoadPolicyFile(string yamlPath) => _engine.LoadYamlFile(yamlPath);
+    // Reads once via PolicyYamlGuard (which also validates) and hands the same content to LoadYaml,
+    // rather than reading the file a second time through LoadYamlFile — see PolicyYamlGuard's remarks
+    // for why this specific mistake needs a guard at all, and why this is only one of two required
+    // call sites (the other is DependencyInjection.AddGovernanceDependencies, for the startup path).
+    public void LoadPolicyFile(string yamlPath) =>
+        _engine.LoadYaml(PolicyYamlGuard.ReadAndValidate(yamlPath));
 
     private static GovernancePolicyAction ParseAction(string? action) => action?.ToLowerInvariant() switch
     {

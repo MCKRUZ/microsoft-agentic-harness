@@ -1,28 +1,44 @@
+# Default governance policy for the agentic harness template.
+#
+# These rules are an illustrative starting point, not a complete security posture — they name this
+# harness's actual built-in tools (see Infrastructure.AI/Tools/**/ToolName) so the policy is functional
+# out of the box, but consumers should extend or replace them to match their own tools and risk
+# tolerance. Sandbox capability enforcement, the ChangeProposal approval gate, and the other checks in
+# ToolInvocationGovernor all run independently of this file; it is one layer, not the only one.
+#
+# A `warn` action currently only tags the governance.action=warn metric (AgtPolicyEngineAdapter maps
+# Warn to Allowed=true and the caller-visible decision discards the matched rule) — there is no log
+# line or audit entry beyond that metric today. Don't read "warn" below as producing a visible signal
+# by itself.
 name: default-policy
 description: Default governance policy for the agentic harness template
 scope: global
-defaultAction: allow
+default_action: allow
 rules:
-  - name: block-system-exec
-    condition: "tool == 'execute_command' || tool == 'shell_exec' || tool == 'run_process'"
-    action: deny
+  # All four shell out to a real CLI inside the sandbox (WorkspaceCommandRunner for run_tests/run_lint,
+  # IacSandboxRunner for iac_plan/iac_scan) -- despite their own tool-level docs describing the iac_*
+  # pair as "read-only" (true of their observable effect on the repo/cluster, not of what they're
+  # capable of while running). Their actual granted capabilities differ, verified against each
+  # runner's own RequiredCapabilities, not assumed: run_tests/run_lint get FileRead|FileWrite|Subprocess
+  # ONLY -- WorkspaceCommandRunner's own doc comment states NetworkAccess is deliberately NOT granted
+  # (the workspace skill's egress allowlist is empty by design) -- while iac_plan/iac_scan additionally
+  # get NetworkAccess (IacSandboxRunner). iac_generate is NOT included here: IIacGenerator.GenerateAsync
+  # is documented as deterministic templating with no sandbox invocation at all, so it genuinely belongs
+  # with the read-only tools below.
+  - name: warn-sandboxed-execution
+    condition: "tool == 'run_tests' || tool == 'run_lint' || tool == 'iac_plan' || tool == 'iac_scan'"
+    action: warn
     priority: 100
-    description: Block direct system execution tools by default
+    description: Warn on tools that shell out to a CLI inside the sandbox (subprocess capability; iac_plan/iac_scan additionally get network access, run_tests/run_lint do not)
 
-  - name: block-network-raw
-    condition: "tool == 'raw_http' || tool == 'tcp_connect'"
-    action: deny
-    priority: 90
-    description: Block raw network access tools
-
-  - name: warn-file-write
-    condition: "tool == 'file_write' || tool == 'file_delete'"
+  - name: warn-file-mutation
+    condition: "tool == 'write_file' || tool == 'file_system'"
     action: warn
     priority: 50
-    description: Warn on file mutation operations
+    description: Warn on tools that can write to the local workspace
 
-  - name: allow-read-tools
-    condition: "tool == 'file_read' || tool == 'web_search' || tool == 'web_fetch'"
+  - name: allow-read-only-tools
+    condition: "tool == 'read_file' || tool == 'list_files' || tool == 'document_search' || tool == 'iac_generate'"
     action: allow
     priority: 10
-    description: Explicitly allow read-only tools
+    description: Explicitly allow tools with no sandbox/subprocess/network capability

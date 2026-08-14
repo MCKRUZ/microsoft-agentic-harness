@@ -19,6 +19,7 @@
 
   <ItemGroup>
     <ProjectReference Include="../../Infrastructure/Infrastructure.AI.Governance/Infrastructure.AI.Governance.csproj" />
+    <ProjectReference Include="../Tests.Common/Tests.Common.csproj" />
   </ItemGroup>
 
 </Project>

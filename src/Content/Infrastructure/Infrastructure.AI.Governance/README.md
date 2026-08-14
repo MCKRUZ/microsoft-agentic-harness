@@ -227,8 +227,21 @@ Policy YAML files are configured as `<None Include="Policies/**/*.yaml" CopyToOu
 
 1. Create a YAML file in the `Policies/` folder following AGT's policy schema.
 2. Add the filename to `GovernanceConfig.PolicyPaths` in appsettings.
-3. The policy is loaded at startup by `GovernanceKernel` via resolved paths.
+3. The policy is loaded at startup: `DependencyInjection.ReadAndValidatePolicyFiles` resolves and reads
+   each configured path, then hands the content to `GovernanceKernel.LoadPolicyFromYaml`.
 4. Or load dynamically at runtime: `_policyEngine.LoadPolicyFile(path)`.
+
+**`default_action` must be snake_case, not camelCase.** AGT's YAML parser deserializes with a
+snake_case naming convention and no override for this field (unlike `apiVersion`, which does have
+one) — a policy written as `defaultAction: allow` is silently ignored rather than rejected, and the
+engine falls back to denying every tool that doesn't match an explicit rule (#384). `PolicyYamlGuard`
+now checks for this on **both** load paths — the startup path (step 3, from `PolicyPaths`) and the
+dynamic path (step 4, `LoadPolicyFile`) — so either one now fails loudly instead of silently on load.
+The harness still doesn't own the deserializer, so getting the key right in the source YAML is on you.
+This is caught on both harness-owned load paths, not guaranteed everywhere: code that resolves the AGT
+`PolicyEngine` from the container directly and calls its own `LoadYamlFile`/`LoadYaml` bypasses
+`PolicyYamlGuard` entirely — go through `IGovernancePolicyEngine`/`AddGovernanceDependencies`, not the
+raw engine type.
 
 ### How to Debug Policy Evaluation
 
