@@ -171,7 +171,7 @@ public sealed class EscalationToolApprovalRouter : IToolApprovalRouter
                 .RequestEscalationAsync(request, cancellationToken)
                 .ConfigureAwait(false);
 
-            return Interpret(outcome, toolName, request.EscalationId, failureKey);
+            return Interpret(outcome, toolName, request, failureKey);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -218,6 +218,13 @@ public sealed class EscalationToolApprovalRouter : IToolApprovalRouter
         // leaves the request at its record defaults (attempt 1, no prior failure).
         var recall = failureKey is { } key ? _failureMemory.TryRecall(key) : null;
 
+        // #321 revision round: recall a prior Revise verdict at this same key so the round counter
+        // actually advances and the next approver sees what was already asked for. A failure
+        // recall and a revision recall CAN both be live at once — a failed approved attempt (#325)
+        // followed by a fresh escalation for the retry that itself gets revised — since RecordFailure
+        // never touches revision state. See IApprovalFailureMemory.ClearRevision's remarks.
+        var revisionRecall = failureKey is { } revKey ? _failureMemory.TryRecallRevision(revKey) : null;
+
         return new EscalationRequest
         {
             EscalationId = Guid.NewGuid(),
@@ -235,26 +242,59 @@ public sealed class EscalationToolApprovalRouter : IToolApprovalRouter
             RequestedAt = DateTimeOffset.UtcNow,
             AttemptNumber = recall is { } r ? r.PriorAttemptCount + 1 : 1,
             PriorFailureReason = recall is { } r2
-                ? TruncatePriorFailureReason(r2.FailureReason, escalation.RetryAttribution.MaxPriorFailureLength)
+                ? ClampToConfiguredLength(
+                    r2.FailureReason,
+                    escalation.RetryAttribution.MaxPriorFailureLength,
+                    EscalationRequestInvariants.MaxPriorFailureReasonLength)
                 : null,
-            PredecessorEscalationId = recall?.EscalationId
+            // Revision wins when both are live: ClearRevision fires the instant any escalation for
+            // this key is approved, so a failure can only ever be recorded (which requires an
+            // approval to have happened first) *before* a still-live revision recall, never after.
+            // The revision recall is therefore always the more recent of the two — the true
+            // immediate predecessor, keeping the audit chain a single linked list rather than a
+            // fork.
+            PredecessorEscalationId = revisionRecall?.EscalationId ?? recall?.EscalationId,
+            RevisionRound = revisionRecall?.RevisionRound ?? 1,
+            PriorRevisionInstructions = revisionRecall?.Instructions
         };
     }
 
     /// <summary>
-    /// Interprets an escalation outcome as a routed result, and — for an explicit human denial only
-    /// — clears the retry-attribution memory for this action.
+    /// Interprets an escalation outcome as a routed result: clears or advances the retry/revision
+    /// memory for this action, and — on a Revise verdict — composes the model-facing carve-out
+    /// text when the operator has opted in.
     /// </summary>
     /// <remarks>
-    /// Cleared on <see cref="EscalationResolutionType.Denied"/> alone, never on
-    /// <see cref="EscalationResolutionType.TimedOut"/> or <see cref="EscalationResolutionType.Escalated"/>.
-    /// "The reviewer ended this line of retries" presupposes a reviewer actually looked; a timeout
-    /// means nobody did, and erasing the context the next approver needs on a mere timeout would
-    /// invert the feature this memory exists for.
+    /// <para>
+    /// Failure-attribution memory (#325) is cleared on <see cref="EscalationResolutionType.Denied"/>
+    /// alone, never on <see cref="EscalationResolutionType.TimedOut"/> or
+    /// <see cref="EscalationResolutionType.Escalated"/>. "The reviewer ended this line of retries"
+    /// presupposes a reviewer actually looked; a timeout means nobody did, and erasing the context
+    /// the next approver needs on a mere timeout would invert the feature this memory exists for.
+    /// </para>
+    /// <para>
+    /// Revision memory (#321) follows a different rule: it clears on <em>either</em> Approved or
+    /// Denied — the revise conversation is over at that decision, not at whatever an approved call
+    /// later does — and advances (never clears) on Revised, independently of whether the model-facing
+    /// relay is turned on. Round-tracking has to work unconditionally, or the configured round cap
+    /// never actually bites: <see cref="EscalationRequestInvariants"/>'s ceiling only means anything
+    /// if <c>EscalationRequest.RevisionRound</c> is genuinely threaded from one escalation to the
+    /// next, which is this method's job, not the config gate's.
+    /// </para>
+    /// <para>
+    /// Reads <see cref="_governanceConfig"/> fresh here rather than reusing the snapshot
+    /// <see cref="RequestApprovalAsync"/> captured before raising the escalation: this method only
+    /// runs after the human decision, potentially minutes later on a Blocking-priority request, and
+    /// the relay gate + roster check both need to see a config change an operator made while the
+    /// call was waiting — an approver revoked mid-wait, or the relay switched off mid-wait, must
+    /// take effect immediately rather than only on the next call.
+    /// </para>
     /// </remarks>
     private ToolApprovalResult Interpret(
-        EscalationOutcome outcome, string toolName, Guid escalationId, ApprovalFailureKey? failureKey)
+        EscalationOutcome outcome, string toolName, EscalationRequest request, ApprovalFailureKey? failureKey)
     {
+        var escalationId = request.EscalationId;
+
         if (outcome.IsApproved)
         {
             // Named deliberately: an approved consequential action must be attributable to the
@@ -272,6 +312,13 @@ public sealed class EscalationToolApprovalRouter : IToolApprovalRouter
             _logger.LogInformation(
                 "Tool {ToolName} approved by [{Approvers}] (escalation {EscalationId}, resolution {Resolution}) — call proceeding.",
                 toolName, approvers, escalationId, outcome.ResolutionType);
+
+            // The revise conversation, if there was one, ends here — an approval is a decision,
+            // not a mid-conversation state. #325's failure memory is untouched: whether this
+            // approved call goes on to succeed or fail is not decided yet.
+            if (failureKey is { } approvedKey)
+                _failureMemory.ClearRevision(approvedKey);
+
             return ToolApprovalResult.Approved($"approved by {approvers}", escalationId);
         }
 
@@ -279,11 +326,6 @@ public sealed class EscalationToolApprovalRouter : IToolApprovalRouter
             "Tool {ToolName} was not approved (escalation {EscalationId}, resolution {Resolution}) — call blocked.",
             toolName, escalationId, outcome.ResolutionType);
 
-        // A Revised resolution reaches this branch exactly like Denied: the outcome's approval
-        // bit is binary by design (#321's asymmetry — see EscalationOutcome), so a revise request
-        // blocks the call today with no new model-facing behavior. Only the operator-facing
-        // wording differs; the carve-out that relays instructions to the model is a separate,
-        // explicitly config-gated change, not implied by this resolution type existing.
         var why = outcome.ResolutionType switch
         {
             EscalationResolutionType.TimedOut => "no approver responded within the timeout",
@@ -292,35 +334,206 @@ public sealed class EscalationToolApprovalRouter : IToolApprovalRouter
             _ => "an approver refused the call"
         };
 
+        // A Denied resolution — including a Revise verdict that degraded to Denied at the round
+        // cap (DefaultEscalationService.ResolveResolutionType) — removes the whole cache entry,
+        // which ends both the #325 failure chain and any #321 revision chain for this key in one
+        // step. There is nothing left to revise once a human has said no.
         if (outcome.ResolutionType == EscalationResolutionType.Denied && failureKey is { } key)
             _failureMemory.Clear(key);
 
-        return ToolApprovalResult.Denied(why, escalationId);
+        if (outcome.ResolutionType != EscalationResolutionType.Revised)
+            return ToolApprovalResult.Denied(why, escalationId);
+
+        return InterpretRevised(outcome, toolName, request, failureKey, _governanceConfig.CurrentValue, why);
     }
 
     /// <summary>
-    /// Truncates a recalled failure reason to the configured display bound, defensively re-clamped
-    /// to always stay under <see cref="EscalationRequestInvariants.MaxPriorFailureReasonLength"/>
-    /// even including the truncation suffix.
+    /// Text stored in revision memory and shown to the next approver when sanitization removes a
+    /// reviewer's instructions entirely. Never relayed to the model — see the
+    /// <c>!sanitizedIsUsable</c> check in <see cref="InterpretRevised"/>.
+    /// </summary>
+    private const string RedactedInstructionsPlaceholder =
+        "(the reviewer's instructions were removed by content safety and could not be recorded)";
+
+    /// <summary>
+    /// The #321 carve-out: advances revision memory unconditionally whenever a live conversation
+    /// can track it, and — only when <c>ToolApproval.RelayRevisionInstructionsToModel</c> is on —
+    /// composes the attributed, delimited, length-bounded text that becomes the refused call's
+    /// model-facing message.
+    /// </summary>
+    private ToolApprovalResult InterpretRevised(
+        EscalationOutcome outcome, string toolName, EscalationRequest request,
+        ApprovalFailureKey? failureKey, GovernanceConfig governance, string why)
+    {
+        var escalationId = request.EscalationId;
+
+        // The round cap is one of the containments this whole carve-out leans on
+        // (EscalationConfig.Revision.MaxRounds, enforced by DefaultEscalationService reading
+        // EscalationRequest.RevisionRound). That counter only ever advances through this key —
+        // with none, BuildRequest can never see a prior round, every subsequent revise on this
+        // action resolves as round 1 forever, and the cap can never fire. Refuse the carve-out
+        // entirely rather than open a channel this class cannot bound; the call still blocks
+        // exactly as an ordinary denial would, same as before this feature existed. Checked before
+        // composing anything, since nothing below can matter without a key to record it under.
+        if (failureKey is not { } key)
+        {
+            _logger.LogWarning(
+                "Tool {ToolName} revise verdict (escalation {EscalationId}) has no conversation to key revision " +
+                "memory on — the round cap cannot be enforced, so instructions are not relayed to the model.",
+                toolName, escalationId);
+            return ToolApprovalResult.Denied(why, escalationId);
+        }
+
+        var composed = ComposeRevisionFeedback(outcome, governance);
+
+        // Composed from ApproverDecision.Instructions — human-authored, not model-influenced —
+        // but run through the same sanitizer chain that scrubs tool output anyway: a reviewer can
+        // paste text they did not write (a secret, a copied prompt-injection payload), and this is
+        // a channel deliberately being opened into model context. Matches the precedent
+        // MagenticHitlBridge already set for the harness's other human-to-model relay.
+        var sanitized = composed is { } feedback
+            ? _sanitizer.Sanitize(feedback.Instructions, toolName).SanitizedContent
+            : null;
+        var sanitizedIsUsable = !string.IsNullOrWhiteSpace(sanitized);
+
+        // Round-tracking must advance even when there is nothing usable to relay — composed is
+        // null (no roster-valid Revise decision survived the live-config check; e.g. the one
+        // approver who voted Revise was revoked from ToolApproval:Approvers before this ran) just
+        // as much as when sanitization redacts everything. Gating RecordRevision on either would
+        // let a revoked-approver race, or a reviewer whose feedback keeps triggering redaction,
+        // revise forever without ever reaching MaxRounds — the exact unbounded-loop failure this
+        // cap exists to prevent. A placeholder satisfies RecordRevision's non-blank contract and
+        // gives the next approver an honest signal instead of silence.
+        //
+        // Same value passed twice below on purpose, not a copy-paste slip: there is no separate
+        // operator-configured soft cap for what gets stored in revision memory (unlike the relay
+        // clamp further down, which has one) — this is enforcing only the hard invariant ceiling.
+        var stored = ClampToConfiguredLength(
+            sanitizedIsUsable ? sanitized! : RedactedInstructionsPlaceholder,
+            EscalationRequestInvariants.MaxRevisionInstructionsLength,
+            EscalationRequestInvariants.MaxRevisionInstructionsLength);
+        _failureMemory.RecordRevision(key, request.RevisionRound + 1, stored, escalationId);
+
+        if (composed is not { } usable || !sanitizedIsUsable || !governance.ToolApproval.RelayRevisionInstructionsToModel)
+            return ToolApprovalResult.Denied(why, escalationId);
+
+        // Clamped from the raw sanitized text, not from `stored` above — `stored` may already
+        // carry a "… (truncated)" suffix from the 4096-char storage ceiling, and re-clamping an
+        // already-truncated string down to the smaller relay ceiling can cut through that suffix
+        // or append a second one. Each ceiling applies exactly once, to the same untouched source.
+        var relayText = ClampToConfiguredLength(
+            sanitized!,
+            governance.ToolApproval.MaxRelayedInstructionsLength,
+            EscalationRequestInvariants.MaxRevisionInstructionsLength);
+        var wrapped = HumanFeedbackRelay.Wrap(relayText, usable.Attribution);
+
+        if (wrapped is null)
+            return ToolApprovalResult.Denied(why, escalationId);
+
+        _logger.LogInformation(
+            "Tool {ToolName} revise instructions relayed to the model (escalation {EscalationId}, from [{Attribution}]).",
+            toolName, escalationId, usable.Attribution);
+
+        return ToolApprovalResult.Revised(why, escalationId, wrapped);
+    }
+
+    /// <summary>
+    /// Composes every live-roster Revise decision's raw instructions into one attributed body, or
+    /// null when there is nothing usable to relay (no Revise decisions, every one left
+    /// <see cref="ApproverDecision.Instructions"/> blank, or none are on the current roster).
+    /// Unsanitized and unclamped — the caller owns both, because sanitizing has to happen before
+    /// either the storage clamp or the relay clamp can decide anything meaningful about the final
+    /// length.
     /// </summary>
     /// <remarks>
-    /// The soft cap is operator config (<c>EscalationConfig.RetryAttribution.MaxPriorFailureLength</c>,
-    /// default 512) and the hard cap is the invariant (4096). <c>GovernanceConfigValidator</c> ties
-    /// the two together at boot so they cannot be configured into disagreement — but this clamp does
-    /// not trust that validator to have run: a misconfigured soft cap above the hard cap must
-    /// degrade to a shorter card, never to a request that fails <see cref="EscalationRequestInvariants"/>
-    /// and gets fail-closed at the top of <see cref="RequestApprovalAsync"/> for reasons an operator
-    /// would have no way to connect to this setting.
+    /// <para>
+    /// Filtered against the roster as configured <em>right now</em>
+    /// (<c>GovernanceConfig.ToolApproval.Approvers</c>), intersected with the escalation's own
+    /// <see cref="EscalationOutcome.Approvers"/> — not <see cref="EscalationOutcome.Approvers"/>
+    /// alone. That field and <see cref="EscalationOutcome.Decisions"/> both travel on the same
+    /// durable record from the same write, so checking one against the other adds no independent
+    /// trust: an approver revoked from config while this escalation was pending would still pass a
+    /// check against the record's own frozen copy of the roster it was raised under. Live config
+    /// is the one roster a rehydrated or tampered durable record cannot have influenced.
+    /// </para>
+    /// <para>
+    /// One contribution per approver, kept by earliest <see cref="ApproverDecision.RespondedAt"/>.
+    /// <c>DefaultEscalationService</c>'s idempotency chokepoint already refuses a second decision
+    /// from the same approver on the live submission path, so this is defense in depth against a
+    /// rehydrated or hand-edited durable record that duplicates one.
+    /// </para>
     /// </remarks>
-    private static string TruncatePriorFailureReason(string reason, int configuredMaxLength)
+    private static (string Attribution, string Instructions)? ComposeRevisionFeedback(
+        EscalationOutcome outcome, GovernanceConfig governance)
+    {
+        var liveRoster = new HashSet<string>(
+            governance.ToolApproval.Approvers.Where(a => !string.IsNullOrWhiteSpace(a)),
+            ApproverNames.Comparer);
+        liveRoster.IntersectWith(outcome.Approvers);
+
+        var contributions = outcome.Decisions
+            .Where(d => d.Verdict == ApproverVerdict.Revise
+                && !string.IsNullOrWhiteSpace(d.Instructions)
+                && liveRoster.Contains(d.ApproverName))
+            .OrderBy(d => d.RespondedAt)
+            .ThenBy(d => d.ApproverName, StringComparer.Ordinal)
+            .DistinctBy(d => d.ApproverName, ApproverNames.Comparer)
+            .ToList();
+
+        if (contributions.Count == 0)
+            return null;
+
+        var attribution = string.Join(", ", contributions.Select(d => $"'{d.ApproverName}'"));
+        var body = string.Join(
+            "\n", contributions.Select(d => $"- {d.ApproverName}: {FlattenToOneLine(d.Instructions!)}"));
+
+        return (attribution, body);
+    }
+
+    /// <summary>
+    /// Each contribution renders as one line in the composed body ("- name: text"). Without this,
+    /// a single approver's own free-text Instructions containing an embedded newline plus a fake
+    /// "- otherApprover: ..." fragment would render as if a second reviewer had independently
+    /// contributed — content structurally indistinguishable from a genuine second contributor.
+    /// Delegates to <see cref="HumanFeedbackRelay.BlankIfLineBreak"/> rather than a private copy —
+    /// see that method's remarks for why a second, independently-maintained copy is exactly how
+    /// this class of check drifts (this file's own prior copy blanked only <c>\r</c>/<c>\n</c>,
+    /// not every control character, which the shared version does).
+    /// </summary>
+    private static string FlattenToOneLine(string text) =>
+        new(text.Select(HumanFeedbackRelay.BlankIfLineBreak).ToArray());
+
+    /// <summary>
+    /// Truncates <paramref name="text"/> to the configured display bound, defensively re-clamped to
+    /// always stay under <paramref name="hardCeiling"/> even including the truncation suffix.
+    /// </summary>
+    /// <remarks>
+    /// Shared by every place in this class that carries operator- or approver-facing free text
+    /// forward into a new <c>EscalationRequest</c> field with its own invariant ceiling: a prior
+    /// failure reason (soft cap <c>EscalationConfig.RetryAttribution.MaxPriorFailureLength</c>,
+    /// hard cap <see cref="EscalationRequestInvariants.MaxPriorFailureReasonLength"/>) and composed
+    /// revise instructions (soft cap <c>ToolApprovalConfig.MaxRelayedInstructionsLength</c>, hard cap
+    /// <see cref="EscalationRequestInvariants.MaxRevisionInstructionsLength"/>). The respective
+    /// config validators tie each soft cap to its hard cap at boot — but this clamp does not trust
+    /// that validation to have run: a misconfigured soft cap above the hard cap must degrade to a
+    /// shorter value, never to a request that fails <see cref="EscalationRequestInvariants"/> and
+    /// gets fail-closed for a reason an operator would have no way to connect to this setting.
+    /// </remarks>
+    private static string ClampToConfiguredLength(string text, int configuredMaxLength, int hardCeiling)
     {
         const string suffix = "… (truncated)";
-        var cap = Math.Clamp(
-            configuredMaxLength, 1, EscalationRequestInvariants.MaxPriorFailureReasonLength - suffix.Length);
+        var cap = Math.Clamp(configuredMaxLength, 1, hardCeiling - suffix.Length);
 
-        return reason.Length > cap
-            ? string.Concat(reason.AsSpan(0, cap), suffix)
-            : reason;
+        if (text.Length <= cap)
+            return text;
+
+        // Back off one more char when the cut would land inside a surrogate pair — cutting between
+        // the two UTF-16 code units of one character emits a lone surrogate into model- and
+        // approver-facing text, which is invalid UTF-16 the moment anything downstream re-encodes it.
+        if (cap > 0 && char.IsHighSurrogate(text[cap - 1]))
+            cap--;
+
+        return string.Concat(text.AsSpan(0, cap), suffix);
     }
 
     /// <summary>

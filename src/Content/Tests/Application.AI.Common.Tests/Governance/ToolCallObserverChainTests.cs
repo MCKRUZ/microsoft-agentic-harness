@@ -185,6 +185,25 @@ public sealed class ToolCallObserverChainTests
     }
 
     [Fact]
+    public async Task EvaluateAsync_ObserverEscalatesAndReviseVerdictCarriesInstructions_RelaysThemAsTheDeniedMessage()
+    {
+        // The #321 relay's second production wiring: this chain is a separate consumer of
+        // IToolApprovalRouter from ToolInvocationGovernor, and previously discarded
+        // ToolApprovalResult down to a bare bool, silently making the carve-out inert here.
+        _approvalRouter
+            .Setup(x => x.RequestApprovalAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
+                It.IsAny<BlastRadius>(), It.IsAny<IReadOnlyDictionary<string, object?>?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(ToolApprovalResult.Revised(
+                "an approver asked for the call to be revised", Guid.NewGuid(), "use X instead"));
+
+        var decision = await Evaluate(Build(
+            new StubObserver("wire-limit", ToolCallVerdict.RequireApproval("over the limit"))));
+
+        Assert.False(decision.IsAllowed);
+        Assert.Equal("use X instead", decision.DeniedMessage);
+    }
+
+    [Fact]
     public async Task EvaluateAsync_ObserverEscalatesButNoApprovalRouteConfigured_Blocks()
     {
         // The observer asked for a human and there is none. Refusing is the only safe answer —

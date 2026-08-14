@@ -146,4 +146,144 @@ public sealed class InProcessApprovalFailureMemoryTests
 
         Assert.Null(memory.TryRecall(evicted));
     }
+
+    // ===== #321 revision tracking: an independent field group on the same entry =====
+
+    [Fact]
+    public void TryRecallRevision_NothingRecorded_ReturnsNull()
+    {
+        var memory = Create();
+
+        Assert.Null(memory.TryRecallRevision(Key()));
+    }
+
+    [Fact]
+    public void RecordRevision_ThenTryRecallRevision_ReturnsWhatWasRecorded()
+    {
+        var memory = Create();
+        var key = Key();
+        var escalationId = Guid.NewGuid();
+
+        memory.RecordRevision(key, revisionRound: 2, "use the read-only endpoint instead", escalationId);
+        var recall = memory.TryRecallRevision(key);
+
+        Assert.NotNull(recall);
+        Assert.Equal(2, recall!.Value.RevisionRound);
+        Assert.Equal("use the read-only endpoint instead", recall.Value.Instructions);
+        Assert.Equal(escalationId, recall.Value.EscalationId);
+    }
+
+    [Fact]
+    public void RecordRevision_BlankInstructions_Throws()
+    {
+        var memory = Create();
+
+        Assert.ThrowsAny<ArgumentException>(() => memory.RecordRevision(Key(), 2, "  ", Guid.NewGuid()));
+    }
+
+    [Fact]
+    public void ClearRevision_RemovesTheRecordedRevisionState()
+    {
+        var memory = Create();
+        var key = Key();
+        memory.RecordRevision(key, 2, "revise this", Guid.NewGuid());
+
+        memory.ClearRevision(key);
+
+        Assert.Null(memory.TryRecallRevision(key));
+    }
+
+    [Fact]
+    public void ClearRevision_UnknownKey_MutationControl_DoesNotThrow()
+    {
+        var memory = Create();
+
+        var exception = Record.Exception(() => memory.ClearRevision(Key("never-recorded")));
+
+        Assert.Null(exception);
+    }
+
+    [Fact]
+    public void RecordFailure_DoesNotAffectRevisionState()
+    {
+        // Coexistence, order 1: a failed approved attempt is recorded on a key that already has
+        // live revision state (the retry that followed an earlier revise was itself approved, ran,
+        // and failed). The failure write must not clobber the still-relevant revision history.
+        var memory = Create();
+        var key = Key();
+        memory.RecordRevision(key, 2, "use the read-only endpoint instead", Guid.NewGuid());
+
+        memory.RecordFailure(key, "timed out", Guid.NewGuid());
+
+        var revision = memory.TryRecallRevision(key);
+        Assert.NotNull(revision);
+        Assert.Equal(2, revision!.Value.RevisionRound);
+        Assert.Equal("use the read-only endpoint instead", revision.Value.Instructions);
+    }
+
+    [Fact]
+    public void RecordRevision_ThenTryRecall_ReturnsNullRatherThanAFabricatedZeroAttemptFailure()
+    {
+        // Regression test. RecordRevision GetOrAdd's the same Entry TryRecall reads — without a
+        // zero-attempt-count guard, this makes TryRecall fabricate ApprovalFailureRecall(0, "", ...)
+        // for a key whose failure half was never touched, which BuildRequest turns into
+        // AttemptNumber=1 with a non-null (empty) PriorFailureReason — a shape
+        // EscalationRequestInvariants rejects outright, fail-closing the very next approval
+        // attempt after every successful revise.
+        var memory = Create();
+        var key = Key();
+
+        memory.RecordRevision(key, 2, "use the read-only endpoint instead", Guid.NewGuid());
+
+        Assert.Null(memory.TryRecall(key));
+    }
+
+    [Fact]
+    public void RecordRevision_DoesNotAffectFailureState()
+    {
+        // Coexistence, order 2: the reverse sequence. A prior failed approved attempt is on record
+        // when a fresh escalation for the same key gets revised — RecordRevision must not touch
+        // the failure fields RecordFailure owns.
+        var memory = Create();
+        var key = Key();
+        memory.RecordFailure(key, "permission denied", Guid.NewGuid());
+
+        memory.RecordRevision(key, 2, "narrow the scope", Guid.NewGuid());
+
+        var failure = memory.TryRecall(key);
+        Assert.NotNull(failure);
+        Assert.Equal(1, failure!.Value.PriorAttemptCount);
+        Assert.Equal("permission denied", failure.Value.FailureReason);
+    }
+
+    [Fact]
+    public void ClearRevision_LeavesFailureStateIntact()
+    {
+        var memory = Create();
+        var key = Key();
+        memory.RecordFailure(key, "permission denied", Guid.NewGuid());
+        memory.RecordRevision(key, 2, "narrow the scope", Guid.NewGuid());
+
+        memory.ClearRevision(key);
+
+        Assert.Null(memory.TryRecallRevision(key));
+        var failure = memory.TryRecall(key);
+        Assert.NotNull(failure);
+        Assert.Equal("permission denied", failure!.Value.FailureReason);
+    }
+
+    [Fact]
+    public void Clear_RemovesRevisionStateToo()
+    {
+        // Denied removes the whole entry via Clear() rather than a separate ClearRevision call —
+        // there is nothing left to revise once a human has said no. Pinned so a future change to
+        // either method can't silently leave stale revision state behind after an explicit denial.
+        var memory = Create();
+        var key = Key();
+        memory.RecordRevision(key, 2, "narrow the scope", Guid.NewGuid());
+
+        memory.Clear(key);
+
+        Assert.Null(memory.TryRecallRevision(key));
+    }
 }

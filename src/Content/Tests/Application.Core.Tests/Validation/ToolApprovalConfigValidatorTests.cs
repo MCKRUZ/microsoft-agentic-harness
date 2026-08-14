@@ -189,6 +189,60 @@ public class ToolApprovalConfigValidatorTests
         result.IsValid.Should().BeTrue();
     }
 
+    // ===== #321 relay: MaxRelayedInstructionsLength, unconditional (not gated on Enabled) =====
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public async Task Validate_MaxRelayedInstructionsLengthNonPositive_Fails(int length)
+    {
+        var config = new ToolApprovalConfig { MaxRelayedInstructionsLength = length };
+
+        var result = await _validator.ValidateAsync(config);
+
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.PropertyName == nameof(ToolApprovalConfig.MaxRelayedInstructionsLength));
+    }
+
+    [Fact]
+    public async Task Validate_MaxRelayedInstructionsLengthAboveTheAbsoluteCeiling_Fails()
+    {
+        // A configured cap above EscalationRequestInvariants.MaxRevisionInstructionsLength could
+        // never be honoured — the request-level invariant would reject it first, deep inside
+        // BuildRequest, for a reason an operator could not connect back to this setting.
+        var config = new ToolApprovalConfig
+        {
+            MaxRelayedInstructionsLength = EscalationRequestInvariants.MaxRevisionInstructionsLength + 1
+        };
+
+        var result = await _validator.ValidateAsync(config);
+
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.PropertyName == nameof(ToolApprovalConfig.MaxRelayedInstructionsLength));
+    }
+
+    [Fact]
+    public async Task Validate_MaxRelayedInstructionsLengthAtTheAbsoluteCeiling_NoErrors()
+    {
+        var config = new ToolApprovalConfig
+        {
+            MaxRelayedInstructionsLength = EscalationRequestInvariants.MaxRevisionInstructionsLength
+        };
+
+        var result = await _validator.ValidateAsync(config);
+
+        result.IsValid.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Validate_DefaultMaxRelayedInstructionsLength_IsOneThousand_NoErrors()
+    {
+        var config = new ToolApprovalConfig();
+
+        config.MaxRelayedInstructionsLength.Should().Be(1000);
+        (await _validator.ValidateAsync(config)).IsValid.Should().BeTrue();
+    }
+
     private static ToolApprovalConfig CreateValidConfig() => new()
     {
         Enabled = true,

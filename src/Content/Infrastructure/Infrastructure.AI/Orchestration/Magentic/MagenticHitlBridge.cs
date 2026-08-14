@@ -31,11 +31,14 @@ namespace Infrastructure.AI.Orchestration.Magentic;
 /// </para>
 /// <para>
 /// <b><c>RevisionFeedback</c> is relayed straight to the Magentic manager model</b> (it drives
-/// <c>review.Revise(...)</c> downstream in the orchestrator's event subscriber) — unlike the
-/// tool-call approval path, where an approver's free text is deliberately never relayed to the
-/// model. This bridge is the one place in the harness where a human's own words are handed to
-/// an LLM by design, so the text is run through <see cref="ICompositeResponseSanitizer"/> —
-/// the same chain that scrubs tool output — before it leaves this method.
+/// <c>review.Revise(...)</c> downstream in the orchestrator's event subscriber). This is one of
+/// two places in the harness where a human's own words are handed to an LLM by design — the other
+/// is the tool-call revise carve-out in <c>EscalationToolApprovalRouter</c>, config-gated and off
+/// by default; every other free-text reason anywhere else in the escalation subsystem still never
+/// reaches the model. Both relays share one format: sanitized through
+/// <see cref="ICompositeResponseSanitizer"/> — the same chain that scrubs tool output — and then
+/// attributed and delimited by <see cref="Domain.AI.Escalation.HumanFeedbackRelay.Wrap"/> so the
+/// text reads as quoted human feedback, never as a system directive.
 /// </para>
 /// </remarks>
 public sealed class MagenticHitlBridge : IMagenticPlanReviewBridge
@@ -102,15 +105,33 @@ public sealed class MagenticHitlBridge : IMagenticPlanReviewBridge
         // Revise) and may leave Reason blank, while a Deny decision has only ever had Reason.
         // Reading Reason alone would silently drop a reviewer's actual words on exactly the verdict
         // this relay exists to carry, falling back to the generic rejection string instead.
-        var rawFeedback = outcome.Decisions
-            .Where(d => !d.IsApproved)
-            .Select(d => d.Instructions ?? d.Reason)
-            .FirstOrDefault(r => !string.IsNullOrWhiteSpace(r))
-            ?? $"Plan rejected ({outcome.ResolutionType}).";
+        //
+        // Filtered against `approver` — computed above from the request input, before the
+        // escalation was even raised — rather than outcome.Approvers alone: that field travels on
+        // the same durable record as outcome.Decisions, so checking one against the other adds no
+        // independent trust (the same gap EscalationToolApprovalRouter's ComposeRevisionFeedback
+        // closed by checking against live config instead of the record's own copy of its roster).
+        // This is a channel that relays text to a model by design, worth the extra filter.
+        //
+        // This bridge only ever raises an escalation for one approver (Approvers = [approver]
+        // above), so "is approver still on the live roster" is a single membership test, not a set
+        // intersection — no HashSet needed for what can only ever hold zero or one elements.
+        var approverIsOnLiveRoster = outcome.Approvers.Contains(approver, ApproverNames.Comparer);
+        var source = approverIsOnLiveRoster
+            ? outcome.Decisions
+                .Where(d => !d.IsApproved && ApproverNames.Comparer.Equals(d.ApproverName, approver))
+                .Select(d => new { d.ApproverName, Text = d.Instructions ?? d.Reason })
+                .FirstOrDefault(x => !string.IsNullOrWhiteSpace(x.Text))
+            : null;
 
-        // The fallback string above is ours, not human-authored, but it is cheaper to run every
-        // path through one sanitizer call than to reason about which branch needs it.
-        var revisionFeedback = _sanitizer.Sanitize(rawFeedback, ToolName).SanitizedContent;
+        // The fallback below is ours, not human-authored, so it is never run through
+        // HumanFeedbackRelay.Wrap — that type's whole contract is attributing text to the human
+        // who wrote it, and this string has no such author. Wrap() itself can also return null
+        // (blank input, or the sanitizer redacted everything) — same fallback either way.
+        var revisionFeedback = source is null
+            ? $"Plan rejected ({outcome.ResolutionType})."
+            : HumanFeedbackRelay.Wrap(_sanitizer.Sanitize(source.Text!, ToolName).SanitizedContent, source.ApproverName)
+                ?? $"Plan rejected ({outcome.ResolutionType}).";
 
         return new MagenticPlanReviewOutcome
         {

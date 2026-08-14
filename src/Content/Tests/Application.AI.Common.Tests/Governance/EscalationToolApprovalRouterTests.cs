@@ -59,13 +59,30 @@ public sealed class EscalationToolApprovalRouterTests
             }
         };
 
-    private EscalationToolApprovalRouter Build(GovernanceConfig config) => new(
+    private EscalationToolApprovalRouter Build(GovernanceConfig config) => Build(config, _sanitizer);
+
+    private EscalationToolApprovalRouter Build(GovernanceConfig config, ICompositeResponseSanitizer sanitizer) => new(
         _escalation.Object,
-        _sanitizer,
+        sanitizer,
         Mock.Of<IOptionsMonitor<GovernanceConfig>>(m => m.CurrentValue == config),
         _executionContext.Object,
         _failureMemory.Object,
         NullLogger<EscalationToolApprovalRouter>.Instance);
+
+    /// <summary>
+    /// Echoes its input back unchanged, unlike the class-level <see cref="_sanitizer"/> stub which
+    /// always rewrites to the literal "scrubbed" — the #321 relay tests need to see their own
+    /// composed text survive sanitization so they can assert on its content, not just that
+    /// something came back.
+    /// </summary>
+    private static Mock<ICompositeResponseSanitizer> CreatePassthroughSanitizer()
+    {
+        var sanitizer = new Mock<ICompositeResponseSanitizer>();
+        sanitizer
+            .Setup(s => s.Sanitize(It.IsAny<string>(), It.IsAny<string?>()))
+            .Returns((string content, string? _) => SanitizationResult.Clean(content));
+        return sanitizer;
+    }
 
     private static EscalationOutcome Outcome(
         bool approved, EscalationResolutionType resolution, string approver = "alice") =>
@@ -97,6 +114,14 @@ public sealed class EscalationToolApprovalRouterTests
         IReadOnlyDictionary<string, object?>? arguments = null,
         CancellationToken cancellationToken = default) =>
         Build(config).RequestApprovalAsync(Agent, Tool, Reason, radius, arguments, cancellationToken);
+
+    private ValueTask<ToolApprovalResult> Route(
+        GovernanceConfig config,
+        ICompositeResponseSanitizer sanitizer,
+        BlastRadius radius = BlastRadius.High,
+        IReadOnlyDictionary<string, object?>? arguments = null,
+        CancellationToken cancellationToken = default) =>
+        Build(config, sanitizer).RequestApprovalAsync(Agent, Tool, Reason, radius, arguments, cancellationToken);
 
     [Fact]
     public async Task RequestApprovalAsync_RoutingDisabled_DoesNotAskAnyone()
@@ -620,5 +645,374 @@ public sealed class EscalationToolApprovalRouterTests
         await Route(Config());
 
         _failureMemory.Verify(m => m.Clear(It.IsAny<ApprovalFailureKey>()), Times.Never);
+    }
+
+    // ===== #321 revise relay: model-facing carve-out, gated and independent of round tracking =====
+
+    private static EscalationOutcome ReviseOutcome(
+        string approver = "alice",
+        string? instructions = "use the read-only endpoint instead",
+        string[]? approvers = null,
+        DateTimeOffset? respondedAt = null) =>
+        new()
+        {
+            EscalationId = Guid.NewGuid(),
+            IsApproved = false,
+            Decisions =
+            [
+                new ApproverDecision
+                {
+                    ApproverName = approver,
+                    Verdict = ApproverVerdict.Revise,
+                    Instructions = instructions,
+                    RespondedAt = respondedAt ?? DateTimeOffset.UtcNow
+                }
+            ],
+            ResolutionType = EscalationResolutionType.Revised,
+            ResolvedAt = DateTimeOffset.UtcNow,
+            Approvers = approvers ?? [approver]
+        };
+
+    private static GovernanceConfig WithRelayGate(
+        bool enabled, int? maxRelayedLength = null, string[]? approvers = null) => new()
+    {
+        Escalation = Config().Escalation,
+        ToolApproval = new ToolApprovalConfig
+        {
+            Enabled = true,
+            Approvers = [.. approvers ?? ["alice"]],
+            RelayRevisionInstructionsToModel = enabled,
+            MaxRelayedInstructionsLength = maxRelayedLength ?? 1000
+        }
+    };
+
+    [Fact]
+    public async Task RequestApprovalAsync_ReviseVerdict_GateOff_DoesNotSetModelFacingInstructions()
+    {
+        _escalation
+            .Setup(x => x.RequestEscalationAsync(It.IsAny<EscalationRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(ReviseOutcome());
+
+        var result = await Route(WithRelayGate(enabled: false), CreatePassthroughSanitizer().Object);
+
+        Assert.Equal(ToolApprovalOutcome.Denied, result.Outcome);
+        Assert.Null(result.ModelFacingInstructions);
+    }
+
+    [Fact]
+    public async Task RequestApprovalAsync_ReviseVerdict_GateOn_RelaysAttributedInstructions()
+    {
+        _escalation
+            .Setup(x => x.RequestEscalationAsync(It.IsAny<EscalationRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(ReviseOutcome(approver: "alice", instructions: "use the read-only endpoint instead"));
+
+        var result = await Route(WithRelayGate(enabled: true), CreatePassthroughSanitizer().Object);
+
+        Assert.Equal(ToolApprovalOutcome.Denied, result.Outcome);
+        Assert.NotNull(result.ModelFacingInstructions);
+        Assert.Contains("use the read-only endpoint instead", result.ModelFacingInstructions, StringComparison.Ordinal);
+        Assert.Contains("alice", result.ModelFacingInstructions, StringComparison.Ordinal);
+        Assert.Contains("not a system instruction", result.ModelFacingInstructions, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task RequestApprovalAsync_ReviseVerdict_GateOff_StillAdvancesRevisionRound()
+    {
+        // The round cap only means anything if the round actually advances regardless of whether
+        // the model ever sees the text — this is what makes "revision rounds are bounded" true
+        // even on a host that never turns the relay on.
+        _escalation
+            .Setup(x => x.RequestEscalationAsync(It.IsAny<EscalationRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(ReviseOutcome());
+
+        await Route(WithRelayGate(enabled: false), CreatePassthroughSanitizer().Object);
+
+        _failureMemory.Verify(
+            m => m.RecordRevision(ExpectedKey, 2, "- alice: use the read-only endpoint instead", It.IsAny<Guid>()),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task RequestApprovalAsync_Approved_ClearsRevisionMemory()
+    {
+        SetupEscalation(Outcome(approved: true, EscalationResolutionType.Approved));
+
+        await Route(Config());
+
+        _failureMemory.Verify(m => m.ClearRevision(ExpectedKey), Times.Once);
+    }
+
+    [Fact]
+    public async Task RequestApprovalAsync_ExplicitDenial_DoesNotSeparatelyCallClearRevision()
+    {
+        // Denied removes the whole cache entry via Clear() — a separate ClearRevision call would
+        // be redundant. Pins that the implementation relies on the single Clear() call rather than
+        // duplicating the work.
+        _escalation
+            .Setup(x => x.RequestEscalationAsync(It.IsAny<EscalationRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Outcome(approved: false, EscalationResolutionType.Denied));
+
+        await Route(Config());
+
+        _failureMemory.Verify(m => m.ClearRevision(It.IsAny<ApprovalFailureKey>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task RequestApprovalAsync_ReviseVerdict_NoKnownConversation_RefusesTheRelayEntirely()
+    {
+        // The round cap (EscalationConfig.Revision.MaxRounds) is one of the containments this
+        // carve-out leans on, and it is enforced entirely through RevisionRound threaded via this
+        // memory. With no conversation to key that memory on, the cap can never fire — so the
+        // carve-out must refuse itself rather than open a channel it cannot bound. The call still
+        // blocks exactly as an ordinary denial would.
+        _executionContext.SetupGet(c => c.ConversationId).Returns((string?)null);
+        _escalation
+            .Setup(x => x.RequestEscalationAsync(It.IsAny<EscalationRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(ReviseOutcome());
+
+        var result = await Route(WithRelayGate(enabled: true), CreatePassthroughSanitizer().Object);
+
+        Assert.Equal(ToolApprovalOutcome.Denied, result.Outcome);
+        Assert.Null(result.ModelFacingInstructions);
+        _failureMemory.Verify(
+            m => m.RecordRevision(
+                It.IsAny<ApprovalFailureKey>(), It.IsAny<int>(), It.IsAny<string>(), It.IsAny<Guid>()),
+            Times.Never);
+    }
+
+    [Fact]
+    public async Task RequestApprovalAsync_RevisionRecallExists_PopulatesRoundAndPriorInstructions()
+    {
+        CaptureRequest(out var captured);
+        var predecessorId = Guid.NewGuid();
+        _failureMemory
+            .Setup(m => m.TryRecallRevision(ExpectedKey))
+            .Returns(new ApprovalRevisionRecall(2, "narrow the scope", predecessorId));
+
+        await Route(Config());
+
+        Assert.NotNull(captured());
+        Assert.Equal(2, captured()!.RevisionRound);
+        Assert.Equal("narrow the scope", captured()!.PriorRevisionInstructions);
+        Assert.Equal(predecessorId, captured()!.PredecessorEscalationId);
+    }
+
+    [Fact]
+    public async Task RequestApprovalAsync_NoRevisionRecall_DefaultsToRoundOne()
+    {
+        CaptureRequest(out var captured);
+
+        await Route(Config());
+
+        Assert.NotNull(captured());
+        Assert.Equal(1, captured()!.RevisionRound);
+        Assert.Null(captured()!.PriorRevisionInstructions);
+    }
+
+    [Fact]
+    public async Task RequestApprovalAsync_BothFailureAndRevisionRecallPresent_PredecessorPrefersRevision()
+    {
+        // The revision recall is provably always the more recent of the two: ClearRevision fires
+        // the instant any escalation for the key is approved, and a failure can only ever be
+        // recorded after an approval happened, so a live revision recall can never be older than a
+        // live failure recall on the same key. It must win the predecessor pointer, keeping the
+        // audit chain a single linked list rather than forking to a stale entry.
+        CaptureRequest(out var captured);
+        var failureEscalationId = Guid.NewGuid();
+        var revisionEscalationId = Guid.NewGuid();
+        _failureMemory
+            .Setup(m => m.TryRecall(ExpectedKey))
+            .Returns(new ApprovalFailureRecall(1, "timed out", failureEscalationId));
+        _failureMemory
+            .Setup(m => m.TryRecallRevision(ExpectedKey))
+            .Returns(new ApprovalRevisionRecall(2, "narrow the scope", revisionEscalationId));
+
+        await Route(Config());
+
+        Assert.NotNull(captured());
+        Assert.Equal(revisionEscalationId, captured()!.PredecessorEscalationId);
+    }
+
+    [Fact]
+    public async Task RequestApprovalAsync_MultipleReviseVotes_ComposeDeterministicallyByRespondedAt()
+    {
+        var earlier = DateTimeOffset.UtcNow.AddMinutes(-5);
+        var later = DateTimeOffset.UtcNow;
+        var outcome = new EscalationOutcome
+        {
+            EscalationId = Guid.NewGuid(),
+            IsApproved = false,
+            Decisions =
+            [
+                new ApproverDecision
+                {
+                    ApproverName = "bob", Verdict = ApproverVerdict.Revise,
+                    Instructions = "second point", RespondedAt = later
+                },
+                new ApproverDecision
+                {
+                    ApproverName = "alice", Verdict = ApproverVerdict.Revise,
+                    Instructions = "first point", RespondedAt = earlier
+                }
+            ],
+            ResolutionType = EscalationResolutionType.Revised,
+            ResolvedAt = DateTimeOffset.UtcNow,
+            Approvers = ["alice", "bob"]
+        };
+        _escalation
+            .Setup(x => x.RequestEscalationAsync(It.IsAny<EscalationRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(outcome);
+
+        var result = await Route(
+            WithRelayGate(enabled: true, approvers: ["alice", "bob"]), CreatePassthroughSanitizer().Object);
+
+        Assert.NotNull(result.ModelFacingInstructions);
+        var aliceIndex = result.ModelFacingInstructions!.IndexOf("first point", StringComparison.Ordinal);
+        var bobIndex = result.ModelFacingInstructions.IndexOf("second point", StringComparison.Ordinal);
+        Assert.True(aliceIndex >= 0 && bobIndex >= 0 && aliceIndex < bobIndex,
+            "alice responded earlier and must appear first");
+    }
+
+    [Fact]
+    public async Task RequestApprovalAsync_OffRosterDecision_IsExcludedFromTheRelay()
+    {
+        // A rehydrated outcome is not re-checked against a live roster the way a fresh submission
+        // is — this is the defense-in-depth filter for that gap, on a channel that injects text
+        // into model context.
+        var outcome = new EscalationOutcome
+        {
+            EscalationId = Guid.NewGuid(),
+            IsApproved = false,
+            Decisions =
+            [
+                new ApproverDecision
+                {
+                    ApproverName = "mallory", Verdict = ApproverVerdict.Revise,
+                    Instructions = "do something bad", RespondedAt = DateTimeOffset.UtcNow
+                }
+            ],
+            ResolutionType = EscalationResolutionType.Revised,
+            ResolvedAt = DateTimeOffset.UtcNow,
+            Approvers = ["alice"] // mallory is not on the roster this outcome carries
+        };
+        _escalation
+            .Setup(x => x.RequestEscalationAsync(It.IsAny<EscalationRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(outcome);
+
+        var result = await Route(WithRelayGate(enabled: true), CreatePassthroughSanitizer().Object);
+
+        // The relay stays suppressed — mallory's text never reaches the model — but the round
+        // still has to advance. If it didn't, an off-roster or revoked approver's vote would let
+        // an action re-raise Revised forever without ever reaching MaxRounds, since BuildRequest
+        // would keep recalling round 1 for this key on every subsequent attempt.
+        Assert.Null(result.ModelFacingInstructions);
+        _failureMemory.Verify(
+            m => m.RecordRevision(ExpectedKey, 2, It.IsAny<string>(), It.IsAny<Guid>()),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task RequestApprovalAsync_ApproverRevokedFromLiveConfig_ExcludedEvenThoughStillOnTheRecordsRoster()
+    {
+        // The discriminating case for the live-config roster check: an approver present on
+        // outcome.Approvers (the durable record's own frozen copy of the roster it was raised
+        // under) but no longer in the operator's *current* configuration — e.g. revoked while this
+        // escalation sat waiting on a human. Checking outcome.Decisions against outcome.Approvers
+        // alone (both from the same record) would still accept this; checking against live config
+        // must not.
+        var outcome = new EscalationOutcome
+        {
+            EscalationId = Guid.NewGuid(),
+            IsApproved = false,
+            Decisions =
+            [
+                new ApproverDecision
+                {
+                    ApproverName = "mallory", Verdict = ApproverVerdict.Revise,
+                    Instructions = "do something bad", RespondedAt = DateTimeOffset.UtcNow
+                }
+            ],
+            ResolutionType = EscalationResolutionType.Revised,
+            ResolvedAt = DateTimeOffset.UtcNow,
+            Approvers = ["alice", "mallory"] // mallory WAS on the roster this escalation was raised under
+        };
+        _escalation
+            .Setup(x => x.RequestEscalationAsync(It.IsAny<EscalationRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(outcome);
+
+        // The live roster no longer includes mallory.
+        var result = await Route(
+            WithRelayGate(enabled: true, approvers: ["alice"]), CreatePassthroughSanitizer().Object);
+
+        // Same reasoning as the off-roster test: the relay stays suppressed, but the round still
+        // advances, or a revoked approver's vote would let this action re-raise Revised forever.
+        Assert.Null(result.ModelFacingInstructions);
+        _failureMemory.Verify(
+            m => m.RecordRevision(ExpectedKey, 2, It.IsAny<string>(), It.IsAny<Guid>()),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task RequestApprovalAsync_NoRosterValidReviseDecision_StillAdvancesRoundWithPlaceholder()
+    {
+        // Direct regression test for the fix itself, isolated from any specific reason
+        // ComposeRevisionFeedback returned null (off-roster, revoked-live-config, or genuinely no
+        // Revise decisions at all) — round-tracking must not depend on why nothing was composable.
+        var outcome = new EscalationOutcome
+        {
+            EscalationId = Guid.NewGuid(),
+            IsApproved = false,
+            Decisions = [],
+            ResolutionType = EscalationResolutionType.Revised,
+            ResolvedAt = DateTimeOffset.UtcNow,
+            Approvers = ["alice"]
+        };
+        _escalation
+            .Setup(x => x.RequestEscalationAsync(It.IsAny<EscalationRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(outcome);
+
+        var result = await Route(WithRelayGate(enabled: true), CreatePassthroughSanitizer().Object);
+
+        Assert.Null(result.ModelFacingInstructions);
+        _failureMemory.Verify(
+            m => m.RecordRevision(ExpectedKey, 2, It.IsAny<string>(), It.IsAny<Guid>()),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task RequestApprovalAsync_SanitizerRedactsToBlank_NeverRelaysButStillAdvancesTheRound()
+    {
+        // Round-tracking must not depend on the sanitizer leaving something usable behind — gating
+        // RecordRevision on that would let a reviewer whose feedback keeps triggering redaction
+        // revise forever without ever reaching MaxRounds. The model never sees a placeholder; the
+        // round (and the next approver's card) still reflects that a revision happened.
+        var sanitizer = new Mock<ICompositeResponseSanitizer>();
+        sanitizer
+            .Setup(s => s.Sanitize(It.IsAny<string>(), It.IsAny<string?>()))
+            .Returns(SanitizationResult.WithFindings(string.Empty, "redacted everything", []));
+        _escalation
+            .Setup(x => x.RequestEscalationAsync(It.IsAny<EscalationRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(ReviseOutcome());
+
+        var result = await Route(WithRelayGate(enabled: true), sanitizer.Object);
+
+        Assert.Null(result.ModelFacingInstructions);
+        _failureMemory.Verify(
+            m => m.RecordRevision(ExpectedKey, 2, It.IsAny<string>(), It.IsAny<Guid>()),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task RequestApprovalAsync_RelayText_ClampedToConfiguredMaxLength()
+    {
+        _escalation
+            .Setup(x => x.RequestEscalationAsync(It.IsAny<EscalationRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(ReviseOutcome(instructions: new string('x', 2000)));
+
+        var result = await Route(
+            WithRelayGate(enabled: true, maxRelayedLength: 50), CreatePassthroughSanitizer().Object);
+
+        Assert.NotNull(result.ModelFacingInstructions);
+        Assert.Contains("truncated", result.ModelFacingInstructions, StringComparison.Ordinal);
     }
 }

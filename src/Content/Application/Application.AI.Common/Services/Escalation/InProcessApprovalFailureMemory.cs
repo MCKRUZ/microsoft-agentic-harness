@@ -44,7 +44,15 @@ public sealed class InProcessApprovalFailureMemory : IApprovalFailureMemory
 
         entry.LastAccessTicks = _timeProvider.GetUtcNow().UtcTicks;
         var (attemptCount, failureReason, escalationId) = entry.Snapshot();
-        return new ApprovalFailureRecall(attemptCount, failureReason, escalationId);
+
+        // Zero means this entry's failure half was never touched — it exists only because
+        // RecordRevision created it. Without this guard, any key that ever recorded a revision
+        // fabricates a "prior failure" of attempt 0 with an empty reason on its very next recall,
+        // which BuildRequest turns into AttemptNumber=1 with a non-null PriorFailureReason — a
+        // shape EscalationRequestInvariants rejects outright ("attempt 1 carries a prior failure
+        // reason, which never happened"), fail-closing the next approval attempt after every
+        // successful revise. Mirrors TryRecallRevision's RevisionRound==0 guard below.
+        return attemptCount == 0 ? null : new ApprovalFailureRecall(attemptCount, failureReason, escalationId);
     }
 
     /// <inheritdoc />
@@ -68,6 +76,43 @@ public sealed class InProcessApprovalFailureMemory : IApprovalFailureMemory
 
     /// <inheritdoc />
     public void Clear(in ApprovalFailureKey key) => _entries.TryRemove(key, out _);
+
+    /// <inheritdoc />
+    public ApprovalRevisionRecall? TryRecallRevision(in ApprovalFailureKey key)
+    {
+        if (!_entries.TryGetValue(key, out var entry))
+            return null;
+
+        entry.LastAccessTicks = _timeProvider.GetUtcNow().UtcTicks;
+        var snapshot = entry.SnapshotRevision();
+        // A zero round means no revision was ever recorded for this entry — it may exist purely
+        // for #325's failure tracking. Recall must not fabricate round 1 out of an unrelated entry.
+        return snapshot.RevisionRound == 0
+            ? null
+            : new ApprovalRevisionRecall(snapshot.RevisionRound, snapshot.Instructions, snapshot.EscalationId);
+    }
+
+    /// <inheritdoc />
+    public void RecordRevision(in ApprovalFailureKey key, int revisionRound, string instructions, Guid escalationId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(instructions);
+
+        var now = _timeProvider.GetUtcNow().UtcTicks;
+        var entry = _entries.GetOrAdd(key, _ => new Entry { LastAccessTicks = now });
+        entry.RecordRevision(revisionRound, instructions, escalationId);
+        entry.LastAccessTicks = now;
+
+        EvictIfOverCapacity();
+    }
+
+    /// <inheritdoc />
+    public void ClearRevision(in ApprovalFailureKey key)
+    {
+        // Deliberately does not remove the entry outright: a failure-tracking half of the same
+        // entry may still be live, and TryRemove-ing the whole thing would silently clear it too.
+        if (_entries.TryGetValue(key, out var entry))
+            entry.ClearRevision();
+    }
 
     /// <summary>
     /// When the entry count exceeds the cap, evicts the least-recently-touched entries back down to
@@ -140,6 +185,47 @@ public sealed class InProcessApprovalFailureMemory : IApprovalFailureMemory
                 _attemptCount++;
                 _failureReason = failureReason;
                 _escalationId = escalationId;
+            }
+        }
+
+        // A second, independent gate — not _gate above. Revision state and failure state are
+        // unrelated halves of the same entry with different clear rules (see
+        // IApprovalFailureMemory.ClearRevision); sharing a lock would only couple their
+        // concurrency, not their meaning, so there is nothing to gain and a real cost: a
+        // ClearRevision call would needlessly block a concurrent RecordFailure on the same key.
+        private readonly object _revisionGate = new();
+        private int _revisionRound;
+        private string _revisionInstructions = string.Empty;
+        private Guid _revisionEscalationId;
+
+        /// <summary>
+        /// A coherent snapshot of the revision round, instructions, and escalation id together.
+        /// <c>RevisionRound</c> of zero means no revision has ever been recorded on this entry —
+        /// distinct from round 1, which is a real recorded revision.
+        /// </summary>
+        public (int RevisionRound, string Instructions, Guid EscalationId) SnapshotRevision()
+        {
+            lock (_revisionGate)
+                return (_revisionRound, _revisionInstructions, _revisionEscalationId);
+        }
+
+        public void RecordRevision(int revisionRound, string instructions, Guid escalationId)
+        {
+            lock (_revisionGate)
+            {
+                _revisionRound = revisionRound;
+                _revisionInstructions = instructions;
+                _revisionEscalationId = escalationId;
+            }
+        }
+
+        public void ClearRevision()
+        {
+            lock (_revisionGate)
+            {
+                _revisionRound = 0;
+                _revisionInstructions = string.Empty;
+                _revisionEscalationId = Guid.Empty;
             }
         }
     }

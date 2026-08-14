@@ -74,6 +74,15 @@ public sealed partial class ToolInvocationGovernor
             $"requires approval: {reason} ({approval.Reason})", profile.Radius,
             requiredApproval: true, agentId);
 
+        // The #321 revise carve-out, applied here rather than inside Blocked(): every other call
+        // to Blocked() — five sites in ToolInvocationGovernor.cs — must keep returning the fully
+        // generic denial unchanged. Overriding only the model-facing message on this one result,
+        // after Blocked() has already recorded the trace/audit/log, makes that true by
+        // construction instead of by trusting an optional parameter to default correctly
+        // everywhere else it's called. ApplyModelFacingOverride is shared with
+        // ToolCallObserverChain's identical wiring — see its remarks.
+        block = approval.ApplyModelFacingOverride(block);
+
         return new ApprovalGate(block, approval.Reason);
     }
 

@@ -50,6 +50,17 @@ public sealed class ToolApprovalConfigValidator : AbstractValidator<ToolApproval
             .Must(v => AutonomyValidationRules.TryParseEnumName<BlastRadius>(v, out _))
             .WithMessage($"CriticalAtBlastRadius is invalid. {AutonomyValidationRules.InvalidBlastRadiusMessage}");
 
+        // Bounded the same way EscalationConfig.RetryAttribution.MaxPriorFailureLength is: a soft
+        // display cap that can never be configured above the hard invariant it feeds, so a bad
+        // value here is a boot error naming the setting instead of a request that fails deep inside
+        // EscalationRequestInvariants for a reason no operator would connect back to this field.
+        RuleFor(x => x.MaxRelayedInstructionsLength)
+            .InclusiveBetween(1, EscalationRequestInvariants.MaxRevisionInstructionsLength)
+            .WithMessage(
+                "MaxRelayedInstructionsLength must be between 1 and " +
+                $"{EscalationRequestInvariants.MaxRevisionInstructionsLength} — " +
+                "EscalationRequestInvariants' absolute ceiling on EscalationRequest.PriorRevisionInstructions.");
+
         When(x => x.Enabled, () =>
         {
             RuleFor(x => x.Approvers)
