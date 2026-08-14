@@ -245,4 +245,28 @@ public class PatternSecretRedactorTests
         result.Should().Contain("[REDACTED]");
         result.Should().NotContain("superSecret123");
     }
+
+    /// <summary>
+    /// A secret keyword found inside a JSON string value (a query string embedded in a "url" field, on
+    /// whitespace-free serialized JSON) is redacted without corrupting the surrounding document. A
+    /// plain <c>\S+</c> value matcher is greedy across the entire rest of a whitespace-free string,
+    /// consuming every remaining character — the closing quote, every later key, and the closing brace
+    /// — and replacing it all with a single "[REDACTED]", destroying the rest of the payload's data.
+    /// </summary>
+    [Fact]
+    public void Redact_SecretKeywordInsideJsonStringValue_DoesNotConsumeRestOfDocument()
+    {
+        var sut = CreateRedactor();
+        var input = """{"url":"https://api.example.com/v1?api_key=abc123","method":"GET"}""";
+
+        var result = sut.Redact(input);
+
+        result.Should().Contain("[REDACTED]");
+        result.Should().NotContain("abc123");
+        // The rest of the JSON document must survive the redaction pass intact and remain valid JSON.
+        var act = () => System.Text.Json.JsonDocument.Parse(result);
+        act.Should().NotThrow();
+        using var doc = System.Text.Json.JsonDocument.Parse(result);
+        doc.RootElement.GetProperty("method").GetString().Should().Be("GET");
+    }
 }

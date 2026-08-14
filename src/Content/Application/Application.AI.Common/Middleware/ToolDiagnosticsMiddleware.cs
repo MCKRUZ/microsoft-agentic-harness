@@ -117,7 +117,10 @@ public sealed class ToolDiagnosticsMiddleware : DelegatingChatClient
                     Type = TraceRecordTypes.ToolResult,
                     ExecutionRunId = _traceWriter.Scope.ExecutionRunId.ToString("D"),
                     TurnId = result.CallId ?? Guid.NewGuid().ToString("D"),
-                    ResultCategory = TraceResultCategories.Success,
+                    // SafeResultText strips the raw exception text from PayloadSummary on failure — that
+                    // text used to be the only signal a reader had that the call failed at all, so
+                    // ResultCategory must now carry that signal structurally instead.
+                    ResultCategory = result.Exception is not null ? TraceResultCategories.Error : TraceResultCategories.Success,
                     PayloadSummary = trimmedPayload
                 };
 

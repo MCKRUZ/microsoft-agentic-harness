@@ -1163,7 +1163,10 @@ curl -sS -H "Authorization: Bearer $TOKEN" \
                     </p>
                     <p>
                         Frames are <code>data: {json}\n\n</code>, camelCase, with a <code>type</code> discriminator taken
-                        from the AG-UI wire vocabulary — so an AG-UI client library consumes this feed unchanged:
+                        from the AG-UI wire vocabulary — a hand-written client that switches on <code>type</code> works
+                        unchanged. A strict AG-UI client library is not guaranteed to: tool-call frames can arrive while
+                        a <code>TEXT_MESSAGE</code> is still open (see below, some AG-UI client libraries reject that),
+                        and <code>TOOL_CALL_RESULT</code>'s fields have no AG-UI precedent to match against.
                     </p>
                     <table>
                         <thead><tr><th>Frame <code>type</code></th><th>Payload</th><th>When</th></tr></thead>

@@ -349,8 +349,11 @@ paths:
         the run is recorded as `Failed` with reason `The run was cancelled.`
 
         Frames are `data: {json}\n\n` with camelCase properties and a `type` discriminator matching
-        the AG-UI wire vocabulary, so an AG-UI client library consumes the feed unchanged. Exactly
-        one terminal frame is emitted: `RUN_FINISHED` or `RUN_ERROR`.
+        the AG-UI wire vocabulary — a hand-written client that switches on `type` works unchanged.
+        A strict `@ag-ui/client`-style consumer is not guaranteed to: tool-call frames can arrive
+        while a `TEXT_MESSAGE` is still open (see below), which some AG-UI client libraries reject,
+        and `TOOL_CALL_RESULT`'s fields (`toolCallId`, `result`) have no AG-UI precedent to match
+        against. Exactly one terminal frame is emitted: `RUN_FINISHED` or `RUN_ERROR`.
 
         A tool call interleaves as `TOOL_CALL_START` → `TOOL_CALL_ARGS` → `TOOL_CALL_END`, then
         `TOOL_CALL_RESULT` once the tool has run — freely interleaved with `TEXT_MESSAGE_*` frames,

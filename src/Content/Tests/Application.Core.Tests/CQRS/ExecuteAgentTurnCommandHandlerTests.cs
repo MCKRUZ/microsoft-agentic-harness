@@ -412,6 +412,13 @@ public class ExecuteAgentTurnCommandHandlerTests
             // Assert
             args.Should().NotContain("secret-value").And.Contain("[REDACTED]");
             toolResult.Should().Be("[REDACTED]");
+            // TOOL_CALL_ARGS.delta is documented as always-complete, parseable JSON — a redactor that
+            // corrupts the surrounding structure (e.g. a greedy value matcher, see
+            // PatternSecretRedactorTests.Redact_SecretKeywordInsideJsonStringValue_DoesNotConsumeRestOfDocument
+            // in Infrastructure.AI.Tests for the concrete regex bug this guards against) would break
+            // this contract silently.
+            var act = () => System.Text.Json.JsonDocument.Parse(args);
+            act.Should().NotThrow();
         }
         finally
         {

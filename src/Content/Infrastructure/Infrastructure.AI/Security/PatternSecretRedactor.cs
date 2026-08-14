@@ -102,10 +102,16 @@ public sealed class PatternSecretRedactor : ISecretRedactor
         // below — client_secret/password/pwd only had "=" coverage via the connection-string pattern
         // above, never ":", and client_secret had neither; keeping the two alternations in sync avoids
         // a key being redacted in one shape (quoted JSON) but not another (bare key: value).
+        // Value matcher [^;"'\s]+ (matching the connection-string pattern above) stops at a quote,
+        // semicolon, or apostrophe — a plain \S+ is greedy across the whole rest of a whitespace-free
+        // string, so on compact JSON (no spaces) a key found inside a serialized string value (e.g.
+        // "...?api_key=abc123" embedded in a URL) would consume every remaining character in the
+        // document, including the closing quote, brace, and any keys after it, corrupting the JSON and
+        // silently dropping the rest of the payload's data.
         // Negative lookahead (?!\[REDACTED\]) ensures idempotency.
         (
             new Regex(
-                @"(?i)(api[_-]?key|access[_-]?token|secret[_-]?key|client[_-]?secret|password|pwd)\s*[=:]\s*(?!\[REDACTED\])\S+",
+                @"(?i)(api[_-]?key|access[_-]?token|secret[_-]?key|client[_-]?secret|password|pwd)\s*[=:]\s*(?!\[REDACTED\])[^;""'\s]+",
                 RegexOptions.Compiled),
             "$1=[REDACTED]"
         ),
