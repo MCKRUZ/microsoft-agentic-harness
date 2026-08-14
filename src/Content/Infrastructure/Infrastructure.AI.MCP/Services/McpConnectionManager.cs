@@ -133,22 +133,14 @@ public sealed class McpConnectionManager : IAsyncDisposable
         if (_clients.TryGetValue(serverName, out var existing))
             return existing;
 
-        var connectionLock = _connectionLocks.GetOrAdd(serverName, _ => new SemaphoreSlim(1, 1));
-        await connectionLock.WaitAsync(cancellationToken);
+        using var _ = await AcquireConnectionLockAsync(serverName, cancellationToken);
 
-        try
-        {
-            if (_clients.TryGetValue(serverName, out existing))
-                return existing;
+        if (_clients.TryGetValue(serverName, out existing))
+            return existing;
 
-            var client = await CreateClientAsync(serverName, cancellationToken);
-            _clients[serverName] = client;
-            return client;
-        }
-        finally
-        {
-            connectionLock.Release();
-        }
+        var client = await CreateClientAsync(serverName, cancellationToken);
+        _clients[serverName] = client;
+        return client;
     }
 
     /// <summary>
@@ -162,7 +154,61 @@ public sealed class McpConnectionManager : IAsyncDisposable
     /// <summary>
     /// Disconnects from a specific server and removes the cached connection.
     /// </summary>
+    /// <remarks>
+    /// Takes the same per-server lock <see cref="GetClientAsync"/> uses around its own cache mutation, so
+    /// this can't interleave with a concurrent <see cref="GetClientAsync"/> or <see cref="ReconnectAsync"/>
+    /// call for the same server and corrupt <see cref="_clients"/>. It still does not protect a caller
+    /// that already holds a reference to the client this disposes, obtained via
+    /// <see cref="GetClientAsync"/>'s unlocked fast-path read before this method ran — that caller can
+    /// still observe <see cref="ObjectDisposedException"/> mid-use. Closing that needs reference-counted
+    /// or generation-tagged client leases, a larger change to this type's client-lifetime model; tracked
+    /// as a known limitation, not solved here.
+    /// </remarks>
     public async Task DisconnectAsync(string serverName)
+    {
+        using var _ = await AcquireConnectionLockAsync(serverName, CancellationToken.None);
+        await EvictLockedAsync(serverName);
+    }
+
+    /// <summary>
+    /// Evicts <paramref name="failedClient"/> and connects fresh, but only if it is still the cached
+    /// client for <paramref name="serverName"/>.
+    /// </summary>
+    /// <remarks>
+    /// A cached client that a previous call already used can go stale — the remote restarted or evicted
+    /// the session — and using it fails with no warning beyond the failed call itself (#385). The caller
+    /// that observed that failure calls this to recover. Without the reference check, two callers that
+    /// both saw the SAME stale client and both raced here would each run their own evict-then-reconnect:
+    /// the second would tear down the fresh connection the first just paid for and connect a third time.
+    /// The check collapses that to one reconnect — whichever caller acquires the per-server lock first
+    /// evicts and reconnects; every later caller finds the cache already holding a client that isn't the
+    /// one it saw fail, and simply returns that instead.
+    /// </remarks>
+    /// <param name="serverName">The server name from configuration.</param>
+    /// <param name="failedClient">The client instance the caller observed a failure on.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <exception cref="McpConnectionException">Thrown when the fresh connection attempt fails.</exception>
+    public async Task<McpClient> ReconnectAsync(string serverName, McpClient failedClient, CancellationToken cancellationToken)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        using var _ = await AcquireConnectionLockAsync(serverName, cancellationToken);
+
+        if (_clients.TryGetValue(serverName, out var current) && !ReferenceEquals(current, failedClient))
+            return current;
+
+        await EvictLockedAsync(serverName);
+
+        var client = await CreateClientAsync(serverName, cancellationToken);
+        _clients[serverName] = client;
+        return client;
+    }
+
+    /// <summary>
+    /// Removes and disposes the cached client and its associated per-server HTTP clients for
+    /// <paramref name="serverName"/>. Caller must hold that server's connection lock.
+    /// </summary>
+    private async Task EvictLockedAsync(string serverName)
     {
         if (_clients.TryRemove(serverName, out var client))
         {
@@ -170,12 +216,24 @@ public sealed class McpConnectionManager : IAsyncDisposable
             _logger.LogInformation("Disconnected from MCP server '{ServerName}'", serverName);
         }
 
-        // Release the per-server Entra and bundle-egress clients (and their pooled sockets) on explicit
-        // disconnect, mirroring the cleanup of _clients above. Both caches were built with
-        // disposeHandler:false, so this leaves the shared AntiSSRF handler intact; a later reconnect
-        // recreates a fresh token-injecting or attribution+egress-policy handler pair as needed.
+        // Release the per-server Entra and bundle-egress clients (and their pooled sockets) alongside the
+        // MCP client above. Both caches were built with disposeHandler:false, so this leaves the shared
+        // AntiSSRF handler intact; a later reconnect recreates a fresh token-injecting or
+        // attribution+egress-policy handler pair as needed.
         TryDisposeCachedClient(_entraClients, serverName);
         TryDisposeCachedClient(_bundleEgressClients, serverName);
+    }
+
+    private readonly struct ConnectionLockScope(SemaphoreSlim semaphore) : IDisposable
+    {
+        public void Dispose() => semaphore.Release();
+    }
+
+    private async Task<ConnectionLockScope> AcquireConnectionLockAsync(string serverName, CancellationToken cancellationToken)
+    {
+        var connectionLock = _connectionLocks.GetOrAdd(serverName, _ => new SemaphoreSlim(1, 1));
+        await connectionLock.WaitAsync(cancellationToken);
+        return new ConnectionLockScope(connectionLock);
     }
 
     private static void TryDisposeCachedClient(ConcurrentDictionary<string, HttpClient> cache, string serverName)
