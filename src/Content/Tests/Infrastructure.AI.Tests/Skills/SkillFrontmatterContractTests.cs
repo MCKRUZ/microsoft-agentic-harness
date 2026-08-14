@@ -18,7 +18,9 @@ public sealed class SkillFrontmatterContractTests : IDisposable
 
     public SkillFrontmatterContractTests()
     {
-        _sut = new SkillMetadataParser(NullLogger<SkillMetadataParser>.Instance, new UnsandboxedSkillFileReader());
+        _sut = new SkillMetadataParser(
+            NullLogger<SkillMetadataParser>.Instance, new UnsandboxedSkillFileReader(),
+            TestMcpSecurityScanner.AlwaysSafe(), TestMcpSecurityScanner.DefaultConfig());
         _tempDir = Path.Combine(Path.GetTempPath(), $"frontmatter-contract-{Guid.NewGuid():N}");
         Directory.CreateDirectory(_tempDir);
     }

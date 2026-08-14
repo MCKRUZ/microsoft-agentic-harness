@@ -38,6 +38,31 @@ internal sealed partial class McpSecurityScannerAdapter : IMcpSecurityScanner
         tools.Select(t => ScanTool(t.Name, t.Description, t.Schema)).ToList().AsReadOnly();
 
     /// <summary>
+    /// Screens content that isn't shaped like a tool definition — a skill or agent manifest's short
+    /// fields or long-form instructions body. Reuses the same word-match and hidden-instruction rules
+    /// as <see cref="ScanTool"/>, adds the two instruction-specific rules below, and conditionally
+    /// excludes the base64-block rule per <paramref name="includeLengthSensitiveRules"/>.
+    /// </summary>
+    public McpToolScanResult ScanContent(string sourceName, string content, bool includeLengthSensitiveRules)
+    {
+        GovernanceMetrics.McpScans.Add(1);
+        var threats = new List<McpToolThreat>();
+
+        var text = ScannerText.For(content);
+
+        ScanWordMatchRules(text, threats);
+        ScanForHiddenInstructions(text, threats, includeBase64Rule: includeLengthSensitiveRules);
+        ScanForInstructionPoisoning(text, threats);
+
+        if (threats.Count > 0)
+            GovernanceMetrics.McpThreats.Add(threats.Count);
+
+        return threats.Count == 0
+            ? McpToolScanResult.Safe(sourceName)
+            : new McpToolScanResult(sourceName, false, threats.AsReadOnly());
+    }
+
+    /// <summary>
     /// The four rules that all reduce to the same shape — does a folded pattern match, and if so
     /// record one fixed threat — collapsed into one table and one loop. Each pattern's own design
     /// rationale stays on its <c>[GeneratedRegex]</c> declaration below; nothing here narrates why a
@@ -86,7 +111,8 @@ internal sealed partial class McpSecurityScannerAdapter : IMcpSecurityScanner
     /// characters — a property nothing enforces.
     /// </para>
     /// </remarks>
-    private static void ScanForHiddenInstructions(ScannerText descriptionAndSchema, List<McpToolThreat> threats)
+    private static void ScanForHiddenInstructions(
+        ScannerText descriptionAndSchema, List<McpToolThreat> threats, bool includeBase64Rule = true)
     {
         var textToScan = descriptionAndSchema.Raw;
 
@@ -99,13 +125,46 @@ internal sealed partial class McpSecurityScannerAdapter : IMcpSecurityScanner
                 0.95));
         }
 
-        if (Base64BlockPattern().IsMatch(textToScan))
+        // Excluded for long-form content (includeBase64Rule: false) — a multi-thousand-token manifest
+        // instructions body routinely contains a legitimate 40+ character run (a hash, a UUID, an
+        // embedded credential placeholder) that this rule cannot distinguish from an encoded payload.
+        // The short-field callers (a tool description, or a manifest's name/description) keep the
+        // rule: those fields are prose-length, where the same run is genuinely rare and worth flagging.
+        if (includeBase64Rule && Base64BlockPattern().IsMatch(textToScan))
         {
             threats.Add(new McpToolThreat(
                 McpThreatType.HiddenInstruction,
                 ThreatLevel.Medium,
                 "Content contains base64-encoded blocks that may hide instructions",
                 0.6));
+        }
+    }
+
+    /// <summary>
+    /// Instruction content that directs the agent toward a self-propagating foothold rather than a
+    /// one-shot prompt manipulation — fetching and running a remote payload, or encoding data and
+    /// sending it out. Scoped separately from <see cref="WordMatchRules"/> because both patterns are
+    /// specific to instruction-shaped content (a manifest's long-form body) and were not evaluated
+    /// against the tool-description corpus <see cref="WordMatchRules"/>'s rules were tuned against.
+    /// </summary>
+    private static void ScanForInstructionPoisoning(ScannerText text, List<McpToolThreat> threats)
+    {
+        if (text.Matches(CurlWgetPattern()))
+        {
+            threats.Add(new McpToolThreat(
+                McpThreatType.InstructionPoisoning,
+                ThreatLevel.High,
+                "Content directs fetching a remote URL via curl or wget",
+                0.85));
+        }
+
+        if (text.Matches(EncodedExfilPattern()))
+        {
+            threats.Add(new McpToolThreat(
+                McpThreatType.InstructionPoisoning,
+                ThreatLevel.High,
+                "Content instructs encoding data and transmitting it — a common exfiltration pattern",
+                0.8));
         }
     }
 
@@ -327,4 +386,29 @@ internal sealed partial class McpSecurityScannerAdapter : IMcpSecurityScanner
     // Homoglyph characters commonly used in typosquatting: Cyrillic lookalikes, special Unicode
     [GeneratedRegex(@"[Ѐ-ӿԀ-ԯ‐-―！-～]")]
     private static partial Regex TyposquattingPattern();
+
+    /// <summary>
+    /// A <c>curl</c> or <c>wget</c> invocation aimed at a URL — the shape of a directive to fetch a
+    /// remote payload, not documentation that merely mentions either tool by name. Up to four
+    /// flag-shaped tokens (<c>-s</c>, <c>-X POST</c>, <c>--output foo</c>) are allowed between the
+    /// command and the URL, since real usage rarely calls either bare.
+    /// </summary>
+    [GeneratedRegex(
+        @"\b(?:curl|wget)\b(?:\s+(?:-{1,2}\S+|\S+)){0,4}\s+https?://",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled, matchTimeoutMilliseconds: 1000)]
+    private static partial Regex CurlWgetPattern();
+
+    /// <summary>
+    /// Encoding language and transmission language within ~30 characters of each other, in either
+    /// order — the shape of an instruction to encode data and send it out. The proximity bound is
+    /// load-bearing the same way <see cref="ExfiltrationUrlPattern"/>'s specificity is: it is what
+    /// keeps a long document that separately mentions base64 (an encoding format) and HTTP (a
+    /// transport) somewhere in its prose from tripping this rule, which a bare "mentions both" match
+    /// would do on any document of nontrivial length.
+    /// </summary>
+    [GeneratedRegex(
+        @"\bbase64\b.{0,30}?\b(?:send|transmit|post|upload|exfiltrat\w*|curl|wget)\b" +
+        @"|\b(?:send|transmit|post|upload|exfiltrat\w*)\b.{0,30}?\bbase64\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled | RegexOptions.Singleline, matchTimeoutMilliseconds: 1000)]
+    private static partial Regex EncodedExfilPattern();
 }

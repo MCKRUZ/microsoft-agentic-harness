@@ -224,7 +224,9 @@ public sealed class SkillFileReaderTests : IDisposable
         // there is indistinguishable from a directory that genuinely holds no skills, so a
         // misconfigured root would boot an agent silently missing all of its own skills.
         var reader = CreateReader();
-        var parser = new SkillMetadataParser(NullLogger<SkillMetadataParser>.Instance, reader);
+        var parser = new SkillMetadataParser(
+            NullLogger<SkillMetadataParser>.Instance, reader,
+            TestMcpSecurityScanner.AlwaysSafe(), TestMcpSecurityScanner.DefaultConfig());
 
         var act = () => NestedSkillScanner.Scan(
             _outsideRoot, parser, reader, NullLogger<SkillFileReaderTests>.Instance);

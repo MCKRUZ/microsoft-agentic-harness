@@ -22,5 +22,11 @@ public enum McpThreatType
     /// <summary>Two servers advertise a tool with the same normalised name.</summary>
     ToolNameCollision,
     /// <summary>A tool's description references another server's tool by name, redirecting the agent's choice.</summary>
-    ToolShadowing
+    ToolShadowing,
+    /// <summary>
+    /// Instruction content (a skill or agent manifest's long-form body) directs the agent toward a
+    /// self-propagating foothold — fetching and running a remote payload, or encoding and
+    /// transmitting data out — rather than a one-shot prompt manipulation.
+    /// </summary>
+    InstructionPoisoning
 }

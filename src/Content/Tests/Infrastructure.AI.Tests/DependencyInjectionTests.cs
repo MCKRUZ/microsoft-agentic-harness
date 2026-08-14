@@ -35,6 +35,10 @@ public sealed class DependencyInjectionTests
         // registers both monitors; mirror that here so hosted-service enumeration can resolve.
         services.AddSingleton<IOptionsMonitor<Domain.Common.Config.AI.AIConfig>>(
             new AIConfigMonitorStub(config.AI));
+        // SkillMetadataParser / AgentMetadataParser depend on IMcpSecurityScanner (#331). The real
+        // composition root registers it via AddGovernanceDependencies / AddGovernanceNoOpDependencies,
+        // called separately from AddInfrastructureAIDependencies — mirror that here.
+        services.AddSingleton(TestMcpSecurityScanner.AlwaysSafe());
         services.AddSingleton<ISender>(new Mock<ISender>().Object);
         services.AddKnowledgeGraphDependencies(config);
 

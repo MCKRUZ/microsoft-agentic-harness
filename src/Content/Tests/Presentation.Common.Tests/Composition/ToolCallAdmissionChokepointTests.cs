@@ -90,10 +90,10 @@ public sealed class ToolCallAdmissionChokepointTests
 
         foreach (var file in Directory.EnumerateFiles(contentRoot, SourceGlob, SearchOption.AllDirectories))
         {
-            if (IsExcluded(file) || Allowed.Contains(Path.GetFileName(file)))
+            if (SourceScan.IsExcluded(file, contentRoot) || Allowed.Contains(Path.GetFileName(file)))
                 continue;
 
-            var code = StripCommentsAndStrings(File.ReadAllText(file));
+            var code = SourceScan.StripCommentsAndStrings(File.ReadAllText(file));
             var named = GateInterfaces.Where(gate => Regex.IsMatch(code, $@"\b{gate}\b")).ToArray();
             if (named.Length > 0)
                 offenders.Add($"{Path.GetRelativePath(contentRoot, file)} → {string.Join(", ", named)}");
@@ -112,9 +112,9 @@ public sealed class ToolCallAdmissionChokepointTests
         // The scan above passes trivially if the matching is broken — an empty offender list is the
         // same shape whether nothing violates the rule or nothing is being read. This proves the
         // matcher recognises a violation, and that comments do not count as one.
-        var violating = StripCommentsAndStrings(
+        var violating = SourceScan.StripCommentsAndStrings(
             "public class X { private readonly IToolInvocationGovernor _g; }");
-        var commentOnly = StripCommentsAndStrings(
+        var commentOnly = SourceScan.StripCommentsAndStrings(
             "// see IToolInvocationGovernor for the first stage\npublic class X { }");
 
         Regex.IsMatch(violating, @"\bIToolInvocationGovernor\b").Should().BeTrue();
@@ -130,32 +130,7 @@ public sealed class ToolCallAdmissionChokepointTests
         var contentRoot = Path.Combine(RepoRoot.Path, "src", "Content");
 
         Directory.EnumerateFiles(contentRoot, SourceGlob, SearchOption.AllDirectories)
-            .Count(f => !IsExcluded(f))
+            .Count(f => !SourceScan.IsExcluded(f, contentRoot))
             .Should().BeGreaterThan(500);
-    }
-
-    /// <summary>Skips test code and build output — the rule is about production call sites.</summary>
-    private static bool IsExcluded(string path)
-    {
-        var relative = Path.GetRelativePath(Path.Combine(RepoRoot.Path, "src", "Content"), path);
-        var segments = relative.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-        return segments.Contains("Tests", StringComparer.OrdinalIgnoreCase)
-            || segments.Contains("bin", StringComparer.OrdinalIgnoreCase)
-            || segments.Contains("obj", StringComparer.OrdinalIgnoreCase);
-    }
-
-    /// <summary>
-    /// Removes comments and string literals so only compiled code is matched.
-    /// </summary>
-    /// <remarks>
-    /// Deliberately crude — it does not parse C#. It only has to be conservative in the direction that
-    /// matters: a construct it mishandles yields a false <em>positive</em>, which surfaces as a failing
-    /// test naming the file, not a silently missed call site.
-    /// </remarks>
-    private static string StripCommentsAndStrings(string source)
-    {
-        var withoutBlockComments = Regex.Replace(source, @"/\*.*?\*/", " ", RegexOptions.Singleline);
-        var withoutLineComments = Regex.Replace(withoutBlockComments, @"//[^\n]*", " ");
-        return Regex.Replace(withoutLineComments, "\"(?:[^\"\\\\\n]|\\\\.)*\"", "\"\"");
     }
 }

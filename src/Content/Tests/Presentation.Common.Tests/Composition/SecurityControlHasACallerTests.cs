@@ -100,8 +100,8 @@ public sealed class SecurityControlHasACallerTests
 
         var productionFiles = Directory
             .EnumerateFiles(contentRoot, "*.cs", SearchOption.AllDirectories)
-            .Where(f => !IsExcluded(f, contentRoot))
-            .Select(f => (Path: f, Code: StripCommentsAndStrings(File.ReadAllText(f))))
+            .Where(f => !SourceScan.IsExcluded(f, contentRoot))
+            .Select(f => (Path: f, Code: SourceScan.StripCommentsAndStrings(File.ReadAllText(f))))
             .ToArray();
 
         var uncalled = new List<string>();
@@ -168,7 +168,7 @@ public sealed class SecurityControlHasACallerTests
         var contentRoot = Path.Combine(RepoRoot.Path, "src", "Content");
 
         Directory.EnumerateFiles(contentRoot, "*.cs", SearchOption.AllDirectories)
-            .Count(f => !IsExcluded(f, contentRoot))
+            .Count(f => !SourceScan.IsExcluded(f, contentRoot))
             .Should().BeGreaterThan(500);
     }
 
@@ -206,7 +206,7 @@ public sealed class SecurityControlHasACallerTests
 
         var factoryFiles = Directory
             .EnumerateFiles(contentRoot, "*.cs", SearchOption.AllDirectories)
-            .Where(f => !IsExcluded(f, contentRoot))
+            .Where(f => !SourceScan.IsExcluded(f, contentRoot))
             .Where(f => (Path.GetDirectoryName(f) ?? string.Empty)
                 .Contains(Path.DirectorySeparatorChar + "Factories", StringComparison.OrdinalIgnoreCase))
             .ToArray();
@@ -228,7 +228,7 @@ public sealed class SecurityControlHasACallerTests
         {
             // Comments are stripped first on purpose: this file's own explanation of why the condition
             // was removed names the switch, and a guard that flagged its own rationale would be useless.
-            var code = StripCommentsAndStrings(File.ReadAllText(file));
+            var code = SourceScan.StripCommentsAndStrings(File.ReadAllText(file));
 
             foreach (var (pattern, what) in PerRunFactPatterns)
             {
@@ -254,14 +254,14 @@ public sealed class SecurityControlHasACallerTests
 
         foreach (var file in Directory.EnumerateFiles(contentRoot, "I*.cs", SearchOption.AllDirectories))
         {
-            if (IsExcluded(file, contentRoot))
+            if (SourceScan.IsExcluded(file, contentRoot))
                 continue;
 
             var directory = Path.GetDirectoryName(file) ?? string.Empty;
             if (!GuardedInterfaceFolders.Any(folder => directory.Contains(folder, StringComparison.OrdinalIgnoreCase)))
                 continue;
 
-            var code = StripCommentsAndStrings(File.ReadAllText(file));
+            var code = SourceScan.StripCommentsAndStrings(File.ReadAllText(file));
             foreach (Match match in Regex.Matches(code, @"\bpublic\s+interface\s+(I\w+)"))
                 found.Add((match.Groups[1].Value, file));
         }
@@ -296,23 +296,4 @@ public sealed class SecurityControlHasACallerTests
     private static bool Implements(string code, string contract) =>
         Regex.IsMatch(code, $@"\b(?:class|record|struct)\s+\w+(?:<[^>]*>)?\s*:\s*[^{{;]*\b{contract}\b");
 
-    private static bool IsExcluded(string path, string contentRoot)
-    {
-        var relative = Path.GetRelativePath(contentRoot, path);
-        var segments = relative.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-        return segments.Contains("Tests", StringComparer.OrdinalIgnoreCase)
-            || segments.Contains("bin", StringComparer.OrdinalIgnoreCase)
-            || segments.Contains("obj", StringComparer.OrdinalIgnoreCase);
-    }
-
-    /// <summary>
-    /// Removes comments and string literals so only compiled code is matched — a doc comment naming
-    /// a contract must not count as calling it, which is exactly how the dead controls read as live.
-    /// </summary>
-    private static string StripCommentsAndStrings(string source)
-    {
-        var withoutBlockComments = Regex.Replace(source, @"/\*.*?\*/", " ", RegexOptions.Singleline);
-        var withoutLineComments = Regex.Replace(withoutBlockComments, @"//[^\n]*", " ");
-        return Regex.Replace(withoutLineComments, "\"(?:[^\"\\\\\n]|\\\\.)*\"", "\"\"");
-    }
 }

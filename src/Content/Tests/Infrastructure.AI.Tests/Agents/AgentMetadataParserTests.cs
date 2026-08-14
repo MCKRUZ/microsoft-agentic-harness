@@ -35,7 +35,7 @@ public sealed class AgentMetadataParserTests : IDisposable
     }
 
     private static AgentMetadataParser CreateParser() =>
-        new(NullLogger<AgentMetadataParser>.Instance);
+        new(NullLogger<AgentMetadataParser>.Instance, TestMcpSecurityScanner.AlwaysSafe(), TestMcpSecurityScanner.DefaultConfig());
 
     [Fact]
     public void ParseFromFile_WithAllFrontmatterFields_PopulatesDefinition()

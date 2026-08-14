@@ -145,10 +145,10 @@ public sealed class GovernanceEnumParseChokepointTests
 
         foreach (var file in Directory.EnumerateFiles(contentRoot, SourceGlob, SearchOption.AllDirectories))
         {
-            if (IsExcluded(file) || Allowed.Contains(Path.GetFileName(file)))
+            if (SourceScan.IsExcluded(file, contentRoot) || Allowed.Contains(Path.GetFileName(file)))
                 continue;
 
-            var code = StripCommentsAndStrings(File.ReadAllText(file));
+            var code = SourceScan.StripCommentsAndStrings(File.ReadAllText(file));
 
             var named = GovernanceEnums.Where(e => BareParseOf(e).IsMatch(code)).ToArray();
 
@@ -180,13 +180,13 @@ public sealed class GovernanceEnumParseChokepointTests
         // same shape whether nothing violates the rule or nothing is being read. This proves the
         // matcher recognises the real shapes, and that the doc comments this very sweep added (which
         // quote Enum.TryParse<ToolCapability>("255", …) verbatim) are not counted as violations.
-        var tryParse = StripCommentsAndStrings(
+        var tryParse = SourceScan.StripCommentsAndStrings(
             "if (Enum.TryParse<AutonomyLevel>(raw, ignoreCase: true, out var t)) { }");
-        var parse = StripCommentsAndStrings("var t = Enum.Parse<BlastRadius>(raw);");
-        var spaced = StripCommentsAndStrings("Enum.TryParse < ToolCapability > (raw, out var c);");
-        var comment = StripCommentsAndStrings(
+        var parse = SourceScan.StripCommentsAndStrings("var t = Enum.Parse<BlastRadius>(raw);");
+        var spaced = SourceScan.StripCommentsAndStrings("Enum.TryParse < ToolCapability > (raw, out var c);");
+        var comment = SourceScan.StripCommentsAndStrings(
             "// a bare Enum.TryParse<AutonomyLevel> accepts any integer string\npublic class X { }");
-        var otherEnum = StripCommentsAndStrings("Enum.TryParse<StepExecutionStatus>(raw, out var s);");
+        var otherEnum = SourceScan.StripCommentsAndStrings("Enum.TryParse<StepExecutionStatus>(raw, out var s);");
 
         BareParseOf("AutonomyLevel").IsMatch(tryParse).Should().BeTrue();
         BareParseOf("BlastRadius").IsMatch(parse).Should().BeTrue();
@@ -209,7 +209,7 @@ public sealed class GovernanceEnumParseChokepointTests
     [Fact]
     public void TheGuardCatchesAParseWhoseEnumTypeIsInferred()
     {
-        var theOffendingLine = StripCommentsAndStrings(
+        var theOffendingLine = SourceScan.StripCommentsAndStrings(
             "public static bool TryParse(string? value, out IacScanSeverity severity)"
             + " => Enum.TryParse(value?.Trim(), ignoreCase: true, out severity) && Enum.IsDefined(severity);");
 
@@ -219,10 +219,10 @@ public sealed class GovernanceEnumParseChokepointTests
             "and the type-argument matcher alone genuinely cannot see it — that is why this exists");
 
         // The explicit form must not be double-reported by the inferred matcher's own call paren.
-        InferredParse.IsMatch(StripCommentsAndStrings("Enum.TryParse<AutonomyLevel>(raw, out var t);"))
+        InferredParse.IsMatch(SourceScan.StripCommentsAndStrings("Enum.TryParse<AutonomyLevel>(raw, out var t);"))
             .Should().BeFalse("a type argument means the enum is named, and BareParseOf owns that case");
 
-        InferredParse.IsMatch(StripCommentsAndStrings("var ok = int.TryParse(raw, out var n);"))
+        InferredParse.IsMatch(SourceScan.StripCommentsAndStrings("var ok = int.TryParse(raw, out var n);"))
             .Should().BeFalse("only Enum.TryParse / Enum.Parse are in scope");
     }
 
@@ -234,7 +234,7 @@ public sealed class GovernanceEnumParseChokepointTests
         var contentRoot = Path.Combine(RepoRoot.Path, "src", "Content");
 
         Directory.EnumerateFiles(contentRoot, SourceGlob, SearchOption.AllDirectories)
-            .Count(f => !IsExcluded(f))
+            .Count(f => !SourceScan.IsExcluded(f, contentRoot))
             .Should().BeGreaterThan(500);
     }
 
@@ -248,7 +248,7 @@ public sealed class GovernanceEnumParseChokepointTests
         var declarations = Directory
             .EnumerateFiles(Path.Combine(contentRoot, "Domain"), SourceGlob, SearchOption.AllDirectories)
             .Concat(Directory.EnumerateFiles(Path.Combine(contentRoot, "Application"), SourceGlob, SearchOption.AllDirectories))
-            .Where(f => !IsExcluded(f))
+            .Where(f => !SourceScan.IsExcluded(f, contentRoot))
             .Select(File.ReadAllText)
             .ToArray();
 
@@ -261,28 +261,4 @@ public sealed class GovernanceEnumParseChokepointTests
             + "guarding. Missing: " + string.Join(", ", missing));
     }
 
-    /// <summary>Skips test code and build output — the rule is about production call sites.</summary>
-    private static bool IsExcluded(string path)
-    {
-        var relative = Path.GetRelativePath(Path.Combine(RepoRoot.Path, "src", "Content"), path);
-        var segments = relative.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-        return segments.Contains("Tests", StringComparer.OrdinalIgnoreCase)
-            || segments.Contains("bin", StringComparer.OrdinalIgnoreCase)
-            || segments.Contains("obj", StringComparer.OrdinalIgnoreCase);
-    }
-
-    /// <summary>
-    /// Removes comments and string literals so only compiled code is matched.
-    /// </summary>
-    /// <remarks>
-    /// Deliberately crude — it does not parse C#. It only has to be conservative in the direction
-    /// that matters: a construct it mishandles yields a false <em>positive</em>, which surfaces as a
-    /// failing test naming the file, not a silently missed call site.
-    /// </remarks>
-    private static string StripCommentsAndStrings(string source)
-    {
-        var withoutBlockComments = Regex.Replace(source, @"/\*.*?\*/", " ", RegexOptions.Singleline);
-        var withoutLineComments = Regex.Replace(withoutBlockComments, @"//[^\n]*", " ");
-        return Regex.Replace(withoutLineComments, "\"(?:[^\"\\\\\n]|\\\\.)*\"", "\"\"");
-    }
 }

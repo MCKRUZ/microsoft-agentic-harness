@@ -1,6 +1,10 @@
+using Application.AI.Common.Interfaces.Governance;
 using Application.Common.Helpers;
 using Domain.AI.Agents;
+using Domain.Common.Config.AI;
+using Infrastructure.AI.Governance;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace Infrastructure.AI.Agents;
 
@@ -16,11 +20,25 @@ namespace Infrastructure.AI.Agents;
 public sealed class AgentMetadataParser
 {
     private readonly ILogger<AgentMetadataParser> _logger;
+    private readonly IMcpSecurityScanner _scanner;
+    private readonly IOptionsMonitor<AIConfig> _config;
 
-    /// <summary>Initialises the parser with a logger for malformed-frontmatter diagnostics.</summary>
-    public AgentMetadataParser(ILogger<AgentMetadataParser> logger)
+    /// <summary>
+    /// Initialises the parser with a logger for malformed-frontmatter diagnostics, and a scanner
+    /// that screens the manifest for prompt-injection payloads before it is trusted (issue #331).
+    /// </summary>
+    public AgentMetadataParser(
+        ILogger<AgentMetadataParser> logger,
+        IMcpSecurityScanner scanner,
+        IOptionsMonitor<AIConfig> config)
     {
+        ArgumentNullException.ThrowIfNull(logger);
+        ArgumentNullException.ThrowIfNull(scanner);
+        ArgumentNullException.ThrowIfNull(config);
+
         _logger = logger;
+        _scanner = scanner;
+        _config = config;
     }
 
     /// <summary>
@@ -39,12 +57,20 @@ public sealed class AgentMetadataParser
 
         var name = ParseString(yaml, "name") ?? Path.GetFileName(baseDirectory);
         var id = ParseString(yaml, "id") ?? name;
+        var description = ParseString(yaml, "description") ?? string.Empty;
+        // Only trust the body as instructions when frontmatter actually parsed. When `yaml` is
+        // empty the frontmatter was absent or malformed (already warned above), and ExtractFrontmatter
+        // returns the whole file as `body` — capturing that would leak the raw `---`/YAML lines into
+        // the agent's system prompt.
+        var instructions = string.IsNullOrWhiteSpace(yaml) || string.IsNullOrWhiteSpace(body) ? null : body.Trim();
+
+        ScanOrRefuse(name, description, instructions, agentFilePath);
 
         return new AgentDefinition
         {
             Id = id,
             Name = name,
-            Description = ParseString(yaml, "description") ?? string.Empty,
+            Description = description,
             Category = ParseString(yaml, "category"),
             Domain = ParseString(yaml, "domain"),
             Version = ParseString(yaml, "version"),
@@ -52,16 +78,33 @@ public sealed class AgentMetadataParser
             Tags = ParseList(yaml, "tags"),
             Skills = ParseSkills(yaml),
             AllowedTools = ParseList(yaml, "allowed-tools"),
-            // Only trust the body as instructions when frontmatter actually parsed. When `yaml` is
-            // empty the frontmatter was absent or malformed (already warned above), and ExtractFrontmatter
-            // returns the whole file as `body` — capturing that would leak the raw `---`/YAML lines into
-            // the agent's system prompt.
-            Instructions = string.IsNullOrWhiteSpace(yaml) || string.IsNullOrWhiteSpace(body) ? null : body.Trim(),
+            Instructions = instructions,
             FilePath = agentFilePath,
             BaseDirectory = baseDirectory,
             LoadedAt = DateTime.UtcNow,
         };
     }
+
+    /// <summary>
+    /// Screens an agent manifest's name/description and, separately, its instructions body for
+    /// prompt-injection payloads before <see cref="ParseFromFile"/> constructs the
+    /// <see cref="AgentDefinition"/> (issue #331). No exemption for first-party agents shipped in
+    /// this template — see <see cref="Infrastructure.AI.Skills.SkillMetadataParser"/>'s sibling
+    /// method for the same reasoning.
+    /// </summary>
+    /// <remarks>
+    /// Unlike the skill-loading path, a refusal here is <b>not</b> automatically skip-and-continue
+    /// for a bundle: <c>BundleStagingService</c>'s AGENT.md parse sits inside a plain
+    /// <c>catch (Exception ex)</c> that fails the whole bundle — an agent manifest is the bundle's
+    /// identity, so refusing the entire bundle when it's poisoned is the intended behaviour, not a
+    /// gap. Discovery-path callers (<c>AgentMetadataRegistry.DiscoverInDirectory</c>) already catch
+    /// generically and skip that one agent, continuing with the rest.
+    /// </remarks>
+    private void ScanOrRefuse(string name, string description, string? instructions, string agentFilePath) =>
+        ManifestSecurityGate.ScanOrRefuse(
+            _scanner, _logger, _config.CurrentValue.Governance, name, "agent", agentFilePath,
+            shortFieldsContent: $"{name}\n{description}",
+            instructions);
 
     private static string? ParseString(string? frontmatter, string key)
     {
