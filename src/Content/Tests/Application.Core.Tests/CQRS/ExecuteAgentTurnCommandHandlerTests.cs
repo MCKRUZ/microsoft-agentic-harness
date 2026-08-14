@@ -163,6 +163,42 @@ public class ExecuteAgentTurnCommandHandlerTests
         }
     }
 
+    [Fact]
+    public async Task Handle_ActiveStreamSink_DuplicateFunctionCallContentForSameCallId_EmitsToolCallStartOnce()
+    {
+        // A provider connector surfacing the same FunctionCallContent twice for one CallId (a
+        // duplicate update, a retry-shaped delta) must not double-emit a TOOL_CALL_START/ARGS triple
+        // to the client — startedCallIds.Add's bool return gates the second occurrence.
+        var duplicateCall = new FunctionCallContent("call-1", "search", new Dictionary<string, object?> { ["q"] = "docs" });
+        var agent = TestableAIAgent.StreamingContent([duplicateCall], [duplicateCall]);
+        _agentCache
+            .Setup(c => c.GetOrCreateAsync(
+                It.IsAny<string>(),
+                It.IsAny<IReadOnlyList<string>>(),
+                It.IsAny<SkillAgentOptions>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(agent);
+
+        var callStarts = 0;
+        Application.AI.Common.Services.AgentTurnStreamSink.Current =
+            new Application.AI.Common.Services.AgentTurnStreamSink(
+                onDelta: (_, _) => Task.CompletedTask,
+                onToolCall: (_, _, _, _) => { callStarts++; return Task.CompletedTask; });
+
+        try
+        {
+            // Act
+            await _handler.Handle(CreateCommand(), CancellationToken.None);
+
+            // Assert
+            callStarts.Should().Be(1);
+        }
+        finally
+        {
+            Application.AI.Common.Services.AgentTurnStreamSink.Current = null;
+        }
+    }
+
     /// <summary>A value that throws when JSON-serialized, to prove a bad tool argument degrades the
     /// streamed args to a warning rather than aborting the whole turn.</summary>
     private sealed class UnserializableArgValue

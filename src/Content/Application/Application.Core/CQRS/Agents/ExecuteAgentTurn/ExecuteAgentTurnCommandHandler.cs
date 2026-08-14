@@ -368,13 +368,14 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 		CancellationToken cancellationToken)
 	{
 		var builder = new StringBuilder();
-		// Tracks which CallIds actually got a TOOL_CALL_START streamed, so a matching result can't
-		// stream on its own merits (a non-empty CallId) alone — the two guards below check different
-		// fields (Name vs nothing further), so a call skipped for missing Name but carrying a valid
-		// CallId would otherwise leave its result to stream unmatched: a TOOL_CALL_RESULT with no
-		// preceding TOOL_CALL_START a client could place. Deliberately scoped to this one call — the
-		// invariant it enforces (no orphaned RESULT) is local to a single turn's stream, not something
-		// a second IAgentTurnStreamSink elsewhere in the codebase needs to share.
+		// Tracks which CallIds actually got a TOOL_CALL_START streamed — two jobs. (1) A matching
+		// result can't stream on its own merits (a non-empty CallId) alone: a call skipped for missing
+		// Name but carrying a valid CallId would otherwise leave its result to stream unmatched, a
+		// TOOL_CALL_RESULT with no preceding TOOL_CALL_START a client could place. (2) A provider
+		// connector that surfaces the same call twice must not double-emit a START/ARGS/END triple —
+		// HashSet.Add's bool return doubles as that guard. Deliberately scoped to this one call — the
+		// invariant it enforces is local to a single turn's stream, not something a second
+		// IAgentTurnStreamSink elsewhere in the codebase needs to share.
 		var startedCallIds = new HashSet<string>();
 		await foreach (var update in agent.RunStreamingAsync(messages, cancellationToken: cancellationToken))
 		{
@@ -411,8 +412,10 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 			// Guards on both CallId and Name: a call with no id can't be matched to its later
 			// result (an empty toolCallId would violate the wire contract's required field), and
 			// a call with no name has nothing meaningful to announce.
-			case FunctionCallContent { CallId.Length: > 0 } call when !string.IsNullOrEmpty(call.Name):
-				startedCallIds.Add(call.CallId);
+			// startedCallIds.Add returning false means this CallId already started — a provider
+			// connector surfacing the same call twice must not double-emit a TOOL_CALL_START/ARGS/END
+			// triple to the client.
+			case FunctionCallContent { CallId.Length: > 0 } call when !string.IsNullOrEmpty(call.Name) && startedCallIds.Add(call.CallId):
 				await sink.EmitToolCallAsync(
 					call.CallId, call.Name, RedactedArgsJson(call, redactor, logger), cancellationToken);
 				break;

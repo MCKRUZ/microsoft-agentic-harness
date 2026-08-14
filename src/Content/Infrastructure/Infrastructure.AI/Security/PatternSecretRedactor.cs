@@ -77,6 +77,20 @@ public sealed class PatternSecretRedactor : ISecretRedactor
         return false;
     }
 
+    // Every compiled pattern below gets a match timeout — this redactor now sits on a client-facing
+    // hot path (streamed tool-call arguments/results), fed by tool-controlled text, and the pattern
+    // set is expected to keep growing. None of today's patterns has a super-linear backtracking path,
+    // but a timeout is cheap insurance that a future addition can't turn a large tool result into a
+    // CPU stall on the request thread.
+    private static readonly TimeSpan MatchTimeout = TimeSpan.FromMilliseconds(100);
+
+    // Keys covered by both the JSON-quoted pattern and the generic key=value/key:value pattern below —
+    // kept as one shared alternation so the two patterns can't drift out of sync (a key redacted in one
+    // shape but not the other was exactly the bug that motivated this constant).
+    private const string SecretKeyAlternation =
+        "api[_-]?key|access[_-]?token|secret[_-]?key|client[_-]?secret|password|pwd|" +
+        "account[_-]?key|shared[_-]?access[_-]?key|connection[_-]?string|sas[_-]?token";
+
     private static (Regex Pattern, string Replacement)[] BuildRedactionPatterns() =>
     [
         // Bearer tokens: case-insensitive; replaces entire match preserving the "Bearer" prefix.
@@ -84,7 +98,7 @@ public sealed class PatternSecretRedactor : ISecretRedactor
         (
             new Regex(
                 @"Bearer\s+[A-Za-z0-9\-._~+/]+=*",
-                RegexOptions.Compiled | RegexOptions.IgnoreCase),
+                RegexOptions.Compiled | RegexOptions.IgnoreCase, MatchTimeout),
             "Bearer [REDACTED]"
         ),
 
@@ -94,31 +108,45 @@ public sealed class PatternSecretRedactor : ISecretRedactor
         (
             new Regex(
                 @"(?i)(AccountKey|Password|pwd|SharedAccessKey)\s*=\s*(?!\[REDACTED\])[^;""'\s]+",
-                RegexOptions.Compiled),
+                RegexOptions.Compiled, MatchTimeout),
             "$1=[REDACTED]"
         ),
 
-        // Generic key=value / key:value secret pairs. Key alternation matches the JSON-quoted pattern
-        // below — client_secret/password/pwd only had "=" coverage via the connection-string pattern
-        // above, never ":", and client_secret had neither; keeping the two alternations in sync avoids
-        // a key being redacted in one shape (quoted JSON) but not another (bare key: value).
-        // Value matcher [^;"'\s]+ (matching the connection-string pattern above) stops at a quote,
-        // semicolon, or apostrophe — a plain \S+ is greedy across the whole rest of a whitespace-free
-        // string, so on compact JSON (no spaces) a key found inside a serialized string value (e.g.
-        // "...?api_key=abc123" embedded in a URL) would consume every remaining character in the
-        // document, including the closing quote, brace, and any keys after it, corrupting the JSON and
-        // silently dropping the rest of the payload's data.
+        // Generic key=value / key:value secret pairs, covering both quoted and unquoted values (a
+        // bare key with a quoted value — "api_key: \"value\"" in YAML, "api_key=\"value\"" in a log
+        // line — is a normal, common shape the JSON-quoted pattern below does NOT cover, since that
+        // pattern requires the KEY to be quoted too).
+        //
+        // The value alternation tries, in order: a double-quoted string, a single-quoted string, then
+        // a bounded unquoted run. Two mistakes this specifically avoids, both shipped and caught by
+        // review before merge:
+        //   1. A bare \S+ is greedy across the whole rest of a whitespace-free string, so on compact
+        //      JSON (no spaces) a key found inside a serialized string value (e.g. "...?api_key=abc123"
+        //      embedded in a URL) would consume every remaining character in the document — the
+        //      closing quote, every later key, the closing brace — corrupting the JSON and silently
+        //      dropping the rest of the payload.
+        //   2. Narrowing the value class to [^;"'\s]+ alone (excluding quotes) fixes (1) but makes the
+        //      pattern quote-hostile: a value that starts with a quote has nothing left to match at
+        //      that position, so the match fails outright and the secret passes through completely
+        //      unredacted — worse than the greedy-corruption bug it replaced, since (1) still exposed
+        //      the leaked leading string of the secret while (2) exposed the whole one. The quoted
+        //      alternatives above must be tried first so a quoted value is matched by its own bounded
+        //      class instead of falling through to the unquoted one.
+        //
+        // The separator is captured (not hardcoded) so the replacement preserves whichever of "=" or
+        // ":" the input actually used, rather than silently rewriting "api_key: value" into
+        // "api_key=value" and potentially invalidating the surrounding document.
         // Negative lookahead (?!\[REDACTED\]) ensures idempotency.
         (
             new Regex(
-                @"(?i)(api[_-]?key|access[_-]?token|secret[_-]?key|client[_-]?secret|password|pwd)\s*[=:]\s*(?!\[REDACTED\])[^;""'\s]+",
-                RegexOptions.Compiled),
-            "$1=[REDACTED]"
+                $@"(?i)({SecretKeyAlternation})(\s*[=:]\s*)(?!\[REDACTED\])(?:""[^""]*""|'[^']*'|[^;""'\s]+)",
+                RegexOptions.Compiled, MatchTimeout),
+            "$1$2[REDACTED]"
         ),
 
         // JSON-quoted key/value secret pairs: "api_key":"value". The generic pattern above requires
-        // an unquoted \S+ value, so it never matches this shape — and tool payloads streamed to
-        // clients are routinely JSON (function-call arguments, tool results serialized as objects).
+        // an unquoted key, so it never matches this shape — and tool payloads streamed to clients are
+        // routinely JSON (function-call arguments, tool results serialized as objects).
         // The value matcher (?:\\.|[^"\\])* is escape-aware — it treats "\"" as part of the value
         // rather than ending the match there, unlike a plain [^"]* which stops at the first quote
         // character regardless of the preceding backslash and truncates the match mid-value, leaking
@@ -126,8 +154,8 @@ public sealed class PatternSecretRedactor : ISecretRedactor
         // Negative lookahead (?!\[REDACTED\]) ensures idempotency.
         (
             new Regex(
-                @"(?i)""(api[_-]?key|access[_-]?token|secret[_-]?key|client[_-]?secret|password|pwd)""\s*:\s*""(?!\[REDACTED\])(?:\\.|[^""\\])*""",
-                RegexOptions.Compiled),
+                $@"(?i)""({SecretKeyAlternation})""\s*:\s*""(?!\[REDACTED\])(?:\\.|[^""\\])*""",
+                RegexOptions.Compiled, MatchTimeout),
             @"""$1"":""[REDACTED]"""
         ),
     ];

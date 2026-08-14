@@ -269,4 +269,64 @@ public class PatternSecretRedactorTests
         using var doc = System.Text.Json.JsonDocument.Parse(result);
         doc.RootElement.GetProperty("method").GetString().Should().Be("GET");
     }
+
+    /// <summary>
+    /// A bare (unquoted) key with a double-quoted value — e.g. a log line or shell env-var display —
+    /// is redacted. Bounding the generic pattern's value class to [^;"'\s]+ alone (excluding quotes,
+    /// to fix the JSON-corruption case above) makes the pattern quote-hostile: a value starting with a
+    /// quote has nothing left to match at that position, so the whole match fails and the secret passes
+    /// through completely unredacted. The value alternation must try a quoted form first.
+    /// </summary>
+    [Theory]
+    [InlineData("api_key=\"sk-live-ABCDEF\"", "sk-live-ABCDEF")]
+    [InlineData("api_key='sk-live-ABCDEF'", "sk-live-ABCDEF")]
+    [InlineData("access_token=\"ghp_SECRETVALUE\"", "ghp_SECRETVALUE")]
+    public void Redact_UnquotedKeyWithQuotedValue_RedactsValue(string input, string secret)
+    {
+        var sut = CreateRedactor();
+
+        var result = sut.Redact(input);
+
+        result.Should().Contain("[REDACTED]");
+        result.Should().NotContain(secret);
+    }
+
+    /// <summary>
+    /// A YAML-style "key: value" pair with a quoted value is redacted, and the original ":" separator
+    /// survives in the output — the pre-existing replacement hardcoded "=" regardless of which
+    /// separator the input actually used, which would rewrite "api_key: value" into the different,
+    /// potentially document-invalidating "api_key=value".
+    /// </summary>
+    [Fact]
+    public void Redact_ColonSeparatedKeyWithQuotedValue_PreservesColonSeparator()
+    {
+        var sut = CreateRedactor();
+        var input = "api_key: \"sk-live-ABCDEF\"";
+
+        var result = sut.Redact(input);
+
+        result.Should().Be("api_key: [REDACTED]");
+    }
+
+    /// <summary>
+    /// Storage/connection-string-shaped keys (AccountKey, SharedAccessKey, connection string, SAS
+    /// token) are covered by the JSON-quoted pattern too, not just the semicolon-delimited
+    /// connection-string pattern — which cannot match the JSON shape "AccountKey":"..." since the
+    /// character after the key is a quote, not "=".
+    /// </summary>
+    [Theory]
+    [InlineData("AccountKey")]
+    [InlineData("SharedAccessKey")]
+    [InlineData("connection_string")]
+    [InlineData("sas_token")]
+    public void Redact_JsonQuotedStorageKey_RedactsValue(string key)
+    {
+        var sut = CreateRedactor();
+        var input = $$"""{"{{key}}":"b64-super-secret-value"}""";
+
+        var result = sut.Redact(input);
+
+        result.Should().Contain("[REDACTED]");
+        result.Should().NotContain("b64-super-secret-value");
+    }
 }
