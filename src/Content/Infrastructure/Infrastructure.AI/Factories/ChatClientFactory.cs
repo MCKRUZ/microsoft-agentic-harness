@@ -5,6 +5,7 @@ using Azure.AI.OpenAI;
 using Domain.Common.Config;
 using Domain.Common.Config.AI;
 using Infrastructure.AI.Clients;
+using Infrastructure.AI.Helpers;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.DependencyInjection;
@@ -102,14 +103,20 @@ public sealed partial class ChatClientFactory : IChatClientFactory, IDisposable
     /// </summary>
     private IReadOnlyList<string> ComputeMissingSettings(AIAgentFrameworkClientType clientType)
     {
-        // FoundryResponses authenticates via the Foundry project endpoint + Entra (not an API key),
-        // so its only required setting lives under AppConfig:AI:AIFoundry.
-        if (clientType == AIAgentFrameworkClientType.FoundryResponses)
+        // Both Foundry types authenticate via Entra (not an API key), each against its own
+        // AppConfig:AI:AIFoundry setting — ProjectEndpoint for the Project-scoped agent path,
+        // ResourceEndpoint for the direct-inference path (issue #382).
+        var foundry = _appConfig.CurrentValue.AI.AIFoundry;
+        (bool IsConfigured, string RequiredSetting)? foundryRequirement = clientType switch
         {
-            return _appConfig.CurrentValue.AI.AIFoundry.IsConfigured
-                ? []
-                : ["AppConfig:AI:AIFoundry:ProjectEndpoint"];
-        }
+            AIAgentFrameworkClientType.FoundryResponses =>
+                (foundry.IsConfigured, "AppConfig:AI:AIFoundry:ProjectEndpoint"),
+            AIAgentFrameworkClientType.FoundryDirectResponses =>
+                (foundry.IsDirectResponsesConfigured, "AppConfig:AI:AIFoundry:ResourceEndpoint"),
+            _ => null
+        };
+        if (foundryRequirement is { } requirement)
+            return requirement.IsConfigured ? [] : [requirement.RequiredSetting];
 
         var framework = _appConfig.CurrentValue.AI.AgentFramework;
         var missing = new List<string>();
@@ -144,6 +151,10 @@ public sealed partial class ChatClientFactory : IChatClientFactory, IDisposable
             // not an IChatClient. Availability is reported here for consistency and health checks,
             // and is gated on the Foundry project endpoint being configured.
             AIAgentFrameworkClientType.FoundryResponses => _appConfig.CurrentValue.AI.AIFoundry.IsConfigured,
+            AIAgentFrameworkClientType.FoundryDirectResponses =>
+                _appConfig.CurrentValue.AI.AIFoundry.IsDirectResponsesConfigured
+                && _serviceProvider.GetKeyedService<AzureOpenAIClient>(
+                    AgentFrameworkHelper.FoundryDirectResponsesClientKey) != null,
             AIAgentFrameworkClientType.Echo => true,
             _ => false
         };
@@ -188,6 +199,7 @@ public sealed partial class ChatClientFactory : IChatClientFactory, IDisposable
             AIAgentFrameworkClientType.FoundryResponses => throw new InvalidOperationException(
                 "ClientType 'FoundryResponses' does not expose an IChatClient — it produces an AIAgent. " +
                 "Build it through AgentFactory (which uses IFoundryAgentProvider), not IChatClientFactory.GetChatClientAsync."),
+            AIAgentFrameworkClientType.FoundryDirectResponses => await GetFoundryDirectResponsesChatClientAsync(deploymentOrAgentId, disableProviderRetry, cancellationToken),
             AIAgentFrameworkClientType.Echo => new EchoChatClient(),
             _ => throw new ArgumentException($"Unsupported AI framework client type: {clientType}", nameof(clientType))
         };
@@ -204,6 +216,7 @@ public sealed partial class ChatClientFactory : IChatClientFactory, IDisposable
             { AIAgentFrameworkClientType.PersistentAgents, IsAvailable(AIAgentFrameworkClientType.PersistentAgents) },
             { AIAgentFrameworkClientType.Anthropic, IsAvailable(AIAgentFrameworkClientType.Anthropic) },
             { AIAgentFrameworkClientType.FoundryResponses, IsAvailable(AIAgentFrameworkClientType.FoundryResponses) },
+            { AIAgentFrameworkClientType.FoundryDirectResponses, IsAvailable(AIAgentFrameworkClientType.FoundryDirectResponses) },
             { AIAgentFrameworkClientType.Echo, IsAvailable(AIAgentFrameworkClientType.Echo) }
         };
     }

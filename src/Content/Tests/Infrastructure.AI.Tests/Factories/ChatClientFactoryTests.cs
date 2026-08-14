@@ -80,8 +80,9 @@ public sealed class ChatClientFactoryTests : IDisposable
         providers.Should().ContainKey(AIAgentFrameworkClientType.PersistentAgents);
         providers.Should().ContainKey(AIAgentFrameworkClientType.Anthropic);
         providers.Should().ContainKey(AIAgentFrameworkClientType.FoundryResponses);
+        providers.Should().ContainKey(AIAgentFrameworkClientType.FoundryDirectResponses);
         providers.Should().ContainKey(AIAgentFrameworkClientType.Echo);
-        providers.Should().HaveCount(7);
+        providers.Should().HaveCount(8);
     }
 
     [Fact]

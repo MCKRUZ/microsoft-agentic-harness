@@ -65,7 +65,11 @@
     <PackageVersion Include="Polly.Core" Version="8.5.2" />
     <PackageVersion Include="Anthropic.SDK" Version="5.10.0" />
     <PackageVersion Include="Azure.AI.Inference" Version="1.0.0-beta.5" />
-    <PackageVersion Include="Azure.AI.OpenAI" Version="2.8.0-beta.1" />
+    <!-- 2.9.0-beta.1 restores compatibility with OpenAI 2.9.*; needed so the resolved OpenAI
+         package (2.10.0, pulled in by Microsoft.Agents.AI.OpenAI/Foundry) doesn't run against
+         an Azure.AI.OpenAI build compiled for OpenAI 2.8.0 — that combination throws
+         MissingMethodException on the Responses surface at runtime, not at build time. -->
+    <PackageVersion Include="Azure.AI.OpenAI" Version="2.9.0-beta.1" />
     <PackageVersion Include="Microsoft.Agents.AI.OpenAI" Version="1.13.0" />
     <!-- Foundry stays on the 1.10 preview line while the rest of the Microsoft.Agents.AI
          family moves to 1.13.0: there is no 1.13 Foundry preview, and the 1.13 core does

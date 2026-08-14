@@ -26,6 +26,23 @@ public static class AgentFrameworkHelper
     public const string NoProviderRetryClientKey = "no-provider-retry";
 
     /// <summary>
+    /// DI key for the <see cref="AzureOpenAIClient"/> targeting the bare AI Foundry resource
+    /// endpoint (<see cref="Domain.Common.Config.AI.AIAgentFrameworkClientType.FoundryDirectResponses"/>).
+    /// Keyed rather than resolved unkeyed because the harness's primary
+    /// <see cref="AzureOpenAIClient"/> registration (for <c>ClientType=AzureOpenAI</c>) uses a
+    /// different endpoint and credential (API key vs Entra) — the two must never share a slot.
+    /// </summary>
+    public const string FoundryDirectResponsesClientKey = "foundry-direct-responses";
+
+    /// <summary>
+    /// DI key for the retry-disabled variant of <see cref="FoundryDirectResponsesClientKey"/>,
+    /// resolved by the provider fallback chain — same reasoning as <see cref="NoProviderRetryClientKey"/>,
+    /// kept separate because it must combine with the Foundry-direct endpoint/credential, not
+    /// whichever provider <see cref="NoProviderRetryClientKey"/> would otherwise resolve.
+    /// </summary>
+    public const string FoundryDirectResponsesNoRetryClientKey = "foundry-direct-responses-no-retry";
+
+    /// <summary>
     /// Gets configured options for <see cref="AzureOpenAIClient"/>.
     /// </summary>
     /// <param name="networkTimeoutSeconds">Network timeout in seconds. Default: 300.</param>

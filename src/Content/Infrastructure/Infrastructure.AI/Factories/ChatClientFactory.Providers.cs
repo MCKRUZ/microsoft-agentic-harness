@@ -121,6 +121,27 @@ public sealed partial class ChatClientFactory
         }
     }
 
+    /// <summary>
+    /// Creates an <see cref="IChatClient"/> for the Azure AI Foundry Responses API called directly
+    /// against the bare resource endpoint, bypassing <c>AIProjectClient</c>'s Project-scoped
+    /// routing (issue #382: Project-scoped routing measured ~15x higher per-call latency for the
+    /// identical model/tenant/credential).
+    /// </summary>
+    private Task<IChatClient> GetFoundryDirectResponsesChatClientAsync(
+        string deploymentName, bool disableProviderRetry, CancellationToken cancellationToken)
+    {
+        var key = disableProviderRetry
+            ? AgentFrameworkHelper.FoundryDirectResponsesNoRetryClientKey
+            : AgentFrameworkHelper.FoundryDirectResponsesClientKey;
+
+        var client = _serviceProvider.GetKeyedService<AzureOpenAIClient>(key)
+            ?? throw new AiProviderNotConfiguredException(
+                "FoundryDirectResponses is not configured. Set AppConfig:AI:AIFoundry:ResourceEndpoint " +
+                "and AppConfig:AI:AIFoundry:Entra.");
+
+        return Task.FromResult(client.GetResponsesClient().AsIChatClient(deploymentName));
+    }
+
     private Task<IChatClient> GetOpenAIChatClientAsync(
         string deploymentName, bool disableProviderRetry, CancellationToken cancellationToken)
     {

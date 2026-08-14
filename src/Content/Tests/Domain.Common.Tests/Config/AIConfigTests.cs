@@ -1,4 +1,5 @@
 using Domain.Common.Config.AI;
+using Domain.Common.Config.AI.AIFoundry;
 using FluentAssertions;
 using Xunit;
 
@@ -83,6 +84,65 @@ public class AgentFrameworkConfigTests
 }
 
 /// <summary>
+/// Tests for <see cref="AIFoundryConfig"/>'s two independent configured-ness gates —
+/// <see cref="AIFoundryConfig.IsConfigured"/> (Project-scoped) and
+/// <see cref="AIFoundryConfig.IsDirectResponsesConfigured"/> (bare resource endpoint, issue #382)
+/// — proving neither depends on the other.
+/// </summary>
+public class AIFoundryConfigTests
+{
+    [Fact]
+    public void IsConfigured_WithNoProjectEndpoint_ReturnsFalse()
+    {
+        new AIFoundryConfig().IsConfigured.Should().BeFalse();
+    }
+
+    [Fact]
+    public void IsConfigured_WithProjectEndpoint_ReturnsTrue()
+    {
+        var config = new AIFoundryConfig { ProjectEndpoint = "https://my-project.services.ai.azure.com/api/projects/my-project" };
+
+        config.IsConfigured.Should().BeTrue();
+    }
+
+    [Fact]
+    public void IsDirectResponsesConfigured_WithNoResourceEndpoint_ReturnsFalse()
+    {
+        new AIFoundryConfig().IsDirectResponsesConfigured.Should().BeFalse();
+    }
+
+    [Fact]
+    public void IsDirectResponsesConfigured_WithResourceEndpoint_ReturnsTrue()
+    {
+        var config = new AIFoundryConfig { ResourceEndpoint = "https://my-resource.services.ai.azure.com" };
+
+        config.IsDirectResponsesConfigured.Should().BeTrue();
+    }
+
+    [Fact]
+    public void IsDirectResponsesConfigured_WithWhitespaceResourceEndpoint_ReturnsFalse()
+    {
+        var config = new AIFoundryConfig { ResourceEndpoint = "   " };
+
+        config.IsDirectResponsesConfigured.Should().BeFalse();
+    }
+
+    [Fact]
+    public void BothGates_AreIndependent_NeitherSettingSatisfiesTheOther()
+    {
+        // A consumer may configure only the direct path, only the Project-scoped path, or both —
+        // the two settings must never be conflated.
+        var directOnly = new AIFoundryConfig { ResourceEndpoint = "https://my-resource.services.ai.azure.com" };
+        directOnly.IsConfigured.Should().BeFalse();
+        directOnly.IsDirectResponsesConfigured.Should().BeTrue();
+
+        var projectOnly = new AIFoundryConfig { ProjectEndpoint = "https://my-project.services.ai.azure.com/api/projects/my-project" };
+        projectOnly.IsConfigured.Should().BeTrue();
+        projectOnly.IsDirectResponsesConfigured.Should().BeFalse();
+    }
+}
+
+/// <summary>
 /// Tests for <see cref="AIAgentFrameworkClientType"/> enum values.
 /// </summary>
 public class AIAgentFrameworkClientTypeTests
@@ -95,6 +155,7 @@ public class AIAgentFrameworkClientTypeTests
     [InlineData(AIAgentFrameworkClientType.Anthropic, 4)]
     [InlineData(AIAgentFrameworkClientType.Echo, 5)]
     [InlineData(AIAgentFrameworkClientType.FoundryResponses, 6)]
+    [InlineData(AIAgentFrameworkClientType.FoundryDirectResponses, 7)]
     public void Value_HasExpectedInteger(AIAgentFrameworkClientType type, int expected)
     {
         ((int)type).Should().Be(expected);
@@ -104,7 +165,7 @@ public class AIAgentFrameworkClientTypeTests
     public void AllValues_AreDistinct()
     {
         Enum.GetValues<AIAgentFrameworkClientType>().Should().OnlyHaveUniqueItems();
-        Enum.GetValues<AIAgentFrameworkClientType>().Should().HaveCount(7);
+        Enum.GetValues<AIAgentFrameworkClientType>().Should().HaveCount(8);
     }
 
     [Fact]
