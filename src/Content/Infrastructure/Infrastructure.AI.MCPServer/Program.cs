@@ -1,6 +1,7 @@
 using System.Threading.RateLimiting;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Skills;
+using Application.Common.Extensions;
 using Domain.Common.Config;
 using Domain.Common.Config.AI;
 using Infrastructure.AI.Governance;
@@ -60,6 +61,12 @@ public class Program
         // services rather than calling AddAIDependencies, so it registers the discovery trio through
         // the shared entry point instead of by hand (issue #247).
         builder.Services.AddSkillDiscovery();
+
+        // Azure SDK EventSource-to-ILogger bridge (issue #383). This host composes its own services
+        // rather than calling AddApplicationCommonDependencies (Clean Architecture — an
+        // Infrastructure-layer host must not depend on Presentation), so it must wire this
+        // explicitly rather than getting it for free from ConfigureLogging.
+        builder.Services.AddAzureIdentityDiagnostics();
 
         // SkillMetadataParser now depends on IMcpSecurityScanner to screen a skill manifest for
         // prompt-injection payloads before trusting it (issue #331). This host composes its own
