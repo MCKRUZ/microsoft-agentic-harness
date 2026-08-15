@@ -160,6 +160,55 @@ public class AzureIdentityDiagnosticsExtensionsTests
     }
 
     [Fact]
+    public void AddAzureIdentityDiagnostics_OperatorSetsStricterCategoryNullExportLevel_ClampsToIt()
+    {
+        // The realistic way an operator restricts OTel export verbosity is a category-null
+        // MinExportLevel rule (exactly what OpenTelemetryServiceCollectionExtensions.AddLogsSignal
+        // registers), not a category-specific one — and a category-specific rule always wins
+        // provider selection over a category-null one regardless of which is stricter. A hardcoded
+        // Warning/Information default would therefore silently let "Azure"/"Azure.Identity" export
+        // MORE verbosely than an operator's stricter category-null cap (e.g. Error-only, configured
+        // specifically to keep resource identifiers out of exported telemetry) — caught by this
+        // repo's correctness-review CI gate on the first version of this fix. The OTel-scoped level
+        // must clamp to the stricter of the two.
+        var services = new ServiceCollection();
+        var otelProviderName = typeof(OpenTelemetryLoggerProvider).FullName;
+        services.Configure<LoggerFilterOptions>(o =>
+            o.Rules.Add(new LoggerFilterRule(otelProviderName, categoryName: null, LogLevel.Error, filter: null)));
+
+        services.AddAzureIdentityDiagnostics();
+
+        using var provider = services.BuildServiceProvider();
+        var rules = provider.GetRequiredService<IOptions<LoggerFilterOptions>>().Value.Rules;
+
+        rules.Should().Contain(r => r.ProviderName == otelProviderName && r.CategoryName == "Azure" && r.LogLevel == LogLevel.Error,
+            "the operator's stricter Error-only export cap must win over this method's Warning default");
+        rules.Should().Contain(r => r.ProviderName == otelProviderName && r.CategoryName == "Azure.Identity" && r.LogLevel == LogLevel.Error,
+            "the operator's stricter Error-only export cap must win over this method's Information default");
+    }
+
+    [Fact]
+    public void AddAzureIdentityDiagnostics_OperatorSetsMorePermissiveCategoryNullExportLevel_KeepsTheSaferDefault()
+    {
+        // The mirror case of the clamp above: an operator's category-null export level that is MORE
+        // permissive than this method's defaults (e.g. Trace, to capture everything for a debugging
+        // session) must not loosen the "Azure"/"Azure.Identity" export levels below the safe
+        // defaults — that's the original bypass this method exists to close.
+        var services = new ServiceCollection();
+        var otelProviderName = typeof(OpenTelemetryLoggerProvider).FullName;
+        services.Configure<LoggerFilterOptions>(o =>
+            o.Rules.Add(new LoggerFilterRule(otelProviderName, categoryName: null, LogLevel.Trace, filter: null)));
+
+        services.AddAzureIdentityDiagnostics();
+
+        using var provider = services.BuildServiceProvider();
+        var rules = provider.GetRequiredService<IOptions<LoggerFilterOptions>>().Value.Rules;
+
+        rules.Should().Contain(r => r.ProviderName == otelProviderName && r.CategoryName == "Azure" && r.LogLevel == LogLevel.Warning);
+        rules.Should().Contain(r => r.ProviderName == otelProviderName && r.CategoryName == "Azure.Identity" && r.LogLevel == LogLevel.Information);
+    }
+
+    [Fact]
     public void AddApplicationCommonDependencies_ResolvesLogForwarderAndHostedServiceFromTheRealCompositionRoot()
     {
         // This repo's own CLAUDE.md documents a recurring defect class: a service registered but

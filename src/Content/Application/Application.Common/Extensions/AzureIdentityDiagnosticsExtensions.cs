@@ -65,6 +65,19 @@ public static class AzureIdentityDiagnosticsExtensions
     /// otherwise reach exported telemetry unfiltered. This method adds matching default rules scoped
     /// explicitly to <see cref="OpenTelemetryLoggerProvider"/> to close that gap.
     /// </para>
+    /// <para>
+    /// That OTel-scoped default is clamped to never be <em>more</em> permissive than the operator's
+    /// own export-level cap, not just skipped when an exact-category rule already exists: the
+    /// realistic way an operator restricts OTel export verbosity is the category-null
+    /// <c>MinExportLevel</c> rule above, not a category-specific one, and a category-specific rule
+    /// always wins provider selection over a category-null one regardless of which is stricter. A
+    /// hardcoded <see cref="LogLevel.Warning"/> default would silently let "Azure" export at Warning
+    /// even when an operator configured a stricter cap (e.g. Error-only, specifically to keep
+    /// resource identifiers out of exported telemetry) — the mirror-image of the bypass this method
+    /// exists to close. The effective OTel-scoped level is therefore the <em>stricter</em> (numerically
+    /// higher <see cref="LogLevel"/>) of this method's default and any category-null export-level rule
+    /// already present for <see cref="OpenTelemetryLoggerProvider"/>.
+    /// </para>
     /// </remarks>
     public static IServiceCollection AddAzureIdentityDiagnostics(this IServiceCollection services)
     {
@@ -73,11 +86,18 @@ public static class AzureIdentityDiagnosticsExtensions
         services.PostConfigure<LoggerFilterOptions>(options =>
         {
             var openTelemetryProvider = typeof(OpenTelemetryLoggerProvider).FullName;
+            var operatorExportLevel = options.Rules
+                .Where(r => r.ProviderName == openTelemetryProvider && r.CategoryName is null && r.LogLevel is not null)
+                .Select(r => r.LogLevel!.Value)
+                .DefaultIfEmpty()
+                .Max();
 
             foreach (var (category, level) in DefaultCategoryLevels)
             {
                 AddDefaultUnlessConfigured(options, providerName: null, category, level);
-                AddDefaultUnlessConfigured(options, openTelemetryProvider, category, level);
+
+                var otelLevel = operatorExportLevel > level ? operatorExportLevel : level;
+                AddDefaultUnlessConfigured(options, openTelemetryProvider, category, otelLevel);
             }
         });
 
