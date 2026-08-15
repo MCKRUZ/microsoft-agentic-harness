@@ -138,9 +138,7 @@ public sealed class McpConnectionManager : IAsyncDisposable
         if (_clients.TryGetValue(serverName, out existing))
             return existing;
 
-        var client = await CreateClientAsync(serverName, cancellationToken);
-        _clients[serverName] = client;
-        return client;
+        return await CreateAndCacheClientAsync(serverName, cancellationToken);
     }
 
     /// <summary>
@@ -166,6 +164,8 @@ public sealed class McpConnectionManager : IAsyncDisposable
     /// </remarks>
     public async Task DisconnectAsync(string serverName)
     {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
         using var _ = await AcquireConnectionLockAsync(serverName, CancellationToken.None);
         await EvictLockedAsync(serverName);
     }
@@ -199,6 +199,15 @@ public sealed class McpConnectionManager : IAsyncDisposable
 
         await EvictLockedAsync(serverName);
 
+        return await CreateAndCacheClientAsync(serverName, cancellationToken);
+    }
+
+    /// <summary>
+    /// Connects to <paramref name="serverName"/> and caches the result. Caller must hold that server's
+    /// connection lock.
+    /// </summary>
+    private async Task<McpClient> CreateAndCacheClientAsync(string serverName, CancellationToken cancellationToken)
+    {
         var client = await CreateClientAsync(serverName, cancellationToken);
         _clients[serverName] = client;
         return client;

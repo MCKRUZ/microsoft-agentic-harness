@@ -33,6 +33,16 @@ namespace Infrastructure.AI.MCP.Services;
 /// this path; a server that was never reachable in the first place still fails exactly as fast as
 /// before, with no added attempt or timeout.
 /// </para>
+/// <para>
+/// <strong>Known limitation: this recovers tool discovery, not tool invocation.</strong> An
+/// <see cref="AITool"/> this method returns is bound to the specific <c>McpClient</c> it was listed
+/// from; once handed to the agent's tool chain, an actual tool <em>call</em> invokes that binding
+/// directly and never routes back through this class. A session that goes stale between discovery
+/// and invocation still fails unrecovered on the call itself — only the next discovery pass observes
+/// and repairs it. Extending recovery to invocation needs a retry-aware wrapper around every
+/// <see cref="AITool"/> this method returns, not a change here; tracked as a follow-up, not solved in
+/// this class.
+/// </para>
 /// </remarks>
 public sealed class McpToolProvider : IMcpToolProvider
 {
@@ -56,6 +66,7 @@ public sealed class McpToolProvider : IMcpToolProvider
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
+        var connectSw = Stopwatch.StartNew();
         McpClient client;
         try
         {
@@ -65,7 +76,9 @@ public sealed class McpToolProvider : IMcpToolProvider
         {
             // Never reachable at all this call — no cached connection existed to go stale, so
             // there is nothing a reconnect-and-retry would fix. Same behaviour as before this fix.
-            RecordOutcome(Stopwatch.StartNew(), serverName, McpConventions.StatusValues.Unavailable);
+            // Covers caller cancellation too: this class's contract is to degrade to [] rather than
+            // throw, for cancellation exactly as for every other failure — see RetryAfterReconnectAsync.
+            RecordOutcome(connectSw, serverName, McpConventions.StatusValues.Unavailable);
             _logger.LogWarning(ex, "Failed to connect to MCP server '{ServerName}' — skipping", serverName);
             return [];
         }
@@ -73,12 +86,6 @@ public sealed class McpToolProvider : IMcpToolProvider
         try
         {
             return await ListToolsAsync(client, serverName, cancellationToken);
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            // The caller's own token fired — not a signal the connection is stale. Let it propagate
-            // rather than spending a reconnect attempt on a call nobody is waiting for.
-            throw;
         }
         catch (Exception ex)
         {
@@ -92,25 +99,47 @@ public sealed class McpToolProvider : IMcpToolProvider
     /// genuinely unreachable, so ask <see cref="McpConnectionManager"/> to evict and reconnect before
     /// falling back to "unavailable this turn". <see cref="McpConnectionManager.ReconnectAsync"/> owns
     /// the eviction, not this method — it is the only place that can tell whether a concurrent caller
-    /// already recovered the same stale client, and returning here degrades to <c>[]</c> for any
-    /// failure the reconnect attempt raises, honoring this class's "skipped rather than throwing"
-    /// contract exactly as the first attempt does.
+    /// already recovered the same stale client.
     /// </summary>
+    /// <remarks>
+    /// Reconnect and retry are two separate stages, each with its own outcome, rather than one
+    /// enclosing <c>try</c>: <see cref="ListToolsAsync"/> already records its own outcome (including
+    /// <c>Error</c>, with real elapsed time) before rethrowing, so a single catch around both stages
+    /// would record a second, misleading near-zero-duration <c>Error</c> for the SAME failed call. A
+    /// caller's own cancellation is caught in both stages and degrades to <c>[]</c> like every other
+    /// failure, never rethrown — this class's contract is "skipped rather than throwing" for every
+    /// caller (<see cref="GetAllToolsAsync"/> fans this out via <c>Task.WhenAll</c> with no per-task
+    /// guard; letting cancellation escape here would propagate out of that fan-out unhandled).
+    /// </remarks>
     private async Task<IList<AITool>> RetryAfterReconnectAsync(
         string serverName, McpClient failedClient, Exception cause, CancellationToken cancellationToken)
     {
+        _logger.LogInformation(cause,
+            "MCP server '{ServerName}' rejected a call on its existing connection — reconnecting and retrying once",
+            serverName);
+
+        var reconnectSw = Stopwatch.StartNew();
+        McpClient freshClient;
         try
         {
-            _logger.LogInformation(cause,
-                "MCP server '{ServerName}' rejected a call on its existing connection — reconnecting and retrying once",
-                serverName);
-            var freshClient = await _connectionManager.ReconnectAsync(serverName, failedClient, cancellationToken);
+            freshClient = await _connectionManager.ReconnectAsync(serverName, failedClient, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            RecordOutcome(reconnectSw, serverName, McpConventions.StatusValues.Unavailable);
+            _logger.LogWarning(ex, "Failed to reconnect to MCP server '{ServerName}' — skipping", serverName);
+            return [];
+        }
+
+        try
+        {
             return await ListToolsAsync(freshClient, serverName, cancellationToken);
         }
-        catch (Exception retryEx)
+        catch (Exception ex)
         {
-            RecordOutcome(Stopwatch.StartNew(), serverName, McpConventions.StatusValues.Error);
-            _logger.LogWarning(retryEx,
+            // ListToolsAsync already recorded the Error outcome (with real elapsed time) before
+            // rethrowing — do not record it again here.
+            _logger.LogWarning(ex,
                 "Failed to get tools from MCP server '{ServerName}' after reconnecting — skipping",
                 serverName);
             return [];
