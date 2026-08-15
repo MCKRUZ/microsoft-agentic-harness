@@ -133,22 +133,12 @@ public sealed class McpConnectionManager : IAsyncDisposable
         if (_clients.TryGetValue(serverName, out var existing))
             return existing;
 
-        var connectionLock = _connectionLocks.GetOrAdd(serverName, _ => new SemaphoreSlim(1, 1));
-        await connectionLock.WaitAsync(cancellationToken);
+        using var _ = await AcquireConnectionLockAsync(serverName, cancellationToken);
 
-        try
-        {
-            if (_clients.TryGetValue(serverName, out existing))
-                return existing;
+        if (_clients.TryGetValue(serverName, out existing))
+            return existing;
 
-            var client = await CreateClientAsync(serverName, cancellationToken);
-            _clients[serverName] = client;
-            return client;
-        }
-        finally
-        {
-            connectionLock.Release();
-        }
+        return await CreateAndCacheClientAsync(serverName, cancellationToken);
     }
 
     /// <summary>
@@ -162,20 +152,147 @@ public sealed class McpConnectionManager : IAsyncDisposable
     /// <summary>
     /// Disconnects from a specific server and removes the cached connection.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Deliberately does NOT take the per-server connection lock <see cref="GetClientAsync"/> and
+    /// <see cref="ReconnectAsync"/> use: this method's only production caller is bundle teardown
+    /// (<c>BundleMcpServerRegistrar</c>), which needs a fast, non-blocking disconnect and has no
+    /// cancellation token to bound a wait with. Taking the lock here would let a hung connect attempt
+    /// for the same server (mid-handshake, inside <see cref="CreateClientAsync"/>) block teardown
+    /// indefinitely — worse than the narrow race it would close. <c>ConcurrentDictionary.TryRemove</c>
+    /// is already atomic, so concurrent callers of this method cannot corrupt <see cref="_clients"/>
+    /// between themselves; the remaining race is with a concurrent create finishing and caching a NEW
+    /// client between this method's remove and its return — a pre-existing gap, not something this
+    /// method ever closed.
+    /// </para>
+    /// <para>
+    /// Also does not protect a caller that already holds a reference to the client this disposes,
+    /// obtained via <see cref="GetClientAsync"/>'s unlocked fast-path read before this method ran — that
+    /// caller can still observe <see cref="ObjectDisposedException"/> mid-use. Closing either race needs
+    /// reference-counted or generation-tagged client leases, a larger change to this type's
+    /// client-lifetime model; tracked as a known limitation, not solved here.
+    /// </para>
+    /// </remarks>
     public async Task DisconnectAsync(string serverName)
     {
-        if (_clients.TryRemove(serverName, out var client))
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        await EvictAsync(serverName);
+    }
+
+    /// <summary>
+    /// Evicts <paramref name="failedClient"/> and connects fresh, but only if it is still the cached
+    /// client for <paramref name="serverName"/>.
+    /// </summary>
+    /// <remarks>
+    /// A cached client that a previous call already used can go stale — the remote restarted or evicted
+    /// the session — and using it fails with no warning beyond the failed call itself (#385). The caller
+    /// that observed that failure calls this to recover. Without the reference check, two callers that
+    /// both saw the SAME stale client and both raced here would each run their own evict-then-reconnect:
+    /// the second would tear down the fresh connection the first just paid for and connect a third time.
+    /// The check collapses that to one reconnect — whichever caller acquires the per-server lock first
+    /// evicts and reconnects; every later caller finds the cache already holding a client that isn't the
+    /// one it saw fail, and simply returns that instead.
+    /// </remarks>
+    /// <param name="serverName">The server name from configuration.</param>
+    /// <param name="failedClient">The client instance the caller observed a failure on.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <exception cref="McpConnectionException">Thrown when the fresh connection attempt fails.</exception>
+    public async Task<McpClient> ReconnectAsync(string serverName, McpClient failedClient, CancellationToken cancellationToken)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        using var _ = await AcquireConnectionLockAsync(serverName, cancellationToken);
+
+        if (_clients.TryGetValue(serverName, out var current) && !ReferenceEquals(current, failedClient))
+            return current;
+
+        var stale = DetachClient(serverName);
+
+        // Disposing the stale client and connecting fresh are independent once detach has happened — run
+        // them concurrently rather than paying dispose-then-connect serially. For a hung/misbehaving
+        // remote (exactly the case that got here), tearing down the old session — a stdio child-process
+        // exit or an HTTP/SSE session close against a remote that just rejected it — can be the slower
+        // half; every other caller of GetClientAsync for this server is already queued behind this same
+        // lock, so serializing it in front of the new connect only lengthens their wait for no benefit.
+        var disposeStale = stale is not null ? DisposeStaleClientAsync(stale, serverName) : Task.CompletedTask;
+        var connect = CreateAndCacheClientAsync(serverName, cancellationToken);
+        await Task.WhenAll(disposeStale, connect);
+
+        return await connect;
+    }
+
+    /// <summary>
+    /// Connects to <paramref name="serverName"/> and caches the result. Caller must hold that server's
+    /// connection lock.
+    /// </summary>
+    private async Task<McpClient> CreateAndCacheClientAsync(string serverName, CancellationToken cancellationToken)
+    {
+        var client = await CreateClientAsync(serverName, cancellationToken);
+        _clients[serverName] = client;
+        return client;
+    }
+
+    /// <summary>
+    /// Removes and disposes the cached client and its associated per-server HTTP clients for
+    /// <paramref name="serverName"/>. Safe to call with or without the connection lock held — every
+    /// mutation here is an atomic <c>ConcurrentDictionary.TryRemove</c> call.
+    /// </summary>
+    private async Task EvictAsync(string serverName)
+    {
+        var client = DetachClient(serverName);
+        if (client is not null)
         {
             await client.DisposeAsync();
             _logger.LogInformation("Disconnected from MCP server '{ServerName}'", serverName);
         }
+    }
 
-        // Release the per-server Entra and bundle-egress clients (and their pooled sockets) on explicit
-        // disconnect, mirroring the cleanup of _clients above. Both caches were built with
-        // disposeHandler:false, so this leaves the shared AntiSSRF handler intact; a later reconnect
-        // recreates a fresh token-injecting or attribution+egress-policy handler pair as needed.
+    /// <summary>
+    /// Removes the cached <see cref="McpClient"/> for <paramref name="serverName"/> from <see cref="_clients"/>
+    /// and, in the same call, releases its associated per-server Entra and bundle-egress HTTP clients (and
+    /// their pooled sockets). Both HTTP caches were built with <c>disposeHandler:false</c>, so this leaves
+    /// the shared AntiSSRF handler intact; a later reconnect recreates a fresh token-injecting or
+    /// attribution+egress-policy handler pair as needed. Does NOT dispose the returned <see cref="McpClient"/>
+    /// — the caller decides whether to await that or run it concurrently with other work.
+    /// </summary>
+    private McpClient? DetachClient(string serverName)
+    {
+        _clients.TryRemove(serverName, out var client);
         TryDisposeCachedClient(_entraClients, serverName);
         TryDisposeCachedClient(_bundleEgressClients, serverName);
+        return client;
+    }
+
+    /// <summary>
+    /// Disposes a client already detached from <see cref="_clients"/>. Swallows and logs its own
+    /// disposal failures rather than propagating them: this disposes something already being discarded
+    /// (a stale or superseded connection), so a failure to tear it down cleanly must not fail the
+    /// reconnect that is replacing it.
+    /// </summary>
+    private async Task DisposeStaleClientAsync(McpClient client, string serverName)
+    {
+        try
+        {
+            await client.DisposeAsync();
+            _logger.LogInformation("Disconnected from MCP server '{ServerName}'", serverName);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to cleanly dispose the stale MCP client for '{ServerName}'", serverName);
+        }
+    }
+
+    private readonly struct ConnectionLockScope(SemaphoreSlim semaphore) : IDisposable
+    {
+        public void Dispose() => semaphore.Release();
+    }
+
+    private async Task<ConnectionLockScope> AcquireConnectionLockAsync(string serverName, CancellationToken cancellationToken)
+    {
+        var connectionLock = _connectionLocks.GetOrAdd(serverName, _ => new SemaphoreSlim(1, 1));
+        await connectionLock.WaitAsync(cancellationToken);
+        return new ConnectionLockScope(connectionLock);
     }
 
     private static void TryDisposeCachedClient(ConcurrentDictionary<string, HttpClient> cache, string serverName)
