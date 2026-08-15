@@ -8,6 +8,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using OpenTelemetry.Logs;
 using Xunit;
 
 namespace Application.Common.Tests.Extensions;
@@ -49,7 +50,7 @@ public class AzureIdentityDiagnosticsExtensionsTests
         using var provider = services.BuildServiceProvider();
         var rules = provider.GetRequiredService<IOptions<LoggerFilterOptions>>().Value.Rules;
 
-        rules.Should().Contain(r => r.CategoryName == "Azure" && r.LogLevel == LogLevel.Warning);
+        rules.Should().Contain(r => r.ProviderName == null && r.CategoryName == "Azure" && r.LogLevel == LogLevel.Warning);
     }
 
     [Fact]
@@ -62,22 +63,22 @@ public class AzureIdentityDiagnosticsExtensionsTests
         using var provider = services.BuildServiceProvider();
         var rules = provider.GetRequiredService<IOptions<LoggerFilterOptions>>().Value.Rules;
 
-        rules.Should().Contain(r => r.CategoryName == "Azure.Identity" && r.LogLevel == LogLevel.Information);
+        rules.Should().Contain(r => r.ProviderName == null && r.CategoryName == "Azure.Identity" && r.LogLevel == LogLevel.Information);
     }
 
     [Fact]
-    public void AddAzureIdentityDiagnostics_CalledAfterAnEarlierAzureCategoryRule_OverridesIt()
+    public void AddAzureIdentityDiagnostics_CalledAfterAnEarlierAzureCategoryRule_DoesNotOverrideIt()
     {
-        // The generic host (WebApplication.CreateBuilder) binds "Logging:LogLevel" from
-        // appsettings.json into LoggerFilterOptions.Rules before this app's own DI composition
-        // runs. AddAzureIdentityDiagnostics() is called later, in ConfigureLogging — this test
-        // proves what that ordering means: an operator's own "Logging:LogLevel:Azure" override is
-        // NOT honored, because the code-registered Warning rule always wins the equal-specificity
-        // tie-break (.NET's LoggerRuleSelector picks the last-registered rule when two rules match
-        // a category with equal specificity). Simulated here with a hand-built rule instead of real
-        // configuration binding, since the outcome depends only on registration order, not on where
-        // the earlier rule came from. This is the opposite of what this class's XML doc remarks used
-        // to claim, and is documented there now.
+        // A naive `builder.AddFilter("Azure", Warning)` inside AddLogging would win an operator's
+        // own "Logging:LogLevel:Azure" configuration outright — .NET's LoggerRuleSelector picks the
+        // last-registered rule when two rules match a category with equal specificity, and
+        // AddAzureIdentityDiagnostics() runs after a host's own config-bound logging setup. This
+        // proves the actual implementation avoids that trap: PostConfigure<LoggerFilterOptions> only
+        // adds the "Azure" default when no global (provider-unscoped) rule already targets that
+        // exact category, so a pre-existing rule — from configuration or earlier code — is left in
+        // place. Simulated here with a hand-built rule instead of real configuration binding, since
+        // the outcome depends only on whether a rule for the category already exists, not on where
+        // it came from.
         var services = new ServiceCollection();
         // A provider must be registered for IsEnabled() to evaluate rules at all — with none, every
         // category reports disabled regardless of filter level, which would make this test vacuous.
@@ -90,11 +91,51 @@ public class AzureIdentityDiagnosticsExtensionsTests
         using var provider = services.BuildServiceProvider();
         var logger = provider.GetRequiredService<ILoggerFactory>().CreateLogger("Azure");
 
-        logger.IsEnabled(LogLevel.Debug).Should().BeFalse(
-            "AddAzureIdentityDiagnostics's Warning filter is registered after the earlier rule " +
-            "and wins the equal-specificity tie-break");
+        logger.IsEnabled(LogLevel.Debug).Should().BeTrue(
+            "the operator's own pre-existing 'Azure' rule must be preserved, not silently replaced " +
+            "by AddAzureIdentityDiagnostics's Warning default");
+    }
+
+    [Fact]
+    public void AddAzureIdentityDiagnostics_NoPriorAzureCategoryRule_AppliesTheWarningDefault()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging(builder => builder.AddConsole());
+
+        services.AddAzureIdentityDiagnostics();
+
+        using var provider = services.BuildServiceProvider();
+        var logger = provider.GetRequiredService<ILoggerFactory>().CreateLogger("Azure");
+
+        logger.IsEnabled(LogLevel.Information).Should().BeFalse(
+            "with no pre-existing 'Azure' rule, the Warning default should apply");
         logger.IsEnabled(LogLevel.Warning).Should().BeTrue();
     }
+
+    [Fact]
+    public void AddAzureIdentityDiagnostics_RegistersProviderScopedRulesForOpenTelemetryExport()
+    {
+        // .NET's LoggerRuleSelector treats ANY provider-scoped rule as strictly better than a
+        // category-only rule when selecting for that provider — regardless of category specificity
+        // or registration order. OpenTelemetry's own AddFilter<OpenTelemetryLoggerProvider>(category:
+        // null, MinExportLevel) is exactly such a rule, so the global "Azure"/"Azure.Identity" rules
+        // above would never apply to the OTel export sink at all, letting Azure SDK diagnostics
+        // (which can carry resource identifiers) reach exported telemetry unfiltered. This proves the
+        // provider-scoped rules that close that gap actually exist.
+        var services = new ServiceCollection();
+
+        services.AddAzureIdentityDiagnostics();
+
+        using var provider = services.BuildServiceProvider();
+        var rules = provider.GetRequiredService<IOptions<LoggerFilterOptions>>().Value.Rules;
+        var otelProviderName = typeof(OpenTelemetryLoggerProvider).FullName;
+
+        rules.Should().Contain(r =>
+            r.ProviderName == otelProviderName && r.CategoryName == "Azure" && r.LogLevel == LogLevel.Warning);
+        rules.Should().Contain(r =>
+            r.ProviderName == otelProviderName && r.CategoryName == "Azure.Identity" && r.LogLevel == LogLevel.Information);
+    }
+
 
     [Fact]
     public async Task StartAsync_CallsLogForwarderStart()
