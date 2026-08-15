@@ -49,13 +49,26 @@ public sealed class AzureIdentityLogForwarderHostedService : IHostedService
     /// </summary>
     /// <param name="cancellationToken">Token to observe while starting.</param>
     /// <returns>A completed task — starting the listener is synchronous.</returns>
+    /// <remarks>
+    /// This is diagnostics-only and must never fail host startup — <see cref="AzureEventSourceLogForwarder.Start"/>
+    /// constructs an <c>EventListener</c>, which can throw in a constrained hosting environment.
+    /// </remarks>
     public Task StartAsync(CancellationToken cancellationToken)
     {
-        _logForwarder.Start();
+        try
+        {
+            _logForwarder.Start();
 
-        _logger.LogInformation(
-            "Azure SDK diagnostics forwarder started — DefaultAzureCredential's selected " +
-            "credential now logs under the Azure.Identity category.");
+            _logger.LogInformation(
+                "Azure SDK diagnostics forwarder started — DefaultAzureCredential's selected " +
+                "credential now logs under the Azure.Identity category.");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex,
+                "Azure SDK diagnostics forwarder failed to start — DefaultAzureCredential's " +
+                "selected credential will not be logged. Host startup continues unaffected.");
+        }
 
         return Task.CompletedTask;
     }

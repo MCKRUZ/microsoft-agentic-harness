@@ -26,8 +26,17 @@ public static class AzureIdentityDiagnosticsExtensions
     /// Azure SDK this template uses, so the <c>Azure</c> category defaults to
     /// <see cref="LogLevel.Warning"/> here, with <c>Azure.Identity</c> carved back out to
     /// <see cref="LogLevel.Information"/> — the one category carrying the
-    /// "DefaultAzureCredential credential selected: {0}" line this exists for. Consumers can
-    /// still override either category from configuration.
+    /// "DefaultAzureCredential credential selected: {0}" line this exists for.
+    /// </para>
+    /// <para>
+    /// <strong>Not overridable from <c>appsettings.json</c>:</strong> these two filters are
+    /// registered here, in code, after the host's own configuration-bound logging filters — and
+    /// .NET's rule selection picks the last-registered rule when two rules match a category with
+    /// equal specificity. An operator setting <c>Logging:LogLevel:Azure</c> in configuration will
+    /// not change the effective level; this method's <see cref="LogLevel.Warning"/> always wins.
+    /// That's the deliberate, safer direction — it can't be accidentally relaxed — but it means a
+    /// genuine need for deeper Azure SDK tracing has to go through the full EventSource listener
+    /// this class exists to make unnecessary for the common case, not through configuration.
     /// </para>
     /// </remarks>
     public static IServiceCollection AddAzureIdentityDiagnostics(this IServiceCollection services)
