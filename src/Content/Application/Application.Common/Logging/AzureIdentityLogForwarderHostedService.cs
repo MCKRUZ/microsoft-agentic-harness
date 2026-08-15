@@ -1,8 +1,9 @@
+using Application.Common.Extensions;
 using Microsoft.Extensions.Azure;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
-namespace Application.Common.Extensions;
+namespace Application.Common.Logging;
 
 /// <summary>
 /// Starts the Azure SDK EventSource-to-<see cref="ILogger"/> bridge at host start.

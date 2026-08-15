@@ -1,4 +1,5 @@
 using Application.Common.Extensions;
+using Application.Common.Logging;
 using FluentAssertions;
 using Microsoft.Extensions.Azure;
 using Microsoft.Extensions.DependencyInjection;
