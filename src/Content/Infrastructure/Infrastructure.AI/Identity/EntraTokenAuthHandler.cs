@@ -73,7 +73,8 @@ public sealed class EntraTokenAuthHandler : DelegatingHandler
             TenantId = auth.TenantId,
             ClientId = auth.ClientId,
             ClientSecret = auth.ClientSecret,
-            CertificatePath = auth.CertificatePath
+            CertificatePath = auth.CertificatePath,
+            ExcludeManagedIdentityCredential = auth.ExcludeManagedIdentityCredential
         });
 
         return new EntraTokenAuthHandler(credential, auth.Scopes) { InnerHandler = innerHandler };

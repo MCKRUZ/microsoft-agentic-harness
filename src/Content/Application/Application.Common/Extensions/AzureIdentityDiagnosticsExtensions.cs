@@ -12,6 +12,18 @@ namespace Application.Common.Extensions;
 public static class AzureIdentityDiagnosticsExtensions
 {
     /// <summary>
+    /// The (category, level) pairs applied by <see cref="AddAzureIdentityDiagnostics"/> — a
+    /// single source of truth shared by the global rule set and the
+    /// <see cref="OpenTelemetryLoggerProvider"/>-scoped rule set, so the two can never drift
+    /// out of sync with each other.
+    /// </summary>
+    private static readonly (string Category, LogLevel Level)[] DefaultCategoryLevels =
+    [
+        ("Azure", LogLevel.Warning),
+        ("Azure.Identity", LogLevel.Information),
+    ];
+
+    /// <summary>
     /// Bridges Azure SDK EventSource diagnostics into <see cref="ILogger"/>, so which credential
     /// <c>DefaultAzureCredential</c> selected is visible at normal log-Information level instead
     /// of requiring full EventSource tracing.
@@ -30,15 +42,17 @@ public static class AzureIdentityDiagnosticsExtensions
     /// "DefaultAzureCredential credential selected: {0}" line this exists for.
     /// </para>
     /// <para>
-    /// These are <em>defaults</em>, not overrides: registered via <c>PostConfigure&lt;LoggerFilterOptions&gt;</c>,
+    /// These are <em>defaults</em>, not overrides, for both the global rules and the
+    /// OpenTelemetry-scoped rules below: registered via <c>PostConfigure&lt;LoggerFilterOptions&gt;</c>,
     /// which the Options pattern guarantees runs after every <c>Configure&lt;LoggerFilterOptions&gt;</c>
     /// call — including a host's own <c>Logging</c> configuration-section binding, when the host
-    /// binds one. Each rule is added only if no <em>global</em> (provider-unscoped) rule already
-    /// targets that exact category name, so a consumer's own <c>Logging:LogLevel:Azure</c> /
-    /// <c>Logging:LogLevel:Azure.Identity</c> configuration — or an earlier code-registered filter —
-    /// is left in place rather than silently replaced. A bare <see cref="IServiceCollection"/> with
-    /// no configuration source bound has nothing to override in the first place; the defaults simply
-    /// apply.
+    /// binds one. Each rule is added only if no rule already targets that exact
+    /// (provider, category) pair, so a consumer's own <c>Logging:LogLevel:Azure</c> /
+    /// <c>Logging:LogLevel:Azure.Identity</c> configuration, or an earlier code-registered filter
+    /// — global or provider-scoped — is left in place rather than silently replaced in either
+    /// direction (more permissive or more restrictive). A bare <see cref="IServiceCollection"/>
+    /// with no configuration source bound has nothing to override in the first place; the
+    /// defaults simply apply.
     /// </para>
     /// <para>
     /// <strong>OpenTelemetry export is filtered separately, on purpose:</strong> the OTel logging
@@ -48,10 +62,8 @@ public static class AzureIdentityDiagnosticsExtensions
     /// for that provider — so the global "Azure"/"Azure.Identity" rules above never apply to the OTel
     /// export sink at all, regardless of specificity or registration order, and Azure SDK diagnostics
     /// (which can carry resource identifiers, e.g. Key Vault secret names in request URIs) would
-    /// otherwise reach exported telemetry unfiltered. This method adds matching rules scoped
-    /// explicitly to <see cref="OpenTelemetryLoggerProvider"/> to close that gap; they are always
-    /// applied (not gated by the "already configured" check above) since nothing else in this
-    /// codebase registers a provider-scoped rule for this exact provider/category pair.
+    /// otherwise reach exported telemetry unfiltered. This method adds matching default rules scoped
+    /// explicitly to <see cref="OpenTelemetryLoggerProvider"/> to close that gap.
     /// </para>
     /// </remarks>
     public static IServiceCollection AddAzureIdentityDiagnostics(this IServiceCollection services)
@@ -60,12 +72,13 @@ public static class AzureIdentityDiagnosticsExtensions
 
         services.PostConfigure<LoggerFilterOptions>(options =>
         {
-            AddGlobalDefaultUnlessConfigured(options, "Azure", LogLevel.Warning);
-            AddGlobalDefaultUnlessConfigured(options, "Azure.Identity", LogLevel.Information);
-
             var openTelemetryProvider = typeof(OpenTelemetryLoggerProvider).FullName;
-            options.Rules.Add(new LoggerFilterRule(openTelemetryProvider, "Azure", LogLevel.Warning, null));
-            options.Rules.Add(new LoggerFilterRule(openTelemetryProvider, "Azure.Identity", LogLevel.Information, null));
+
+            foreach (var (category, level) in DefaultCategoryLevels)
+            {
+                AddDefaultUnlessConfigured(options, providerName: null, category, level);
+                AddDefaultUnlessConfigured(options, openTelemetryProvider, category, level);
+            }
         });
 
         services.AddSingleton<AzureEventSourceLogForwarder>();
@@ -74,11 +87,12 @@ public static class AzureIdentityDiagnosticsExtensions
         return services;
     }
 
-    private static void AddGlobalDefaultUnlessConfigured(LoggerFilterOptions options, string category, LogLevel level)
+    private static void AddDefaultUnlessConfigured(
+        LoggerFilterOptions options, string? providerName, string category, LogLevel level)
     {
-        if (options.Rules.Any(r => r.ProviderName == null && r.CategoryName == category))
+        if (options.Rules.Any(r => r.ProviderName == providerName && r.CategoryName == category))
             return;
 
-        options.Rules.Add(new LoggerFilterRule(providerName: null, categoryName: category, logLevel: level, filter: null));
+        options.Rules.Add(new LoggerFilterRule(providerName, category, level, filter: null));
     }
 }

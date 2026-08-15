@@ -1,4 +1,5 @@
 using System.Reflection;
+using Application.Common;
 using Application.Common.Extensions;
 using Application.Common.Logging;
 using FluentAssertions;
@@ -136,6 +137,46 @@ public class AzureIdentityDiagnosticsExtensionsTests
             r.ProviderName == otelProviderName && r.CategoryName == "Azure.Identity" && r.LogLevel == LogLevel.Information);
     }
 
+    [Fact]
+    public void AddAzureIdentityDiagnostics_CalledAfterAnEarlierOpenTelemetryScopedRule_DoesNotOverrideIt()
+    {
+        // The OpenTelemetry-scoped defaults must respect an explicit prior rule for that exact
+        // (provider, category) pair too, not just the global rules — otherwise an operator who
+        // deliberately configures a STRICTER OTel export level for "Azure" (e.g. Error-only, to keep
+        // resource identifiers out of exported telemetry) would have this method silently loosen it
+        // back to Warning, which is the mirror-image of the bypass this method exists to close.
+        var services = new ServiceCollection();
+        var otelProviderName = typeof(OpenTelemetryLoggerProvider).FullName;
+        services.Configure<LoggerFilterOptions>(o =>
+            o.Rules.Add(new LoggerFilterRule(otelProviderName, "Azure", LogLevel.Error, filter: null)));
+
+        services.AddAzureIdentityDiagnostics();
+
+        using var provider = services.BuildServiceProvider();
+        var rules = provider.GetRequiredService<IOptions<LoggerFilterOptions>>().Value.Rules;
+
+        rules.Should().Contain(r => r.ProviderName == otelProviderName && r.CategoryName == "Azure" && r.LogLevel == LogLevel.Error);
+        rules.Should().NotContain(r => r.ProviderName == otelProviderName && r.CategoryName == "Azure" && r.LogLevel == LogLevel.Warning);
+    }
+
+    [Fact]
+    public void AddApplicationCommonDependencies_ResolvesLogForwarderAndHostedServiceFromTheRealCompositionRoot()
+    {
+        // This repo's own CLAUDE.md documents a recurring defect class: a service registered but
+        // never invoked from the real composition root, caught only by resolving it there rather than
+        // from a bare ServiceCollection built solely for a unit test (issues #247, #331). Every other
+        // test in this class calls AddAzureIdentityDiagnostics() directly; this one instead goes
+        // through the actual entry point (AddApplicationCommonDependencies -> ConfigureLogging) so a
+        // future refactor that drops the wiring call fails a test, not just silently ships dark.
+        var services = new ServiceCollection();
+
+        services.AddApplicationCommonDependencies();
+
+        using var provider = services.BuildServiceProvider();
+
+        provider.GetRequiredService<AzureEventSourceLogForwarder>().Should().NotBeNull();
+        provider.GetServices<IHostedService>().Should().ContainSingle(s => s is AzureIdentityLogForwarderHostedService);
+    }
 
     [Fact]
     public async Task StartAsync_CallsLogForwarderStart()
@@ -144,6 +185,9 @@ public class AzureIdentityDiagnosticsExtensionsTests
         // reads its private listener field via reflection — the only way to catch a mutation that
         // silently drops the Start() call (this repo's "registered but never invoked" defect class,
         // see reference_security_control_has_a_caller.md), which every other assertion here would miss.
+        // Fragile by nature: pinned to Microsoft.Extensions.Azure 1.14.0's current internal layout
+        // (Directory.Packages.props) — a future package bump that renames or restructures the
+        // internal listener field will need this test updated alongside it.
         using var loggerFactory = NullLoggerFactory.Instance;
         var forwarder = new AzureEventSourceLogForwarder(loggerFactory);
         var service = new AzureIdentityLogForwarderHostedService(
