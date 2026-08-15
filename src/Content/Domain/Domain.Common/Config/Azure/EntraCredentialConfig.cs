@@ -31,4 +31,21 @@ public class EntraCredentialConfig
     /// Gets or sets the path to the certificate for certificate-based authentication.
     /// </summary>
     public string? CertificatePath { get; set; }
+
+    /// <summary>
+    /// Gets or sets whether <c>ManagedIdentityCredential</c> is excluded from the
+    /// <c>DefaultAzureCredential</c> fallback chain.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// On a corporate VDI, the VDI host itself often has a managed identity. When that's true,
+    /// <c>DefaultAzureCredential</c> can silently authenticate as the VDI host's identity instead
+    /// of falling through to the developer's own credential (Azure CLI, Visual Studio, etc.) —
+    /// the app runs, but every call is scoped to the wrong identity, producing 403s that look
+    /// like a permissions bug. Set this to <see langword="true"/> for local-dev configuration
+    /// (e.g. <c>appsettings.Development.json</c>) on affected VDIs to skip
+    /// <c>ManagedIdentityCredential</c> and let the chain reach the developer's credential.
+    /// </para>
+    /// </remarks>
+    public bool ExcludeManagedIdentityCredential { get; set; }
 }

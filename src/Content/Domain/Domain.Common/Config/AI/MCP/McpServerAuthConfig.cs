@@ -77,6 +77,23 @@ public class McpServerAuthConfig
     public List<string> Scopes { get; set; } = [];
 
     /// <summary>
+    /// Gets or sets whether <c>ManagedIdentityCredential</c> is excluded from the fallback
+    /// credential chain when this config resolves to the managed-identity shape of
+    /// <see cref="McpServerAuthType.Entra"/> (see <see cref="IsValid"/>).
+    /// </summary>
+    /// <remarks>
+    /// On a corporate VDI, the VDI host itself often has a managed identity, which can win
+    /// that fallback chain before the developer's own credential gets a turn — the same
+    /// gotcha <see cref="Domain.Common.Config.Azure.EntraCredentialConfig.ExcludeManagedIdentityCredential"/>
+    /// exists for. This is the client-connection equivalent: managed identity is the
+    /// <em>preferred, secure-by-default</em> shape for outbound MCP Entra auth, so without
+    /// this switch a developer on an affected VDI has no way to reach their own credential
+    /// on that path. Set to <see langword="true"/> for local-dev configuration on affected
+    /// VDIs.
+    /// </remarks>
+    public bool ExcludeManagedIdentityCredential { get; set; }
+
+    /// <summary>
     /// Gets or sets the explicit opt-in that lets this application's own MCP server
     /// (<see cref="McpConfig.Auth"/>) serve anonymously when <see cref="Type"/> is
     /// <see cref="McpServerAuthType.None"/>.

@@ -312,6 +312,70 @@
                         </div>
                     </div>
 
+                    <h2 id="vdi-managed-identity">Local development gotcha: DefaultAzureCredential on a VDI</h2>
+                    <p>
+                        <code>AzureCredentialFactory</code>
+                        (<code>src/Content/Application/Application.Common/Factories/AzureCredentialFactory.cs</code>)
+                        falls back to <code>DefaultAzureCredential</code> whenever an
+                        <code>EntraCredentialConfig</code> doesn't carry a full client-secret or
+                        certificate credential — the normal case for local development, where
+                        <code>DefaultAzureCredential</code> is expected to fall through to your own
+                        Azure CLI or Visual Studio login.
+                    </p>
+                    <p>
+                        On a corporate VDI (virtual desktop), that assumption can quietly break. The VDI
+                        host itself often has its own managed identity. <code>DefaultAzureCredential</code>
+                        walks a fixed list of credential sources and stops at the first one that succeeds
+                        — and a VDI-provisioned managed identity succeeds before your own CLI or
+                        interactive login ever gets a turn. The app boots and runs normally, but every
+                        call authenticates as the VDI host, not as you.
+                    </p>
+
+                    <div class="callout callout-warn">
+                        <span class="callout-icon">!</span>
+                        <div class="callout-body">
+                            <div class="callout-title">Symptom: 403s that look like a permissions bug</div>
+                            <p style="margin: 0">
+                                If you have real access to a resource via your own Entra role assignments
+                                but still get <code>403 Forbidden</code> when running locally on a VDI,
+                                suspect this before suspecting your role assignments. Check the
+                                <code>Azure.Identity</code> log category — the harness surfaces
+                                <code>DefaultAzureCredential credential selected: {CredentialType}</code>
+                                at <code>Information</code> level by default (via
+                                <code>AzureIdentityDiagnosticsExtensions.AddAzureIdentityDiagnostics</code>),
+                                so you no longer need full Azure SDK EventSource tracing to see which
+                                credential won. If it reports
+                                <code>ManagedIdentityCredential</code> when you expected your own login,
+                                that's the VDI host's identity, not yours.
+                            </p>
+                        </div>
+                    </div>
+
+                    <p>
+                        <strong>Workaround:</strong> set
+                        <code>ExcludeManagedIdentityCredential</code> on the relevant
+                        <code>EntraCredentialConfig</code> section — for example, in
+                        <code>appsettings.Development.json</code> — to skip the VDI's managed identity
+                        and let the chain reach your own credential. Every consumer of
+                        <code>AzureCredentialFactory</code> embeds an <code>EntraCredentialConfig</code>
+                        the same way; <code>AIFoundryConfig.Entra</code> is one example:
+                    </p>
+
+                    <div class="code-block">
+                        <div class="code-block-header"><span class="code-block-lang">json</span></div>
+                        <pre><code>{
+  "AppConfig": {
+    "AI": {
+      "AIFoundry": {
+        "Entra": {
+          "ExcludeManagedIdentityCredential": true
+        }
+      }
+    }
+  }
+}</code></pre>
+                    </div>
+
                     <h2 id="a2a">Agent-to-agent (A2A) authentication</h2>
                     <p>
                         <strong>The attack this stops:</strong> one agent impersonating another to inherit its

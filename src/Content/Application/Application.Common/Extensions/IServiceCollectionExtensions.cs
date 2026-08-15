@@ -75,6 +75,10 @@ public static class IServiceCollectionExtensions
             builder.AddInMemoryRingBuffer();
         });
 
+        // Azure SDK EventSource-to-ILogger bridge (issue #383) — surfaces which credential
+        // DefaultAzureCredential selected at Information level, without full EventSource tracing.
+        services.AddAzureIdentityDiagnostics();
+
         return services;
     }
 }
