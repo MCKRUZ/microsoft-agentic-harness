@@ -153,21 +153,31 @@ public sealed class McpConnectionManager : IAsyncDisposable
     /// Disconnects from a specific server and removes the cached connection.
     /// </summary>
     /// <remarks>
-    /// Takes the same per-server lock <see cref="GetClientAsync"/> uses around its own cache mutation, so
-    /// this can't interleave with a concurrent <see cref="GetClientAsync"/> or <see cref="ReconnectAsync"/>
-    /// call for the same server and corrupt <see cref="_clients"/>. It still does not protect a caller
-    /// that already holds a reference to the client this disposes, obtained via
-    /// <see cref="GetClientAsync"/>'s unlocked fast-path read before this method ran — that caller can
-    /// still observe <see cref="ObjectDisposedException"/> mid-use. Closing that needs reference-counted
-    /// or generation-tagged client leases, a larger change to this type's client-lifetime model; tracked
-    /// as a known limitation, not solved here.
+    /// <para>
+    /// Deliberately does NOT take the per-server connection lock <see cref="GetClientAsync"/> and
+    /// <see cref="ReconnectAsync"/> use: this method's only production caller is bundle teardown
+    /// (<c>BundleMcpServerRegistrar</c>), which needs a fast, non-blocking disconnect and has no
+    /// cancellation token to bound a wait with. Taking the lock here would let a hung connect attempt
+    /// for the same server (mid-handshake, inside <see cref="CreateClientAsync"/>) block teardown
+    /// indefinitely — worse than the narrow race it would close. <c>ConcurrentDictionary.TryRemove</c>
+    /// is already atomic, so concurrent callers of this method cannot corrupt <see cref="_clients"/>
+    /// between themselves; the remaining race is with a concurrent create finishing and caching a NEW
+    /// client between this method's remove and its return — a pre-existing gap, not something this
+    /// method ever closed.
+    /// </para>
+    /// <para>
+    /// Also does not protect a caller that already holds a reference to the client this disposes,
+    /// obtained via <see cref="GetClientAsync"/>'s unlocked fast-path read before this method ran — that
+    /// caller can still observe <see cref="ObjectDisposedException"/> mid-use. Closing either race needs
+    /// reference-counted or generation-tagged client leases, a larger change to this type's
+    /// client-lifetime model; tracked as a known limitation, not solved here.
+    /// </para>
     /// </remarks>
     public async Task DisconnectAsync(string serverName)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
-        using var _ = await AcquireConnectionLockAsync(serverName, CancellationToken.None);
-        await EvictLockedAsync(serverName);
+        await EvictAsync(serverName);
     }
 
     /// <summary>
@@ -197,7 +207,7 @@ public sealed class McpConnectionManager : IAsyncDisposable
         if (_clients.TryGetValue(serverName, out var current) && !ReferenceEquals(current, failedClient))
             return current;
 
-        await EvictLockedAsync(serverName);
+        await EvictAsync(serverName);
 
         return await CreateAndCacheClientAsync(serverName, cancellationToken);
     }
@@ -215,9 +225,10 @@ public sealed class McpConnectionManager : IAsyncDisposable
 
     /// <summary>
     /// Removes and disposes the cached client and its associated per-server HTTP clients for
-    /// <paramref name="serverName"/>. Caller must hold that server's connection lock.
+    /// <paramref name="serverName"/>. Safe to call with or without the connection lock held — every
+    /// mutation here is an atomic <c>ConcurrentDictionary.TryRemove</c> call.
     /// </summary>
-    private async Task EvictLockedAsync(string serverName)
+    private async Task EvictAsync(string serverName)
     {
         if (_clients.TryRemove(serverName, out var client))
         {

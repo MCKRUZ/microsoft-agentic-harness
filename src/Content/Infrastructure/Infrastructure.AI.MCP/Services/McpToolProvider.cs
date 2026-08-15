@@ -34,14 +34,20 @@ namespace Infrastructure.AI.MCP.Services;
 /// before, with no added attempt or timeout.
 /// </para>
 /// <para>
-/// <strong>Known limitation: this recovers tool discovery, not tool invocation.</strong> An
-/// <see cref="AITool"/> this method returns is bound to the specific <c>McpClient</c> it was listed
-/// from; once handed to the agent's tool chain, an actual tool <em>call</em> invokes that binding
-/// directly and never routes back through this class. A session that goes stale between discovery
-/// and invocation still fails unrecovered on the call itself — only the next discovery pass observes
-/// and repairs it. Extending recovery to invocation needs a retry-aware wrapper around every
-/// <see cref="AITool"/> this method returns, not a change here; tracked as a follow-up, not solved in
-/// this class.
+/// <strong>Known limitation: this recovers tool discovery, not tool invocation, and reconnect can now
+/// race an in-flight call.</strong> An <see cref="AITool"/> this method returns is bound to the
+/// specific <c>McpClient</c> it was listed from; once handed to the agent's tool chain, an actual tool
+/// <em>call</em> invokes that binding directly (e.g. via
+/// <c>Presentation.AgentHub/Controllers/McpController.InvokeTool</c> or the agent-turn pipeline in
+/// <c>Application.Core/CQRS/Agents/ExecuteAgentTurn</c>) and never routes back through this class. A
+/// session that goes stale between discovery and invocation still fails unrecovered on the call itself
+/// — only the next discovery pass observes and repairs it. Because reconnect now happens
+/// automatically on any discovery failure rather than only on an explicit admin disconnect, a call
+/// already in flight against a client another caller's reconnect is about to evict can observe
+/// <see cref="ObjectDisposedException"/> mid-invocation more often than before this fix. Closing this
+/// needs a retry-aware wrapper around every <see cref="AITool"/> this method returns plus
+/// reference-counted or generation-tagged client leases in <see cref="McpConnectionManager"/> — a
+/// materially larger change than this fix; tracked as a follow-up, not solved in this class.
 /// </para>
 /// </remarks>
 public sealed class McpToolProvider : IMcpToolProvider
@@ -66,19 +72,22 @@ public sealed class McpToolProvider : IMcpToolProvider
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
-        var connectSw = Stopwatch.StartNew();
+        var connectStart = Stopwatch.GetTimestamp();
         McpClient client;
         try
         {
             client = await _connectionManager.GetClientAsync(serverName, cancellationToken);
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // The caller gave up, not the server — nothing failed here worth logging or metering.
+            return [];
+        }
         catch (Exception ex)
         {
             // Never reachable at all this call — no cached connection existed to go stale, so
             // there is nothing a reconnect-and-retry would fix. Same behaviour as before this fix.
-            // Covers caller cancellation too: this class's contract is to degrade to [] rather than
-            // throw, for cancellation exactly as for every other failure — see RetryAfterReconnectAsync.
-            RecordOutcome(connectSw, serverName, McpConventions.StatusValues.Unavailable);
+            RecordOutcome(connectStart, serverName, McpConventions.StatusValues.Unavailable);
             _logger.LogWarning(ex, "Failed to connect to MCP server '{ServerName}' — skipping", serverName);
             return [];
         }
@@ -86,6 +95,19 @@ public sealed class McpToolProvider : IMcpToolProvider
         try
         {
             return await ListToolsAsync(client, serverName, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return [];
+        }
+        catch (ObjectDisposedException)
+        {
+            // The client itself is already gone — most likely a concurrent reconnect for this server
+            // (McpConnectionManager.ReconnectAsync's collapse behaviour) or an explicit DisconnectAsync
+            // beat this call to eviction. Reconnecting from an already-disposed reference fixes nothing
+            // this call could observe; ListToolsAsync already recorded the failure. Skip the wasted
+            // round trip rather than retrying — the caller that evicted it is the one making progress.
+            return [];
         }
         catch (Exception ex)
         {
@@ -106,10 +128,11 @@ public sealed class McpToolProvider : IMcpToolProvider
     /// enclosing <c>try</c>: <see cref="ListToolsAsync"/> already records its own outcome (including
     /// <c>Error</c>, with real elapsed time) before rethrowing, so a single catch around both stages
     /// would record a second, misleading near-zero-duration <c>Error</c> for the SAME failed call. A
-    /// caller's own cancellation is caught in both stages and degrades to <c>[]</c> like every other
-    /// failure, never rethrown — this class's contract is "skipped rather than throwing" for every
-    /// caller (<see cref="GetAllToolsAsync"/> fans this out via <c>Task.WhenAll</c> with no per-task
-    /// guard; letting cancellation escape here would propagate out of that fan-out unhandled).
+    /// caller's own cancellation is caught in both stages and degrades to <c>[]</c> with no log or
+    /// metric — it isn't a server outcome — never rethrown, since this class's contract is "skipped
+    /// rather than throwing" for every caller (<see cref="GetAllToolsAsync"/> fans this out via
+    /// <c>Task.WhenAll</c> with no per-task guard; letting cancellation escape here would propagate out
+    /// of that fan-out unhandled).
     /// </remarks>
     private async Task<IList<AITool>> RetryAfterReconnectAsync(
         string serverName, McpClient failedClient, Exception cause, CancellationToken cancellationToken)
@@ -118,15 +141,19 @@ public sealed class McpToolProvider : IMcpToolProvider
             "MCP server '{ServerName}' rejected a call on its existing connection — reconnecting and retrying once",
             serverName);
 
-        var reconnectSw = Stopwatch.StartNew();
+        var reconnectStart = Stopwatch.GetTimestamp();
         McpClient freshClient;
         try
         {
             freshClient = await _connectionManager.ReconnectAsync(serverName, failedClient, cancellationToken);
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return [];
+        }
         catch (Exception ex)
         {
-            RecordOutcome(reconnectSw, serverName, McpConventions.StatusValues.Unavailable);
+            RecordOutcome(reconnectStart, serverName, McpConventions.StatusValues.Unavailable);
             _logger.LogWarning(ex, "Failed to reconnect to MCP server '{ServerName}' — skipping", serverName);
             return [];
         }
@@ -134,6 +161,10 @@ public sealed class McpToolProvider : IMcpToolProvider
         try
         {
             return await ListToolsAsync(freshClient, serverName, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return [];
         }
         catch (Exception ex)
         {
@@ -153,11 +184,11 @@ public sealed class McpToolProvider : IMcpToolProvider
     /// </summary>
     private async Task<IList<AITool>> ListToolsAsync(McpClient client, string serverName, CancellationToken cancellationToken)
     {
-        var sw = Stopwatch.StartNew();
+        var start = Stopwatch.GetTimestamp();
         try
         {
             var tools = await client.ListToolsAsync(cancellationToken: cancellationToken);
-            RecordOutcome(sw, serverName, McpConventions.StatusValues.Available);
+            RecordOutcome(start, serverName, McpConventions.StatusValues.Available);
 
             _logger.LogDebug(
                 "Retrieved {ToolCount} tools from MCP server '{ServerName}'",
@@ -166,23 +197,28 @@ public sealed class McpToolProvider : IMcpToolProvider
             // McpClientTool implements AITool
             return tools.Cast<AITool>().ToList();
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // The caller gave up — not a server-side outcome, so no metric for it. Let the caller decide.
+            throw;
+        }
         catch (Exception)
         {
-            RecordOutcome(sw, serverName, McpConventions.StatusValues.Error);
+            RecordOutcome(start, serverName, McpConventions.StatusValues.Error);
             throw;
         }
     }
 
-    private static void RecordOutcome(Stopwatch sw, string serverName, string status)
+    private static void RecordOutcome(long startTimestamp, string serverName, string status)
     {
-        sw.Stop();
+        var elapsed = Stopwatch.GetElapsedTime(startTimestamp);
         var tags = new TagList
         {
             { McpConventions.ServerName, serverName },
             { McpConventions.Operation, "list_tools" },
             { McpConventions.Status, status }
         };
-        McpServerMetrics.RequestDuration.Record(sw.Elapsed.TotalMilliseconds, tags);
+        McpServerMetrics.RequestDuration.Record(elapsed.TotalMilliseconds, tags);
         McpServerMetrics.Requests.Add(1, tags);
     }
 
