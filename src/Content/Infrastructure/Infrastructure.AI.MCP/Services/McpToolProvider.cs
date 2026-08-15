@@ -37,13 +37,16 @@ namespace Infrastructure.AI.MCP.Services;
 /// <strong>Known limitation: this recovers tool discovery, not tool invocation, and reconnect can now
 /// race an in-flight call.</strong> An <see cref="AITool"/> this method returns is bound to the
 /// specific <c>McpClient</c> it was listed from; once handed to the agent's tool chain, an actual tool
-/// <em>call</em> invokes that binding directly (e.g. via
-/// <c>Presentation.AgentHub/Controllers/McpController.InvokeTool</c> or the agent-turn pipeline in
-/// <c>Application.Core/CQRS/Agents/ExecuteAgentTurn</c>) and never routes back through this class. A
-/// session that goes stale between discovery and invocation still fails unrecovered on the call itself
-/// — only the next discovery pass observes and repairs it. Because reconnect now happens
-/// automatically on any discovery failure rather than only on an explicit admin disconnect, a call
-/// already in flight against a client another caller's reconnect is about to evict can observe
+/// <em>call</em> invokes that binding directly and never routes back through this class. The exposure
+/// varies by caller: <c>Presentation.AgentHub/Controllers/McpController.InvokeTool</c> calls
+/// <see cref="GetToolByNameAsync"/> — and so gets this fix's recovery — immediately before invoking,
+/// leaving only the brief window between that lookup and the call itself; the agent-turn pipeline
+/// (<c>Application.Core/CQRS/Agents/ExecuteAgentTurn</c>) resolves tools once per turn and can hold that
+/// binding across a materially longer window before invoking it, with no re-lookup in between. Either
+/// way, a session that goes stale in that window still fails unrecovered on the call itself — only the
+/// next discovery pass observes and repairs it. Because reconnect now happens automatically on any
+/// discovery failure rather than only on an explicit admin disconnect, a call already in flight against
+/// a client another caller's reconnect is about to evict can observe
 /// <see cref="ObjectDisposedException"/> mid-invocation more often than before this fix. Closing this
 /// needs a retry-aware wrapper around every <see cref="AITool"/> this method returns plus
 /// reference-counted or generation-tagged client leases in <see cref="McpConnectionManager"/> — a
@@ -85,8 +88,10 @@ public sealed class McpToolProvider : IMcpToolProvider
         }
         catch (Exception ex)
         {
-            // Never reachable at all this call — no cached connection existed to go stale, so
-            // there is nothing a reconnect-and-retry would fix. Same behaviour as before this fix.
+            // Never reachable at all this call — no cached connection existed to go stale, so there is
+            // nothing a reconnect-and-retry would fix; still degrades to [] as before this fix, but now
+            // tagged Unavailable rather than Error, distinguishing "never reachable" from "a call on an
+            // established connection failed" — the two StatusValues this fix's retry decision hinges on.
             RecordOutcome(connectStart, serverName, McpConventions.StatusValues.Unavailable);
             _logger.LogWarning(ex, "Failed to connect to MCP server '{ServerName}' — skipping", serverName);
             return [];
