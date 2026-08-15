@@ -207,9 +207,19 @@ public sealed class McpConnectionManager : IAsyncDisposable
         if (_clients.TryGetValue(serverName, out var current) && !ReferenceEquals(current, failedClient))
             return current;
 
-        await EvictAsync(serverName);
+        var stale = DetachClient(serverName);
 
-        return await CreateAndCacheClientAsync(serverName, cancellationToken);
+        // Disposing the stale client and connecting fresh are independent once detach has happened — run
+        // them concurrently rather than paying dispose-then-connect serially. For a hung/misbehaving
+        // remote (exactly the case that got here), tearing down the old session — a stdio child-process
+        // exit or an HTTP/SSE session close against a remote that just rejected it — can be the slower
+        // half; every other caller of GetClientAsync for this server is already queued behind this same
+        // lock, so serializing it in front of the new connect only lengthens their wait for no benefit.
+        var disposeStale = stale is not null ? DisposeStaleClientAsync(stale, serverName) : Task.CompletedTask;
+        var connect = CreateAndCacheClientAsync(serverName, cancellationToken);
+        await Task.WhenAll(disposeStale, connect);
+
+        return await connect;
     }
 
     /// <summary>
@@ -230,18 +240,47 @@ public sealed class McpConnectionManager : IAsyncDisposable
     /// </summary>
     private async Task EvictAsync(string serverName)
     {
-        if (_clients.TryRemove(serverName, out var client))
+        var client = DetachClient(serverName);
+        if (client is not null)
         {
             await client.DisposeAsync();
             _logger.LogInformation("Disconnected from MCP server '{ServerName}'", serverName);
         }
+    }
 
-        // Release the per-server Entra and bundle-egress clients (and their pooled sockets) alongside the
-        // MCP client above. Both caches were built with disposeHandler:false, so this leaves the shared
-        // AntiSSRF handler intact; a later reconnect recreates a fresh token-injecting or
-        // attribution+egress-policy handler pair as needed.
+    /// <summary>
+    /// Removes the cached <see cref="McpClient"/> for <paramref name="serverName"/> from <see cref="_clients"/>
+    /// and, in the same call, releases its associated per-server Entra and bundle-egress HTTP clients (and
+    /// their pooled sockets). Both HTTP caches were built with <c>disposeHandler:false</c>, so this leaves
+    /// the shared AntiSSRF handler intact; a later reconnect recreates a fresh token-injecting or
+    /// attribution+egress-policy handler pair as needed. Does NOT dispose the returned <see cref="McpClient"/>
+    /// — the caller decides whether to await that or run it concurrently with other work.
+    /// </summary>
+    private McpClient? DetachClient(string serverName)
+    {
+        _clients.TryRemove(serverName, out var client);
         TryDisposeCachedClient(_entraClients, serverName);
         TryDisposeCachedClient(_bundleEgressClients, serverName);
+        return client;
+    }
+
+    /// <summary>
+    /// Disposes a client already detached from <see cref="_clients"/>. Swallows and logs its own
+    /// disposal failures rather than propagating them: this disposes something already being discarded
+    /// (a stale or superseded connection), so a failure to tear it down cleanly must not fail the
+    /// reconnect that is replacing it.
+    /// </summary>
+    private async Task DisposeStaleClientAsync(McpClient client, string serverName)
+    {
+        try
+        {
+            await client.DisposeAsync();
+            _logger.LogInformation("Disconnected from MCP server '{ServerName}'", serverName);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to cleanly dispose the stale MCP client for '{ServerName}'", serverName);
+        }
     }
 
     private readonly struct ConnectionLockScope(SemaphoreSlim semaphore) : IDisposable
