@@ -75,13 +75,25 @@ public sealed record BundleToolCallStartEvent(
 /// Carries a tool call's arguments. Unlike <see cref="BundleTextMessageContentEvent"/>, this is NOT an
 /// incremental delta — the underlying chat-client abstraction only ever exposes a tool call's
 /// arguments once fully assembled, so <see cref="Delta"/> always carries the complete JSON payload in
-/// one frame, immediately followed by <see cref="BundleToolCallEndEvent"/>.
+/// one frame, immediately followed by <see cref="BundleToolCallEndEvent"/>. Unless <see cref="Withheld"/>
+/// is true, in which case <see cref="Delta"/> is the fixed placeholder <c>"{}"</c> — the real arguments
+/// exceeded the streaming size ceiling and were withheld whole rather than truncated (truncating mid-JSON
+/// would hand the client invalid data).
 /// </summary>
 public sealed record BundleToolCallArgsEvent(
     /// <summary>The call this payload belongs to.</summary>
     [property: JsonPropertyName("toolCallId")] string ToolCallId,
-    /// <summary>The tool call's complete arguments, serialized as JSON.</summary>
-    [property: JsonPropertyName("delta")] string Delta) : BundleStreamEvent;
+    /// <summary>The tool call's complete arguments, serialized as JSON, or <c>"{}"</c> if withheld.</summary>
+    [property: JsonPropertyName("delta")] string Delta,
+    /// <summary>
+    /// <see langword="true"/> when the real arguments were withheld for exceeding the size ceiling.
+    /// Nullable, and only ever constructed as <see langword="true"/> or <see langword="null"/> — never
+    /// <see langword="false"/> — so the field is omitted from the wire (via
+    /// <see cref="System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull"/>, the writer's
+    /// existing serializer setting) on every normal frame instead of serializing <c>"withheld":false</c>
+    /// on all of them.
+    /// </summary>
+    [property: JsonPropertyName("withheld")] bool? Withheld = null) : BundleStreamEvent;
 
 /// <summary>Signals that a tool call's arguments are complete.</summary>
 public sealed record BundleToolCallEndEvent(

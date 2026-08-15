@@ -1,3 +1,5 @@
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using Application.AI.Common.Interfaces;
 using Domain.Common.Config.MetaHarness;
@@ -50,17 +52,200 @@ public sealed class PatternSecretRedactor : ISecretRedactor
         _redactionPatterns = Array.AsReadOnly(BuildRedactionPatterns());
     }
 
+    /// <summary>
+    /// Above this length the structural JSON pass in <see cref="Redact"/> is skipped in favor of the
+    /// regex-only fallback. <see cref="Redact"/> is called on tool outputs specifically <em>above</em>
+    /// a token-compression threshold (see <c>ToolOutputCompressionBehavior</c>), so nothing bounds
+    /// how large an input reaches this method — parsing an unbounded payload into a full
+    /// <see cref="JsonNode"/> tree on that path would trade a bounded regex scan for unbounded
+    /// allocation. Payloads above this size keep only regex-based protection: a secret escaped inside
+    /// nested JSON in a payload this large goes unredacted by the structural pass, but every
+    /// unescaped/URL-embedded shape the regex patterns already cover is still caught.
+    /// </summary>
+    private const int MaxStructuralRedactionLength = 64 * 1024;
+
+    /// <summary>
+    /// How many levels of "a string value that is itself JSON" <see cref="RedactNode"/> will parse
+    /// and recurse into. Bounds work against adversarial input (a string containing a JSON-escaped
+    /// string containing a JSON-escaped string, arbitrarily deep) — real tool payloads nest at most
+    /// one level (a request body serialized as a string field), so 2 is generous headroom, not a
+    /// tight fit.
+    /// </summary>
+    private const int MaxEmbeddedJsonDepth = 2;
+
+    private static readonly JsonDocumentOptions StructuralParseOptions = new() { MaxDepth = 32 };
+
     /// <inheritdoc />
+    /// <remarks>
+    /// When <paramref name="input"/> looks like JSON (starts with <c>{</c> or <c>[</c>, after
+    /// trimming) and is under <see cref="MaxStructuralRedactionLength"/>, redaction walks the parsed
+    /// structure instead of scanning the raw text: a value whose parent key names a secret is
+    /// replaced outright, and a string value that is itself JSON (the escaped-nested-payload shape,
+    /// e.g. a request body serialized as a string field, up to <see cref="MaxEmbeddedJsonDepth"/>
+    /// levels deep) is recursively parsed and redacted the same way. This closes the gap the
+    /// regex-only pass cannot: a key/value pair whose surrounding quotes are escaped
+    /// (<c>\"api_key\":\"secret\"</c>) never matches a pattern written for the unescaped shape. Every
+    /// leaf string — JSON or not — still runs through the regex passes below, so free-text secrets
+    /// embedded in an otherwise ordinary value (a token in a URL query string) are still caught.
+    /// Falls back to the regex-only pass for non-JSON input, oversized input, or input that merely
+    /// looks like JSON but fails to parse (unchanged from before this pass existed).
+    /// </remarks>
     public string? Redact(string? input)
     {
         if (string.IsNullOrEmpty(input))
             return input;
 
+        if (!LooksLikeJson(input) || input.Length > MaxStructuralRedactionLength)
+            return RedactFreeText(input);
+
+        JsonNode? node;
+        try
+        {
+            node = JsonNode.Parse(input, documentOptions: StructuralParseOptions);
+        }
+        catch (JsonException)
+        {
+            return RedactFreeText(input);
+        }
+
+        var (changed, redacted) = RedactNode(node, depth: 0);
+        // Only re-serialize when something was actually redacted — otherwise a JSON payload with no
+        // secrets would be silently reformatted (whitespace normalized, non-ASCII escaped by the
+        // default encoder) on every call, which is unnecessary churn and breaks the "return the
+        // original reference when nothing matched" no-allocation guarantee this method documents.
+        return changed ? redacted!.ToJsonString() : input;
+    }
+
+    /// <summary>
+    /// Cheap pre-check before attempting a JSON parse: does the trimmed input start with an object or
+    /// array opener? Exception-driven control flow (attempting <see cref="JsonNode"/>.Parse on every
+    /// plain-text log line or config value just to catch the failure) costs far more than the regex
+    /// passes this structural pass exists to supplement, so ordinary non-JSON input is rejected with
+    /// a character comparison instead of a parse attempt.
+    /// </summary>
+    private static bool LooksLikeJson(string input)
+    {
+        var trimmed = input.AsSpan().Trim();
+        return trimmed.Length > 0 && (trimmed[0] == '{' || trimmed[0] == '[');
+    }
+
+    /// <summary>
+    /// Applies the free-text regex pattern set to <paramref name="input"/>. This is the entire
+    /// pre-JSON-aware behavior of <see cref="Redact"/>, extracted so it can serve both as the
+    /// fallback for non-JSON/oversized input and as the leaf-level scan <see cref="RedactNode"/> runs
+    /// over each JSON string value.
+    /// </summary>
+    private string RedactFreeText(string input)
+    {
         var result = input;
         foreach (var (pattern, replacement) in _redactionPatterns)
             result = pattern.Replace(result, replacement);
-
         return result;
+    }
+
+    /// <summary>
+    /// Recursively redacts a parsed JSON node — dispatches to the shape-specific helper for an
+    /// object, array, or string leaf; a number/bool/null leaf is left untouched.
+    /// </summary>
+    /// <returns>
+    /// Whether anything in the subtree changed, and the (possibly same, possibly replaced) node.
+    /// </returns>
+    private (bool Changed, JsonNode? Node) RedactNode(JsonNode? node, int depth) => node switch
+    {
+        JsonObject obj => RedactObject(obj, depth),
+        JsonArray array => RedactArray(array, depth),
+        JsonValue value when value.TryGetValue<string>(out var text) => RedactStringLeaf(value, text, depth),
+        _ => (false, node),
+    };
+
+    /// <summary>
+    /// A property whose key names a secret (<see cref="IsSecretKeyName"/>) has its value replaced
+    /// with <c>"[REDACTED]"</c> — unless it is already exactly that placeholder, in which case it is
+    /// left alone so an already-redacted document reports no change; every other property is
+    /// recursed into via <see cref="RedactNode"/>.
+    /// </summary>
+    private (bool Changed, JsonNode? Node) RedactObject(JsonObject obj, int depth)
+    {
+        var changed = false;
+        // ToArray() first: mutating a JsonObject's values in place while enumerating it throws,
+        // since JsonObject is itself the enumerable being walked.
+        foreach (var (key, value) in obj.ToArray())
+        {
+            if (IsSecretKeyName(key))
+            {
+                if (value is JsonValue existing && existing.TryGetValue<string>(out var existingText)
+                    && existingText == "[REDACTED]")
+                    continue;
+
+                obj[key] = JsonValue.Create("[REDACTED]");
+                changed = true;
+            }
+            else
+            {
+                var (childChanged, childNode) = RedactNode(value, depth);
+                if (childChanged)
+                {
+                    changed = true;
+                    // An object/array child that changed was mutated in place (RedactNode returns
+                    // the SAME instance for those cases) and is therefore still correctly parented
+                    // under obj — reassigning it to its own slot throws "the node already has a
+                    // parent". Only a genuinely new node (the JsonValue leaf-replacement case) needs
+                    // to be written back.
+                    if (!ReferenceEquals(childNode, value))
+                        obj[key] = childNode;
+                }
+            }
+        }
+        return (changed, obj);
+    }
+
+    /// <summary>Each element is recursed into positionally via <see cref="RedactNode"/>.</summary>
+    private (bool Changed, JsonNode? Node) RedactArray(JsonArray array, int depth)
+    {
+        var changed = false;
+        for (var i = 0; i < array.Count; i++)
+        {
+            var existingElement = array[i];
+            var (childChanged, childNode) = RedactNode(existingElement, depth);
+            if (childChanged)
+            {
+                changed = true;
+                if (!ReferenceEquals(childNode, existingElement))
+                    array[i] = childNode;
+            }
+        }
+        return (changed, array);
+    }
+
+    /// <summary>
+    /// A string leaf that itself looks like and parses as JSON is redacted recursively and
+    /// re-serialized back into the string slot (the escaped-nested-payload case), up to
+    /// <paramref name="depth"/> reaching <see cref="MaxEmbeddedJsonDepth"/>; any other string leaf is
+    /// scanned via <see cref="RedactFreeText"/>.
+    /// </summary>
+    private (bool Changed, JsonNode? Node) RedactStringLeaf(JsonValue value, string text, int depth)
+    {
+        if (depth < MaxEmbeddedJsonDepth && LooksLikeJson(text))
+        {
+            JsonNode? nested;
+            try
+            {
+                nested = JsonNode.Parse(text, documentOptions: StructuralParseOptions);
+            }
+            catch (JsonException)
+            {
+                nested = null;
+            }
+
+            if (nested is not null)
+            {
+                var (childChanged, childNode) = RedactNode(nested, depth + 1);
+                return childChanged ? (true, JsonValue.Create(childNode!.ToJsonString())) : (false, value);
+            }
+        }
+
+        var redactedText = RedactFreeText(text);
+        return redactedText == text ? (false, value) : (true, JsonValue.Create(redactedText));
     }
 
     /// <inheritdoc />
@@ -90,6 +275,17 @@ public sealed class PatternSecretRedactor : ISecretRedactor
     private const string SecretKeyAlternation =
         "api[_-]?key|access[_-]?token|secret[_-]?key|client[_-]?secret|password|pwd|" +
         "account[_-]?key|shared[_-]?access[_-]?key|connection[_-]?string|sas[_-]?token";
+
+    // Anchored (whole-key) match for the structural JSON walk in RedactNode — deliberately distinct
+    // from IsSecretKey/_denylistPatterns, which is a separate, config-driven, substring-match
+    // denylist used only for filtering config-snapshot keys. Conflating the two would change
+    // IsSecretKey's contract for its existing callers. Built once from the same SecretKeyAlternation
+    // the free-text patterns use, so a JSON object key and the equivalent free-text "key=value" shape
+    // can never redact one and miss the other.
+    private static readonly Regex SecretKeyNameRegex = new(
+        $"^(?:{SecretKeyAlternation})$", RegexOptions.Compiled | RegexOptions.IgnoreCase, MatchTimeout);
+
+    private static bool IsSecretKeyName(string key) => SecretKeyNameRegex.IsMatch(key);
 
     private static (Regex Pattern, string Replacement)[] BuildRedactionPatterns() =>
     [

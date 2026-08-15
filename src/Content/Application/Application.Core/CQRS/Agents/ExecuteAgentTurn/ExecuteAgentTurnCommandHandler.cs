@@ -348,11 +348,13 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 	/// <c>update.Contents</c> stream. Both are redacted via <see cref="ToolPayloadRedactor"/> before
 	/// reaching the sink — the same treatment <c>ToolDiagnosticsMiddleware</c> applies before the
 	/// identical data is persisted, since a live SSE stream is just as much an exposure point for
-	/// secrets as the observability store is. Arguments are redacted only, never truncated —
-	/// <see cref="IAgentTurnStreamSink.EmitToolCallAsync"/> documents its JSON as always complete, and a
-	/// preview-length cap would silently hand a client invalid, unparseable JSON instead; the result
-	/// text has no such contract and gets the same redact-and-truncate preview treatment the middleware
-	/// uses — except when the tool failed, where a generic message is streamed instead of
+	/// secrets as the observability store is. Arguments are redacted, never truncated — truncating
+	/// mid-JSON would silently hand a client invalid, unparseable data — but above
+	/// <see cref="ToolPayloadRedactor.MaxStreamedToolCallArgsLength"/> they are withheld whole instead
+	/// (<see cref="StreamedToolCallArguments.Withheld"/>), since a size cap and a truncation cap are
+	/// not the same thing; the result text has no such contract and gets the same redact-and-truncate
+	/// preview treatment the middleware uses — except when the tool failed, where a generic message is
+	/// streamed instead of
 	/// <see cref="FunctionResultContent.Result"/>'s raw text, since <c>IncludeDetailedErrors</c> bakes
 	/// the exception message into that string (see <see cref="RedactedResultPreview"/>). Usage and
 	/// tool-call capture still flow through the chat-client middleware, so the caller's post-turn
@@ -368,26 +370,23 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 		CancellationToken cancellationToken)
 	{
 		var builder = new StringBuilder();
-		// Tracks which CallIds actually got a TOOL_CALL_START streamed — two jobs. (1) A matching
-		// result can't stream on its own merits (a non-empty CallId) alone: a call skipped for missing
-		// Name but carrying a valid CallId would otherwise leave its result to stream unmatched, a
-		// TOOL_CALL_RESULT with no preceding TOOL_CALL_START a client could place. (2) A provider
-		// connector that surfaces the same call twice must not double-emit a START/ARGS/END triple —
-		// HashSet.Add's bool return doubles as that guard. Deliberately scoped to this one call — the
-		// invariant it enforces is local to a single turn's stream, not something a second
-		// IAgentTurnStreamSink elsewhere in the codebase needs to share.
-		var startedCallIds = new HashSet<string>();
+		// Wraps the ambient sink for the lifetime of this one turn only — never held past this method
+		// or reused across turns. See ToolCallOrderingSink's remarks for why per-turn construction
+		// (not, say, wrapping once per run) is load-bearing: some providers reuse simple call ids
+		// across turns, and a wrapper that lived longer than one turn would misidentify a reused id as
+		// a duplicate.
+		var orderedSink = new ToolCallOrderingSink(sink);
 		await foreach (var update in agent.RunStreamingAsync(messages, cancellationToken: cancellationToken))
 		{
 			var delta = update.Text;
 			if (!string.IsNullOrEmpty(delta))
 			{
 				builder.Append(delta);
-				await sink.EmitAsync(delta, cancellationToken);
+				await orderedSink.EmitAsync(delta, cancellationToken);
 			}
 
 			foreach (var content in update.Contents)
-				await EmitToolCallActivityAsync(content, sink, startedCallIds, redactor, logger, cancellationToken);
+				await EmitToolCallActivityAsync(content, orderedSink, redactor, logger, cancellationToken);
 		}
 
 		return builder.ToString();
@@ -397,12 +396,15 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 	/// Handles one item from a streaming update's <c>Contents</c> — a tool-call decision or a tool's
 	/// result — forwarding it to <paramref name="sink"/> when it's one of the two content types this
 	/// stream cares about. Extracted from <see cref="RunStreamingTurnAsync"/> to keep that method under
-	/// the 50-line convention.
+	/// the 50-line convention. <paramref name="sink"/> is expected to be a
+	/// <see cref="ToolCallOrderingSink"/> (or another sink honoring the same ordering contract), so this
+	/// method applies only the semantic guards a well-formed frame requires — a non-empty
+	/// <c>CallId</c>, and a non-empty <c>Name</c> for the call side — and leaves duplicate-start and
+	/// orphaned-result enforcement to the sink.
 	/// </summary>
 	private static async Task EmitToolCallActivityAsync(
 		AIContent content,
 		IAgentTurnStreamSink sink,
-		HashSet<string> startedCallIds,
 		ISecretRedactor? redactor,
 		ILogger logger,
 		CancellationToken cancellationToken)
@@ -412,18 +414,14 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 			// Guards on both CallId and Name: a call with no id can't be matched to its later
 			// result (an empty toolCallId would violate the wire contract's required field), and
 			// a call with no name has nothing meaningful to announce.
-			// startedCallIds.Add returning false means this CallId already started — a provider
-			// connector surfacing the same call twice must not double-emit a TOOL_CALL_START/ARGS/END
-			// triple to the client.
-			case FunctionCallContent { CallId.Length: > 0 } call when !string.IsNullOrEmpty(call.Name) && startedCallIds.Add(call.CallId):
+			case FunctionCallContent { CallId.Length: > 0 } call when !string.IsNullOrEmpty(call.Name):
 				await sink.EmitToolCallAsync(
 					call.CallId, call.Name, RedactedArgsJson(call, redactor, logger), cancellationToken);
 				break;
 
-			// Guards on CallId AND on having actually streamed a matching TOOL_CALL_START — a
-			// non-empty CallId alone isn't enough, since the call side can be skipped (e.g. empty
-			// Name) while still carrying a CallId this result shares.
-			case FunctionResultContent { CallId.Length: > 0 } result when startedCallIds.Contains(result.CallId):
+			// A non-empty CallId is the only guard needed here — the sink itself drops a result with
+			// no matching preceding TOOL_CALL_START (e.g. a call skipped above for an empty Name).
+			case FunctionResultContent { CallId.Length: > 0 } result:
 				await sink.EmitToolCallResultAsync(
 					result.CallId, RedactedResultPreview(result, redactor, logger), cancellationToken);
 				break;
@@ -432,21 +430,37 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 
 	/// <summary>
 	/// Serializes and redacts a tool call's arguments for streaming. An unserializable argument value
-	/// (an unsupported CLR type from a poorly-behaved tool), or a redaction-contract violation from
-	/// <paramref name="redactor"/>, must degrade to a logged warning via
-	/// <see cref="ToolPayloadRedactor.TryOrFallback"/>, not abort the whole turn — text already
-	/// streamed to the client before this tool call must not be thrown away over either failure.
+	/// (an unsupported CLR type from a poorly-behaved tool) must degrade to a withheld result, not
+	/// abort the whole turn — text already streamed to the client before this tool call must not be
+	/// thrown away over it. Redaction failure and the size ceiling are both handled by
+	/// <see cref="ToolPayloadRedactor.RedactForStreaming"/>, which this method shares with
+	/// <c>AgUiClientToolBridge</c>'s identical need on the AG-UI client round-trip transport.
+	/// Deliberately independent of <c>ToolDiagnosticsMiddleware.LogToolCallsInResponse</c>, which
+	/// redacts the same <see cref="FunctionCallContent.Arguments"/> a second time for the persisted
+	/// observability record (#389, investigated and closed as won't-fix) — see that method's comment
+	/// for why.
 	/// </summary>
-	private static string RedactedArgsJson(FunctionCallContent call, ISecretRedactor? redactor, ILogger logger)
+	private static StreamedToolCallArguments RedactedArgsJson(FunctionCallContent call, ISecretRedactor? redactor, ILogger logger)
 	{
 		if (call.Arguments is not { Count: > 0 } args)
-			return "{}";
+			return new StreamedToolCallArguments("{}", Withheld: false);
 
-		return ToolPayloadRedactor.TryOrFallback(
-			() => ToolPayloadRedactor.Redact(JsonSerializer.Serialize(args), redactor),
-			logger,
-			$"Failed to serialize or redact streamed tool-call arguments for {call.Name} CallId={call.CallId}",
-			fallback: "{}");
+		string serialized;
+		try
+		{
+			serialized = JsonSerializer.Serialize(args);
+		}
+		catch (Exception ex)
+		{
+			logger.LogWarning(ex,
+				"Failed to serialize streamed tool-call arguments for {ToolName} CallId={CallId}",
+				call.Name, call.CallId);
+			return new StreamedToolCallArguments("{}", Withheld: true);
+		}
+
+		return ToolPayloadRedactor.RedactForStreaming(
+			serialized, redactor, logger,
+			$"Failed to redact streamed tool-call arguments for {call.Name} CallId={call.CallId}");
 	}
 
 	/// <summary>

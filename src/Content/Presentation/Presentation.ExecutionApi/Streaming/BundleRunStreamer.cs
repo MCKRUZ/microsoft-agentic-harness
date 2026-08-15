@@ -70,14 +70,16 @@ public sealed class BundleRunStreamer
 
                 await writer.WriteAsync(new BundleTextMessageContentEvent(messageId, delta), ct).ConfigureAwait(false);
             },
-            onToolCall: async (toolCallId, toolCallName, argsJson, ct) =>
+            onToolCall: async (toolCallId, toolCallName, args, ct) =>
             {
                 // The AG-UI wire protocol wants three separate frames; the sink itself only ever
                 // reports one complete tool call, so this is where that single call fans out into
                 // start/args/end — see IAgentTurnStreamSink.EmitToolCallAsync's remarks for why the
                 // seam doesn't carry that split.
                 await writer.WriteAsync(new BundleToolCallStartEvent(toolCallId, toolCallName), ct).ConfigureAwait(false);
-                await writer.WriteAsync(new BundleToolCallArgsEvent(toolCallId, argsJson), ct).ConfigureAwait(false);
+                await writer.WriteAsync(
+                    new BundleToolCallArgsEvent(toolCallId, args.Json, args.Withheld ? true : null),
+                    ct).ConfigureAwait(false);
                 await writer.WriteAsync(new BundleToolCallEndEvent(toolCallId), ct).ConfigureAwait(false);
             },
             onToolCallResult: (toolCallId, result, ct) =>

@@ -227,6 +227,15 @@ public sealed class ToolDiagnosticsMiddleware : DelegatingChatClient
 
             capture?.RecordToolCall(call.Name);
 
+            // Deliberately independent of ExecuteAgentTurnCommandHandler.RedactedArgsJson, which
+            // redacts the same call.Arguments a second time for the streaming SSE path (#389,
+            // investigated and closed as won't-fix): the two values have different truncation
+            // contracts — this one is capped to MaxPayloadSummaryLength for the persisted
+            // observability record, the streamed one is never truncated (only withheld whole above
+            // a size ceiling, since cutting mid-JSON would hand a client invalid data). A shared
+            // cache would have to store the uncapped value and rely on every consumer remembering to
+            // re-cap it — a footgun, not a saving — for a cost (one extra serialize + four redaction
+            // passes per tool call) that is negligible next to an LLM round trip.
             string? argsJson = null;
             if (call.Arguments is { Count: > 0 } args)
             {

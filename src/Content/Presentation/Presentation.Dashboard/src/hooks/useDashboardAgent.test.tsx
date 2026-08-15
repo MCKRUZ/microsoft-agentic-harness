@@ -149,6 +149,24 @@ describe('useDashboardAgent', () => {
     expect(useChatStore.getState().error).toBe('boom');
   });
 
+  it('never dispatches the dashboard action when the server withholds oversized arguments', async () => {
+    runWith([
+      { type: EventType.TOOL_CALL_START, toolCallId: 'call-w', toolCallName: 'dashboard_control' },
+      { type: EventType.TOOL_CALL_ARGS, toolCallId: 'call-w', delta: '{}', withheld: true },
+      { type: EventType.TOOL_CALL_END, toolCallId: 'call-w' },
+    ]);
+
+    const { result } = renderHook(() => useDashboardAgent());
+    await act(async () => {
+      await result.current.sendMessage('do something huge');
+    });
+
+    await waitFor(() =>
+      expect(postToolResult).toHaveBeenCalledWith('thread-1', 'call-w', expect.stringContaining('withheld')),
+    );
+    expect(dispatchDashboardAction).not.toHaveBeenCalled();
+  });
+
   it('ignores empty input and does not start a run', async () => {
     const { result } = renderHook(() => useDashboardAgent());
     await act(async () => {

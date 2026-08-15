@@ -1,6 +1,7 @@
 using Application.AI.Common.Helpers;
 using Application.AI.Common.Interfaces;
 using FluentAssertions;
+using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
 namespace Application.AI.Common.Tests.Helpers;
@@ -76,5 +77,46 @@ public sealed class ToolPayloadRedactorTests
         var result = ToolPayloadRedactor.RedactAndTruncate(payload, redactor: null, maxLength: 10);
 
         result.Should().Be(new string('a', 10));
+    }
+
+    [Fact]
+    public void RedactForStreaming_UnderCeiling_RedactsAndIsNotWithheld()
+    {
+        var redactor = new MarkerRedactor();
+        var payload = $"before {MarkerRedactor.Secret} after";
+
+        var result = ToolPayloadRedactor.RedactForStreaming(payload, redactor, NullLogger.Instance, "unused");
+
+        result.Withheld.Should().BeFalse();
+        result.Json.Should().Contain(MarkerRedactor.Replacement).And.NotContain("super-secret");
+    }
+
+    [Fact]
+    public void RedactForStreaming_AboveCeiling_WithholdsWithoutRedacting()
+    {
+        var payload = new string('x', ToolPayloadRedactor.MaxStreamedToolCallArgsLength + 1);
+
+        var result = ToolPayloadRedactor.RedactForStreaming(payload, redactor: null, NullLogger.Instance, "unused");
+
+        result.Withheld.Should().BeTrue();
+        result.Json.Should().Be("{}");
+    }
+
+    /// <summary>
+    /// A redaction-contract violation must withhold, not silently pass through as a normal
+    /// (Withheld: false) empty-object result — the two failure modes ("too large" and "redaction
+    /// broke") must be indistinguishable to the client precisely because both mean "the real
+    /// arguments never arrived," and a caller must never mistake either for genuinely empty
+    /// arguments.
+    /// </summary>
+    [Fact]
+    public void RedactForStreaming_RedactorThrows_WithholdsRatherThanReturningNormalEmptyObject()
+    {
+        var redactor = new NullReturningRedactor();
+
+        var result = ToolPayloadRedactor.RedactForStreaming("api_key=super-secret", redactor, NullLogger.Instance, "unused");
+
+        result.Withheld.Should().BeTrue();
+        result.Json.Should().Be("{}");
     }
 }

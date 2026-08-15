@@ -1176,7 +1176,7 @@ curl -sS -H "Authorization: Bearer $TOKEN" \
                             <tr><td><code>TEXT_MESSAGE_CONTENT</code></td><td><code>messageId</code>, <code>delta</code></td><td>Per token batch. Append to your buffer.</td></tr>
                             <tr><td><code>TEXT_MESSAGE_END</code></td><td><code>messageId</code></td><td>Once, if the message was opened.</td></tr>
                             <tr><td><code>TOOL_CALL_START</code></td><td><code>toolCallId</code>, <code>toolCallName</code></td><td>When the agent decides to call a tool. May arrive before the first <code>TEXT_MESSAGE_START</code>.</td></tr>
-                            <tr><td><code>TOOL_CALL_ARGS</code></td><td><code>toolCallId</code>, <code>delta</code></td><td>Immediately after <code>TOOL_CALL_START</code> — the complete arguments JSON in one frame, not an incremental delta.</td></tr>
+                            <tr><td><code>TOOL_CALL_ARGS</code></td><td><code>toolCallId</code>, <code>delta</code>, <code>withheld</code> (only present when <code>true</code>)</td><td>Immediately after <code>TOOL_CALL_START</code> — the complete arguments JSON in one frame, not an incremental delta.</td></tr>
                             <tr><td><code>TOOL_CALL_END</code></td><td><code>toolCallId</code></td><td>Immediately after <code>TOOL_CALL_ARGS</code>.</td></tr>
                             <tr><td><code>TOOL_CALL_RESULT</code></td><td><code>toolCallId</code>, <code>result</code> (redacted preview)</td><td>Once the tool has actually run.</td></tr>
                             <tr><td><code>RUN_FINISHED</code></td><td><code>threadId</code>, <code>runId</code></td><td>Terminal, on success.</td></tr>
@@ -1194,9 +1194,15 @@ curl -sS -H "Authorization: Bearer $TOKEN" \
                     </p>
                     <p>
                         <code>TOOL_CALL_ARGS.delta</code> and <code>TOOL_CALL_RESULT.result</code> are never the raw
-                        payload — both pass through the same secret-redaction and length-truncation the harness
-                        applies before persisting tool activity to its observability store, since a live stream to
-                        a browser is just as much an exposure point as disk. If a tool call fails,
+                        payload — both pass through the same secret-redaction the harness applies before persisting
+                        tool activity to its observability store, since a live stream to a browser is just as much
+                        an exposure point as disk. They differ in how they bound size: <code>result</code> is
+                        truncated to a fixed preview length, which is safe for free text. <code>delta</code> is
+                        never truncated — cutting JSON mid-token would hand the client invalid data — so above a
+                        size ceiling the real arguments are <strong>withheld</strong> instead: <code>delta</code>
+                        becomes the fixed placeholder <code>"{}"</code> and <code>withheld</code> is <code>true</code>.
+                        A client should treat a <code>withheld</code> frame as "arguments unavailable," not attempt
+                        to interpret <code>"{}"</code> as the tool's real (empty) arguments. If a tool call fails,
                         <code>result</code> is a generic failure message, not the underlying exception text.
                     </p>
                     <div class="code-block">

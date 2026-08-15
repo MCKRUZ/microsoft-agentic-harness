@@ -1319,14 +1319,22 @@ components:
         incremental delta — the underlying model-provider integration only ever exposes a tool
         call's arguments once fully assembled, so this frame always carries the complete JSON
         payload in one shot, immediately followed by `TOOL_CALL_END`. The field is still named
-        `delta` to match the AG-UI wire vocabulary exactly.
+        `delta` to match the AG-UI wire vocabulary exactly. Above a server-side size ceiling the
+        real arguments are withheld rather than truncated — `delta` is the fixed placeholder `"{}"`
+        and `withheld` is `true` — since cutting a JSON payload mid-token would hand the client
+        invalid data.
       required: [type, toolCallId, delta]
       properties:
         type: { type: string, const: TOOL_CALL_ARGS }
         toolCallId: { type: string }
         delta:
           type: string
-          description: The tool call's complete arguments, serialized as JSON.
+          description: The tool call's complete arguments, serialized as JSON, or `"{}"` if withheld.
+        withheld:
+          type: boolean
+          description: >-
+            Present and `true` only when the real arguments exceeded the streaming size ceiling and
+            were withheld. Absent on every normal frame.
 
     ToolCallEndEvent:
       type: object

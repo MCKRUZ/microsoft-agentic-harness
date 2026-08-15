@@ -5,6 +5,8 @@ using Moq;
 using Presentation.AgentHub.AgUi;
 using Presentation.AgentHub.Config;
 using Xunit;
+using Application.AI.Common.Helpers;
+using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.AI;
 using Application.AI.Common.Models.Conversations;
 
@@ -29,9 +31,10 @@ public sealed class AgUiClientToolBridgeTests
         IAgUiEventWriterAccessor accessor,
         PendingToolCallRegistry registry,
         IConversationStore? store = null,
-        int timeoutSeconds = 30) =>
+        int timeoutSeconds = 30,
+        ISecretRedactor? redactor = null) =>
         new(accessor, registry, Options(timeoutSeconds), store ?? new RecordingConversationStore(),
-            new ClientWidgetCatalog(), NullLogger<AgUiClientToolBridge>.Instance);
+            new ClientWidgetCatalog(), NullLogger<AgUiClientToolBridge>.Instance, redactor);
 
     [Fact]
     public async Task InvokeAsync_EmitsToolCallSequence_BlocksUntilCompleted_ThenReturnsResult()
@@ -118,6 +121,87 @@ public sealed class AgUiClientToolBridgeTests
         message.Widget.Should().NotBeNull();
         message.Widget!.Type.Should().Be("render_table");
         message.Widget.Args.GetProperty("columns").GetArrayLength().Should().Be(1);
+    }
+
+    /// <summary>
+    /// Client round-trip tool arguments are redacted before they stream to the browser — the same
+    /// treatment the bundle SSE path applies, since this is an equally live exposure point that
+    /// previously streamed arguments completely unredacted.
+    /// </summary>
+    [Fact]
+    public async Task InvokeAsync_RedactsArgumentsBeforeStreaming()
+    {
+        var writer = new CapturingEventWriter();
+        var accessor = new AgUiEventWriterAccessor { Writer = writer, ThreadId = "thread-r", CallerId = "user-r" };
+        var registry = new PendingToolCallRegistry();
+        var redactor = new Mock<ISecretRedactor>();
+        redactor.Setup(r => r.Redact(It.Is<string>(s => s.Contains("secret-value"))))
+            .Returns<string>(s => s.Replace("secret-value", "[REDACTED]"));
+        var bridge = Bridge(accessor, registry, redactor: redactor.Object);
+
+        var invokeTask = bridge.InvokeAsync("dashboard_control", "{\"token\":\"secret-value\"}");
+
+        await WaitForAsync(() => writer.Events.Count >= 3);
+        var callId = ((ToolCallStartEvent)writer.Events[0]).ToolCallId;
+        registry.TryComplete(callId, "thread-r", "ok").Should().BeTrue();
+        await invokeTask.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var args = (ToolCallArgsEvent)writer.Events[1];
+        args.Delta.Should().NotContain("secret-value").And.Contain("[REDACTED]");
+        args.Withheld.Should().BeNull("a normal frame carries null, never false, so the field is omitted from the wire");
+    }
+
+    /// <summary>
+    /// Arguments above the streaming size ceiling are withheld whole (Delta="{}", Withheld=true), and
+    /// the raw oversized payload never reaches the wire.
+    /// </summary>
+    [Fact]
+    public async Task InvokeAsync_OversizedArguments_WithholdsRawPayload()
+    {
+        var writer = new CapturingEventWriter();
+        var accessor = new AgUiEventWriterAccessor { Writer = writer, ThreadId = "thread-o", CallerId = "user-o" };
+        var registry = new PendingToolCallRegistry();
+        var bridge = Bridge(accessor, registry);
+        var oversized = $$"""{"q":"{{new string('x', ToolPayloadRedactor.MaxStreamedToolCallArgsLength + 1)}}"}""";
+
+        var invokeTask = bridge.InvokeAsync("dashboard_control", oversized);
+
+        await WaitForAsync(() => writer.Events.Count >= 3);
+        var callId = ((ToolCallStartEvent)writer.Events[0]).ToolCallId;
+        registry.TryComplete(callId, "thread-o", "ok").Should().BeTrue();
+        await invokeTask.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var args = (ToolCallArgsEvent)writer.Events[1];
+        args.Delta.Should().Be("{}");
+        args.Withheld.Should().BeTrue();
+    }
+
+    /// <summary>
+    /// A widget's persisted spec carries the redacted arguments, not the raw ones — a reload must
+    /// never surface a secret the live stream had already withheld.
+    /// </summary>
+    [Fact]
+    public async Task InvokeAsync_WidgetTool_PersistsRedactedArguments_NotRawPayload()
+    {
+        var writer = new CapturingEventWriter();
+        var accessor = new AgUiEventWriterAccessor { Writer = writer, ThreadId = "thread-wr", CallerId = "user-wr" };
+        var registry = new PendingToolCallRegistry();
+        var store = new RecordingConversationStore();
+        var redactor = new Mock<ISecretRedactor>();
+        redactor.Setup(r => r.Redact(It.Is<string>(s => s.Contains("secret-value"))))
+            .Returns<string>(s => s.Replace("secret-value", "[REDACTED]"));
+        var bridge = Bridge(accessor, registry, store, redactor: redactor.Object);
+
+        var invokeTask = bridge.InvokeAsync("render_form", "{\"apiKey\":\"secret-value\"}");
+
+        await WaitForAsync(() => writer.Events.Count >= 3);
+        var callId = ((ToolCallStartEvent)writer.Events[0]).ToolCallId;
+        registry.TryComplete(callId, "thread-wr", "ok").Should().BeTrue();
+        await invokeTask.WaitAsync(TimeSpan.FromSeconds(5));
+
+        store.Appended.Should().HaveCount(1);
+        var message = store.Appended[0].Message;
+        message.Widget!.Args.GetProperty("apiKey").GetString().Should().Be("[REDACTED]");
     }
 
     [Fact]

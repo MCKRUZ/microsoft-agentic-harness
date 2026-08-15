@@ -29,6 +29,10 @@ export interface UseAgentStreamReturn {
 interface PendingCall {
   name: string;
   args: string;
+  /** True once a TOOL_CALL_ARGS frame arrived with `withheld: true` — the real arguments exceeded
+   *  the server's streaming size ceiling and were never sent, so `args` is not "{}" as the real
+   *  (empty) arguments, it is a placeholder that must not be parsed and acted on as such. */
+  withheld: boolean;
 }
 
 /**
@@ -36,11 +40,14 @@ interface PendingCall {
  * renders the widget as an assistant message on success, and returns the acknowledgement the agent
  * observes. Everything widget-specific (validation, component, ack text) lives in the widget registry,
  * so this stays generic across all widgets and is unchanged when a new one is added. On invalid args it
- * returns the validator's reason and renders nothing, so the agent can recover.
+ * returns the validator's reason and renders nothing, so the agent can recover. Withheld arguments
+ * short-circuit before the widget ever sees them — `"{}"` is a placeholder, not real (empty) input.
  */
-function runWidgetToolCall(name: string, argsJson: string): string {
+function runWidgetToolCall(name: string, argsJson: string, withheld: boolean): string {
   const widget = getWidget(name);
   if (!widget) return `The client has no handler for widget "${name}".`;
+
+  if (withheld) return `The ${name} arguments were too large to stream and were withheld.`;
 
   let args: Record<string, unknown>;
   try {
@@ -72,7 +79,7 @@ function runWidgetToolCall(name: string, argsJson: string): string {
  */
 async function finishToolCall(threadId: string, callId: string, pending: PendingCall | undefined): Promise<void> {
   const result = pending
-    ? runWidgetToolCall(pending.name, pending.args)
+    ? runWidgetToolCall(pending.name, pending.args, pending.withheld)
     : `No client handler matched tool call ${callId}.`;
 
   try {
@@ -160,13 +167,16 @@ export function useAgentStream(): UseAgentStreamReturn {
             }
             case EventType.TOOL_CALL_START: {
               const e = event as BaseEvent & { toolCallId: string; toolCallName: string };
-              activePendingCalls.set(e.toolCallId, { name: e.toolCallName, args: '' });
+              activePendingCalls.set(e.toolCallId, { name: e.toolCallName, args: '', withheld: false });
               break;
             }
             case EventType.TOOL_CALL_ARGS: {
-              const e = event as BaseEvent & { toolCallId: string; delta: string };
+              const e = event as BaseEvent & { toolCallId: string; delta: string; withheld?: boolean };
               const pending = activePendingCalls.get(e.toolCallId);
-              if (pending) pending.args += e.delta;
+              if (pending) {
+                if (e.withheld) pending.withheld = true;
+                else pending.args += e.delta;
+              }
               break;
             }
             case EventType.TOOL_CALL_END: {

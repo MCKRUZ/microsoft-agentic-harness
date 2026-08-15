@@ -119,4 +119,19 @@ describe('useAgentStream — render_image round-trip', () => {
 
     await waitFor(() => { expect(postToolResult).toHaveBeenCalledWith('conv-1', 'orphan', expect.stringContaining('No client handler')); });
   });
+
+  it('never renders a widget or interprets "{}" as real args when the server withholds oversized arguments', async () => {
+    const events$ = await startRun();
+
+    act(() => {
+      events$.next({ type: EventType.TOOL_CALL_START, toolCallId: 'call-w', toolCallName: 'render_image' });
+      events$.next({ type: EventType.TOOL_CALL_ARGS, toolCallId: 'call-w', delta: '{}', withheld: true });
+      events$.next({ type: EventType.TOOL_CALL_END, toolCallId: 'call-w' });
+    });
+
+    await waitFor(() => {
+      expect(postToolResult).toHaveBeenCalledWith('conv-1', 'call-w', expect.stringContaining('withheld'));
+    });
+    expect(useChatStore.getState().messages.some((m) => m.widget?.type === 'render_image')).toBe(false);
+  });
 });

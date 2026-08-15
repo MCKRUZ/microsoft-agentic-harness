@@ -37,6 +37,28 @@ public sealed class AgUiToolCallEventSerializationTests
         json.Should().Contain("navigate");
     }
 
+    /// <summary>
+    /// The <c>withheld</c> field is absent from the wire on a normal (non-withheld) frame — pins
+    /// against a future refactor that constructs it as <c>false</c> instead of <c>null</c>, which
+    /// would start serializing <c>"withheld":false</c> on every frame.
+    /// </summary>
+    [Fact]
+    public void ToolCallArgsEvent_NotWithheld_OmitsWithheldFieldFromWire()
+    {
+        var json = JsonSerializer.Serialize<AgUiEvent>(new ToolCallArgsEvent("call-1", "{}"), JsonOptions);
+
+        json.Should().NotContain("withheld");
+    }
+
+    /// <summary>A withheld frame carries an explicit <c>"withheld":true</c> on the wire.</summary>
+    [Fact]
+    public void ToolCallArgsEvent_Withheld_SerializesTheFlag()
+    {
+        var json = JsonSerializer.Serialize<AgUiEvent>(new ToolCallArgsEvent("call-1", "{}", true), JsonOptions);
+
+        json.Should().Contain("\"withheld\":true");
+    }
+
     [Fact]
     public void ToolCallEndEvent_Serializes_WithId()
     {
