@@ -5,6 +5,7 @@ using Domain.Common.Helpers;
 using Domain.AI.Changes;
 using Domain.Common.Config.AI.Governance;
 using Domain.AI.Models;
+using Domain.AI.Sandbox;
 using Domain.AI.SkillTraining;
 using MediatR;
 using Microsoft.Extensions.DependencyInjection;
@@ -86,6 +87,16 @@ public sealed class WorkspaceWriteFileTool : ITool
 
     /// <inheritdoc />
     public bool IsConcurrencySafe => false;
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// Same reasoning as <see cref="Capabilities"/> immediately above, applied to the sandbox model: the
+    /// approval gate on the proposal is a separate control, not a substitute for declaring what this
+    /// tool's effect actually is. Unlike <c>IacGenerateTool</c> — whose own effect really is bounded to
+    /// in-process templating, hence its <c>None</c> in both capability models — this tool's submitted
+    /// proposal, once approved, writes the file it names; the write is deferred, not absent.
+    /// </remarks>
+    public ToolCapability RequiredCapabilities => ToolCapability.FileWrite;
 
     /// <inheritdoc />
     public async Task<ToolResult> ExecuteAsync(

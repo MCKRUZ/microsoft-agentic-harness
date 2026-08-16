@@ -54,9 +54,9 @@ public sealed class ResponseSanitizationBehaviorTests
     }
 
     [Fact]
-    public async Task Handle_GovernanceDisabled_CallsNextWithoutSanitizing()
+    public async Task Handle_GovernanceDisabledAndSanitizationDisabled_CallsNextWithoutSanitizing()
     {
-        var behavior = CreateBehavior(new GovernanceConfig { Enabled = false });
+        var behavior = CreateBehavior(new GovernanceConfig { Enabled = false, EnableResponseSanitization = false });
 
         var result = await behavior.Handle(
             new TestToolSanitizeRequest("test"),
@@ -65,6 +65,38 @@ public sealed class ResponseSanitizationBehaviorTests
 
         Assert.True(result.IsSuccess);
         _sanitizer.Verify(x => x.Sanitize(It.IsAny<string>(), It.IsAny<string?>()), Times.Never);
+    }
+
+    // #386 regression guard: EnableResponseSanitization is independent of Enabled — the same fix
+    // applied to PromptInjectionBehavior. Before the fix, this behaviour short-circuited on
+    // `!cfg.Enabled` regardless of EnableResponseSanitization, so DI could resolve the real
+    // ICompositeResponseSanitizer chain while this behaviour never called it.
+    [Fact]
+    public async Task Handle_GovernanceDisabledButSanitizationEnabled_StillSanitizes()
+    {
+        var output = new TestToolOutput("secret: AKIAIOSFODNN7EXAMPLE");
+        var sanitized = SanitizationResult.WithFindings(
+            "secret: [REDACTED:aws_key]",
+            "secret: AKIAIOSFODNN7EXAMPLE",
+            [new SanitizationFinding(SanitizationCategory.CredentialLeak, ThreatLevel.High, "AWS key", 8, 20, 0.95)]);
+
+        _sanitizer.Setup(x => x.Sanitize("secret: AKIAIOSFODNN7EXAMPLE", "test")).Returns(sanitized);
+
+        var behavior = CreateBehavior(new GovernanceConfig
+        {
+            Enabled = false,
+            EnableResponseSanitization = true,
+            ResponseBlockThreshold = ThreatLevel.Critical,
+        });
+
+        var result = await behavior.Handle(
+            new TestToolSanitizeRequest("test"),
+            () => Task.FromResult(Result<TestToolOutput>.Success(output)),
+            CancellationToken.None);
+
+        _sanitizer.Verify(x => x.Sanitize("secret: AKIAIOSFODNN7EXAMPLE", "test"), Times.Once);
+        Assert.True(result.IsSuccess);
+        Assert.Equal("secret: [REDACTED:aws_key]", result.Value!.ToolOutput);
     }
 
     [Fact]

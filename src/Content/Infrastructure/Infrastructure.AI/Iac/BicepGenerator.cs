@@ -4,6 +4,7 @@ using Domain.AI.Iac;
 using Domain.AI.Sandbox;
 using Domain.Common;
 using Domain.Common.Config;
+using Infrastructure.AI.Tools.Iac;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -106,7 +107,9 @@ public sealed class BicepGenerator : IIacGenerator
 
         var allowlist = _config.CurrentValue.AI.Iac.RegistryAllowlist;
 
-        var build = await Run(CliProgram, [ "build", MainFile, "--stdout" ], moduleDirectory, allowlist, "iac_plan", cancellationToken);
+        var build = await Run(
+            CliProgram, [ "build", MainFile, "--stdout" ], moduleDirectory, allowlist, "iac_plan",
+            IacPlanTool.RequiredSandboxCapabilities, cancellationToken);
         if (build is null)
         {
             return Result<IacPlanResult>.Fail("iac.plan.sandbox_error");
@@ -143,8 +146,12 @@ public sealed class BicepGenerator : IIacGenerator
             return Result<IacScanResult>.Fail("iac.scan.invalid_blocking_severity");
         }
 
-        var armTtk = await Run(ArmTtkProgram, [ "-TemplatePath", "." ], moduleDirectory, iac.RegistryAllowlist, "iac_scan", cancellationToken);
-        var checkov = await Run(CheckovProgram, [ "-d", ".", "--compact", "--quiet" ], moduleDirectory, iac.RegistryAllowlist, "iac_scan", cancellationToken);
+        var armTtk = await Run(
+            ArmTtkProgram, [ "-TemplatePath", "." ], moduleDirectory, iac.RegistryAllowlist, "iac_scan",
+            IacScanTool.RequiredSandboxCapabilities, cancellationToken);
+        var checkov = await Run(
+            CheckovProgram, [ "-d", ".", "--compact", "--quiet" ], moduleDirectory, iac.RegistryAllowlist, "iac_scan",
+            IacScanTool.RequiredSandboxCapabilities, cancellationToken);
         if (armTtk is null || checkov is null)
         {
             return Result<IacScanResult>.Fail("iac.scan.sandbox_error");
@@ -170,6 +177,7 @@ public sealed class BicepGenerator : IIacGenerator
         string moduleDirectory,
         IReadOnlyList<string> allowlist,
         string toolName,
+        ToolCapability requiredCapabilities,
         CancellationToken cancellationToken)
     {
         try
@@ -179,7 +187,9 @@ public sealed class BicepGenerator : IIacGenerator
             await using var scope = _scopeFactory.CreateAsyncScope();
             var sandbox = scope.ServiceProvider.GetRequiredKeyedService<ISandboxExecutor>(_isolationLevel);
 
-            return await IacSandboxRunner.RunAsync(program, args, moduleDirectory, allowlist, sandbox, toolName, cancellationToken: cancellationToken);
+            return await IacSandboxRunner.RunAsync(
+                program, args, moduleDirectory, allowlist, sandbox, toolName, requiredCapabilities,
+                cancellationToken: cancellationToken);
         }
         catch (OperationCanceledException)
         {

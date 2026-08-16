@@ -29,7 +29,13 @@ public static class DependencyInjection
         this IServiceCollection services,
         GovernanceConfig config)
     {
-        var policyContents = ReadAndValidatePolicyFiles(config.PolicyPaths);
+        // Policy files are only ever relevant to the declarative YAML layer, which Enabled alone
+        // governs (#386) — EnablePromptInjectionDetection and EnableMcpSecurity can bring up this
+        // whole method without wanting the policy layer at all, and PolicyPaths should not even be
+        // touched in that case.
+        var policyContents = config.Enabled
+            ? ReadAndValidatePolicyFiles(config.PolicyPaths)
+            : [];
 
         var options = new GovernanceOptions
         {
@@ -53,7 +59,15 @@ public static class DependencyInjection
         // AuditLogger above): PolicyEngine.LoadYamlFile/LoadYaml/LoadPolicy all bypass PolicyYamlGuard,
         // so a consumer that could resolve PolicyEngine directly and load its own YAML through it would
         // reintroduce #384. Only the adapter needs it, so it's captured in this factory instead.
-        services.AddSingleton<IGovernancePolicyEngine>(_ => new AgtPolicyEngineAdapter(kernel.PolicyEngine));
+        //
+        // Conditional on Enabled (#386): a consumer that armed this method solely for
+        // EnablePromptInjectionDetection or EnableMcpSecurity did not opt into the declarative policy
+        // layer, so IGovernancePolicyEngine resolves the same NoOpPolicyEngine it would have gotten
+        // from AddGovernanceNoOpDependencies — the policy layer's own switch, not a side effect of
+        // some other feature area being on.
+        services.AddSingleton<IGovernancePolicyEngine>(_ => config.Enabled
+            ? new AgtPolicyEngineAdapter(kernel.PolicyEngine)
+            : new NoOpPolicyEngine());
 
         // Prompt-injection detection is optional. The AGT kernel only builds an InjectionDetector when
         // GovernanceConfig.EnablePromptInjectionDetection is true, so registering kernel.InjectionDetector

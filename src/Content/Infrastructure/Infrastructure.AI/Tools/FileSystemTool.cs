@@ -2,6 +2,7 @@ using Application.AI.Common.Interfaces.Tools;
 using Domain.AI.Changes;
 using Domain.Common.Config.AI.Governance;
 using Domain.AI.Models;
+using Domain.AI.Sandbox;
 
 namespace Infrastructure.AI.Tools;
 
@@ -58,6 +59,9 @@ public sealed class FileSystemTool : ITool
     /// </remarks>
     public ToolCompositionCapability Capabilities =>
         ToolCompositionCapability.IngestsUntrustedInput | ToolCompositionCapability.WritesFiles;
+
+    /// <inheritdoc />
+    public ToolCapability RequiredCapabilities => ToolCapability.FileRead | ToolCapability.FileWrite;
 
     /// <inheritdoc />
     public string Description => "Reads, writes, lists, and searches files within the project sandbox.";

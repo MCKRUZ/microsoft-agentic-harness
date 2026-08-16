@@ -118,9 +118,16 @@ public static class DependencyInjection
             .AddTransient(typeof(IPipelineBehavior<,>), typeof(WorkEpisodeCaptureBehavior<,>))
             .AddTransient(typeof(IPipelineBehavior<,>), typeof(PromptUsageTrackingBehavior<,>));
 
-        // Sandbox capability enforcement — profile resolution and enforcement
+        // Sandbox capability enforcement — profile resolution and enforcement. The resolver reads a
+        // tool's own ITool.RequiredCapabilities/MinimumIsolation declaration via bounded-key-set-gated
+        // keyed DI (#387) — the same KeyedToolRegistrationKeys(services) set IToolCapabilityResolver's
+        // registration below builds, so the two resolvers agree on what "a real tool name" means. See
+        // ToolCapabilityResolver's remarks for why the key set must stay bounded.
         services.AddOptions<SandboxConfig>();
-        services.AddSingleton<ToolPermissionProfileResolver>();
+        services.AddSingleton(sp => new ToolPermissionProfileResolver(
+            sp,
+            sp.GetRequiredService<IOptionsMonitor<SandboxConfig>>(),
+            new HashSet<string>(KeyedToolRegistrationKeys(services), StringComparer.Ordinal)));
         services.AddScoped<ICapabilityEnforcer, CapabilityEnforcer>();
 
         // Scoped agent execution context — carries agent identity through the pipeline

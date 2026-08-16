@@ -58,14 +58,15 @@ public class ConfigValidationStartupTests
             new Dictionary<string, string?> { ["AppConfig:AI:Governance:Escalation:DefaultTimeoutAction"] = "NotAnAction" }
         },
         {
-            // Landmine: injection detection requested while governance is disabled. It only runs on the
-            // AGT kernel path (composed only when Enabled=true), so the flag is silently ineffective.
+            // Enabled and EnablePromptInjectionDetection are independent (#386) — this combination is
+            // valid now, so the probe uses an unconditional enum-sanity rule instead, mirroring the
+            // other rows in this table.
             "GovernanceConfig",
-            new Dictionary<string, string?>
-            {
-                ["AppConfig:AI:Governance:Enabled"] = "false",
-                ["AppConfig:AI:Governance:EnablePromptInjectionDetection"] = "true",
-            }
+            // A non-numeric string fails at config-binding time (InvalidOperationException, not
+            // OptionsValidationException) — the enum converter only accepts a defined name or any
+            // numeric value. "99" binds successfully to the undefined (ThreatLevel)99 and reaches
+            // the validator's IsInEnum() rule, matching this table's other enum-sanity probes.
+            new Dictionary<string, string?> { ["AppConfig:AI:Governance:McpToolBlockThreshold"] = "99" }
         },
         {
             "WorkMemoryConfig",

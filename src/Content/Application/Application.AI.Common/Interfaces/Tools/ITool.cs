@@ -1,5 +1,6 @@
 using Domain.AI.Changes;
 using Domain.AI.Models;
+using Domain.AI.Sandbox;
 using Domain.Common.Config.AI.Governance;
 
 namespace Application.AI.Common.Interfaces.Tools;
@@ -149,6 +150,29 @@ public interface ITool
     /// composition analyzer's unclassified-tool count makes that gap visible rather than silent.
     /// </remarks>
     ToolCompositionCapability Capabilities => ToolCompositionCapability.None;
+
+    /// <summary>
+    /// The sandbox capabilities this tool requires to execute — filesystem, network, subprocess,
+    /// database, or LLM access. See <see cref="ToolCapability"/>. Resolved by
+    /// <c>ToolPermissionProfileResolver</c> and checked by <c>CapabilityEnforcer</c> against what the
+    /// host actually grants (<c>SandboxConfig.DefaultGrantedCapabilities</c>) before every governed
+    /// tool call, and by <c>ToolUseStepExecutor</c> to build the sandbox executor's permission profile
+    /// on the planner path.
+    /// </summary>
+    /// <remarks>
+    /// Default is <see cref="ToolCapability.None"/> — unlike <see cref="Capabilities"/> above, this
+    /// default IS fail-closed: a tool that declares nothing gets nothing. A tool that shells out to a
+    /// CLI, writes to disk, or calls the network must declare it here, or the capability check silently
+    /// never refuses it and (on the planner path) the sandbox executor silently starves it of network
+    /// access and write access it actually needs. This is the single source of truth for what a tool
+    /// may do to the machine — a sandbox runner that hardcodes its own copy of this fact (as
+    /// <c>WorkspaceCommandRunner</c> and <c>IacSandboxRunner</c> used to) is the drift this property
+    /// exists to prevent; runners take the caller's declared capabilities as a parameter instead.
+    /// </remarks>
+    ToolCapability RequiredCapabilities => ToolCapability.None;
+
+    /// <summary>Minimum sandbox isolation level this tool requires. Default is <see cref="SandboxIsolationLevel.None"/>.</summary>
+    SandboxIsolationLevel MinimumIsolation => SandboxIsolationLevel.None;
 
     /// <summary>
     /// Executes a tool operation with the given parameters.

@@ -104,4 +104,68 @@ public sealed class GovernanceDependencyInjectionTests
         act.Should().Throw<InvalidOperationException>()
             .WithMessage($"*{missingPath}*");
     }
+
+    // #386: Enabled now governs the declarative policy layer alone. EnablePromptInjectionDetection
+    // must still stand up the real AGT-backed scanner even when Enabled is false — and because the
+    // policy layer itself is off, IGovernancePolicyEngine must resolve the no-op engine, not the
+    // adapter, and PolicyPaths must never be read (a configured-but-missing path here would have
+    // thrown, per the test above, if it were touched).
+    [Fact]
+    public void AddGovernanceDependencies_DisabledWithInjectionDetectionOn_ResolvesAgtScannerAndNoOpPolicyEngine()
+    {
+        var config = new GovernanceConfig
+        {
+            Enabled = false,
+            EnablePromptInjectionDetection = true,
+            PolicyPaths = [Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.yaml")],
+        };
+
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddGovernanceDependencies(config);
+
+        using var provider = services.BuildServiceProvider();
+        provider.GetRequiredService<IPromptInjectionScanner>()
+            .Should().BeOfType<AgtPromptInjectionAdapter>(
+                "detection is independently switched on and must arm the real scanner even with the policy layer off");
+        provider.GetRequiredService<IGovernancePolicyEngine>()
+            .Should().BeOfType<NoOpPolicyEngine>(
+                "the declarative policy layer is off (Enabled=false); a sibling feature being on must not turn it on");
+    }
+
+    // Mirrors the test above for MCP security scanning — the other independently-toggleable feature
+    // area #386 decouples from Enabled.
+    [Fact]
+    public void AddGovernanceDependencies_DisabledWithMcpSecurityOn_ResolvesAgtScannerAndNoOpPolicyEngine()
+    {
+        var config = new GovernanceConfig { Enabled = false, EnableMcpSecurity = true };
+
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddGovernanceDependencies(config);
+
+        using var provider = services.BuildServiceProvider();
+        provider.GetRequiredService<IMcpSecurityScanner>()
+            .Should().BeOfType<McpSecurityScannerAdapter>(
+                "MCP security scanning is independently switched on and must arm the real scanner even with the policy layer off");
+        provider.GetRequiredService<IGovernancePolicyEngine>()
+            .Should().BeOfType<NoOpPolicyEngine>(
+                "the declarative policy layer is off (Enabled=false); a sibling feature being on must not turn it on");
+    }
+
+    // The policy engine's own switch: Enabled=true must resolve the real adapter regardless of the
+    // other two flags, and Enabled=false must resolve the no-op — the control for the two tests above.
+    [Fact]
+    public void AddGovernanceDependencies_EnabledTrue_ResolvesAgtPolicyEngineAdapter()
+    {
+        var config = new GovernanceConfig { Enabled = true };
+
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddGovernanceDependencies(config);
+
+        using var provider = services.BuildServiceProvider();
+        provider.GetRequiredService<IGovernancePolicyEngine>()
+            .Should().BeOfType<AgtPolicyEngineAdapter>();
+    }
 }

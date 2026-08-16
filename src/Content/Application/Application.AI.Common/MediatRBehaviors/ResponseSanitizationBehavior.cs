@@ -18,10 +18,13 @@ namespace Application.AI.Common.MediatRBehaviors;
 /// </summary>
 /// <remarks>
 /// <para>Pipeline position: 9.5 (post-execution, after content safety at 8).</para>
-/// <para>Only activates when <c>GovernanceConfig.Enabled</c> and
-/// <c>GovernanceConfig.EnableResponseSanitization</c> are both true,
-/// the request implements <see cref="IToolRequest"/>, and the response
-/// value implements <see cref="IToolResponse"/>.</para>
+/// <para>Only activates when <c>GovernanceConfig.EnableResponseSanitization</c> is true, the request
+/// implements <see cref="IToolRequest"/>, and the response value implements
+/// <see cref="IToolResponse"/>. Independent of <c>GovernanceConfig.Enabled</c> (#386) — the
+/// composition root arms the real <see cref="ICompositeResponseSanitizer"/> chain in DI whenever
+/// any of <c>Enabled</c>, <c>EnablePromptInjectionDetection</c>, or <c>EnableMcpSecurity</c> is on,
+/// unconditional on <c>EnableResponseSanitization</c>, so this behaviour must not re-require
+/// <c>Enabled</c> either — the same gap fixed for <see cref="PromptInjectionBehavior{TRequest,TResponse}"/>.</para>
 /// </remarks>
 public sealed class ResponseSanitizationBehavior<TRequest, TResponse>
     : IPipelineBehavior<TRequest, TResponse> where TRequest : notnull
@@ -52,7 +55,11 @@ public sealed class ResponseSanitizationBehavior<TRequest, TResponse>
             return await next();
 
         var cfg = _config.CurrentValue;
-        if (!cfg.Enabled || !cfg.EnableResponseSanitization)
+        // EnableResponseSanitization is independent of Enabled (#386) — see remarks above. A stale
+        // `!cfg.Enabled ||` here would leave the real sanitizer chain resolved in DI yet never
+        // actually invoked whenever a consumer arms governance solely via EnablePromptInjectionDetection
+        // or EnableMcpSecurity, exactly the gap PromptInjectionBehavior had.
+        if (!cfg.EnableResponseSanitization)
             return await next();
 
         var response = await next();

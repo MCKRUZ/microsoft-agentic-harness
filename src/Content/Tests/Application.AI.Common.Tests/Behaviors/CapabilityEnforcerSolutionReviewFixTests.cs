@@ -1,7 +1,9 @@
+using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Services.Sandbox;
 using Domain.AI.Sandbox;
 using Domain.Common.Config.AI.Sandbox;
 using FluentAssertions;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Moq;
@@ -18,40 +20,36 @@ namespace Application.AI.Common.Tests.Behaviors;
 /// </summary>
 public sealed class CapabilityEnforcerSolutionReviewFixTests
 {
-    private SandboxConfig _config = new();
-    private readonly ToolPermissionProfileResolver _resolver;
-    private readonly CapabilityEnforcer _enforcer;
-
-    public CapabilityEnforcerSolutionReviewFixTests()
+    // "file_system" declares FileRead|FileWrite via ITool.RequiredCapabilities (#387) — mirrors
+    // ToolCapabilityResolverTests' pattern for the sibling composition-capability resolver, not the
+    // dead [ToolCapabilityAttribute]/RegisterToolType mechanism this replaces.
+    private static CapabilityEnforcer BuildEnforcer(SandboxConfig config)
     {
-        var configMock = new Mock<IOptionsMonitor<SandboxConfig>>();
-        configMock.Setup(m => m.CurrentValue).Returns(() => _config);
-        _resolver = new ToolPermissionProfileResolver(configMock.Object);
-        _enforcer = new CapabilityEnforcer(
-            _resolver,
-            Mock.Of<ILogger<CapabilityEnforcer>>());
-    }
+        var services = new ServiceCollection();
+        services.AddKeyedSingleton<ITool>("file_system", (_, _) => Mock.Of<ITool>(t =>
+            t.RequiredCapabilities == (ToolCapability.FileRead | ToolCapability.FileWrite)));
 
-    [ToolCapability(ToolCapability.FileRead | ToolCapability.FileWrite)]
-    private sealed class FileToolType { }
+        var configMock = new Mock<IOptionsMonitor<SandboxConfig>>();
+        configMock.Setup(m => m.CurrentValue).Returns(config);
+
+        var resolver = new ToolPermissionProfileResolver(
+            services.BuildServiceProvider(), configMock.Object, new HashSet<string> { "file_system" });
+        return new CapabilityEnforcer(resolver, Mock.Of<ILogger<CapabilityEnforcer>>());
+    }
 
     [Fact]
     public async Task EnforceAsync_SiblingDirectorySharingAllowedPrefix_IsDenied()
     {
-        _resolver.RegisterToolType("file_system", typeof(FileToolType));
-        _config = new SandboxConfig
+        var enforcer = BuildEnforcer(new SandboxConfig
         {
             ToolOverrides = new()
             {
-                ["file_system"] = new ToolOverrideConfig
-                {
-                    AllowedPaths = ["./sandbox/work"]
-                }
+                ["file_system"] = new ToolOverrideConfig { AllowedPaths = ["./sandbox/work"] }
             }
-        };
+        });
 
         // Sibling "work-evil" begins with the allowed string "sandbox/work" but is NOT a child.
-        var result = await _enforcer.EnforceAsync(
+        var result = await enforcer.EnforceAsync(
             "file_system",
             ToolCapability.FileRead | ToolCapability.FileWrite,
             requestedPaths: ["./sandbox/work-evil/loot.txt"]);
@@ -63,19 +61,15 @@ public sealed class CapabilityEnforcerSolutionReviewFixTests
     [Fact]
     public async Task EnforceAsync_TrueChildOfAllowedPath_IsPermitted()
     {
-        _resolver.RegisterToolType("file_system", typeof(FileToolType));
-        _config = new SandboxConfig
+        var enforcer = BuildEnforcer(new SandboxConfig
         {
             ToolOverrides = new()
             {
-                ["file_system"] = new ToolOverrideConfig
-                {
-                    AllowedPaths = ["./sandbox/work"]
-                }
+                ["file_system"] = new ToolOverrideConfig { AllowedPaths = ["./sandbox/work"] }
             }
-        };
+        });
 
-        var result = await _enforcer.EnforceAsync(
+        var result = await enforcer.EnforceAsync(
             "file_system",
             ToolCapability.FileRead | ToolCapability.FileWrite,
             requestedPaths: ["./sandbox/work/output.txt"]);
@@ -87,19 +81,15 @@ public sealed class CapabilityEnforcerSolutionReviewFixTests
     [Fact]
     public async Task EnforceAsync_AllowedPathItself_IsPermitted()
     {
-        _resolver.RegisterToolType("file_system", typeof(FileToolType));
-        _config = new SandboxConfig
+        var enforcer = BuildEnforcer(new SandboxConfig
         {
             ToolOverrides = new()
             {
-                ["file_system"] = new ToolOverrideConfig
-                {
-                    AllowedPaths = ["./sandbox/work"]
-                }
+                ["file_system"] = new ToolOverrideConfig { AllowedPaths = ["./sandbox/work"] }
             }
-        };
+        });
 
-        var result = await _enforcer.EnforceAsync(
+        var result = await enforcer.EnforceAsync(
             "file_system",
             ToolCapability.FileRead | ToolCapability.FileWrite,
             requestedPaths: ["./sandbox/work"]);
@@ -111,8 +101,7 @@ public sealed class CapabilityEnforcerSolutionReviewFixTests
     [Fact]
     public async Task EnforceAsync_SiblingOfDeniedPath_IsNotOverDenied()
     {
-        _resolver.RegisterToolType("file_system", typeof(FileToolType));
-        _config = new SandboxConfig
+        var enforcer = BuildEnforcer(new SandboxConfig
         {
             ToolOverrides = new()
             {
@@ -122,11 +111,11 @@ public sealed class CapabilityEnforcerSolutionReviewFixTests
                     DeniedPaths = ["./data/secret"]
                 }
             }
-        };
+        });
 
         // "secrets-public" shares the prefix "data/secret" but is a sibling of the denied
         // "data/secret" directory and must NOT be over-denied.
-        var result = await _enforcer.EnforceAsync(
+        var result = await enforcer.EnforceAsync(
             "file_system",
             ToolCapability.FileRead | ToolCapability.FileWrite,
             requestedPaths: ["./data/secrets-public/notes.txt"]);
@@ -138,8 +127,7 @@ public sealed class CapabilityEnforcerSolutionReviewFixTests
     [Fact]
     public async Task EnforceAsync_TrueChildOfDeniedPath_IsDenied()
     {
-        _resolver.RegisterToolType("file_system", typeof(FileToolType));
-        _config = new SandboxConfig
+        var enforcer = BuildEnforcer(new SandboxConfig
         {
             ToolOverrides = new()
             {
@@ -149,9 +137,9 @@ public sealed class CapabilityEnforcerSolutionReviewFixTests
                     DeniedPaths = ["./data/secret"]
                 }
             }
-        };
+        });
 
-        var result = await _enforcer.EnforceAsync(
+        var result = await enforcer.EnforceAsync(
             "file_system",
             ToolCapability.FileRead | ToolCapability.FileWrite,
             requestedPaths: ["./data/secret/key.pem"]);

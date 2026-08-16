@@ -22,13 +22,11 @@ namespace Infrastructure.AI.Tools.Workspace;
 /// vector even via the sandbox boundary.
 /// </para>
 /// <para>
-/// The permission profile grants <see cref="ToolCapability.FileRead"/>,
-/// <see cref="ToolCapability.FileWrite"/> (test runners drop into
-/// <c>bin/</c>/<c>obj/</c>), and <see cref="ToolCapability.Subprocess"/>
-/// (e.g. <c>dotnet test</c> spawns the test host). It explicitly does NOT
-/// grant <see cref="ToolCapability.NetworkAccess"/> — the workspace skill's
-/// egress allowlist is empty by design, and the verifier capabilities must
-/// match.
+/// The permission profile grants whatever <see cref="ToolCapability"/> the caller declares — see
+/// <c>WorkspaceRunTestsTool.RequiredSandboxCapabilities</c>/<c>WorkspaceRunLintTool.RequiredSandboxCapabilities</c>,
+/// the single source of truth this runner used to duplicate as a hardcoded literal (#387). Neither
+/// declares <see cref="ToolCapability.NetworkAccess"/> — the workspace skill's egress allowlist is
+/// empty by design, and the verifier capabilities must match.
 /// </para>
 /// </remarks>
 public static class WorkspaceCommandRunner
@@ -42,6 +40,11 @@ public static class WorkspaceCommandRunner
     /// <param name="workspace">The active workspace context — supplies the working copy path the sandbox roots its capabilities to.</param>
     /// <param name="executor">The sandbox executor to dispatch through.</param>
     /// <param name="toolName">Tool name for diagnostic attribution in the sandbox request.</param>
+    /// <param name="requiredCapabilities">
+    /// The sandbox capabilities this run needs — supplied by the caller (e.g.
+    /// <c>WorkspaceRunTestsTool.RequiredSandboxCapabilities</c>) rather than hardcoded here, so there
+    /// is one place that states what a <c>run_tests</c>/<c>run_lint</c> call may do, not two (#387).
+    /// </param>
     /// <param name="timeout">Optional wall-clock timeout for the command. Defaults to 5 minutes — tests can be slow.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>A <see cref="ToolResult"/> describing the run outcome.</returns>
@@ -50,6 +53,7 @@ public static class WorkspaceCommandRunner
         WorkspaceContext workspace,
         ISandboxExecutor executor,
         string toolName,
+        ToolCapability requiredCapabilities,
         TimeSpan? timeout = null,
         CancellationToken cancellationToken = default)
     {
@@ -67,10 +71,7 @@ public static class WorkspaceCommandRunner
 
         var profile = new ToolPermissionProfile
         {
-            RequiredCapabilities =
-                ToolCapability.FileRead
-                | ToolCapability.FileWrite
-                | ToolCapability.Subprocess,
+            RequiredCapabilities = requiredCapabilities,
             AllowedPaths = [workspace.WorkingCopyPath],
             AllowedPrograms = [program],
             AllowedHosts = [],

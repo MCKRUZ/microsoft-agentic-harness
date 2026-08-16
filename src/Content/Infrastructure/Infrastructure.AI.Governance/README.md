@@ -38,7 +38,9 @@ Microsoft.AgentGovernance (NuGet)
          ^
          |
   Presentation composition root:
-    if (config.Governance.Enabled)
+    if (config.Governance.Enabled
+        || config.Governance.EnablePromptInjectionDetection
+        || config.Governance.EnableMcpSecurity)
         services.AddGovernanceDependencies(config);
     else
         services.AddGovernanceNoOpDependencies();
@@ -204,14 +206,15 @@ Infrastructure.AI.Governance/
   "AppConfig": {
     "AI": {
       "Governance": {
-        "Enabled": true,                    // false = register no-ops instead
-        "PolicyPaths": [                    // YAML policy files to load
+        "Enabled": true,                    // declarative YAML policy layer; false = no-op policy engine
+        "PolicyPaths": [                    // YAML policy files to load (only read when Enabled is true)
           "Policies/default-policy.yaml",
           "Policies/production-policy.yaml"
         ],
         "EnableAudit": true,                // Enable hash-chained audit logging
         "EnableMetrics": true,              // Emit OTel governance metrics
-        "EnablePromptInjectionDetection": true,  // Enable injection scanning
+        "EnablePromptInjectionDetection": true,  // Independent of Enabled (#386) — real scanner even if Enabled=false
+        "EnableMcpSecurity": true,          // Independent of Enabled (#386) — real scanner even if Enabled=false
         "ConflictStrategy": "MostRestrictive"    // How to resolve conflicting policies
       }
     }
@@ -252,7 +255,14 @@ raw engine type.
 
 ### How to Disable Governance for Development
 
-Set `AppConfig.AI.Governance.Enabled = false` in appsettings.Development.json. The composition root will call `AddGovernanceNoOpDependencies()` and all checks become passthrough.
+`Enabled`, `EnablePromptInjectionDetection`, and `EnableMcpSecurity` are three independent
+switches (#386) — the composition root calls `AddGovernanceDependencies()` whenever *any* of them
+is `true`, and `AddGovernanceNoOpDependencies()` only when all three are `false`. To disable
+everything, clear all three in appsettings.Development.json. To disable only the declarative
+policy layer while keeping prompt-injection detection and/or MCP tool scanning live, set
+`Enabled = false` and leave the sub-flag(s) you still want `true` — `PolicyPaths` is not read and
+`IGovernancePolicyEngine` resolves the no-op engine, but the other feature areas keep running on
+the real AGT-backed adapters.
 
 ## Dependencies
 

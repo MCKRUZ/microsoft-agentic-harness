@@ -68,6 +68,12 @@ public abstract class BlockingProxyTool : ITool
     /// </remarks>
     public bool IsDirectlyInvocable => false;
 
+    // No RequiredCapabilities override for this family (RenderChartTool, RenderImageTool,
+    // RenderFormTool, RenderTableTool, DashboardControlTool): the whole effect is an in-process
+    // AG-UI round-trip to a browser already attached to this run — no filesystem, subprocess, or new
+    // outbound network connection this tool itself initiates. ToolCapability.None (the interface
+    // default) is the honest answer, not an oversight (#387).
+
     /// <summary>Whether a client is currently attached and able to service the round-trip.</summary>
     protected bool IsClientAttached => _bridge.IsClientAttached;
 

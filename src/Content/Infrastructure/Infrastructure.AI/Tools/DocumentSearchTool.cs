@@ -6,6 +6,7 @@ using Domain.AI.Changes;
 using Domain.Common.Config.AI.Governance;
 using Domain.AI.Models;
 using Domain.AI.RAG.Enums;
+using Domain.AI.Sandbox;
 
 namespace Infrastructure.AI.Tools;
 
@@ -87,6 +88,14 @@ public sealed class DocumentSearchTool : ITool
 
     /// <inheritdoc />
     public bool IsConcurrencySafe => true;
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// Reads the vector/BM25 index (<see cref="ToolCapability.DatabaseRead"/>) and, for CRAG
+    /// evaluation and reranking, invokes an LLM (<see cref="ToolCapability.LlmInvocation"/>) — both
+    /// happen in-process via <see cref="IRagOrchestrator"/>, not through a sandboxed subprocess.
+    /// </remarks>
+    public ToolCapability RequiredCapabilities => ToolCapability.DatabaseRead | ToolCapability.LlmInvocation;
 
     /// <inheritdoc />
     public async Task<ToolResult> ExecuteAsync(

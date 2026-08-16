@@ -10,6 +10,11 @@
 # Warn to Allowed=true and the caller-visible decision discards the matched rule) — there is no log
 # line or audit entry beyond that metric today. Don't read "warn" below as producing a visible signal
 # by itself.
+#
+# The risk tiers below are checked against each named tool's own ITool.RequiredCapabilities
+# declaration by DefaultPolicyCapabilityAlignmentTests (Infrastructure.AI.Governance.Tests/Policies) —
+# a tool moved into the wrong tier here, or a tool's declaration drifting out from under the tier it
+# is in, fails that test at build time rather than waiting for the next manual review to catch it (#387).
 name: default-policy
 description: Default governance policy for the agentic harness template
 scope: global
@@ -18,13 +23,15 @@ rules:
   # All four shell out to a real CLI inside the sandbox (WorkspaceCommandRunner for run_tests/run_lint,
   # IacSandboxRunner for iac_plan/iac_scan) -- despite their own tool-level docs describing the iac_*
   # pair as "read-only" (true of their observable effect on the repo/cluster, not of what they're
-  # capable of while running). Their actual granted capabilities differ, verified against each
-  # runner's own RequiredCapabilities, not assumed: run_tests/run_lint get FileRead|FileWrite|Subprocess
-  # ONLY -- WorkspaceCommandRunner's own doc comment states NetworkAccess is deliberately NOT granted
-  # (the workspace skill's egress allowlist is empty by design) -- while iac_plan/iac_scan additionally
-  # get NetworkAccess (IacSandboxRunner). iac_generate is NOT included here: IIacGenerator.GenerateAsync
-  # is documented as deterministic templating with no sandbox invocation at all, so it genuinely belongs
-  # with the read-only tools below.
+  # capable of while running). Their actual granted capabilities differ, sourced from each tool's own
+  # ITool.RequiredCapabilities declaration (the runners take it as a caller-supplied parameter, not a
+  # hardcoded literal, since #387) and build-checked against this tier by
+  # DefaultPolicyCapabilityAlignmentTests: run_tests/run_lint get FileRead|FileWrite|Subprocess ONLY --
+  # WorkspaceRunTestsTool/WorkspaceRunLintTool's own doc comments state NetworkAccess is deliberately
+  # NOT granted (the workspace skill's egress allowlist is empty by design) -- while iac_plan/iac_scan
+  # additionally get NetworkAccess (IacPlanTool/IacScanTool). iac_generate is NOT included here:
+  # IIacGenerator.GenerateAsync is documented as deterministic templating with no sandbox invocation at
+  # all, so it genuinely belongs with the read-only tools below.
   - name: warn-sandboxed-execution
     condition: "tool == 'run_tests' || tool == 'run_lint' || tool == 'iac_plan' || tool == 'iac_scan'"
     action: warn

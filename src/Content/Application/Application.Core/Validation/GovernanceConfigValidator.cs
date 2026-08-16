@@ -61,32 +61,18 @@ public sealed class GovernanceConfigValidator : AbstractValidator<GovernanceConf
                 "PolicyPaths contains a blank entry. A blank path never resolves to a file — remove it " +
                 "or supply the policy file path.");
 
-        // Landmine guard: these sub-features only run through the AGT kernel path, which the composition
-        // root wires exclusively when Enabled=true. Turning one on while governance is disabled is a
-        // no-op the operator cannot see — the composition root registers the no-op scanner/scanner and
-        // the corresponding MediatR behaviour passes through — so the flag never fires. Reject it so the
-        // contradiction surfaces at boot instead of masquerading as protection at runtime. (Independent
-        // of EnforceToolInvocation, ProgressGuard, and DataClassification.Mode, which are consumed on the
-        // live tool path regardless of Enabled and so are intentionally not constrained here.)
-        When(x => !x.Enabled, () =>
-        {
-            RuleFor(x => x.EnablePromptInjectionDetection)
-                .Equal(false)
-                .WithMessage(
-                    "EnablePromptInjectionDetection requires Governance.Enabled=true. With governance " +
-                    "disabled the composition root wires the no-op injection scanner and " +
-                    "PromptInjectionBehavior passes through, so detection never runs — enable governance " +
-                    "or clear this flag.");
+        // #386: EnablePromptInjectionDetection and EnableMcpSecurity used to require Enabled=true,
+        // because the composition root only ever wired the AGT kernel path when Enabled was true —
+        // turning one on while governance was "disabled" was a silent no-op. That coupling is gone:
+        // the composition root (Presentation.Common.IServiceCollectionExtensions,
+        // Infrastructure.AI.MCPServer.Program) now stands up AddGovernanceDependencies whenever ANY
+        // of Enabled, EnablePromptInjectionDetection, or EnableMcpSecurity is true, and
+        // AddGovernanceDependencies itself only loads the declarative policy layer (PolicyPaths,
+        // IGovernancePolicyEngine) when Enabled is true — resolving NoOpPolicyEngine otherwise. So
+        // Enabled now governs the policy layer alone; the other two arm the kernel on their own and
+        // no longer need this validator's help to do so.
 
-            RuleFor(x => x.EnableMcpSecurity)
-                .Equal(false)
-                .WithMessage(
-                    "EnableMcpSecurity requires Governance.Enabled=true. With governance disabled the " +
-                    "composition root wires the no-op MCP scanner, so tool-registration scanning never " +
-                    "runs — enable governance or clear this flag.");
-        });
-
-        // The same landmine, for the behaviour posture — but stated precisely, because the imprecise
+        // The same landmine shape, for the behaviour posture — but stated precisely, because the imprecise
         // version of this sentence is wrong. The posture is applied by IToolInvocationGovernor, and
         // GovernanceEnforcement.IsActive arms that governor on EITHER EnforceToolInvocation OR an
         // ambient capability envelope. So with enforcement off the posture is not inert everywhere: it

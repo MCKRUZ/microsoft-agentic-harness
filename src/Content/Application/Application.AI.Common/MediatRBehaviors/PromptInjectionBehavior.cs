@@ -47,7 +47,11 @@ public sealed class PromptInjectionBehavior<TRequest, TResponse>
             return await next();
 
         var cfg = _config.CurrentValue;
-        if (!cfg.Enabled || !cfg.EnablePromptInjectionDetection)
+        // EnablePromptInjectionDetection is independent of Enabled (#386) — it arms the real AGT
+        // scanner in DI on its own, so this must not also require the declarative policy layer to be
+        // on. A stale `!cfg.Enabled ||` here would leave detection resolved to the real scanner in DI
+        // yet never actually invoked, which is a worse defect than the flag doing nothing visibly.
+        if (!cfg.EnablePromptInjectionDetection)
             return await next();
 
         var result = _scanner.Scan(screenable.ContentToScreen);

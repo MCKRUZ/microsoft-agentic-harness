@@ -1,3 +1,4 @@
+using Domain.AI.Sandbox;
 using FluentAssertions;
 using Infrastructure.AI.Iac;
 using Xunit;
@@ -29,7 +30,8 @@ public sealed class IacSandboxRunnerSolutionReviewFixTests
             moduleDirectory: ModuleDir,
             registryAllowlist: allowlist,
             executor: sandbox,
-            toolName: "terraform_plan");
+            toolName: "terraform_plan",
+            requiredCapabilities: ToolCapability.FileRead | ToolCapability.FileWrite | ToolCapability.Subprocess | ToolCapability.NetworkAccess);
 
         var request = sandbox.RequestFor("terraform");
 
@@ -51,7 +53,8 @@ public sealed class IacSandboxRunnerSolutionReviewFixTests
             moduleDirectory: ModuleDir,
             registryAllowlist: [],
             executor: sandbox,
-            toolName: "terraform_plan");
+            toolName: "terraform_plan",
+            requiredCapabilities: ToolCapability.FileRead | ToolCapability.FileWrite | ToolCapability.Subprocess | ToolCapability.NetworkAccess);
 
         // No declared registries means nothing to precheck — the preflight is allowed
         // to short-circuit only because there is genuinely no egress claim to enforce.
@@ -69,7 +72,8 @@ public sealed class IacSandboxRunnerSolutionReviewFixTests
             moduleDirectory: ModuleDir,
             registryAllowlist: ["registry.terraform.io", "  ", "registry.terraform.io"],
             executor: sandbox,
-            toolName: "terraform_plan");
+            toolName: "terraform_plan",
+            requiredCapabilities: ToolCapability.FileRead | ToolCapability.FileWrite | ToolCapability.Subprocess | ToolCapability.NetworkAccess);
 
         var targets = sandbox.RequestFor("terraform").EgressPrecheckTargets!;
         targets.Select(u => u.Host).Should().ContainSingle().Which.Should().Be("registry.terraform.io");

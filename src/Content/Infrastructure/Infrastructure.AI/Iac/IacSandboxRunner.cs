@@ -17,13 +17,12 @@ namespace Infrastructure.AI.Iac;
 /// argument can never smuggle a shell metacharacter through the sandbox boundary.
 /// </para>
 /// <para>
-/// The permission profile grants <see cref="ToolCapability.FileRead"/>,
-/// <see cref="ToolCapability.FileWrite"/> (terraform writes a <c>.terraform</c>
-/// cache and a plan file; bicep emits an ARM template), <see cref="ToolCapability.Subprocess"/>
-/// (the CLIs spawn provider plugins / language servers), and
-/// <see cref="ToolCapability.NetworkAccess"/> scoped to the provider/module
-/// registries via <see cref="ToolPermissionProfile.AllowedHosts"/>. The
-/// filesystem scope is the single module directory.
+/// The permission profile grants whatever <see cref="ToolCapability"/> the caller declares — see
+/// <c>IacPlanTool.RequiredSandboxCapabilities</c>/<c>IacScanTool.RequiredSandboxCapabilities</c>,
+/// the single source of truth this runner used to duplicate as a hardcoded literal (#387). Network
+/// access is scoped to the provider/module registries via
+/// <see cref="ToolPermissionProfile.AllowedHosts"/>. The filesystem scope is the single module
+/// directory.
 /// </para>
 /// <para>
 /// Egress enforcement is the registry allowlist from
@@ -52,6 +51,11 @@ public static class IacSandboxRunner
     /// <param name="registryAllowlist">The provider/module-registry hosts the run may reach. Seeds the sandbox egress allowlist.</param>
     /// <param name="executor">The sandbox executor to dispatch through.</param>
     /// <param name="toolName">Tool name for diagnostic attribution in the sandbox request.</param>
+    /// <param name="requiredCapabilities">
+    /// The sandbox capabilities this run needs — supplied by the caller (e.g.
+    /// <c>IacPlanTool.RequiredSandboxCapabilities</c>) rather than hardcoded here, so there is one
+    /// place that states what an <c>iac_plan</c>/<c>iac_scan</c> call may do, not two (#387).
+    /// </param>
     /// <param name="timeout">Optional wall-clock timeout. Defaults to 5 minutes — terraform init/plan can be slow.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>The raw <see cref="SandboxExecutionResult"/> for the caller to parse.</returns>
@@ -62,6 +66,7 @@ public static class IacSandboxRunner
         IReadOnlyList<string> registryAllowlist,
         ISandboxExecutor executor,
         string toolName,
+        ToolCapability requiredCapabilities,
         TimeSpan? timeout = null,
         CancellationToken cancellationToken = default)
     {
@@ -74,11 +79,7 @@ public static class IacSandboxRunner
 
         var profile = new ToolPermissionProfile
         {
-            RequiredCapabilities =
-                ToolCapability.FileRead
-                | ToolCapability.FileWrite
-                | ToolCapability.Subprocess
-                | ToolCapability.NetworkAccess,
+            RequiredCapabilities = requiredCapabilities,
             AllowedPaths = [moduleDirectory],
             AllowedPrograms = [program],
             AllowedHosts = registryAllowlist,

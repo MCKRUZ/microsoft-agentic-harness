@@ -1,38 +1,58 @@
+using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Services.Sandbox;
 using Domain.AI.Sandbox;
 using Domain.Common.Config.AI.Sandbox;
 using FluentAssertions;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using Moq;
 using Xunit;
 
 namespace Application.AI.Common.Tests.Services.Sandbox;
 
+/// <summary>
+/// Tests for <see cref="ToolPermissionProfileResolver"/>. The base declaration now comes from a
+/// registered <see cref="ITool"/>'s own <see cref="ITool.RequiredCapabilities"/>/
+/// <see cref="ITool.MinimumIsolation"/> via bounded-key-set keyed DI, mirroring
+/// <c>ToolCapabilityResolverTests</c>'s pattern for the sibling composition-capability resolver —
+/// not the dead <c>[ToolCapabilityAttribute]</c>/<c>RegisterToolType</c> mechanism this replaces
+/// (#387).
+/// </summary>
 public sealed class ToolPermissionProfileResolverTests
 {
-    private SandboxConfig _config = new();
-    private readonly ToolPermissionProfileResolver _resolver;
-
-    public ToolPermissionProfileResolverTests()
+    private static ToolPermissionProfileResolver BuildResolver(
+        SandboxConfig? config = null,
+        params (string Name, ITool Tool)[] tools)
     {
+        var services = new ServiceCollection();
+        foreach (var (name, tool) in tools)
+            services.AddKeyedSingleton<ITool>(name, (_, _) => tool);
+
         var configMock = new Mock<IOptionsMonitor<SandboxConfig>>();
-        configMock.Setup(m => m.CurrentValue).Returns(() => _config);
-        _resolver = new ToolPermissionProfileResolver(configMock.Object);
+        configMock.Setup(m => m.CurrentValue).Returns(config ?? new SandboxConfig());
+
+        return new ToolPermissionProfileResolver(
+            services.BuildServiceProvider(),
+            configMock.Object,
+            new HashSet<string>(tools.Select(t => t.Name)));
     }
 
-    [ToolCapability(ToolCapability.FileRead | ToolCapability.FileWrite)]
-    private sealed class FileToolType { }
+    private static ITool FileTool() => Mock.Of<ITool>(t =>
+        t.RequiredCapabilities == (ToolCapability.FileRead | ToolCapability.FileWrite));
 
-    [ToolCapability(ToolCapability.FileRead | ToolCapability.FileWrite | ToolCapability.NetworkAccess)]
-    private sealed class FullToolType { }
+    private static ITool FullTool() => Mock.Of<ITool>(t =>
+        t.RequiredCapabilities == (ToolCapability.FileRead | ToolCapability.FileWrite | ToolCapability.NetworkAccess));
 
-    [ToolCapability(ToolCapability.FileRead, MinimumIsolation = SandboxIsolationLevel.Container)]
-    private sealed class ContainerToolType { }
+    private static ITool ContainerTool() => Mock.Of<ITool>(t =>
+        t.RequiredCapabilities == ToolCapability.FileRead
+        && t.MinimumIsolation == SandboxIsolationLevel.Container);
 
     [Fact]
-    public void Resolve_NoAttribute_NoOverride_ReturnsDefaultProfile()
+    public void Resolve_UnregisteredName_NoOverride_ReturnsDefaultProfile()
     {
-        var profile = _resolver.Resolve("unknown_tool");
+        var resolver = BuildResolver();
+
+        var profile = resolver.Resolve("unknown_tool");
 
         profile.RequiredCapabilities.Should().Be(ToolCapability.None);
         profile.AllowedPaths.Should().BeEmpty();
@@ -43,20 +63,20 @@ public sealed class ToolPermissionProfileResolverTests
     }
 
     [Fact]
-    public void Resolve_AttributeOnly_ReturnsAttributeValues()
+    public void Resolve_DeclarationOnly_ReturnsDeclaredValues()
     {
-        _resolver.RegisterToolType("file_system", typeof(FileToolType));
+        var resolver = BuildResolver(tools: ("file_system", FileTool()));
 
-        var profile = _resolver.Resolve("file_system");
+        var profile = resolver.Resolve("file_system");
 
         profile.RequiredCapabilities.Should().Be(ToolCapability.FileRead | ToolCapability.FileWrite);
-        profile.MinimumIsolation.Should().Be(SandboxIsolationLevel.Process);
+        profile.MinimumIsolation.Should().Be(SandboxIsolationLevel.None);
     }
 
     [Fact]
     public void Resolve_OverrideOnly_MergesWithDefaults()
     {
-        _config = new SandboxConfig
+        var config = new SandboxConfig
         {
             ToolOverrides = new()
             {
@@ -68,8 +88,9 @@ public sealed class ToolPermissionProfileResolverTests
                 }
             }
         };
+        var resolver = BuildResolver(config);
 
-        var profile = _resolver.Resolve("custom_tool");
+        var profile = resolver.Resolve("custom_tool");
 
         profile.RequiredCapabilities.Should().Be(ToolCapability.None);
         profile.AllowedPaths.Should().Contain("./data");
@@ -78,21 +99,18 @@ public sealed class ToolPermissionProfileResolverTests
     }
 
     [Fact]
-    public void Resolve_OverrideDeniedCapabilities_RemovesFromAttribute()
+    public void Resolve_OverrideDeniedCapabilities_RemovesFromDeclaration()
     {
-        _resolver.RegisterToolType("full_tool", typeof(FullToolType));
-        _config = new SandboxConfig
+        var config = new SandboxConfig
         {
             ToolOverrides = new()
             {
-                ["full_tool"] = new ToolOverrideConfig
-                {
-                    DeniedCapabilities = ["NetworkAccess"]
-                }
+                ["full_tool"] = new ToolOverrideConfig { DeniedCapabilities = ["NetworkAccess"] }
             }
         };
+        var resolver = BuildResolver(config, ("full_tool", FullTool()));
 
-        var profile = _resolver.Resolve("full_tool");
+        var profile = resolver.Resolve("full_tool");
 
         profile.RequiredCapabilities.Should().Be(ToolCapability.FileRead | ToolCapability.FileWrite);
         profile.RequiredCapabilities.Should().NotHaveFlag(ToolCapability.NetworkAccess);
@@ -101,19 +119,16 @@ public sealed class ToolPermissionProfileResolverTests
     [Fact]
     public void Resolve_OverrideMinimumIsolation_ElevatesButNeverDowngrades()
     {
-        _resolver.RegisterToolType("container_tool", typeof(ContainerToolType));
-        _config = new SandboxConfig
+        var config = new SandboxConfig
         {
             ToolOverrides = new()
             {
-                ["container_tool"] = new ToolOverrideConfig
-                {
-                    MinimumIsolation = "Process"
-                }
+                ["container_tool"] = new ToolOverrideConfig { MinimumIsolation = "Process" }
             }
         };
+        var resolver = BuildResolver(config, ("container_tool", ContainerTool()));
 
-        var profile = _resolver.Resolve("container_tool");
+        var profile = resolver.Resolve("container_tool");
 
         profile.MinimumIsolation.Should().Be(SandboxIsolationLevel.Container);
     }
@@ -121,8 +136,7 @@ public sealed class ToolPermissionProfileResolverTests
     [Fact]
     public void Resolve_OverridePaths_MergesLists()
     {
-        _resolver.RegisterToolType("file_system", typeof(FileToolType));
-        _config = new SandboxConfig
+        var config = new SandboxConfig
         {
             ToolOverrides = new()
             {
@@ -135,13 +149,32 @@ public sealed class ToolPermissionProfileResolverTests
                 }
             }
         };
+        var resolver = BuildResolver(config, ("file_system", FileTool()));
 
-        var profile = _resolver.Resolve("file_system");
+        var profile = resolver.Resolve("file_system");
 
         profile.AllowedPaths.Should().Contain("./workspace").And.Contain("./temp");
         profile.DeniedPaths.Should().Contain("./workspace/.secrets");
         profile.AllowedHosts.Should().Contain("api.example.com");
         profile.DeniedHosts.Should().Contain("evil.example.com");
+    }
+
+    [Fact]
+    public void Resolve_NameNotInBoundedKeySet_IsTreatedAsUnregistered()
+    {
+        // A name that carries a real ITool registration in the container but was not included in the
+        // bounded key set (e.g. an MCP or bundle-owned name) must never be probed — see the resolver's
+        // remarks. Simulated here by registering the tool but passing an empty key set.
+        var services = new ServiceCollection();
+        services.AddKeyedSingleton<ITool>("mcp_tool", (_, _) => FullTool());
+        var configMock = new Mock<IOptionsMonitor<SandboxConfig>>();
+        configMock.Setup(m => m.CurrentValue).Returns(new SandboxConfig());
+        var resolver = new ToolPermissionProfileResolver(
+            services.BuildServiceProvider(), configMock.Object, new HashSet<string>());
+
+        var profile = resolver.Resolve("mcp_tool");
+
+        profile.RequiredCapabilities.Should().Be(ToolCapability.None);
     }
 
     [Fact]
@@ -202,19 +235,16 @@ public sealed class ToolPermissionProfileResolverTests
     public void Resolve_CommaSeparatedDeniedCapabilities_StillDeny()
     {
         // The regression this guards, stated where it actually bites: a deny that stops denying.
-        _resolver.RegisterToolType("full_tool", typeof(FullToolType));
-        _config = new SandboxConfig
+        var config = new SandboxConfig
         {
             ToolOverrides = new()
             {
-                ["full_tool"] = new ToolOverrideConfig
-                {
-                    DeniedCapabilities = ["NetworkAccess,FileWrite"]
-                }
+                ["full_tool"] = new ToolOverrideConfig { DeniedCapabilities = ["NetworkAccess,FileWrite"] }
             }
         };
+        var resolver = BuildResolver(config, ("full_tool", FullTool()));
 
-        var profile = _resolver.Resolve("full_tool");
+        var profile = resolver.Resolve("full_tool");
 
         profile.RequiredCapabilities.Should().Be(ToolCapability.FileRead);
         profile.RequiredCapabilities.Should().NotHaveFlag(ToolCapability.NetworkAccess);
@@ -226,16 +256,16 @@ public sealed class ToolPermissionProfileResolverTests
     {
         // The other half of the contract: a numeric deny entry is refused rather than expanded to
         // every bit. "255" would otherwise strip all capabilities from the tool.
-        _resolver.RegisterToolType("full_tool", typeof(FullToolType));
-        _config = new SandboxConfig
+        var config = new SandboxConfig
         {
             ToolOverrides = new()
             {
                 ["full_tool"] = new ToolOverrideConfig { DeniedCapabilities = ["255"] }
             }
         };
+        var resolver = BuildResolver(config, ("full_tool", FullTool()));
 
-        var profile = _resolver.Resolve("full_tool");
+        var profile = resolver.Resolve("full_tool");
 
         profile.RequiredCapabilities.Should().Be(
             ToolCapability.FileRead | ToolCapability.FileWrite | ToolCapability.NetworkAccess);
@@ -257,22 +287,22 @@ public sealed class ToolPermissionProfileResolverTests
     [InlineData("99")]
     [InlineData("2")]                       // the numeric form of a real isolation level
     [InlineData("None,Container")]
-    public void Resolve_NonNameMinimumIsolation_IsIgnoredAndTheAttributeFloorStands(string configured)
+    public void Resolve_NonNameMinimumIsolation_IsIgnoredAndTheDeclaredFloorStands(string configured)
     {
         // The override may only elevate isolation, so an unparseable value must land on None and
-        // leave the tool's compile-time floor untouched — not on an isolation level that is not a
+        // leave the tool's declared floor untouched — not on an isolation level that is not a
         // member, which Math.Max would then treat as higher than Container.
-        _resolver.RegisterToolType("file_system", typeof(FileToolType));
-        _config = new SandboxConfig
+        var config = new SandboxConfig
         {
             ToolOverrides = new()
             {
-                ["file_system"] = new ToolOverrideConfig { MinimumIsolation = configured }
+                ["container_tool"] = new ToolOverrideConfig { MinimumIsolation = configured }
             }
         };
+        var resolver = BuildResolver(config, ("container_tool", ContainerTool()));
 
-        var profile = _resolver.Resolve("file_system");
+        var profile = resolver.Resolve("container_tool");
 
-        profile.MinimumIsolation.Should().Be(SandboxIsolationLevel.Process);
+        profile.MinimumIsolation.Should().Be(SandboxIsolationLevel.Container);
     }
 }

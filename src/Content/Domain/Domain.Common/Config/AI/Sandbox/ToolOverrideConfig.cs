@@ -1,15 +1,15 @@
 namespace Domain.Common.Config.AI.Sandbox;
 
 /// <summary>
-/// Per-tool permission override from appsettings. Merged with compile-time
-/// <c>[ToolCapabilityAttribute]</c> using deny-overrides-allow semantics.
-/// Overrides can restrict capabilities but never expand beyond the attribute declaration.
+/// Per-tool permission override from appsettings. Merged with a tool's own
+/// <c>ITool.RequiredCapabilities</c> declaration using deny-overrides-allow semantics.
+/// Overrides can restrict capabilities but never expand beyond what the tool declared.
 /// </summary>
 public sealed class ToolOverrideConfig
 {
     /// <summary>
     /// Capability names to deny (e.g., "NetworkAccess", "Subprocess").
-    /// Removed from the attribute's declared capabilities via bitwise AND-NOT.
+    /// Removed from the tool's declared capabilities via bitwise AND-NOT.
     /// </summary>
     public List<string> DeniedCapabilities { get; init; } = [];
 

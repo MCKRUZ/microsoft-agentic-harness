@@ -8,8 +8,37 @@ namespace Domain.Common.Config.AI;
 /// </summary>
 public sealed class GovernanceConfig
 {
-    /// <summary>Whether governance policy enforcement is enabled.</summary>
+    /// <summary>
+    /// Whether the declarative YAML policy layer (<see cref="PolicyPaths"/>, <c>IGovernancePolicyEngine</c>)
+    /// is loaded and consulted.
+    /// </summary>
+    /// <remarks>
+    /// Governs the policy layer specifically, not the whole Agent Governance Toolkit integration
+    /// (#386). <see cref="EnablePromptInjectionDetection"/> and <see cref="EnableMcpSecurity"/> are
+    /// independent switches: each stands up the AGT kernel on its own, even when this is
+    /// <see langword="false"/>, so turning off the policy layer does not silently turn off
+    /// injection detection or MCP tool scanning. The composition root
+    /// (<c>Presentation.Common.IServiceCollectionExtensions</c>,
+    /// <c>Infrastructure.AI.MCPServer.Program</c>) wires the AGT kernel whenever any of the three
+    /// is <see langword="true"/>; when this flag alone is <see langword="false"/>,
+    /// <c>IGovernancePolicyEngine</c> resolves the no-op engine and <see cref="PolicyPaths"/> is
+    /// never read.
+    /// </remarks>
     public bool Enabled { get; init; }
+
+    /// <summary>
+    /// Whether the composition root should stand up the AGT kernel — <c>true</c> when any of
+    /// <see cref="Enabled"/>, <see cref="EnablePromptInjectionDetection"/>, or
+    /// <see cref="EnableMcpSecurity"/> is on.
+    /// </summary>
+    /// <remarks>
+    /// The single decision behind <c>AddGovernanceDependencies</c> vs <c>AddGovernanceNoOpDependencies</c>
+    /// (#386), computed once here so <c>Presentation.Common.IServiceCollectionExtensions</c> and
+    /// <c>Infrastructure.AI.MCPServer.Program</c> — the two composition roots that each make this call —
+    /// cannot drift apart on what "any of the three" means. A future governance sub-flag that should
+    /// also arm the kernel is added to this one expression, not copied into two files.
+    /// </remarks>
+    public bool ArmsAgtKernel => Enabled || EnablePromptInjectionDetection || EnableMcpSecurity;
 
     /// <summary>
     /// Whether per-invocation governance runs on the agent's live tool-call path. When true, every
@@ -34,7 +63,11 @@ public sealed class GovernanceConfig
     /// <summary>Strategy for resolving conflicts when multiple policy rules match.</summary>
     public ConflictResolutionStrategy ConflictStrategy { get; init; } = ConflictResolutionStrategy.PriorityFirstMatch;
 
-    /// <summary>Whether deterministic prompt injection detection is enabled.</summary>
+    /// <summary>
+    /// Whether deterministic prompt injection detection is enabled. Independent of
+    /// <see cref="Enabled"/> (#386) — stands up the AGT kernel and the real scanner on its own, even
+    /// when the declarative policy layer is off.
+    /// </summary>
     public bool EnablePromptInjectionDetection { get; init; }
 
     /// <summary>
@@ -44,10 +77,14 @@ public sealed class GovernanceConfig
     /// the model, and a finding at or above <see cref="McpToolBlockThreshold"/> withholds that tool.
     /// </summary>
     /// <remarks>
+    /// Independent of <see cref="Enabled"/> (#386) — stands up the AGT kernel and the real scanner on
+    /// its own, even when the declarative policy layer is off.
+    /// <para>
     /// Scanning happens at discovery rather than at call time because the attack surface is the tool's
     /// name, description and parameter schema — text the harness copies into the model's context so
     /// the model knows the tool exists. That text does its work the moment it is in context, whether
     /// or not the tool is ever invoked, so refusing the call later would be too late.
+    /// </para>
     /// </remarks>
     public bool EnableMcpSecurity { get; init; }
 
