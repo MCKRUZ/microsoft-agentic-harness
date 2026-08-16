@@ -298,7 +298,17 @@ public sealed class PatternSecretRedactor : ISecretRedactor
     // set is expected to keep growing. None of today's patterns has a super-linear backtracking path,
     // but a timeout is cheap insurance that a future addition can't turn a large tool result into a
     // CPU stall on the request thread.
-    private static readonly TimeSpan MatchTimeout = TimeSpan.FromMilliseconds(100);
+    //
+    // 100ms was too tight in practice: reproduced RegexMatchTimeoutException on a 20-CHARACTER input
+    // ("AccountKey=[REDACTED]") under nothing more exotic than a full-solution parallel test run —
+    // CPU scheduling contention alone, not backtracking, pushed a trivial match past the deadline.
+    // RegexMatchTimeoutException propagates uncaught from RedactFreeText (the regex-only path has no
+    // exception handling of its own — see Redact's fail-loud contract), so a timeout this tight risks
+    // throwing out of every caller under ordinary production load, not just synthetic pathological
+    // input. 2 seconds still bounds a genuinely catastrophic pattern (today's patterns would need
+    // orders of magnitude worse backtracking to approach even the old 100ms) while sitting far clear
+    // of realistic scheduling jitter.
+    private static readonly TimeSpan MatchTimeout = TimeSpan.FromSeconds(2);
 
     // Keys covered by both the JSON-quoted pattern and the generic key=value/key:value pattern below —
     // kept as one shared alternation so the two patterns can't drift out of sync (a key redacted in one
