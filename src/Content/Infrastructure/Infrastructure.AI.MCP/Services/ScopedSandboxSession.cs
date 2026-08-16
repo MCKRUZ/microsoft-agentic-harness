@@ -5,15 +5,16 @@ namespace Infrastructure.AI.MCP.Services;
 
 /// <summary>
 /// Decorates an <see cref="ISandboxSession"/> so that disposing it also disposes the
-/// <see cref="IServiceScope"/> it was resolved from. <see cref="ISandboxSessionFactory"/> is
+/// <see cref="AsyncServiceScope"/> it was resolved from. <see cref="ISandboxSessionFactory"/> is
 /// scoped (it depends on <c>ISandboxEgressPreflight</c>, which resolves the ambient agent
 /// identity per call), but the singleton <c>McpConnectionManager</c> needs to hold a session
 /// well past the lifetime of any request scope — the same pattern the codebase already uses
-/// elsewhere for a singleton/scoped-dependency mismatch (see the remarks on
-/// <c>TerraformGenerator</c>'s per-run <c>ISandboxExecutor</c> resolution). Every member below is
-/// a pure delegation except <see cref="DisposeAsync"/>.
+/// elsewhere for a singleton/scoped-dependency mismatch (see <c>TerraformGenerator</c>'s per-run
+/// <c>ISandboxExecutor</c> resolution, which uses this same <c>CreateAsyncScope</c> +
+/// <see cref="IAsyncDisposable"/> shape rather than the synchronous <see cref="IServiceScope"/>
+/// one). Every member below is a pure delegation except <see cref="DisposeAsync"/>.
 /// </summary>
-public sealed class ScopedSandboxSession(ISandboxSession inner, IServiceScope scope) : ISandboxSession
+public sealed class ScopedSandboxSession(ISandboxSession inner, AsyncServiceScope scope) : ISandboxSession
 {
     /// <inheritdoc />
     public Stream StandardInput => inner.StandardInput;
@@ -36,7 +37,7 @@ public sealed class ScopedSandboxSession(ISandboxSession inner, IServiceScope sc
         }
         finally
         {
-            scope.Dispose();
+            await scope.DisposeAsync();
         }
     }
 }

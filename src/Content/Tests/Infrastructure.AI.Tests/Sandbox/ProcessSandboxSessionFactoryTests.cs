@@ -224,6 +224,49 @@ public class ProcessSandboxSessionFactoryTests
     }
 
     [SkippableFact]
+    public async Task StartSessionAsync_CallerCancelsAfterProcessStarted_KillsTheOrphanedProcess()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "Windows-only: spawns a real cmd.exe process.");
+
+        // Cancels the token AFTER the real process has already been spawned (StartProcess
+        // succeeded) but before StartSessionAsync returns — the same shape as the caller's
+        // InitializationTimeout firing mid-startup. Before the fix, the cleanup catch excluded
+        // OperationCanceledException entirely, so the spawned process, its Job Object handle,
+        // and its workspace were all leaked in exactly this case. Cancellation has to actually
+        // surface as an exception to exercise that catch — ApplyResourceLimits itself doesn't
+        // observe ct, so the cancellation is set to fire on the next ct-aware call, the
+        // attestation signer's SignStartAsync, mirroring where a real cancelled ct would first
+        // be observed on this path.
+        using var cts = new CancellationTokenSource();
+        int? capturedProcessId = null;
+        _limiter.Setup(x => x.Apply(It.IsAny<System.Diagnostics.Process>(), It.IsAny<ResourceLimits>()))
+            .Returns<System.Diagnostics.Process, ResourceLimits>((p, _) =>
+            {
+                capturedProcessId = p.Id;
+                cts.Cancel();
+                return true;
+            });
+        _attestation
+            .Setup(x => x.SignAsync(It.IsAny<AttestationRequest>(), It.IsAny<CancellationToken>()))
+            .Returns<AttestationRequest, CancellationToken>((_, ct) =>
+            {
+                ct.ThrowIfCancellationRequested();
+                throw new InvalidOperationException("unreachable: ThrowIfCancellationRequested always throws first");
+            });
+
+        var act = () => _sut.StartSessionAsync(CreateRequest(), cts.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>(
+            "cancellation after the process exists must still propagate as a cancellation");
+        capturedProcessId.Should().NotBeNull();
+        _limiter.Verify(x => x.Release(capturedProcessId!.Value), Times.Once,
+            "the process spawned before cancellation fired must not be leaked, including its Job Object handle");
+        _attestation.Verify(x => x.SignAsync(
+                It.Is<AttestationRequest>(r => r.IsFailure), It.IsAny<CancellationToken>()),
+            Times.Never, "a caller giving up is not the security-relevant rejection SignFailureAsync exists to record");
+    }
+
+    [SkippableFact]
     public async Task StartSessionAsync_InvalidMaxSessionDuration_KillsProcessAndReturnsFailureInsteadOfThrowing()
     {
         Skip.IfNot(OperatingSystem.IsWindows(), "Windows-only: spawns a real cmd.exe process.");

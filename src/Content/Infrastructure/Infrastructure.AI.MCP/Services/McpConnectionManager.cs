@@ -466,7 +466,7 @@ public sealed class McpConnectionManager : IAsyncDisposable
     private async Task<Result<ISandboxSession>> StartSandboxedStdioSessionAsync(
         string serverName, McpServerDefinition definition, CancellationToken cancellationToken)
     {
-        var scope = _scopeFactory.CreateScope();
+        var scope = _scopeFactory.CreateAsyncScope();
         var ownershipTransferred = false;
         try
         {
@@ -499,7 +499,7 @@ public sealed class McpConnectionManager : IAsyncDisposable
         finally
         {
             if (!ownershipTransferred)
-                scope.Dispose();
+                await scope.DisposeAsync();
         }
     }
 

@@ -312,6 +312,35 @@ public class DockerSandboxSessionFactoryTests
             "a caller-initiated cancellation must propagate as a cancellation, not be converted into an ordinary Result.Fail");
     }
 
+    [Fact]
+    public async Task StartSessionAsync_CallerCancelsAfterContainerCreated_RemovesTheOrphanedContainer()
+    {
+        // Unlike the "cancels during create" test above, this cancels one step later — after
+        // CreateContainerAsync has already succeeded and a real container ID exists, but before
+        // AttachContainerAsync returns. Before the fix, StartContainerSessionAsync's cleanup
+        // catch excluded OperationCanceledException entirely, so this exact case — the caller's
+        // InitializationTimeout firing after the container is up — leaked the container forever.
+        using var cts = new CancellationTokenSource();
+        _containers.Setup(x => x.AttachContainerAsync(
+                It.IsAny<string>(), It.IsAny<bool>(), It.IsAny<ContainerAttachParameters>(), It.IsAny<CancellationToken>()))
+            .Returns<string, bool, ContainerAttachParameters, CancellationToken>((_, _, _, ct) =>
+            {
+                cts.Cancel();
+                ct.ThrowIfCancellationRequested();
+                throw new InvalidOperationException("unreachable: ThrowIfCancellationRequested always throws first");
+            });
+
+        var act = () => _sut.StartSessionAsync(CreateRequest(), cts.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>(
+            "cancellation after the container exists must still propagate as a cancellation");
+        _containers.Verify(x => x.RemoveContainerAsync(
+                "test-container-id", It.IsAny<ContainerRemoveParameters>(), It.IsAny<CancellationToken>()),
+            Times.Once, "the container created before cancellation fired must not be leaked");
+        _attestation.Verify(x => x.SignAsync(It.IsAny<AttestationRequest>(), It.IsAny<CancellationToken>()),
+            Times.Never, "a caller giving up is not the security-relevant rejection SignFailureAsync exists to record");
+    }
+
     private FakeAttachStream SetUpAttachStream(byte[] frames)
     {
         var fakeStream = new FakeAttachStream(frames);

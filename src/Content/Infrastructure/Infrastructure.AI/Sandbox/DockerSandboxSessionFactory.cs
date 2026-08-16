@@ -110,14 +110,31 @@ public sealed class DockerSandboxSessionFactory(
                 dockerClient, launchPreparer, attachStream, containerId, request.ToolName, workspaceDir,
                 request.MaxSessionDuration, sessionLogger));
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (OperationCanceledException)
         {
-            await launchPreparer.RemoveContainerSafeAsync(containerId);
-            launchPreparer.CleanupWorkspace(workspaceDir);
+            // The caller gave up (e.g. McpConnectionManager's InitializationTimeout) after the
+            // container was already created/started. Clean up the leaked container and
+            // workspace — RemoveContainerSafeAsync and CleanupWorkspace synthesize their own
+            // timeouts and never depend on ct, so they still run with ct already cancelled —
+            // but skip attestation: signing with a cancelled ct would itself throw, and a
+            // caller giving up is not the security-relevant rejection SignFailureAsync exists
+            // to record. Then let cancellation propagate as the caller expects.
+            await CleanupPartialContainerAsync(containerId, workspaceDir);
+            throw;
+        }
+        catch (Exception ex)
+        {
+            await CleanupPartialContainerAsync(containerId, workspaceDir);
 
             var failureReason = $"Docker error: {ex.Message}";
             await attestationSigner.SignFailureAsync(request, failureReason, egressDigest, ct);
             return Result<ISandboxSession>.Fail(failureReason);
         }
+    }
+
+    private async Task CleanupPartialContainerAsync(string? containerId, string workspaceDir)
+    {
+        await launchPreparer.RemoveContainerSafeAsync(containerId);
+        launchPreparer.CleanupWorkspace(workspaceDir);
     }
 }

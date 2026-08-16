@@ -43,7 +43,8 @@ public sealed class SandboxedStdioClientTransport(
         {
             var streamTransport = new StreamClientTransport(session.StandardInput, session.StandardOutput, loggerFactory);
             var protocolTransport = await streamTransport.ConnectAsync(cancellationToken);
-            return new SandboxSessionTransport(protocolTransport, session);
+            return new SandboxSessionTransport(
+                protocolTransport, session, serverName, loggerFactory.CreateLogger<SandboxedStdioClientTransport>());
         }
         catch
         {
@@ -58,21 +59,63 @@ public sealed class SandboxedStdioClientTransport(
     /// Wraps the SDK's own connected <see cref="ITransport"/> so that disposing it also disposes
     /// the underlying <see cref="ISandboxSession"/> — terminating the sandboxed process/container
     /// and releasing its resources — in the same place the SDK already tears down the protocol
-    /// session. Every member below is a pure delegation except <see cref="DisposeAsync"/>.
+    /// session, and so an unexpected mid-session exit (crash, OOM-kill) is logged rather than
+    /// surfacing only as a delayed stream EOF the SDK's own read loop eventually notices. Every
+    /// member below is a pure delegation except <see cref="DisposeAsync"/>.
     /// </summary>
-    private sealed class SandboxSessionTransport(ITransport inner, ISandboxSession session) : ITransport
+    private sealed class SandboxSessionTransport : ITransport
     {
-        public string? SessionId => inner.SessionId;
+        private readonly ITransport _inner;
+        private readonly ISandboxSession _session;
+        private readonly string _serverName;
+        private readonly ILogger _logger;
+        private int _disposed;
 
-        public System.Threading.Channels.ChannelReader<JsonRpcMessage> MessageReader => inner.MessageReader;
+        public SandboxSessionTransport(ITransport inner, ISandboxSession session, string serverName, ILogger logger)
+        {
+            _inner = inner;
+            _session = session;
+            _serverName = serverName;
+            _logger = logger;
+            _ = ObserveUnexpectedExitAsync();
+        }
+
+        public string? SessionId => _inner.SessionId;
+
+        public System.Threading.Channels.ChannelReader<JsonRpcMessage> MessageReader => _inner.MessageReader;
 
         public Task SendMessageAsync(JsonRpcMessage message, CancellationToken cancellationToken) =>
-            inner.SendMessageAsync(message, cancellationToken);
+            _inner.SendMessageAsync(message, cancellationToken);
 
         public async ValueTask DisposeAsync()
         {
-            await inner.DisposeAsync();
-            await session.DisposeAsync();
+            Interlocked.Exchange(ref _disposed, 1);
+            await _inner.DisposeAsync();
+            await _session.DisposeAsync();
+        }
+
+        /// <summary>
+        /// <see cref="ISandboxSession.Completion"/> is guaranteed to complete once disposed, so this
+        /// only logs when it completes BEFORE disposal — an unexpected exit while the conversation
+        /// was still in progress, not the ordinary teardown path.
+        /// </summary>
+        private async Task ObserveUnexpectedExitAsync()
+        {
+            try
+            {
+                await _session.Completion;
+            }
+            catch
+            {
+                // Completion is documented to never fault; guard defensively anyway since this is a
+                // fire-and-forget observer with no caller to propagate a fault to.
+            }
+
+            if (Volatile.Read(ref _disposed) == 0)
+            {
+                _logger.LogWarning(
+                    "Sandboxed stdio MCP server '{ServerName}' exited unexpectedly mid-session.", _serverName);
+            }
         }
     }
 }

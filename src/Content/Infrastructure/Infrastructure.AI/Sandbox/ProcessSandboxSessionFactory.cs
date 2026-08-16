@@ -74,14 +74,24 @@ public sealed class ProcessSandboxSessionFactory(
 
             // The audit trail must record that a session actually started, not just that some
             // were refused — a running session is the more consequential event of the two.
-            // The audit trail must record that a session actually started, not just that some
-            // were refused — a running session is the more consequential event of the two.
             await attestationSigner.SignStartAsync(request, egressDigest, ct);
 
             return Result<ISandboxSession>.Success(
                 new ProcessSandboxSession(process, launchPreparer, workspaceDir, request.MaxSessionDuration, sessionLogger));
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (OperationCanceledException)
+        {
+            // The caller gave up (e.g. McpConnectionManager's InitializationTimeout) after the
+            // process was already spawned. Clean up the leaked process, its resource-limiter
+            // handle, and its workspace — none of that cleanup depends on ct, so it still runs
+            // with ct already cancelled — but skip attestation: signing with a cancelled ct
+            // would itself throw, and a caller giving up is not the security-relevant rejection
+            // SignFailureAsync exists to record. Then let cancellation propagate.
+            KillAndReleaseIfStarted(process);
+            launchPreparer.CleanupWorkspace(workspaceDir);
+            throw;
+        }
+        catch (Exception ex)
         {
             // Single cleanup path for every way starting a session can fail once the process
             // exists: StartProcess itself throwing after a partial launch, ApplyResourceLimits
