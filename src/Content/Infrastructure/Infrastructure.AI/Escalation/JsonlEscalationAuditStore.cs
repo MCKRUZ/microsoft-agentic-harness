@@ -167,6 +167,27 @@ public sealed class JsonlEscalationAuditStore : IEscalationAuditStore, IVerifiab
     }
 
     /// <inheritdoc />
+    public async Task<EscalationExecutionRecord?> GetLatestExecutionAsync(Guid escalationId, CancellationToken ct)
+    {
+        var history = await GetHistoryAsync(escalationId, ct);
+        var latest = history.LastOrDefault(r => r.RecordType == EscalationAuditRecordType.Execution);
+        if (latest is null)
+            return null;
+
+        try
+        {
+            return JsonSerializer.Deserialize<EscalationExecutionRecord>(latest.Payload, DeserializeOptions);
+        }
+        catch (JsonException ex)
+        {
+            _logger.LogWarning(ex,
+                "Failed to deserialize execution audit record for escalation {EscalationId}",
+                escalationId);
+            return null;
+        }
+    }
+
+    /// <inheritdoc />
     public Task<AuditChainVerificationResult> VerifyChainAsync(CancellationToken cancellationToken) =>
         _chain.VerifyChainAsync(cancellationToken);
 

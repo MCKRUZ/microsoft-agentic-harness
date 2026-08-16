@@ -41,7 +41,8 @@ namespace Application.AI.Common.Interfaces.Escalation;
 ///   </description></item>
 ///   <item><description>
 ///     An <b>undefined enum value</b> for <see cref="EscalationRequest.ApprovalStrategy"/>,
-///     <see cref="EscalationRequest.TimeoutAction"/>, or <see cref="EscalationRequest.Priority"/>
+///     <see cref="EscalationRequest.TimeoutAction"/>, <see cref="EscalationRequest.Priority"/>, or
+///     (when set) <see cref="EscalationRequest.EscalationTierTarget"/>
 ///     — reachable only via a hand-edited or corrupted durable row, since every in-process
 ///     constructor path is closed by config validation — would otherwise surface far downstream:
 ///     an undefined strategy throws inside <c>GetRequiredKeyedService</c> mid-resolution rather
@@ -226,6 +227,12 @@ public static class EscalationRequestInvariants
         if (!Enum.IsDefined(request.Priority))
         {
             violation = $"the priority ({(int)request.Priority}) is not a defined value";
+            return true;
+        }
+
+        if (request.EscalationTierTarget is { } tierTarget && !Enum.IsDefined(tierTarget))
+        {
+            violation = $"the escalation tier target ({(int)tierTarget}) is not a defined value";
             return true;
         }
 

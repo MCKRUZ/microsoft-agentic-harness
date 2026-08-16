@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.IO;
 using Application.AI.Common.Interfaces.Escalation;
 using Domain.AI.Escalation;
+using Domain.AI.Governance;
 using Domain.Common.Config.AI.Governance;
 using FluentAssertions;
 using Infrastructure.AI.Escalation;
@@ -64,7 +65,8 @@ public sealed class DefaultEscalationServiceTests : IDisposable
 		ApprovalStrategyType strategy = ApprovalStrategyType.AnyOf,
 		int timeoutSeconds = 300,
 		EscalationTimeoutAction timeoutAction = EscalationTimeoutAction.DenyAndEscalate,
-		IReadOnlyList<string>? approvers = null) =>
+		IReadOnlyList<string>? approvers = null,
+		AutonomyLevel? escalationTierTarget = null) =>
 		new()
 		{
 			EscalationId = Guid.NewGuid(),
@@ -78,7 +80,8 @@ public sealed class DefaultEscalationServiceTests : IDisposable
 			Approvers = approvers ?? ["approver-1", "approver-2"],
 			TimeoutSeconds = timeoutSeconds,
 			TimeoutAction = timeoutAction,
-			RequestedAt = DateTimeOffset.UtcNow
+			RequestedAt = DateTimeOffset.UtcNow,
+			EscalationTierTarget = escalationTierTarget
 		};
 
 	private static ApproverDecision CreateApproval(string approverName = "approver-1") =>
@@ -540,6 +543,26 @@ public sealed class DefaultEscalationServiceTests : IDisposable
 		_auditStore.Verify(
 			a => a.RecordOutcomeAsync(It.IsAny<EscalationOutcome>(), It.IsAny<CancellationToken>()),
 			Times.Once);
+	}
+
+	[Fact]
+	public async Task Timeout_FiresDenyAndEscalate_WithTierTarget_ResolvesEscalated()
+	{
+		// #394: a request that declares EscalationTierTarget is asking the service to record a
+		// real tier hand-off on timeout, not just a denial. Control:
+		// Timeout_FiresDenyAndEscalate_CompletesWithTimedOut above proves a request WITHOUT a
+		// tier target still resolves TimedOut — this field is additive, not a behavior change
+		// for every other caller.
+		var request = CreateTestRequest(
+			timeoutSeconds: 1,
+			timeoutAction: EscalationTimeoutAction.DenyAndEscalate,
+			escalationTierTarget: AutonomyLevel.Autonomous);
+
+		var outcome = await _sut.RequestEscalationAsync(request, CancellationToken.None);
+
+		outcome.ResolutionType.Should().Be(EscalationResolutionType.Escalated);
+		outcome.IsApproved.Should().BeFalse();
+		outcome.EscalatedToTier.Should().Be(AutonomyLevel.Autonomous);
 	}
 
 	[Fact]

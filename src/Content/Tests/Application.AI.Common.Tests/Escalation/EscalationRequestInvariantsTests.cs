@@ -1,5 +1,6 @@
 using Application.AI.Common.Interfaces.Escalation;
 using Domain.AI.Escalation;
+using Domain.AI.Governance;
 using FluentAssertions;
 using Xunit;
 
@@ -125,6 +126,44 @@ public sealed class EscalationRequestInvariantsTests
 
         isValid.Should().BeFalse();
         violation.Should().Contain("priority");
+    }
+
+    [Fact]
+    public void TryValidate_UndefinedEscalationTierTarget_IsRejected()
+    {
+        // #394's gap: a hand-edited/corrupted durable row with an out-of-range EscalationTierTarget
+        // must be caught here just like the other three enums on this request, not flow unchecked
+        // into DefaultEscalationService.ResolveTimeoutOutcome and then into CapabilityMatchSupervisor's
+        // minimumTier comparisons.
+        var request = CreateValidRequest() with { EscalationTierTarget = (AutonomyLevel)99 };
+
+        var isValid = EscalationRequestInvariants.TryValidate(request, out var violation);
+
+        isValid.Should().BeFalse();
+        violation.Should().Contain("escalation tier target");
+    }
+
+    [Fact]
+    public void TryValidate_NullEscalationTierTarget_IsAccepted()
+    {
+        // Control: the field is optional (null for every escalation source except
+        // delegation-autonomy escalation), so absence must not trip the new check.
+        var request = CreateValidRequest() with { EscalationTierTarget = null };
+
+        var isValid = EscalationRequestInvariants.TryValidate(request, out var violation);
+
+        isValid.Should().BeTrue();
+        violation.Should().BeNull();
+    }
+
+    [Fact]
+    public void TryValidate_DefinedEscalationTierTarget_IsAccepted()
+    {
+        var request = CreateValidRequest() with { EscalationTierTarget = AutonomyLevel.Autonomous };
+
+        var isValid = EscalationRequestInvariants.TryValidate(request, out var violation);
+
+        isValid.Should().BeTrue();
     }
 
     [Fact]

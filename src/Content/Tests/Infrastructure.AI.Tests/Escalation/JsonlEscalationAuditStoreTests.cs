@@ -79,6 +79,9 @@ public sealed class JsonlEscalationAuditStoreTests : IDisposable
         ResolvedAt = DateTimeOffset.UtcNow
     };
 
+    private static EscalationExecutionRecord BuildExecutionRecord(Guid escalationId) =>
+        EscalationExecutionRecord.Succeeded(escalationId, DateTimeOffset.UtcNow, "agent-turn");
+
     [Fact]
     public async Task RecordRequestAsync_AppendsToFile()
     {
@@ -147,6 +150,32 @@ public sealed class JsonlEscalationAuditStoreTests : IDisposable
         var history = await _store.GetHistoryAsync(Guid.NewGuid(), CancellationToken.None);
 
         history.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task GetLatestExecutionAsync_NoExecutionRecorded_ReturnsNull()
+    {
+        // #396: nothing has ever deserialized an execution record back out of the audit trail —
+        // EscalationExecutionRecord's private, factory-only constructor blocks System.Text.Json
+        // from rehydrating it without a [JsonConstructor] escape hatch.
+        var result = await _store.GetLatestExecutionAsync(Guid.NewGuid(), CancellationToken.None);
+
+        result.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task GetLatestExecutionAsync_AfterRecordExecutionAsync_ReturnsTheRecord()
+    {
+        var escalationId = Guid.NewGuid();
+        var record = BuildExecutionRecord(escalationId);
+
+        await _store.RecordExecutionAsync(record, CancellationToken.None);
+        var result = await _store.GetLatestExecutionAsync(escalationId, CancellationToken.None);
+
+        result.Should().NotBeNull();
+        result!.EscalationId.Should().Be(escalationId);
+        result.Status.Should().Be(EscalationExecutionStatus.Succeeded);
+        result.ReportedBy.Should().Be("agent-turn");
     }
 
     [Fact]

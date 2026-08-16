@@ -115,7 +115,10 @@ public sealed class EscalationsController : ControllerBase
 
     /// <summary>
     /// Reads one escalation: its pending summary while undecided (roster-private), or its
-    /// resolved outcome after a verdict — the poll target following a 202 decision response.
+    /// resolved outcome after a verdict — the poll target following a 202 decision response. A
+    /// resolved response also carries the execution outcome (#396) once
+    /// <c>IApprovalExecutionReporter</c> has reported what happened when the approved action
+    /// actually ran — null until then, and always null for a denied escalation.
     /// </summary>
     /// <param name="id">The escalation id.</param>
     /// <param name="cancellationToken">Cancellation token.</param>

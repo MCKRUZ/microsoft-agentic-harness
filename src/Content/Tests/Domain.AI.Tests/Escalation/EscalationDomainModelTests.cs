@@ -57,7 +57,8 @@ public sealed class EscalationDomainModelTests
             TimeoutSeconds = 600,
             TimeoutAction = EscalationTimeoutAction.Deny,
             RequestedAt = now,
-            OriginatingDecision = decision
+            OriginatingDecision = decision,
+            EscalationTierTarget = AutonomyLevel.Autonomous
         };
 
         Assert.Equal(id, request.EscalationId);
@@ -75,6 +76,26 @@ public sealed class EscalationDomainModelTests
         Assert.Equal(now, request.RequestedAt);
         Assert.NotNull(request.OriginatingDecision);
         Assert.Equal("blocked_tools", request.OriginatingDecision.MatchedRule);
+        Assert.Equal(AutonomyLevel.Autonomous, request.EscalationTierTarget);
+    }
+
+    [Fact]
+    public void EscalationRequest_WithDefaults_EscalationTierTargetIsNull()
+    {
+        var request = new EscalationRequest
+        {
+            EscalationId = Guid.NewGuid(),
+            AgentId = "agent-1",
+            ToolName = "file_write",
+            Arguments = new Dictionary<string, string> { ["path"] = "/etc/config" }.AsReadOnly(),
+            Description = "Write to system config",
+            RiskLevel = RiskLevel.High,
+            Priority = EscalationPriority.Blocking,
+            Approvers = ["admin"],
+            RequestedAt = DateTimeOffset.UtcNow
+        };
+
+        Assert.Null(request.EscalationTierTarget);
     }
 
     // --- EscalationOutcome ---

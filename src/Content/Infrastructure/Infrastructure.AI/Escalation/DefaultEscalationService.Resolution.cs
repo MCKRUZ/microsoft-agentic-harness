@@ -1,6 +1,7 @@
 using Application.AI.Common.Exceptions;
 using Application.AI.Common.OpenTelemetry.Metrics;
 using Domain.AI.Escalation;
+using Domain.AI.Governance;
 using Domain.AI.Telemetry.Conventions;
 using Microsoft.Extensions.Logging;
 
@@ -206,14 +207,17 @@ public sealed partial class DefaultEscalationService
 				if (state.IsResolved)
 					return;
 
+				var (resolutionType, isApproved, escalatedToTier) = ResolveTimeoutOutcome(state);
+
 				outcome = new EscalationOutcome
 				{
 					EscalationId = state.Request.EscalationId,
-					IsApproved = ResolveTimeoutApproval(state),
+					IsApproved = isApproved,
 					Decisions = state.Decisions.ToList().AsReadOnly(),
-					ResolutionType = EscalationResolutionType.TimedOut,
+					ResolutionType = resolutionType,
 					ResolvedAt = DateTimeOffset.UtcNow,
-					Approvers = state.Request.Approvers
+					Approvers = state.Request.Approvers,
+					EscalatedToTier = escalatedToTier
 				};
 				MarkResolving(state, outcome);
 			}
@@ -234,6 +238,35 @@ public sealed partial class DefaultEscalationService
 			// long-running resolution when the host shuts down mid-flight.
 			ReleaseWriteGate(state);
 		}
+	}
+
+	/// <summary>
+	/// Decides what a timeout produces: a real tier hand-off (#394) when the request opted in via
+	/// <see cref="EscalationRequest.EscalationTierTarget"/> and the configured action calls for
+	/// escalation, otherwise the ordinary approve/deny verdict from <see cref="ResolveTimeoutApproval"/>.
+	/// </summary>
+	/// <remarks>
+	/// The escalated branch never auto-grants anything — <c>IsApproved</c> stays false. It only
+	/// records that this request should be handed to a higher-authority roster; a caller-owned
+	/// downstream process (only <c>CapabilityMatchSupervisor</c>'s delegation-autonomy escalation
+	/// today) is what actually raises the follow-up request and decides whether to act on approval.
+	/// This keeps the branch fail-closed under the exact same rehydration-during-downtime scenario
+	/// <see cref="ResolveTimeoutApproval"/> guards against for <c>Approve</c>: nothing here can ever
+	/// auto-grant tier access on a restart.
+	/// </remarks>
+	/// <param name="state">The timing-out escalation.</param>
+	/// <returns>The resolution type, approval verdict, and escalated-to tier (if any) to record.</returns>
+	private (EscalationResolutionType ResolutionType, bool IsApproved, AutonomyLevel? EscalatedToTier)
+		ResolveTimeoutOutcome(EscalationState state)
+	{
+		var request = state.Request;
+		var escalates = request.TimeoutAction is EscalationTimeoutAction.Escalate
+			or EscalationTimeoutAction.DenyAndEscalate;
+
+		if (escalates && request.EscalationTierTarget is { } tier)
+			return (EscalationResolutionType.Escalated, false, tier);
+
+		return (EscalationResolutionType.TimedOut, ResolveTimeoutApproval(state), null);
 	}
 
 	/// <summary>

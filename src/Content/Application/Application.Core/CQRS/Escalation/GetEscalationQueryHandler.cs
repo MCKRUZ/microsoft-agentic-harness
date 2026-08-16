@@ -23,16 +23,23 @@ public sealed class GetEscalationQueryHandler
     private const string NotFoundMessage = "No escalation with the given id is visible to the caller.";
 
     private readonly IEscalationService _escalations;
+    private readonly IEscalationAuditStore _auditStore;
     private readonly ILogger<GetEscalationQueryHandler> _logger;
 
     /// <summary>Initializes a new instance of the <see cref="GetEscalationQueryHandler"/> class.</summary>
     /// <param name="escalations">The escalation lifecycle service.</param>
+    /// <param name="auditStore">
+    /// The audit trail, consulted for a resolved escalation's execution outcome (#396) — that
+    /// record lives only in the audit trail, never on <see cref="EscalationOutcome"/> itself.
+    /// </param>
     /// <param name="logger">Logger for recording read outcomes (never escalation content).</param>
     public GetEscalationQueryHandler(
         IEscalationService escalations,
+        IEscalationAuditStore auditStore,
         ILogger<GetEscalationQueryHandler> logger)
     {
         _escalations = escalations;
+        _auditStore = auditStore;
         _logger = logger;
     }
 
@@ -73,8 +80,14 @@ public sealed class GetEscalationQueryHandler
                 return Result<EscalationDetail>.NotFound(NotFoundMessage);
             }
 
+            var execution = await _auditStore.GetLatestExecutionAsync(request.EscalationId, cancellationToken);
+            var executionSummary = execution is null
+                ? null
+                : EscalationExecutionSummary.FromRecord(execution);
+
             return Result<EscalationDetail>.Success(
-                EscalationDetail.ForResolved(EscalationOutcomeSummary.FromOutcome(outcome)));
+                EscalationDetail.ForResolved(
+                    EscalationOutcomeSummary.FromOutcome(outcome, executionSummary)));
         }
 
         return Result<EscalationDetail>.NotFound(NotFoundMessage);
