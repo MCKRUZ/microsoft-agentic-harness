@@ -93,13 +93,28 @@ public sealed class ToolDiagnosticsMiddleware : DelegatingChatClient
             // which is just as much an exposure point as the streamed SSE frame, so it gets the same
             // generic-message substitution, not just redaction of the raw text.
             var rawPayload = ToolPayloadRedactor.SafeResultText(result);
-            // A redaction-contract violation from _redactor must degrade this trace record, not
-            // abort the chat call this diagnostics middleware is only observing.
-            var trimmedPayload = ToolPayloadRedactor.TryOrFallback(
-                () => ToolPayloadRedactor.RedactAndTruncate(rawPayload, _redactor),
-                _logger,
-                $"[ToolDiag] Failed to redact tool result for CallId={result.CallId}",
-                fallback: "[unavailable]");
+
+            string trimmedPayload;
+            if (rawPayload.Length > ToolPayloadRedactor.MaxStructuralRedactionCeiling)
+            {
+                // Above this size PatternSecretRedactor falls back to its regex-only pass, which
+                // cannot see through the escaped-nested-JSON secret shape #391 closed for smaller
+                // payloads — a 500-char slice of an oversized, only-partially-redacted result could
+                // still contain an unredacted secret persisted to the trace store indefinitely. Same
+                // guard ExecuteAgentTurnCommandHandler.RedactedResultPreview applies to the identical
+                // exposure on the streamed path.
+                trimmedPayload = "[result too large to preview safely]";
+            }
+            else
+            {
+                // A redaction-contract violation from _redactor must degrade this trace record, not
+                // abort the chat call this diagnostics middleware is only observing.
+                trimmedPayload = ToolPayloadRedactor.TryOrFallback(
+                    () => ToolPayloadRedactor.RedactAndTruncate(rawPayload, _redactor),
+                    _logger,
+                    $"[ToolDiag] Failed to redact tool result for CallId={result.CallId}",
+                    fallback: "[unavailable]");
+            }
 
             // Always record the stdout against the matching call id so the
             // observability pipeline can render it on the per-invocation page
@@ -241,7 +256,15 @@ public sealed class ToolDiagnosticsMiddleware : DelegatingChatClient
             {
                 try
                 {
-                    argsJson = ToolPayloadRedactor.RedactAndTruncate(System.Text.Json.JsonSerializer.Serialize(args), _redactor);
+                    var serialized = System.Text.Json.JsonSerializer.Serialize(args);
+                    // Above the structural-redaction ceiling, PatternSecretRedactor falls back to its
+                    // regex-only pass, which cannot see through the escaped-nested-JSON secret shape
+                    // #391 closed for smaller payloads — a 500-char preview sliced from this path could
+                    // then still contain an unredacted secret. Withhold rather than preview, since this
+                    // path (unlike the streaming path's 16KB ceiling) has no size cap of its own.
+                    argsJson = serialized.Length > ToolPayloadRedactor.MaxStructuralRedactionCeiling
+                        ? "[args too large to preview safely]"
+                        : ToolPayloadRedactor.RedactAndTruncate(serialized, _redactor);
                 }
                 catch (Exception ex)
                 {

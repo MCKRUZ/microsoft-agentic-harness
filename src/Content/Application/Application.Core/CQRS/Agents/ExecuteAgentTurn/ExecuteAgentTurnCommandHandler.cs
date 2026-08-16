@@ -458,9 +458,7 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 			return new StreamedToolCallArguments("{}", Withheld: true);
 		}
 
-		return ToolPayloadRedactor.RedactForStreaming(
-			serialized, redactor, logger,
-			$"Failed to redact streamed tool-call arguments for {call.Name} CallId={call.CallId}");
+		return ToolPayloadRedactor.RedactForStreaming(serialized, redactor, logger, call.Name, call.CallId);
 	}
 
 	/// <summary>
@@ -471,11 +469,20 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 	/// <c>ToolDiagnosticsMiddleware</c> applies before persisting to the trace store a dashboard later
 	/// renders, since that is just as much an exposure point as this client-facing SSE frame. A
 	/// redaction-contract violation from <paramref name="redactor"/> degrades the same way, via
-	/// <see cref="ToolPayloadRedactor.TryOrFallback"/>.
+	/// <see cref="ToolPayloadRedactor.TryOrFallback"/>. Above
+	/// <see cref="ToolPayloadRedactor.MaxStructuralRedactionCeiling"/>, <c>PatternSecretRedactor</c>
+	/// falls back to its regex-only pass, which cannot see through the escaped-nested-JSON secret
+	/// shape #391 closed for smaller payloads — so a 500-char preview sliced from a redact-and-truncate
+	/// call on an oversized result could still contain an unredacted secret. A generic message is
+	/// streamed instead of attempting a preview at all, rather than silently degrading the redaction
+	/// guarantee this method otherwise provides.
 	/// </summary>
 	private static string RedactedResultPreview(FunctionResultContent result, ISecretRedactor? redactor, ILogger logger)
 	{
 		var resultText = ToolPayloadRedactor.SafeResultText(result);
+
+		if (resultText.Length > ToolPayloadRedactor.MaxStructuralRedactionCeiling)
+			return "[result too large to preview safely]";
 
 		return ToolPayloadRedactor.TryOrFallback(
 			() => ToolPayloadRedactor.RedactAndTruncate(resultText, redactor),

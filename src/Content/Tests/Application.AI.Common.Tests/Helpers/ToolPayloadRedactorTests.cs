@@ -29,6 +29,19 @@ public sealed class ToolPayloadRedactorTests
         public bool IsSecretKey(string configKey) => false;
     }
 
+    /// <summary>
+    /// Simulates PatternSecretRedactor's real behavior of returning a LONGER string than it was given
+    /// (its structural pass re-serializes via a JSON encoder that escapes every non-ASCII character to
+    /// `\uXXXX`) — without depending on Infrastructure.AI from this Application-layer test project.
+    /// Isolates RedactForStreaming's own post-redaction ceiling check from the specific mechanism
+    /// (JSON escaping) that can trigger it in production.
+    /// </summary>
+    private sealed class InflatingRedactor : ISecretRedactor
+    {
+        public string? Redact(string? input) => input + new string('x', ToolPayloadRedactor.MaxStreamedToolCallArgsLength);
+        public bool IsSecretKey(string configKey) => false;
+    }
+
     [Fact]
     public void Redact_NullRedactor_ReturnsPayloadUnchanged()
     {
@@ -85,7 +98,7 @@ public sealed class ToolPayloadRedactorTests
         var redactor = new MarkerRedactor();
         var payload = $"before {MarkerRedactor.Secret} after";
 
-        var result = ToolPayloadRedactor.RedactForStreaming(payload, redactor, NullLogger.Instance, "unused");
+        var result = ToolPayloadRedactor.RedactForStreaming(payload, redactor, NullLogger.Instance, "search", "call-1");
 
         result.Withheld.Should().BeFalse();
         result.Json.Should().Contain(MarkerRedactor.Replacement).And.NotContain("super-secret");
@@ -96,7 +109,27 @@ public sealed class ToolPayloadRedactorTests
     {
         var payload = new string('x', ToolPayloadRedactor.MaxStreamedToolCallArgsLength + 1);
 
-        var result = ToolPayloadRedactor.RedactForStreaming(payload, redactor: null, NullLogger.Instance, "unused");
+        var result = ToolPayloadRedactor.RedactForStreaming(payload, redactor: null, NullLogger.Instance, "search", "call-1");
+
+        result.Withheld.Should().BeTrue();
+        result.Json.Should().Be("{}");
+    }
+
+    /// <summary>
+    /// Redaction can inflate a payload past the ceiling even when the INPUT was under it —
+    /// PatternSecretRedactor's structural pass re-serializes via a JSON encoder that escapes every
+    /// non-ASCII character to `\uXXXX`, so a payload of mostly non-ASCII text can come back several
+    /// times longer than it went in. The ceiling must be checked on the OUTPUT too, or the "16KB
+    /// ceiling" the OpenAPI spec documents isn't actually true.
+    /// </summary>
+    [Fact]
+    public void RedactForStreaming_RedactionInflatesOutputPastCeiling_Withholds()
+    {
+        var payload = "small input, well under the ceiling";
+        payload.Length.Should().BeLessThan(ToolPayloadRedactor.MaxStreamedToolCallArgsLength,
+            "the test must exercise the OUTPUT check, not the input pre-check");
+
+        var result = ToolPayloadRedactor.RedactForStreaming(payload, new InflatingRedactor(), NullLogger.Instance, "search", "call-1");
 
         result.Withheld.Should().BeTrue();
         result.Json.Should().Be("{}");
@@ -114,7 +147,7 @@ public sealed class ToolPayloadRedactorTests
     {
         var redactor = new NullReturningRedactor();
 
-        var result = ToolPayloadRedactor.RedactForStreaming("api_key=super-secret", redactor, NullLogger.Instance, "unused");
+        var result = ToolPayloadRedactor.RedactForStreaming("api_key=super-secret", redactor, NullLogger.Instance, "search", "call-1");
 
         result.Withheld.Should().BeTrue();
         result.Json.Should().Be("{}");

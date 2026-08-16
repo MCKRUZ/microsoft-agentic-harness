@@ -111,8 +111,11 @@ public sealed class AgUiClientToolBridge : IClientToolBridge
         // disconnected round-trip that never displayed the widget throws above, so we do not leave a
         // phantom that reappears on reload contradicting the agent. This still precedes the run handler's
         // final assistant-text append, so the widget lands in the right position. A persistence failure
-        // must not break the turn, so it is logged and swallowed.
-        if (_widgetCatalog.IsWidget(toolName))
+        // must not break the turn, so it is logged and swallowed. Skipped entirely when withheld: the
+        // live widget never rendered real arguments (streamedArgs.Json is the "{}" placeholder), so
+        // persisting it would reload as a widget with no signal that its arguments were withheld — the
+        // exact confusion useAgentStream.ts/useDashboardAgent.ts were changed to prevent on the live path.
+        if (_widgetCatalog.IsWidget(toolName) && !streamedArgs.Withheld)
             await PersistWidgetAsync(threadId, callerId, toolName, streamedArgs.Json, cancellationToken).ConfigureAwait(false);
 
         return result;
@@ -126,9 +129,7 @@ public sealed class AgUiClientToolBridge : IClientToolBridge
     /// than the two transports drifting to different failure behavior.
     /// </summary>
     private StreamedToolCallArguments RedactAndCapArguments(string toolName, string callId, string? argumentsJson) =>
-        ToolPayloadRedactor.RedactForStreaming(
-            argumentsJson ?? "{}", _redactor, _logger,
-            $"Failed to redact client tool-call arguments for {toolName} CallId={callId}");
+        ToolPayloadRedactor.RedactForStreaming(argumentsJson ?? "{}", _redactor, _logger, toolName, callId);
 
     /// <summary>
     /// Appends an assistant message carrying the widget spec (empty text, so it renders as the widget

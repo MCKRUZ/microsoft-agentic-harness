@@ -522,4 +522,110 @@ public class PatternSecretRedactorTests
         var innerDoc = System.Text.Json.JsonDocument.Parse(middleDoc.RootElement.GetProperty("inner").GetString()!);
         innerDoc.RootElement.GetProperty("api_key").GetString().Should().Be("[REDACTED]");
     }
+
+    /// <summary>
+    /// Common real-world secret key names — security-review finding H1 — measured as leaking
+    /// unredacted before <see cref="PatternSecretRedactor"/>'s key alternation covered them. Each of
+    /// these is a shape a real HTTP tool call or header dictionary would plausibly carry.
+    /// </summary>
+    [Theory]
+    [InlineData("x-api-key")]
+    [InlineData("refresh_token")]
+    [InlineData("id_token")]
+    [InlineData("private_key")]
+    [InlineData("secret_access_key")]
+    [InlineData("authorization")]
+    [InlineData("auth_token")]
+    [InlineData("credential")]
+    [InlineData("credentials")]
+    [InlineData("passphrase")]
+    [InlineData("subscription_key")]
+    [InlineData("Ocp-Apim-Subscription-Key")]
+    public void Redact_CommonSecretKeyNames_AreRedacted(string key)
+    {
+        var sut = CreateRedactor();
+        var input = $$"""{"{{key}}":"LEAKME"}""";
+
+        var result = sut.Redact(input);
+
+        result.Should().NotContain("LEAKME");
+    }
+
+    /// <summary>
+    /// Duplicate JSON property names are legal per RFC 8259 and <see cref="System.Text.Json.Nodes.JsonNode"/>.Parse
+    /// tolerates them, but materializing a <see cref="System.Text.Json.Nodes.JsonObject"/>'s backing
+    /// dictionary rejects the duplicate with an <see cref="ArgumentException"/> — security-review
+    /// finding M2, a regression this structural pass would otherwise introduce into
+    /// <c>ToolOutputCompressionBehavior</c>, which redacts fully third-party-controlled tool output.
+    /// Must degrade to the regex-only fallback, not throw out of the caller.
+    /// </summary>
+    [Fact]
+    public void Redact_JsonWithDuplicatePropertyNames_FallsBackToRegexOnly_DoesNotThrow()
+    {
+        var sut = CreateRedactor();
+        var input = """{"a":1,"a":2,"api_key":"LEAKME"}""";
+
+        var act = () => sut.Redact(input);
+
+        act.Should().NotThrow();
+        act().Should().NotContain("LEAKME");
+    }
+
+    /// <summary>
+    /// Bare "token" and bare "secret" — not the compound shapes
+    /// <see cref="Redact_CommonSecretKeyNames_AreRedacted"/> already covers — are common real key
+    /// names on their own (a session store keyed just "token", a config value keyed just "secret").
+    /// </summary>
+    [Theory]
+    [InlineData("token")]
+    [InlineData("secret")]
+    public void Redact_BareTokenOrSecretKeyName_IsRedacted(string key)
+    {
+        var sut = CreateRedactor();
+        var input = $$"""{"{{key}}":"LEAKME"}""";
+
+        var result = sut.Redact(input);
+
+        result.Should().NotContain("LEAKME");
+    }
+
+    /// <summary>
+    /// A secret key with incidental leading/trailing whitespace (a sloppily-serialized tool argument,
+    /// not necessarily adversarial) is still recognized — the anchored key match trims before
+    /// comparing, or "api_key " (trailing space) would silently fail the whole-key match.
+    /// </summary>
+    [Fact]
+    public void Redact_SecretKeyWithSurroundingWhitespace_IsStillRedacted()
+    {
+        var sut = CreateRedactor();
+        var input = """{"api_key ":"LEAKME"}""";
+
+        var result = sut.Redact(input);
+
+        result.Should().NotContain("LEAKME");
+    }
+
+    /// <summary>
+    /// A top-level JSON-encoded STRING — exactly what <c>JsonSerializer.Serialize(someString)</c>
+    /// produces for a string value, e.g. a tool result that is itself a JSON document serialized as
+    /// text — previously bypassed the structural pass entirely: LooksLikeJson only accepted the
+    /// object/array openers `{`/`[`, so this shape fell straight to the regex-only fallback, which
+    /// cannot see through an escaped-nested secret. The structural walk already handles a top-level
+    /// JsonValue string via RedactStringLeaf; only the entry-point prefix check was missing the case
+    /// — security-review finding M3.
+    /// </summary>
+    [Fact]
+    public void Redact_TopLevelJsonEncodedString_RedactsNestedSecret()
+    {
+        var sut = CreateRedactor();
+        var input = System.Text.Json.JsonSerializer.Serialize(
+            System.Text.Json.JsonSerializer.Serialize(new { api_key = "sk-topstring" }));
+
+        var result = sut.Redact(input);
+
+        result.Should().NotContain("sk-topstring");
+        var nestedJson = System.Text.Json.JsonSerializer.Deserialize<string>(result!)!;
+        using var doc = System.Text.Json.JsonDocument.Parse(nestedJson);
+        doc.RootElement.GetProperty("api_key").GetString().Should().Be("[REDACTED]");
+    }
 }
