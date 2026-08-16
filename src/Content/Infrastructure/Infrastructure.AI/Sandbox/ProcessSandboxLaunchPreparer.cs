@@ -31,13 +31,20 @@ public sealed class ProcessSandboxLaunchPreparer(
     /// <summary>
     /// Environment variable names that per-request grants may never override, compared
     /// case-insensitively (Windows environment lookups ignore case). Covers the pinned temp
-    /// set (always redirected into the workspace) and the security-critical variables the
+    /// set (always redirected into the workspace), the security-critical variables the
     /// allowlist controls — a grant of <c>temp</c>, <c>Path</c>, or <c>COMSPEC</c> would
-    /// otherwise un-pin or re-smuggle them.
+    /// otherwise un-pin or re-smuggle them — and the dynamic-linker variables
+    /// (<see cref="DockerContainerLaunchPreparer"/> guards the same names for the container
+    /// tier). This tier needs the guard even more: it runs as the harness's own OS user against
+    /// a fully writable host filesystem, so an unguarded grant loads an arbitrary shared library
+    /// into an otherwise operator-allowlisted program — the allowlist checks <c>Command</c> only,
+    /// and never meaningfully ran if the attacker's constructor executed first.
     /// </summary>
     private static readonly string[] ReservedEnvironmentVariableNames =
     [
-        "TEMP", "TMP", "TMPDIR", "PATH", "COMSPEC", "PATHEXT", "SYSTEMROOT"
+        "TEMP", "TMP", "TMPDIR", "PATH", "COMSPEC", "PATHEXT", "SYSTEMROOT",
+        "LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT", "LD_ORIGIN_PATH",
+        "DYLD_INSERT_LIBRARIES", "DYLD_LIBRARY_PATH", "DYLD_FRAMEWORK_PATH"
     ];
 
     /// <summary>

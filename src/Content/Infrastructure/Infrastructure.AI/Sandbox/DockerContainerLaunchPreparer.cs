@@ -47,7 +47,11 @@ public sealed class DockerContainerLaunchPreparer(
     /// </summary>
     private static readonly string[] ReservedContainerEnvironmentVariableNames =
     [
-        "LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT", "LD_ORIGIN_PATH"
+        "LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT", "LD_ORIGIN_PATH",
+        // Included for parity with ProcessSandboxLaunchPreparer's identical list, even though
+        // today's images are Linux — a future macOS-based image should not silently lose this
+        // guard because nobody remembered to add it here too.
+        "DYLD_INSERT_LIBRARIES", "DYLD_LIBRARY_PATH", "DYLD_FRAMEWORK_PATH"
     ];
 
     /// <summary>

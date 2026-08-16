@@ -91,9 +91,23 @@ public class DockerSandboxSessionFactoryTests
             _dockerClient.Object,
             _launchPreparer,
             new SandboxEgressPreflightRunner(null, Mock.Of<ILogger<SandboxEgressPreflightRunner>>()),
-            new SandboxSessionRejectionSigner(_attestation.Object),
+            new SandboxSessionAttestationSigner(_attestation.Object),
             _sandboxConfig.Object,
             Mock.Of<ILogger<DockerSandboxSession>>());
+    }
+
+    [Fact]
+    public async Task StartSessionAsync_Success_SignsStartAttestation()
+    {
+        SetUpAttachStream(BuildFrames(("stdout", "ready")));
+
+        var result = await _sut.StartSessionAsync(CreateRequest(), CancellationToken.None);
+        result.IsSuccess.Should().BeTrue(string.Join("; ", result.Errors));
+        await using var session = result.Value!;
+
+        _attestation.Verify(x => x.SignAsync(
+            It.Is<AttestationRequest>(r => !r.IsFailure), It.IsAny<CancellationToken>()), Times.Once,
+            "a session that actually ran untrusted bundle code must leave a signed audit record");
     }
 
     [Fact]

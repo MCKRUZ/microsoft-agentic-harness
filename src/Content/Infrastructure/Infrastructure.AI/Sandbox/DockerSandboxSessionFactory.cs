@@ -19,7 +19,7 @@ public sealed class DockerSandboxSessionFactory(
     IDockerClient dockerClient,
     DockerContainerLaunchPreparer launchPreparer,
     SandboxEgressPreflightRunner egressPreflightRunner,
-    SandboxSessionRejectionSigner rejectionSigner,
+    SandboxSessionAttestationSigner attestationSigner,
     IOptionsMonitor<SandboxConfig> sandboxConfig,
     ILogger<DockerSandboxSession> sessionLogger) : ISandboxSessionFactory
 {
@@ -34,14 +34,14 @@ public sealed class DockerSandboxSessionFactory(
         if (!DockerContainerLaunchPreparer.IsValidCpuCoreLimit(request.Limits.CpuCoreLimit))
         {
             var reason = DockerContainerLaunchPreparer.InvalidCpuCoreLimitMessage(request.Limits.CpuCoreLimit);
-            return await rejectionSigner.RejectAsync(request, reason, ct);
+            return await attestationSigner.RejectAsync(request, reason, ct);
         }
 
         if (DockerContainerLaunchPreparer.FindReservedEnvironmentGrant(request.EnvironmentVariables) is { } reservedGrant)
         {
             var reason = $"Environment grant rejected: '{reservedGrant}' is a dynamic-linker-hijack " +
                 "vector and cannot be set for a container-isolated tool.";
-            return await rejectionSigner.RejectAsync(request, reason, ct);
+            return await attestationSigner.RejectAsync(request, reason, ct);
         }
 
         // Egress-policy evaluation and the Docker daemon ping are independent I/O with nothing to
@@ -52,7 +52,7 @@ public sealed class DockerSandboxSessionFactory(
 
         var egress = await egressTask;
         if (egress.IsDenied)
-            return await rejectionSigner.RejectAsync(request, egress.ErrorMessage!, ct, egress.Digest);
+            return await attestationSigner.RejectAsync(request, egress.ErrorMessage!, ct, egress.Digest);
 
         if (!await dockerAvailableTask)
             return await HandleDockerUnavailableAsync(request, egress.Digest, ct);
@@ -68,7 +68,7 @@ public sealed class DockerSandboxSessionFactory(
         {
             // Matches DockerSandboxExecutor: only the "required" branch is attested — the softer
             // fallback-suggestion branch below is a hint to the caller, not a security refusal.
-            return await rejectionSigner.RejectAsync(
+            return await attestationSigner.RejectAsync(
                 request,
                 "Container isolation required but Docker is unavailable. Cannot downgrade to process isolation.",
                 ct, egressDigest);
@@ -102,6 +102,10 @@ public sealed class DockerSandboxSessionFactory(
                 new ContainerAttachParameters { Stream = true, Stdin = true, Stdout = true, Stderr = true },
                 ct);
 
+            // The audit trail must record that a session actually started, not just that some
+            // were refused — a running session is the more consequential event of the two.
+            await attestationSigner.SignStartAsync(request, egressDigest, ct);
+
             return Result<ISandboxSession>.Success(new DockerSandboxSession(
                 dockerClient, launchPreparer, attachStream, containerId, request.ToolName, workspaceDir,
                 request.MaxSessionDuration, sessionLogger));
@@ -112,7 +116,7 @@ public sealed class DockerSandboxSessionFactory(
             launchPreparer.CleanupWorkspace(workspaceDir);
 
             var failureReason = $"Docker error: {ex.Message}";
-            await rejectionSigner.SignFailureAsync(request, failureReason, egressDigest, ct);
+            await attestationSigner.SignFailureAsync(request, failureReason, egressDigest, ct);
             return Result<ISandboxSession>.Fail(failureReason);
         }
     }

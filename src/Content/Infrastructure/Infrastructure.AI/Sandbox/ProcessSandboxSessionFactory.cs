@@ -32,7 +32,7 @@ namespace Infrastructure.AI.Sandbox;
 public sealed class ProcessSandboxSessionFactory(
     ProcessSandboxLaunchPreparer launchPreparer,
     SandboxEgressPreflightRunner egressPreflightRunner,
-    SandboxSessionRejectionSigner rejectionSigner,
+    SandboxSessionAttestationSigner attestationSigner,
     IOptionsMonitor<SandboxConfig> sandboxConfig,
     ILogger<ProcessSandboxSession> sessionLogger) : ISandboxSessionFactory
 {
@@ -49,12 +49,12 @@ public sealed class ProcessSandboxSessionFactory(
             var reason =
                 $"Environment grant rejected: '{reservedGrant}' collides with a reserved variable " +
                 "(pinned temp or security-critical) and cannot be overridden by per-request grants.";
-            return await rejectionSigner.RejectAsync(request, reason, ct);
+            return await attestationSigner.RejectAsync(request, reason, ct);
         }
 
         var egress = await egressPreflightRunner.EvaluateAsync(request.ToolName, request.EgressPrecheckTargets, ct);
         if (egress.IsDenied)
-            return await rejectionSigner.RejectAsync(request, egress.ErrorMessage!, ct, egress.Digest);
+            return await attestationSigner.RejectAsync(request, egress.ErrorMessage!, ct, egress.Digest);
 
         return await StartProcessSessionAsync(request, egress.Digest, ct);
     }
@@ -72,6 +72,12 @@ public sealed class ProcessSandboxSessionFactory(
                 command, request.ArgumentList, request.PermissionProfile, request.EnvironmentVariables, workspaceDir);
             launchPreparer.ApplyResourceLimits(process, request.Limits);
 
+            // The audit trail must record that a session actually started, not just that some
+            // were refused — a running session is the more consequential event of the two.
+            // The audit trail must record that a session actually started, not just that some
+            // were refused — a running session is the more consequential event of the two.
+            await attestationSigner.SignStartAsync(request, egressDigest, ct);
+
             return Result<ISandboxSession>.Success(
                 new ProcessSandboxSession(process, launchPreparer, workspaceDir, request.MaxSessionDuration, sessionLogger));
         }
@@ -85,7 +91,7 @@ public sealed class ProcessSandboxSessionFactory(
             KillAndReleaseIfStarted(process);
             launchPreparer.CleanupWorkspace(workspaceDir);
 
-            await rejectionSigner.SignFailureAsync(
+            await attestationSigner.SignFailureAsync(
                 request, $"Process sandbox session failed to start: {ex.Message}", egressDigest, ct);
             return Result<ISandboxSession>.Fail(ex.Message);
         }

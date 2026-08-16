@@ -56,9 +56,25 @@ public class ProcessSandboxSessionFactoryTests
         _sut = new ProcessSandboxSessionFactory(
             _launchPreparer,
             new SandboxEgressPreflightRunner(null, Mock.Of<ILogger<SandboxEgressPreflightRunner>>()),
-            new SandboxSessionRejectionSigner(_attestation.Object),
+            new SandboxSessionAttestationSigner(_attestation.Object),
             _sandboxConfig.Object,
             Mock.Of<ILogger<ProcessSandboxSession>>());
+    }
+
+    [SkippableFact]
+    public async Task StartSessionAsync_Success_SignsStartAttestation()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "Windows-only: uses cmd.exe /c more.");
+
+        var result = await _sut.StartSessionAsync(CreateRequest(), CancellationToken.None);
+        result.IsSuccess.Should().BeTrue(string.Join("; ", result.Errors));
+        await using var session = result.Value!;
+
+        _attestation.Verify(x => x.SignAsync(
+            It.Is<AttestationRequest>(r => !r.IsFailure && r.ToolName == "test_session_tool"),
+            It.IsAny<CancellationToken>()), Times.Once,
+            "a session that actually ran untrusted bundle code must leave a signed audit record — " +
+            "the more consequential event than any of the rejection paths, which were already attested");
     }
 
     [SkippableFact]
@@ -142,18 +158,20 @@ public class ProcessSandboxSessionFactoryTests
         result.Errors.Should().ContainSingle(e => e.Contains("not in the allowed programs list"));
     }
 
-    [Fact]
-    public async Task StartSessionAsync_ReservedEnvironmentGrant_FailsWithoutSpawning()
+    [Theory]
+    [InlineData("PATH")]
+    [InlineData("LD_PRELOAD")]
+    public async Task StartSessionAsync_ReservedEnvironmentGrant_FailsWithoutSpawning(string grantName)
     {
         var request = CreateRequest() with
         {
-            EnvironmentVariables = new Dictionary<string, string> { ["PATH"] = @"C:\attacker-controlled" }
+            EnvironmentVariables = new Dictionary<string, string> { [grantName] = @"C:\attacker-controlled" }
         };
 
         var result = await _sut.StartSessionAsync(request, CancellationToken.None);
 
         result.IsSuccess.Should().BeFalse();
-        result.Errors.Should().ContainSingle(e => e.Contains("PATH"));
+        result.Errors.Should().ContainSingle(e => e.Contains(grantName));
     }
 
     [Fact]

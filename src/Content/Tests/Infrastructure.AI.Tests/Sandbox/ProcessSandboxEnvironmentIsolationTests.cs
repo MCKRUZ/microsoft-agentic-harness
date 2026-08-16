@@ -188,6 +188,13 @@ public class ProcessSandboxEnvironmentIsolationTests
     [InlineData("COMSPEC")]
     [InlineData("PathExt")]
     [InlineData("systemroot")]
+    // Dynamic-linker-hijack vectors: this tier runs as the harness's own OS user against a fully
+    // writable host filesystem, so an unguarded grant here loads an arbitrary shared library into
+    // an otherwise operator-allowlisted program before the allowlisted binary's own code ever
+    // runs — the exact gap a security review caught (#371).
+    [InlineData("LD_PRELOAD")]
+    [InlineData("ld_library_path")]
+    [InlineData("LD_AUDIT")]
     public async Task ExecuteAsync_ReservedEnvironmentGrant_RejectsRequestBeforeSpawning(string grantName)
     {
         // Reserved names are checked case-insensitively: Windows environment lookups are

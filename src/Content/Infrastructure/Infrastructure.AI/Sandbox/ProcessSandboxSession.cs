@@ -69,7 +69,11 @@ public sealed class ProcessSandboxSession : ISandboxSession
         {
             while (true)
             {
-                var read = await _process.StandardError.ReadAsync(buffer, 0, buffer.Length);
+                // Best-effort cancellation: an OS pipe read that's genuinely blocked in native
+                // code is not guaranteed to unblock just because this token fires — DisposeAsync
+                // does not rely on that guarantee (see the WhenAny race there) but passing it
+                // still helps the common case where the stream itself has already been closed.
+                var read = await _process.StandardError.ReadAsync(buffer.AsMemory(), _lifetimeCts.Token);
                 if (read == 0)
                     break;
 
@@ -122,7 +126,21 @@ public sealed class ProcessSandboxSession : ISandboxSession
 
         await _lifetimeCts.CancelAsync();
         await _completion;
-        await _stderrDrain;
+
+        // Not a plain await: a stderr read blocked in native code is not guaranteed to unblock
+        // just because the token above fired (a known limitation for OS-pipe-backed streams), and
+        // this method exists specifically so a stuck drain cannot silently defeat the bounded
+        // teardown _completion already enforces. Degrades to a warning and proceeds with cleanup
+        // rather than hanging forever; the drain task, if still running, keeps its own internal
+        // catch and simply completes later once the process handle below is disposed out from
+        // under it.
+        var stderrDrainOrTimeout = await Task.WhenAny(_stderrDrain, Task.Delay(PostKillWaitTimeout));
+        if (stderrDrainOrTimeout != _stderrDrain)
+        {
+            _logger.LogWarning(
+                "Stderr drain for process {ProcessId} did not finish within {Timeout} of teardown — proceeding with cleanup anyway",
+                _process.Id, PostKillWaitTimeout);
+        }
 
         // Both calls are internally safe (Release() is a documented no-op for an unknown id;
         // CleanupWorkspace catches and logs its own failures) — no guard needed before the
