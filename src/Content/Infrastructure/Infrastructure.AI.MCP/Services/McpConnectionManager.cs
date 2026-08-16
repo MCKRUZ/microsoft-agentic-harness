@@ -167,14 +167,15 @@ public sealed class McpConnectionManager : IAsyncDisposable
     /// </summary>
     /// <remarks>
     /// <para>
-    /// Takes the same per-server connection lock <see cref="GetClientAsync"/> and
-    /// <see cref="ReconnectAsync"/> use, but only for up to <see cref="DisconnectLockTimeout"/> (#378):
-    /// unlike those two, this method's only production caller (bundle teardown) has no cancellation token
-    /// to bound an unconditional wait with, so a hung connect attempt for the same server (mid-handshake,
-    /// inside <see cref="CreateClientAsync"/>) could otherwise block teardown indefinitely — worse than
-    /// the race the lock closes. When the lock cannot be acquired within the timeout, eviction proceeds
-    /// anyway, unlocked, exactly as this method always has: <c>ConcurrentDictionary.TryRemove</c> is
-    /// already atomic, so concurrent callers of this method cannot corrupt <see cref="_clients"/> between
+    /// Takes the SAME per-server connection lock <see cref="GetClientAsync"/> and
+    /// <see cref="ReconnectAsync"/> use, through the SAME <see cref="AcquireConnectionLockAsync"/> — not a
+    /// second lock-acquisition method — bounded by a locally-synthesized <see cref="CancellationTokenSource"/>
+    /// (#378): unlike those two callers, this method's only production caller (bundle teardown) has no
+    /// cancellation token of its own to bound an unconditional wait with, so a hung connect attempt for the
+    /// same server (mid-handshake, inside <see cref="CreateClientAsync"/>) could otherwise block teardown
+    /// indefinitely — worse than the race the lock closes. When the token fires before the lock is free,
+    /// eviction proceeds anyway, unlocked, exactly as this method always has: <c>ConcurrentDictionary.TryRemove</c>
+    /// is already atomic, so concurrent callers of this method cannot corrupt <see cref="_clients"/> between
     /// themselves either way. What the lock actually buys, when acquired, is exclusion against a
     /// concurrent <see cref="CreateAndCacheClientAsync"/> caching a NEW client for this server between
     /// this method's remove and its return — the pre-existing gap this method's doc used to describe as
@@ -192,14 +193,28 @@ public sealed class McpConnectionManager : IAsyncDisposable
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
-        using var lockScope = await TryAcquireConnectionLockAsync(serverName, DisconnectLockTimeout);
-        if (lockScope is null)
+        using var timeoutCts = new CancellationTokenSource(DisconnectLockTimeout);
+        IDisposable? lockScope = null;
+        try
+        {
+            lockScope = await AcquireConnectionLockAsync(serverName, timeoutCts.Token);
+        }
+        catch (OperationCanceledException)
+        {
             _logger.LogWarning(
                 "Disconnect from MCP server '{ServerName}' proceeded without the connection lock after " +
                 "waiting {Timeout} — a connect attempt for this server was still in flight.",
                 serverName, DisconnectLockTimeout);
+        }
 
-        await EvictAsync(serverName);
+        try
+        {
+            await EvictAsync(serverName);
+        }
+        finally
+        {
+            lockScope?.Dispose();
+        }
     }
 
     /// <summary>
@@ -315,20 +330,6 @@ public sealed class McpConnectionManager : IAsyncDisposable
         var connectionLock = GetOrCreateConnectionLock(serverName);
         await connectionLock.WaitAsync(cancellationToken);
         return new ConnectionLockScope(connectionLock);
-    }
-
-    /// <summary>
-    /// Attempts the same per-server lock <see cref="AcquireConnectionLockAsync"/> takes, but bounded by
-    /// <paramref name="timeout"/> instead of waiting unconditionally — for <see cref="DisconnectAsync"/>
-    /// (#378), whose caller has no cancellation token to bound a wait with otherwise. Returns
-    /// <see langword="null"/> (not held) when the timeout elapses before the lock is free, rather than
-    /// throwing — a caller that cannot get the lock in time is expected to proceed without it, not fail.
-    /// </summary>
-    private async Task<IDisposable?> TryAcquireConnectionLockAsync(string serverName, TimeSpan timeout)
-    {
-        var connectionLock = GetOrCreateConnectionLock(serverName);
-        var acquired = await connectionLock.WaitAsync(timeout);
-        return acquired ? new ConnectionLockScope(connectionLock) : null;
     }
 
     private SemaphoreSlim GetOrCreateConnectionLock(string serverName) =>

@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Domain.Common;
 using Domain.Common.Config.AI.MCP;
+using Domain.Common.Extensions;
 
 namespace Infrastructure.AI.Plugins;
 
@@ -130,20 +131,13 @@ public static class McpServerDefinitionBuilder
     /// absent property) still defaults to stdio, matching the pre-existing, callers-depend-on-it behavior
     /// (see <c>BundleStagingService.LogStdioRejected</c>).
     /// </summary>
-    private static Result<McpServerType> ParseType(JsonElement serverElement, string serverName)
-    {
-        var typeResult = ReadOptionalString(serverElement, "type", serverName);
-        if (!typeResult.IsSuccess)
-            return Result<McpServerType>.Fail([.. typeResult.Errors]);
-
-        var type = typeResult.Value?.ToLowerInvariant() switch
+    private static Result<McpServerType> ParseType(JsonElement serverElement, string serverName) =>
+        ReadOptionalString(serverElement, "type", serverName).Map(raw => raw?.ToLowerInvariant() switch
         {
             "http" => McpServerType.Http,
             "sse" => McpServerType.Sse,
             _ => McpServerType.Stdio
-        };
-        return Result<McpServerType>.Success(type);
-    }
+        });
 
     /// <summary>
     /// Reads an optional string property. Absent is success with a <see langword="null"/> value —
@@ -179,11 +173,11 @@ public static class McpServerDefinitionBuilder
         var result = new List<string>();
         foreach (var element in args.EnumerateArray())
         {
-            if (element.ValueKind is not (JsonValueKind.String or JsonValueKind.Null))
-                return Result<List<string>?>.Fail(
-                    $"'{serverName}' declares an 'args' element as {element.ValueKind}, but a string was expected.");
+            var leaf = ReadStringLeaf(element, "an 'args' element", serverName);
+            if (!leaf.IsSuccess)
+                return Result<List<string>?>.Fail([.. leaf.Errors]);
 
-            result.Add(element.GetString() ?? string.Empty);
+            result.Add(leaf.Value!);
         }
 
         return Result<List<string>?>.Success(result);
@@ -205,13 +199,29 @@ public static class McpServerDefinitionBuilder
         var result = new Dictionary<string, string>();
         foreach (var property in env.EnumerateObject())
         {
-            if (property.Value.ValueKind is not (JsonValueKind.String or JsonValueKind.Null))
-                return Result<Dictionary<string, string>?>.Fail(
-                    $"'{serverName}' declares 'env.{property.Name}' as {property.Value.ValueKind}, but a string was expected.");
+            var leaf = ReadStringLeaf(property.Value, $"'env.{property.Name}'", serverName);
+            if (!leaf.IsSuccess)
+                return Result<Dictionary<string, string>?>.Fail([.. leaf.Errors]);
 
-            result[property.Name] = property.Value.GetString() ?? string.Empty;
+            result[property.Name] = leaf.Value!;
         }
 
         return Result<Dictionary<string, string>?>.Success(result);
+    }
+
+    /// <summary>
+    /// Validates that an already-resolved JSON leaf value — one array element of <c>args</c>, or one
+    /// property value of <c>env</c> — is a string (or null), sharing the same kind-check
+    /// <see cref="ReadOptionalString"/> applies at the object-property level. <paramref name="context"/>
+    /// names the leaf's location for the error message (e.g. <c>"an 'args' element"</c> or
+    /// <c>"'env.NAME'"</c>).
+    /// </summary>
+    private static Result<string> ReadStringLeaf(JsonElement element, string context, string serverName)
+    {
+        if (element.ValueKind is not (JsonValueKind.String or JsonValueKind.Null))
+            return Result<string>.Fail(
+                $"'{serverName}' declares {context} as {element.ValueKind}, but a string was expected.");
+
+        return Result<string>.Success(element.GetString() ?? string.Empty);
     }
 }

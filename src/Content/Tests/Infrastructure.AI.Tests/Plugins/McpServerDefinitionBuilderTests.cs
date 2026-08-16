@@ -116,81 +116,22 @@ public sealed class McpServerDefinitionBuilderTests
 
     // -- Malformed JSON shapes on untrusted input (#374) --------------------------------------------
 
-    [Fact]
-    public void Build_TypeIsNotAString_FailsWithoutThrowing()
+    [Theory]
+    [InlineData("""{ "type": 5 }""", "*'s' declares 'type' as Number*")]
+    [InlineData("""{ "type": "http", "url": 5 }""", "*'s' declares 'url' as Number*")]
+    [InlineData("""{ "command": true }""", "*'s' declares 'command' as True*")]
+    [InlineData("""{ "command": "npx", "args": "not-an-array" }""", "*'s' declares 'args' as String*")]
+    [InlineData("""{ "command": "npx", "args": ["ok", 5] }""", "*'s' declares an 'args' element as Number*")]
+    [InlineData("""{ "command": "npx", "env": ["not-an-object"] }""", "*'s' declares 'env' as Array*")]
+    [InlineData("""{ "command": "npx", "env": { "A": 5 } }""", "*'s' declares 'env.A' as Number*")]
+    public void Build_MalformedJsonShape_FailsWithoutThrowing(string json, string expectedErrorPattern)
     {
-        var element = Parse("""{ "type": 5 }""");
+        var element = Parse(json);
 
         var result = McpServerDefinitionBuilder.Build(element, NoEnv, "[Bundle: b1]", "s");
 
         result.IsSuccess.Should().BeFalse();
-        result.Errors.Should().ContainMatch("*'s' declares 'type' as Number*");
-    }
-
-    [Fact]
-    public void Build_UrlIsNotAString_FailsWithoutThrowing()
-    {
-        var element = Parse("""{ "type": "http", "url": 5 }""");
-
-        var result = McpServerDefinitionBuilder.Build(element, NoEnv, "[Bundle: b1]", "s");
-
-        result.IsSuccess.Should().BeFalse();
-        result.Errors.Should().ContainMatch("*'s' declares 'url' as Number*");
-    }
-
-    [Fact]
-    public void Build_CommandIsNotAString_FailsWithoutThrowing()
-    {
-        var element = Parse("""{ "command": true }""");
-
-        var result = McpServerDefinitionBuilder.Build(element, NoEnv, "[Bundle: b1]", "s");
-
-        result.IsSuccess.Should().BeFalse();
-        result.Errors.Should().ContainMatch("*'s' declares 'command' as True*");
-    }
-
-    [Fact]
-    public void Build_ArgsIsNotAnArray_FailsWithoutThrowing()
-    {
-        var element = Parse("""{ "command": "npx", "args": "not-an-array" }""");
-
-        var result = McpServerDefinitionBuilder.Build(element, NoEnv, "[Bundle: b1]", "s");
-
-        result.IsSuccess.Should().BeFalse();
-        result.Errors.Should().ContainMatch("*'s' declares 'args' as String*");
-    }
-
-    [Fact]
-    public void Build_ArgsElementIsNotAString_FailsWithoutThrowing()
-    {
-        var element = Parse("""{ "command": "npx", "args": ["ok", 5] }""");
-
-        var result = McpServerDefinitionBuilder.Build(element, NoEnv, "[Bundle: b1]", "s");
-
-        result.IsSuccess.Should().BeFalse();
-        result.Errors.Should().ContainMatch("*'s' declares an 'args' element as Number*");
-    }
-
-    [Fact]
-    public void Build_EnvIsNotAnObject_FailsWithoutThrowing()
-    {
-        var element = Parse("""{ "command": "npx", "env": ["not-an-object"] }""");
-
-        var result = McpServerDefinitionBuilder.Build(element, NoEnv, "[Bundle: b1]", "s");
-
-        result.IsSuccess.Should().BeFalse();
-        result.Errors.Should().ContainMatch("*'s' declares 'env' as Array*");
-    }
-
-    [Fact]
-    public void Build_EnvValueIsNotAString_FailsWithoutThrowing()
-    {
-        var element = Parse("""{ "command": "npx", "env": { "A": 5 } }""");
-
-        var result = McpServerDefinitionBuilder.Build(element, NoEnv, "[Bundle: b1]", "s");
-
-        result.IsSuccess.Should().BeFalse();
-        result.Errors.Should().ContainMatch("*'s' declares 'env.A' as Number*");
+        result.Errors.Should().ContainMatch(expectedErrorPattern);
     }
 
     [Fact]
