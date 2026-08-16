@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Application.AI.Common.Interfaces.Escalation;
 using Application.AI.Common.OpenTelemetry.Metrics;
 using Application.AI.Common.Services;
 using Domain.Common.Helpers;
@@ -15,6 +16,17 @@ namespace Infrastructure.AI.Agents;
 
 public sealed partial class CapabilityMatchSupervisor
 {
+    // A misconfigured/empty roster is a standing condition, not a per-call event. Warning once
+    // keeps the signal without spamming a line on every blocked delegation for the life of the
+    // process. Static because escalation config can change between calls but the operator only
+    // needs to be told once per process lifetime; Interlocked so concurrent delegations can't
+    // both observe unwarned and both log. Mirrors EscalationToolApprovalRouter's
+    // s_blankApproversWarned pattern.
+    private static int s_delegationApproversWarned;
+
+    // Same rationale as s_delegationApproversWarned, for the tier-2 ("escalated") roster.
+    private static int s_delegationEscalatedApproversWarned;
+
     private async Task<DelegationResult?> HandleAutonomyEscalationAsync(
         string taskDescription,
         IReadOnlyList<string> requiredCapabilities,
@@ -24,6 +36,22 @@ public sealed partial class CapabilityMatchSupervisor
         Domain.Common.Config.AI.Governance.EscalationConfig escalationConfig,
         CancellationToken ct)
     {
+        // An escalation with nobody on the roster can never be approved — EscalationRequestInvariants
+        // rejects it outright, and today that rejection was silently swallowed by the fail-closed
+        // catch below, so delegation escalation could never succeed (#393). Refuse immediately with
+        // an actionable log instead of raising a request that is guaranteed to be denied.
+        var roster = escalationConfig.DelegationApprovers;
+        if (roster.Count == 0)
+        {
+            if (Interlocked.Exchange(ref s_delegationApproversWarned, 1) == 0)
+                _logger.LogWarning(
+                    "AppConfig:AI:Governance:Escalation:DelegationApprovers is empty — a delegation " +
+                    "blocked by autonomy tier can never be escalated for approval and is denied " +
+                    "(fail-closed). Configure at least one approver to enable delegation escalation.");
+
+            return null;
+        }
+
         var escalationRequest = new EscalationRequest
         {
             EscalationId = Guid.NewGuid(),
@@ -44,13 +72,20 @@ public sealed partial class CapabilityMatchSupervisor
             ApprovalStrategy = EnumNameHelper.TryParseName<ApprovalStrategyType>(
                 escalationConfig.DefaultApprovalStrategy, out var strategy)
                 ? strategy : ApprovalStrategyType.AnyOf,
-            Approvers = [],
+            Approvers = roster,
             QuorumThreshold = 1,
             TimeoutSeconds = escalationConfig.DefaultTimeoutSeconds,
             TimeoutAction = EnumNameHelper.TryParseName<EscalationTimeoutAction>(
                 escalationConfig.DefaultTimeoutAction, out var timeoutAction)
                 ? timeoutAction : EscalationTimeoutAction.DenyAndEscalate,
-            RequestedAt = DateTimeOffset.UtcNow
+            RequestedAt = DateTimeOffset.UtcNow,
+            // #394: if this escalation times out under Escalate/DenyAndEscalate, resolve it as a
+            // real tier hand-off instead of a bare denial — recording the tier THIS delegation
+            // actually needed (minimumTier), not a fixed constant. HandleEscalatedTierAsync below
+            // is the caller-owned downstream process that raises the tier-2 escalation; approving
+            // it does not grant minimumTier itself, it only unblocks the retry the same way an
+            // ordinary tier-1 approval does (see HandleEscalatedTierAsync's remarks).
+            EscalationTierTarget = minimumTier
         };
 
         if (_escalationService is not { } escalation)
@@ -64,6 +99,11 @@ public sealed partial class CapabilityMatchSupervisor
         {
             var outcome = await escalation.RequestEscalationAsync(escalationRequest, ct);
 
+            if (outcome.ResolutionType == EscalationResolutionType.Escalated)
+                return await HandleEscalatedTierAsync(
+                    outcome, taskDescription, requiredCapabilities, currentDelegationDepth,
+                    toolOverrides, escalationConfig, escalation, ct);
+
             if (!outcome.IsApproved)
             {
                 _logger.LogWarning("Escalation {EscalationId} denied for delegation: {TaskDescription}",
@@ -74,9 +114,13 @@ public sealed partial class CapabilityMatchSupervisor
             _logger.LogInformation("Escalation {EscalationId} approved — retrying delegation with Restricted tier",
                 outcome.EscalationId);
 
+            // +1: an approved-escalation retry is another attempt at the same delegation, not a
+            // fresh call — without advancing depth here, an approver who keeps approving (or a
+            // misconfigured selector that never finds a match) could retry indefinitely with
+            // MaxDelegationDepth never tripping.
             return await DelegateAsync(
                 taskDescription, requiredCapabilities, AutonomyLevel.Restricted,
-                currentDelegationDepth, toolOverrides, ct);
+                currentDelegationDepth + 1, toolOverrides, ct);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -85,6 +129,97 @@ public sealed partial class CapabilityMatchSupervisor
                 taskDescription);
             return null;
         }
+    }
+
+    /// <summary>
+    /// The downstream process #394's <c>EscalationResolutionType.Escalated</c> resolution
+    /// documents: raises a second, tier-2 escalation to the escalated-approvers roster when the
+    /// first tier went unanswered, and only on ITS approval retries the delegation. The retry
+    /// drops the autonomy-tier floor to <see cref="AutonomyLevel.Restricted"/> — the same relief
+    /// an ordinary tier-1 approval grants (see <see cref="CapabilityMatchStrategy"/>'s
+    /// <c>MinimumAutonomyLevel</c> floor-exclusion filter: a human approval means "let this
+    /// proceed with whatever agent is available," not "grant a specific higher tier" — there is
+    /// no domain concept of granting a tier here, only of relaxing the automated pre-filter). An
+    /// empty escalated roster denies (fail-closed) — the same posture as an empty tier-1 roster in
+    /// <see cref="HandleAutonomyEscalationAsync"/>.
+    /// </summary>
+    private async Task<DelegationResult?> HandleEscalatedTierAsync(
+        EscalationOutcome tier1Outcome,
+        string taskDescription,
+        IReadOnlyList<string> requiredCapabilities,
+        int currentDelegationDepth,
+        IReadOnlyList<string>? toolOverrides,
+        Domain.Common.Config.AI.Governance.EscalationConfig escalationConfig,
+        IEscalationService escalation,
+        CancellationToken ct)
+    {
+        var escalatedRoster = escalationConfig.DelegationEscalatedApprovers;
+        if (escalatedRoster.Count == 0)
+        {
+            if (Interlocked.Exchange(ref s_delegationEscalatedApproversWarned, 1) == 0)
+                _logger.LogWarning(
+                    "Escalation {EscalationId} was escalated to tier {Tier} but " +
+                    "AppConfig:AI:Governance:Escalation:DelegationEscalatedApprovers is empty — " +
+                    "denying (fail-closed). Configure at least one escalated approver to enable it.",
+                    tier1Outcome.EscalationId, tier1Outcome.EscalatedToTier);
+
+            return null;
+        }
+
+        var tier2Request = new EscalationRequest
+        {
+            EscalationId = Guid.NewGuid(),
+            AgentId = SupervisorId,
+            ToolName = $"delegate:{string.Join(",", requiredCapabilities)}",
+            Arguments = new Dictionary<string, string> { ["taskDescription"] = taskDescription },
+            Description =
+                $"Escalated (autonomy tier {tier1Outcome.EscalatedToTier} unmet, first tier " +
+                $"unanswered): {taskDescription}",
+            RiskLevel = RiskLevel.High,
+            Priority = EscalationPriority.Critical,
+            // Same config-driven parsing as the tier-1 request above — a configured approval
+            // strategy or timeout action should apply uniformly to both tiers, not silently weaken
+            // at the more sensitive, higher-priority tier. TimeoutAction is deliberately never
+            // itself escalatable here: EscalationTierTarget is left unset on this request, so even
+            // a configured Escalate/DenyAndEscalate action resolves as an ordinary timeout denial,
+            // never a third escalation tier.
+            ApprovalStrategy = EnumNameHelper.TryParseName<ApprovalStrategyType>(
+                escalationConfig.DefaultApprovalStrategy, out var tier2Strategy)
+                ? tier2Strategy : ApprovalStrategyType.AnyOf,
+            Approvers = escalatedRoster,
+            QuorumThreshold = 1,
+            TimeoutSeconds = escalationConfig.DefaultTimeoutSeconds,
+            TimeoutAction = EnumNameHelper.TryParseName<EscalationTimeoutAction>(
+                escalationConfig.DefaultTimeoutAction, out var tier2TimeoutAction)
+                ? tier2TimeoutAction : EscalationTimeoutAction.Deny,
+            RequestedAt = DateTimeOffset.UtcNow,
+            PredecessorEscalationId = tier1Outcome.EscalationId
+        };
+
+        _logger.LogInformation(
+            "Escalation {EscalationId} escalated to tier {Tier} — requesting approval from " +
+            "{Count} escalated approver(s)",
+            tier1Outcome.EscalationId, tier1Outcome.EscalatedToTier, escalatedRoster.Count);
+
+        var tier2Outcome = await escalation.RequestEscalationAsync(tier2Request, ct);
+
+        if (!tier2Outcome.IsApproved)
+        {
+            _logger.LogWarning(
+                "Escalated-tier escalation {EscalationId} denied for delegation: {TaskDescription}",
+                tier2Outcome.EscalationId, taskDescription);
+            return null;
+        }
+
+        _logger.LogInformation(
+            "Escalated-tier escalation {EscalationId} approved — retrying delegation with Restricted tier",
+            tier2Outcome.EscalationId);
+
+        // Restricted, not tier1Outcome.EscalatedToTier — see this method's remarks. +1 for the
+        // same unbounded-retry reason as the ordinary-approval retry in HandleAutonomyEscalationAsync.
+        return await DelegateAsync(
+            taskDescription, requiredCapabilities, AutonomyLevel.Restricted,
+            currentDelegationDepth + 1, toolOverrides, ct);
     }
 
     private async Task<DelegationResult> ExecuteAndTrack(

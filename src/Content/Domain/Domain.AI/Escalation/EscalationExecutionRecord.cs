@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace Domain.AI.Escalation;
 
 /// <summary>
@@ -5,14 +7,18 @@ namespace Domain.AI.Escalation;
 /// pushed to the approver so a failed action and a completed one no longer look identical.
 /// </summary>
 /// <remarks>
-/// Constructible only through the factories below, mirroring
+/// Constructible from application code only through the factories below, mirroring
 /// <c>Application.AI.Common.Interfaces.Governance.ToolCallAdmission</c>: a <see cref="Failed"/>
 /// record with a blank <see cref="FailureReason"/> would read to an approver as "no reason
 /// given", which is indistinguishable from success, so the shape that could produce one is kept
-/// unreachable rather than defended against at every reader.
+/// unreachable rather than defended against at every reader. The constructor is marked
+/// <see cref="JsonConstructorAttribute"/> so <c>System.Text.Json</c> can rehydrate an
+/// already-validated record from the audit store (#396) without bypassing this class's own
+/// invariant checks for anything application code constructs fresh.
 /// </remarks>
 public sealed record EscalationExecutionRecord
 {
+    [JsonConstructor]
     private EscalationExecutionRecord(
         Guid escalationId,
         EscalationExecutionStatus status,

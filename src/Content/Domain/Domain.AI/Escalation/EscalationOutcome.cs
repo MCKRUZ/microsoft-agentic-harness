@@ -24,8 +24,11 @@ public sealed record EscalationOutcome
     public required DateTimeOffset ResolvedAt { get; init; }
 
     /// <summary>
-    /// If resolution was <see cref="EscalationResolutionType.Escalated"/>,
-    /// which authority tier received the escalated request. Null otherwise.
+    /// If resolution was <see cref="EscalationResolutionType.Escalated"/>, the autonomy tier the
+    /// originating request could not clear — i.e. why escalation was needed. Copied from
+    /// <see cref="EscalationRequest.EscalationTierTarget"/>; not a grant of that tier. What
+    /// approving the resulting tier-2 escalation actually unlocks is entirely up to the
+    /// caller-owned downstream process that raises it. Null otherwise.
     /// </summary>
     public AutonomyLevel? EscalatedToTier { get; init; }
 

@@ -17,12 +17,17 @@ namespace Application.Core.Tests.CQRS.Escalation;
 public sealed class GetEscalationQueryHandlerTests
 {
     private readonly Mock<IEscalationService> _service = new();
+    private readonly Mock<IEscalationAuditStore> _auditStore = new();
     private readonly GetEscalationQueryHandler _handler;
 
     public GetEscalationQueryHandlerTests()
     {
+        _auditStore
+            .Setup(s => s.GetLatestExecutionAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((EscalationExecutionRecord?)null);
+
         _handler = new GetEscalationQueryHandler(
-            _service.Object, NullLogger<GetEscalationQueryHandler>.Instance);
+            _service.Object, _auditStore.Object, NullLogger<GetEscalationQueryHandler>.Instance);
     }
 
     [Fact]
@@ -101,6 +106,36 @@ public sealed class GetEscalationQueryHandlerTests
         result.Value!.Status.Should().Be(EscalationReadStatus.Resolved);
         result.Value.Outcome!.IsApproved.Should().BeTrue();
         result.Value.Pending.Should().BeNull();
+        result.Value.Outcome.Execution.Should().BeNull(
+            "the audit store mock returns no execution record by default — control for the " +
+            "populated-execution test below");
+    }
+
+    [Fact]
+    public async Task Handle_ResolvedWithExecutionOutcome_PopulatesExecutionSummary()
+    {
+        // #396: GET /api/escalations/{id} previously never surfaced the execution outcome that
+        // #325 (PR #366) started reporting — this is the fix.
+        var id = Guid.NewGuid();
+        _service.Setup(s => s.GetPendingEscalationAsync(id, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((EscalationRequest?)null);
+        _service.Setup(s => s.GetOutcomeAsync(id, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(EscalationTestData.NewOutcome(id, approved: true, "alice@contoso.com"));
+        _auditStore
+            .Setup(s => s.GetLatestExecutionAsync(id, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(EscalationExecutionRecord.Failed(
+                id, "downstream API returned 500", DateTimeOffset.UtcNow, "agent-turn"));
+
+        var result = await _handler.Handle(new GetEscalationQuery
+        {
+            EscalationId = id,
+            ApproverName = "alice@contoso.com"
+        }, CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value!.Outcome!.Execution.Should().NotBeNull();
+        result.Value.Outcome.Execution!.Status.Should().Be(EscalationExecutionStatus.Failed);
+        result.Value.Outcome.Execution.FailureReason.Should().Be("downstream API returned 500");
     }
 
     [Fact]

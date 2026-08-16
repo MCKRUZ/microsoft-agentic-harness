@@ -36,4 +36,12 @@ public interface IEscalationAuditStore
     /// Returns an empty list if the escalation ID is unknown.
     /// </summary>
     Task<IReadOnlyList<EscalationAuditRecord>> GetHistoryAsync(Guid escalationId, CancellationToken ct);
+
+    /// <summary>
+    /// Returns the most recently recorded execution outcome for an escalation (#396) — what
+    /// happened when the approved action actually ran, as reported through
+    /// <see cref="IApprovalExecutionReporter"/>. Null if the escalation is unknown, was never
+    /// approved, or its approved action has not been reported yet.
+    /// </summary>
+    Task<EscalationExecutionRecord?> GetLatestExecutionAsync(Guid escalationId, CancellationToken ct);
 }

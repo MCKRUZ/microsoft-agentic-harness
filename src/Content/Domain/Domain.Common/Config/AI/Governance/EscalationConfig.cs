@@ -103,6 +103,22 @@ public class EscalationConfig
     /// another round.
     /// </summary>
     public EscalationRevisionConfig Revision { get; set; } = new();
+
+    /// <summary>
+    /// Roster for delegation escalations raised when <c>CapabilityMatchSupervisor</c> blocks a
+    /// delegation on autonomy tier (#393). Mirrors the <c>ToolApprovalConfig.Approvers</c> /
+    /// <c>ChangesConfig.DefaultApprovers</c> pattern. Empty by default — an empty roster is a
+    /// fail-closed denial, never a silently-broken escalation attempt.
+    /// </summary>
+    public List<string> DelegationApprovers { get; set; } = [];
+
+    /// <summary>
+    /// The second-tier ("escalated") roster a delegation escalation hands off to when its
+    /// first-tier resolution comes back as <c>EscalationResolutionType.Escalated</c> (#394).
+    /// Empty by default — with no escalated roster configured, an escalated first-tier
+    /// resolution denies (fail-closed) instead of hanging or auto-granting.
+    /// </summary>
+    public List<string> DelegationEscalatedApprovers { get; set; } = [];
 }
 
 /// <summary>Sizing for the retry-attribution text shown on a second-or-later approval attempt.</summary>

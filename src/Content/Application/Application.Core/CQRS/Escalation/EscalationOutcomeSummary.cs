@@ -25,9 +25,20 @@ public sealed record EscalationOutcomeSummary
     /// <summary>The individual approver decisions collected before resolution.</summary>
     public required IReadOnlyList<ApproverDecisionSummary> Decisions { get; init; }
 
+    /// <summary>
+    /// What happened when the approved action was actually carried out (#396). Null until
+    /// <c>IApprovalExecutionReporter</c> reports an outcome — always null for a denied escalation.
+    /// </summary>
+    public EscalationExecutionSummary? Execution { get; init; }
+
     /// <summary>Projects a domain <see cref="EscalationOutcome"/> to the wire-safe shape.</summary>
     /// <param name="outcome">The resolved outcome to project. Must not be null.</param>
-    public static EscalationOutcomeSummary FromOutcome(EscalationOutcome outcome)
+    /// <param name="execution">
+    /// The most recently reported execution outcome for this escalation, or null if none has been
+    /// reported yet (or ever will be, for a denied escalation).
+    /// </param>
+    public static EscalationOutcomeSummary FromOutcome(
+        EscalationOutcome outcome, EscalationExecutionSummary? execution = null)
     {
         ArgumentNullException.ThrowIfNull(outcome);
         return new EscalationOutcomeSummary
@@ -36,7 +47,8 @@ public sealed record EscalationOutcomeSummary
             IsApproved = outcome.IsApproved,
             ResolutionType = outcome.ResolutionType,
             ResolvedAt = outcome.ResolvedAt,
-            Decisions = outcome.Decisions.Select(ApproverDecisionSummary.FromDecision).ToList()
+            Decisions = outcome.Decisions.Select(ApproverDecisionSummary.FromDecision).ToList(),
+            Execution = execution
         };
     }
 }

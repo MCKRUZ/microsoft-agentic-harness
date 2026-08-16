@@ -96,4 +96,19 @@ public sealed record EscalationRequest
     /// steer the retry.
     /// </summary>
     public string? PriorRevisionInstructions { get; init; }
+
+    /// <summary>
+    /// If set, and this request times out with <see cref="EscalationTimeoutAction.Escalate"/> or
+    /// <see cref="EscalationTimeoutAction.DenyAndEscalate"/>, the resolution is
+    /// <see cref="EscalationResolutionType.Escalated"/> (not <see cref="EscalationResolutionType.TimedOut"/>)
+    /// and <see cref="EscalationOutcome.EscalatedToTier"/> is stamped with this value — the
+    /// autonomy tier the request could not clear, recorded for audit and to signal a caller-owned
+    /// downstream process to hand the request to a second, higher-authority roster. This is
+    /// <b>not</b> a tier to auto-grant: the escalation service never auto-grants anything for this
+    /// value, and a downstream process approving the tier-2 escalation decides for itself what to
+    /// unlock. Null for every caller that has no such downstream process (every escalation source
+    /// except delegation-autonomy escalation today) — their timeout behavior on
+    /// <c>Escalate</c>/<c>DenyAndEscalate</c> is unaffected by this field.
+    /// </summary>
+    public AutonomyLevel? EscalationTierTarget { get; init; }
 }
