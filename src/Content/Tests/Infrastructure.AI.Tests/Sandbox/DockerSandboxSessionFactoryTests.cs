@@ -341,6 +341,32 @@ public class DockerSandboxSessionFactoryTests
             Times.Never, "a caller giving up is not the security-relevant rejection SignFailureAsync exists to record");
     }
 
+    [Fact]
+    public async Task StartSessionAsync_InvalidMaxSessionDuration_SignsOnlyFailureAttestationNotBoth()
+    {
+        // A negative (but not -1ms/"infinite") duration makes the session's internal
+        // CancellationTokenSource throw ArgumentOutOfRangeException — after the container has
+        // already been created, started, and attached. Before the fix, SignStartAsync ran before
+        // construction, so this exact input produced a "session started" attestation immediately
+        // followed by a "session failed" one for a session the caller never received.
+        SetUpAttachStream(BuildFrames(("stdout", "ready")));
+        var request = CreateRequest() with { MaxSessionDuration = TimeSpan.FromMilliseconds(-500) };
+
+        var result = await _sut.StartSessionAsync(request, CancellationToken.None);
+
+        result.IsSuccess.Should().BeFalse();
+        _attestation.Verify(x => x.SignAsync(
+            It.Is<AttestationRequest>(r => r.IsFailure), It.IsAny<CancellationToken>()), Times.Once);
+        _attestation.Verify(x => x.SignAsync(
+                It.Is<AttestationRequest>(r => !r.IsFailure), It.IsAny<CancellationToken>()),
+            Times.Never,
+            "the session constructor throws before a session is ever returned to the caller — signing a " +
+            "success attestation here would record 'session started' for a session nobody ever received");
+        _containers.Verify(x => x.RemoveContainerAsync(
+                "test-container-id", It.IsAny<ContainerRemoveParameters>(), It.IsAny<CancellationToken>()),
+            Times.Once, "the container created before construction failed must not be leaked");
+    }
+
     private FakeAttachStream SetUpAttachStream(byte[] frames)
     {
         var fakeStream = new FakeAttachStream(frames);

@@ -10,13 +10,16 @@ namespace Infrastructure.AI.Sandbox;
 /// </summary>
 public sealed record SandboxEgressPreflightOutcome(string? Digest, string? FailureReason, string? ErrorMessage)
 {
+    /// <summary>True when the preflight denied one or more targets; equivalent to <see cref="FailureReason"/> being non-null.</summary>
     // Derived, not a fourth positional field: Allowed always supplies a null FailureReason and
     // Denied always supplies a non-null one, so a separate IsDenied field could only ever agree
     // with FailureReason's own nullness — never disagree with it by construction.
     public bool IsDenied => FailureReason is not null;
 
+    /// <summary>An outcome that allows the sandbox to start, carrying the preflight digest (if the preflight ran) for the attestation record.</summary>
     public static SandboxEgressPreflightOutcome Allowed(string? digest) => new(digest, null, null);
 
+    /// <summary>An outcome that blocks the sandbox from starting — <paramref name="failureReason"/> is the detailed reason recorded in the attestation, <paramref name="errorMessage"/> the shorter one surfaced to the caller.</summary>
     public static SandboxEgressPreflightOutcome Denied(string? digest, string failureReason, string errorMessage) =>
         new(digest, failureReason, errorMessage);
 }
@@ -33,6 +36,12 @@ public sealed class SandboxEgressPreflightRunner(
     ISandboxEgressPreflight? egressPreflight,
     ILogger<SandboxEgressPreflightRunner> logger)
 {
+    /// <summary>
+    /// Evaluates <paramref name="targets"/> against the configured egress policy. Returns an
+    /// allowed outcome with a null digest when no <see cref="ISandboxEgressPreflight"/> is
+    /// configured or <paramref name="targets"/> is empty — there is nothing to evaluate, so this
+    /// never denies a request that declared no targets up front.
+    /// </summary>
     public async Task<SandboxEgressPreflightOutcome> EvaluateAsync(
         string toolName, IReadOnlyList<Uri>? targets, CancellationToken ct)
     {

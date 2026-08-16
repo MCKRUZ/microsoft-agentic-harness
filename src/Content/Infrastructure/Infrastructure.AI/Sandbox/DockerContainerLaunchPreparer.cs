@@ -56,6 +56,7 @@ public sealed class DockerContainerLaunchPreparer(
     public static string? FindReservedEnvironmentGrant(IReadOnlyDictionary<string, string>? environmentVariables) =>
         SandboxReservedEnvironment.FindReservedGrant(ReservedContainerEnvironmentVariableNames, environmentVariables);
 
+    /// <summary>Pings the Docker daemon. Returns false rather than throwing on any failure — unreachability is an expected, callable-checkable condition, not an exceptional one.</summary>
     public async Task<bool> IsDockerAvailableAsync(CancellationToken ct)
     {
         try
@@ -78,6 +79,12 @@ public sealed class DockerContainerLaunchPreparer(
     public Task<ContainerWaitResponse> WaitForContainerExitAsync(string containerId, CancellationToken ct) =>
         dockerClient.Containers.WaitContainerAsync(containerId, ct);
 
+    /// <summary>
+    /// Resolves the container image for a tool: a per-tool <c>ContainerImage</c> override from
+    /// <see cref="SandboxExecutionOptions.ToolOverrides"/> when one is configured (validated
+    /// against <see cref="ContainerSandboxOptions.AllowedImagePrefixes"/>), otherwise the
+    /// configured default image.
+    /// </summary>
     public string ResolveImage(string toolName)
     {
         var currentOptions = options.CurrentValue;
@@ -109,6 +116,7 @@ public sealed class DockerContainerLaunchPreparer(
             $"Image '{image}' not in allowed registry list. Allowed prefixes: {string.Join(", ", allowedPrefixes)}");
     }
 
+    /// <summary>Pulls <paramref name="image"/> if the daemon does not already have it locally.</summary>
     public async Task EnsureImageAvailableAsync(string image, CancellationToken ct)
     {
         try

@@ -82,6 +82,8 @@ public sealed class DockerSandboxSessionFactory(
     {
         var workspaceDir = launchPreparer.CreateWorkspace();
         string? containerId = null;
+        DockerSandboxSession? session = null;
+        MultiplexedStream? attachStream = null;
 
         try
         {
@@ -96,35 +98,43 @@ public sealed class DockerSandboxSessionFactory(
 
             await dockerClient.Containers.StartContainerAsync(containerId, null, ct);
 
-            var attachStream = await dockerClient.Containers.AttachContainerAsync(
+            attachStream = await dockerClient.Containers.AttachContainerAsync(
                 containerId,
                 tty: false,
                 new ContainerAttachParameters { Stream = true, Stdin = true, Stdout = true, Stderr = true },
                 ct);
 
-            // The audit trail must record that a session actually started, not just that some
-            // were refused — a running session is the more consequential event of the two.
+            // Constructed before signing, not after: the session takes ownership of attachStream
+            // (its own DisposeAsync disposes it) the moment it exists, so a failure past this
+            // point — including SignStartAsync itself throwing — cannot leak the live attach
+            // connection the way returning it bare would.
+            session = new DockerSandboxSession(
+                launchPreparer, attachStream, containerId, request.ToolName, workspaceDir,
+                request.MaxSessionDuration, sessionLogger);
+
+            // Signed only once the session object actually exists, so a failure past this point
+            // can never leave behind a "started" attestation for a session the caller never
+            // received. The audit trail must still record that a session actually started, not
+            // just that some were refused: a running session is the more consequential event.
             await attestationSigner.SignStartAsync(request, egressDigest, ct);
 
-            return Result<ISandboxSession>.Success(new DockerSandboxSession(
-                launchPreparer, attachStream, containerId, request.ToolName, workspaceDir,
-                request.MaxSessionDuration, sessionLogger));
+            return Result<ISandboxSession>.Success(session);
         }
         catch (OperationCanceledException)
         {
             // The caller gave up (e.g. McpConnectionManager's InitializationTimeout) after the
-            // container was already created/started. Clean up the leaked container and
-            // workspace — RemoveContainerSafeAsync and CleanupWorkspace synthesize their own
-            // timeouts and never depend on ct, so they still run with ct already cancelled —
-            // but skip attestation: signing with a cancelled ct would itself throw, and a
-            // caller giving up is not the security-relevant rejection SignFailureAsync exists
-            // to record. Then let cancellation propagate as the caller expects.
-            await CleanupPartialContainerAsync(containerId, workspaceDir);
+            // container was already created/started. Tear down whatever exists — the constructed
+            // session if SignStartAsync is what threw, otherwise the bare container — none of
+            // that cleanup depends on ct, so it still runs with ct already cancelled — but skip
+            // attestation: signing with a cancelled ct would itself throw, and a caller giving up
+            // is not the security-relevant rejection SignFailureAsync exists to record. Then let
+            // cancellation propagate as the caller expects.
+            await TearDownPartialStartAsync(session, attachStream, containerId, workspaceDir);
             throw;
         }
         catch (Exception ex)
         {
-            await CleanupPartialContainerAsync(containerId, workspaceDir);
+            await TearDownPartialStartAsync(session, attachStream, containerId, workspaceDir);
 
             var failureReason = $"Docker error: {ex.Message}";
             await attestationSigner.SignFailureAsync(request, failureReason, egressDigest, ct);
@@ -132,8 +142,27 @@ public sealed class DockerSandboxSessionFactory(
         }
     }
 
-    private async Task CleanupPartialContainerAsync(string? containerId, string workspaceDir)
+    /// <summary>
+    /// Tears down a session start that did not complete. If the <see cref="DockerSandboxSession"/>
+    /// object already exists (the failure happened at or after <c>SignStartAsync</c>), disposing
+    /// it is the correct teardown — its own <see cref="DockerSandboxSession.DisposeAsync"/> stops
+    /// and removes the container, disposes the attach stream, and cleans up the workspace.
+    /// Otherwise the bare container and workspace are torn down directly, and
+    /// <paramref name="attachStream"/> — if the failure happened inside the session constructor
+    /// itself, after the attach succeeded but before any object took ownership of it — is disposed
+    /// directly too, so a construction failure (e.g. an invalid <c>MaxSessionDuration</c>) cannot
+    /// leak the live Docker attach connection.
+    /// </summary>
+    private async Task TearDownPartialStartAsync(
+        DockerSandboxSession? session, MultiplexedStream? attachStream, string? containerId, string workspaceDir)
     {
+        if (session is not null)
+        {
+            await session.DisposeAsync();
+            return;
+        }
+
+        attachStream?.Dispose();
         await launchPreparer.RemoveContainerSafeAsync(containerId);
         launchPreparer.CleanupWorkspace(workspaceDir);
     }

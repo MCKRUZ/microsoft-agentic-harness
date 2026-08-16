@@ -282,6 +282,11 @@ public class ProcessSandboxSessionFactoryTests
         result.IsSuccess.Should().BeFalse();
         _attestation.Verify(x => x.SignAsync(
             It.Is<AttestationRequest>(r => r.IsFailure), It.IsAny<CancellationToken>()), Times.Once);
+        _attestation.Verify(x => x.SignAsync(
+                It.Is<AttestationRequest>(r => !r.IsFailure), It.IsAny<CancellationToken>()),
+            Times.Never,
+            "the session constructor throws before a session is ever returned to the caller — signing a " +
+            "success attestation here would record 'session started' for a session nobody ever received");
     }
 
     private static SandboxSessionRequest CreateRequest() => new()

@@ -65,6 +65,7 @@ public sealed class ProcessSandboxSessionFactory(
         var command = request.Command ?? request.ToolName;
         var workspaceDir = launchPreparer.CreateWorkspace();
         Process? process = null;
+        ProcessSandboxSession? session = null;
 
         try
         {
@@ -72,39 +73,64 @@ public sealed class ProcessSandboxSessionFactory(
                 command, request.ArgumentList, request.PermissionProfile, request.EnvironmentVariables, workspaceDir);
             launchPreparer.ApplyResourceLimits(process, request.Limits);
 
-            // The audit trail must record that a session actually started, not just that some
-            // were refused — a running session is the more consequential event of the two.
+            session = new ProcessSandboxSession(process, launchPreparer, workspaceDir, request.MaxSessionDuration, sessionLogger);
+
+            // Signed only once the session object actually exists — not before it, and not
+            // wrapped together with construction in the same try region as a bare `new` — so a
+            // failure past this point (this call itself throwing, e.g. on a cancelled ct) can
+            // never leave behind a "started" attestation for a session the caller never
+            // received. The audit trail must still record that a session actually started, not
+            // just that some were refused: a running session is the more consequential event.
             await attestationSigner.SignStartAsync(request, egressDigest, ct);
 
-            return Result<ISandboxSession>.Success(
-                new ProcessSandboxSession(process, launchPreparer, workspaceDir, request.MaxSessionDuration, sessionLogger));
+            return Result<ISandboxSession>.Success(session);
         }
         catch (OperationCanceledException)
         {
             // The caller gave up (e.g. McpConnectionManager's InitializationTimeout) after the
-            // process was already spawned. Clean up the leaked process, its resource-limiter
-            // handle, and its workspace — none of that cleanup depends on ct, so it still runs
-            // with ct already cancelled — but skip attestation: signing with a cancelled ct
-            // would itself throw, and a caller giving up is not the security-relevant rejection
-            // SignFailureAsync exists to record. Then let cancellation propagate.
-            KillAndReleaseIfStarted(process);
-            launchPreparer.CleanupWorkspace(workspaceDir);
+            // process was already spawned. Tear down whatever exists — the constructed session if
+            // SignStartAsync is what threw, otherwise the bare process — none of that cleanup
+            // depends on ct, so it still runs with ct already cancelled — but skip attestation:
+            // signing with a cancelled ct would itself throw, and a caller giving up is not the
+            // security-relevant rejection SignFailureAsync exists to record. Then let cancellation
+            // propagate.
+            await TearDownPartialStartAsync(session, process, workspaceDir);
             throw;
         }
         catch (Exception ex)
         {
-            // Single cleanup path for every way starting a session can fail once the process
-            // exists: StartProcess itself throwing after a partial launch, ApplyResourceLimits
-            // (which may have already killed the process on a PlatformNotSupportedException path
-            // — killing an already-exited process here is a safe no-op), or the session
-            // constructor throwing (e.g. an invalid MaxSessionDuration).
-            KillAndReleaseIfStarted(process);
-            launchPreparer.CleanupWorkspace(workspaceDir);
+            // Single cleanup path for every way starting a session can fail: StartProcess itself
+            // throwing after a partial launch, ApplyResourceLimits (which may have already killed
+            // the process on a PlatformNotSupportedException path — killing an already-exited
+            // process here is a safe no-op), the session constructor throwing (e.g. an invalid
+            // MaxSessionDuration — session stays null, so the bare-process branch below applies),
+            // or SignStartAsync itself throwing after a valid session already exists (the
+            // session's own DisposeAsync then owns tearing the process down).
+            await TearDownPartialStartAsync(session, process, workspaceDir);
 
             var failureReason = $"Process sandbox session failed to start: {ex.Message}";
             await attestationSigner.SignFailureAsync(request, failureReason, egressDigest, ct);
             return Result<ISandboxSession>.Fail(failureReason);
         }
+    }
+
+    /// <summary>
+    /// Tears down a session start that did not complete. If the <see cref="ProcessSandboxSession"/>
+    /// object already exists (the failure happened at or after <c>SignStartAsync</c>), disposing it
+    /// is the correct teardown — its own <see cref="ProcessSandboxSession.DisposeAsync"/> kills the
+    /// process and cleans up the workspace. Otherwise (the failure happened before the session
+    /// object existed) the bare process and workspace are torn down directly.
+    /// </summary>
+    private async Task TearDownPartialStartAsync(ProcessSandboxSession? session, Process? process, string workspaceDir)
+    {
+        if (session is not null)
+        {
+            await session.DisposeAsync();
+            return;
+        }
+
+        KillAndReleaseIfStarted(process);
+        launchPreparer.CleanupWorkspace(workspaceDir);
     }
 
     /// <summary>
