@@ -1,4 +1,6 @@
 using System.Text.Json;
+using Application.AI.Common.Helpers;
+using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Tools;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -34,15 +36,22 @@ public sealed class AgUiClientToolBridge : IClientToolBridge
     private readonly IConversationStore _conversationStore;
     private readonly ClientWidgetCatalog _widgetCatalog;
     private readonly ILogger<AgUiClientToolBridge> _logger;
+    private readonly ISecretRedactor? _redactor;
 
     /// <summary>Initializes a new <see cref="AgUiClientToolBridge"/>.</summary>
+    /// <param name="redactor">
+    /// Optional secret redactor applied to tool-call arguments before they stream to the browser or
+    /// get persisted as a widget message — the same treatment the bundle SSE path
+    /// (<c>ExecuteAgentTurnCommandHandler</c>) applies, since this is an equally live exposure point.
+    /// </param>
     public AgUiClientToolBridge(
         IAgUiEventWriterAccessor writerAccessor,
         PendingToolCallRegistry registry,
         IOptionsMonitor<AgentHubConfig> config,
         IConversationStore conversationStore,
         ClientWidgetCatalog widgetCatalog,
-        ILogger<AgUiClientToolBridge> logger)
+        ILogger<AgUiClientToolBridge> logger,
+        ISecretRedactor? redactor = null)
     {
         _writerAccessor = writerAccessor;
         _registry = registry;
@@ -50,6 +59,7 @@ public sealed class AgUiClientToolBridge : IClientToolBridge
         _conversationStore = conversationStore;
         _widgetCatalog = widgetCatalog;
         _logger = logger;
+        _redactor = redactor;
     }
 
     /// <inheritdoc />
@@ -81,8 +91,17 @@ public sealed class AgUiClientToolBridge : IClientToolBridge
         // ahead of the pending entry, and so only a caller who owns this thread can complete it.
         var resultTask = _registry.RegisterAsync(callId, threadId, timeout, cancellationToken);
 
+        // Redacted and size-capped the same way the bundle SSE path treats streamed tool-call
+        // arguments (ExecuteAgentTurnCommandHandler.RedactedArgsJson) — this is an equally live
+        // client-facing exposure point, just on a different transport. The redacted (not raw) value
+        // also feeds the widget persisted below, so a reload never surfaces a secret the live stream
+        // withheld.
+        var streamedArgs = RedactAndCapArguments(toolName, callId, argumentsJson);
+
         await writer.WriteAsync(new ToolCallStartEvent(callId, toolName), cancellationToken).ConfigureAwait(false);
-        await writer.WriteAsync(new ToolCallArgsEvent(callId, argumentsJson ?? "{}"), cancellationToken).ConfigureAwait(false);
+        await writer.WriteAsync(
+            new ToolCallArgsEvent(callId, streamedArgs.Json, streamedArgs.Withheld ? true : null),
+            cancellationToken).ConfigureAwait(false);
         await writer.WriteAsync(new ToolCallEndEvent(callId), cancellationToken).ConfigureAwait(false);
 
         var result = await resultTask.ConfigureAwait(false);
@@ -92,12 +111,25 @@ public sealed class AgUiClientToolBridge : IClientToolBridge
         // disconnected round-trip that never displayed the widget throws above, so we do not leave a
         // phantom that reappears on reload contradicting the agent. This still precedes the run handler's
         // final assistant-text append, so the widget lands in the right position. A persistence failure
-        // must not break the turn, so it is logged and swallowed.
-        if (_widgetCatalog.IsWidget(toolName))
-            await PersistWidgetAsync(threadId, callerId, toolName, argumentsJson, cancellationToken).ConfigureAwait(false);
+        // must not break the turn, so it is logged and swallowed. Skipped entirely when withheld: the
+        // live widget never rendered real arguments (streamedArgs.Json is the "{}" placeholder), so
+        // persisting it would reload as a widget with no signal that its arguments were withheld — the
+        // exact confusion useAgentStream.ts/useDashboardAgent.ts were changed to prevent on the live path.
+        if (_widgetCatalog.IsWidget(toolName) && !streamedArgs.Withheld)
+            await PersistWidgetAsync(threadId, callerId, toolName, streamedArgs.Json, cancellationToken).ConfigureAwait(false);
 
         return result;
     }
+
+    /// <summary>
+    /// Redacts and size-caps <paramref name="argumentsJson"/> via
+    /// <see cref="ToolPayloadRedactor.RedactForStreaming"/> — the same helper
+    /// <c>ExecuteAgentTurnCommandHandler</c> uses for the bundle SSE path, so a redaction failure or
+    /// an oversized payload withholds the arguments here exactly the same way it does there, rather
+    /// than the two transports drifting to different failure behavior.
+    /// </summary>
+    private StreamedToolCallArguments RedactAndCapArguments(string toolName, string callId, string? argumentsJson) =>
+        ToolPayloadRedactor.RedactForStreaming(argumentsJson ?? "{}", _redactor, _logger, toolName, callId);
 
     /// <summary>
     /// Appends an assistant message carrying the widget spec (empty text, so it renders as the widget

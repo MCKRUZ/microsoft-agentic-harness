@@ -17,6 +17,36 @@ public static class ToolPayloadRedactor
     public const int MaxPayloadSummaryLength = 500;
 
     /// <summary>
+    /// The length, in UTF-16 characters of the serialized (pre-redaction) JSON, above which a
+    /// streamed tool call's arguments are withheld rather than sent. Unlike
+    /// <see cref="MaxPayloadSummaryLength"/>, arguments are never truncated — truncating mid-JSON
+    /// would hand a client invalid, unparseable data (see <see cref="Redact"/>'s remarks) — so
+    /// oversized arguments are withheld whole instead of cut. Checked against the pre-redaction
+    /// length deliberately: it is a resource ceiling, not a secrecy decision, so there is no reason
+    /// to pay for redaction on a payload that is about to be discarded. Sits comfortably below
+    /// <c>PatternSecretRedactor</c>'s own structural-redaction size ceiling (64KB), so any payload
+    /// that actually reaches a client has had the full structural JSON-aware redaction pass applied
+    /// to it — never just the regex-only fallback.
+    /// </summary>
+    public const int MaxStreamedToolCallArgsLength = 16 * 1024;
+
+    /// <summary>
+    /// Mirrors <c>PatternSecretRedactor.MaxStructuralRedactionLength</c> (Infrastructure layer,
+    /// private) — the length above which that redactor's JSON-aware structural pass is skipped in
+    /// favor of a regex-only scan. Duplicated as a separate constant rather than a shared reference
+    /// because Application must not depend on Infrastructure (Clean Architecture); the two values
+    /// must be changed together.
+    /// </summary>
+    /// <remarks>
+    /// The persistence path (<c>ToolDiagnosticsMiddleware</c>) has no size ceiling of its own, unlike
+    /// the streaming path (<see cref="MaxStreamedToolCallArgsLength"/>, 16KB). Above this size,
+    /// <see cref="Redact"/> silently falls back to regex-only redaction, which cannot see through
+    /// escaped-nested JSON (the #391 shape) — so a payload larger than this must be withheld rather
+    /// than previewed, or the persisted record's 500-char prefix could contain an unredacted secret.
+    /// </remarks>
+    public const int MaxStructuralRedactionCeiling = 64 * 1024;
+
+    /// <summary>
     /// Redacts <paramref name="payload"/> via <paramref name="redactor"/> (a no-op when
     /// <paramref name="redactor"/> is <see langword="null"/>), then truncates the result to
     /// <paramref name="maxLength"/> characters. Only safe for free-text previews (a log line, a
@@ -54,6 +84,56 @@ public static class ToolPayloadRedactor
     }
 
     /// <summary>
+    /// Redacts and size-caps <paramref name="json"/> for a live tool-call-arguments stream —
+    /// consolidates the identical "check the ceiling, redact, wrap the result" shape that shipped
+    /// independently (and inconsistently) in both <c>ExecuteAgentTurnCommandHandler</c> (bundle SSE)
+    /// and <c>AgUiClientToolBridge</c> (AG-UI client round-trip). Above
+    /// <see cref="MaxStreamedToolCallArgsLength"/>, or if redaction itself throws (a redactor-contract
+    /// violation), the result is withheld: <c>Json</c> is <c>"{}"</c> and <c>Withheld</c> is
+    /// <see langword="true"/> — both failure modes collapse to the same client-visible signal, since
+    /// either way the real arguments never reach the consumer and must not be mistaken for the tool's
+    /// real (empty) input.
+    /// </summary>
+    /// <param name="json">The tool call's arguments, already serialized as JSON.</param>
+    /// <param name="redactor">Optional secret redactor; a no-op when <see langword="null"/>.</param>
+    /// <param name="logger">Logs a warning if redaction throws.</param>
+    /// <param name="toolName">
+    /// The tool name, logged as a structured field (<c>{ToolName}</c>) rather than interpolated into
+    /// the message text — <paramref name="toolName"/> is model/registry-chosen, and interpolating it
+    /// into a plain-text log line lets a name containing a newline forge a second log entry on a
+    /// plain-text sink.
+    /// </param>
+    /// <param name="callId">The provider-assigned call id, logged as a structured field (<c>{CallId}</c>).</param>
+    public static StreamedToolCallArguments RedactForStreaming(
+        string json, ISecretRedactor? redactor, ILogger logger, string toolName, string? callId)
+    {
+        if (json.Length > MaxStreamedToolCallArgsLength)
+            return new StreamedToolCallArguments("{}", Withheld: true);
+
+        StreamedToolCallArguments result;
+        try
+        {
+            result = new StreamedToolCallArguments(Redact(json, redactor), Withheld: false);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex,
+                "Failed to redact streamed tool-call arguments for {ToolName} CallId={CallId}",
+                toolName, callId);
+            return new StreamedToolCallArguments("{}", Withheld: true);
+        }
+
+        // The pre-check above bounds the INPUT, but PatternSecretRedactor's structural pass
+        // re-serializes via ToJsonString(), whose default encoder escapes every non-ASCII character
+        // (and HTML-sensitive ones) to \uXXXX — a redacted payload of mostly non-ASCII text can come
+        // back several times longer than it went in. Re-check the OUTPUT so the ceiling is actually a
+        // wire-size ceiling, not just an input-size one.
+        return result.Json.Length > MaxStreamedToolCallArgsLength
+            ? new StreamedToolCallArguments("{}", Withheld: true)
+            : result;
+    }
+
+    /// <summary>
     /// Guarded variant of <paramref name="produce"/> — typically a call to <see cref="Redact"/> or
     /// <see cref="RedactAndTruncate"/>, optionally preceded by payload preparation such as JSON
     /// serialization. Catches any exception (a redaction-contract violation from a misbehaving
@@ -69,6 +149,13 @@ public static class ToolPayloadRedactor
     /// template — this failure path is rare (a misbehaving redactor or an unserializable value) and
     /// shared across call sites with different natural template arguments, so a caller-formatted
     /// message is simpler than plumbing per-call structured fields through a generic helper.
+    /// <see cref="RedactForStreaming"/> does NOT use this helper, despite an identical
+    /// try/catch/log/fallback shape: it needs <c>toolName</c> and <c>callId</c> logged as separate
+    /// structured fields (not pre-interpolated into one string) so a model-chosen tool name
+    /// containing control characters can't forge a second entry on a plain-text log sink — a need
+    /// this helper's single-preformatted-string contract deliberately doesn't support. Widening this
+    /// helper to take structured args instead of a plain string was considered and rejected: doing so
+    /// for one caller would force every other caller to plumb a template + args pair for no benefit.
     /// </remarks>
     public static string TryOrFallback(Func<string> produce, ILogger logger, string failureMessage, string fallback)
     {

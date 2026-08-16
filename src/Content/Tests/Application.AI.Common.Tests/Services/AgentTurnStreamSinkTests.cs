@@ -1,3 +1,4 @@
+using Application.AI.Common.Interfaces;
 using Application.AI.Common.Services;
 using FluentAssertions;
 using Xunit;
@@ -60,14 +61,14 @@ public class AgentTurnStreamSinkTests
     [Fact]
     public async Task EmitToolCallAsync_ForwardsToTheCallback()
     {
-        (string Id, string Name, string Args)? received = null;
+        (string Id, string Name, StreamedToolCallArguments Args)? received = null;
         var sink = new AgentTurnStreamSink(
             (_, _) => Task.CompletedTask,
             onToolCall: (id, name, args, _) => { received = (id, name, args); return Task.CompletedTask; });
 
-        await sink.EmitToolCallAsync("call-1", "search", "{\"q\":\"x\"}", CancellationToken.None);
+        await sink.EmitToolCallAsync("call-1", "search", new StreamedToolCallArguments("{\"q\":\"x\"}", false), CancellationToken.None);
 
-        received.Should().Be(("call-1", "search", "{\"q\":\"x\"}"));
+        received.Should().Be(("call-1", "search", new StreamedToolCallArguments("{\"q\":\"x\"}", false)));
     }
 
     [Fact]
@@ -75,9 +76,26 @@ public class AgentTurnStreamSinkTests
     {
         var sink = new AgentTurnStreamSink((_, _) => Task.CompletedTask);
 
-        var act = () => sink.EmitToolCallAsync("call-1", "search", "{}", CancellationToken.None);
+        var act = () => sink.EmitToolCallAsync("call-1", "search", new StreamedToolCallArguments("{}", false), CancellationToken.None);
 
         await act.Should().NotThrowAsync();
+    }
+
+    /// <summary>
+    /// Proves the sink forwards the withheld flag unchanged — a duplicate-signaling mechanism (#392)
+    /// distinct from the ordering guarantees tested elsewhere in this file.
+    /// </summary>
+    [Fact]
+    public async Task EmitToolCallAsync_ArgsWithheld_ForwardsTheFlag()
+    {
+        StreamedToolCallArguments? received = null;
+        var sink = new AgentTurnStreamSink(
+            (_, _) => Task.CompletedTask,
+            onToolCall: (_, _, args, _) => { received = args; return Task.CompletedTask; });
+
+        await sink.EmitToolCallAsync("call-1", "search", new StreamedToolCallArguments("{}", true), CancellationToken.None);
+
+        received.Should().Be(new StreamedToolCallArguments("{}", true));
     }
 
     [Fact]

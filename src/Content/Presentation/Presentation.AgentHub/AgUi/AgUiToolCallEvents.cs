@@ -25,13 +25,21 @@ public sealed record ToolCallStartEvent(
 /// <summary>
 /// A streaming arguments chunk (delta) for an in-progress tool call. The full argument
 /// payload is assembled by concatenating all <see cref="Delta"/> values for the same
-/// <see cref="ToolCallId"/>. The blocking proxy emits the arguments as a single JSON delta.
+/// <see cref="ToolCallId"/>. The blocking proxy emits the arguments as a single JSON delta —
+/// unless <see cref="Withheld"/> is true, in which case <see cref="Delta"/> is the fixed
+/// placeholder <c>"{}"</c> because the real arguments exceeded the streaming size ceiling.
 /// </summary>
 public sealed record ToolCallArgsEvent(
     /// <summary>The tool call these arguments belong to.</summary>
     [property: JsonPropertyName("toolCallId")] string ToolCallId,
-    /// <summary>The incremental arguments text (JSON) to append to the call's argument buffer.</summary>
-    [property: JsonPropertyName("delta")] string Delta
+    /// <summary>The incremental arguments text (JSON) to append to the call's argument buffer, or <c>"{}"</c> if withheld.</summary>
+    [property: JsonPropertyName("delta")] string Delta,
+    /// <summary>
+    /// <see langword="true"/> when the real arguments were withheld for exceeding the size ceiling.
+    /// Nullable, and only ever constructed as <see langword="true"/> or <see langword="null"/> — never
+    /// <see langword="false"/> — so the field is omitted from the wire on every normal frame.
+    /// </summary>
+    [property: JsonPropertyName("withheld")] bool? Withheld = null
 ) : AgUiEvent;
 
 /// <summary>

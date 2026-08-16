@@ -93,13 +93,28 @@ public sealed class ToolDiagnosticsMiddleware : DelegatingChatClient
             // which is just as much an exposure point as the streamed SSE frame, so it gets the same
             // generic-message substitution, not just redaction of the raw text.
             var rawPayload = ToolPayloadRedactor.SafeResultText(result);
-            // A redaction-contract violation from _redactor must degrade this trace record, not
-            // abort the chat call this diagnostics middleware is only observing.
-            var trimmedPayload = ToolPayloadRedactor.TryOrFallback(
-                () => ToolPayloadRedactor.RedactAndTruncate(rawPayload, _redactor),
-                _logger,
-                $"[ToolDiag] Failed to redact tool result for CallId={result.CallId}",
-                fallback: "[unavailable]");
+
+            string trimmedPayload;
+            if (rawPayload.Length > ToolPayloadRedactor.MaxStructuralRedactionCeiling)
+            {
+                // Above this size PatternSecretRedactor falls back to its regex-only pass, which
+                // cannot see through the escaped-nested-JSON secret shape #391 closed for smaller
+                // payloads — a 500-char slice of an oversized, only-partially-redacted result could
+                // still contain an unredacted secret persisted to the trace store indefinitely. Same
+                // guard ExecuteAgentTurnCommandHandler.RedactedResultPreview applies to the identical
+                // exposure on the streamed path.
+                trimmedPayload = "[result too large to preview safely]";
+            }
+            else
+            {
+                // A redaction-contract violation from _redactor must degrade this trace record, not
+                // abort the chat call this diagnostics middleware is only observing.
+                trimmedPayload = ToolPayloadRedactor.TryOrFallback(
+                    () => ToolPayloadRedactor.RedactAndTruncate(rawPayload, _redactor),
+                    _logger,
+                    $"[ToolDiag] Failed to redact tool result for CallId={result.CallId}",
+                    fallback: "[unavailable]");
+            }
 
             // Always record the stdout against the matching call id so the
             // observability pipeline can render it on the per-invocation page
@@ -227,12 +242,29 @@ public sealed class ToolDiagnosticsMiddleware : DelegatingChatClient
 
             capture?.RecordToolCall(call.Name);
 
+            // Deliberately independent of ExecuteAgentTurnCommandHandler.RedactedArgsJson, which
+            // redacts the same call.Arguments a second time for the streaming SSE path (#389,
+            // investigated and closed as won't-fix): the two values have different truncation
+            // contracts — this one is capped to MaxPayloadSummaryLength for the persisted
+            // observability record, the streamed one is never truncated (only withheld whole above
+            // a size ceiling, since cutting mid-JSON would hand a client invalid data). A shared
+            // cache would have to store the uncapped value and rely on every consumer remembering to
+            // re-cap it — a footgun, not a saving — for a cost (one extra serialize + four redaction
+            // passes per tool call) that is negligible next to an LLM round trip.
             string? argsJson = null;
             if (call.Arguments is { Count: > 0 } args)
             {
                 try
                 {
-                    argsJson = ToolPayloadRedactor.RedactAndTruncate(System.Text.Json.JsonSerializer.Serialize(args), _redactor);
+                    var serialized = System.Text.Json.JsonSerializer.Serialize(args);
+                    // Above the structural-redaction ceiling, PatternSecretRedactor falls back to its
+                    // regex-only pass, which cannot see through the escaped-nested-JSON secret shape
+                    // #391 closed for smaller payloads — a 500-char preview sliced from this path could
+                    // then still contain an unredacted secret. Withhold rather than preview, since this
+                    // path (unlike the streaming path's 16KB ceiling) has no size cap of its own.
+                    argsJson = serialized.Length > ToolPayloadRedactor.MaxStructuralRedactionCeiling
+                        ? "[args too large to preview safely]"
+                        : ToolPayloadRedactor.RedactAndTruncate(serialized, _redactor);
                 }
                 catch (Exception ex)
                 {

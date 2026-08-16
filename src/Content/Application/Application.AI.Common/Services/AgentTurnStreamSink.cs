@@ -25,7 +25,7 @@ public sealed class AgentTurnStreamSink : IAgentTurnStreamSink
     }
 
     private readonly Func<string, CancellationToken, Task> _onDelta;
-    private readonly Func<string, string, string, CancellationToken, Task>? _onToolCall;
+    private readonly Func<string, string, StreamedToolCallArguments, CancellationToken, Task>? _onToolCall;
     private readonly Func<string, string, CancellationToken, Task>? _onToolCallResult;
 
     /// <summary>
@@ -41,7 +41,7 @@ public sealed class AgentTurnStreamSink : IAgentTurnStreamSink
     /// <param name="onToolCallResult">Invoked with a tool call's result, or <see langword="null"/> to ignore it.</param>
     public AgentTurnStreamSink(
         Func<string, CancellationToken, Task> onDelta,
-        Func<string, string, string, CancellationToken, Task>? onToolCall = null,
+        Func<string, string, StreamedToolCallArguments, CancellationToken, Task>? onToolCall = null,
         Func<string, string, CancellationToken, Task>? onToolCallResult = null)
     {
         ArgumentNullException.ThrowIfNull(onDelta);
@@ -55,8 +55,8 @@ public sealed class AgentTurnStreamSink : IAgentTurnStreamSink
         string.IsNullOrEmpty(delta) ? Task.CompletedTask : _onDelta(delta, cancellationToken);
 
     /// <inheritdoc />
-    public Task EmitToolCallAsync(string toolCallId, string toolCallName, string argsJson, CancellationToken cancellationToken) =>
-        _onToolCall?.Invoke(toolCallId, toolCallName, argsJson, cancellationToken) ?? Task.CompletedTask;
+    public Task EmitToolCallAsync(string toolCallId, string toolCallName, StreamedToolCallArguments args, CancellationToken cancellationToken) =>
+        _onToolCall?.Invoke(toolCallId, toolCallName, args, cancellationToken) ?? Task.CompletedTask;
 
     /// <inheritdoc />
     public Task EmitToolCallResultAsync(string toolCallId, string result, CancellationToken cancellationToken) =>

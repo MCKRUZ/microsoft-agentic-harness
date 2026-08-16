@@ -19,6 +19,10 @@ const RENDER_CHART = 'render_chart';
 interface PendingCall {
   name: string;
   args: string;
+  /** True once a TOOL_CALL_ARGS frame arrived with `withheld: true` — the real arguments exceeded
+   *  the server's streaming size ceiling and were never sent, so `args` is not "{}" as the real
+   *  (empty) arguments, it is a placeholder that must not be parsed and acted on as such. */
+  withheld: boolean;
 }
 
 /** Executes a `dashboard_control` call and returns the result string the agent should observe. */
@@ -82,6 +86,10 @@ export function useDashboardAgent() {
     let result: string;
     if (!pending) {
       result = `No client handler matched tool call ${callId}.`;
+    } else if (pending.withheld) {
+      // The real arguments exceeded the streaming size ceiling and were withheld — "{}" here is a
+      // placeholder, not the tool's real (empty) input, so it must never reach the action runners.
+      result = `The ${pending.name} arguments were too large to stream and were withheld.`;
     } else {
       switch (pending.name) {
         case DASHBOARD_CONTROL:
@@ -122,13 +130,16 @@ export function useDashboardAgent() {
         }
         case EventType.TOOL_CALL_START: {
           const e = event as BaseEvent & { toolCallId: string; toolCallName: string };
-          pendingCallsRef.current.set(e.toolCallId, { name: e.toolCallName, args: '' });
+          pendingCallsRef.current.set(e.toolCallId, { name: e.toolCallName, args: '', withheld: false });
           break;
         }
         case EventType.TOOL_CALL_ARGS: {
-          const e = event as BaseEvent & { toolCallId: string; delta: string };
+          const e = event as BaseEvent & { toolCallId: string; delta: string; withheld?: boolean };
           const pending = pendingCallsRef.current.get(e.toolCallId);
-          if (pending) pending.args += e.delta;
+          if (pending) {
+            if (e.withheld) pending.withheld = true;
+            else pending.args += e.delta;
+          }
           break;
         }
         case EventType.TOOL_CALL_END: {

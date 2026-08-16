@@ -329,4 +329,303 @@ public class PatternSecretRedactorTests
         result.Should().Contain("[REDACTED]");
         result.Should().NotContain("b64-super-secret-value");
     }
+
+    /// <summary>
+    /// A secret key nested inside a JSON string value whose quotes are escaped — e.g. a tool argument
+    /// carrying an HTTP request body serialized as a string field — is redacted. Neither the
+    /// JSON-quoted pattern (which needs an unescaped <c>"key"</c>) nor the generic key=value pattern
+    /// (whose separator can't span the escaped <c>\":</c>) can match this shape; only a structural
+    /// walk that re-parses the string value as its own JSON document catches it.
+    /// </summary>
+    [Fact]
+    public void Redact_SecretKeyInsideEscapedNestedJsonString_RedactsValue()
+    {
+        var sut = CreateRedactor();
+        var input = """{"body":"{\"api_key\":\"sk-1\"}"}""";
+
+        var result = sut.Redact(input);
+
+        result.Should().NotContain("sk-1");
+        using var doc = System.Text.Json.JsonDocument.Parse(result!);
+        var nested = System.Text.Json.JsonDocument.Parse(doc.RootElement.GetProperty("body").GetString()!);
+        nested.RootElement.GetProperty("api_key").GetString().Should().Be("[REDACTED]");
+    }
+
+    /// <summary>
+    /// A non-JSON leaf string (a URL) inside an otherwise valid, non-nested JSON document still gets
+    /// its embedded secret keyword redacted via the free-text fallback the structural walk applies to
+    /// every leaf — proving the leaf-level regex scan still fires, not just the top-level one.
+    /// </summary>
+    [Fact]
+    public void Redact_SecretKeywordInsideUnparseableStringInsideValidJson_StillRedacted()
+    {
+        var sut = CreateRedactor();
+        var input = """{"headers":"Authorization: Bearer eyABC123xyz==","method":"GET"}""";
+
+        var result = sut.Redact(input);
+
+        result.Should().NotContain("eyABC123xyz==");
+        using var doc = System.Text.Json.JsonDocument.Parse(result!);
+        doc.RootElement.GetProperty("headers").GetString().Should().Be("Authorization: Bearer [REDACTED]");
+        doc.RootElement.GetProperty("method").GetString().Should().Be("GET");
+    }
+
+    /// <summary>
+    /// A secret key inside an object nested in a JSON array is redacted — proves array elements are
+    /// recursed into, not just object properties.
+    /// </summary>
+    [Fact]
+    public void Redact_ArrayOfObjectsWithSecretKeys_RedactsEach()
+    {
+        var sut = CreateRedactor();
+        var input = """{"items":[{"name":"a","api_key":"k1"},{"name":"b","api_key":"k2"}]}""";
+
+        var result = sut.Redact(input);
+
+        result.Should().NotContain("k1");
+        result.Should().NotContain("k2");
+        using var doc = System.Text.Json.JsonDocument.Parse(result!);
+        var items = doc.RootElement.GetProperty("items");
+        items[0].GetProperty("api_key").GetString().Should().Be("[REDACTED]");
+        items[1].GetProperty("api_key").GetString().Should().Be("[REDACTED]");
+        items[0].GetProperty("name").GetString().Should().Be("a");
+    }
+
+    /// <summary>
+    /// Valid JSON with no secrets anywhere is returned as the exact same string reference — the
+    /// structural walk must not silently reformat a clean payload on every call. Mutation-tested: a
+    /// version of RedactNode that always reports "changed" (even when nothing was replaced) fails
+    /// this test while still passing every value-bearing test above.
+    /// </summary>
+    [Fact]
+    public void Redact_ValidJsonWithNoSecrets_ReturnsOriginalReferenceUnchanged()
+    {
+        var sut = CreateRedactor();
+        var input = """{"toolName":"http_call","timeout":30,"tags":["a","b"]}""";
+
+        var result = sut.Redact(input);
+
+        ReferenceEquals(result, input).Should().BeTrue();
+    }
+
+    /// <summary>
+    /// Already-redacted JSON (the structural shape, not just the regex-pattern shape covered by
+    /// <see cref="Redact_AlreadyRedactedJsonQuotedSecret_ReturnsUnchanged"/>) reports no change and
+    /// returns the original reference — the secret-key branch must compare against the existing
+    /// value, not unconditionally overwrite and only happen to reserialize identically.
+    /// </summary>
+    [Fact]
+    public void Redact_JsonAlreadyStructurallyRedacted_ReturnsOriginalReferenceUnchanged()
+    {
+        var sut = CreateRedactor();
+        var input = """{"api_key":"[REDACTED]","timeout":30}""";
+
+        var result = sut.Redact(input);
+
+        ReferenceEquals(result, input).Should().BeTrue();
+    }
+
+    /// <summary>
+    /// A non-object, non-array JSON value under a secret key (a number, not a string) is still
+    /// replaced with the string placeholder — the structural pass redacts by key, regardless of the
+    /// value's original JSON type.
+    /// </summary>
+    [Fact]
+    public void Redact_NonStringValueUnderSecretKey_IsRedacted()
+    {
+        var sut = CreateRedactor();
+        var input = """{"secret_key":123456}""";
+
+        var result = sut.Redact(input);
+
+        result.Should().NotContain("123456");
+        using var doc = System.Text.Json.JsonDocument.Parse(result!);
+        doc.RootElement.GetProperty("secret_key").GetString().Should().Be("[REDACTED]");
+    }
+
+    /// <summary>
+    /// Malformed JSON that merely starts with <c>{</c> (so it passes the cheap prefix pre-check) but
+    /// fails to actually parse falls back to the regex-only pass rather than throwing.
+    /// </summary>
+    [Fact]
+    public void Redact_MalformedJsonStartingWithBrace_FallsBackToRegexOnly()
+    {
+        var sut = CreateRedactor();
+        var input = "{not valid json, api_key=superSecret123";
+
+        var result = sut.Redact(input);
+
+        result.Should().Contain("[REDACTED]");
+        result.Should().NotContain("superSecret123");
+    }
+
+    /// <summary>
+    /// A JSON payload larger than the structural pass's size ceiling still gets its unescaped secret
+    /// redacted, via the regex-only fallback rather than the structural walk.
+    /// </summary>
+    [Fact]
+    public void Redact_JsonAboveSizeCeiling_FallsBackToRegexOnly()
+    {
+        var sut = CreateRedactor();
+        var padding = new string('x', 70 * 1024);
+        var input = $$"""{"padding":"{{padding}}","api_key":"sk-oversized"}""";
+
+        var result = sut.Redact(input);
+
+        result.Should().Contain("[REDACTED]");
+        result.Should().NotContain("sk-oversized");
+    }
+
+    /// <summary>
+    /// Proves the size ceiling is actually active (not just harmlessly redundant): an oversized
+    /// payload whose secret is only reachable via the structural walk (escaped-nested-JSON, the
+    /// #391 shape) is NOT redacted once input exceeds the ceiling, because only the structural pass
+    /// — not the regex fallback — can see through the escaping. Documents the residual gap rather
+    /// than hiding it. If the ceiling check were ever removed, this secret would start being
+    /// redacted and this test would fail, distinguishing it from
+    /// <see cref="Redact_JsonAboveSizeCeiling_FallsBackToRegexOnly"/>, which passes whether or not
+    /// the ceiling exists.
+    /// </summary>
+    [Fact]
+    public void Redact_EscapedNestedSecretAboveSizeCeiling_IsNotRedacted_DocumentingTheResidualGap()
+    {
+        var sut = CreateRedactor();
+        var padding = new string('x', 70 * 1024);
+        var input = $$"""{"padding":"{{padding}}","body":"{\"api_key\":\"sk-deep-oversized\"}"}""";
+
+        var result = sut.Redact(input);
+
+        result.Should().Contain("sk-deep-oversized",
+            "above the size ceiling only the regex fallback runs, which cannot see through the " +
+            "escaped nesting — this is the documented residual gap, not a regression");
+    }
+
+    /// <summary>
+    /// A secret nested two levels deep in escaped JSON-in-a-string-in-a-string — within the embedded
+    /// JSON depth cap — is redacted at the innermost level. Payloads are built via
+    /// <see cref="System.Text.Json.JsonSerializer"/> rather than hand-written escaping so the exact
+    /// backslash nesting is generated correctly instead of guessed at.
+    /// </summary>
+    [Fact]
+    public void Redact_SecretTwoLevelsDeepInEscapedJson_IsRedacted()
+    {
+        var sut = CreateRedactor();
+        var innermost = System.Text.Json.JsonSerializer.Serialize(new { api_key = "sk-deep" });
+        var middle = System.Text.Json.JsonSerializer.Serialize(new { inner = innermost });
+        var input = System.Text.Json.JsonSerializer.Serialize(new { body = middle });
+
+        var result = sut.Redact(input);
+
+        result.Should().NotContain("sk-deep");
+        using var doc = System.Text.Json.JsonDocument.Parse(result!);
+        var middleDoc = System.Text.Json.JsonDocument.Parse(doc.RootElement.GetProperty("body").GetString()!);
+        var innerDoc = System.Text.Json.JsonDocument.Parse(middleDoc.RootElement.GetProperty("inner").GetString()!);
+        innerDoc.RootElement.GetProperty("api_key").GetString().Should().Be("[REDACTED]");
+    }
+
+    /// <summary>
+    /// Common real-world secret key names — security-review finding H1 — measured as leaking
+    /// unredacted before <see cref="PatternSecretRedactor"/>'s key alternation covered them. Each of
+    /// these is a shape a real HTTP tool call or header dictionary would plausibly carry.
+    /// </summary>
+    [Theory]
+    [InlineData("x-api-key")]
+    [InlineData("refresh_token")]
+    [InlineData("id_token")]
+    [InlineData("private_key")]
+    [InlineData("secret_access_key")]
+    [InlineData("authorization")]
+    [InlineData("auth_token")]
+    [InlineData("credential")]
+    [InlineData("credentials")]
+    [InlineData("passphrase")]
+    [InlineData("subscription_key")]
+    [InlineData("Ocp-Apim-Subscription-Key")]
+    public void Redact_CommonSecretKeyNames_AreRedacted(string key)
+    {
+        var sut = CreateRedactor();
+        var input = $$"""{"{{key}}":"LEAKME"}""";
+
+        var result = sut.Redact(input);
+
+        result.Should().NotContain("LEAKME");
+    }
+
+    /// <summary>
+    /// Duplicate JSON property names are legal per RFC 8259 and <see cref="System.Text.Json.Nodes.JsonNode"/>.Parse
+    /// tolerates them, but materializing a <see cref="System.Text.Json.Nodes.JsonObject"/>'s backing
+    /// dictionary rejects the duplicate with an <see cref="ArgumentException"/> — security-review
+    /// finding M2, a regression this structural pass would otherwise introduce into
+    /// <c>ToolOutputCompressionBehavior</c>, which redacts fully third-party-controlled tool output.
+    /// Must degrade to the regex-only fallback, not throw out of the caller.
+    /// </summary>
+    [Fact]
+    public void Redact_JsonWithDuplicatePropertyNames_FallsBackToRegexOnly_DoesNotThrow()
+    {
+        var sut = CreateRedactor();
+        var input = """{"a":1,"a":2,"api_key":"LEAKME"}""";
+
+        var act = () => sut.Redact(input);
+
+        act.Should().NotThrow();
+        act().Should().NotContain("LEAKME");
+    }
+
+    /// <summary>
+    /// Bare "token" and bare "secret" — not the compound shapes
+    /// <see cref="Redact_CommonSecretKeyNames_AreRedacted"/> already covers — are common real key
+    /// names on their own (a session store keyed just "token", a config value keyed just "secret").
+    /// </summary>
+    [Theory]
+    [InlineData("token")]
+    [InlineData("secret")]
+    public void Redact_BareTokenOrSecretKeyName_IsRedacted(string key)
+    {
+        var sut = CreateRedactor();
+        var input = $$"""{"{{key}}":"LEAKME"}""";
+
+        var result = sut.Redact(input);
+
+        result.Should().NotContain("LEAKME");
+    }
+
+    /// <summary>
+    /// A secret key with incidental leading/trailing whitespace (a sloppily-serialized tool argument,
+    /// not necessarily adversarial) is still recognized — the anchored key match trims before
+    /// comparing, or "api_key " (trailing space) would silently fail the whole-key match.
+    /// </summary>
+    [Fact]
+    public void Redact_SecretKeyWithSurroundingWhitespace_IsStillRedacted()
+    {
+        var sut = CreateRedactor();
+        var input = """{"api_key ":"LEAKME"}""";
+
+        var result = sut.Redact(input);
+
+        result.Should().NotContain("LEAKME");
+    }
+
+    /// <summary>
+    /// A top-level JSON-encoded STRING — exactly what <c>JsonSerializer.Serialize(someString)</c>
+    /// produces for a string value, e.g. a tool result that is itself a JSON document serialized as
+    /// text — previously bypassed the structural pass entirely: LooksLikeJson only accepted the
+    /// object/array openers `{`/`[`, so this shape fell straight to the regex-only fallback, which
+    /// cannot see through an escaped-nested secret. The structural walk already handles a top-level
+    /// JsonValue string via RedactStringLeaf; only the entry-point prefix check was missing the case
+    /// — security-review finding M3.
+    /// </summary>
+    [Fact]
+    public void Redact_TopLevelJsonEncodedString_RedactsNestedSecret()
+    {
+        var sut = CreateRedactor();
+        var input = System.Text.Json.JsonSerializer.Serialize(
+            System.Text.Json.JsonSerializer.Serialize(new { api_key = "sk-topstring" }));
+
+        var result = sut.Redact(input);
+
+        result.Should().NotContain("sk-topstring");
+        var nestedJson = System.Text.Json.JsonSerializer.Deserialize<string>(result!)!;
+        using var doc = System.Text.Json.JsonDocument.Parse(nestedJson);
+        doc.RootElement.GetProperty("api_key").GetString().Should().Be("[REDACTED]");
+    }
 }

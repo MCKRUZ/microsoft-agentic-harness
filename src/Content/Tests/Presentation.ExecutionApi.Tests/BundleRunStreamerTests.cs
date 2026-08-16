@@ -138,7 +138,7 @@ public sealed class BundleRunStreamerTests
         var executor = new FakeExecutor(BundleRunExecution.Ran(Record(BundleRunStatus.Succeeded)), async (sink, ct) =>
         {
             await sink.EmitAsync("Looking that up", ct);
-            await sink.EmitToolCallAsync("call-1", "search", "{\"q\":\"docs\"}", ct);
+            await sink.EmitToolCallAsync("call-1", "search", new StreamedToolCallArguments("{\"q\":\"docs\"}", false), ct);
             await sink.EmitToolCallResultAsync("call-1", "42 results", ct);
             await sink.EmitAsync(" — found it.", ct);
         });
@@ -167,13 +167,33 @@ public sealed class BundleRunStreamerTests
     {
         var executor = new FakeExecutor(BundleRunExecution.Ran(Record(BundleRunStatus.Succeeded)), async (sink, ct) =>
         {
-            await sink.EmitToolCallAsync("call-1", "search", "{}", ct);
+            await sink.EmitToolCallAsync("call-1", "search", new StreamedToolCallArguments("{}", false), ct);
         });
 
         var frames = await RunAndParseAsync(executor, Record());
 
         frames.Select(Type).Should().Equal(
             "RUN_STARTED", "TOOL_CALL_START", "TOOL_CALL_ARGS", "TOOL_CALL_END", "RUN_FINISHED");
+    }
+
+    /// <summary>
+    /// A withheld tool-call args emission (real arguments exceeded the streaming size ceiling) sets
+    /// the wire frame's <c>withheld</c> flag and streams the placeholder, never the raw payload —
+    /// #392.
+    /// </summary>
+    [Fact]
+    public async Task StreamAsync_OversizedToolCallArgs_EmitsWithheldFrame_NotRawPayload()
+    {
+        var executor = new FakeExecutor(BundleRunExecution.Ran(Record(BundleRunStatus.Succeeded)), async (sink, ct) =>
+        {
+            await sink.EmitToolCallAsync("call-1", "search", new StreamedToolCallArguments("{}", true), ct);
+        });
+
+        var frames = await RunAndParseAsync(executor, Record());
+
+        var argsFrame = frames.Single(f => Type(f) == "TOOL_CALL_ARGS");
+        argsFrame.GetProperty("delta").GetString().Should().Be("{}");
+        argsFrame.GetProperty("withheld").GetBoolean().Should().BeTrue();
     }
 
     [Fact]

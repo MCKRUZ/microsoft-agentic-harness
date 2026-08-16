@@ -1,4 +1,5 @@
 using Application.AI.Common.Categorization;
+using Application.AI.Common.Helpers;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Context;
 using Application.AI.Common.Notifications;
@@ -141,7 +142,7 @@ public class ExecuteAgentTurnCommandHandlerTests
         Application.AI.Common.Services.AgentTurnStreamSink.Current =
             new Application.AI.Common.Services.AgentTurnStreamSink(
                 onDelta: (delta, _) => { events.Add($"delta:{delta}"); return Task.CompletedTask; },
-                onToolCall: (id, name, args, _) => { events.Add($"call:{id}:{name}:{args}"); return Task.CompletedTask; },
+                onToolCall: (id, name, args, _) => { events.Add($"call:{id}:{name}:{args.Json}"); return Task.CompletedTask; },
                 onToolCallResult: (id, result, _) => { events.Add($"result:{id}:{result}"); return Task.CompletedTask; });
 
         try
@@ -224,7 +225,7 @@ public class ExecuteAgentTurnCommandHandlerTests
                 It.IsAny<CancellationToken>()))
             .ReturnsAsync(agent);
 
-        var toolCallArgs = string.Empty;
+        StreamedToolCallArguments toolCallArgs = default;
         Application.AI.Common.Services.AgentTurnStreamSink.Current =
             new Application.AI.Common.Services.AgentTurnStreamSink(
                 onDelta: (_, _) => Task.CompletedTask,
@@ -236,10 +237,14 @@ public class ExecuteAgentTurnCommandHandlerTests
             var result = await _handler.Handle(CreateCommand(), CancellationToken.None);
 
             // Assert — the turn still completes and streams the surrounding text; the tool call is
-            // reported with a safe fallback instead of the handler throwing.
+            // reported with a safe fallback instead of the handler throwing. Withheld must be true —
+            // "{}" here is a degraded fallback, not the tool's real (empty) arguments, and a client
+            // must be able to tell the two apart (a prior version of this code set Withheld: false
+            // on this exact path).
             result.Success.Should().BeTrue();
             result.Response.Should().Be("Looking that up — done.");
-            toolCallArgs.Should().Be("{}");
+            toolCallArgs.Json.Should().Be("{}");
+            toolCallArgs.Withheld.Should().BeTrue();
         }
         finally
         {
@@ -252,7 +257,8 @@ public class ExecuteAgentTurnCommandHandlerTests
     {
         // BundleToolCallArgsEvent.Delta is documented as always carrying the complete JSON payload.
         // Truncating it at the same preview-length cap used for log strings would hand a client
-        // invalid, unparseable JSON — arguments must be redacted only, never truncated.
+        // invalid, unparseable JSON — arguments must be redacted only, never truncated. 600 chars is
+        // well under the streaming size ceiling (16 KB), so this must stream whole and un-withheld.
         var longValue = new string('x', 600);
         var agent = TestableAIAgent.StreamingContent(
             [new FunctionCallContent("call-1", "search", new Dictionary<string, object?> { ["q"] = longValue })]);
@@ -264,7 +270,7 @@ public class ExecuteAgentTurnCommandHandlerTests
                 It.IsAny<CancellationToken>()))
             .ReturnsAsync(agent);
 
-        var toolCallArgs = string.Empty;
+        StreamedToolCallArguments toolCallArgs = default;
         Application.AI.Common.Services.AgentTurnStreamSink.Current =
             new Application.AI.Common.Services.AgentTurnStreamSink(
                 onDelta: (_, _) => Task.CompletedTask,
@@ -276,9 +282,48 @@ public class ExecuteAgentTurnCommandHandlerTests
             await _handler.Handle(CreateCommand(), CancellationToken.None);
 
             // Assert
-            toolCallArgs.Length.Should().BeGreaterThan(500);
-            var act = () => System.Text.Json.JsonDocument.Parse(toolCallArgs);
+            toolCallArgs.Withheld.Should().BeFalse();
+            toolCallArgs.Json.Length.Should().BeGreaterThan(500);
+            var act = () => System.Text.Json.JsonDocument.Parse(toolCallArgs.Json);
             act.Should().NotThrow("the streamed args must remain valid, complete JSON");
+        }
+        finally
+        {
+            Application.AI.Common.Services.AgentTurnStreamSink.Current = null;
+        }
+    }
+
+    [Fact]
+    public async Task Handle_ActiveStreamSink_OversizedToolCallArgs_StreamsWithheldPlaceholder_NotRawPayload()
+    {
+        // Above ToolPayloadRedactor.MaxStreamedToolCallArgsLength (16 KB), the real arguments must
+        // never reach the client — withheld whole (Json="{}", Withheld=true), not truncated.
+        var oversizedValue = new string('x', ToolPayloadRedactor.MaxStreamedToolCallArgsLength + 1);
+        var agent = TestableAIAgent.StreamingContent(
+            [new FunctionCallContent("call-1", "search", new Dictionary<string, object?> { ["q"] = oversizedValue })]);
+        _agentCache
+            .Setup(c => c.GetOrCreateAsync(
+                It.IsAny<string>(),
+                It.IsAny<IReadOnlyList<string>>(),
+                It.IsAny<SkillAgentOptions>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(agent);
+
+        StreamedToolCallArguments toolCallArgs = default;
+        Application.AI.Common.Services.AgentTurnStreamSink.Current =
+            new Application.AI.Common.Services.AgentTurnStreamSink(
+                onDelta: (_, _) => Task.CompletedTask,
+                onToolCall: (_, _, args, _) => { toolCallArgs = args; return Task.CompletedTask; });
+
+        try
+        {
+            // Act
+            await _handler.Handle(CreateCommand(), CancellationToken.None);
+
+            // Assert
+            toolCallArgs.Withheld.Should().BeTrue();
+            toolCallArgs.Json.Should().Be("{}");
+            toolCallArgs.Json.Should().NotContain("x");
         }
         finally
         {
@@ -379,7 +424,7 @@ public class ExecuteAgentTurnCommandHandlerTests
         Application.AI.Common.Services.AgentTurnStreamSink.Current =
             new Application.AI.Common.Services.AgentTurnStreamSink(
                 onDelta: (_, _) => Task.CompletedTask,
-                onToolCall: (id, name, args, _) => { events.Add($"call:{id}:{name}:{args}"); return Task.CompletedTask; },
+                onToolCall: (id, name, args, _) => { events.Add($"call:{id}:{name}:{args.Json}"); return Task.CompletedTask; },
                 onToolCallResult: (id, result, _) => { events.Add($"result:{id}:{result}"); return Task.CompletedTask; });
 
         try
@@ -437,7 +482,7 @@ public class ExecuteAgentTurnCommandHandlerTests
         Application.AI.Common.Services.AgentTurnStreamSink.Current =
             new Application.AI.Common.Services.AgentTurnStreamSink(
                 onDelta: (_, _) => Task.CompletedTask,
-                onToolCall: (_, _, a, _) => { args = a; return Task.CompletedTask; },
+                onToolCall: (_, _, a, _) => { args = a.Json; return Task.CompletedTask; },
                 onToolCallResult: (_, r, _) => { toolResult = r; return Task.CompletedTask; });
 
         try

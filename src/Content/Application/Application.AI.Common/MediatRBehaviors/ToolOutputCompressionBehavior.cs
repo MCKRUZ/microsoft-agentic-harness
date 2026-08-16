@@ -113,7 +113,10 @@ public sealed class ToolOutputCompressionBehavior<TRequest, TResponse>
         // and tokens included — even when the sanitizer later blocks the response. Redact secrets
         // at this persistence boundary so they never land at rest. ISecretRedactor is idempotent,
         // so the model-visible summary the sanitizer later scans is unaffected by also redacting here.
-        var redactedOutput = _secretRedactor.Redact(toolOutput) ?? toolOutput;
+        // Routed through ToolPayloadRedactor.Redact (not a bare `?? toolOutput`) so a redaction-contract
+        // violation fails loudly instead of silently persisting the raw, unredacted output — the same
+        // fail-closed rule this helper enforces at every other redaction boundary.
+        var redactedOutput = ToolPayloadRedactor.Redact(toolOutput, _secretRedactor);
 
         var reference = await _resultStore.StoreIfLargeAsync(
             sessionId,

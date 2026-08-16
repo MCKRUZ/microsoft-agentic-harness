@@ -54,6 +54,28 @@ public sealed class BundleStreamEventsSerializationTests
         element.GetProperty("delta").GetString().Should().Be("{\"q\":\"docs\"}");
     }
 
+    /// <summary>
+    /// The <c>withheld</c> field is absent from the wire on a normal (non-withheld) frame — a future
+    /// refactor that starts constructing it as <c>false</c> instead of <c>null</c> would start
+    /// serializing <c>"withheld":false</c> on every frame, which this pins against.
+    /// </summary>
+    [Fact]
+    public async Task ToolCallArgsEvent_NotWithheld_OmitsWithheldFieldFromWire()
+    {
+        var element = await WriteAndParseAsync(new BundleToolCallArgsEvent("call-1", "{}"));
+
+        element.TryGetProperty("withheld", out _).Should().BeFalse();
+    }
+
+    /// <summary>A withheld frame carries an explicit <c>"withheld":true</c> on the wire.</summary>
+    [Fact]
+    public async Task ToolCallArgsEvent_Withheld_SerializesTheFlag()
+    {
+        var element = await WriteAndParseAsync(new BundleToolCallArgsEvent("call-1", "{}", true));
+
+        element.GetProperty("withheld").GetBoolean().Should().BeTrue();
+    }
+
     [Fact]
     public async Task ToolCallEndEvent_SerializesWithDiscriminatorAndFields()
     {
