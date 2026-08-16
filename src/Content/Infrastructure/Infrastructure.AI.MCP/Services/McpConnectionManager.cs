@@ -4,6 +4,7 @@ using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Bundles;
 using Application.AI.Common.Interfaces.Egress;
 using Application.AI.Common.Interfaces.Sandbox;
+using Application.AI.Common.Services.Sandbox;
 using Domain.AI.Sandbox;
 using Domain.Common;
 using Domain.Common.Config.AI.MCP;
@@ -448,20 +449,35 @@ public sealed class McpConnectionManager : IAsyncDisposable
 
     /// <summary>
     /// Starts the sandboxed session backing a bundle-owned stdio MCP server. Resolves
-    /// <see cref="ISandboxSessionFactory"/> from a fresh <see cref="IServiceScope"/> — it is
-    /// scoped (it depends on <c>ISandboxEgressPreflight</c>, which resolves the ambient agent
-    /// identity per call) while this manager is a process-lifetime singleton — and wraps the
-    /// result in <see cref="ScopedSandboxSession"/> so the scope survives exactly as long as the
-    /// session does, matching the pattern <c>TerraformGenerator</c> already uses for the same
-    /// singleton/scoped mismatch against <see cref="ISandboxExecutor"/>.
+    /// <see cref="ISandboxSessionFactory"/> from a fresh scope — it is scoped (it depends on
+    /// <c>ISandboxEgressPreflight</c>, which resolves the ambient agent identity per call) while
+    /// this manager is a process-lifetime singleton — and wraps the result in
+    /// <see cref="ScopedSandboxSession"/> so the scope survives exactly as long as the session
+    /// does, past the end of this method. See that type's own remarks for why that makes this a
+    /// different shape from <c>TerraformGenerator</c>'s per-run <c>ISandboxExecutor</c>
+    /// resolution, not the same one.
     /// </summary>
     /// <remarks>
     /// Container isolation only, for now: the harness has no per-bundle Process-tier allowlist
     /// concept yet (that path is only safe when an operator has explicitly trusted a specific
     /// command — see the remarks on <c>ProcessSandboxSessionFactory</c>), and building that
     /// policy surface belongs with the registration gate that makes this arm reachable at all,
-    /// not with the transport plumbing here. Resource limits use sandbox defaults and network
-    /// access is denied by default, matching #371's stated security posture.
+    /// not with the transport plumbing here. Resource limits use sandbox defaults.
+    /// <para>
+    /// The permission profile is resolved through <see cref="ToolPermissionProfileResolver"/> —
+    /// not built as an inline literal — so an operator's <c>SandboxConfig.ToolOverrides</c> entry
+    /// keyed on this server name (denied capabilities, denied hosts, a raised isolation floor)
+    /// applies here exactly as it would for any other tool name. Without that, an operator could
+    /// lock down this same server's container image via <c>SandboxExecutionOptions.ToolOverrides</c>
+    /// (read by <c>DockerContainerLaunchPreparer.ResolveImage</c>) while a capability or host
+    /// restriction on the identical name silently had no effect — two override registries for one
+    /// tool name, only one of them consulted. A bundle-owned name is outside the bounded
+    /// first-party key set, so the resolver's base declaration is
+    /// <see cref="ToolCapability.None"/>/<see cref="SandboxIsolationLevel.None"/>; the isolation
+    /// floor is then raised to <see cref="SandboxIsolationLevel.Container"/> via
+    /// <c>Math.Max</c>, matching how the resolver itself combines a base declaration with an
+    /// override (never downgrades, only raises).
+    /// </para>
     /// </remarks>
     private async Task<Result<ISandboxSession>> StartSandboxedStdioSessionAsync(
         string serverName, McpServerDefinition definition, CancellationToken cancellationToken)
@@ -472,16 +488,20 @@ public sealed class McpConnectionManager : IAsyncDisposable
         {
             var sessionFactory = scope.ServiceProvider
                 .GetRequiredKeyedService<ISandboxSessionFactory>(SandboxIsolationLevel.Container);
+            var profileResolver = scope.ServiceProvider.GetRequiredService<ToolPermissionProfileResolver>();
+
+            var resolvedProfile = profileResolver.Resolve(serverName);
+            var permissionProfile = resolvedProfile with
+            {
+                MinimumIsolation = (SandboxIsolationLevel)Math.Max(
+                    (int)resolvedProfile.MinimumIsolation, (int)SandboxIsolationLevel.Container)
+            };
 
             var request = new SandboxSessionRequest
             {
                 ToolName = serverName,
                 Limits = new ResourceLimits(),
-                PermissionProfile = new ToolPermissionProfile
-                {
-                    RequiredCapabilities = ToolCapability.None,
-                    MinimumIsolation = SandboxIsolationLevel.Container
-                },
+                PermissionProfile = permissionProfile,
                 Command = definition.Command,
                 ArgumentList = definition.Args,
                 EnvironmentVariables = definition.Env.Count > 0 ? definition.Env : null

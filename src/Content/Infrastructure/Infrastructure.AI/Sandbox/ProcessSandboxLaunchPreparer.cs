@@ -31,20 +31,20 @@ public sealed class ProcessSandboxLaunchPreparer(
     /// <summary>
     /// Environment variable names that per-request grants may never override, compared
     /// case-insensitively (Windows environment lookups ignore case). Covers the pinned temp
-    /// set (always redirected into the workspace), the security-critical variables the
+    /// set (always redirected into the workspace) and the security-critical variables the
     /// allowlist controls — a grant of <c>temp</c>, <c>Path</c>, or <c>COMSPEC</c> would
-    /// otherwise un-pin or re-smuggle them — and the dynamic-linker variables
-    /// (<see cref="DockerContainerLaunchPreparer"/> guards the same names for the container
-    /// tier). This tier needs the guard even more: it runs as the harness's own OS user against
-    /// a fully writable host filesystem, so an unguarded grant loads an arbitrary shared library
-    /// into an otherwise operator-allowlisted program — the allowlist checks <c>Command</c> only,
-    /// and never meaningfully ran if the attacker's constructor executed first.
+    /// otherwise un-pin or re-smuggle them — plus <see cref="SandboxReservedEnvironment.DynamicLinkerNames"/>,
+    /// shared with <see cref="DockerContainerLaunchPreparer"/> so the two tiers cannot drift on
+    /// this list. This tier needs the linker guard even more than the container tier does: it
+    /// runs as the harness's own OS user against a fully writable host filesystem, so an
+    /// unguarded grant loads an arbitrary shared library into an otherwise operator-allowlisted
+    /// program — the allowlist checks <c>Command</c> only, and never meaningfully ran if the
+    /// attacker's constructor executed first.
     /// </summary>
     private static readonly string[] ReservedEnvironmentVariableNames =
     [
         "TEMP", "TMP", "TMPDIR", "PATH", "COMSPEC", "PATHEXT", "SYSTEMROOT",
-        "LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT", "LD_ORIGIN_PATH",
-        "DYLD_INSERT_LIBRARIES", "DYLD_LIBRARY_PATH", "DYLD_FRAMEWORK_PATH"
+        .. SandboxReservedEnvironment.DynamicLinkerNames
     ];
 
     /// <summary>
@@ -60,14 +60,8 @@ public sealed class ProcessSandboxLaunchPreparer(
     /// Returns the first per-request environment grant whose name collides (case-insensitively)
     /// with a reserved variable, or null when all grants are benign.
     /// </summary>
-    public static string? FindReservedEnvironmentGrant(IReadOnlyDictionary<string, string>? environmentVariables)
-    {
-        if (environmentVariables is null)
-            return null;
-
-        return environmentVariables.Keys.FirstOrDefault(
-            name => ReservedEnvironmentVariableNames.Contains(name, StringComparer.OrdinalIgnoreCase));
-    }
+    public static string? FindReservedEnvironmentGrant(IReadOnlyDictionary<string, string>? environmentVariables) =>
+        SandboxReservedEnvironment.FindReservedGrant(ReservedEnvironmentVariableNames, environmentVariables);
 
     /// <summary>Creates the workspace directory (via the <see cref="CreateWorkspaceDirectory"/> test seam, when set).</summary>
     public string CreateWorkspace() => (CreateWorkspaceDirectory ?? CreateDefaultWorkspace)();

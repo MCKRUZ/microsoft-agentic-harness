@@ -4,11 +4,13 @@ using Application.AI.Common.Interfaces.Sandbox;
 using Domain.AI.Sandbox;
 using Domain.Common;
 using Domain.Common.Config.AI.MCP;
+using Domain.Common.Config.AI.Sandbox;
 using FluentAssertions;
 using Infrastructure.AI.Bundles;
 using Infrastructure.AI.MCP.Services;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using Moq;
 using Xunit;
 
@@ -89,6 +91,52 @@ public sealed class McpConnectionManagerSandboxedStdioTests
     }
 
     [Fact]
+    public async Task GetClientAsync_BundleOwnedStdioServer_HonorsOperatorPermissionOverrideForThisServerName()
+    {
+        // Before the fix, StartSandboxedStdioSessionAsync built ToolPermissionProfile as an inline
+        // literal (RequiredCapabilities=None, MinimumIsolation=Container) instead of resolving it
+        // through ToolPermissionProfileResolver — so a SandboxConfig.ToolOverrides entry keyed on
+        // this exact bundle server name (the same mechanism that already applies to first-party
+        // tool names, and that DockerContainerLaunchPreparer.ResolveImage already honors for this
+        // same name via a separate override registry) had silently no effect.
+        var bundleOwned = new BundleOwnedMcpServerRegistry();
+        bundleOwned.TryAdd("b1:local-tool", new McpServerDefinition
+        {
+            Enabled = true,
+            Type = McpServerType.Stdio,
+            Command = "npx",
+            StartupTimeoutSeconds = 1
+        });
+
+        var overriddenSandboxConfig = new SandboxConfig
+        {
+            ToolOverrides = new Dictionary<string, ToolOverrideConfig>
+            {
+                ["b1:local-tool"] = new ToolOverrideConfig { DeniedHosts = ["evil.example.com"] }
+            }
+        };
+        var rootServices = McpConnectionManagerBundleEgressSupport.BuildRootServices(services =>
+        {
+            services.AddKeyedSingleton<ISandboxSessionFactory>(SandboxIsolationLevel.Container, _fakeSessionFactory);
+            // Registered after BuildRootServices' own IOptionsMonitor<SandboxConfig> — the container
+            // resolves the LAST registration for a non-keyed singleton, so this overrides it.
+            services.AddSingleton<IOptionsMonitor<SandboxConfig>>(new StaticSandboxConfigMonitor(overriddenSandboxConfig));
+        });
+        var sut = McpConnectionManagerBundleEgressSupport.CreateManager(
+            Mock.Of<ILogger<McpConnectionManager>>(), new Mock<ILoggerFactory>().Object,
+            TestSsrf.HandlerFactory(), new McpServersConfig(), bundleOwned, rootServices);
+
+        await Assert.ThrowsAsync<McpConnectionException>(() => sut.GetClientAsync("b1:local-tool"));
+
+        _fakeSessionFactory.LastRequest.Should().NotBeNull();
+        _fakeSessionFactory.LastRequest!.PermissionProfile.DeniedHosts.Should().Contain("evil.example.com",
+            "an operator's SandboxConfig.ToolOverrides entry for this bundle server name must be honored, " +
+            "the same way it already is for a first-party tool name");
+        _fakeSessionFactory.LastRequest.PermissionProfile.MinimumIsolation.Should().Be(SandboxIsolationLevel.Container,
+            "the isolation floor must still be raised to Container even though the override didn't set one");
+    }
+
+    [Fact]
     public async Task GetClientAsync_HostConfiguredStdioServer_NeverReachesTheSandbox()
     {
         // The trust-tier boundary #371 must not blur: a host-installed plugin's stdio server keeps
@@ -113,6 +161,19 @@ public sealed class McpConnectionManagerSandboxedStdioTests
         await act.Should().ThrowAsync<McpConnectionException>();
         _fakeSessionFactory.WasCalled.Should().BeFalse(
             "a host-configured server is a different trust tier and must never route through the sandbox");
+    }
+
+    private sealed class StaticSandboxConfigMonitor(SandboxConfig value) : IOptionsMonitor<SandboxConfig>
+    {
+        public SandboxConfig CurrentValue => value;
+        public SandboxConfig Get(string? name) => value;
+        public IDisposable OnChange(Action<SandboxConfig, string?> listener) => NullDisposable.Instance;
+
+        private sealed class NullDisposable : IDisposable
+        {
+            public static readonly NullDisposable Instance = new();
+            public void Dispose() { }
+        }
     }
 
     private sealed class FakeSandboxSessionFactory : ISandboxSessionFactory

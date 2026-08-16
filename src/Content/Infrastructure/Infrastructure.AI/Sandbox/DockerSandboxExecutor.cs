@@ -58,11 +58,18 @@ public sealed class DockerSandboxExecutor : ISandboxExecutor
         if (DockerContainerLaunchPreparer.FindReservedEnvironmentGrant(request.EnvironmentVariables) is { } reservedGrant)
             return await RejectReservedEnvironmentGrantAsync(request, reservedGrant, ct);
 
-        var egress = await RunEgressPreflightAsync(request, ct);
+        // Egress-policy evaluation and the Docker daemon ping are independent I/O with nothing to
+        // wait on each other for — run them concurrently rather than paying their sum, matching
+        // DockerSandboxSessionFactory's identical preflight (#371).
+        var egressTask = RunEgressPreflightAsync(request, ct);
+        var dockerAvailableTask = _launchPreparer.IsDockerAvailableAsync(ct);
+        await Task.WhenAll(egressTask, dockerAvailableTask);
+
+        var egress = await egressTask;
         if (egress.Blocked is { } block)
             return block;
 
-        if (!await _launchPreparer.IsDockerAvailableAsync(ct))
+        if (!await dockerAvailableTask)
             return await HandleDockerUnavailableAsync(request, ct);
 
         var workspaceDir = _launchPreparer.CreateWorkspace();

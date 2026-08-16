@@ -1,6 +1,5 @@
 using System.Buffers;
 using System.IO.Pipelines;
-using System.Runtime.InteropServices;
 using System.Text;
 using Application.AI.Common.Interfaces.Sandbox;
 using Docker.DotNet;
@@ -19,7 +18,6 @@ namespace Infrastructure.AI.Sandbox;
 /// </summary>
 public sealed class DockerSandboxSession : ISandboxSession
 {
-    private readonly IDockerClient _dockerClient;
     private readonly DockerContainerLaunchPreparer _launchPreparer;
     private readonly MultiplexedStream _attachStream;
     private readonly string _containerId;
@@ -30,11 +28,9 @@ public sealed class DockerSandboxSession : ISandboxSession
     private readonly Pipe _outputPipe = new();
     private readonly Task _waitForExit;
     private readonly Task _outputPump;
-    private readonly Stream _standardOutput;
     private int _disposed;
 
     internal DockerSandboxSession(
-        IDockerClient dockerClient,
         DockerContainerLaunchPreparer launchPreparer,
         MultiplexedStream attachStream,
         string containerId,
@@ -43,7 +39,6 @@ public sealed class DockerSandboxSession : ISandboxSession
         TimeSpan maxSessionDuration,
         ILogger logger)
     {
-        _dockerClient = dockerClient;
         _launchPreparer = launchPreparer;
         _attachStream = attachStream;
         _containerId = containerId;
@@ -53,7 +48,7 @@ public sealed class DockerSandboxSession : ISandboxSession
         _lifetimeCts = new CancellationTokenSource(maxSessionDuration);
 
         StandardInput = new MultiplexedWriteStream(attachStream);
-        _standardOutput = _outputPipe.Reader.AsStream();
+        StandardOutput = _outputPipe.Reader.AsStream();
 
         _outputPump = PumpOutputAsync(_lifetimeCts.Token);
         _waitForExit = WaitForExitAsync();
@@ -63,7 +58,7 @@ public sealed class DockerSandboxSession : ISandboxSession
     public Stream StandardInput { get; }
 
     /// <inheritdoc />
-    public Stream StandardOutput => _standardOutput;
+    public Stream StandardOutput { get; }
 
     /// <inheritdoc />
     public Task Completion => _waitForExit;
@@ -72,7 +67,7 @@ public sealed class DockerSandboxSession : ISandboxSession
     {
         try
         {
-            await _dockerClient.Containers.WaitContainerAsync(_containerId, _lifetimeCts.Token);
+            await _launchPreparer.WaitForContainerExitAsync(_containerId, _lifetimeCts.Token);
         }
         catch (OperationCanceledException)
         {
@@ -146,22 +141,13 @@ public sealed class DockerSandboxSession : ISandboxSession
         _launchPreparer.CleanupWorkspace(_workspaceDir);
 
         SafeDispose(StandardInput, "stdin stream");
-        SafeDispose(_standardOutput, "stdout stream");
+        SafeDispose(StandardOutput, "stdout stream");
         SafeDispose(_attachStream, "attach stream");
         SafeDispose(_lifetimeCts, "lifetime cancellation token source");
     }
 
-    private void SafeDispose(IDisposable disposable, string what)
-    {
-        try
-        {
-            disposable.Dispose();
-        }
-        catch (Exception ex)
-        {
-            _logger.LogDebug(ex, "Failed to dispose {What} during sandbox session teardown for {ToolName}", what, _toolName);
-        }
-    }
+    private void SafeDispose(IDisposable disposable, string what) =>
+        SandboxWorkspace.SafeDispose(disposable, what, _toolName, _logger);
 
     /// <summary>
     /// Adapts <see cref="MultiplexedStream"/>'s byte-array write method to a plain writable
@@ -202,33 +188,14 @@ public sealed class DockerSandboxSession : ISandboxSession
         public override void Write(byte[] buffer, int offset, int count) =>
             inner.WriteAsync(buffer, offset, count, CancellationToken.None).GetAwaiter().GetResult();
 
+        // No WriteAsync(ReadOnlyMemory<byte>, CancellationToken) override: Stream's own default
+        // implementation already does exactly what one would do here — MemoryMarshal.TryGetArray,
+        // dispatch straight through on the array-backed fast path, else ArrayPool rent+copy+return
+        // — and its array-backed path calls this class's own WriteAsync(byte[], int, int, ct)
+        // override above, so the inherited version routes to the same MultiplexedStream call a
+        // hand-written override would.
         public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken) =>
             inner.WriteAsync(buffer, offset, count, cancellationToken);
-
-        public override async ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
-        {
-            // MultiplexedStream only exposes a byte[]-based WriteAsync overload. Most callers
-            // (including the MCP SDK's JSON-RPC framing) hand this an array-backed buffer, so
-            // TryGetArray lets it dispatch straight through with no extra copy — exactly what
-            // Stream's own default WriteAsync(Memory<byte>) implementation does internally. Only
-            // a genuinely non-array-backed buffer (native/pinned memory) pays for a rent+copy.
-            if (MemoryMarshal.TryGetArray(buffer, out var segment))
-            {
-                await inner.WriteAsync(segment.Array!, segment.Offset, segment.Count, cancellationToken);
-                return;
-            }
-
-            var rented = ArrayPool<byte>.Shared.Rent(buffer.Length);
-            try
-            {
-                buffer.CopyTo(rented);
-                await inner.WriteAsync(rented, 0, buffer.Length, cancellationToken);
-            }
-            finally
-            {
-                ArrayPool<byte>.Shared.Return(rented);
-            }
-        }
 
         public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
 

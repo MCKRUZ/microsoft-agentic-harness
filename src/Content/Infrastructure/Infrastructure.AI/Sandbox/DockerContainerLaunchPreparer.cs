@@ -36,36 +36,25 @@ public sealed class DockerContainerLaunchPreparer(
 
     /// <summary>
     /// Dynamic-linker environment variables that let a process on the container's own image load
-    /// an arbitrary shared library before <c>main</c> runs. Unlike
-    /// <see cref="ProcessSandboxLaunchPreparer"/>'s reserved names — which guard against a grant
-    /// un-pinning a variable inherited from the host — a container starts from a clean,
-    /// image-defined environment, so there is no host-leak risk here. The risk is different but
-    /// just as real: a request with <see cref="ToolCapability.FileWrite"/> gets a read-write bind
-    /// mount at <c>/workspace</c>, so a caller can write a malicious <c>.so</c> there and, with an
-    /// unguarded <c>LD_PRELOAD</c>/<c>LD_LIBRARY_PATH</c>/<c>LD_AUDIT</c> grant, have the
-    /// container's own dynamic linker load it into the sandboxed process on start.
+    /// an arbitrary shared library before <c>main</c> runs — shared with
+    /// <see cref="ProcessSandboxLaunchPreparer"/>'s reserved-name list
+    /// (<see cref="SandboxReservedEnvironment.DynamicLinkerNames"/>) so the two tiers cannot drift.
+    /// Unlike that tier — which additionally guards against a grant un-pinning a variable
+    /// inherited from the host — a container starts from a clean, image-defined environment, so
+    /// there is no host-leak risk here. The risk is different but just as real: a request with
+    /// <see cref="ToolCapability.FileWrite"/> gets a read-write bind mount at <c>/workspace</c>,
+    /// so a caller can write a malicious <c>.so</c> there and, with an unguarded
+    /// <c>LD_PRELOAD</c>/<c>LD_LIBRARY_PATH</c>/<c>LD_AUDIT</c> grant, have the container's own
+    /// dynamic linker load it into the sandboxed process on start.
     /// </summary>
-    private static readonly string[] ReservedContainerEnvironmentVariableNames =
-    [
-        "LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT", "LD_ORIGIN_PATH",
-        // Included for parity with ProcessSandboxLaunchPreparer's identical list, even though
-        // today's images are Linux — a future macOS-based image should not silently lose this
-        // guard because nobody remembered to add it here too.
-        "DYLD_INSERT_LIBRARIES", "DYLD_LIBRARY_PATH", "DYLD_FRAMEWORK_PATH"
-    ];
+    private static readonly string[] ReservedContainerEnvironmentVariableNames = SandboxReservedEnvironment.DynamicLinkerNames;
 
     /// <summary>
     /// Returns the first per-request environment grant whose name collides (case-insensitively)
     /// with a dynamic-linker-hijack variable, or null when all grants are benign.
     /// </summary>
-    public static string? FindReservedEnvironmentGrant(IReadOnlyDictionary<string, string>? environmentVariables)
-    {
-        if (environmentVariables is null)
-            return null;
-
-        return environmentVariables.Keys.FirstOrDefault(
-            name => ReservedContainerEnvironmentVariableNames.Contains(name, StringComparer.OrdinalIgnoreCase));
-    }
+    public static string? FindReservedEnvironmentGrant(IReadOnlyDictionary<string, string>? environmentVariables) =>
+        SandboxReservedEnvironment.FindReservedGrant(ReservedContainerEnvironmentVariableNames, environmentVariables);
 
     public async Task<bool> IsDockerAvailableAsync(CancellationToken ct)
     {
@@ -80,6 +69,14 @@ public sealed class DockerContainerLaunchPreparer(
             return false;
         }
     }
+
+    /// <summary>
+    /// Awaits container exit. A thin pass-through to the Docker client this preparer already
+    /// owns, so <see cref="DockerSandboxSession"/> does not need its own separate
+    /// <see cref="IDockerClient"/> reference just for this one call.
+    /// </summary>
+    public Task<ContainerWaitResponse> WaitForContainerExitAsync(string containerId, CancellationToken ct) =>
+        dockerClient.Containers.WaitContainerAsync(containerId, ct);
 
     public string ResolveImage(string toolName)
     {

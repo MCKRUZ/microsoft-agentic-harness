@@ -8,13 +8,17 @@ namespace Infrastructure.AI.Sandbox;
 /// populated whenever the preflight actually ran (allowed or denied) so callers can bind it into
 /// a signed attestation; it is null only when there was nothing to evaluate.
 /// </summary>
-public sealed record SandboxEgressPreflightOutcome(
-    bool IsDenied, string? Digest, string? FailureReason, string? ErrorMessage)
+public sealed record SandboxEgressPreflightOutcome(string? Digest, string? FailureReason, string? ErrorMessage)
 {
-    public static SandboxEgressPreflightOutcome Allowed(string? digest) => new(false, digest, null, null);
+    // Derived, not a fourth positional field: Allowed always supplies a null FailureReason and
+    // Denied always supplies a non-null one, so a separate IsDenied field could only ever agree
+    // with FailureReason's own nullness — never disagree with it by construction.
+    public bool IsDenied => FailureReason is not null;
+
+    public static SandboxEgressPreflightOutcome Allowed(string? digest) => new(digest, null, null);
 
     public static SandboxEgressPreflightOutcome Denied(string? digest, string failureReason, string errorMessage) =>
-        new(true, digest, failureReason, errorMessage);
+        new(digest, failureReason, errorMessage);
 }
 
 /// <summary>

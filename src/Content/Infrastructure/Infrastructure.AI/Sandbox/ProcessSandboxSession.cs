@@ -71,7 +71,7 @@ public sealed class ProcessSandboxSession : ISandboxSession
             {
                 // Best-effort cancellation: an OS pipe read that's genuinely blocked in native
                 // code is not guaranteed to unblock just because this token fires — DisposeAsync
-                // does not rely on that guarantee (see the WhenAny race there) but passing it
+                // does not rely on that guarantee (see the WaitAsync race there) but passing it
                 // still helps the common case where the stream itself has already been closed.
                 var read = await _process.StandardError.ReadAsync(buffer.AsMemory(), _lifetimeCts.Token);
                 if (read == 0)
@@ -124,6 +124,11 @@ public sealed class ProcessSandboxSession : ISandboxSession
         if (Interlocked.Exchange(ref _disposed, 1) == 1)
             return;
 
+        // Captured before any disposal below: SafeDispose's own log line needs an identifier for
+        // this session, and reading Process.Id after the process handle it disposes is closed is
+        // not something to rely on.
+        var processIdForLogging = _process.Id.ToString();
+
         await _lifetimeCts.CancelAsync();
         await _completion;
 
@@ -133,9 +138,14 @@ public sealed class ProcessSandboxSession : ISandboxSession
         // teardown _completion already enforces. Degrades to a warning and proceeds with cleanup
         // rather than hanging forever; the drain task, if still running, keeps its own internal
         // catch and simply completes later once the process handle below is disposed out from
-        // under it.
-        var stderrDrainOrTimeout = await Task.WhenAny(_stderrDrain, Task.Delay(PostKillWaitTimeout));
-        if (stderrDrainOrTimeout != _stderrDrain)
+        // under it. WaitAsync (not WhenAny+Delay) disarms its own timer the moment the drain
+        // completes, instead of leaving an armed Task.Delay reachable for the full timeout on the
+        // normal, non-stuck teardown path.
+        try
+        {
+            await _stderrDrain.WaitAsync(PostKillWaitTimeout);
+        }
+        catch (TimeoutException)
         {
             _logger.LogWarning(
                 "Stderr drain for process {ProcessId} did not finish within {Timeout} of teardown — proceeding with cleanup anyway",
@@ -149,21 +159,12 @@ public sealed class ProcessSandboxSession : ISandboxSession
         _launchPreparer.ReleaseResourceLimiter(_process.Id);
         _launchPreparer.CleanupWorkspace(_workspaceDir);
 
-        SafeDispose(StandardInput, "stdin stream");
-        SafeDispose(StandardOutput, "stdout stream");
-        SafeDispose(_process, "process handle");
-        SafeDispose(_lifetimeCts, "lifetime cancellation token source");
+        SafeDispose(StandardInput, "stdin stream", processIdForLogging);
+        SafeDispose(StandardOutput, "stdout stream", processIdForLogging);
+        SafeDispose(_process, "process handle", processIdForLogging);
+        SafeDispose(_lifetimeCts, "lifetime cancellation token source", processIdForLogging);
     }
 
-    private void SafeDispose(IDisposable disposable, string what)
-    {
-        try
-        {
-            disposable.Dispose();
-        }
-        catch (Exception ex)
-        {
-            _logger.LogDebug(ex, "Failed to dispose {What} during sandbox session teardown", what);
-        }
-    }
+    private void SafeDispose(IDisposable disposable, string what, string processIdForLogging) =>
+        SandboxWorkspace.SafeDispose(disposable, what, processIdForLogging, _logger);
 }

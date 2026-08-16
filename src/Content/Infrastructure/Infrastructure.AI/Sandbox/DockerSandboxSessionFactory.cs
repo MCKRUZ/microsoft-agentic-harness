@@ -107,7 +107,7 @@ public sealed class DockerSandboxSessionFactory(
             await attestationSigner.SignStartAsync(request, egressDigest, ct);
 
             return Result<ISandboxSession>.Success(new DockerSandboxSession(
-                dockerClient, launchPreparer, attachStream, containerId, request.ToolName, workspaceDir,
+                launchPreparer, attachStream, containerId, request.ToolName, workspaceDir,
                 request.MaxSessionDuration, sessionLogger));
         }
         catch (OperationCanceledException)

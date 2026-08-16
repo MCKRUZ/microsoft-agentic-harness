@@ -31,4 +31,23 @@ internal static class SandboxWorkspace
             logger.LogWarning(ex, "Failed to clean up {Backend} sandbox workspace {Path}", backendName, path);
         }
     }
+
+    /// <summary>
+    /// Disposes one resource during session teardown, logging rather than throwing on failure —
+    /// shared by <see cref="ProcessSandboxSession"/> and <see cref="DockerSandboxSession"/> so
+    /// their otherwise-identical teardown paths cannot silently drift apart. <paramref name="context"/>
+    /// identifies the session for the log line (a tool name for the container backend, a process
+    /// ID for the process backend — whichever the caller already has on hand).
+    /// </summary>
+    internal static void SafeDispose(IDisposable disposable, string what, string context, ILogger logger)
+    {
+        try
+        {
+            disposable.Dispose();
+        }
+        catch (Exception ex)
+        {
+            logger.LogDebug(ex, "Failed to dispose {What} during sandbox session teardown for {Context}", what, context);
+        }
+    }
 }

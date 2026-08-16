@@ -89,7 +89,7 @@ public sealed class SandboxedStdioClientTransport(
 
         public async ValueTask DisposeAsync()
         {
-            Interlocked.Exchange(ref _disposed, 1);
+            Volatile.Write(ref _disposed, 1);
             await _inner.DisposeAsync();
             await _session.DisposeAsync();
         }

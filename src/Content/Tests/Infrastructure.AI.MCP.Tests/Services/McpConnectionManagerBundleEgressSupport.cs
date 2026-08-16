@@ -3,15 +3,19 @@ using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Egress;
 using Application.AI.Common.Services;
 using Application.AI.Common.Services.Agent;
+using Application.AI.Common.Services.Sandbox;
+using Application.AI.Common.Services.Tools;
 using Domain.AI.Egress;
 using Domain.AI.Identity;
 using Domain.Common.Config.AI.MCP;
+using Domain.Common.Config.AI.Sandbox;
 using Infrastructure.AI.Bundles;
 using Infrastructure.AI.Egress;
 using Infrastructure.AI.MCP.Services;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 
 namespace Infrastructure.AI.MCP.Tests.Services;
 
@@ -98,6 +102,15 @@ internal static class McpConnectionManagerBundleEgressSupport
         // real DefaultEgressPolicy with an explicit allowlist per scenario.
         services.AddSingleton<IEgressPolicy, AllowAllEgressPolicy>();
         services.AddSingleton<IEgressPolicyResolver, AllowAllEgressPolicyResolver>();
+        // McpConnectionManager resolves ToolPermissionProfileResolver eagerly at construction
+        // (#371 follow-up: the sandboxed-stdio path resolves a bundle-owned server's permission
+        // profile through it rather than an inline literal). No first-party ITool is registered
+        // in this minimal provider, so the empty key set correctly resolves every server name to
+        // the same None/None base the production registration would give an unrecognised name.
+        services.AddOptions<SandboxConfig>();
+        services.AddSingleton(sp => new FirstPartyToolLookup(sp, new HashSet<string>(StringComparer.Ordinal)));
+        services.AddSingleton(sp => new ToolPermissionProfileResolver(
+            sp.GetRequiredService<FirstPartyToolLookup>(), sp.GetRequiredService<IOptionsMonitor<SandboxConfig>>()));
         extra?.Invoke(services);
         return services.BuildServiceProvider();
     }

@@ -101,27 +101,24 @@ public sealed class ProcessSandboxSessionFactory(
             KillAndReleaseIfStarted(process);
             launchPreparer.CleanupWorkspace(workspaceDir);
 
-            await attestationSigner.SignFailureAsync(
-                request, $"Process sandbox session failed to start: {ex.Message}", egressDigest, ct);
-            return Result<ISandboxSession>.Fail(ex.Message);
+            var failureReason = $"Process sandbox session failed to start: {ex.Message}";
+            await attestationSigner.SignFailureAsync(request, failureReason, egressDigest, ct);
+            return Result<ISandboxSession>.Fail(failureReason);
         }
     }
 
+    /// <summary>
+    /// Kills, releases, and disposes a process this factory started but could not hand off to a
+    /// session. Delegates the kill itself to <see cref="ProcessSandboxLaunchPreparer.KillProcess"/>
+    /// — the same method <see cref="ProcessSandboxSession"/>'s normal teardown path already calls
+    /// — rather than a second, silent copy of the same kill-and-swallow logic.
+    /// </summary>
     private void KillAndReleaseIfStarted(Process? process)
     {
         if (process is null)
             return;
 
-        try
-        {
-            if (!process.HasExited)
-                process.Kill(entireProcessTree: true);
-        }
-        catch (InvalidOperationException)
-        {
-            // Already exited.
-        }
-
+        launchPreparer.KillProcess(process);
         launchPreparer.ReleaseResourceLimiter(process.Id);
         process.Dispose();
     }
