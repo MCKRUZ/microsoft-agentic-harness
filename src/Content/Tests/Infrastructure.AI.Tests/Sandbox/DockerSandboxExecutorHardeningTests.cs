@@ -73,12 +73,16 @@ public class DockerSandboxExecutorHardeningTests
         var sandboxConfig = new Mock<IOptionsMonitor<SandboxConfig>>();
         sandboxConfig.Setup(x => x.CurrentValue).Returns(new SandboxConfig { Enabled = true });
 
+        var launchPreparer = new DockerContainerLaunchPreparer(
+            _dockerClient.Object, _options.Object, Mock.Of<ILogger<DockerContainerLaunchPreparer>>());
+
         _sut = new DockerSandboxExecutor(
             _dockerClient.Object,
+            launchPreparer,
             _attestation.Object,
-            _options.Object,
             sandboxConfig.Object,
-            Mock.Of<ILogger<DockerSandboxExecutor>>());
+            Mock.Of<ILogger<DockerSandboxExecutor>>(),
+            new SandboxEgressPreflightRunner(null, Mock.Of<ILogger<SandboxEgressPreflightRunner>>()));
     }
 
     [Fact]

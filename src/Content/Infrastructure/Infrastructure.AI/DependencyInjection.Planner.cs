@@ -170,9 +170,9 @@ public static partial class DependencyInjection
     }
 
     /// <summary>
-    /// Registers sandbox execution services: process and container executors (keyed by
-    /// <see cref="SandboxIsolationLevel"/>), Docker client, attestation, and platform-specific
-    /// resource limiters.
+    /// Registers sandbox execution services: process and container executors and session
+    /// factories (both keyed by <see cref="SandboxIsolationLevel"/>), Docker client,
+    /// attestation, and platform-specific resource limiters.
     /// </summary>
     private static void RegisterSandboxServices(IServiceCollection services)
     {
@@ -184,11 +184,31 @@ public static partial class DependencyInjection
         services.AddScoped<ProcessSandboxExecutor>();
         services.AddScoped<DockerSandboxExecutor>();
 
-        // PR-3c: sandbox-side egress preflight gate. Optional injection on the
-        // executors; the executor falls back to legacy attestation when no
-        // preflight is registered. Activated unconditionally here so the
-        // sandbox cannot bypass policy by default in any composed host.
+        // #371: long-lived, duplex counterpart to ISandboxExecutor — same keying scheme, same
+        // shared launch mechanics (see the two LaunchPreparer types below), used where a caller
+        // needs an open conversation with a sandboxed program (e.g. a bundle-owned stdio MCP
+        // server) rather than a single buffered input/output exchange.
+        services.AddKeyedScoped<ISandboxSessionFactory>(SandboxIsolationLevel.Process,
+            (sp, _) => sp.GetRequiredService<ProcessSandboxSessionFactory>());
+        services.AddKeyedScoped<ISandboxSessionFactory>(SandboxIsolationLevel.Container,
+            (sp, _) => sp.GetRequiredService<DockerSandboxSessionFactory>());
+
+        services.AddScoped<ProcessSandboxSessionFactory>();
+        services.AddScoped<DockerSandboxSessionFactory>();
+
+        // Shared launch mechanics behind both the one-shot executor and the session factory for
+        // each backend, so the two can never drift from each other's security posture.
+        services.AddScoped<ProcessSandboxLaunchPreparer>();
+        services.AddScoped<DockerContainerLaunchPreparer>();
+
+        // PR-3c: sandbox-side egress preflight gate, shared by every executor/session factory.
+        // The executor falls back to legacy attestation when no preflight is registered — but
+        // that "no preflight" case can only happen via direct construction (e.g. tests); the
+        // registration below activates a real preflight unconditionally, so the sandbox cannot
+        // bypass policy by default in any composed host. Scoped because ISandboxEgressPreflight
+        // itself is scoped (resolves the ambient agent identity per request).
         services.AddScoped<Application.AI.Common.Interfaces.Sandbox.ISandboxEgressPreflight, Infrastructure.AI.Sandbox.SandboxEgressPreflight>();
+        services.AddScoped<SandboxEgressPreflightRunner>();
 
         services.AddSingleton<Docker.DotNet.IDockerClient>(_ =>
             new Docker.DotNet.DockerClientConfiguration().CreateClient());

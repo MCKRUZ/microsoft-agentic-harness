@@ -1,7 +1,6 @@
 using System.Diagnostics;
 using Application.AI.Common.Interfaces.Attestation;
 using Application.AI.Common.Interfaces.Sandbox;
-using Domain.AI.Egress;
 using Domain.AI.Sandbox;
 using Domain.Common.Config.AI.Sandbox;
 using Microsoft.Extensions.Logging;
@@ -15,66 +14,36 @@ namespace Infrastructure.AI.Sandbox;
 /// On Windows, resource limits use Job Objects. On other platforms,
 /// execution works but limits are skipped with a logged warning.
 /// </summary>
+/// <remarks>
+/// Program allowlist enforcement, environment isolation, workspace lifecycle, and resource-limit
+/// application live in <see cref="ProcessSandboxLaunchPreparer"/>, shared with
+/// <see cref="ProcessSandboxSessionFactory"/> so the two never drift from each other's security
+/// posture — see #371.
+/// </remarks>
 public sealed class ProcessSandboxExecutor : ISandboxExecutor
 {
-    private readonly IProcessResourceLimiter _resourceLimiter;
+    private readonly ProcessSandboxLaunchPreparer _launchPreparer;
     private readonly IAttestationService _attestationService;
     private readonly ILogger<ProcessSandboxExecutor> _logger;
     private readonly TimeProvider _timeProvider;
     private readonly IOptionsMonitor<SandboxConfig> _sandboxConfig;
-    private readonly ISandboxEgressPreflight? _egressPreflight;
+    private readonly SandboxEgressPreflightRunner _egressPreflightRunner;
 
     public ProcessSandboxExecutor(
-        IProcessResourceLimiter resourceLimiter,
+        ProcessSandboxLaunchPreparer launchPreparer,
         IAttestationService attestationService,
         ILogger<ProcessSandboxExecutor> logger,
         TimeProvider timeProvider,
         IOptionsMonitor<SandboxConfig> sandboxConfig,
-        ISandboxEgressPreflight? egressPreflight = null)
+        SandboxEgressPreflightRunner egressPreflightRunner)
     {
-        _resourceLimiter = resourceLimiter;
+        _launchPreparer = launchPreparer;
         _attestationService = attestationService;
         _logger = logger;
         _timeProvider = timeProvider;
         _sandboxConfig = sandboxConfig;
-        _egressPreflight = egressPreflight;
-        CreateWorkspaceDirectory = CreateDefaultWorkspace;
+        _egressPreflightRunner = egressPreflightRunner;
     }
-
-    internal Func<string> CreateWorkspaceDirectory { get; set; }
-
-    private string CreateDefaultWorkspace()
-    {
-        var root = _sandboxConfig.CurrentValue.WorkspaceRoot;
-        var baseDir = !string.IsNullOrEmpty(root) ? root : Path.GetTempPath();
-
-        if (!Path.IsPathRooted(baseDir))
-            throw new InvalidOperationException(
-                $"SandboxConfig.WorkspaceRoot must be an absolute path. Found: '{baseDir}'");
-
-        var dir = Path.Combine(baseDir, $"sandbox-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(dir);
-        SetRestrictivePermissions(dir);
-        return dir;
-    }
-
-    private static void SetRestrictivePermissions(string path)
-    {
-        if (!OperatingSystem.IsWindows())
-            File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-    }
-
-    /// <summary>
-    /// Environment variable names that per-request grants may never override, compared
-    /// case-insensitively (Windows environment lookups ignore case). Covers the pinned temp
-    /// set (always redirected into the workspace) and the security-critical variables the
-    /// allowlist controls — a grant of <c>temp</c>, <c>Path</c>, or <c>COMSPEC</c> would
-    /// otherwise un-pin or re-smuggle them.
-    /// </summary>
-    private static readonly string[] ReservedEnvironmentVariableNames =
-    [
-        "TEMP", "TMP", "TMPDIR", "PATH", "COMSPEC", "PATHEXT", "SYSTEMROOT"
-    ];
 
     public async Task<SandboxExecutionResult> ExecuteAsync(
         SandboxExecutionRequest request, CancellationToken ct)
@@ -82,21 +51,21 @@ public sealed class ProcessSandboxExecutor : ISandboxExecutor
         if (!_sandboxConfig.CurrentValue.Enabled)
             throw new InvalidOperationException("Sandbox execution is disabled by configuration (Sandbox:Enabled=false).");
 
-        if (FindReservedEnvironmentGrant(request) is { } reservedGrant)
+        if (ProcessSandboxLaunchPreparer.FindReservedEnvironmentGrant(request.EnvironmentVariables) is { } reservedGrant)
             return await RejectReservedGrantAsync(request, reservedGrant, ct);
 
         var egress = await RunEgressPreflightAsync(request, ct);
         if (egress.Blocked is { } block)
             return block;
 
-        var workspaceDir = CreateWorkspaceDirectory();
+        var workspaceDir = _launchPreparer.CreateWorkspace();
         var startTimestamp = _timeProvider.GetTimestamp();
         int? limitedProcessId = null;
 
         try
         {
             using var process = StartProcess(request, workspaceDir);
-            ApplyResourceLimits(process, request.Limits);
+            _launchPreparer.ApplyResourceLimits(process, request.Limits);
             limitedProcessId = process.Id;
 
             var stdoutTask = process.StandardOutput.ReadToEndAsync();
@@ -116,7 +85,7 @@ public sealed class ProcessSandboxExecutor : ISandboxExecutor
             catch (OperationCanceledException) when (!ct.IsCancellationRequested)
             {
                 timedOut = true;
-                KillProcess(process);
+                _launchPreparer.KillProcess(process);
             }
 
             var (stdout, stderr) = await DrainOutputAsync(stdoutTask, stderrTask);
@@ -150,47 +119,30 @@ public sealed class ProcessSandboxExecutor : ISandboxExecutor
             // (BuildUsage runs inside the try, before this finally). Without this, every Windows
             // sandbox execution leaks one kernel handle until host shutdown.
             if (limitedProcessId is { } pid)
-                _resourceLimiter.Release(pid);
+                _launchPreparer.ReleaseResourceLimiter(pid);
 
-            CleanupWorkspace(workspaceDir);
+            _launchPreparer.CleanupWorkspace(workspaceDir);
         }
     }
 
     private async Task<(SandboxExecutionResult? Blocked, string? Digest)> RunEgressPreflightAsync(
         SandboxExecutionRequest request, CancellationToken ct)
     {
-        if (_egressPreflight is null || request.EgressPrecheckTargets is not { Count: > 0 } targets)
+        var outcome = await _egressPreflightRunner.EvaluateAsync(request.ToolName, request.EgressPrecheckTargets, ct);
+        if (!outcome.IsDenied)
+            return (null, outcome.Digest);
+
+        var attestation = await _attestationService.SignAsync(
+            Domain.AI.Attestation.AttestationRequest.Failure(
+                request.ToolName, request.Input, outcome.FailureReason!, egressDigest: outcome.Digest),
+            ct);
+
+        return (new SandboxExecutionResult
         {
-            return (null, null);
-        }
-
-        var decisions = await _egressPreflight.EvaluateAsync(targets, ct);
-        var digest = _egressPreflight.ComputeDigest(decisions);
-
-        var denied = decisions.FirstOrDefault(d => !d.Allowed);
-        if (denied is not null)
-        {
-            _logger.LogWarning(
-                "Sandbox refused to spawn process for tool {ToolName}: egress preflight denied '{Host}'",
-                request.ToolName, denied.Target.Host);
-
-            var attestation = await _attestationService.SignAsync(
-                Domain.AI.Attestation.AttestationRequest.Failure(
-                    request.ToolName,
-                    request.Input,
-                    $"Egress preflight denied: {denied.Target} ({denied.Reason})",
-                    egressDigest: digest),
-                ct);
-
-            return (new SandboxExecutionResult
-            {
-                Success = false,
-                ErrorMessage = $"Egress preflight denied: {denied.Target}",
-                Attestation = attestation
-            }, digest);
-        }
-
-        return (null, digest);
+            Success = false,
+            ErrorMessage = outcome.ErrorMessage,
+            Attestation = attestation
+        }, outcome.Digest);
     }
 
     private Task<Domain.AI.Attestation.ToolExecutionAttestation> SignFailureAsync(
@@ -205,57 +157,13 @@ public sealed class ProcessSandboxExecutor : ISandboxExecutor
             Domain.AI.Attestation.AttestationRequest.Success(toolName, input, output, egressDigest),
             ct);
 
-    private Process StartProcess(SandboxExecutionRequest request, string workspaceDir)
-    {
-        var command = request.Command ?? request.ToolName;
-
-        if (request.PermissionProfile.AllowedPrograms.Count == 0)
-            throw new UnauthorizedAccessException(
-                "No allowed programs configured in the permission profile. Sandbox is closed-by-default.");
-
-        if (!request.PermissionProfile.AllowedPrograms.Contains(
-                command, StringComparer.OrdinalIgnoreCase))
-        {
-            throw new UnauthorizedAccessException(
-                $"Command '{command}' is not in the allowed programs list");
-        }
-
-        var psi = new ProcessStartInfo
-        {
-            FileName = command,
-            WorkingDirectory = workspaceDir,
-            RedirectStandardInput = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true
-        };
-
-        ConfigureIsolatedEnvironment(psi, request, workspaceDir);
-
-        if (request.ArgumentList is { Count: > 0 })
-        {
-            foreach (var arg in request.ArgumentList)
-                psi.ArgumentList.Add(arg);
-        }
-
-        var process = new Process { StartInfo = psi };
-        process.Start();
-        return process;
-    }
-
-    /// <summary>
-    /// Returns the first per-request environment grant whose name collides
-    /// (case-insensitively) with a reserved variable, or null when all grants are benign.
-    /// </summary>
-    private static string? FindReservedEnvironmentGrant(SandboxExecutionRequest request)
-    {
-        if (request.EnvironmentVariables is null)
-            return null;
-
-        return request.EnvironmentVariables.Keys.FirstOrDefault(
-            name => ReservedEnvironmentVariableNames.Contains(name, StringComparer.OrdinalIgnoreCase));
-    }
+    private Process StartProcess(SandboxExecutionRequest request, string workspaceDir) =>
+        _launchPreparer.StartProcess(
+            request.Command ?? request.ToolName,
+            request.ArgumentList,
+            request.PermissionProfile,
+            request.EnvironmentVariables,
+            workspaceDir);
 
     /// <summary>
     /// Rejects a request whose environment grants collide with reserved variables — before
@@ -283,72 +191,6 @@ public sealed class ProcessSandboxExecutor : ISandboxExecutor
             ErrorMessage = errorMessage,
             Attestation = attestation
         };
-    }
-
-    /// <summary>
-    /// Rebuilds the child process environment from scratch: only variables named in the
-    /// configured allowlist are copied from the host, temp variables are pinned to the
-    /// disposable workspace, and pre-validated per-request grants are applied last (grants
-    /// colliding with reserved names were already rejected in
-    /// <see cref="ExecuteAsync"/>, so they can never un-pin these values).
-    /// </summary>
-    /// <remarks>
-    /// This is environment-level isolation only, and it is deliberately documented as
-    /// partial: the child still runs as the same OS user with the same token (no privilege
-    /// drop), so it can read anything the host user can read through the file system. PATH
-    /// is copied verbatim by default (cmd/child executable resolution needs it), which leaks
-    /// host directory layout and carries binary-planting risk if PATH contains
-    /// user-writable directories — operators can remove PATH from
-    /// <c>SandboxConfig.ProcessEnvironmentAllowlist</c> when tools do not need it. Use
-    /// container isolation for a real security boundary.
-    /// </remarks>
-    private void ConfigureIsolatedEnvironment(
-        ProcessStartInfo psi, SandboxExecutionRequest request, string workspaceDir)
-    {
-        // Closed-by-default: drop everything inherited from the host process.
-        psi.EnvironmentVariables.Clear();
-
-        foreach (var name in _sandboxConfig.CurrentValue.ProcessEnvironmentAllowlist)
-        {
-            var value = Environment.GetEnvironmentVariable(name);
-            if (value is not null)
-                psi.EnvironmentVariables[name] = value;
-        }
-
-        // Temp always points inside the per-execution workspace (deleted after the run),
-        // never at the host temp directory — regardless of the allowlist contents.
-        psi.EnvironmentVariables["TEMP"] = workspaceDir;
-        psi.EnvironmentVariables["TMP"] = workspaceDir;
-        psi.EnvironmentVariables["TMPDIR"] = workspaceDir;
-
-        if (request.EnvironmentVariables is not null)
-        {
-            foreach (var (name, value) in request.EnvironmentVariables)
-                psi.EnvironmentVariables[name] = value;
-        }
-    }
-
-    private void ApplyResourceLimits(Process process, ResourceLimits limits)
-    {
-        if (!_resourceLimiter.Apply(process, limits))
-        {
-            if (!_resourceLimiter.IsSupported)
-            {
-                KillProcess(process);
-                throw new PlatformNotSupportedException(
-                    "Process resource limits are not available on this platform. " +
-                    "Use container isolation (SandboxIsolationLevel.Container) for cross-platform enforcement.");
-            }
-
-            _logger.LogWarning("Failed to apply resource limits to process {ProcessId}", process.Id);
-        }
-    }
-
-    private void KillProcess(Process process)
-    {
-        _logger.LogWarning("Process {ProcessId} timed out, killing", process.Id);
-        try { process.Kill(entireProcessTree: true); }
-        catch (InvalidOperationException) { /* already exited */ }
     }
 
     private async Task<(string stdout, string stderr)> DrainOutputAsync(
@@ -381,7 +223,7 @@ public sealed class ProcessSandboxExecutor : ISandboxExecutor
             Success = false,
             ErrorMessage = $"Process timed out after {request.Timeout}",
             Attestation = attestation,
-            ResourceUsage = BuildUsage(processId, elapsed)
+            ResourceUsage = _launchPreparer.BuildUsage(processId, elapsed)
         };
     }
 
@@ -407,7 +249,7 @@ public sealed class ProcessSandboxExecutor : ISandboxExecutor
             ErrorMessage = stderr,
             ExitCode = exitCode,
             Attestation = attestation,
-            ResourceUsage = BuildUsage(processId, elapsed)
+            ResourceUsage = _launchPreparer.BuildUsage(processId, elapsed)
         };
     }
 
@@ -424,29 +266,7 @@ public sealed class ProcessSandboxExecutor : ISandboxExecutor
             Output = stdout,
             ExitCode = 0,
             Attestation = attestation,
-            ResourceUsage = BuildUsage(processId, elapsed)
+            ResourceUsage = _launchPreparer.BuildUsage(processId, elapsed)
         };
-    }
-
-    private ResourceUsage BuildUsage(int processId, TimeSpan elapsed)
-    {
-        var limiterUsage = _resourceLimiter.GetUsage(processId);
-        if (limiterUsage is not null)
-            return limiterUsage with { WallClockDuration = elapsed };
-
-        return new ResourceUsage { WallClockDuration = elapsed };
-    }
-
-    private void CleanupWorkspace(string path)
-    {
-        try
-        {
-            if (Directory.Exists(path))
-                Directory.Delete(path, recursive: true);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Failed to clean up sandbox workspace {Path}", path);
-        }
     }
 }

@@ -18,7 +18,7 @@ namespace Infrastructure.AI.MCP.Tests.Services;
 /// <summary>
 /// Shared test-double wiring for <c>McpConnectionManager</c>'s bundle-egress-attribution constructor
 /// parameters (added for the PR #370 security fix). Every SUT factory across this test project's files
-/// calls <see cref="CreateManager"/> instead of <c>new McpConnectionManager(...)</c> directly, so a
+/// calls <c>CreateManager</c> instead of <c>new McpConnectionManager(...)</c> directly, so a
 /// bundle-owned server's connection attempt — several existing tests build one — exercises the SAME real
 /// machinery production does: a genuine DI-resolved <see cref="IAgentExecutionContext"/> via a real
 /// <see cref="IServiceScopeFactory"/>, the real <see cref="AmbientRequestScope"/> singleton, a no-op audit
@@ -56,7 +56,34 @@ internal static class McpConnectionManagerBundleEgressSupport
             logger, loggerFactory, antiSsrfHandlerFactory, config, bundleOwnedServers,
             Args.ScopeFactory, Args.AmbientScope, Args.RootServices);
 
-    private static IServiceProvider BuildRootServices(IAmbientRequestScope ambientScope)
+    /// <summary>
+    /// Builds a <see cref="McpConnectionManager"/> against a caller-supplied root service provider
+    /// instead of the shared <see cref="Args"/> singleton — for tests that need to register their own
+    /// fakes into the scope <c>McpConnectionManager</c> resolves scoped dependencies from (e.g. a fake
+    /// <c>ISandboxSessionFactory</c> for #371's sandboxed-stdio path), without affecting every other
+    /// test in this project that uses the shared default provider.
+    /// </summary>
+    public static McpConnectionManager CreateManager(
+        ILogger<McpConnectionManager> logger,
+        ILoggerFactory loggerFactory,
+        AntiSsrfHandlerFactory antiSsrfHandlerFactory,
+        McpServersConfig config,
+        BundleOwnedMcpServerRegistry bundleOwnedServers,
+        IServiceProvider rootServicesOverride) =>
+        new(
+            logger, loggerFactory, antiSsrfHandlerFactory, config, bundleOwnedServers,
+            rootServicesOverride.GetRequiredService<IServiceScopeFactory>(), s_ambientScope, rootServicesOverride);
+
+    /// <summary>
+    /// Builds a fresh root provider with the same baseline registrations as the shared
+    /// <see cref="Args"/> singleton, plus whatever <paramref name="extra"/> adds on top — for a test
+    /// that needs its own isolated fakes (e.g. a keyed <c>ISandboxSessionFactory</c>) without
+    /// affecting the shared provider every other test in this project uses.
+    /// </summary>
+    internal static IServiceProvider BuildRootServices(Action<IServiceCollection>? extra = null) =>
+        BuildRootServices(s_ambientScope, extra);
+
+    private static IServiceProvider BuildRootServices(IAmbientRequestScope ambientScope, Action<IServiceCollection>? extra = null)
     {
         var services = new ServiceCollection();
         services.AddScoped<IAgentExecutionContext, AgentExecutionContext>();
@@ -71,6 +98,7 @@ internal static class McpConnectionManagerBundleEgressSupport
         // real DefaultEgressPolicy with an explicit allowlist per scenario.
         services.AddSingleton<IEgressPolicy, AllowAllEgressPolicy>();
         services.AddSingleton<IEgressPolicyResolver, AllowAllEgressPolicyResolver>();
+        extra?.Invoke(services);
         return services.BuildServiceProvider();
     }
 
