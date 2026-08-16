@@ -76,29 +76,12 @@ public sealed class ProcessSandboxLaunchPreparer(
 
         var dir = Path.Combine(baseDir, $"sandbox-{Guid.NewGuid():N}");
         Directory.CreateDirectory(dir);
-        SetRestrictivePermissions(dir);
+        SandboxWorkspace.SetRestrictivePermissions(dir);
         return dir;
     }
 
-    private static void SetRestrictivePermissions(string path)
-    {
-        if (!OperatingSystem.IsWindows())
-            File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-    }
-
     /// <summary>Best-effort recursive delete of a workspace created by <see cref="CreateWorkspace"/>. Never throws.</summary>
-    public void CleanupWorkspace(string path)
-    {
-        try
-        {
-            if (Directory.Exists(path))
-                Directory.Delete(path, recursive: true);
-        }
-        catch (Exception ex)
-        {
-            logger.LogWarning(ex, "Failed to clean up sandbox workspace {Path}", path);
-        }
-    }
+    public void CleanupWorkspace(string path) => SandboxWorkspace.Cleanup(path, logger, "process");
 
     /// <summary>
     /// Enforces the closed-by-default program allowlist, rebuilds an isolated environment, and

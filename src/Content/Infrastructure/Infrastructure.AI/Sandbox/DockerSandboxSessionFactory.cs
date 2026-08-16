@@ -1,4 +1,3 @@
-using Application.AI.Common.Interfaces.Attestation;
 using Application.AI.Common.Interfaces.Sandbox;
 using Docker.DotNet;
 using Docker.DotNet.Models;
@@ -20,7 +19,7 @@ public sealed class DockerSandboxSessionFactory(
     IDockerClient dockerClient,
     DockerContainerLaunchPreparer launchPreparer,
     SandboxEgressPreflightRunner egressPreflightRunner,
-    IAttestationService attestationService,
+    SandboxSessionRejectionSigner rejectionSigner,
     IOptionsMonitor<SandboxConfig> sandboxConfig,
     ILogger<DockerSandboxSession> sessionLogger) : ISandboxSessionFactory
 {
@@ -35,7 +34,14 @@ public sealed class DockerSandboxSessionFactory(
         if (!DockerContainerLaunchPreparer.IsValidCpuCoreLimit(request.Limits.CpuCoreLimit))
         {
             var reason = DockerContainerLaunchPreparer.InvalidCpuCoreLimitMessage(request.Limits.CpuCoreLimit);
-            return await RejectAsync(request, reason, ct);
+            return await rejectionSigner.RejectAsync(request, reason, ct);
+        }
+
+        if (DockerContainerLaunchPreparer.FindReservedEnvironmentGrant(request.EnvironmentVariables) is { } reservedGrant)
+        {
+            var reason = $"Environment grant rejected: '{reservedGrant}' is a dynamic-linker-hijack " +
+                "vector and cannot be set for a container-isolated tool.";
+            return await rejectionSigner.RejectAsync(request, reason, ct);
         }
 
         // Egress-policy evaluation and the Docker daemon ping are independent I/O with nothing to
@@ -46,7 +52,7 @@ public sealed class DockerSandboxSessionFactory(
 
         var egress = await egressTask;
         if (egress.IsDenied)
-            return await RejectAsync(request, egress.ErrorMessage!, ct, egress.Digest);
+            return await rejectionSigner.RejectAsync(request, egress.ErrorMessage!, ct, egress.Digest);
 
         if (!await dockerAvailableTask)
             return await HandleDockerUnavailableAsync(request, egress.Digest, ct);
@@ -62,7 +68,7 @@ public sealed class DockerSandboxSessionFactory(
         {
             // Matches DockerSandboxExecutor: only the "required" branch is attested — the softer
             // fallback-suggestion branch below is a hint to the caller, not a security refusal.
-            return await RejectAsync(
+            return await rejectionSigner.RejectAsync(
                 request,
                 "Container isolation required but Docker is unavailable. Cannot downgrade to process isolation.",
                 ct, egressDigest);
@@ -106,30 +112,8 @@ public sealed class DockerSandboxSessionFactory(
             launchPreparer.CleanupWorkspace(workspaceDir);
 
             var failureReason = $"Docker error: {ex.Message}";
-            await SignFailureAsync(request, failureReason, egressDigest, ct);
+            await rejectionSigner.SignFailureAsync(request, failureReason, egressDigest, ct);
             return Result<ISandboxSession>.Fail(failureReason);
         }
     }
-
-    private async Task<Result<ISandboxSession>> RejectAsync(
-        SandboxSessionRequest request, string reason, CancellationToken ct, string? egressDigest = null)
-    {
-        await SignFailureAsync(request, reason, egressDigest, ct);
-        return Result<ISandboxSession>.Fail(reason);
-    }
-
-    /// <summary>
-    /// Signs a failure attestation for a session-start rejection. A session has no single
-    /// <c>Input</c> the way a one-shot execution does, so the resolved command line — what was
-    /// about to run — stands in as the attested "input" for this one-time start decision.
-    /// </summary>
-    private Task SignFailureAsync(
-        SandboxSessionRequest request, string failureReason, string? egressDigest, CancellationToken ct) =>
-        attestationService.SignAsync(
-            Domain.AI.Attestation.AttestationRequest.Failure(
-                request.ToolName, DescribeCommandLine(request), failureReason, egressDigest: egressDigest),
-            ct);
-
-    private static string DescribeCommandLine(SandboxSessionRequest request) =>
-        string.Join(' ', new[] { request.Command ?? request.ToolName }.Concat(request.ArgumentList ?? []));
 }

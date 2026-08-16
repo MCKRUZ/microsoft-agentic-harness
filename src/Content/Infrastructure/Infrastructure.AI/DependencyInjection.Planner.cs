@@ -209,6 +209,7 @@ public static partial class DependencyInjection
         // itself is scoped (resolves the ambient agent identity per request).
         services.AddScoped<Application.AI.Common.Interfaces.Sandbox.ISandboxEgressPreflight, Infrastructure.AI.Sandbox.SandboxEgressPreflight>();
         services.AddScoped<SandboxEgressPreflightRunner>();
+        services.AddScoped<SandboxSessionRejectionSigner>();
 
         services.AddSingleton<Docker.DotNet.IDockerClient>(_ =>
             new Docker.DotNet.DockerClientConfiguration().CreateClient());

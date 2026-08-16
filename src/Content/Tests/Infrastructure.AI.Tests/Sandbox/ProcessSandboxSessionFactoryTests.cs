@@ -56,7 +56,7 @@ public class ProcessSandboxSessionFactoryTests
         _sut = new ProcessSandboxSessionFactory(
             _launchPreparer,
             new SandboxEgressPreflightRunner(null, Mock.Of<ILogger<SandboxEgressPreflightRunner>>()),
-            _attestation.Object,
+            new SandboxSessionRejectionSigner(_attestation.Object),
             _sandboxConfig.Object,
             Mock.Of<ILogger<ProcessSandboxSession>>());
     }

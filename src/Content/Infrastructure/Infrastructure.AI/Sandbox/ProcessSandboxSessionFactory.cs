@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using Application.AI.Common.Interfaces.Attestation;
 using Application.AI.Common.Interfaces.Sandbox;
 using Domain.AI.Sandbox;
 using Domain.Common;
@@ -33,7 +32,7 @@ namespace Infrastructure.AI.Sandbox;
 public sealed class ProcessSandboxSessionFactory(
     ProcessSandboxLaunchPreparer launchPreparer,
     SandboxEgressPreflightRunner egressPreflightRunner,
-    IAttestationService attestationService,
+    SandboxSessionRejectionSigner rejectionSigner,
     IOptionsMonitor<SandboxConfig> sandboxConfig,
     ILogger<ProcessSandboxSession> sessionLogger) : ISandboxSessionFactory
 {
@@ -50,12 +49,12 @@ public sealed class ProcessSandboxSessionFactory(
             var reason =
                 $"Environment grant rejected: '{reservedGrant}' collides with a reserved variable " +
                 "(pinned temp or security-critical) and cannot be overridden by per-request grants.";
-            return await RejectAsync(request, reason, ct);
+            return await rejectionSigner.RejectAsync(request, reason, ct);
         }
 
         var egress = await egressPreflightRunner.EvaluateAsync(request.ToolName, request.EgressPrecheckTargets, ct);
         if (egress.IsDenied)
-            return await RejectAsync(request, egress.ErrorMessage!, ct, egress.Digest);
+            return await rejectionSigner.RejectAsync(request, egress.ErrorMessage!, ct, egress.Digest);
 
         return await StartProcessSessionAsync(request, egress.Digest, ct);
     }
@@ -86,7 +85,8 @@ public sealed class ProcessSandboxSessionFactory(
             KillAndReleaseIfStarted(process);
             launchPreparer.CleanupWorkspace(workspaceDir);
 
-            await SignFailureAsync(request, $"Process sandbox session failed to start: {ex.Message}", egressDigest, ct);
+            await rejectionSigner.SignFailureAsync(
+                request, $"Process sandbox session failed to start: {ex.Message}", egressDigest, ct);
             return Result<ISandboxSession>.Fail(ex.Message);
         }
     }
@@ -109,26 +109,4 @@ public sealed class ProcessSandboxSessionFactory(
         launchPreparer.ReleaseResourceLimiter(process.Id);
         process.Dispose();
     }
-
-    private async Task<Result<ISandboxSession>> RejectAsync(
-        SandboxSessionRequest request, string reason, CancellationToken ct, string? egressDigest = null)
-    {
-        await SignFailureAsync(request, reason, egressDigest, ct);
-        return Result<ISandboxSession>.Fail(reason);
-    }
-
-    /// <summary>
-    /// Signs a failure attestation for a session-start rejection. A session has no single
-    /// <c>Input</c> the way a one-shot execution does, so the resolved command line — what was
-    /// about to run — stands in as the attested "input" for this one-time start decision.
-    /// </summary>
-    private Task SignFailureAsync(
-        SandboxSessionRequest request, string failureReason, string? egressDigest, CancellationToken ct) =>
-        attestationService.SignAsync(
-            Domain.AI.Attestation.AttestationRequest.Failure(
-                request.ToolName, DescribeCommandLine(request), failureReason, egressDigest: egressDigest),
-            ct);
-
-    private static string DescribeCommandLine(SandboxSessionRequest request) =>
-        string.Join(' ', new[] { request.Command ?? request.ToolName }.Concat(request.ArgumentList ?? []));
 }

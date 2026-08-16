@@ -55,6 +55,9 @@ public sealed class DockerSandboxExecutor : ISandboxExecutor
         if (!DockerContainerLaunchPreparer.IsValidCpuCoreLimit(request.Limits.CpuCoreLimit))
             return await RejectInvalidCpuLimitAsync(request, ct);
 
+        if (DockerContainerLaunchPreparer.FindReservedEnvironmentGrant(request.EnvironmentVariables) is { } reservedGrant)
+            return await RejectReservedEnvironmentGrantAsync(request, reservedGrant, ct);
+
         var egress = await RunEgressPreflightAsync(request, ct);
         if (egress.Blocked is { } block)
             return block;
@@ -134,6 +137,33 @@ public sealed class DockerSandboxExecutor : ISandboxExecutor
             request.ToolName, request.Limits.CpuCoreLimit);
 
         var errorMessage = DockerContainerLaunchPreparer.InvalidCpuCoreLimitMessage(request.Limits.CpuCoreLimit);
+
+        var attestation = await _attestationService.SignAsync(
+            Domain.AI.Attestation.AttestationRequest.Failure(request.ToolName, request.Input, errorMessage), ct);
+
+        return new SandboxExecutionResult
+        {
+            Success = false,
+            ErrorMessage = errorMessage,
+            Attestation = attestation
+        };
+    }
+
+    /// <summary>
+    /// Rejects a request whose environment grants include a dynamic-linker-hijack variable and
+    /// leaves a signed failure attestation for the audit trail — see
+    /// <see cref="DockerContainerLaunchPreparer.FindReservedEnvironmentGrant"/> for the threat
+    /// this closes.
+    /// </summary>
+    private async Task<SandboxExecutionResult> RejectReservedEnvironmentGrantAsync(
+        SandboxExecutionRequest request, string reservedGrant, CancellationToken ct)
+    {
+        _logger.LogWarning(
+            "Docker sandbox refused request for tool {ToolName}: environment grant '{GrantName}' is a dynamic-linker-hijack vector",
+            request.ToolName, reservedGrant);
+
+        var errorMessage = $"Environment grant rejected: '{reservedGrant}' is a dynamic-linker-hijack " +
+            "vector and cannot be set for a container-isolated tool.";
 
         var attestation = await _attestationService.SignAsync(
             Domain.AI.Attestation.AttestationRequest.Failure(request.ToolName, request.Input, errorMessage), ct);

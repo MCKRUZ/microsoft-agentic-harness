@@ -34,6 +34,35 @@ public sealed class DockerContainerLaunchPreparer(
         $"Invalid resource limits: CpuCoreLimit must be a positive number of cores (was {cpuCoreLimit}). " +
         "A non-positive value would map to NanoCPUs=0, which Docker treats as unlimited.";
 
+    /// <summary>
+    /// Dynamic-linker environment variables that let a process on the container's own image load
+    /// an arbitrary shared library before <c>main</c> runs. Unlike
+    /// <see cref="ProcessSandboxLaunchPreparer"/>'s reserved names — which guard against a grant
+    /// un-pinning a variable inherited from the host — a container starts from a clean,
+    /// image-defined environment, so there is no host-leak risk here. The risk is different but
+    /// just as real: a request with <see cref="ToolCapability.FileWrite"/> gets a read-write bind
+    /// mount at <c>/workspace</c>, so a caller can write a malicious <c>.so</c> there and, with an
+    /// unguarded <c>LD_PRELOAD</c>/<c>LD_LIBRARY_PATH</c>/<c>LD_AUDIT</c> grant, have the
+    /// container's own dynamic linker load it into the sandboxed process on start.
+    /// </summary>
+    private static readonly string[] ReservedContainerEnvironmentVariableNames =
+    [
+        "LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT", "LD_ORIGIN_PATH"
+    ];
+
+    /// <summary>
+    /// Returns the first per-request environment grant whose name collides (case-insensitively)
+    /// with a dynamic-linker-hijack variable, or null when all grants are benign.
+    /// </summary>
+    public static string? FindReservedEnvironmentGrant(IReadOnlyDictionary<string, string>? environmentVariables)
+    {
+        if (environmentVariables is null)
+            return null;
+
+        return environmentVariables.Keys.FirstOrDefault(
+            name => ReservedContainerEnvironmentVariableNames.Contains(name, StringComparer.OrdinalIgnoreCase));
+    }
+
     public async Task<bool> IsDockerAvailableAsync(CancellationToken ct)
     {
         try
@@ -111,7 +140,11 @@ public sealed class DockerContainerLaunchPreparer(
     /// Variables to set in the container's environment, in addition to whatever the image itself
     /// defines. Unlike <see cref="ProcessSandboxLaunchPreparer"/>'s process environment, a
     /// container starts from a clean, image-defined environment rather than an inherited host
-    /// one, so there is no equivalent reserved-name collision risk to guard against here.
+    /// one — so there is no host-secret-leak risk to guard against here — but the caller must
+    /// still have rejected a dynamic-linker-hijack grant via
+    /// <see cref="FindReservedEnvironmentGrant"/> before calling this method; that check is a
+    /// different threat model (linker hijack via a writable bind mount, not host inheritance) and
+    /// this method does not re-derive it.
     /// </param>
     public CreateContainerParameters BuildContainerParams(
         string? command,
@@ -172,24 +205,12 @@ public sealed class DockerContainerLaunchPreparer(
     {
         var workspaceDir = Path.Combine(Path.GetTempPath(), $"docker-sandbox-{Guid.NewGuid():N}");
         Directory.CreateDirectory(workspaceDir);
-        if (!OperatingSystem.IsWindows())
-            File.SetUnixFileMode(workspaceDir, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        SandboxWorkspace.SetRestrictivePermissions(workspaceDir);
         return workspaceDir;
     }
 
     /// <summary>Best-effort recursive delete of a workspace created by <see cref="CreateWorkspace"/>. Never throws.</summary>
-    public void CleanupWorkspace(string path)
-    {
-        try
-        {
-            if (Directory.Exists(path))
-                Directory.Delete(path, recursive: true);
-        }
-        catch (Exception ex)
-        {
-            logger.LogWarning(ex, "Failed to clean up Docker sandbox workspace {Path}", path);
-        }
-    }
+    public void CleanupWorkspace(string path) => SandboxWorkspace.Cleanup(path, logger, "Docker");
 
     /// <summary>
     /// Stops a container with the configured grace period before Docker force-kills it. Used on

@@ -91,7 +91,7 @@ public class DockerSandboxSessionFactoryTests
             _dockerClient.Object,
             _launchPreparer,
             new SandboxEgressPreflightRunner(null, Mock.Of<ILogger<SandboxEgressPreflightRunner>>()),
-            _attestation.Object,
+            new SandboxSessionRejectionSigner(_attestation.Object),
             _sandboxConfig.Object,
             Mock.Of<ILogger<DockerSandboxSession>>());
     }
@@ -174,6 +174,30 @@ public class DockerSandboxSessionFactoryTests
         result.Errors.Should().ContainSingle(e => e.Contains("CpuCoreLimit"));
         _containers.Verify(x => x.CreateContainerAsync(
             It.IsAny<CreateContainerParameters>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Theory]
+    [InlineData("LD_PRELOAD")]
+    [InlineData("ld_library_path")]
+    [InlineData("LD_AUDIT")]
+    public async Task StartSessionAsync_DynamicLinkerHijackEnvironmentGrant_FailsWithoutCreatingContainer(string grantName)
+    {
+        // A request with FileWrite gets a read-write bind mount at /workspace — an unguarded
+        // LD_PRELOAD/LD_LIBRARY_PATH/LD_AUDIT grant would let a caller write a malicious .so there
+        // and have the container's own dynamic linker load it into the sandboxed process on start.
+        var request = CreateRequest() with
+        {
+            EnvironmentVariables = new Dictionary<string, string> { [grantName] = "/workspace/evil.so" }
+        };
+
+        var result = await _sut.StartSessionAsync(request, CancellationToken.None);
+
+        result.IsSuccess.Should().BeFalse();
+        result.Errors.Should().ContainSingle(e => e.Contains("dynamic-linker-hijack"));
+        _containers.Verify(x => x.CreateContainerAsync(
+            It.IsAny<CreateContainerParameters>(), It.IsAny<CancellationToken>()), Times.Never);
+        _attestation.Verify(x => x.SignAsync(
+            It.Is<AttestationRequest>(r => r.IsFailure), It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
