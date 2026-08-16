@@ -1,5 +1,7 @@
 using System.Text.Json;
+using Domain.Common;
 using Domain.Common.Config.AI.MCP;
+using Domain.Common.Extensions;
 
 namespace Infrastructure.AI.Plugins;
 
@@ -9,6 +11,14 @@ namespace Infrastructure.AI.Plugins;
 /// authored bundle's own <c>plugin.json</c>/<c>mcp.json</c>), so the two never independently decide
 /// how a server entry maps to a definition.
 /// </summary>
+/// <remarks>
+/// Every field this class reads comes from externally-authored, untrusted manifest JSON — a bundle's
+/// own <c>mcp.json</c>, or (with more trust, but still hand-authored) a host-installed plugin's. A
+/// malformed shape (a number where a string is expected, an object where an array is expected) is an
+/// ordinary, expected input-validation failure, not an exceptional condition, so <see cref="Build"/>
+/// returns <see cref="Result{T}"/> rather than throwing (issue #374) — matching this repo's own
+/// convention that validation failures on untrusted input use <c>Result&lt;T&gt;</c>, not exceptions.
+/// </remarks>
 public static class McpServerDefinitionBuilder
 {
     /// <summary>
@@ -25,69 +35,193 @@ public static class McpServerDefinitionBuilder
     /// </param>
     /// <param name="descriptionPrefix">A human-readable owner tag, e.g. <c>"[Plugin: azure]"</c>.</param>
     /// <param name="serverName">The server's own name, appended to <paramref name="descriptionPrefix"/>.</param>
-    public static McpServerDefinition Build(
+    /// <returns>
+    /// The built definition, or a failure describing which property had the wrong JSON shape (or, for
+    /// an http/sse entry, a missing <c>url</c>) — caller-safe: it names the property and server, never
+    /// the surrounding manifest content.
+    /// </returns>
+    public static Result<McpServerDefinition> Build(
         JsonElement serverElement,
         IReadOnlyDictionary<string, string> declarationEnv,
         string descriptionPrefix,
         string serverName)
     {
-        var type = ParseType(serverElement);
+        // Every property read below goes through JsonElement.TryGetProperty on serverElement itself
+        // (directly, via ReadOptionalString/ReadArgs/ReadEnv) — TryGetProperty throws
+        // InvalidOperationException outright when called on a non-Object element, so a manifest entry
+        // like "badserver": "not-an-object" would otherwise throw here uncaught instead of failing
+        // cleanly, exactly the defect this Result-returning signature exists to close.
+        if (serverElement.ValueKind is not JsonValueKind.Object)
+            return Result<McpServerDefinition>.Fail(
+                $"'{serverName}' declares its server entry as {serverElement.ValueKind}, but an object was expected.");
+
+        var typeResult = ParseType(serverElement, serverName);
+        if (!typeResult.IsSuccess)
+            return Result<McpServerDefinition>.Fail([.. typeResult.Errors]);
 
         var definition = new McpServerDefinition
         {
             Enabled = true,
-            Type = type,
+            Type = typeResult.Value,
             Description = $"{descriptionPrefix} {serverName}"
         };
 
-        if (type is McpServerType.Http or McpServerType.Sse)
-        {
-            var url = serverElement.TryGetProperty("url", out var urlElement) ? urlElement.GetString() : null;
-            if (string.IsNullOrWhiteSpace(url))
-                throw new InvalidOperationException(
-                    $"'{serverName}' declares a {type} transport with no 'url' — a remote server must declare one.");
+        var transportResult = ReadTransportFields(serverElement, typeResult.Value, serverName, definition);
+        if (!transportResult.IsSuccess)
+            return Result<McpServerDefinition>.Fail([.. transportResult.Errors]);
 
-            definition.Url = url;
-        }
-        else
-        {
-            if (serverElement.TryGetProperty("command", out var cmd))
-                definition.Command = cmd.GetString() ?? string.Empty;
+        var envResult = ReadEnv(serverElement, serverName);
+        if (!envResult.IsSuccess)
+            return Result<McpServerDefinition>.Fail([.. envResult.Errors]);
 
-            if (serverElement.TryGetProperty("args", out var args))
-                definition.Args = args.EnumerateArray()
-                    .Select(a => a.GetString() ?? string.Empty)
-                    .ToList();
-        }
-
-        if (serverElement.TryGetProperty("env", out var env))
-        {
-            foreach (var envProp in env.EnumerateObject())
-                definition.Env[envProp.Name] = envProp.Value.GetString() ?? string.Empty;
-        }
+        if (envResult.Value is not null)
+            foreach (var (key, value) in envResult.Value)
+                definition.Env[key] = value;
 
         // Declaration env overrides take precedence over manifest-declared env.
         foreach (var (key, value) in declarationEnv)
             definition.Env[key] = value;
 
-        return definition;
+        return Result<McpServerDefinition>.Success(definition);
+    }
+
+    /// <summary>
+    /// Reads the transport-specific fields into <paramref name="definition"/>: <c>url</c> for an http/sse
+    /// entry, <c>command</c>/<c>args</c> for everything else (stdio). Mutates <paramref name="definition"/>
+    /// in place rather than returning a value — the caller already owns it and every other field-reader in
+    /// this class follows the same "read, then the caller decides whether to apply" shape except this one,
+    /// which has two fields to set together and no natural single return value to carry them both.
+    /// </summary>
+    private static Result ReadTransportFields(
+        JsonElement serverElement, McpServerType type, string serverName, McpServerDefinition definition)
+    {
+        if (type is McpServerType.Http or McpServerType.Sse)
+        {
+            var urlResult = ReadOptionalString(serverElement, "url", serverName);
+            if (!urlResult.IsSuccess)
+                return Result.Fail([.. urlResult.Errors]);
+
+            if (string.IsNullOrWhiteSpace(urlResult.Value))
+                return Result.Fail(
+                    $"'{serverName}' declares a {type} transport with no 'url' — a remote server must declare one.");
+
+            definition.Url = urlResult.Value;
+            return Result.Success();
+        }
+
+        var commandResult = ReadOptionalString(serverElement, "command", serverName);
+        if (!commandResult.IsSuccess)
+            return Result.Fail([.. commandResult.Errors]);
+        if (commandResult.Value is not null)
+            definition.Command = commandResult.Value;
+
+        var argsResult = ReadArgs(serverElement, serverName);
+        if (!argsResult.IsSuccess)
+            return Result.Fail([.. argsResult.Errors]);
+        if (argsResult.Value is not null)
+            definition.Args = argsResult.Value;
+
+        return Result.Success();
     }
 
     /// <summary>
     /// Reads the optional <c>type</c> property, defaulting to <see cref="McpServerType.Stdio"/> — every
-    /// manifest written before this branch existed omits the property and means stdio.
+    /// manifest written before this branch existed omits the property and means stdio. Fails only if
+    /// <c>type</c> is present with a non-string JSON shape; an unrecognized string value (not just an
+    /// absent property) still defaults to stdio, matching the pre-existing, callers-depend-on-it behavior
+    /// (see <c>BundleStagingService.LogStdioRejected</c>).
     /// </summary>
-    private static McpServerType ParseType(JsonElement serverElement)
-    {
-        if (!serverElement.TryGetProperty("type", out var typeElement))
-            return McpServerType.Stdio;
-
-        var raw = typeElement.GetString();
-        return raw?.ToLowerInvariant() switch
+    private static Result<McpServerType> ParseType(JsonElement serverElement, string serverName) =>
+        ReadOptionalString(serverElement, "type", serverName).Map(raw => raw?.ToLowerInvariant() switch
         {
             "http" => McpServerType.Http,
             "sse" => McpServerType.Sse,
             _ => McpServerType.Stdio
-        };
+        });
+
+    /// <summary>
+    /// Reads an optional string property. Absent is success with a <see langword="null"/> value —
+    /// callers decide what "not declared" means. Present but not a JSON string (or JSON null) is a
+    /// failure: calling <see cref="JsonElement.GetString"/> on any other kind throws, and this is exactly
+    /// the untrusted-input case that must degrade to a caller-safe <see cref="Result{T}"/> failure instead.
+    /// </summary>
+    private static Result<string?> ReadOptionalString(JsonElement parent, string propertyName, string serverName)
+    {
+        if (!parent.TryGetProperty(propertyName, out var value))
+            return Result<string?>.Success(null);
+
+        if (value.ValueKind is not (JsonValueKind.String or JsonValueKind.Null))
+            return Result<string?>.Fail(
+                $"'{serverName}' declares '{propertyName}' as {value.ValueKind}, but a string was expected.");
+
+        return Result<string?>.Success(value.GetString());
+    }
+
+    /// <summary>
+    /// Reads the optional <c>args</c> array, failing if it is present but not a JSON array, or if any
+    /// element is present but not a JSON string.
+    /// </summary>
+    private static Result<List<string>?> ReadArgs(JsonElement parent, string serverName)
+    {
+        if (!parent.TryGetProperty("args", out var args))
+            return Result<List<string>?>.Success(null);
+
+        if (args.ValueKind is not JsonValueKind.Array)
+            return Result<List<string>?>.Fail(
+                $"'{serverName}' declares 'args' as {args.ValueKind}, but an array was expected.");
+
+        var result = new List<string>();
+        foreach (var element in args.EnumerateArray())
+        {
+            var leaf = ReadStringLeaf(element, "an 'args' element", serverName);
+            if (!leaf.IsSuccess)
+                return Result<List<string>?>.Fail([.. leaf.Errors]);
+
+            result.Add(leaf.Value!);
+        }
+
+        return Result<List<string>?>.Success(result);
+    }
+
+    /// <summary>
+    /// Reads the optional <c>env</c> object, failing if it is present but not a JSON object, or if any
+    /// property value is present but not a JSON string.
+    /// </summary>
+    private static Result<Dictionary<string, string>?> ReadEnv(JsonElement parent, string serverName)
+    {
+        if (!parent.TryGetProperty("env", out var env))
+            return Result<Dictionary<string, string>?>.Success(null);
+
+        if (env.ValueKind is not JsonValueKind.Object)
+            return Result<Dictionary<string, string>?>.Fail(
+                $"'{serverName}' declares 'env' as {env.ValueKind}, but an object was expected.");
+
+        var result = new Dictionary<string, string>();
+        foreach (var property in env.EnumerateObject())
+        {
+            var leaf = ReadStringLeaf(property.Value, $"'env.{property.Name}'", serverName);
+            if (!leaf.IsSuccess)
+                return Result<Dictionary<string, string>?>.Fail([.. leaf.Errors]);
+
+            result[property.Name] = leaf.Value!;
+        }
+
+        return Result<Dictionary<string, string>?>.Success(result);
+    }
+
+    /// <summary>
+    /// Validates that an already-resolved JSON leaf value — one array element of <c>args</c>, or one
+    /// property value of <c>env</c> — is a string (or null), sharing the same kind-check
+    /// <see cref="ReadOptionalString"/> applies at the object-property level. <paramref name="context"/>
+    /// names the leaf's location for the error message (e.g. <c>"an 'args' element"</c> or
+    /// <c>"'env.NAME'"</c>).
+    /// </summary>
+    private static Result<string> ReadStringLeaf(JsonElement element, string context, string serverName)
+    {
+        if (element.ValueKind is not (JsonValueKind.String or JsonValueKind.Null))
+            return Result<string>.Fail(
+                $"'{serverName}' declares {context} as {element.ValueKind}, but a string was expected.");
+
+        return Result<string>.Success(element.GetString() ?? string.Empty);
     }
 }

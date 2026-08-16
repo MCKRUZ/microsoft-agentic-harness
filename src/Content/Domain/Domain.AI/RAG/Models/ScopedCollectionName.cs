@@ -1,5 +1,5 @@
-using System.Security.Cryptography;
 using System.Text;
+using Domain.Common.Helpers;
 
 namespace Domain.AI.RAG.Models;
 
@@ -91,8 +91,7 @@ public static class ScopedCollectionName
         }
 
         var normalized = tenantId.Trim().ToLowerInvariant();
-        var hash = Convert.ToHexStringLower(
-            SHA256.HashData(Encoding.UTF8.GetBytes(normalized)))[..HashLength];
+        var hash = Sha256HexPrefixHelper.Compute(normalized, HashLength);
         var slug = Slugify(normalized);
 
         return $"{Prefix}{slug}-{hash}";

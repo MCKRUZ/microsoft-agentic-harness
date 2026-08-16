@@ -3,6 +3,7 @@ using Application.AI.Common.Interfaces.Egress;
 using System.Collections.Concurrent;
 using Domain.Common.Config;
 using Domain.Common.Config.AI.MCP;
+using Infrastructure.AI.Bundles;
 using Infrastructure.AI.Egress;
 using Infrastructure.AI.MCP.Services;
 using Infrastructure.AI.Tests.Egress.Support;

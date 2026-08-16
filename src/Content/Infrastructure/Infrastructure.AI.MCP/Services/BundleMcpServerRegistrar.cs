@@ -1,26 +1,25 @@
 using System.Linq;
 using Application.AI.Common.Interfaces.Bundles;
-using Domain.Common.Config.AI.MCP;
 using Microsoft.Extensions.Logging;
 
 namespace Infrastructure.AI.MCP.Services;
 
 /// <summary>
 /// Default <see cref="IBundleMcpServerRegistrar"/>. Removes a bundle's namespaced entries from the
-/// shared <see cref="BundleOwnedMcpServerRegistry"/> and disconnects any live
+/// shared <see cref="IBundleOwnedMcpServerRegistry"/> and disconnects any live
 /// <see cref="McpConnectionManager"/> client for each — the deregistration counterpart to the
 /// registration <c>BundleStagingService</c> performs at staging time, against the SAME
-/// <see cref="BundleOwnedMcpServerRegistry"/> instance.
+/// <see cref="IBundleOwnedMcpServerRegistry"/> instance.
 /// </summary>
 public sealed class BundleMcpServerRegistrar : IBundleMcpServerRegistrar
 {
-    private readonly BundleOwnedMcpServerRegistry _bundleOwnedMcpServers;
+    private readonly IBundleOwnedMcpServerRegistry _bundleOwnedMcpServers;
     private readonly McpConnectionManager _connectionManager;
     private readonly ILogger<BundleMcpServerRegistrar> _logger;
 
     /// <summary>Initializes a new <see cref="BundleMcpServerRegistrar"/>.</summary>
     public BundleMcpServerRegistrar(
-        BundleOwnedMcpServerRegistry bundleOwnedMcpServers,
+        IBundleOwnedMcpServerRegistry bundleOwnedMcpServers,
         McpConnectionManager connectionManager,
         ILogger<BundleMcpServerRegistrar> logger)
     {

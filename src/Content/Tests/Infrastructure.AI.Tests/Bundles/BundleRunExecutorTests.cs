@@ -261,8 +261,11 @@ public sealed class BundleRunExecutorTests : IDisposable
         await executor.ExecuteAsync("j1", CancellationToken.None);
 
         seenEnvelope.Should().NotBeNull();
-        // Namespaced, never the bare server-declared name — see BundleOwnedMcpToolNaming.
-        seenEnvelope!.AllowedTools.Should().Contain("b1_echo__echo_tool");
+        // Namespaced, never the bare server-declared name — see BundleOwnedMcpToolNaming. Structural, not
+        // an exact literal: the server half carries its own #373 collision-guard hash suffix (its raw
+        // form contains the ':' namespace separator).
+        seenEnvelope!.AllowedTools.Should().Contain(
+            n => n.StartsWith("b1_echo_", StringComparison.Ordinal) && n.EndsWith("__echo_tool", StringComparison.Ordinal));
         seenEnvelope.AllowedTools.Should().NotContain("echo_tool",
             "the bare, bundle-chosen name must never be the granted/governed name");
     }

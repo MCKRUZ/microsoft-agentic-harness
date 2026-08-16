@@ -4,6 +4,7 @@ using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Tools;
 using Domain.Common.Config.AI;
 using Domain.Common.Config.AI.MCP;
+using Infrastructure.AI.Bundles;
 using Infrastructure.AI.Egress;
 using Infrastructure.AI.MCP.Resources;
 using Infrastructure.AI.MCP.Services;
@@ -37,9 +38,12 @@ public static class DependencyInjection
     {
         // The runtime-only store for a bundle's own (untrusted, uploaded) MCP server definitions —
         // deliberately never the AIConfig-bound McpServersConfig below. See its own doc comment for why.
-        // TryAddSingleton (not AddSingleton) — also registered by AddInfrastructureAIDependencies, so
-        // call order between the two extension methods is irrelevant.
-        services.TryAddSingleton<BundleOwnedMcpServerRegistry>();
+        // TryAddSingleton<TService, TImplementation> (not AddSingleton) — also registered by
+        // AddInfrastructureAIDependencies, so call order between the two extension methods is irrelevant,
+        // and BOTH sites must register against the SAME service type (the interface) or they silently
+        // produce two separate singleton instances, defeating the isolation guarantee this registry
+        // exists for (#374).
+        services.TryAddSingleton<IBundleOwnedMcpServerRegistry, BundleOwnedMcpServerRegistry>();
 
         // Connection manager — singleton, manages MCP client lifecycles.
         // Resolving AntiSsrfHandlerFactory makes the SSRF guard a mandatory dependency:
@@ -51,7 +55,7 @@ public static class DependencyInjection
             var logger = sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<McpConnectionManager>>();
             var loggerFactory = sp.GetRequiredService<Microsoft.Extensions.Logging.ILoggerFactory>();
             var antiSsrfHandlerFactory = sp.GetRequiredService<AntiSsrfHandlerFactory>();
-            var bundleOwnedServers = sp.GetRequiredService<BundleOwnedMcpServerRegistry>();
+            var bundleOwnedServers = sp.GetRequiredService<IBundleOwnedMcpServerRegistry>();
             // The bundle-owned egress-attribution chain (see McpConnectionManager.ResolveBundleEgressClient)
             // resolves the SAME registered EgressPolicyDelegatingHandler the "egress" named HttpClient uses
             // (Infrastructure.AI/DependencyInjection.Egress.cs) from the root provider it is handed below —
@@ -97,7 +101,7 @@ public static class DependencyInjection
         // (above) and BundleStagingService's registration use, so a removal here is visible to both
         // (issue #368; isolated from the trusted registry per the security fix in #370).
         services.AddSingleton<IBundleMcpServerRegistrar>(sp => new BundleMcpServerRegistrar(
-            sp.GetRequiredService<BundleOwnedMcpServerRegistry>(),
+            sp.GetRequiredService<IBundleOwnedMcpServerRegistry>(),
             sp.GetRequiredService<McpConnectionManager>(),
             sp.GetRequiredService<ILogger<BundleMcpServerRegistrar>>()));
 

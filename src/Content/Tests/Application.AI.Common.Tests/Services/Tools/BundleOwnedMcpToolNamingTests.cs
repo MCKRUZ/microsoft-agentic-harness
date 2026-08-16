@@ -15,9 +15,15 @@ public sealed class BundleOwnedMcpToolNamingTests
     [Fact]
     public void BuildToolName_SanitizesColonInServerKey()
     {
+        // The server half gets the same collision guard as the tool half (see
+        // BuildToolName_ServerNamesCollideAfterSanitizing_DoNotProduceTheSameName): sanitizing the ':'
+        // away changes the raw value, so a disambiguating hash is appended after it. Only the
+        // deterministic, human-readable portion is asserted literally.
         var name = BundleOwnedMcpToolNaming.BuildToolName("bundle-abc123:echo", "search");
 
-        name.Should().Be("bundle-abc123_echo__search");
+        name.Should().StartWith("bundle-abc123_echo_");
+        name.Should().EndWith("__search");
+        name.Should().MatchRegex("^[a-zA-Z0-9_-]{1,64}$");
     }
 
     [Fact]
@@ -26,13 +32,30 @@ public sealed class BundleOwnedMcpToolNamingTests
         // A bundle-authored MCP server can name its tool anything, including characters OpenAI/Azure
         // OpenAI's function-name charset (^[a-zA-Z0-9_-]{1,64}$) rejects outright. Both the server prefix
         // and the tool's own name go through the same sanitization so the published name is always
-        // callable, not just short enough. A disambiguating hash suffix is appended because sanitizing
-        // actually changed the raw name (see BuildToolName_SanitizingDifferentRawNames_DoesNotCollide for
-        // why that's load-bearing), so only the deterministic prefix is asserted here.
+        // callable, not just short enough. Both halves here get a disambiguating hash suffix, since
+        // sanitizing changes both the raw server key (':') and the raw tool name (' ', '!') — so only the
+        // deterministic, human-readable substrings are asserted, not an exact literal.
         var name = BundleOwnedMcpToolNaming.BuildToolName("b1:echo", "weird name!");
 
-        name.Should().StartWith("b1_echo__weird_name_");
+        name.Should().Contain("b1_echo");
+        name.Should().Contain("weird_name");
         name.Should().MatchRegex("^[a-zA-Z0-9_-]{1,64}$");
+    }
+
+    [Fact]
+    public void BuildToolName_ServerNamesCollideAfterSanitizing_DoNotProduceTheSameName()
+    {
+        // Regression test for #373. Two different bundle-owned server keys that sanitize to the
+        // IDENTICAL prefix — here, the namespace separator ':' and a literal space both collapse to '_',
+        // so "bundle-abc:my_server" and "bundle-abc:my server" both sanitize to "bundle-abc_my_server" —
+        // must still publish different tool names for the same underlying tool. Before this fix, the
+        // server half of BuildToolName called bare Sanitize with no collision guard, so both bundles'
+        // "search" tool published under the identical namespaced name, contradicting this class's own
+        // "collision-proof" doc comment.
+        var a = BundleOwnedMcpToolNaming.BuildToolName("bundle-abc:my_server", "search");
+        var b = BundleOwnedMcpToolNaming.BuildToolName("bundle-abc:my server", "search");
+
+        a.Should().NotBe(b);
     }
 
     [Fact]
@@ -82,14 +105,17 @@ public sealed class BundleOwnedMcpToolNamingTests
     }
 
     [Fact]
-    public void BuildToolName_NaturalConcatenationUnder64Chars_IsReturnedVerbatim()
+    public void BuildToolName_NaturalConcatenationUnder64Chars_FitsWithoutShortening()
     {
         // A realistic bundle id (GUID) + short server + short tool name fits comfortably — the common
-        // case must not pay the shortening cost or lose readability.
+        // case must not pay the truncate-and-hash cost Shorten applies to over-length names. The server
+        // half still carries its own collision-guard hash suffix (its raw form contains ':'), so this
+        // asserts structure rather than a byte-exact literal.
         var name = BundleOwnedMcpToolNaming.BuildToolName(
             "3fa85f64-5717-4562-b3fc-2c963f66afa6:search", "lookup");
 
-        name.Should().Be("3fa85f64-5717-4562-b3fc-2c963f66afa6_search__lookup");
+        name.Should().StartWith("3fa85f64-5717-4562-b3fc-2c963f66afa6_search_");
+        name.Should().EndWith("__lookup");
         name.Length.Should().BeLessThanOrEqualTo(64);
     }
 

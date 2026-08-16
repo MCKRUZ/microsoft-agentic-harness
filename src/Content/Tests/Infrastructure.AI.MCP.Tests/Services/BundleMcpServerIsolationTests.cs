@@ -1,6 +1,8 @@
 using System.Collections.Concurrent;
 using Application.AI.Common.Exceptions;
+using Application.AI.Common.Interfaces.Bundles;
 using Domain.Common.Config.AI.MCP;
+using Infrastructure.AI.Bundles;
 using FluentAssertions;
 using Infrastructure.AI.MCP.Services;
 using Microsoft.Extensions.Logging;
@@ -41,7 +43,14 @@ public sealed class BundleMcpServerIsolationTests
         // on this type is one careless foreach away from becoming a second GetConfiguredServerNames-style
         // chokepoint. This test fails the build the moment that happens, rather than relying on a
         // reviewer noticing.
-        var type = typeof(BundleOwnedMcpServerRegistry);
+        //
+        // Targets IBundleOwnedMcpServerRegistry, not the concrete BundleOwnedMcpServerRegistry (#374):
+        // every production consumer is constructed against the interface, so the interface is the actual
+        // public contract a future convenience method would be added to. Checking only the concrete type
+        // would miss a method added to the interface (and implemented via explicit interface
+        // implementation, invisible on the concrete type's own public method list) just as easily as one
+        // added directly to the class.
+        var type = typeof(IBundleOwnedMcpServerRegistry);
 
         type.Should().NotBeAssignableTo<System.Collections.IEnumerable>(
             "the registry must never be directly enumerable");
@@ -51,7 +60,7 @@ public sealed class BundleMcpServerIsolationTests
             .Select(m => m.Name)
             .ToList();
         publicMemberNames.Should().BeEquivalentTo(
-            [nameof(BundleOwnedMcpServerRegistry.TryAdd), nameof(BundleOwnedMcpServerRegistry.TryRemove), nameof(BundleOwnedMcpServerRegistry.TryGetValue)],
+            [nameof(IBundleOwnedMcpServerRegistry.TryAdd), nameof(IBundleOwnedMcpServerRegistry.TryRemove), nameof(IBundleOwnedMcpServerRegistry.TryGetValue)],
             "the only way to read this registry is an exact-name lookup — adding any other public member " +
             "(Keys, Values, Count, GetEnumerator, ...) needs a deliberate, reviewed decision, not an accident");
     }

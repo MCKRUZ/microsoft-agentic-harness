@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using Application.AI.Common.Exceptions;
 using Application.AI.Common.Interfaces;
+using Application.AI.Common.Interfaces.Bundles;
 using Application.AI.Common.Interfaces.Egress;
 using Domain.Common.Config.AI.MCP;
 using Infrastructure.AI.Egress;
@@ -30,7 +31,7 @@ public sealed class McpConnectionManager : IAsyncDisposable
     private readonly HttpMessageHandler _antiSsrfHandler;
     private readonly HttpClient _httpClient;
     private readonly McpServersConfig _config;
-    private readonly BundleOwnedMcpServerRegistry _bundleOwnedServers;
+    private readonly IBundleOwnedMcpServerRegistry _bundleOwnedServers;
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly IAmbientRequestScope _ambientScope;
     private readonly IServiceProvider _rootServices;
@@ -85,7 +86,7 @@ public sealed class McpConnectionManager : IAsyncDisposable
         ILoggerFactory loggerFactory,
         AntiSsrfHandlerFactory antiSsrfHandlerFactory,
         McpServersConfig config,
-        BundleOwnedMcpServerRegistry bundleOwnedServers,
+        IBundleOwnedMcpServerRegistry bundleOwnedServers,
         IServiceScopeFactory scopeFactory,
         IAmbientRequestScope ambientScope,
         IServiceProvider rootServices)
@@ -150,25 +151,40 @@ public sealed class McpConnectionManager : IAsyncDisposable
     }
 
     /// <summary>
+    /// Bound on how long <see cref="DisconnectAsync"/> waits for the per-server connection lock before
+    /// proceeding without it (#378). This method's only production caller is bundle teardown
+    /// (<c>BundleMcpServerRegistrar</c>), which has no cancellation token of its own to bound a wait
+    /// with — a fixed timeout is the only option that keeps teardown bounded regardless of caller. Long
+    /// enough that the realistic race (a fast in-flight connect finishing just before or during a
+    /// disconnect for the same server) resolves cleanly under the lock; short enough that a genuinely
+    /// hung connect attempt (a stdio child process that never exits, a remote that never completes its
+    /// handshake) cannot block teardown for more than this.
+    /// </summary>
+    private static readonly TimeSpan DisconnectLockTimeout = TimeSpan.FromSeconds(5);
+
+    /// <summary>
     /// Disconnects from a specific server and removes the cached connection.
     /// </summary>
     /// <remarks>
     /// <para>
-    /// Deliberately does NOT take the per-server connection lock <see cref="GetClientAsync"/> and
-    /// <see cref="ReconnectAsync"/> use: this method's only production caller is bundle teardown
-    /// (<c>BundleMcpServerRegistrar</c>), which needs a fast, non-blocking disconnect and has no
-    /// cancellation token to bound a wait with. Taking the lock here would let a hung connect attempt
-    /// for the same server (mid-handshake, inside <see cref="CreateClientAsync"/>) block teardown
-    /// indefinitely — worse than the narrow race it would close. <c>ConcurrentDictionary.TryRemove</c>
-    /// is already atomic, so concurrent callers of this method cannot corrupt <see cref="_clients"/>
-    /// between themselves; the remaining race is with a concurrent create finishing and caching a NEW
-    /// client between this method's remove and its return — a pre-existing gap, not something this
-    /// method ever closed.
+    /// Takes the SAME per-server connection lock <see cref="GetClientAsync"/> and
+    /// <see cref="ReconnectAsync"/> use, through the SAME <see cref="AcquireConnectionLockAsync"/> — not a
+    /// second lock-acquisition method — bounded by a locally-synthesized <see cref="CancellationTokenSource"/>
+    /// (#378): unlike those two callers, this method's only production caller (bundle teardown) has no
+    /// cancellation token of its own to bound an unconditional wait with, so a hung connect attempt for the
+    /// same server (mid-handshake, inside <see cref="CreateClientAsync"/>) could otherwise block teardown
+    /// indefinitely — worse than the race the lock closes. When the token fires before the lock is free,
+    /// eviction proceeds anyway, unlocked, exactly as this method always has: <c>ConcurrentDictionary.TryRemove</c>
+    /// is already atomic, so concurrent callers of this method cannot corrupt <see cref="_clients"/> between
+    /// themselves either way. What the lock actually buys, when acquired, is exclusion against a
+    /// concurrent <see cref="CreateAndCacheClientAsync"/> caching a NEW client for this server between
+    /// this method's remove and its return — the pre-existing gap this method's doc used to describe as
+    /// unclosed is now closed for every realistic (non-hung) case.
     /// </para>
     /// <para>
-    /// Also does not protect a caller that already holds a reference to the client this disposes,
+    /// Still does not protect a caller that already holds a reference to the client this disposes,
     /// obtained via <see cref="GetClientAsync"/>'s unlocked fast-path read before this method ran — that
-    /// caller can still observe <see cref="ObjectDisposedException"/> mid-use. Closing either race needs
+    /// caller can still observe <see cref="ObjectDisposedException"/> mid-use. Closing that race needs
     /// reference-counted or generation-tagged client leases, a larger change to this type's
     /// client-lifetime model; tracked as a known limitation, not solved here.
     /// </para>
@@ -177,7 +193,28 @@ public sealed class McpConnectionManager : IAsyncDisposable
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
-        await EvictAsync(serverName);
+        using var timeoutCts = new CancellationTokenSource(DisconnectLockTimeout);
+        IDisposable? lockScope = null;
+        try
+        {
+            lockScope = await AcquireConnectionLockAsync(serverName, timeoutCts.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            _logger.LogWarning(
+                "Disconnect from MCP server '{ServerName}' proceeded without the connection lock after " +
+                "waiting {Timeout} — a connect attempt for this server was still in flight.",
+                serverName, DisconnectLockTimeout);
+        }
+
+        try
+        {
+            await EvictAsync(serverName);
+        }
+        finally
+        {
+            lockScope?.Dispose();
+        }
     }
 
     /// <summary>
@@ -290,10 +327,13 @@ public sealed class McpConnectionManager : IAsyncDisposable
 
     private async Task<ConnectionLockScope> AcquireConnectionLockAsync(string serverName, CancellationToken cancellationToken)
     {
-        var connectionLock = _connectionLocks.GetOrAdd(serverName, _ => new SemaphoreSlim(1, 1));
+        var connectionLock = GetOrCreateConnectionLock(serverName);
         await connectionLock.WaitAsync(cancellationToken);
         return new ConnectionLockScope(connectionLock);
     }
+
+    private SemaphoreSlim GetOrCreateConnectionLock(string serverName) =>
+        _connectionLocks.GetOrAdd(serverName, _ => new SemaphoreSlim(1, 1));
 
     private static void TryDisposeCachedClient(ConcurrentDictionary<string, HttpClient> cache, string serverName)
     {
@@ -319,7 +359,7 @@ public sealed class McpConnectionManager : IAsyncDisposable
     /// <remarks>
     /// <strong>Deliberately host-only.</strong> This enumerates <em>only</em> <see cref="_config"/> —
     /// never <see cref="_bundleOwnedServers"/>. Do not add it here; see
-    /// <see cref="BundleOwnedMcpServerRegistry"/>'s own doc comment for why a bundle-owned server must
+    /// <see cref="IBundleOwnedMcpServerRegistry"/>'s own doc comment for why a bundle-owned server must
     /// never be reachable from this method.
     /// </remarks>
     public IEnumerable<string> GetConfiguredServerNames()

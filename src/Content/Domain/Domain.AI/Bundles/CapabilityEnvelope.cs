@@ -66,17 +66,28 @@ public sealed record CapabilityEnvelope
     /// Empty (the default) means no bundle-owned server is granted this run.
     /// </summary>
     /// <remarks>
-    /// <strong>Invariant callers must preserve:</strong> this list is always a subset of
-    /// <see cref="AllowedMcpServers"/>, and the two are kept in sync by a SINGLE writer today
+    /// <para>
+    /// <strong>Invariant this list should preserve:</strong> it is always a subset of
+    /// <see cref="AllowedMcpServers"/>, kept in sync by a SINGLE writer today
     /// (<c>RunBundleCommandHandler.WithBundleOwnedMcpServers</c>), which unions the same
-    /// <c>staged.McpServerNames</c> into both in one <c>with</c> expression. Nothing in the type system
-    /// enforces this — a future call site that adds a bundle-owned name to <see cref="AllowedMcpServers"/>
-    /// without adding it here as well would silently make that server's tools resolve as NOT bundle-owned
-    /// (falling through to <see cref="IsBundleOwnedMcpServer"/> returning <see langword="false"/>), which
-    /// is fail-closed on the namespacing decision but reintroduces the exact "trust a server based on
-    /// incomplete provenance" defect this field exists to prevent. Any new writer of
-    /// <see cref="AllowedMcpServers"/> for a bundle-owned server MUST update this list in the same
-    /// operation.
+    /// <c>staged.McpServerNames</c> into both in one <c>with</c> expression.
+    /// </para>
+    /// <para>
+    /// <strong>Two ways this can go wrong, and they are NOT symmetric.</strong> (1) A name lands here but
+    /// the writer forgot to also grant it in <see cref="AllowedMcpServers"/> — <see cref="GrantsMcpServer"/>
+    /// already refuses to contact a server absent from that list regardless of what this one claims, so
+    /// this direction was never exploitable; <see cref="IsBundleOwnedMcpServer"/> now also requires
+    /// <see cref="AllowedMcpServers"/> membership, so the predicate agrees with reality instead of
+    /// answering "yes" for a server nothing can ever reach. (2) A name is granted in
+    /// <see cref="AllowedMcpServers"/> but the writer forgot to add it here — this is the direction the
+    /// original design worried about (the server's tools would resolve as host-trusted rather than
+    /// bundle-owned, reopening the "trust a server based on incomplete provenance" defect this field
+    /// exists to prevent), and it is NOT something any check inside this type can catch: once a name is
+    /// simply absent from this list, nothing in the envelope records that it should have been present.
+    /// There is no construction-time check either — <c>with</c> expressions bypass a factory entirely, and
+    /// the single writer uses one. The only real guard against (2) is keeping that one writer correct,
+    /// which is what its own test pins down rather than anything checkable here.
+    /// </para>
     /// </remarks>
     public IReadOnlyList<string> BundleOwnedMcpServers { get; init; } = [];
 
@@ -118,8 +129,21 @@ public sealed record CapabilityEnvelope
     /// check callers must use to decide whether a resolved tool needs bundle-owned namespacing, instead
     /// of inferring ownership from the server name's shape.
     /// </summary>
+    /// <remarks>
+    /// Requires membership in BOTH <see cref="BundleOwnedMcpServers"/> AND <see cref="AllowedMcpServers"/>
+    /// — see the <see cref="BundleOwnedMcpServers"/> remarks for the two ways the two lists can drift
+    /// apart. This dual check closes only ONE of those (a name recorded as bundle-owned for a server that
+    /// was never actually granted — already unreachable via <see cref="GrantsMcpServer"/> either way, so
+    /// this makes the predicate consistent rather than newly safe). It does NOT and cannot close the
+    /// other, more consequential direction (a granted server missing from
+    /// <see cref="BundleOwnedMcpServers"/>) — by the time a name is absent from that list, nothing in this
+    /// record retains any evidence it should have been present, so no check confined to this type can
+    /// recover it. That direction is guarded by keeping the envelope's single writer correct, not by
+    /// anything this method can verify at read time.
+    /// </remarks>
     /// <param name="serverName">The MCP server name being checked.</param>
-    public bool IsBundleOwnedMcpServer(string serverName) => Contains(BundleOwnedMcpServers, serverName);
+    public bool IsBundleOwnedMcpServer(string serverName) =>
+        Contains(BundleOwnedMcpServers, serverName) && Contains(AllowedMcpServers, serverName);
 
     /// <summary>
     /// Shared case-insensitive membership check backing every <c>Grants*</c>/<c>Is*</c> predicate on this

@@ -125,26 +125,24 @@ public sealed class PluginLoader : IPluginLoader
     /// <summary>
     /// Builds one manifest-declared server and registers it under <paramref name="namespacedName"/>.
     /// A malformed entry (e.g. a non-string <c>args</c> element) is skipped and logged rather than
-    /// thrown — <see cref="Load"/>'s outer catch would otherwise mark the WHOLE plugin
+    /// failing the caller — <see cref="Load"/>'s outer catch would otherwise mark the WHOLE plugin
     /// <see cref="PluginLoadStatus.Failed"/> over one bad server, discarding the skill paths already
     /// collected in the same call and leaving any server registered by an earlier entry in this same
     /// loop orphaned (absent from the returned names, so nothing can deregister it later).
     /// </summary>
     private bool TryBuildAndRegisterOneServer(PluginDeclaration declaration, string namespacedName, JsonProperty serverProp)
     {
-        McpServerDefinition definition;
-        try
+        var result = McpServerDefinitionBuilder.Build(
+            serverProp.Value, declaration.Env, $"[Plugin: {declaration.Name}]", serverProp.Name);
+        if (!result.IsSuccess)
         {
-            definition = McpServerDefinitionBuilder.Build(
-                serverProp.Value, declaration.Env, $"[Plugin: {declaration.Name}]", serverProp.Name);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex,
-                "Plugin {Name}: failed to build MCP server definition for '{ServerName}', skipping",
-                declaration.Name, serverProp.Name);
+            _logger.LogWarning(
+                "Plugin {Name}: failed to build MCP server definition for '{ServerName}', skipping: {Errors}",
+                declaration.Name, serverProp.Name, string.Join("; ", result.Errors));
             return false;
         }
+
+        var definition = result.Value!;
 
         // Last-writer-wins on a duplicate namespaced key — unlike BundleStagingService's TryAdd +
         // keep-first-and-warn. Deliberately different, not an oversight: a host plugin's own manifest

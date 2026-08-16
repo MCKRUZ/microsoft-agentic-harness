@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Reflection;
 using Application.AI.Common.Exceptions;
 using Domain.Common.Config.AI.MCP;
+using Infrastructure.AI.Bundles;
 using FluentAssertions;
 using Infrastructure.AI.MCP.Services;
 using Microsoft.Extensions.Logging;

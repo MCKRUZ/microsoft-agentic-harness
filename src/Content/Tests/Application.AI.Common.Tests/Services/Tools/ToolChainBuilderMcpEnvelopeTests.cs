@@ -72,7 +72,11 @@ public sealed class ToolChainBuilderMcpEnvelopeTests
         using (CapabilityEnvelopeAccessor.Begin(EnvelopeWithBundleOwned("bundle-123:epr-mcp")))
             tools = await builder.BuildToolsAsync(InjectedSkill(), new SkillAgentOptions());
 
-        tools.Select(t => t.Name).Should().Contain("bundle-123_epr-mcp__epr_tool");
+        // The server half now also carries its own #373 collision-guard hash suffix (its raw form
+        // contains the ':' namespace separator), so the namespaced name is asserted structurally rather
+        // than as an exact literal.
+        tools.Select(t => t.Name).Should().Contain(
+            n => n.StartsWith("bundle-123_epr-mcp_", StringComparison.Ordinal) && n.EndsWith("__epr_tool", StringComparison.Ordinal));
         tools.Select(t => t.Name).Should().NotContain("epr_tool",
             "the bare, bundle-chosen name must never be the model-callable/governed name in Injected mode either");
     }
@@ -224,8 +228,10 @@ public sealed class ToolChainBuilderMcpEnvelopeTests
             tools = await builder.BuildToolsAsync(skill, new SkillAgentOptions());
 
         // Published under a NAMESPACED name, never the bare name the (untrusted, bundle-authored)
-        // server declared — see BundleOwnedMcpToolNaming for why a bare name would be exploitable.
-        tools.Select(t => t.Name).Should().Contain("bundle-123_epr-mcp__epr_tool");
+        // server declared — see BundleOwnedMcpToolNaming for why a bare name would be exploitable. The
+        // server half also carries its own #373 collision-guard hash suffix, so this is structural.
+        tools.Select(t => t.Name).Should().Contain(
+            n => n.StartsWith("bundle-123_epr-mcp_", StringComparison.Ordinal) && n.EndsWith("__epr_tool", StringComparison.Ordinal));
         tools.Select(t => t.Name).Should().NotContain("epr_tool",
             "the bare, bundle-chosen name must never be the model-callable/governed name");
         mcp.Verify(p => p.GetToolsAsync("bundle-123:epr-mcp", It.IsAny<CancellationToken>()), Times.Once);
@@ -335,7 +341,9 @@ public sealed class ToolChainBuilderMcpEnvelopeTests
         using (CapabilityEnvelopeAccessor.Begin(envelope))
             tools = await builder.BuildToolsAsync(skill, new SkillAgentOptions());
 
-        tools.Select(t => t.Name).Should().Contain("bundle-123_epr-mcp__epr_tool");
+        // Structural, not literal: the server half carries its own #373 collision-guard hash suffix.
+        tools.Select(t => t.Name).Should().Contain(
+            n => n.StartsWith("bundle-123_epr-mcp_", StringComparison.Ordinal) && n.EndsWith("__epr_tool", StringComparison.Ordinal));
         mcp.Verify(p => p.GetToolsAsync("bundle-123:epr-mcp", It.IsAny<CancellationToken>()), Times.Once);
         mcp.Verify(p => p.GetToolsAsync("corp-tools:epr-mcp", It.IsAny<CancellationToken>()), Times.Never,
             "the unrelated grant must never be contacted for a bundle skill's own declared server");

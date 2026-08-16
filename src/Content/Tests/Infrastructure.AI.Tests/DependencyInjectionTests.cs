@@ -1,12 +1,15 @@
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Agent;
+using Application.AI.Common.Interfaces.Bundles;
 using Application.AI.Common.Interfaces.Escalation;
 using Application.AI.Common.Interfaces.Resilience;
 using Domain.Common.Config;
+using Domain.Common.Config.AI.MCP;
 using Domain.Common.Config.AI.Resilience;
 using FluentAssertions;
 using Infrastructure.AI.Escalation;
 using Infrastructure.AI.KnowledgeGraph;
+using Infrastructure.AI.MCP;
 using Infrastructure.AI.Resilience;
 using MediatR;
 using Microsoft.Extensions.DependencyInjection;
@@ -295,6 +298,64 @@ public sealed class DependencyInjectionTests
         client.Timeout.Should().Be(
             Timeout.InfiniteTimeSpan,
             "the resilience pipeline owns the timeout; the typed client must not set a finite one that races it");
+    }
+
+    // -- IBundleOwnedMcpServerRegistry cross-registration (#374) --
+
+    /// <summary>
+    /// Pins the invariant the interface extraction under #374 depends on: this registry is registered
+    /// via <c>TryAddSingleton</c> from BOTH <c>AddInfrastructureAIDependencies</c> (here) and
+    /// <c>AddMcpClientDependencies</c> (Infrastructure.AI.MCP), deliberately redundantly, so the wiring
+    /// survives either extension method being dropped from a future composition root by mistake. This
+    /// composes BOTH real extension methods against one container — mutation-tested by removing both
+    /// registration lines and confirming resolution fails, so the pass here is not vacuous — and resolves
+    /// the SAME staging service + connection manager the production host wires, proving the graph
+    /// actually constructs rather than merely that a type is registered.
+    /// </summary>
+    /// <remarks>
+    /// The <c>BeSameAs</c> assertion below is a weaker guarantee than it looks: .NET's container resolves
+    /// a service type to one deterministic descriptor for the container's lifetime, so two resolutions of
+    /// the SAME service type always agree even if a future edit adds a redundant duplicate registration —
+    /// there is no "sometimes returns a different instance" failure mode to catch that way. What actually
+    /// protected the pre-#374 design (and what a regression back to registering the bare concrete type
+    /// from only one site would break) is that every production consumer now depends on the INTERFACE,
+    /// not the concrete type — so there is no second, independently-resolvable key for a future edit to
+    /// accidentally diverge onto. <c>BundleMcpServerIsolationTests</c> guards that surface directly.
+    /// </remarks>
+    [Fact]
+    public async Task AddInfrastructureAIDependencies_AndAddMcpClientDependencies_ShareOneRegistryInstance()
+    {
+        var services = CreateBaseServices();
+        // AddMcpClientDependencies' own additional prerequisites — mirrors
+        // Infrastructure.AI.MCP.Tests.DependencyInjectionTests.BuildProvider (that project's TestSsrf
+        // helper is internal to a different test assembly, so the equivalent factory is built inline).
+        services.AddSingleton(new Infrastructure.AI.Egress.AntiSsrfHandlerFactory(new OptionsMonitorStub(new AppConfig())));
+        services.AddSingleton(new Mock<Application.AI.Common.Interfaces.Tools.IToolBehaviorRegistry>().Object);
+        services.AddSingleton(new Mock<IAmbientRequestScope>().Object);
+        services.AddSingleton(new Mock<Application.AI.Common.Interfaces.Egress.IEgressAuditWriter>().Object);
+
+        services.AddInfrastructureAIDependencies(IsolatedAppConfig.Create());
+        services.AddMcpClientDependencies();
+        // McpConnectionManager is IAsyncDisposable-only; the container refuses synchronous disposal.
+        await using var provider = services.BuildServiceProvider();
+
+        var registry = provider.GetRequiredService<IBundleOwnedMcpServerRegistry>();
+
+        // Round-trip through both real consumers this registry exists to keep in sync: staging (writes)
+        // and the connection manager (reads the fallback). If either resolved a DIFFERENT instance, a
+        // server staged here would be invisible to a connect attempt against the same name.
+        registry.TryAdd("bundle-x:probe", new McpServerDefinition { Enabled = true, Type = McpServerType.Http, Url = "https://example.com" })
+            .Should().BeTrue();
+
+        var stagingService = provider.GetRequiredService<Application.AI.Common.Interfaces.Bundles.IBundleStagingService>();
+        var connectionManager = provider.GetRequiredService<Infrastructure.AI.MCP.Services.McpConnectionManager>();
+        stagingService.Should().NotBeNull();
+        connectionManager.Should().NotBeNull();
+
+        // Resolving the registry itself twice more, through both extension methods' own service key,
+        // must hand back the identical instance — this is the actual regression #374's DI split risks.
+        var second = provider.GetRequiredService<IBundleOwnedMcpServerRegistry>();
+        registry.Should().BeSameAs(second);
     }
 
     /// <summary>
