@@ -268,7 +268,7 @@ var request = new SandboxExecutionRequest
 
 **ToolPermissionProfile** declares a tool's full access scope with deny-overrides-allow semantics: `RequiredCapabilities`, `AllowedPaths`/`DeniedPaths`, `AllowedHosts`/`DeniedHosts`, `AllowedPrograms`, and `MinimumIsolation`.
 
-**ToolCapabilityAttribute** (`[ToolCapability(ToolCapability.FileRead)]`) is a class-level attribute for declaring capabilities at compile time. Can be overridden at runtime via appsettings configuration.
+A tool declares its required capabilities by overriding `ITool.RequiredCapabilities`/`ITool.MinimumIsolation` (in `Application.AI.Common`) — a default interface member, not a Domain-layer attribute, since `ITool` is the tool contract itself. Can be overridden (restricted, never expanded) at runtime via appsettings configuration.
 
 **ResourceLimits** defines hard caps enforced via Job Objects (Windows) or cgroups (Linux): `MemoryLimitBytes` (default 256 MB), `CpuTimeSeconds` (default 30s), `MaxSubprocesses` (default 5), `DiskQuotaBytes` (default 100 MB).
 
@@ -366,7 +366,6 @@ Domain.AI/
 | `ToolCapability` | Flags enum of required capabilities | ToolPermissionProfile, capability enforcer |
 | `ToolPermissionProfile` | Access scope with deny-overrides-allow | ISandboxExecutor, ToolUseConfig |
 | `ResourceLimits` | Hard caps on memory, CPU, processes, disk | SandboxExecutionRequest |
-| `ToolCapabilityAttribute` | Compile-time capability declaration | Tool class annotations |
 | **RAG** | | |
 | `DocumentChunk` | Text unit with embedding | Vector stores, retrieval pipeline |
 | `RagAssembledContext` | Final assembled RAG output | IRagOrchestrator consumers |

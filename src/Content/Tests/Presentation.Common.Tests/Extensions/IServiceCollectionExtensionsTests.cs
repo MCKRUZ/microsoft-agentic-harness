@@ -467,12 +467,16 @@ public sealed class IServiceCollectionExtensionsTests
         services.RegisterConfigSections(config);
         var provider = services.BuildServiceProvider();
 
-        // Assert: least-privilege compiled defaults survive when nothing overrides them.
+        // Assert: compiled defaults survive when nothing overrides them. The set is the union of what
+        // the harness's shipped tools declare via ITool.RequiredCapabilities (#387) — EnvRead is the
+        // one bit deliberately excluded (see SandboxConfig.DefaultGrantedCapabilities' remarks).
         var sandboxConfig = provider
             .GetRequiredService<IOptionsMonitor<Domain.Common.Config.AI.Sandbox.SandboxConfig>>()
             .CurrentValue;
         sandboxConfig.Enabled.Should().BeTrue();
-        sandboxConfig.DefaultGrantedCapabilities.Should().BeEquivalentTo("FileRead", "LlmInvocation");
+        sandboxConfig.DefaultGrantedCapabilities.Should().BeEquivalentTo(
+            "FileRead", "FileWrite", "NetworkAccess", "Subprocess",
+            "DatabaseRead", "DatabaseWrite", "LlmInvocation");
     }
 
     // -- AppConfig tree exposes PromptUsage + SandboxCapabilities (findings 0 & 49) --

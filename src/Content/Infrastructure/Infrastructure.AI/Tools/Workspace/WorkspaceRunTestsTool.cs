@@ -35,6 +35,16 @@ public sealed class WorkspaceRunTestsTool : ITool
     /// <summary>Tool key — matches the keyed-DI registration and the SKILL.md allowed-tools entry.</summary>
     public const string ToolName = "run_tests";
 
+    /// <summary>
+    /// The sandbox capabilities a test run needs: reads and writes the workspace (test runners drop
+    /// into <c>bin/</c>/<c>obj/</c>) and spawns the test host as a subprocess. Deliberately does NOT
+    /// include <see cref="ToolCapability.NetworkAccess"/> — the workspace skill's egress allowlist is
+    /// empty by design. The single source of truth <see cref="WorkspaceCommandRunner"/> uses — no
+    /// longer a hardcoded literal inside the runner (#387).
+    /// </summary>
+    public const ToolCapability RequiredSandboxCapabilities =
+        ToolCapability.FileRead | ToolCapability.FileWrite | ToolCapability.Subprocess;
+
     private static readonly IReadOnlyList<string> Operations = ["run"];
 
     private readonly IWorkspaceContextAccessor _workspace;
@@ -69,6 +79,9 @@ public sealed class WorkspaceRunTestsTool : ITool
     public ToolCompositionCapability Capabilities => ToolCompositionCapability.ExecutesCode;
 
     /// <inheritdoc />
+    public ToolCapability RequiredCapabilities => RequiredSandboxCapabilities;
+
+    /// <inheritdoc />
     public string Description =>
         "Runs the workspace's test command inside the sandbox. Returns the exit code and combined output.";
 
@@ -101,6 +114,7 @@ public sealed class WorkspaceRunTestsTool : ITool
             workspace,
             sandbox,
             ToolName,
+            RequiredSandboxCapabilities,
             timeout: null,
             cancellationToken);
     }

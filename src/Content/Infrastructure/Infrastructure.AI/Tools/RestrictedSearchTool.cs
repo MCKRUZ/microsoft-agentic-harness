@@ -3,6 +3,7 @@ using System.Text;
 using Application.AI.Common.Interfaces.Tools;
 using Domain.AI.Changes;
 using Domain.AI.Models;
+using Domain.AI.Sandbox;
 using Domain.Common.Config.MetaHarness;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -99,6 +100,14 @@ public sealed class RestrictedSearchTool : ITool
 
     /// <inheritdoc />
     public bool IsConcurrencySafe => true;
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// Spawns the allowlisted binary directly via <see cref="Process"/> — its own hand-rolled
+    /// isolation, not <c>ISandboxExecutor</c> — so it genuinely needs <see cref="ToolCapability.Subprocess"/>
+    /// alongside <see cref="ToolCapability.FileRead"/> for what grep/cat/find/etc. read.
+    /// </remarks>
+    public ToolCapability RequiredCapabilities => ToolCapability.FileRead | ToolCapability.Subprocess;
 
     /// <inheritdoc />
     public async Task<ToolResult> ExecuteAsync(

@@ -15,11 +15,28 @@ using Microsoft.Extensions.Logging;
 namespace Infrastructure.AI.Governance;
 
 /// <summary>
-/// Registers Agent Governance Toolkit services and harness adapter implementations.
-/// Call from the composition root when <c>GovernanceConfig.Enabled</c> is true.
+/// Registers Agent Governance Toolkit services and harness adapter implementations. Composition
+/// roots call <see cref="AddGovernance"/>, which chooses this wiring or the no-op set based on
+/// <see cref="GovernanceConfig.ArmsAgtKernel"/>.
 /// </summary>
 public static class DependencyInjection
 {
+    /// <summary>
+    /// Adds governance services to the service collection, choosing the AGT-backed implementation or
+    /// the no-op set based on <see cref="GovernanceConfig.ArmsAgtKernel"/> — the single unconditional
+    /// entry point composition roots should call, so a caller never has to ask <c>ArmsAgtKernel</c>
+    /// first and branch between <see cref="AddGovernanceDependencies"/>/
+    /// <see cref="AddGovernanceNoOpDependencies"/> itself. Both underlying methods stay public: unit
+    /// tests that want to force one wiring or the other (e.g. proving the AGT path resolves correctly
+    /// regardless of <see cref="GovernanceConfig.Enabled"/>) call them directly.
+    /// </summary>
+    public static IServiceCollection AddGovernance(
+        this IServiceCollection services,
+        GovernanceConfig config) =>
+        config.ArmsAgtKernel
+            ? services.AddGovernanceDependencies(config)
+            : services.AddGovernanceNoOpDependencies();
+
     /// <summary>
     /// Adds AGT-backed governance services to the service collection.
     /// Registers the <see cref="GovernanceKernel"/> as a singleton and wires
@@ -29,7 +46,40 @@ public static class DependencyInjection
         this IServiceCollection services,
         GovernanceConfig config)
     {
-        var policyContents = ReadAndValidatePolicyFiles(config.PolicyPaths);
+        var kernel = BuildKernel(config);
+        services.AddSingleton(kernel);
+
+        RegisterPolicyEngine(services, config, kernel);
+        RegisterPromptInjectionDetection(services, config, kernel);
+        RegisterAudit(services);
+
+        services.AddSingleton<IMcpSecurityScanner, McpSecurityScannerAdapter>();
+        services.AddSingleton<IMcpDefinitionPinStore, InMemoryMcpDefinitionPinStore>();
+        services.AddSingleton<IMcpToolSurfaceScanner, McpToolSurfaceScannerAdapter>();
+
+        services.AddSingleton<IResponseSanitizer, CredentialRedactor>();
+        services.AddSingleton<IResponseSanitizer, ResponseInjectionScrubber>();
+        services.AddSingleton<IResponseSanitizer, ExfiltrationUrlDetector>();
+        services.AddSingleton<ICompositeResponseSanitizer, CompositeResponseSanitizer>();
+
+        // Data-classification seam. The policy evaluator is pure; the provider routes to the Graph-backed
+        // Information Protection and Purview Data Map clients when wired, else the fail-fast default.
+        AddDataClassificationProvider(services, config.DataClassification);
+
+        return services;
+    }
+
+    /// <summary>
+    /// Constructs the <see cref="GovernanceKernel"/>, loading the declarative policy layer's YAML
+    /// only when <see cref="GovernanceConfig.Enabled"/> is true — <see cref="GovernanceConfig.EnablePromptInjectionDetection"/>
+    /// and <see cref="GovernanceConfig.EnableMcpSecurity"/> can bring the kernel up on their own
+    /// (#386), and <see cref="GovernanceConfig.PolicyPaths"/> should not even be touched in that case.
+    /// </summary>
+    private static GovernanceKernel BuildKernel(GovernanceConfig config)
+    {
+        var policyContents = config.Enabled
+            ? ReadAndValidatePolicyFiles(config.PolicyPaths)
+            : [];
 
         var options = new GovernanceOptions
         {
@@ -46,56 +96,81 @@ public static class DependencyInjection
         foreach (var content in policyContents)
             kernel.LoadPolicyFromYaml(content);
 
-        services.AddSingleton(kernel);
-        services.AddSingleton<AuditLogger>();
+        return kernel;
+    }
 
-        // Deliberately not registering the raw PolicyEngine as its own resolvable service (unlike
-        // AuditLogger above): PolicyEngine.LoadYamlFile/LoadYaml/LoadPolicy all bypass PolicyYamlGuard,
-        // so a consumer that could resolve PolicyEngine directly and load its own YAML through it would
-        // reintroduce #384. Only the adapter needs it, so it's captured in this factory instead.
-        services.AddSingleton<IGovernancePolicyEngine>(_ => new AgtPolicyEngineAdapter(kernel.PolicyEngine));
+    /// <summary>
+    /// Registers <see cref="IGovernancePolicyEngine"/> — the real AGT-backed adapter when
+    /// <see cref="GovernanceConfig.Enabled"/> is true, otherwise the no-op engine, since a consumer
+    /// that armed <see cref="AddGovernanceDependencies"/> solely for
+    /// <see cref="GovernanceConfig.EnablePromptInjectionDetection"/>,
+    /// <see cref="GovernanceConfig.EnableMcpSecurity"/>, or
+    /// <see cref="GovernanceConfig.EnableResponseSanitization"/> did not opt into the declarative
+    /// policy layer (#386).
+    /// </summary>
+    /// <remarks>
+    /// Deliberately not registering the raw <c>PolicyEngine</c> as its own resolvable service:
+    /// <c>PolicyEngine.LoadYamlFile</c>/<c>LoadYaml</c>/<c>LoadPolicy</c> all bypass
+    /// <see cref="PolicyYamlGuard"/>, so a consumer that could resolve <c>PolicyEngine</c> directly
+    /// and load its own YAML through it would reintroduce #384. Only the adapter needs it, so it's
+    /// captured in this factory instead.
+    /// </remarks>
+    private static void RegisterPolicyEngine(IServiceCollection services, GovernanceConfig config, GovernanceKernel kernel) =>
+        services.AddSingleton<IGovernancePolicyEngine>(_ => config.Enabled
+            ? new AgtPolicyEngineAdapter(kernel.PolicyEngine)
+            : new NoOpPolicyEngine());
 
-        // Prompt-injection detection is optional. The AGT kernel only builds an InjectionDetector when
-        // GovernanceConfig.EnablePromptInjectionDetection is true, so registering kernel.InjectionDetector
-        // (or the AgtPromptInjectionAdapter that requires it) unconditionally crashes composition for the
-        // valid Enabled=true, EnablePromptInjectionDetection=false configuration — AddSingleton throws on a
-        // null instance. When detection is off, satisfy IPromptInjectionScanner with the no-op scanner so
-        // every consumer resolves and the PromptInjectionBehavior simply passes through.
-        if (config.EnablePromptInjectionDetection)
-        {
-            // Fail closed: if detection is configured on, the kernel must have produced a detector.
-            // Silently falling back to the no-op scanner here would leave a *configured* security
-            // control inert — the exact silent-degradation failure this hardening pass targets.
-            if (kernel.InjectionDetector is null)
-            {
-                throw new InvalidOperationException(
-                    "GovernanceConfig.EnablePromptInjectionDetection is true but the governance kernel " +
-                    "produced no InjectionDetector; refusing to start with the configured control disabled.");
-            }
-
-            services.AddSingleton(kernel.InjectionDetector);
-            services.AddSingleton<IPromptInjectionScanner, AgtPromptInjectionAdapter>();
-        }
-        else
+    /// <summary>
+    /// Registers <see cref="IPromptInjectionScanner"/>. Detection is optional — the AGT kernel only
+    /// builds an <c>InjectionDetector</c> when <see cref="GovernanceConfig.EnablePromptInjectionDetection"/>
+    /// is true, so registering <c>kernel.InjectionDetector</c> (or the adapter that requires it)
+    /// unconditionally would crash composition for the valid <c>Enabled=true,
+    /// EnablePromptInjectionDetection=false</c> configuration — <c>AddSingleton</c> throws on a null
+    /// instance. When detection is off, the no-op scanner satisfies every consumer and
+    /// <c>PromptInjectionBehavior</c> simply passes through.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">
+    /// Detection is configured on but the kernel produced no <c>InjectionDetector</c>. Fails closed:
+    /// silently falling back to the no-op scanner here would leave a <em>configured</em> security
+    /// control inert.
+    /// </exception>
+    private static void RegisterPromptInjectionDetection(IServiceCollection services, GovernanceConfig config, GovernanceKernel kernel)
+    {
+        if (!config.EnablePromptInjectionDetection)
         {
             services.AddSingleton<IPromptInjectionScanner, NoOpInjectionScanner>();
+            return;
         }
 
+        if (kernel.InjectionDetector is null)
+        {
+            throw new InvalidOperationException(
+                "GovernanceConfig.EnablePromptInjectionDetection is true but the governance kernel " +
+                "produced no InjectionDetector; refusing to start with the configured control disabled.");
+        }
+
+        services.AddSingleton(kernel.InjectionDetector);
+        services.AddSingleton<IPromptInjectionScanner, AgtPromptInjectionAdapter>();
+    }
+
+    /// <summary>
+    /// Registers the real <see cref="IGovernanceAuditService"/>. Shared by
+    /// <see cref="AddGovernanceDependencies"/> and <see cref="AddGovernanceNoOpDependencies"/>
+    /// because <c>AuditLogger</c> has no dependency on <see cref="GovernanceKernel"/> — auditing is
+    /// not one of the features <see cref="GovernanceConfig.ArmsAgtKernel"/> decides between, so both
+    /// composition paths wire it identically instead of each declaring their own copy.
+    /// </summary>
+    /// <remarks>
+    /// <c>AuditLogger</c>'s hash-chained entries are in-memory only — no trim, no eviction, no
+    /// persistence — so this trail does not survive a process restart and grows for the process
+    /// lifetime. Registering it unconditionally (this fix) widens that growth to every host that
+    /// previously took the no-op path, since <see cref="GovernanceConfig.EnableAudit"/> defaults
+    /// true. Tracked separately: https://github.com/MCKRUZ/microsoft-agentic-harness/issues/407.
+    /// </remarks>
+    private static void RegisterAudit(IServiceCollection services)
+    {
+        services.AddSingleton<AuditLogger>();
         services.AddSingleton<IGovernanceAuditService, AgtAuditAdapter>();
-        services.AddSingleton<IMcpSecurityScanner, McpSecurityScannerAdapter>();
-        services.AddSingleton<IMcpDefinitionPinStore, InMemoryMcpDefinitionPinStore>();
-        services.AddSingleton<IMcpToolSurfaceScanner, McpToolSurfaceScannerAdapter>();
-
-        services.AddSingleton<IResponseSanitizer, CredentialRedactor>();
-        services.AddSingleton<IResponseSanitizer, ResponseInjectionScrubber>();
-        services.AddSingleton<IResponseSanitizer, ExfiltrationUrlDetector>();
-        services.AddSingleton<ICompositeResponseSanitizer, CompositeResponseSanitizer>();
-
-        // Data-classification seam. The policy evaluator is pure; the provider routes to the Graph-backed
-        // Information Protection and Purview Data Map clients when wired, else the fail-fast default.
-        AddDataClassificationProvider(services, config.DataClassification);
-
-        return services;
     }
 
     /// <summary>
@@ -218,14 +293,23 @@ public static class DependencyInjection
 
     /// <summary>
     /// Adds no-op governance services that satisfy DI without AGT.
-    /// Used when <c>GovernanceConfig.Enabled</c> is false.
+    /// Used when <see cref="GovernanceConfig.ArmsAgtKernel"/> is false.
     /// </summary>
+    /// <remarks>
+    /// <see cref="IGovernanceAuditService"/> is the one exception to the no-op set — see
+    /// <see cref="RegisterAudit"/>. <see cref="GovernanceConfig.EnableAudit"/> gates whether call
+    /// sites actually invoke <c>.Log()</c> (<c>ToolInvocationGovernor</c>,
+    /// <c>PromptInjectionBehavior</c>, etc.) — a no-op audit service here whenever every kernel-arming
+    /// flag happened to be off would silently drop audit records for a consumer who left every other
+    /// governance feature disabled but still wants an audit trail, the same fail-open class #386/#387
+    /// exist to close.
+    /// </remarks>
     public static IServiceCollection AddGovernanceNoOpDependencies(
         this IServiceCollection services)
     {
         services.AddSingleton<IGovernancePolicyEngine, NoOpPolicyEngine>();
         services.AddSingleton<IPromptInjectionScanner, NoOpInjectionScanner>();
-        services.AddSingleton<IGovernanceAuditService, NoOpAuditService>();
+        RegisterAudit(services);
         services.AddSingleton<IMcpSecurityScanner, NoOpMcpScanner>();
         services.AddSingleton<IMcpToolSurfaceScanner, NoOpMcpToolSurfaceScanner>();
         services.AddSingleton<ICompositeResponseSanitizer, NoOpResponseSanitizer>();

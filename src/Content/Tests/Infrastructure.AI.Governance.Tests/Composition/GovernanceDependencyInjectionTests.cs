@@ -104,4 +104,140 @@ public sealed class GovernanceDependencyInjectionTests
         act.Should().Throw<InvalidOperationException>()
             .WithMessage($"*{missingPath}*");
     }
+
+    // #386: Enabled now governs the declarative policy layer alone. EnablePromptInjectionDetection
+    // must still stand up the real AGT-backed scanner even when Enabled is false — and because the
+    // policy layer itself is off, IGovernancePolicyEngine must resolve the no-op engine, not the
+    // adapter, and PolicyPaths must never be read (a configured-but-missing path here would have
+    // thrown, per the test above, if it were touched).
+    [Fact]
+    public void AddGovernanceDependencies_DisabledWithInjectionDetectionOn_ResolvesAgtScannerAndNoOpPolicyEngine()
+    {
+        var config = new GovernanceConfig
+        {
+            Enabled = false,
+            EnablePromptInjectionDetection = true,
+            PolicyPaths = [Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.yaml")],
+        };
+
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddGovernanceDependencies(config);
+
+        using var provider = services.BuildServiceProvider();
+        provider.GetRequiredService<IPromptInjectionScanner>()
+            .Should().BeOfType<AgtPromptInjectionAdapter>(
+                "detection is independently switched on and must arm the real scanner even with the policy layer off");
+        provider.GetRequiredService<IGovernancePolicyEngine>()
+            .Should().BeOfType<NoOpPolicyEngine>(
+                "the declarative policy layer is off (Enabled=false); a sibling feature being on must not turn it on");
+    }
+
+    // Mirrors the test above for MCP security scanning — the other independently-toggleable feature
+    // area #386 decouples from Enabled.
+    [Fact]
+    public void AddGovernanceDependencies_DisabledWithMcpSecurityOn_ResolvesAgtScannerAndNoOpPolicyEngine()
+    {
+        var config = new GovernanceConfig { Enabled = false, EnableMcpSecurity = true };
+
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddGovernanceDependencies(config);
+
+        using var provider = services.BuildServiceProvider();
+        provider.GetRequiredService<IMcpSecurityScanner>()
+            .Should().BeOfType<McpSecurityScannerAdapter>(
+                "MCP security scanning is independently switched on and must arm the real scanner even with the policy layer off");
+        provider.GetRequiredService<IGovernancePolicyEngine>()
+            .Should().BeOfType<NoOpPolicyEngine>(
+                "the declarative policy layer is off (Enabled=false); a sibling feature being on must not turn it on");
+    }
+
+    // The policy engine's own switch: Enabled=true must resolve the real adapter regardless of the
+    // other two flags, and Enabled=false must resolve the no-op — the control for the two tests above.
+    [Fact]
+    public void AddGovernanceDependencies_EnabledTrue_ResolvesAgtPolicyEngineAdapter()
+    {
+        var config = new GovernanceConfig { Enabled = true };
+
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddGovernanceDependencies(config);
+
+        using var provider = services.BuildServiceProvider();
+        provider.GetRequiredService<IGovernancePolicyEngine>()
+            .Should().BeOfType<AgtPolicyEngineAdapter>();
+    }
+
+    // Regression guard for the bug the security review found: EnableResponseSanitization is the one
+    // flag among the four ArmsAgtKernel checks that defaults to true. AddGovernance — the single entry
+    // point composition roots call (#386) — must arm the kernel and resolve the REAL sanitizer chain
+    // for a bare GovernanceConfig, not fall through to AddGovernanceNoOpDependencies while
+    // ResponseSanitizationBehavior believes sanitization is active because its own flag reads true.
+    [Fact]
+    public void AddGovernance_DefaultConfig_ResolvesRealCompositeResponseSanitizer()
+    {
+        var config = new GovernanceConfig();
+        config.ArmsAgtKernel.Should().BeTrue("EnableResponseSanitization defaults to true");
+
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddGovernance(config);
+
+        using var provider = services.BuildServiceProvider();
+        var sanitizer = provider.GetRequiredService<ICompositeResponseSanitizer>();
+        sanitizer.Should().NotBeOfType<NoOpResponseSanitizer>(
+            "a bare GovernanceConfig has EnableResponseSanitization=true and must not silently wire the no-op chain");
+    }
+
+    // The control: every flag off must still resolve the no-op set via AddGovernance.
+    [Fact]
+    public void AddGovernance_AllFlagsOff_ResolvesNoOpResponseSanitizer()
+    {
+        var config = new GovernanceConfig
+        {
+            Enabled = false,
+            EnablePromptInjectionDetection = false,
+            EnableMcpSecurity = false,
+            EnableResponseSanitization = false,
+        };
+
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddGovernance(config);
+
+        using var provider = services.BuildServiceProvider();
+        provider.GetRequiredService<ICompositeResponseSanitizer>()
+            .Should().BeOfType<NoOpResponseSanitizer>();
+    }
+
+    // Regression guard for a security-review HIGH finding: AddGovernanceNoOpDependencies used to
+    // register NoOpAuditService, so any consumer that left every kernel-arming flag off (Enabled,
+    // EnablePromptInjectionDetection, EnableMcpSecurity, EnableResponseSanitization, DataClassification)
+    // but still had EnableAudit=true (the default) silently lost every audit record — the call sites
+    // that gate on EnableAudit (ToolInvocationGovernor, PromptInjectionBehavior, etc.) believed
+    // auditing was active. AuditLogger has no dependency on GovernanceKernel, so it is now registered
+    // for real regardless of ArmsAgtKernel.
+    [Fact]
+    public void AddGovernance_AllFlagsOff_StillResolvesRealAuditService()
+    {
+        var config = new GovernanceConfig
+        {
+            Enabled = false,
+            EnablePromptInjectionDetection = false,
+            EnableMcpSecurity = false,
+            EnableResponseSanitization = false,
+        };
+        config.ArmsAgtKernel.Should().BeFalse("every kernel-arming flag is off");
+
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddGovernance(config);
+
+        using var provider = services.BuildServiceProvider();
+        provider.GetRequiredService<IGovernanceAuditService>()
+            .Should().BeOfType<AgtAuditAdapter>(
+                "EnableAudit defaults true and its call sites must not silently lose their audit trail " +
+                "just because no other governance feature armed the kernel");
+    }
 }

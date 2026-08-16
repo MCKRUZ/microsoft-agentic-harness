@@ -118,9 +118,23 @@ public static class DependencyInjection
             .AddTransient(typeof(IPipelineBehavior<,>), typeof(WorkEpisodeCaptureBehavior<,>))
             .AddTransient(typeof(IPipelineBehavior<,>), typeof(PromptUsageTrackingBehavior<,>));
 
-        // Sandbox capability enforcement — profile resolution and enforcement
+        // Shared bounded-key-set-gated first-party ITool lookup — the one place ToolCapabilityResolver
+        // (tool-composition capability model), ToolPermissionProfileResolver (sandbox capability
+        // model), and ToolRiskClassifier (graded-autonomy risk) each resolve a tool's own declaration
+        // from keyed DI, instead of independently-maintained copies of the same bounded-lookup safety
+        // invariant. See FirstPartyToolLookup's remarks for why the key set must stay bounded.
+        // IToolCatalog below needs the raw key list rather than the lookup abstraction, so it scans
+        // `services` again on its own — a second one-time O(n) scan at startup, not a shared instance.
+        services.AddSingleton(sp => new Services.Tools.FirstPartyToolLookup(
+            sp, new HashSet<string>(KeyedToolRegistrationKeys(services), StringComparer.Ordinal)));
+
+        // Sandbox capability enforcement — profile resolution and enforcement. The resolver reads a
+        // tool's own ITool.RequiredCapabilities/MinimumIsolation declaration via the shared
+        // FirstPartyToolLookup (#387).
         services.AddOptions<SandboxConfig>();
-        services.AddSingleton<ToolPermissionProfileResolver>();
+        services.AddSingleton(sp => new ToolPermissionProfileResolver(
+            sp.GetRequiredService<Services.Tools.FirstPartyToolLookup>(),
+            sp.GetRequiredService<IOptionsMonitor<SandboxConfig>>()));
         services.AddScoped<ICapabilityEnforcer, CapabilityEnforcer>();
 
         // Scoped agent execution context — carries agent identity through the pipeline
@@ -149,8 +163,12 @@ public static class DependencyInjection
         services.AddSingleton<IToolConverter, AIToolConverter>();
 
         // Tool risk classification — resolves a tool's declared blast radius for the
-        // graded-autonomy gate and escalation-severity derivation.
-        services.AddSingleton<Interfaces.Tools.IToolRiskClassifier, Services.Tools.ToolRiskClassifier>();
+        // graded-autonomy gate and escalation-severity derivation. Reads the shared
+        // FirstPartyToolLookup registered above — see its remarks for why the key set must stay
+        // bounded; this call site was missed by the original #387 sweep and probed keyed DI directly
+        // (found during a later code-review pass on this same diff).
+        services.AddSingleton<Interfaces.Tools.IToolRiskClassifier>(sp => new Services.Tools.ToolRiskClassifier(
+            sp.GetRequiredService<Services.Tools.FirstPartyToolLookup>()));
 
         // Tool behaviour registry — what each tool declared it does, and who declared it. Singleton
         // because an external MCP server's declaration arrives on a discovery call and must still be
@@ -163,21 +181,12 @@ public static class DependencyInjection
         // untrusted/sensitive content, or a costly sink), for the tool-composition check. A sibling to
         // the behaviour registry above, answering a different question. Registered unconditionally, like
         // it: resolving costs nothing, and only ToolCompositionGatingConfig's pairings turn a resolved
-        // profile into a reported or enforced posture.
-        //
-        // The bounded registered-key set is supplied explicitly (the same KeyedToolRegistrationKeys(services)
-        // call IToolCatalog's registration below already makes) rather than left to a DI-resolved
-        // IReadOnlySet<string>, which nothing else registers. The resolver is called with every tool
-        // name in an agent's set, including MCP and bundle-owned names that are never registration
-        // keys — probing IServiceProvider.GetKeyedService with a name outside this bounded set would
-        // teach the root container's key-accessor cache a new, permanently-retained entry per distinct
-        // unregistered name, which is unbounded growth for a bundle-owned name space. See
-        // ToolCapabilityResolver's remarks.
+        // profile into a reported or enforced posture. Reads the shared FirstPartyToolLookup registered
+        // above — see its remarks for why the key set must stay bounded.
         services.AddSingleton<Interfaces.Tools.IToolCapabilityResolver>(sp => new Services.Tools.ToolCapabilityResolver(
-            sp,
+            sp.GetRequiredService<Services.Tools.FirstPartyToolLookup>(),
             sp.GetRequiredService<Interfaces.Tools.IToolBehaviorRegistry>(),
-            sp.GetRequiredService<IOptionsMonitor<Domain.Common.Config.AI.GovernanceConfig>>(),
-            new HashSet<string>(KeyedToolRegistrationKeys(services), StringComparer.Ordinal)));
+            sp.GetRequiredService<IOptionsMonitor<Domain.Common.Config.AI.GovernanceConfig>>()));
 
         // Tool composition analyzer + reporter — flags an agent's assembled tool set for an
         // untrusted-input/credential-reading tool co-resident with a file-write/code-exec/outbound-send

@@ -277,9 +277,13 @@
                     <div class="def">
                         <div class="def-term">1. Declare</div>
                         <div class="def-desc">
-                            A tool states the capabilities it needs by annotating itself with
-                            <code>[ToolCapabilityAttribute]</code>. This is a static, reviewable contract — you can read
-                            a tool's source and know exactly what it claims to need.
+                            A tool states the capabilities it needs by overriding
+                            <code>ITool.RequiredCapabilities</code> — a default interface member, so a tool that
+                            declares nothing inherits <code>None</code> automatically. This is a static, reviewable
+                            contract — you can read a tool's source and know exactly what it claims to need, and a
+                            build-time test (<code>DefaultPolicyCapabilityAlignmentTests</code>) checks the shipped
+                            governance policy's risk tiers against these declarations so the two cannot silently
+                            drift apart.
                         </div>
                     </div>
                     <div class="def">

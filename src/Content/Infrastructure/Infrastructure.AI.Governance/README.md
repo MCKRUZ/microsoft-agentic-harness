@@ -33,15 +33,21 @@ Microsoft.AgentGovernance (NuGet)
 |                                               |
 |  NoOp fallbacks (when disabled):              |
 |    NoOpPolicyEngine, NoOpInjectionScanner,    |
-|    NoOpAuditService, NoOpMcpScanner           |
+|    NoOpMcpScanner, NoOpResponseSanitizer      |
+|    (audit is real in both paths — see below)  |
 +----------------------------------------------+
          ^
          |
   Presentation composition root:
-    if (config.Governance.Enabled)
-        services.AddGovernanceDependencies(config);
-    else
-        services.AddGovernanceNoOpDependencies();
+    services.AddGovernance(config);
+    // -> AddGovernanceDependencies(config) when config.ArmsAgtKernel,
+    //    else AddGovernanceNoOpDependencies() — true whenever any of five
+    //    independent flags is on: Enabled, EnablePromptInjectionDetection,
+    //    EnableMcpSecurity, EnableResponseSanitization, or
+    //    DataClassification.Mode != Off. IGovernanceAuditService is
+    //    registered identically by both branches (RegisterAudit): AuditLogger
+    //    has no dependency on GovernanceKernel, so audit does not follow
+    //    ArmsAgtKernel — see GovernanceConfig.ArmsAgtKernel's remarks.
 ```
 
 ## Key Concepts
@@ -190,11 +196,10 @@ Infrastructure.AI.Governance/
 |------|---------|-----------|----------|
 | `AgtPolicyEngineAdapter` | Policy evaluation with metrics | `IGovernancePolicyEngine` | Singleton |
 | `AgtPromptInjectionAdapter` | Injection detection with metrics | `IPromptInjectionScanner` | Singleton |
-| `AgtAuditAdapter` | Hash-chained audit logging | `IGovernanceAuditService` | Singleton |
+| `AgtAuditAdapter` | Hash-chained audit logging — registered by both `AddGovernanceDependencies` and `AddGovernanceNoOpDependencies`, since audit does not follow `ArmsAgtKernel` | `IGovernanceAuditService` | Singleton |
 | `McpSecurityScannerAdapter` | MCP tool vetting | `IMcpSecurityScanner` | Singleton |
 | `NoOpPolicyEngine` | Passthrough (disabled) | `IGovernancePolicyEngine` | Singleton |
 | `NoOpInjectionScanner` | Always clean (disabled) | `IPromptInjectionScanner` | Singleton |
-| `NoOpAuditService` | No-op (disabled) | `IGovernanceAuditService` | Singleton |
 | `NoOpMcpScanner` | Always safe (disabled) | `IMcpSecurityScanner` | Singleton |
 
 ## Configuration
@@ -204,14 +209,15 @@ Infrastructure.AI.Governance/
   "AppConfig": {
     "AI": {
       "Governance": {
-        "Enabled": true,                    // false = register no-ops instead
-        "PolicyPaths": [                    // YAML policy files to load
+        "Enabled": true,                    // declarative YAML policy layer; false = no-op policy engine
+        "PolicyPaths": [                    // YAML policy files to load (only read when Enabled is true)
           "Policies/default-policy.yaml",
           "Policies/production-policy.yaml"
         ],
         "EnableAudit": true,                // Enable hash-chained audit logging
         "EnableMetrics": true,              // Emit OTel governance metrics
-        "EnablePromptInjectionDetection": true,  // Enable injection scanning
+        "EnablePromptInjectionDetection": true,  // Independent of Enabled (#386) — real scanner even if Enabled=false
+        "EnableMcpSecurity": true,          // Independent of Enabled (#386) — real scanner even if Enabled=false
         "ConflictStrategy": "MostRestrictive"    // How to resolve conflicting policies
       }
     }
@@ -252,7 +258,19 @@ raw engine type.
 
 ### How to Disable Governance for Development
 
-Set `AppConfig.AI.Governance.Enabled = false` in appsettings.Development.json. The composition root will call `AddGovernanceNoOpDependencies()` and all checks become passthrough.
+`Enabled`, `EnablePromptInjectionDetection`, `EnableMcpSecurity`, `EnableResponseSanitization`, and
+`DataClassification.Mode` are five independent switches (#386) — the composition root calls
+`AddGovernanceDependencies()` whenever `GovernanceConfig.ArmsAgtKernel` is `true` (any one of the
+five is on), and `AddGovernanceNoOpDependencies()` only when all five are off.
+**`EnableResponseSanitization` defaults `true`**, so clearing `Enabled`,
+`EnablePromptInjectionDetection`, and `EnableMcpSecurity` alone does *not* disable everything — it
+must also be set `false` explicitly in appsettings.Development.json, alongside
+`DataClassification.Mode` already defaulting `Off`. To disable only the declarative policy layer
+while keeping other feature areas live, set `Enabled = false` and leave the flag(s) you still want
+`true` — `PolicyPaths` is not read and `IGovernancePolicyEngine` resolves the no-op engine, but the
+other feature areas keep running on the real AGT-backed adapters. `IGovernanceAuditService` is
+unaffected by all five switches — it resolves the real adapter on both branches (see
+`RegisterAudit` in `DependencyInjection.cs`) and is gated only by `EnableAudit` at each call site.
 
 ## Dependencies
 

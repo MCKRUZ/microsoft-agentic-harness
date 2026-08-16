@@ -3,6 +3,7 @@ using Application.AI.Common.Interfaces.GitOps;
 using Application.AI.Common.Interfaces.Tools;
 using Domain.AI.Changes;
 using Domain.AI.Models;
+using Domain.AI.Sandbox;
 using Domain.Common.Config.AI.Governance;
 
 namespace Infrastructure.AI.Tools.GitOps;
@@ -76,6 +77,15 @@ public sealed class GitOpsProposeRemediationTool : ITool
     /// composition purposes.
     /// </remarks>
     public ToolCompositionCapability Capabilities => ToolCompositionCapability.WritesFiles;
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// Unlike <c>WorkspaceWriteFileTool</c>, this call performs real work before ever reaching the
+    /// dispatcher: <c>DetectDriftAsync</c> and <c>ProposeRemediationAsync</c> both call the GitOps
+    /// controller over the network within this invocation. The actual cluster/repo mutation still
+    /// happens later, behind the ChangeProposal gate — so no <see cref="ToolCapability.FileWrite"/>.
+    /// </remarks>
+    public ToolCapability RequiredCapabilities => ToolCapability.NetworkAccess;
 
     /// <inheritdoc />
     public async Task<ToolResult> ExecuteAsync(

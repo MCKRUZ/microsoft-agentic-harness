@@ -3,6 +3,7 @@ using Application.AI.Common.Interfaces.Tools;
 using Domain.Common.Helpers;
 using Domain.AI.Changes;
 using Domain.AI.Governance;
+using Domain.AI.Sandbox;
 using Domain.Common.Config.AI.Governance;
 using Domain.AI.Models;
 using Microsoft.Extensions.Logging;
@@ -91,6 +92,14 @@ public sealed class DelegateToSubagentTool : ITool
 
     /// <inheritdoc />
     public bool IsConcurrencySafe => false;
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// Delegation immediately runs an LLM-driven subagent turn. Whatever tools that subagent calls are
+    /// separately governed on their own invocation — this declaration covers only what triggering the
+    /// delegation itself requires.
+    /// </remarks>
+    public ToolCapability RequiredCapabilities => ToolCapability.LlmInvocation;
 
     /// <summary>
     /// Never directly invocable over HTTP. One call here is not one unit of work — it selects a

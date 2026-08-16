@@ -17,14 +17,23 @@ public sealed class SandboxConfig
     public bool Enabled { get; init; } = true;
 
     /// <summary>
-    /// Capabilities granted to all sessions by default. Follows least-privilege: only
-    /// FileRead and LlmInvocation are granted out of the box. Operators must explicitly
-    /// grant FileWrite, NetworkAccess, Subprocess, DatabaseWrite, etc. in appsettings.
-    /// Uses string names matching <c>ToolCapability</c> enum values.
+    /// Capabilities granted to all sessions by default. Uses string names matching
+    /// <c>ToolCapability</c> enum values.
     /// </summary>
+    /// <remarks>
+    /// Set to the union of what the harness's own shipped tools declare via
+    /// <c>ITool.RequiredCapabilities</c> (#387), so <c>EnforceToolInvocation</c> and bundle runs — the
+    /// two paths that make <c>CapabilityEnforcer</c> live — behave identically to the template's
+    /// out-of-the-box behaviour before those declarations existed. <c>EnvRead</c> is deliberately
+    /// excluded: no shipped tool declares it, and it is the one bit that reads directly off the host
+    /// process environment rather than through a scoped service, so it stays an explicit operator
+    /// opt-in. A consumer adding a tool that needs a capability outside this set must grant it here
+    /// explicitly — that is the closed-by-default model working as intended, not a gap.
+    /// </remarks>
     public List<string> DefaultGrantedCapabilities { get; init; } =
     [
-        "FileRead", "LlmInvocation"
+        "FileRead", "FileWrite", "NetworkAccess", "Subprocess",
+        "DatabaseRead", "DatabaseWrite", "LlmInvocation"
     ];
 
     /// <summary>
@@ -38,7 +47,7 @@ public sealed class SandboxConfig
 
     /// <summary>
     /// Per-tool permission overrides keyed by tool name.
-    /// Overrides can restrict (never expand) compile-time <c>[ToolCapabilityAttribute]</c> declarations.
+    /// Overrides can restrict (never expand) a tool's own <c>ITool.RequiredCapabilities</c> declaration.
     /// </summary>
     public Dictionary<string, ToolOverrideConfig> ToolOverrides { get; init; } = new();
 

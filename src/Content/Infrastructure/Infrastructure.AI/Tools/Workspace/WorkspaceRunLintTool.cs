@@ -35,6 +35,15 @@ public sealed class WorkspaceRunLintTool : ITool
     /// <summary>Tool key — matches the keyed-DI registration and the SKILL.md allowed-tools entry.</summary>
     public const string ToolName = "run_lint";
 
+    /// <summary>
+    /// The sandbox capabilities a lint run needs: reads and writes the workspace and spawns the
+    /// linter as a subprocess. Deliberately does NOT include <see cref="ToolCapability.NetworkAccess"/>
+    /// — the workspace skill's egress allowlist is empty by design. The single source of truth
+    /// <see cref="WorkspaceCommandRunner"/> uses — no longer a hardcoded literal inside the runner (#387).
+    /// </summary>
+    public const ToolCapability RequiredSandboxCapabilities =
+        ToolCapability.FileRead | ToolCapability.FileWrite | ToolCapability.Subprocess;
+
     private static readonly IReadOnlyList<string> Operations = ["run"];
 
     private readonly IWorkspaceContextAccessor _workspace;
@@ -69,6 +78,9 @@ public sealed class WorkspaceRunLintTool : ITool
     public ToolCompositionCapability Capabilities => ToolCompositionCapability.ExecutesCode;
 
     /// <inheritdoc />
+    public ToolCapability RequiredCapabilities => RequiredSandboxCapabilities;
+
+    /// <inheritdoc />
     public string Description =>
         "Runs the workspace's lint command inside the sandbox. Returns the exit code and combined output.";
 
@@ -101,6 +113,7 @@ public sealed class WorkspaceRunLintTool : ITool
             workspace,
             sandbox,
             ToolName,
+            RequiredSandboxCapabilities,
             timeout: null,
             cancellationToken);
     }

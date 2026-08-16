@@ -3,6 +3,7 @@ using Application.AI.Common.Interfaces.GitOps;
 using Application.AI.Common.Interfaces.Tools;
 using Domain.AI.Changes;
 using Domain.AI.Models;
+using Domain.AI.Sandbox;
 
 namespace Infrastructure.AI.Tools.GitOps;
 
@@ -56,6 +57,9 @@ public sealed class GitOpsDetectDriftTool : ITool
 
     /// <inheritdoc />
     public bool IsConcurrencySafe => true;
+
+    /// <inheritdoc />
+    public ToolCapability RequiredCapabilities => ToolCapability.NetworkAccess;
 
     /// <inheritdoc />
     public async Task<ToolResult> ExecuteAsync(

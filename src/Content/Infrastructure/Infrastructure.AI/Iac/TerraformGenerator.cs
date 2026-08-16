@@ -4,6 +4,7 @@ using Domain.AI.Iac;
 using Domain.AI.Sandbox;
 using Domain.Common;
 using Domain.Common.Config;
+using Infrastructure.AI.Tools.Iac;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -100,7 +101,9 @@ public sealed class TerraformGenerator : IIacGenerator
 
         var allowlist = _config.CurrentValue.AI.Iac.RegistryAllowlist;
 
-        var validate = await Run([ "validate", "-no-color" ], moduleDirectory, allowlist, "iac_plan", cancellationToken);
+        var validate = await Run(
+            [ "validate", "-no-color" ], moduleDirectory, allowlist, "iac_plan",
+            IacPlanTool.RequiredSandboxCapabilities, cancellationToken);
         if (validate is null)
         {
             return Result<IacPlanResult>.Fail("iac.plan.sandbox_error");
@@ -112,7 +115,9 @@ public sealed class TerraformGenerator : IIacGenerator
             return Result<IacPlanResult>.Success(FailedPlan(moduleDirectory, validate.Output ?? string.Empty, "validate failed"));
         }
 
-        var plan = await Run([ "plan", "-no-color", "-detailed-exitcode" ], moduleDirectory, allowlist, "iac_plan", cancellationToken);
+        var plan = await Run(
+            [ "plan", "-no-color", "-detailed-exitcode" ], moduleDirectory, allowlist, "iac_plan",
+            IacPlanTool.RequiredSandboxCapabilities, cancellationToken);
         if (plan is null)
         {
             return Result<IacPlanResult>.Fail("iac.plan.sandbox_error");
@@ -135,8 +140,12 @@ public sealed class TerraformGenerator : IIacGenerator
             return Result<IacScanResult>.Fail("iac.scan.invalid_blocking_severity");
         }
 
-        var checkov = await Run([ "-d", ".", "--compact", "--quiet" ], moduleDirectory, iac.RegistryAllowlist, "iac_scan", cancellationToken, CheckovProgram);
-        var tfsec = await Run([ ".", "--no-colour" ], moduleDirectory, iac.RegistryAllowlist, "iac_scan", cancellationToken, TfsecProgram);
+        var checkov = await Run(
+            [ "-d", ".", "--compact", "--quiet" ], moduleDirectory, iac.RegistryAllowlist, "iac_scan",
+            IacScanTool.RequiredSandboxCapabilities, cancellationToken, CheckovProgram);
+        var tfsec = await Run(
+            [ ".", "--no-colour" ], moduleDirectory, iac.RegistryAllowlist, "iac_scan",
+            IacScanTool.RequiredSandboxCapabilities, cancellationToken, TfsecProgram);
         if (checkov is null || tfsec is null)
         {
             return Result<IacScanResult>.Fail("iac.scan.sandbox_error");
@@ -161,9 +170,10 @@ public sealed class TerraformGenerator : IIacGenerator
         string moduleDirectory,
         IReadOnlyList<string> allowlist,
         string toolName,
+        ToolCapability requiredCapabilities,
         CancellationToken cancellationToken,
         string program = CliProgram)
-        => RunGuarded(program, args, moduleDirectory, allowlist, toolName, cancellationToken);
+        => RunGuarded(program, args, moduleDirectory, allowlist, toolName, requiredCapabilities, cancellationToken);
 
     private async Task<SandboxExecutionResult?> RunGuarded(
         string program,
@@ -171,6 +181,7 @@ public sealed class TerraformGenerator : IIacGenerator
         string moduleDirectory,
         IReadOnlyList<string> allowlist,
         string toolName,
+        ToolCapability requiredCapabilities,
         CancellationToken cancellationToken)
     {
         try
@@ -180,7 +191,9 @@ public sealed class TerraformGenerator : IIacGenerator
             await using var scope = _scopeFactory.CreateAsyncScope();
             var sandbox = scope.ServiceProvider.GetRequiredKeyedService<ISandboxExecutor>(_isolationLevel);
 
-            return await IacSandboxRunner.RunAsync(program, args, moduleDirectory, allowlist, sandbox, toolName, cancellationToken: cancellationToken);
+            return await IacSandboxRunner.RunAsync(
+                program, args, moduleDirectory, allowlist, sandbox, toolName, requiredCapabilities,
+                cancellationToken: cancellationToken);
         }
         catch (OperationCanceledException)
         {

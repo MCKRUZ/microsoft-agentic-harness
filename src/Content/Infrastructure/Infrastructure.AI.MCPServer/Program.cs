@@ -71,13 +71,11 @@ public class Program
         // SkillMetadataParser now depends on IMcpSecurityScanner to screen a skill manifest for
         // prompt-injection payloads before trusting it (issue #331). This host composes its own
         // services rather than calling the shared Presentation composition root, so it must make the
-        // same Enabled-gated choice that root does — real AGT-backed scanning when governance is on,
-        // the no-op passthrough otherwise — or ValidateOnBuild fails at boot with an unresolved
-        // IMcpSecurityScanner the moment the skill catalog is constructed.
-        if (appConfig.AI?.Governance is { Enabled: true } govConfig)
-            builder.Services.AddGovernanceDependencies(govConfig);
-        else
-            builder.Services.AddGovernanceNoOpDependencies();
+        // same choice that root does — real AGT-backed scanning when any governance feature area is
+        // on, the no-op passthrough otherwise — or ValidateOnBuild fails at boot with an unresolved
+        // IMcpSecurityScanner the moment the skill catalog is constructed. AddGovernance (#386) is the
+        // single entry point for this decision, shared with Presentation.Common.IServiceCollectionExtensions.
+        builder.Services.AddGovernance(appConfig.AI?.Governance ?? new GovernanceConfig());
 
         // Rate limiting
         builder.Services.AddRateLimiter(options =>

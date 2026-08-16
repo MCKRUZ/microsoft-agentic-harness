@@ -2,6 +2,7 @@ using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Interfaces.Workspace;
 using Domain.AI.Changes;
 using Domain.AI.Models;
+using Domain.AI.Sandbox;
 
 namespace Infrastructure.AI.Tools.Workspace;
 
@@ -59,6 +60,9 @@ public sealed class WorkspaceListFilesTool : ITool
 
     /// <inheritdoc />
     public bool IsConcurrencySafe => true;
+
+    /// <inheritdoc />
+    public ToolCapability RequiredCapabilities => ToolCapability.FileRead;
 
     /// <inheritdoc />
     public Task<ToolResult> ExecuteAsync(

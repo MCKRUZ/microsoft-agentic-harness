@@ -4,6 +4,7 @@ using Application.Core.CQRS.RAG.IngestDocument;
 using Domain.AI.Changes;
 using Domain.Common.Config.AI.Governance;
 using Domain.AI.Models;
+using Domain.AI.Sandbox;
 using MediatR;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -84,6 +85,19 @@ public sealed class DocumentIngestTool : ITool
 
     /// <inheritdoc />
     public bool IsConcurrencySafe => false;
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// Unlike <c>WorkspaceWriteFileTool</c>, the ingestion pipeline runs synchronously inside this
+    /// call, not behind a separate approval step — <c>IngestDocumentCommandHandler</c> fetches the
+    /// source URI (<see cref="ToolCapability.FileRead"/> for <c>file://</c>,
+    /// <see cref="ToolCapability.NetworkAccess"/> for <c>https://</c>), calls the embedding service
+    /// (<see cref="ToolCapability.LlmInvocation"/>), and commits to the vector/BM25 index
+    /// (<see cref="ToolCapability.DatabaseWrite"/>) before returning.
+    /// </remarks>
+    public ToolCapability RequiredCapabilities =>
+        ToolCapability.FileRead | ToolCapability.NetworkAccess
+        | ToolCapability.LlmInvocation | ToolCapability.DatabaseWrite;
 
     /// <inheritdoc />
     public async Task<ToolResult> ExecuteAsync(

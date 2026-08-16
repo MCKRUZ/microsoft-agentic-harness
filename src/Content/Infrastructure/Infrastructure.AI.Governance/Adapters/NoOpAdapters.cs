@@ -18,14 +18,6 @@ internal sealed class NoOpInjectionScanner : IPromptInjectionScanner
     public InjectionScanResult Scan(string input) => InjectionScanResult.Clean();
 }
 
-/// <summary>No-op audit service used when governance is disabled.</summary>
-internal sealed class NoOpAuditService : IGovernanceAuditService
-{
-    public int EntryCount => 0;
-    public void Log(string agentId, string action, string decision) { }
-    public bool VerifyChainIntegrity() => true;
-}
-
 /// <summary>No-op MCP scanner used when governance is disabled.</summary>
 internal sealed class NoOpMcpScanner : IMcpSecurityScanner
 {

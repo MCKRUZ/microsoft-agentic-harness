@@ -8,8 +8,11 @@ namespace Application.Core.Tests.Validation;
 
 /// <summary>
 /// Tests for <see cref="GovernanceConfigValidator"/>. The default section is valid (so omitted /
-/// default hosts keep booting); the landmine rules fire only when governance is disabled but a
-/// kernel-path-only feature is switched on. Pattern: a valid baseline, mutate one field per test.
+/// default hosts keep booting). The remaining landmine rules fire only when a posture is switched
+/// on without the invocation-enforcement (or MCP security) flag its enforcement path actually
+/// depends on — Enabled no longer gates EnablePromptInjectionDetection/EnableMcpSecurity (#386), so
+/// there is no longer a rule tying those three together. Pattern: a valid baseline, mutate one
+/// field per test.
 /// </summary>
 public class GovernanceConfigValidatorTests
 {
@@ -76,25 +79,28 @@ public class GovernanceConfigValidatorTests
     }
 
     [Fact]
-    public async Task Validate_DisabledWithInjectionDetectionOn_HasError()
+    public async Task Validate_DisabledWithInjectionDetectionOn_IsValid()
     {
+        // #386: EnablePromptInjectionDetection no longer requires Enabled=true. The composition root
+        // arms the AGT kernel for this flag on its own, independent of the declarative policy layer.
         var config = new GovernanceConfig { Enabled = false, EnablePromptInjectionDetection = true };
 
         var result = await _validator.ValidateAsync(config);
 
-        result.IsValid.Should().BeFalse();
-        result.Errors.Should().Contain(e => e.PropertyName == nameof(GovernanceConfig.EnablePromptInjectionDetection));
+        result.IsValid.Should().BeTrue();
+        result.Errors.Should().BeEmpty();
     }
 
     [Fact]
-    public async Task Validate_DisabledWithMcpSecurityOn_HasError()
+    public async Task Validate_DisabledWithMcpSecurityOn_IsValid()
     {
+        // #386: EnableMcpSecurity no longer requires Enabled=true, for the same reason as above.
         var config = new GovernanceConfig { Enabled = false, EnableMcpSecurity = true };
 
         var result = await _validator.ValidateAsync(config);
 
-        result.IsValid.Should().BeFalse();
-        result.Errors.Should().Contain(e => e.PropertyName == nameof(GovernanceConfig.EnableMcpSecurity));
+        result.IsValid.Should().BeTrue();
+        result.Errors.Should().BeEmpty();
     }
 
     [Fact]

@@ -46,16 +46,4 @@ public sealed class ToolCapabilityTests
         Assert.True((int)SandboxIsolationLevel.Container > (int)SandboxIsolationLevel.Process);
         Assert.True((int)SandboxIsolationLevel.Process > (int)SandboxIsolationLevel.None);
     }
-
-    [Fact]
-    public void ToolCapabilityAttribute_OnClass_DeclaresCapabilitiesAndMinIsolation()
-    {
-        var attr = new ToolCapabilityAttribute(ToolCapability.FileRead | ToolCapability.FileWrite)
-        {
-            MinimumIsolation = SandboxIsolationLevel.Container
-        };
-
-        Assert.Equal(ToolCapability.FileRead | ToolCapability.FileWrite, attr.Capabilities);
-        Assert.Equal(SandboxIsolationLevel.Container, attr.MinimumIsolation);
-    }
 }

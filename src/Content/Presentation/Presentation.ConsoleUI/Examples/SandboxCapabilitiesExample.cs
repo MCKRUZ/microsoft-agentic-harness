@@ -205,8 +205,8 @@ public class SandboxCapabilitiesExample
 
         var steps = new[]
         {
-            ("1. Register Tool Type", "ToolPermissionProfileResolver caches the tool's ToolCapabilityAttribute via RegisterToolType()."),
-            ("2. Read Compile-Time Attribute", "Extract RequiredCapabilities and MinimumIsolation from the tool class [ToolCapability] attribute."),
+            ("1. Resolve the Tool", "ToolPermissionProfileResolver looks up the tool by name via bounded-key-set keyed DI — the same tool instance the agent would call."),
+            ("2. Read Its Declaration", "Read the resolved ITool's own RequiredCapabilities and MinimumIsolation overrides — the tool's single source of truth for what it may do."),
             ("3. Read Runtime Configuration", "Check appsettings SandboxConfig for per-tool overrides (DeniedCapabilities, AllowedPaths, etc.)."),
             ("4. Merge with Deny Override", "Apply deny-overrides-allow: if a capability is in both allowed and denied, deny wins. Formula: BaseCapabilities & ~DeniedCapabilities."),
             ("5. Return Merged Profile", "Return ToolPermissionProfile with effective capabilities, allowed/denied paths/hosts, and isolation level.")

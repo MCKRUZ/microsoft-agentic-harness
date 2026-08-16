@@ -169,10 +169,11 @@ public sealed class ToolCapabilityResolverTests
         IToolBehaviorRegistry? behaviorRegistry = null,
         IReadOnlySet<string>? registeredKeys = null) =>
         new(
-            serviceProvider ?? new ServiceCollection().BuildServiceProvider(),
+            new FirstPartyToolLookup(
+                serviceProvider ?? new ServiceCollection().BuildServiceProvider(),
+                registeredKeys ?? new HashSet<string>()),
             behaviorRegistry ?? new ToolBehaviorRegistry(new ServiceCollection().BuildServiceProvider()),
-            Mock.Of<IOptionsMonitor<GovernanceConfig>>(m => m.CurrentValue == (governance ?? new GovernanceConfig())),
-            registeredKeys ?? new HashSet<string>());
+            Mock.Of<IOptionsMonitor<GovernanceConfig>>(m => m.CurrentValue == (governance ?? new GovernanceConfig())));
 
     private static GovernanceConfig Governance(ToolCompositionGatingConfig gating) =>
         new() { ToolCompositionGating = gating };

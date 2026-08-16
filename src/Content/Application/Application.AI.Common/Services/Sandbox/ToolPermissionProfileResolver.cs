@@ -1,5 +1,5 @@
-using System.Collections.Concurrent;
-using System.Reflection;
+using Application.AI.Common.Interfaces.Tools;
+using Application.AI.Common.Services.Tools;
 using Domain.Common.Helpers;
 using Domain.AI.Sandbox;
 using Domain.Common.Config.AI.Sandbox;
@@ -8,48 +8,53 @@ using Microsoft.Extensions.Options;
 namespace Application.AI.Common.Services.Sandbox;
 
 /// <summary>
-/// Resolves the effective <see cref="ToolPermissionProfile"/> for a tool by merging
-/// compile-time <see cref="ToolCapabilityAttribute"/> declarations with runtime
-/// <see cref="ToolOverrideConfig"/> from appsettings. Uses deny-overrides-allow semantics.
+/// Resolves the effective <see cref="ToolPermissionProfile"/> for a tool by merging its
+/// <see cref="ITool.RequiredCapabilities"/>/<see cref="ITool.MinimumIsolation"/> declaration with
+/// runtime <see cref="ToolOverrideConfig"/> from appsettings. Uses deny-overrides-allow semantics.
 /// </summary>
+/// <remarks>
+/// Mirrors <see cref="ToolCapabilityResolver"/> (the sibling resolver for the tool-composition
+/// capability model): the base classification comes from the shared bounded-key-set-gated
+/// <see cref="FirstPartyToolLookup"/>, not from a separately-populated cache a caller has to
+/// remember to feed. The previous design read a <c>[ToolCapabilityAttribute]</c> cached via an
+/// explicit <c>RegisterToolType</c> call — nothing in production ever called it, so every tool
+/// resolved <see cref="ToolCapability.None"/> regardless of what it actually needed, and the
+/// capability check downstream (<c>CapabilityEnforcer</c>) could never refuse a call (#387).
+/// </remarks>
 public sealed class ToolPermissionProfileResolver
 {
+    private readonly FirstPartyToolLookup _firstPartyLookup;
     private readonly IOptionsMonitor<SandboxConfig> _config;
-    private readonly ConcurrentDictionary<string, ToolCapabilityAttribute?> _attributeCache = new();
 
-    /// <summary>
-    /// Initializes a new instance of the <see cref="ToolPermissionProfileResolver"/> class.
-    /// </summary>
+    /// <summary>Initializes a new instance of the <see cref="ToolPermissionProfileResolver"/> class.</summary>
+    /// <param name="firstPartyLookup">
+    /// The shared bounded-key-set-gated first-party tool lookup — see its remarks for why probing
+    /// keyed DI outside its bounded key set is unsafe.
+    /// </param>
     /// <param name="config">Sandbox configuration with per-tool overrides.</param>
-    public ToolPermissionProfileResolver(IOptionsMonitor<SandboxConfig> config)
+    public ToolPermissionProfileResolver(
+        FirstPartyToolLookup firstPartyLookup,
+        IOptionsMonitor<SandboxConfig> config)
     {
+        ArgumentNullException.ThrowIfNull(firstPartyLookup);
+        ArgumentNullException.ThrowIfNull(config);
+
+        _firstPartyLookup = firstPartyLookup;
         _config = config;
     }
 
     /// <summary>
-    /// Registers a tool type so its <see cref="ToolCapabilityAttribute"/> is available for profile resolution.
-    /// Call during DI registration for each keyed tool.
-    /// </summary>
-    /// <param name="toolName">The keyed DI tool name.</param>
-    /// <param name="toolType">The concrete tool implementation type.</param>
-    public void RegisterToolType(string toolName, Type toolType)
-    {
-        _attributeCache[toolName] = toolType.GetCustomAttribute<ToolCapabilityAttribute>();
-    }
-
-    /// <summary>
-    /// Resolves the effective permission profile by merging the tool's compile-time attribute
-    /// (if registered) with runtime configuration overrides.
+    /// Resolves the effective permission profile by merging the tool's own declaration
+    /// (<see cref="ITool.RequiredCapabilities"/>/<see cref="ITool.MinimumIsolation"/>) with runtime
+    /// configuration overrides.
     /// </summary>
     /// <param name="toolName">The keyed DI tool name.</param>
     /// <returns>The merged permission profile.</returns>
     public ToolPermissionProfile Resolve(string toolName)
     {
-        _attributeCache.TryGetValue(toolName, out var attribute);
-        _config.CurrentValue.ToolOverrides.TryGetValue(toolName, out var overrideConfig);
+        var (baseCapabilities, baseIsolation) = ResolveBase(toolName);
 
-        var baseCapabilities = attribute?.Capabilities ?? ToolCapability.None;
-        var baseIsolation = attribute?.MinimumIsolation ?? SandboxIsolationLevel.None;
+        _config.CurrentValue.ToolOverrides.TryGetValue(toolName, out var overrideConfig);
 
         if (overrideConfig is null)
         {
@@ -79,6 +84,22 @@ public sealed class ToolPermissionProfileResolver
             DeniedHosts = overrideConfig.DeniedHosts.AsReadOnly(),
             MinimumIsolation = effectiveIsolation
         };
+    }
+
+    /// <summary>
+    /// The base declaration before any override: a registered first-party tool's own
+    /// <see cref="ITool.RequiredCapabilities"/>/<see cref="ITool.MinimumIsolation"/>, or
+    /// <see cref="ToolCapability.None"/>/<see cref="SandboxIsolationLevel.None"/> for a name outside
+    /// the bounded registered-key set (MCP or bundle-owned tools — never covered by capability
+    /// declarations either way).
+    /// </summary>
+    private (ToolCapability Capabilities, SandboxIsolationLevel Isolation) ResolveBase(string toolName)
+    {
+        var firstParty = _firstPartyLookup.Resolve(toolName);
+
+        return firstParty is not null
+            ? (firstParty.RequiredCapabilities, firstParty.MinimumIsolation)
+            : (ToolCapability.None, SandboxIsolationLevel.None);
     }
 
     /// <summary>

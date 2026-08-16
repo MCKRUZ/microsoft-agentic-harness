@@ -2,6 +2,7 @@ using System.Text.Json;
 using Application.AI.Common.Interfaces.Tools;
 using Domain.AI.Changes;
 using Domain.AI.Models;
+using Domain.AI.Sandbox;
 using Domain.Common.Config;
 using Microsoft.Extensions.Options;
 
@@ -16,6 +17,16 @@ public sealed class IacScanTool : ITool
 {
     /// <summary>Tool key — matches the keyed-DI registration and the SKILL.md allowed-tools entry.</summary>
     public const string ToolName = "iac_scan";
+
+    /// <summary>
+    /// The sandbox capabilities a scan run needs: reads and writes the module directory, spawns the
+    /// scanner CLIs (checkov/tfsec/arm-ttk) as subprocesses, and reaches the provider/module
+    /// registries. The single source of truth <c>TerraformGenerator</c>/<c>BicepGenerator</c> pass
+    /// into <see cref="Infrastructure.AI.Iac.IacSandboxRunner.RunAsync"/> for every <c>iac_scan</c>
+    /// call — no longer a hardcoded literal inside the runner (#387).
+    /// </summary>
+    public const ToolCapability RequiredSandboxCapabilities =
+        ToolCapability.FileRead | ToolCapability.FileWrite | ToolCapability.Subprocess | ToolCapability.NetworkAccess;
 
     private static readonly IReadOnlyList<string> Operations = ["scan"];
     private static readonly JsonSerializerOptions SerializerOptions = new() { WriteIndented = false };
@@ -52,6 +63,9 @@ public sealed class IacScanTool : ITool
 
     /// <inheritdoc />
     public bool IsConcurrencySafe => true;
+
+    /// <inheritdoc />
+    public ToolCapability RequiredCapabilities => RequiredSandboxCapabilities;
 
     /// <inheritdoc />
     public async Task<ToolResult> ExecuteAsync(

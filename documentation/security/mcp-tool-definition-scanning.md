@@ -93,7 +93,7 @@ Two limits worth stating plainly rather than discovering later. An imperative ph
 }
 ```
 
-`EnableMcpSecurity` requires `Governance.Enabled` — enforced by `GovernanceConfigValidator` at startup, since the scanner is registered by the governance layer.
+`EnableMcpSecurity` is independent of `Governance.Enabled` — it stands up the real AGT-backed scanner on its own even when the declarative policy layer (`Governance.Enabled`) is off. The composition root wires the governance kernel whenever `Enabled`, `EnablePromptInjectionDetection`, or `EnableMcpSecurity` is `true`.
 
 Both settings default to the safe-but-quiet end: `EnableMcpSecurity` is `false` on a bare config, so a consumer starting from nothing gets the previous behaviour until they opt in. All five shipped host configurations turn it on.
 
