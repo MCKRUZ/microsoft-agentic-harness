@@ -118,16 +118,23 @@ public static class DependencyInjection
             .AddTransient(typeof(IPipelineBehavior<,>), typeof(WorkEpisodeCaptureBehavior<,>))
             .AddTransient(typeof(IPipelineBehavior<,>), typeof(PromptUsageTrackingBehavior<,>));
 
+        // Shared bounded-key-set-gated first-party ITool lookup — the one place ToolCapabilityResolver
+        // (tool-composition capability model) and ToolPermissionProfileResolver (sandbox capability
+        // model) each resolve a tool's own declaration from keyed DI, instead of two independently
+        // -maintained copies of the same bounded-lookup safety invariant. See FirstPartyToolLookup's
+        // remarks for why the key set must stay bounded. Registered once so both resolvers — and the
+        // IToolCatalog registration below, which builds the identical key set for a different purpose
+        // — share one instance rather than each constructing their own HashSet from the same scan.
+        services.AddSingleton(sp => new Services.Tools.FirstPartyToolLookup(
+            sp, new HashSet<string>(KeyedToolRegistrationKeys(services), StringComparer.Ordinal)));
+
         // Sandbox capability enforcement — profile resolution and enforcement. The resolver reads a
-        // tool's own ITool.RequiredCapabilities/MinimumIsolation declaration via bounded-key-set-gated
-        // keyed DI (#387) — the same KeyedToolRegistrationKeys(services) set IToolCapabilityResolver's
-        // registration below builds, so the two resolvers agree on what "a real tool name" means. See
-        // ToolCapabilityResolver's remarks for why the key set must stay bounded.
+        // tool's own ITool.RequiredCapabilities/MinimumIsolation declaration via the shared
+        // FirstPartyToolLookup (#387).
         services.AddOptions<SandboxConfig>();
         services.AddSingleton(sp => new ToolPermissionProfileResolver(
-            sp,
-            sp.GetRequiredService<IOptionsMonitor<SandboxConfig>>(),
-            new HashSet<string>(KeyedToolRegistrationKeys(services), StringComparer.Ordinal)));
+            sp.GetRequiredService<Services.Tools.FirstPartyToolLookup>(),
+            sp.GetRequiredService<IOptionsMonitor<SandboxConfig>>()));
         services.AddScoped<ICapabilityEnforcer, CapabilityEnforcer>();
 
         // Scoped agent execution context — carries agent identity through the pipeline
@@ -170,21 +177,12 @@ public static class DependencyInjection
         // untrusted/sensitive content, or a costly sink), for the tool-composition check. A sibling to
         // the behaviour registry above, answering a different question. Registered unconditionally, like
         // it: resolving costs nothing, and only ToolCompositionGatingConfig's pairings turn a resolved
-        // profile into a reported or enforced posture.
-        //
-        // The bounded registered-key set is supplied explicitly (the same KeyedToolRegistrationKeys(services)
-        // call IToolCatalog's registration below already makes) rather than left to a DI-resolved
-        // IReadOnlySet<string>, which nothing else registers. The resolver is called with every tool
-        // name in an agent's set, including MCP and bundle-owned names that are never registration
-        // keys — probing IServiceProvider.GetKeyedService with a name outside this bounded set would
-        // teach the root container's key-accessor cache a new, permanently-retained entry per distinct
-        // unregistered name, which is unbounded growth for a bundle-owned name space. See
-        // ToolCapabilityResolver's remarks.
+        // profile into a reported or enforced posture. Reads the shared FirstPartyToolLookup registered
+        // above — see its remarks for why the key set must stay bounded.
         services.AddSingleton<Interfaces.Tools.IToolCapabilityResolver>(sp => new Services.Tools.ToolCapabilityResolver(
-            sp,
+            sp.GetRequiredService<Services.Tools.FirstPartyToolLookup>(),
             sp.GetRequiredService<Interfaces.Tools.IToolBehaviorRegistry>(),
-            sp.GetRequiredService<IOptionsMonitor<Domain.Common.Config.AI.GovernanceConfig>>(),
-            new HashSet<string>(KeyedToolRegistrationKeys(services), StringComparer.Ordinal)));
+            sp.GetRequiredService<IOptionsMonitor<Domain.Common.Config.AI.GovernanceConfig>>()));
 
         // Tool composition analyzer + reporter — flags an agent's assembled tool set for an
         // untrusted-input/credential-reading tool co-resident with a file-write/code-exec/outbound-send

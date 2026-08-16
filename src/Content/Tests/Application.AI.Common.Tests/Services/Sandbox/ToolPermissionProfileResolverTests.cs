@@ -1,5 +1,6 @@
 using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Services.Sandbox;
+using Application.AI.Common.Services.Tools;
 using Domain.AI.Sandbox;
 using Domain.Common.Config.AI.Sandbox;
 using FluentAssertions;
@@ -31,10 +32,9 @@ public sealed class ToolPermissionProfileResolverTests
         var configMock = new Mock<IOptionsMonitor<SandboxConfig>>();
         configMock.Setup(m => m.CurrentValue).Returns(config ?? new SandboxConfig());
 
-        return new ToolPermissionProfileResolver(
-            services.BuildServiceProvider(),
-            configMock.Object,
-            new HashSet<string>(tools.Select(t => t.Name)));
+        var lookup = new FirstPartyToolLookup(
+            services.BuildServiceProvider(), new HashSet<string>(tools.Select(t => t.Name)));
+        return new ToolPermissionProfileResolver(lookup, configMock.Object);
     }
 
     private static ITool FileTool() => Mock.Of<ITool>(t =>
@@ -169,8 +169,8 @@ public sealed class ToolPermissionProfileResolverTests
         services.AddKeyedSingleton<ITool>("mcp_tool", (_, _) => FullTool());
         var configMock = new Mock<IOptionsMonitor<SandboxConfig>>();
         configMock.Setup(m => m.CurrentValue).Returns(new SandboxConfig());
-        var resolver = new ToolPermissionProfileResolver(
-            services.BuildServiceProvider(), configMock.Object, new HashSet<string>());
+        var lookup = new FirstPartyToolLookup(services.BuildServiceProvider(), new HashSet<string>());
+        var resolver = new ToolPermissionProfileResolver(lookup, configMock.Object);
 
         var profile = resolver.Resolve("mcp_tool");
 

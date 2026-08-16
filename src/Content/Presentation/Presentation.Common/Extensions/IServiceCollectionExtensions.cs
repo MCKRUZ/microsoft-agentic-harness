@@ -504,16 +504,13 @@ public static class IServiceCollectionExtensions
         // RAG must register before Infrastructure.AI — tool registrations depend on IRagOrchestrator
         services.AddRagDependencies(appConfig);
         services.AddInfrastructureAIDependencies(appConfig);
-        // The AGT kernel stands up whenever any of its three independent feature areas is on —
-        // the declarative policy layer (Enabled), prompt-injection detection, or MCP tool
-        // scanning — not only when Enabled is true (#386). Enabled alone used to gate all three,
-        // which meant disabling the policy layer silently disabled the other two as well.
-        // ArmsAgtKernel is the single expression for this decision — see its remarks for why this
-        // and Infrastructure.AI.MCPServer.Program must not each carry their own copy of it.
-        if (appConfig.AI?.Governance is { ArmsAgtKernel: true } govConfig)
-            services.AddGovernanceDependencies(govConfig);
-        else
-            services.AddGovernanceNoOpDependencies();
+        // AddGovernance chooses the AGT-backed wiring or the no-op set based on
+        // GovernanceConfig.ArmsAgtKernel — true whenever any of its three independent feature areas
+        // is on (the declarative policy layer, prompt-injection detection, or MCP tool scanning), not
+        // only when Enabled is true (#386). Enabled alone used to gate all three, which meant
+        // disabling the policy layer silently disabled the other two as well. A default (or absent)
+        // section has ArmsAgtKernel false, so an unconfigured host still gets the no-op set.
+        services.AddGovernance(appConfig.AI?.Governance ?? new GovernanceConfig());
         services.AddAIConnectors();
         services.AddMcpClientDependencies();
         services.AddInfrastructureApiAccessDependencies();

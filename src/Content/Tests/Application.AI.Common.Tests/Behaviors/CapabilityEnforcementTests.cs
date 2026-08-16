@@ -1,6 +1,7 @@
 using Application.AI.Common.Interfaces.Sandbox;
 using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Services.Sandbox;
+using Application.AI.Common.Services.Tools;
 using Domain.AI.Sandbox;
 using Domain.Common;
 using Domain.Common.Config.AI.Sandbox;
@@ -56,10 +57,9 @@ public sealed class CapabilityEnforcementTests
         var configMock = new Mock<IOptionsMonitor<SandboxConfig>>();
         configMock.Setup(m => m.CurrentValue).Returns(config ?? new SandboxConfig());
 
-        var resolver = new ToolPermissionProfileResolver(
-            services.BuildServiceProvider(),
-            configMock.Object,
-            new HashSet<string>(tools.Select(t => t.Name)));
+        var lookup = new FirstPartyToolLookup(
+            services.BuildServiceProvider(), new HashSet<string>(tools.Select(t => t.Name)));
+        var resolver = new ToolPermissionProfileResolver(lookup, configMock.Object);
         var enforcer = new CapabilityEnforcer(resolver, Mock.Of<ILogger<CapabilityEnforcer>>());
         return (resolver, enforcer);
     }

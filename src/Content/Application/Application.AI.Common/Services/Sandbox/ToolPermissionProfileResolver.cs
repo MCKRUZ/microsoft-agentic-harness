@@ -1,8 +1,8 @@
 using Application.AI.Common.Interfaces.Tools;
+using Application.AI.Common.Services.Tools;
 using Domain.Common.Helpers;
 using Domain.AI.Sandbox;
 using Domain.Common.Config.AI.Sandbox;
-using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 
 namespace Application.AI.Common.Services.Sandbox;
@@ -13,48 +13,34 @@ namespace Application.AI.Common.Services.Sandbox;
 /// runtime <see cref="ToolOverrideConfig"/> from appsettings. Uses deny-overrides-allow semantics.
 /// </summary>
 /// <remarks>
-/// <para>
-/// Mirrors <c>ToolCapabilityResolver</c> (the sibling resolver for the tool-composition capability
-/// model): the base classification comes from a bounded-key-set-gated keyed-DI lookup of
-/// <see cref="ITool"/>, not from a separately-populated cache a caller has to remember to feed. The
-/// previous design read a <c>[ToolCapabilityAttribute]</c> cached via an explicit
-/// <c>RegisterToolType</c> call — nothing in production ever called it, so every tool resolved
-/// <see cref="ToolCapability.None"/> regardless of what it actually needed, and the capability
-/// check downstream (<c>CapabilityEnforcer</c>) could never refuse a call (#387).
-/// </para>
-/// <para>
-/// <strong>Never probes keyed DI with a name outside the bounded registered-key set supplied to the
-/// constructor</strong> — see <c>ToolCapabilityResolver</c>'s remarks for why: <c>GetKeyedService</c>
-/// caches an accessor per distinct key it is asked about, even for a key nothing is registered
-/// under, in the ROOT container this singleton holds, so probing an unbounded name space (MCP or
-/// bundle-owned tool names) would be unbounded, process-lifetime memory growth.
-/// </para>
+/// Mirrors <see cref="ToolCapabilityResolver"/> (the sibling resolver for the tool-composition
+/// capability model): the base classification comes from the shared bounded-key-set-gated
+/// <see cref="FirstPartyToolLookup"/>, not from a separately-populated cache a caller has to
+/// remember to feed. The previous design read a <c>[ToolCapabilityAttribute]</c> cached via an
+/// explicit <c>RegisterToolType</c> call — nothing in production ever called it, so every tool
+/// resolved <see cref="ToolCapability.None"/> regardless of what it actually needed, and the
+/// capability check downstream (<c>CapabilityEnforcer</c>) could never refuse a call (#387).
 /// </remarks>
 public sealed class ToolPermissionProfileResolver
 {
-    private readonly IServiceProvider _serviceProvider;
+    private readonly FirstPartyToolLookup _firstPartyLookup;
     private readonly IOptionsMonitor<SandboxConfig> _config;
-    private readonly IReadOnlySet<string> _registeredFirstPartyToolKeys;
 
     /// <summary>Initializes a new instance of the <see cref="ToolPermissionProfileResolver"/> class.</summary>
-    /// <param name="serviceProvider">Root service provider, for bounded keyed-DI lookup of first-party tools.</param>
-    /// <param name="config">Sandbox configuration with per-tool overrides.</param>
-    /// <param name="registeredFirstPartyToolKeys">
-    /// The bounded set of keys <see cref="ITool"/> is actually registered under — see this type's
-    /// remarks for why probing keyed DI outside this set is unsafe.
+    /// <param name="firstPartyLookup">
+    /// The shared bounded-key-set-gated first-party tool lookup — see its remarks for why probing
+    /// keyed DI outside its bounded key set is unsafe.
     /// </param>
+    /// <param name="config">Sandbox configuration with per-tool overrides.</param>
     public ToolPermissionProfileResolver(
-        IServiceProvider serviceProvider,
-        IOptionsMonitor<SandboxConfig> config,
-        IReadOnlySet<string> registeredFirstPartyToolKeys)
+        FirstPartyToolLookup firstPartyLookup,
+        IOptionsMonitor<SandboxConfig> config)
     {
-        ArgumentNullException.ThrowIfNull(serviceProvider);
+        ArgumentNullException.ThrowIfNull(firstPartyLookup);
         ArgumentNullException.ThrowIfNull(config);
-        ArgumentNullException.ThrowIfNull(registeredFirstPartyToolKeys);
 
-        _serviceProvider = serviceProvider;
+        _firstPartyLookup = firstPartyLookup;
         _config = config;
-        _registeredFirstPartyToolKeys = registeredFirstPartyToolKeys;
     }
 
     /// <summary>
@@ -109,9 +95,7 @@ public sealed class ToolPermissionProfileResolver
     /// </summary>
     private (ToolCapability Capabilities, SandboxIsolationLevel Isolation) ResolveBase(string toolName)
     {
-        var firstParty = _registeredFirstPartyToolKeys.Contains(toolName)
-            ? _serviceProvider.GetKeyedService<ITool>(toolName)
-            : null;
+        var firstParty = _firstPartyLookup.Resolve(toolName);
 
         return firstParty is not null
             ? (firstParty.RequiredCapabilities, firstParty.MinimumIsolation)

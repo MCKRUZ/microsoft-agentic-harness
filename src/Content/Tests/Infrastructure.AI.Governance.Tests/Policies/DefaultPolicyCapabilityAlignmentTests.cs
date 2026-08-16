@@ -68,10 +68,14 @@ public sealed class DefaultPolicyCapabilityAlignmentTests
         RegexOptions.Compiled);
 
     /// <summary>
-    /// Parses the shipped YAML's three named rules into (rule name, tool names) pairs. Deliberately a
-    /// small targeted regex, not a general YAML parser — the shipped file's shape is simple and
-    /// stable, and a full parser would be more machinery than this test needs.
+    /// The shipped YAML's three named rules, parsed once into (rule name, tool names) pairs.
+    /// Deliberately a small targeted regex, not a general YAML parser — the shipped file's shape is
+    /// simple and stable, and a full parser would be more machinery than this test needs. `static
+    /// readonly` (not a method re-run per test) so the file is read and parsed once per test-class run,
+    /// not once per `[Fact]`/`[Theory]` row.
     /// </summary>
+    private static readonly IReadOnlyDictionary<string, IReadOnlyList<string>> RuleToolNames = ParseRuleToolNames();
+
     private static IReadOnlyDictionary<string, IReadOnlyList<string>> ParseRuleToolNames()
     {
         var yaml = File.ReadAllText(PolicyPath);
@@ -88,52 +92,29 @@ public sealed class DefaultPolicyCapabilityAlignmentTests
         return result;
     }
 
-    [Fact]
-    public void SandboxedExecutionTier_EveryNamedTool_DeclaresSubprocess()
+    [Theory]
+    [InlineData("warn-sandboxed-execution", ToolCapability.Subprocess, ToolCapability.None)]
+    [InlineData("warn-file-mutation", ToolCapability.FileWrite, ToolCapability.Subprocess)]
+    [InlineData("allow-read-only-tools", ToolCapability.None, ToolCapability.Subprocess | ToolCapability.FileWrite)]
+    public void EveryNamedTool_DeclaresMustHaveFlagsAndNoneOfMustNotHaveFlags(
+        string ruleName, ToolCapability mustHave, ToolCapability mustNotHave)
     {
-        var rules = ParseRuleToolNames();
-        rules.Should().ContainKey("warn-sandboxed-execution");
+        RuleToolNames.Should().ContainKey(ruleName);
 
-        foreach (var toolName in rules["warn-sandboxed-execution"])
+        foreach (var toolName in RuleToolNames[ruleName])
         {
             RealDeclarations.Should().ContainKey(toolName,
-                $"'{toolName}' is named in warn-sandboxed-execution but this test does not yet resolve its RequiredCapabilities");
-            RealDeclarations[toolName].Should().HaveFlag(ToolCapability.Subprocess,
-                $"'{toolName}' is classified as sandboxed-execution but does not declare Subprocess");
-        }
-    }
+                $"'{toolName}' is named in {ruleName} but this test does not yet resolve its RequiredCapabilities");
 
-    [Fact]
-    public void FileMutationTier_EveryNamedTool_DeclaresFileWriteAndNotSubprocess()
-    {
-        var rules = ParseRuleToolNames();
-        rules.Should().ContainKey("warn-file-mutation");
+            if (mustHave != ToolCapability.None)
+                RealDeclarations[toolName].Should().HaveFlag(mustHave,
+                    $"'{toolName}' is classified as {ruleName} but does not declare {mustHave}");
 
-        foreach (var toolName in rules["warn-file-mutation"])
-        {
-            RealDeclarations.Should().ContainKey(toolName,
-                $"'{toolName}' is named in warn-file-mutation but this test does not yet resolve its RequiredCapabilities");
-            RealDeclarations[toolName].Should().HaveFlag(ToolCapability.FileWrite,
-                $"'{toolName}' is classified as file-mutation but does not declare FileWrite");
-            RealDeclarations[toolName].Should().NotHaveFlag(ToolCapability.Subprocess,
-                $"'{toolName}' declares Subprocess and belongs in warn-sandboxed-execution, not warn-file-mutation");
-        }
-    }
-
-    [Fact]
-    public void ReadOnlyTier_EveryNamedTool_DeclaresNeitherSubprocessNorFileWrite()
-    {
-        var rules = ParseRuleToolNames();
-        rules.Should().ContainKey("allow-read-only-tools");
-
-        foreach (var toolName in rules["allow-read-only-tools"])
-        {
-            RealDeclarations.Should().ContainKey(toolName,
-                $"'{toolName}' is named in allow-read-only-tools but this test does not yet resolve its RequiredCapabilities");
-            RealDeclarations[toolName].Should().NotHaveFlag(ToolCapability.Subprocess,
-                $"'{toolName}' declares Subprocess and does not belong in the read-only tier");
-            RealDeclarations[toolName].Should().NotHaveFlag(ToolCapability.FileWrite,
-                $"'{toolName}' declares FileWrite and does not belong in the read-only tier");
+            if (mustNotHave != ToolCapability.None)
+                foreach (ToolCapability flag in Enum.GetValues<ToolCapability>())
+                    if (flag != ToolCapability.None && mustNotHave.HasFlag(flag))
+                        RealDeclarations[toolName].Should().NotHaveFlag(flag,
+                            $"'{toolName}' declares {flag} and does not belong in {ruleName}");
         }
     }
 
@@ -145,8 +126,7 @@ public sealed class DefaultPolicyCapabilityAlignmentTests
     [Fact]
     public void AllNamedToolsAreCoveredByThisTest()
     {
-        var rules = ParseRuleToolNames();
-        var allNamedTools = rules.Values.SelectMany(t => t).Distinct().ToList();
+        var allNamedTools = RuleToolNames.Values.SelectMany(t => t).Distinct().ToList();
 
         allNamedTools.Should().NotBeEmpty("the parser must find at least the three shipped rules");
         allNamedTools.Should().OnlyContain(t => RealDeclarations.ContainsKey(t),

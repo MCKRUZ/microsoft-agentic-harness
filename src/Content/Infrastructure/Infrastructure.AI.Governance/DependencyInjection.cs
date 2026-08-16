@@ -15,11 +15,28 @@ using Microsoft.Extensions.Logging;
 namespace Infrastructure.AI.Governance;
 
 /// <summary>
-/// Registers Agent Governance Toolkit services and harness adapter implementations.
-/// Call from the composition root when <c>GovernanceConfig.Enabled</c> is true.
+/// Registers Agent Governance Toolkit services and harness adapter implementations. Composition
+/// roots call <see cref="AddGovernance"/>, which chooses this wiring or the no-op set based on
+/// <see cref="GovernanceConfig.ArmsAgtKernel"/>.
 /// </summary>
 public static class DependencyInjection
 {
+    /// <summary>
+    /// Adds governance services to the service collection, choosing the AGT-backed implementation or
+    /// the no-op set based on <see cref="GovernanceConfig.ArmsAgtKernel"/> — the single unconditional
+    /// entry point composition roots should call, so a caller never has to ask <c>ArmsAgtKernel</c>
+    /// first and branch between <see cref="AddGovernanceDependencies"/>/
+    /// <see cref="AddGovernanceNoOpDependencies"/> itself. Both underlying methods stay public: unit
+    /// tests that want to force one wiring or the other (e.g. proving the AGT path resolves correctly
+    /// regardless of <see cref="GovernanceConfig.Enabled"/>) call them directly.
+    /// </summary>
+    public static IServiceCollection AddGovernance(
+        this IServiceCollection services,
+        GovernanceConfig config) =>
+        config.ArmsAgtKernel
+            ? services.AddGovernanceDependencies(config)
+            : services.AddGovernanceNoOpDependencies();
+
     /// <summary>
     /// Adds AGT-backed governance services to the service collection.
     /// Registers the <see cref="GovernanceKernel"/> as a singleton and wires
@@ -232,7 +249,7 @@ public static class DependencyInjection
 
     /// <summary>
     /// Adds no-op governance services that satisfy DI without AGT.
-    /// Used when <c>GovernanceConfig.Enabled</c> is false.
+    /// Used when <see cref="GovernanceConfig.ArmsAgtKernel"/> is false.
     /// </summary>
     public static IServiceCollection AddGovernanceNoOpDependencies(
         this IServiceCollection services)

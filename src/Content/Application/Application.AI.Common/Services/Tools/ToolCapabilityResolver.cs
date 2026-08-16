@@ -2,7 +2,6 @@ using Application.AI.Common.Interfaces.Tools;
 using Domain.AI.Governance;
 using Domain.Common.Config.AI;
 using Domain.Common.Config.AI.Governance;
-using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 
 namespace Application.AI.Common.Services.Tools;
@@ -13,50 +12,35 @@ namespace Application.AI.Common.Services.Tools;
 /// open-world hint and operator overrides — see the interface's remarks for the exact precedence.
 /// </summary>
 /// <remarks>
-/// <para>
 /// Registered as a singleton, like <see cref="ToolBehaviorRegistry"/>: it holds no per-call state and
-/// every input it needs (the config snapshot, the behaviour registry, keyed DI) is already safe to read
-/// from any scope.
-/// </para>
-/// <para>
-/// <strong>Never probes keyed DI with a name outside the bounded registered-key set supplied to the
-/// constructor.</strong> This resolver is called for every tool in an agent's set, including
-/// MCP and bundle-owned tools whose published names are not registration keys — a bundle-owned name
-/// embeds a per-run bundle id, so that key space is unbounded across a process lifetime.
-/// <c>IServiceProvider.GetKeyedService</c> caches an accessor per distinct key it is asked about, even
-/// for a key nothing is registered under, in the ROOT container this singleton holds — so probing an
-/// unbounded name space there is unbounded, process-lifetime memory growth, not a per-call cost. The
-/// bounded key set (built once, at the same place <see cref="ToolCatalog"/>'s is) is what keeps the
-/// probe itself bounded.
-/// </para>
+/// every input it needs (the config snapshot, the behaviour registry, the shared
+/// <see cref="FirstPartyToolLookup"/>) is already safe to read from any scope. The bounded-key-set
+/// safety invariant for the keyed-DI lookup itself lives on <see cref="FirstPartyToolLookup"/> — see
+/// its remarks — shared with <c>ToolPermissionProfileResolver</c> rather than duplicated here.
 /// </remarks>
 public sealed class ToolCapabilityResolver : IToolCapabilityResolver
 {
-    private readonly IServiceProvider _serviceProvider;
+    private readonly FirstPartyToolLookup _firstPartyLookup;
     private readonly IToolBehaviorRegistry _behaviorRegistry;
     private readonly IOptionsMonitor<GovernanceConfig> _governanceConfig;
-    private readonly IReadOnlySet<string> _registeredFirstPartyToolKeys;
 
     /// <summary>Initializes a new instance of the <see cref="ToolCapabilityResolver"/> class.</summary>
-    /// <param name="registeredFirstPartyToolKeys">
-    /// The bounded set of keys <see cref="ITool"/> is actually registered under — see this type's
-    /// remarks for why probing keyed DI outside this set is unsafe.
+    /// <param name="firstPartyLookup">
+    /// The shared bounded-key-set-gated first-party tool lookup — see its remarks for why probing
+    /// keyed DI outside its bounded key set is unsafe.
     /// </param>
     public ToolCapabilityResolver(
-        IServiceProvider serviceProvider,
+        FirstPartyToolLookup firstPartyLookup,
         IToolBehaviorRegistry behaviorRegistry,
-        IOptionsMonitor<GovernanceConfig> governanceConfig,
-        IReadOnlySet<string> registeredFirstPartyToolKeys)
+        IOptionsMonitor<GovernanceConfig> governanceConfig)
     {
-        ArgumentNullException.ThrowIfNull(serviceProvider);
+        ArgumentNullException.ThrowIfNull(firstPartyLookup);
         ArgumentNullException.ThrowIfNull(behaviorRegistry);
         ArgumentNullException.ThrowIfNull(governanceConfig);
-        ArgumentNullException.ThrowIfNull(registeredFirstPartyToolKeys);
 
-        _serviceProvider = serviceProvider;
+        _firstPartyLookup = firstPartyLookup;
         _behaviorRegistry = behaviorRegistry;
         _governanceConfig = governanceConfig;
-        _registeredFirstPartyToolKeys = registeredFirstPartyToolKeys;
     }
 
     /// <inheritdoc />
@@ -141,13 +125,9 @@ public sealed class ToolCapabilityResolver : IToolCapabilityResolver
     /// </remarks>
     private (ToolCompositionCapability Capabilities, ToolCapabilityOrigin Origin) ResolveBase(string publishedToolName)
     {
-        // Gated on the bounded registered-key set before ever reaching the container — see this
-        // type's remarks. An MCP or bundle-owned name that is not a registration key skips straight to
-        // the keyword heuristic below, exactly as it would if GetKeyedService had been called and
-        // returned null, but without teaching the root provider a new permanent, never-reused key.
-        var firstParty = _registeredFirstPartyToolKeys.Contains(publishedToolName)
-            ? _serviceProvider.GetKeyedService<ITool>(publishedToolName)
-            : null;
+        // Bounded-key-set-gated — see FirstPartyToolLookup's remarks. An MCP or bundle-owned name that
+        // is not a registration key resolves to null and skips straight to the keyword heuristic below.
+        var firstParty = _firstPartyLookup.Resolve(publishedToolName);
         if (firstParty is not null)
         {
             return firstParty.Capabilities != ToolCompositionCapability.None

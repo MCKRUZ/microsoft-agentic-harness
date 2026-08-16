@@ -1,5 +1,6 @@
 using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Services.Sandbox;
+using Application.AI.Common.Services.Tools;
 using Domain.AI.Sandbox;
 using Domain.Common.Config.AI.Sandbox;
 using FluentAssertions;
@@ -32,8 +33,9 @@ public sealed class CapabilityEnforcerSolutionReviewFixTests
         var configMock = new Mock<IOptionsMonitor<SandboxConfig>>();
         configMock.Setup(m => m.CurrentValue).Returns(config);
 
-        var resolver = new ToolPermissionProfileResolver(
-            services.BuildServiceProvider(), configMock.Object, new HashSet<string> { "file_system" });
+        var lookup = new FirstPartyToolLookup(
+            services.BuildServiceProvider(), new HashSet<string> { "file_system" });
+        var resolver = new ToolPermissionProfileResolver(lookup, configMock.Object);
         return new CapabilityEnforcer(resolver, Mock.Of<ILogger<CapabilityEnforcer>>());
     }
 
