@@ -90,8 +90,18 @@ public sealed class SandboxedStdioClientTransport(
         public async ValueTask DisposeAsync()
         {
             Volatile.Write(ref _disposed, 1);
-            await _inner.DisposeAsync();
-            await _session.DisposeAsync();
+            // try/finally, not a plain sequence: if the SDK transport's own teardown throws, the
+            // sandbox session — the heavier resource, owning the container/process, its workspace,
+            // and the DI scope that resolved it — must still be released rather than leaking until
+            // MaxSessionDuration elapses.
+            try
+            {
+                await _inner.DisposeAsync();
+            }
+            finally
+            {
+                await _session.DisposeAsync();
+            }
         }
 
         /// <summary>

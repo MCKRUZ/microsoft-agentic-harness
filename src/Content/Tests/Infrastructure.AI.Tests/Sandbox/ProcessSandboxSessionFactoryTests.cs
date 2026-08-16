@@ -224,46 +224,38 @@ public class ProcessSandboxSessionFactoryTests
     }
 
     [SkippableFact]
-    public async Task StartSessionAsync_CallerCancelsAfterProcessStarted_KillsTheOrphanedProcess()
+    public async Task StartSessionAsync_CallerCancelsAfterProcessStarted_SessionStillCompletesAndIsAttested()
     {
         Skip.IfNot(OperatingSystem.IsWindows(), "Windows-only: spawns a real cmd.exe process.");
 
-        // Cancels the token AFTER the real process has already been spawned (StartProcess
-        // succeeded) but before StartSessionAsync returns — the same shape as the caller's
-        // InitializationTimeout firing mid-startup. Before the fix, the cleanup catch excluded
-        // OperationCanceledException entirely, so the spawned process, its Job Object handle,
-        // and its workspace were all leaked in exactly this case. Cancellation has to actually
-        // surface as an exception to exercise that catch — ApplyResourceLimits itself doesn't
-        // observe ct, so the cancellation is set to fire on the next ct-aware call, the
-        // attestation signer's SignStartAsync, mirroring where a real cancelled ct would first
-        // be observed on this path.
+        // By the time ApplyResourceLimits returns, the real process is already running — the
+        // untrusted command is already executing. SignStartAsync deliberately no longer takes the
+        // caller's token (see its own remarks): abandoning the "session started" attestation for
+        // an event that has unconditionally already happened would leave the audit trail with
+        // neither a start nor a failure record. So cancelling ct at this exact point must NOT
+        // abort the session — it must complete normally and still get its start attestation.
+        // (A caller that genuinely wants out after this point disposes the returned session or
+        // lets the outer MCP handshake's own cancellation handle it — a separate, already-covered
+        // path — rather than this factory silently discarding a session that is already running.)
         using var cts = new CancellationTokenSource();
-        int? capturedProcessId = null;
         _limiter.Setup(x => x.Apply(It.IsAny<System.Diagnostics.Process>(), It.IsAny<ResourceLimits>()))
-            .Returns<System.Diagnostics.Process, ResourceLimits>((p, _) =>
+            .Returns<System.Diagnostics.Process, ResourceLimits>((_, _) =>
             {
-                capturedProcessId = p.Id;
                 cts.Cancel();
                 return true;
             });
-        _attestation
-            .Setup(x => x.SignAsync(It.IsAny<AttestationRequest>(), It.IsAny<CancellationToken>()))
-            .Returns<AttestationRequest, CancellationToken>((_, ct) =>
-            {
-                ct.ThrowIfCancellationRequested();
-                throw new InvalidOperationException("unreachable: ThrowIfCancellationRequested always throws first");
-            });
 
-        var act = () => _sut.StartSessionAsync(CreateRequest(), cts.Token);
+        var result = await _sut.StartSessionAsync(CreateRequest(), cts.Token);
 
-        await act.Should().ThrowAsync<OperationCanceledException>(
-            "cancellation after the process exists must still propagate as a cancellation");
-        capturedProcessId.Should().NotBeNull();
-        _limiter.Verify(x => x.Release(capturedProcessId!.Value), Times.Once,
-            "the process spawned before cancellation fired must not be leaked, including its Job Object handle");
+        result.IsSuccess.Should().BeTrue(
+            "the session already exists once the process is spawned — the caller's token firing " +
+            "after that point must not discard a session that is already running");
+        await using var session = result.Value!;
         _attestation.Verify(x => x.SignAsync(
-                It.Is<AttestationRequest>(r => r.IsFailure), It.IsAny<CancellationToken>()),
-            Times.Never, "a caller giving up is not the security-relevant rejection SignFailureAsync exists to record");
+                It.Is<AttestationRequest>(r => !r.IsFailure), It.IsAny<CancellationToken>()),
+            Times.Once,
+            "the audit trail must still record that a session actually started, even though the " +
+            "caller's token was already cancelled by the time the attestation call ran");
     }
 
     [SkippableFact]

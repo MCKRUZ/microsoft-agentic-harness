@@ -23,6 +23,16 @@ public sealed class DockerSandboxSessionFactory(
     IOptionsMonitor<SandboxConfig> sandboxConfig,
     ILogger<DockerSandboxSession> sessionLogger) : ISandboxSessionFactory
 {
+    /// <summary>
+    /// Stable, scrubbed caller-visible failure code for an unexpected Docker error — the raw
+    /// exception message (which can embed the workspace host path, image name, or daemon socket
+    /// path) is logged via structured logging instead of returned to the caller in
+    /// <see cref="Result{T}"/>, matching this repo's <c>skill_training.*</c> stable-code
+    /// convention. The full diagnostic detail is still attested (an internal audit record, not a
+    /// caller-facing string) via <see cref="SandboxSessionAttestationSigner.SignFailureAsync"/>.
+    /// </summary>
+    private const string DockerErrorFailureCode = "sandbox.docker_session_start_failed";
+
     /// <inheritdoc />
     public async Task<Result<ISandboxSession>> StartSessionAsync(SandboxSessionRequest request, CancellationToken ct)
     {
@@ -113,32 +123,58 @@ public sealed class DockerSandboxSessionFactory(
                 request.MaxSessionDuration, sessionLogger);
 
             // Signed only once the session object actually exists, so a failure past this point
-            // can never leave behind a "started" attestation for a session the caller never
-            // received. The audit trail must still record that a session actually started, not
-            // just that some were refused: a running session is the more consequential event.
-            await attestationSigner.SignStartAsync(request, egressDigest, ct);
+            // (e.g. the attestation write itself timing out) can never leave behind a "started"
+            // attestation for a session the caller never received. The audit trail must still
+            // record that a session actually started, not just that some were refused: a running
+            // session is the more consequential event. Deliberately not passed ct — see
+            // SignStartAsync's own remarks for why signing this specific event must not be
+            // abandonable by the caller's token.
+            await attestationSigner.SignStartAsync(request, egressDigest);
 
             return Result<ISandboxSession>.Success(session);
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
-            // The caller gave up (e.g. McpConnectionManager's InitializationTimeout) after the
-            // container was already created/started. Tear down whatever exists — the constructed
-            // session if SignStartAsync is what threw, otherwise the bare container — none of
-            // that cleanup depends on ct, so it still runs with ct already cancelled — but skip
-            // attestation: signing with a cancelled ct would itself throw, and a caller giving up
-            // is not the security-relevant rejection SignFailureAsync exists to record. Then let
-            // cancellation propagate as the caller expects.
+            // Filtered on ct specifically: an OperationCanceledException whose token is NOT ct
+            // (e.g. Docker.DotNet's own internal HTTP timeout, which does not use the caller's
+            // token) is not "the caller gave up" and must fall into the catch (Exception) below
+            // instead, where it gets a proper attested Result.Fail rather than an unattested
+            // rethrow.
+            //
+            // Here, the caller genuinely did give up (e.g. McpConnectionManager's
+            // InitializationTimeout) after the container was already created/started. Tear down
+            // whatever exists — the constructed session if SignStartAsync is what threw,
+            // otherwise the bare container — none of that cleanup depends on ct, so it still runs
+            // with ct already cancelled — but skip attestation here: SignFailureAsync's ct would
+            // already be cancelled too, and a caller giving up before this point is not the
+            // security-relevant rejection it exists to record. Then let cancellation propagate as
+            // the caller expects.
             await TearDownPartialStartAsync(session, attachStream, containerId, workspaceDir);
             throw;
         }
-        catch (Exception ex)
+        catch (InvalidOperationException ex)
         {
+            // A deliberate, safe rejection message from DockerContainerLaunchPreparer's own image
+            // allowlist check ("Image 'x' not in allowed registry list...") — not raw external
+            // exception text, so unlike catch (Exception) below it is not scrubbed: there is
+            // nothing here an operator shouldn't see, and hiding it would make a config mistake
+            // harder to diagnose for no security benefit.
             await TearDownPartialStartAsync(session, attachStream, containerId, workspaceDir);
 
-            var failureReason = $"Docker error: {ex.Message}";
-            await attestationSigner.SignFailureAsync(request, failureReason, egressDigest, ct);
-            return Result<ISandboxSession>.Fail(failureReason);
+            await attestationSigner.SignFailureAsync(request, ex.Message, egressDigest, ct);
+            return Result<ISandboxSession>.Fail(ex.Message);
+        }
+        catch (Exception ex)
+        {
+            // Unlike the InvalidOperationException arm above, ex.Message here can be raw Docker
+            // daemon exception text (workspace host path, image name, daemon socket path) —
+            // scrubbed from the caller-visible result; the full detail is still logged and
+            // attested.
+            await TearDownPartialStartAsync(session, attachStream, containerId, workspaceDir);
+
+            sessionLogger.LogWarning(ex, "Docker sandbox session failed to start for tool {ToolName}", request.ToolName);
+            await attestationSigner.SignFailureAsync(request, $"Docker error: {ex.Message}", egressDigest, ct);
+            return Result<ISandboxSession>.Fail(DockerErrorFailureCode);
         }
     }
 

@@ -36,6 +36,16 @@ public sealed class ProcessSandboxSessionFactory(
     IOptionsMonitor<SandboxConfig> sandboxConfig,
     ILogger<ProcessSandboxSession> sessionLogger) : ISandboxSessionFactory
 {
+    /// <summary>
+    /// Stable, scrubbed caller-visible failure code for an unexpected process error — the raw
+    /// exception message (e.g. a Win32Exception embedding a host path) is logged via structured
+    /// logging instead of returned to the caller in <see cref="Result{T}"/>, matching this repo's
+    /// <c>skill_training.*</c> stable-code convention. The full diagnostic detail is still
+    /// attested (an internal audit record, not a caller-facing string) via
+    /// <see cref="SandboxSessionAttestationSigner.SignFailureAsync"/>.
+    /// </summary>
+    private const string ProcessErrorFailureCode = "sandbox.process_session_start_failed";
+
     /// <inheritdoc />
     public async Task<Result<ISandboxSession>> StartSessionAsync(SandboxSessionRequest request, CancellationToken ct)
     {
@@ -77,25 +87,44 @@ public sealed class ProcessSandboxSessionFactory(
 
             // Signed only once the session object actually exists — not before it, and not
             // wrapped together with construction in the same try region as a bare `new` — so a
-            // failure past this point (this call itself throwing, e.g. on a cancelled ct) can
-            // never leave behind a "started" attestation for a session the caller never
-            // received. The audit trail must still record that a session actually started, not
-            // just that some were refused: a running session is the more consequential event.
-            await attestationSigner.SignStartAsync(request, egressDigest, ct);
+            // failure past this point (e.g. the attestation write itself timing out) can never
+            // leave behind a "started" attestation for a session the caller never received. The
+            // audit trail must still record that a session actually started, not just that some
+            // were refused: a running session is the more consequential event. Deliberately not
+            // passed ct — see SignStartAsync's own remarks for why signing this specific event
+            // must not be abandonable by the caller's token.
+            await attestationSigner.SignStartAsync(request, egressDigest);
 
             return Result<ISandboxSession>.Success(session);
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
-            // The caller gave up (e.g. McpConnectionManager's InitializationTimeout) after the
-            // process was already spawned. Tear down whatever exists — the constructed session if
-            // SignStartAsync is what threw, otherwise the bare process — none of that cleanup
-            // depends on ct, so it still runs with ct already cancelled — but skip attestation:
-            // signing with a cancelled ct would itself throw, and a caller giving up is not the
-            // security-relevant rejection SignFailureAsync exists to record. Then let cancellation
-            // propagate.
+            // Filtered on ct specifically: an OperationCanceledException whose token is NOT ct
+            // (e.g. an internal timeout inside StartProcess unrelated to the caller) is not "the
+            // caller gave up" and must fall into the catch (Exception) below instead, where it
+            // gets a proper attested Result.Fail rather than an unattested rethrow.
+            //
+            // Here, the caller genuinely did give up (e.g. McpConnectionManager's
+            // InitializationTimeout) after the process was already spawned. Tear down whatever
+            // exists — the constructed session if SignStartAsync is what threw, otherwise the
+            // bare process — none of that cleanup depends on ct, so it still runs with ct already
+            // cancelled — but skip attestation here: SignFailureAsync's ct would already be
+            // cancelled too, and a caller giving up before this point is not the security-relevant
+            // rejection it exists to record. Then let cancellation propagate.
             await TearDownPartialStartAsync(session, process, workspaceDir);
             throw;
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            // A deliberate, safe rejection message from ProcessSandboxLaunchPreparer.StartProcess's
+            // own allowlist check ("Command 'x' is not in the allowed programs list") — not raw
+            // external exception text, so unlike catch (Exception) below it is not scrubbed:
+            // there is nothing here an operator shouldn't see, and hiding it would make a
+            // config mistake harder to diagnose for no security benefit.
+            await TearDownPartialStartAsync(session, process, workspaceDir);
+
+            await attestationSigner.SignFailureAsync(request, ex.Message, egressDigest, ct);
+            return Result<ISandboxSession>.Fail(ex.Message);
         }
         catch (Exception ex)
         {
@@ -105,12 +134,16 @@ public sealed class ProcessSandboxSessionFactory(
             // process here is a safe no-op), the session constructor throwing (e.g. an invalid
             // MaxSessionDuration — session stays null, so the bare-process branch below applies),
             // or SignStartAsync itself throwing after a valid session already exists (the
-            // session's own DisposeAsync then owns tearing the process down).
+            // session's own DisposeAsync then owns tearing the process down). Unlike the
+            // UnauthorizedAccessException arm above, ex.Message here can be raw OS/process
+            // exception text (e.g. a Win32Exception embedding a host path) — scrubbed from the
+            // caller-visible result; the full detail is still logged and attested.
             await TearDownPartialStartAsync(session, process, workspaceDir);
 
+            sessionLogger.LogWarning(ex, "Process sandbox session failed to start for tool {ToolName}", request.ToolName);
             var failureReason = $"Process sandbox session failed to start: {ex.Message}";
             await attestationSigner.SignFailureAsync(request, failureReason, egressDigest, ct);
-            return Result<ISandboxSession>.Fail(failureReason);
+            return Result<ISandboxSession>.Fail(ProcessErrorFailureCode);
         }
     }
 

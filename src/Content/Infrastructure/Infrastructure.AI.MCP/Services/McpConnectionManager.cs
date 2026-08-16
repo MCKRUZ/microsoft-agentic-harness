@@ -465,18 +465,34 @@ public sealed class McpConnectionManager : IAsyncDisposable
     /// not with the transport plumbing here. Resource limits use sandbox defaults.
     /// <para>
     /// The permission profile is resolved through <see cref="ToolPermissionProfileResolver"/> —
-    /// not built as an inline literal — so an operator's <c>SandboxConfig.ToolOverrides</c> entry
-    /// keyed on this server name (denied capabilities, denied hosts, a raised isolation floor)
-    /// applies here exactly as it would for any other tool name. Without that, an operator could
-    /// lock down this same server's container image via <c>SandboxExecutionOptions.ToolOverrides</c>
-    /// (read by <c>DockerContainerLaunchPreparer.ResolveImage</c>) while a capability or host
-    /// restriction on the identical name silently had no effect — two override registries for one
-    /// tool name, only one of them consulted. A bundle-owned name is outside the bounded
-    /// first-party key set, so the resolver's base declaration is
-    /// <see cref="ToolCapability.None"/>/<see cref="SandboxIsolationLevel.None"/>; the isolation
-    /// floor is then raised to <see cref="SandboxIsolationLevel.Container"/> via
-    /// <c>Math.Max</c>, matching how the resolver itself combines a base declaration with an
-    /// override (never downgrades, only raises).
+    /// not built as an inline literal — so this path consults the same override registry
+    /// (<c>SandboxConfig.ToolOverrides</c>) that <c>SandboxExecutionOptions.ToolOverrides</c>
+    /// (read by <c>DockerContainerLaunchPreparer.ResolveImage</c> for the container image) is a
+    /// sibling of, instead of a second, unconsulted one. Precisely what this achieves today,
+    /// verified rather than assumed:
+    /// <list type="bullet">
+    /// <item><description>Only <see cref="ToolPermissionProfile.RequiredCapabilities"/> and
+    /// <see cref="ToolPermissionProfile.MinimumIsolation"/> reach the container launch (via
+    /// <c>DockerContainerLaunchPreparer.BuildContainerParams</c>) — <c>DeniedHosts</c>/
+    /// <c>AllowedHosts</c>/<c>AllowedPaths</c>/<c>DeniedPaths</c> have no consumer on this path
+    /// today (their only reader is <c>CapabilityEnforcer</c>, used elsewhere); an override
+    /// authored there has no effect here yet.</description></item>
+    /// <item><description>A bundle-owned name is outside the bounded first-party key set, so the
+    /// resolver's base declaration is <see cref="ToolCapability.None"/>/<see cref="SandboxIsolationLevel.None"/>
+    /// — <c>DeniedCapabilities</c> can only subtract from <c>None</c>, so it stays <c>None</c>
+    /// regardless of what an operator writes. The isolation floor is then raised to
+    /// <see cref="SandboxIsolationLevel.Container"/> unconditionally via <c>Math.Max</c>, so a
+    /// <c>MinimumIsolation</c> override can never lower it either.</description></item>
+    /// <item><description>A bundle-owned server name is <c>{bundleId}:{serverName}</c> —
+    /// <c>bundleId</c> is a fresh GUID per staging (<c>BundleStagingService</c>) — so no operator
+    /// can currently author a <c>ToolOverrides</c> key that matches one at all. The resolver call
+    /// is inert-by-construction today, not merely unexercised.</description></item>
+    /// </list>
+    /// The wiring is kept anyway: it is the correct long-term shape (one override registry
+    /// consulted uniformly by tool name, not two, one of them silently skipped), and the resolved
+    /// <see cref="ToolCapability.None"/> is itself the reason a bundle-owned container gets no
+    /// network access and a read-only workspace bind mount by default — a stronger posture than
+    /// leaving the override path unconsulted would suggest.
     /// </para>
     /// </remarks>
     private async Task<Result<ISandboxSession>> StartSandboxedStdioSessionAsync(
