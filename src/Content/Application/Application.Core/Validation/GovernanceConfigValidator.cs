@@ -65,12 +65,13 @@ public sealed class GovernanceConfigValidator : AbstractValidator<GovernanceConf
         // because the composition root only ever wired the AGT kernel path when Enabled was true —
         // turning one on while governance was "disabled" was a silent no-op. That coupling is gone:
         // the composition root (Presentation.Common.IServiceCollectionExtensions,
-        // Infrastructure.AI.MCPServer.Program) now stands up AddGovernanceDependencies whenever ANY
-        // of Enabled, EnablePromptInjectionDetection, or EnableMcpSecurity is true, and
-        // AddGovernanceDependencies itself only loads the declarative policy layer (PolicyPaths,
-        // IGovernancePolicyEngine) when Enabled is true — resolving NoOpPolicyEngine otherwise. So
-        // Enabled now governs the policy layer alone; the other two arm the kernel on their own and
-        // no longer need this validator's help to do so.
+        // Infrastructure.AI.MCPServer.Program) now calls AddGovernance, which stands up
+        // AddGovernanceDependencies whenever GovernanceConfig.ArmsAgtKernel is true — any one of
+        // Enabled, EnablePromptInjectionDetection, EnableMcpSecurity, EnableResponseSanitization, or
+        // DataClassification.Mode != Off — and AddGovernanceDependencies itself only loads the
+        // declarative policy layer (PolicyPaths, IGovernancePolicyEngine) when Enabled is true —
+        // resolving NoOpPolicyEngine otherwise. So Enabled now governs the policy layer alone; the
+        // other four arm the kernel on their own and no longer need this validator's help to do so.
 
         // The same landmine shape, for the behaviour posture — but stated precisely, because the imprecise
         // version of this sentence is wrong. The posture is applied by IToolInvocationGovernor, and

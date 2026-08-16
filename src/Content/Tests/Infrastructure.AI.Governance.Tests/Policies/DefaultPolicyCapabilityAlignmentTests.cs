@@ -63,8 +63,15 @@ public sealed class DefaultPolicyCapabilityAlignmentTests
 
     private static readonly Regex ToolNamePattern = new(@"tool\s*==\s*'([a-zA-Z0-9_]+)'", RegexOptions.Compiled);
 
+    /// <summary>
+    /// Matches a rule block name and condition, tolerating zero or more full-line comments between
+    /// them — the shipped YAML is heavily commented and a rule with an inline comment between its
+    /// <c>name</c> and <c>condition</c> lines is a plausible future edit given the file's existing
+    /// style; silently dropping that block from <see cref="RuleToolNames"/> would defeat this test's
+    /// whole purpose for exactly the rules a reader is most likely to add a comment to.
+    /// </summary>
     private static readonly Regex RuleBlockPattern = new(
-        @"- name:\s*(?<name>\S+)\s*\r?\n\s*condition:\s*""(?<condition>[^""]*)""",
+        @"- name:\s*(?<name>\S+)\s*\r?\n(?:\s*#[^\r\n]*\r?\n)*\s*condition:\s*""(?<condition>[^""]*)""",
         RegexOptions.Compiled);
 
     /// <summary>
@@ -95,7 +102,8 @@ public sealed class DefaultPolicyCapabilityAlignmentTests
     [Theory]
     [InlineData("warn-sandboxed-execution", ToolCapability.Subprocess, ToolCapability.None)]
     [InlineData("warn-file-mutation", ToolCapability.FileWrite, ToolCapability.Subprocess)]
-    [InlineData("allow-read-only-tools", ToolCapability.None, ToolCapability.Subprocess | ToolCapability.FileWrite)]
+    [InlineData("allow-read-only-tools", ToolCapability.None,
+        ToolCapability.Subprocess | ToolCapability.FileWrite | ToolCapability.NetworkAccess)]
     public void EveryNamedTool_DeclaresMustHaveFlagsAndNoneOfMustNotHaveFlags(
         string ruleName, ToolCapability mustHave, ToolCapability mustNotHave)
     {
@@ -131,6 +139,28 @@ public sealed class DefaultPolicyCapabilityAlignmentTests
         allNamedTools.Should().NotBeEmpty("the parser must find at least the three shipped rules");
         allNamedTools.Should().OnlyContain(t => RealDeclarations.ContainsKey(t),
             "every tool named in default-policy.yaml must have a resolved RealDeclarations entry above");
+    }
+
+    /// <summary>
+    /// Regression guard for a code-review finding on this same test: a comment line between a rule's
+    /// <c>name</c> and <c>condition</c> used to make <see cref="RuleBlockPattern"/> skip the whole
+    /// block, silently dropping its tools from <see cref="RuleToolNames"/> and every check above.
+    /// </summary>
+    [Fact]
+    public void RuleBlockPattern_CommentBetweenNameAndCondition_StillMatches()
+    {
+        const string yaml = """
+            - name: warn-sandboxed-execution
+              # a future maintainer's note explaining this rule
+              condition: "tool == 'run_tests'"
+              action: warn
+            """;
+
+        var match = RuleBlockPattern.Match(yaml);
+
+        match.Success.Should().BeTrue("a comment between name and condition must not hide the rule block");
+        match.Groups["name"].Value.Should().Be("warn-sandboxed-execution");
+        match.Groups["condition"].Value.Should().Be("tool == 'run_tests'");
     }
 
     /// <summary>

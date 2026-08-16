@@ -119,12 +119,12 @@ public static class DependencyInjection
             .AddTransient(typeof(IPipelineBehavior<,>), typeof(PromptUsageTrackingBehavior<,>));
 
         // Shared bounded-key-set-gated first-party ITool lookup — the one place ToolCapabilityResolver
-        // (tool-composition capability model) and ToolPermissionProfileResolver (sandbox capability
-        // model) each resolve a tool's own declaration from keyed DI, instead of two independently
-        // -maintained copies of the same bounded-lookup safety invariant. See FirstPartyToolLookup's
-        // remarks for why the key set must stay bounded. Registered once so both resolvers — and the
-        // IToolCatalog registration below, which builds the identical key set for a different purpose
-        // — share one instance rather than each constructing their own HashSet from the same scan.
+        // (tool-composition capability model), ToolPermissionProfileResolver (sandbox capability
+        // model), and ToolRiskClassifier (graded-autonomy risk) each resolve a tool's own declaration
+        // from keyed DI, instead of independently-maintained copies of the same bounded-lookup safety
+        // invariant. See FirstPartyToolLookup's remarks for why the key set must stay bounded.
+        // IToolCatalog below needs the raw key list rather than the lookup abstraction, so it scans
+        // `services` again on its own — a second one-time O(n) scan at startup, not a shared instance.
         services.AddSingleton(sp => new Services.Tools.FirstPartyToolLookup(
             sp, new HashSet<string>(KeyedToolRegistrationKeys(services), StringComparer.Ordinal)));
 
@@ -163,8 +163,12 @@ public static class DependencyInjection
         services.AddSingleton<IToolConverter, AIToolConverter>();
 
         // Tool risk classification — resolves a tool's declared blast radius for the
-        // graded-autonomy gate and escalation-severity derivation.
-        services.AddSingleton<Interfaces.Tools.IToolRiskClassifier, Services.Tools.ToolRiskClassifier>();
+        // graded-autonomy gate and escalation-severity derivation. Reads the shared
+        // FirstPartyToolLookup registered above — see its remarks for why the key set must stay
+        // bounded; this call site was missed by the original #387 sweep and probed keyed DI directly
+        // (found during a later code-review pass on this same diff).
+        services.AddSingleton<Interfaces.Tools.IToolRiskClassifier>(sp => new Services.Tools.ToolRiskClassifier(
+            sp.GetRequiredService<Services.Tools.FirstPartyToolLookup>()));
 
         // Tool behaviour registry — what each tool declared it does, and who declared it. Singleton
         // because an external MCP server's declaration arrives on a discovery call and must still be

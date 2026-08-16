@@ -28,17 +28,40 @@ public sealed class GovernanceConfig
 
     /// <summary>
     /// Whether the composition root should stand up the AGT kernel — <c>true</c> when any of
-    /// <see cref="Enabled"/>, <see cref="EnablePromptInjectionDetection"/>, or
-    /// <see cref="EnableMcpSecurity"/> is on.
+    /// <see cref="Enabled"/>, <see cref="EnablePromptInjectionDetection"/>,
+    /// <see cref="EnableMcpSecurity"/>, <see cref="EnableResponseSanitization"/>, or
+    /// <see cref="Governance.DataClassificationConfig.Mode"/> being on is on.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// The single decision behind <c>AddGovernanceDependencies</c> vs <c>AddGovernanceNoOpDependencies</c>
     /// (#386), computed once here so <c>Presentation.Common.IServiceCollectionExtensions</c> and
     /// <c>Infrastructure.AI.MCPServer.Program</c> — the two composition roots that each make this call —
-    /// cannot drift apart on what "any of the three" means. A future governance sub-flag that should
+    /// cannot drift apart on what "any of these" means. A future governance sub-flag that should
     /// also arm the kernel is added to this one expression, not copied into two files.
+    /// </para>
+    /// <para>
+    /// <strong><see cref="EnableResponseSanitization"/> and <see cref="DataClassification"/> must both
+    /// be included here</strong>, found during this PR's own security review. <c>AddDataClassificationProvider</c>
+    /// — the only code that reads <see cref="DataClassification"/> to decide between the real Purview
+    /// routing provider and <c>NoOpDataClassificationProvider</c> — only runs inside
+    /// <c>AddGovernanceDependencies</c>; omitting it here means an operator who configures
+    /// <c>DataClassification.Mode = Enforce</c> with Purview wired, but leaves the other four flags at
+    /// their defaults, gets a DLP gate that runs, looks armed, and silently allows everything — the
+    /// same inversion this whole property exists to prevent, one layer down. Both flags also default
+    /// away from the other three: <see cref="EnableResponseSanitization"/> defaults
+    /// <see langword="true"/>, and <see cref="Governance.DataClassificationConfig.Mode"/> defaults
+    /// <see cref="Governance.ClassificationEnforcementMode.Off"/>, which is why the check below is
+    /// <c>!= Off</c> rather than a bare flag read. The checked-in appsettings.json files all set
+    /// <see cref="Enabled"/> explicitly, which masked both gaps for every shipped host.
+    /// </para>
     /// </remarks>
-    public bool ArmsAgtKernel => Enabled || EnablePromptInjectionDetection || EnableMcpSecurity;
+    public bool ArmsAgtKernel =>
+        Enabled
+        || EnablePromptInjectionDetection
+        || EnableMcpSecurity
+        || EnableResponseSanitization
+        || DataClassification.Mode != Governance.ClassificationEnforcementMode.Off;
 
     /// <summary>
     /// Whether per-invocation governance runs on the agent's live tool-call path. When true, every
@@ -127,7 +150,12 @@ public sealed class GovernanceConfig
     /// </remarks>
     public ThreatLevel McpToolBlockThreshold { get; init; } = ThreatLevel.High;
 
-    /// <summary>Whether MCP tool response sanitization is enabled.</summary>
+    /// <summary>
+    /// Whether tool response sanitization (credential redaction, injection scrubbing, exfiltration URL
+    /// detection) is enabled. Defaults to <see langword="true"/>, unlike its sibling flags — see
+    /// <see cref="ArmsAgtKernel"/>'s remarks for why that default is exactly why this flag must
+    /// participate in arming the AGT kernel, not merely gate the behaviour that consumes it.
+    /// </summary>
     public bool EnableResponseSanitization { get; init; } = true;
 
     /// <summary>

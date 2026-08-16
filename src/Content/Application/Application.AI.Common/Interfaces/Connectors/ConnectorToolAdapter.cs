@@ -1,5 +1,6 @@
 using Application.AI.Common.Interfaces.Tools;
 using Domain.AI.Models;
+using Domain.AI.Sandbox;
 
 namespace Application.AI.Common.Interfaces.Connectors;
 
@@ -51,6 +52,15 @@ public sealed class ConnectorToolAdapter : ITool
 
     /// <inheritdoc/>
     public IReadOnlyList<string> SupportedOperations => _connector.SupportedOperations;
+
+    /// <summary>
+    /// Every connector this adapter wraps (azure_devops_work_items, github_repos, github_issues,
+    /// jira_issues, slack_notifications) calls a third-party API over HTTP via
+    /// <see cref="IConnectorClient.ExecuteAsync"/> — found missing this declaration during #387's
+    /// security review; the sweep that declared it on every tool under
+    /// <c>Infrastructure.AI/Tools/**</c> did not reach this shared adapter.
+    /// </summary>
+    public ToolCapability RequiredCapabilities => ToolCapability.NetworkAccess;
 
     /// <inheritdoc/>
     public async Task<ToolResult> ExecuteAsync(

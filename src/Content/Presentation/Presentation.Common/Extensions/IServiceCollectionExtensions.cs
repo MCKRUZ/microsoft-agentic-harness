@@ -505,11 +505,15 @@ public static class IServiceCollectionExtensions
         services.AddRagDependencies(appConfig);
         services.AddInfrastructureAIDependencies(appConfig);
         // AddGovernance chooses the AGT-backed wiring or the no-op set based on
-        // GovernanceConfig.ArmsAgtKernel — true whenever any of its three independent feature areas
-        // is on (the declarative policy layer, prompt-injection detection, or MCP tool scanning), not
-        // only when Enabled is true (#386). Enabled alone used to gate all three, which meant
-        // disabling the policy layer silently disabled the other two as well. A default (or absent)
-        // section has ArmsAgtKernel false, so an unconfigured host still gets the no-op set.
+        // GovernanceConfig.ArmsAgtKernel — true whenever any of its five independent feature areas is
+        // on (the declarative policy layer, prompt-injection detection, MCP tool scanning, response
+        // sanitization, or data classification), not only when Enabled is true (#386). Enabled alone
+        // used to gate all of them, which meant disabling the policy layer silently disabled the
+        // others too. EnableResponseSanitization defaults true, so a default (or absent) section
+        // resolves ArmsAgtKernel = true and gets the real AGT-backed wiring, not the no-op set — see
+        // GovernanceConfig.ArmsAgtKernel's remarks. EnableAudit is not one of the five clauses (it
+        // does not arm the kernel), but IGovernanceAuditService is now registered identically by both
+        // branches regardless, so it is honoured either way.
         services.AddGovernance(appConfig.AI?.Governance ?? new GovernanceConfig());
         services.AddAIConnectors();
         services.AddMcpClientDependencies();

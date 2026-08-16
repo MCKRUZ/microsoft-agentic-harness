@@ -20,7 +20,10 @@ public sealed class ToolRiskClassifierTests
         foreach (var tool in tools)
             services.AddKeyedSingleton<ITool>(tool.Name, tool);
 
-        return new ToolRiskClassifier(services.BuildServiceProvider());
+        var toolNames = new HashSet<string>(tools.Select(t => t.Name), StringComparer.Ordinal);
+        var lookup = new FirstPartyToolLookup(services.BuildServiceProvider(), toolNames);
+
+        return new ToolRiskClassifier(lookup);
     }
 
     [Fact]

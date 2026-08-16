@@ -5,11 +5,12 @@ namespace Application.AI.Common.Services.Tools;
 
 /// <summary>
 /// Bounded-key-set-gated first-party <see cref="ITool"/> lookup — the single place
-/// <see cref="ToolCapabilityResolver"/> and <c>ToolPermissionProfileResolver</c> resolve a tool's own
-/// declaration from keyed DI. The two resolvers answer different questions about the same tool (what
-/// it can do with the data that flows through it, vs. what sandbox capabilities it needs), but both
-/// need the identical bounded-lookup safety invariant, so it lives here once rather than in two
-/// independently-maintained copies (#387 follow-up: found duplicated during code review).
+/// <see cref="ToolCapabilityResolver"/>, <c>ToolPermissionProfileResolver</c>, and
+/// <see cref="ToolRiskClassifier"/> resolve a tool's own declaration from keyed DI. Each answers a
+/// different question about the same tool (data-flow risk, sandbox capabilities, graded-autonomy
+/// blast radius), but all three need the identical bounded-lookup safety invariant, so it lives here
+/// once rather than in independently-maintained copies (#387 follow-up: found duplicated — twice —
+/// during code review).
 /// </summary>
 /// <remarks>
 /// <para>
