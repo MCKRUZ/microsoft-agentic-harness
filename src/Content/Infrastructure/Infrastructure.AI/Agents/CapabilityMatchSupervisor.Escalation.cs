@@ -19,13 +19,52 @@ public sealed partial class CapabilityMatchSupervisor
     // A misconfigured/empty roster is a standing condition, not a per-call event. Warning once
     // keeps the signal without spamming a line on every blocked delegation for the life of the
     // process. Static because escalation config can change between calls but the operator only
-    // needs to be told once per process lifetime; Interlocked so concurrent delegations can't
-    // both observe unwarned and both log. Mirrors EscalationToolApprovalRouter's
-    // s_blankApproversWarned pattern.
+    // needs to be told once per process lifetime. See WarnOnceGate for the exchange-and-guard
+    // mechanics shared with EscalationToolApprovalRouter's own two warn-once fields.
     private static int s_delegationApproversWarned;
 
     // Same rationale as s_delegationApproversWarned, for the tier-2 ("escalated") roster.
     private static int s_delegationEscalatedApproversWarned;
+
+    /// <summary>
+    /// Builds a delegation-escalation <see cref="EscalationRequest"/>, sharing the config-driven
+    /// <see cref="ApprovalStrategyType"/>/<see cref="EscalationTimeoutAction"/> parsing (and its
+    /// parse-by-name invariant, #296) and the fields common to both the tier-1 request in
+    /// <see cref="HandleAutonomyEscalationAsync"/> and the tier-2 request in
+    /// <see cref="HandleEscalatedTierAsync"/>.
+    /// </summary>
+    private EscalationRequest BuildDelegationEscalationRequest(
+        IReadOnlyList<string> requiredCapabilities,
+        IReadOnlyDictionary<string, string> arguments,
+        string description,
+        RiskLevel riskLevel,
+        EscalationPriority priority,
+        IReadOnlyList<string> approvers,
+        EscalationTimeoutAction fallbackTimeoutAction,
+        Domain.Common.Config.AI.Governance.EscalationConfig escalationConfig,
+        AutonomyLevel? escalationTierTarget = null,
+        Guid? predecessorEscalationId = null) => new()
+        {
+            EscalationId = Guid.NewGuid(),
+            AgentId = SupervisorId,
+            ToolName = $"delegate:{string.Join(",", requiredCapabilities)}",
+            Arguments = arguments,
+            Description = description,
+            RiskLevel = riskLevel,
+            Priority = priority,
+            ApprovalStrategy = EnumNameHelper.TryParseName<ApprovalStrategyType>(
+                escalationConfig.DefaultApprovalStrategy, out var strategy)
+                ? strategy : ApprovalStrategyType.AnyOf,
+            Approvers = approvers,
+            QuorumThreshold = 1,
+            TimeoutSeconds = escalationConfig.DefaultTimeoutSeconds,
+            TimeoutAction = EnumNameHelper.TryParseName<EscalationTimeoutAction>(
+                escalationConfig.DefaultTimeoutAction, out var timeoutAction)
+                ? timeoutAction : fallbackTimeoutAction,
+            RequestedAt = DateTimeOffset.UtcNow,
+            EscalationTierTarget = escalationTierTarget,
+            PredecessorEscalationId = predecessorEscalationId
+        };
 
     private async Task<DelegationResult?> HandleAutonomyEscalationAsync(
         string taskDescription,
@@ -43,50 +82,35 @@ public sealed partial class CapabilityMatchSupervisor
         var roster = escalationConfig.DelegationApprovers;
         if (roster.Count == 0)
         {
-            if (Interlocked.Exchange(ref s_delegationApproversWarned, 1) == 0)
-                _logger.LogWarning(
-                    "AppConfig:AI:Governance:Escalation:DelegationApprovers is empty — a delegation " +
-                    "blocked by autonomy tier can never be escalated for approval and is denied " +
-                    "(fail-closed). Configure at least one approver to enable delegation escalation.");
+            WarnOnceGate.WarnOnce(ref s_delegationApproversWarned, () => _logger.LogWarning(
+                "AppConfig:AI:Governance:Escalation:DelegationApprovers is empty — a delegation " +
+                "blocked by autonomy tier can never be escalated for approval and is denied " +
+                "(fail-closed). Configure at least one approver to enable delegation escalation."));
 
             return null;
         }
 
-        var escalationRequest = new EscalationRequest
-        {
-            EscalationId = Guid.NewGuid(),
-            AgentId = SupervisorId,
-            ToolName = $"delegate:{string.Join(",", requiredCapabilities)}",
-            Arguments = new Dictionary<string, string>
+        // #394: EscalationTierTarget records the tier THIS delegation actually needed
+        // (minimumTier), not a fixed constant — if this escalation times out under
+        // Escalate/DenyAndEscalate, it resolves as a real tier hand-off instead of a bare denial.
+        // HandleEscalatedTierAsync below is the caller-owned downstream process that raises the
+        // tier-2 escalation; approving it does not grant minimumTier itself, it only unblocks the
+        // retry the same way an ordinary tier-1 approval does (see HandleEscalatedTierAsync's
+        // remarks).
+        var escalationRequest = BuildDelegationEscalationRequest(
+            requiredCapabilities,
+            new Dictionary<string, string>
             {
                 ["taskDescription"] = taskDescription,
                 ["minimumTier"] = minimumTier.ToString()
             },
-            Description = $"Delegation blocked by autonomy tier ({minimumTier}): {taskDescription}",
-            RiskLevel = RiskLevel.Medium,
-            Priority = EscalationPriority.Blocking,
-            // Parsed by member NAME only. A bare Enum.TryParse accepts any integer string, including
-            // one outside the defined range, and the strategy is later resolved from keyed DI by its
-            // enum value — an undefined value has no registered service and throws at resolution.
-            // Same defect, same config keys, third site (#296).
-            ApprovalStrategy = EnumNameHelper.TryParseName<ApprovalStrategyType>(
-                escalationConfig.DefaultApprovalStrategy, out var strategy)
-                ? strategy : ApprovalStrategyType.AnyOf,
-            Approvers = roster,
-            QuorumThreshold = 1,
-            TimeoutSeconds = escalationConfig.DefaultTimeoutSeconds,
-            TimeoutAction = EnumNameHelper.TryParseName<EscalationTimeoutAction>(
-                escalationConfig.DefaultTimeoutAction, out var timeoutAction)
-                ? timeoutAction : EscalationTimeoutAction.DenyAndEscalate,
-            RequestedAt = DateTimeOffset.UtcNow,
-            // #394: if this escalation times out under Escalate/DenyAndEscalate, resolve it as a
-            // real tier hand-off instead of a bare denial — recording the tier THIS delegation
-            // actually needed (minimumTier), not a fixed constant. HandleEscalatedTierAsync below
-            // is the caller-owned downstream process that raises the tier-2 escalation; approving
-            // it does not grant minimumTier itself, it only unblocks the retry the same way an
-            // ordinary tier-1 approval does (see HandleEscalatedTierAsync's remarks).
-            EscalationTierTarget = minimumTier
-        };
+            $"Delegation blocked by autonomy tier ({minimumTier}): {taskDescription}",
+            RiskLevel.Medium,
+            EscalationPriority.Blocking,
+            roster,
+            EscalationTimeoutAction.DenyAndEscalate,
+            escalationConfig,
+            escalationTierTarget: minimumTier);
 
         if (_escalationService is not { } escalation)
             return null;
@@ -156,45 +180,32 @@ public sealed partial class CapabilityMatchSupervisor
         var escalatedRoster = escalationConfig.DelegationEscalatedApprovers;
         if (escalatedRoster.Count == 0)
         {
-            if (Interlocked.Exchange(ref s_delegationEscalatedApproversWarned, 1) == 0)
-                _logger.LogWarning(
-                    "Escalation {EscalationId} was escalated to tier {Tier} but " +
-                    "AppConfig:AI:Governance:Escalation:DelegationEscalatedApprovers is empty — " +
-                    "denying (fail-closed). Configure at least one escalated approver to enable it.",
-                    tier1Outcome.EscalationId, tier1Outcome.EscalatedToTier);
+            WarnOnceGate.WarnOnce(ref s_delegationEscalatedApproversWarned, () => _logger.LogWarning(
+                "Escalation {EscalationId} was escalated to tier {Tier} but " +
+                "AppConfig:AI:Governance:Escalation:DelegationEscalatedApprovers is empty — " +
+                "denying (fail-closed). Configure at least one escalated approver to enable it.",
+                tier1Outcome.EscalationId, tier1Outcome.EscalatedToTier));
 
             return null;
         }
 
-        var tier2Request = new EscalationRequest
-        {
-            EscalationId = Guid.NewGuid(),
-            AgentId = SupervisorId,
-            ToolName = $"delegate:{string.Join(",", requiredCapabilities)}",
-            Arguments = new Dictionary<string, string> { ["taskDescription"] = taskDescription },
-            Description =
-                $"Escalated (autonomy tier {tier1Outcome.EscalatedToTier} unmet, first tier " +
-                $"unanswered): {taskDescription}",
-            RiskLevel = RiskLevel.High,
-            Priority = EscalationPriority.Critical,
-            // Same config-driven parsing as the tier-1 request above — a configured approval
-            // strategy or timeout action should apply uniformly to both tiers, not silently weaken
-            // at the more sensitive, higher-priority tier. TimeoutAction is deliberately never
-            // itself escalatable here: EscalationTierTarget is left unset on this request, so even
-            // a configured Escalate/DenyAndEscalate action resolves as an ordinary timeout denial,
-            // never a third escalation tier.
-            ApprovalStrategy = EnumNameHelper.TryParseName<ApprovalStrategyType>(
-                escalationConfig.DefaultApprovalStrategy, out var tier2Strategy)
-                ? tier2Strategy : ApprovalStrategyType.AnyOf,
-            Approvers = escalatedRoster,
-            QuorumThreshold = 1,
-            TimeoutSeconds = escalationConfig.DefaultTimeoutSeconds,
-            TimeoutAction = EnumNameHelper.TryParseName<EscalationTimeoutAction>(
-                escalationConfig.DefaultTimeoutAction, out var tier2TimeoutAction)
-                ? tier2TimeoutAction : EscalationTimeoutAction.Deny,
-            RequestedAt = DateTimeOffset.UtcNow,
-            PredecessorEscalationId = tier1Outcome.EscalationId
-        };
+        // Same config-driven parsing as the tier-1 request — a configured approval strategy or
+        // timeout action should apply uniformly to both tiers, not silently weaken at the more
+        // sensitive, higher-priority tier. TimeoutAction is deliberately never itself escalatable
+        // here: EscalationTierTarget is left unset on this request, so even a configured
+        // Escalate/DenyAndEscalate action resolves as an ordinary timeout denial, never a third
+        // escalation tier.
+        var tier2Request = BuildDelegationEscalationRequest(
+            requiredCapabilities,
+            new Dictionary<string, string> { ["taskDescription"] = taskDescription },
+            $"Escalated (autonomy tier {tier1Outcome.EscalatedToTier} unmet, first tier " +
+            $"unanswered): {taskDescription}",
+            RiskLevel.High,
+            EscalationPriority.Critical,
+            escalatedRoster,
+            EscalationTimeoutAction.Deny,
+            escalationConfig,
+            predecessorEscalationId: tier1Outcome.EscalationId);
 
         _logger.LogInformation(
             "Escalation {EscalationId} escalated to tier {Tier} — requesting approval from " +
