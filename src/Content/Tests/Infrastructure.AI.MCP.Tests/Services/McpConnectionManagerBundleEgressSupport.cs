@@ -6,6 +6,7 @@ using Application.AI.Common.Services.Agent;
 using Domain.AI.Egress;
 using Domain.AI.Identity;
 using Domain.Common.Config.AI.MCP;
+using Infrastructure.AI.Bundles;
 using Infrastructure.AI.Egress;
 using Infrastructure.AI.MCP.Services;
 using Microsoft.Extensions.DependencyInjection;

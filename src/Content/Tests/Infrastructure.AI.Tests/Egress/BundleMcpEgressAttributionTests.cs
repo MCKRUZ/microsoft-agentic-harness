@@ -9,6 +9,7 @@ using Domain.AI.Identity;
 using Domain.Common.Config;
 using Domain.Common.Config.AI.MCP;
 using FluentAssertions;
+using Infrastructure.AI.Bundles;
 using Infrastructure.AI.Egress;
 using Infrastructure.AI.MCP.Services;
 using Infrastructure.AI.Tests.Egress.Support;

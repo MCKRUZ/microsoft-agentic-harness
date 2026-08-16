@@ -104,6 +104,48 @@ public sealed class RunBundleCommandHandlerTests
         _queue.Verify(q => q.EnqueueAsync(created.JobId, It.IsAny<CancellationToken>()), Times.Once);
     }
 
+    // -- Bundle-owned MCP server envelope invariant (#376) --
+
+    [Fact]
+    public async Task Handle_StagedBundleDeclaresMcpServers_UnionsThemIntoBothAllowedAndBundleOwnedLists()
+    {
+        // Pins WithBundleOwnedMcpServers — the single production writer CapabilityEnvelope's own remarks
+        // name as the one thing actually responsible for keeping AllowedMcpServers and
+        // BundleOwnedMcpServers in sync (see CapabilityEnvelopeTests for why no check on the record
+        // itself can substitute for this: once a name is missing from BundleOwnedMcpServers, nothing in
+        // the envelope retains any evidence it should have been present). Every staged server name must
+        // land in BOTH lists from this one call site, or a bundle's own MCP server silently resolves as
+        // host-trusted instead of bundle-owned.
+        _handleStore.Setup(h => h.GetOwner("handle-1")).Returns("owner-1");
+        _handleStore.Setup(h => h.TryGet("handle-1")).Returns(Staged(mcpServerNames: ["b1:echo", "b1:search"]));
+        BundleRunRecord? created = null;
+        _jobStore.Setup(j => j.Create(It.IsAny<BundleRunRecord>())).Callback<BundleRunRecord>(r => created = r);
+
+        var result = await BuildSut(enabled: true).Handle(Command(), CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue();
+        created!.Envelope.AllowedMcpServers.Should().Contain(["b1:echo", "b1:search"]);
+        created.Envelope.BundleOwnedMcpServers.Should().Contain(["b1:echo", "b1:search"]);
+        created.Envelope.IsBundleOwnedMcpServer("b1:echo").Should().BeTrue();
+        created.Envelope.IsBundleOwnedMcpServer("b1:search").Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Handle_StagedBundleDeclaresNoMcpServers_LeavesBundleOwnedListEmpty()
+    {
+        // The no-op branch WithBundleOwnedMcpServers takes when staged.McpServerNames is empty must not
+        // fabricate entries in either list from the caller's own pre-existing grants.
+        _handleStore.Setup(h => h.GetOwner("handle-1")).Returns("owner-1");
+        _handleStore.Setup(h => h.TryGet("handle-1")).Returns(Staged());
+        BundleRunRecord? created = null;
+        _jobStore.Setup(j => j.Create(It.IsAny<BundleRunRecord>())).Callback<BundleRunRecord>(r => created = r);
+
+        var result = await BuildSut(enabled: true).Handle(Command(), CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue();
+        created!.Envelope.BundleOwnedMcpServers.Should().BeEmpty();
+    }
+
     // -- Conversation continuity (#235) --
 
     [Fact]

@@ -1,5 +1,4 @@
-using System.Security.Cryptography;
-using System.Text;
+using Domain.Common.Helpers;
 
 namespace Application.AI.Common.Services.Tools;
 
@@ -48,38 +47,42 @@ public static class BundleOwnedMcpToolNaming
     /// <summary>
     /// Builds the namespaced tool name for <paramref name="rawToolName"/> as published by
     /// <paramref name="namespacedServerName"/> (the bundle-scoped <c>{bundleId}:{serverName}</c> key
-    /// under which the server itself is registered). The server portion is sanitized to the character set
-    /// OpenAI and Azure OpenAI both require for a function name (<c>^[a-zA-Z0-9_-]{1,64}$</c>); the tool's
-    /// own (untrusted, bundle-server-declared) name goes through the same sanitization via
-    /// <see cref="SanitizeToolName"/> — a bundle-authored MCP server can name its tool anything, including
-    /// spaces or punctuation no provider's function-calling API accepts, and an unsanitized name fails
-    /// every turn of the run exactly like an over-length one does. When the sanitized concatenation would
-    /// still exceed <see cref="MaxToolNameLength"/> — routine, not just adversarial, for an ordinary bundle
-    /// id + server name + tool name — the result is deterministically shortened by <see cref="Shorten"/>
-    /// instead, so the published name always stays within the limit every provider enforces.
+    /// under which the server itself is registered). Both halves are sanitized to the character set
+    /// OpenAI and Azure OpenAI both require for a function name (<c>^[a-zA-Z0-9_-]{1,64}$</c>) via
+    /// <see cref="SanitizeWithCollisionGuard"/> — a bundle-authored MCP server can name itself or its tool
+    /// anything, including spaces, punctuation, or the <c>:</c> namespace separator itself, none of which
+    /// any provider's function-calling API accepts, and an unsanitized name fails every turn of the run
+    /// exactly like an over-length one does. When the sanitized concatenation would still exceed
+    /// <see cref="MaxToolNameLength"/> — routine, not just adversarial, for an ordinary bundle id + server
+    /// name + tool name — the result is deterministically shortened by <see cref="Shorten"/> instead, so
+    /// the published name always stays within the limit every provider enforces.
     /// </summary>
     public static string BuildToolName(string namespacedServerName, string rawToolName)
     {
-        var full = $"{Sanitize(namespacedServerName)}{Separator}{SanitizeToolName(rawToolName)}";
+        var full = $"{SanitizeWithCollisionGuard(namespacedServerName)}{Separator}{SanitizeWithCollisionGuard(rawToolName)}";
         return full.Length <= MaxToolNameLength ? full : Shorten(full);
     }
 
     /// <summary>
-    /// Sanitizes <paramref name="rawToolName"/> to the provider charset. When the raw name was already
-    /// clean, <see cref="Sanitize"/> is a no-op and the result is returned as-is — preserving a short,
-    /// readable name for the overwhelmingly common case. When sanitization actually changes the name, it
+    /// Sanitizes <paramref name="raw"/> to the provider charset. When the raw value was already clean,
+    /// <see cref="Sanitize"/> is a no-op and the result is returned as-is — preserving a short, readable
+    /// name for the overwhelmingly common case. When sanitization actually changes the value, it
     /// necessarily collapses information (multiple distinct raw characters all map to <c>'_'</c>), so two
-    /// different raw tool names from the same server can sanitize to the identical string (e.g. "get user"
-    /// and "get.user" both become "get_user") — silently merging two different tools into one published
-    /// name, which the tool-chain's dedup-by-name step would then drop one of without any signal. A content
-    /// hash of the ORIGINAL raw name is appended whenever sanitization was non-trivial, so distinct raw
-    /// names stay distinct after sanitizing; two raw names that are already letter-for-letter identical
-    /// correctly still produce the same result, since they name the same tool.
+    /// different raw values can sanitize to the identical string — e.g. two raw tool names "get user" and
+    /// "get.user" both become "get_user", or two bundle-scoped server names differing only in a character
+    /// outside <c>[A-Za-z0-9_-]</c> (the namespace separator <c>:</c> among them) collapse to the same
+    /// prefix. Either case silently merges two different tools/servers into one published name, which the
+    /// tool-chain's dedup-by-name step would then drop one of without any signal. A content hash of the
+    /// ORIGINAL raw value is appended whenever sanitization was non-trivial, so distinct raw values stay
+    /// distinct after sanitizing; two raw values that are already letter-for-letter identical correctly
+    /// still produce the same result, since they name the same thing. Applied to BOTH halves of
+    /// <see cref="BuildToolName"/> — the server-name half and the tool-name half — so neither can collide
+    /// with a sibling on the other side of the <see cref="Separator"/>.
     /// </summary>
-    private static string SanitizeToolName(string rawToolName)
+    private static string SanitizeWithCollisionGuard(string raw)
     {
-        var sanitized = Sanitize(rawToolName);
-        return sanitized == rawToolName ? sanitized : $"{sanitized}_{HexHashPrefix(rawToolName)}";
+        var sanitized = Sanitize(raw);
+        return sanitized == raw ? sanitized : $"{sanitized}_{HexHashPrefix(raw)}";
     }
 
     /// <summary>
@@ -103,11 +106,8 @@ public static class BundleOwnedMcpToolNaming
     }
 
     /// <summary>The first <see cref="HashSuffixByteCount"/> bytes of <paramref name="value"/>'s SHA-256 digest, as lowercase hex.</summary>
-    private static string HexHashPrefix(string value)
-    {
-        var digest = SHA256.HashData(Encoding.UTF8.GetBytes(value));
-        return Convert.ToHexStringLower(digest.AsSpan(0, HashSuffixByteCount));
-    }
+    private static string HexHashPrefix(string value) =>
+        Sha256HexPrefixHelper.Compute(value, HashSuffixByteCount * 2);
 
     private static string Sanitize(string value)
     {

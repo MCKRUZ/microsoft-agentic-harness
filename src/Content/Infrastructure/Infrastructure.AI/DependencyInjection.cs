@@ -189,20 +189,23 @@ public static partial class DependencyInjection
         // --- Bundle execution (staging) ---
         // Off by default (AI:BundleExecution:Enabled). The staging service is passive — it does nothing
         // until an ingest call reaches it — so it is registered unconditionally; the run/API surface that
-        // invokes it is gated in a later layer. Wired to the SAME BundleOwnedMcpServerRegistry instance
+        // invokes it is gated in a later layer. Wired to the SAME IBundleOwnedMcpServerRegistry instance
         // McpConnectionManager (Infrastructure.AI.MCP) reads — deliberately NOT the trusted, AIConfig-bound
-        // McpServersConfig PluginLoader (below) writes into; see BundleOwnedMcpServerRegistry's own doc
+        // McpServersConfig PluginLoader (below) writes into; see IBundleOwnedMcpServerRegistry's own doc
         // comment for why.
-        // TryAddSingleton (not AddSingleton) — also registered by AddMcpClientDependencies, so call order
-        // between the two extension methods is irrelevant.
-        services.TryAddSingleton<Domain.Common.Config.AI.MCP.BundleOwnedMcpServerRegistry>();
+        // TryAddSingleton<TService, TImplementation> (not AddSingleton) — also registered by
+        // AddMcpClientDependencies, so call order between the two extension methods is irrelevant, and
+        // BOTH sites must register against the SAME service type (the interface) or they silently produce
+        // two separate singleton instances, defeating the isolation guarantee this registry exists for
+        // (#374).
+        services.TryAddSingleton<IBundleOwnedMcpServerRegistry, BundleOwnedMcpServerRegistry>();
         services.AddSingleton<IBundleStagingService>(sp => new BundleStagingService(
             sp.GetRequiredService<IOptionsMonitor<AppConfig>>(),
             sp.GetRequiredService<AgentMetadataParser>(),
             sp.GetRequiredService<SkillMetadataParser>(),
             sp.GetRequiredService<ISkillFileReader>(),
             sp.GetRequiredService<IPluginManifestReader>(),
-            sp.GetRequiredService<Domain.Common.Config.AI.MCP.BundleOwnedMcpServerRegistry>(),
+            sp.GetRequiredService<IBundleOwnedMcpServerRegistry>(),
             sp.GetRequiredService<ILogger<BundleStagingService>>()));
 
         // Capability-envelope resolver — maps the calling credential to its configured per-caller grant.

@@ -56,7 +56,7 @@ public sealed class BundleStagingService : IBundleStagingService
     private readonly SkillMetadataParser _skillParser;
     private readonly ISkillFileReader _skillFileReader;
     private readonly IPluginManifestReader _pluginReader;
-    private readonly BundleOwnedMcpServerRegistry _bundleOwnedMcpServers;
+    private readonly IBundleOwnedMcpServerRegistry _bundleOwnedMcpServers;
     private readonly ILogger<BundleStagingService> _logger;
 
     /// <summary>Initialises the staging service with its parsers, configuration, and logger.</summary>
@@ -70,9 +70,9 @@ public sealed class BundleStagingService : IBundleStagingService
     /// </param>
     /// <param name="pluginReader">Reader for a staged bundle's plugin manifest.</param>
     /// <param name="bundleOwnedMcpServers">
-    /// The shared, singleton <see cref="BundleOwnedMcpServerRegistry"/> a bundle's own MCP servers are
+    /// The shared, singleton <see cref="IBundleOwnedMcpServerRegistry"/> a bundle's own MCP servers are
     /// merged into under a bundle-scoped namespaced key — deliberately NOT the trusted, host-admin
-    /// <c>McpServersConfig</c>; see <see cref="BundleOwnedMcpServerRegistry"/>'s own doc comment for why.
+    /// <c>McpServersConfig</c>; see <see cref="IBundleOwnedMcpServerRegistry"/>'s own doc comment for why.
     /// </param>
     /// <param name="logger">Logger for staging diagnostics.</param>
     public BundleStagingService(
@@ -81,7 +81,7 @@ public sealed class BundleStagingService : IBundleStagingService
         SkillMetadataParser skillParser,
         ISkillFileReader skillFileReader,
         IPluginManifestReader pluginReader,
-        BundleOwnedMcpServerRegistry bundleOwnedMcpServers,
+        IBundleOwnedMcpServerRegistry bundleOwnedMcpServers,
         ILogger<BundleStagingService> logger)
     {
         ArgumentNullException.ThrowIfNull(skillFileReader);
@@ -164,8 +164,12 @@ public sealed class BundleStagingService : IBundleStagingService
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Bundle staging failed while extracting into {BundleDir}", bundleDir);
-            return CleanupAndFail(bundleDir, "Bundle staging failed while extracting the archive.");
+            // Covers extraction, symlink validation, AND manifest parsing/registration failures — not
+            // just extraction, despite the pre-#372 message this replaces. Any MCP server a manifest
+            // already registered before the failure has been rolled back by ParsePluginManifests itself
+            // by the time this handler runs.
+            _logger.LogWarning(ex, "Bundle staging failed while processing {BundleDir}", bundleDir);
+            return CleanupAndFail(bundleDir, "Bundle staging failed.");
         }
     }
 
@@ -404,52 +408,81 @@ public sealed class BundleStagingService : IBundleStagingService
         return [.. byId.Values];
     }
 
+    /// <summary>
+    /// Parses every plugin manifest a staged bundle declares (its own root <c>plugin.json</c> plus any
+    /// nested <c>plugins/*/plugin.json</c>), registering each manifest's MCP servers as it goes.
+    /// </summary>
+    /// <remarks>
+    /// If ANY manifest — or ANY server within a manifest, not just a later manifest — throws while
+    /// this runs, every server successfully registered into <see cref="_bundleOwnedMcpServers"/> before
+    /// the throw is rolled back (issue #372). <see cref="RegisterBundleMcpServers"/> is handed the SAME
+    /// <paramref name="bundleDir"/>-scoped list this method's catch inspects, and appends to it the
+    /// instant each server registers — not batched into a separate list and merged in only after that
+    /// method returns — so a throw partway through one manifest's OWN multi-server loop still leaves
+    /// every already-registered name visible to this catch, not just names from manifests that finished
+    /// processing entirely. Without this, staging deletes only the extracted files on failure; the
+    /// already-registered servers survive as orphaned, live entries for the rest of the host process's
+    /// life, because a bundle that failed to stage is never registered for the eviction path that would
+    /// otherwise clean them up.
+    /// </remarks>
     private (IReadOnlyList<PluginManifest> Manifests, IReadOnlyList<string> McpServerNames) ParsePluginManifests(
         string bundleDir, string bundleId)
     {
         var manifests = new List<PluginManifest>();
         var mcpServerNames = new List<string>();
 
-        var rootManifest = _pluginReader.Read(bundleDir);
-        if (rootManifest is not null)
+        try
         {
-            manifests.Add(rootManifest);
-            mcpServerNames.AddRange(RegisterBundleMcpServers(bundleDir, bundleId, rootManifest));
-        }
-
-        var pluginsRoot = Path.Combine(bundleDir, "plugins");
-        if (Directory.Exists(pluginsRoot))
-        {
-            foreach (var pluginDir in Directory.EnumerateDirectories(pluginsRoot))
+            var rootManifest = _pluginReader.Read(bundleDir);
+            if (rootManifest is not null)
             {
-                var manifest = _pluginReader.Read(pluginDir);
-                if (manifest is not null)
+                manifests.Add(rootManifest);
+                RegisterBundleMcpServers(bundleDir, bundleId, rootManifest, mcpServerNames);
+            }
+
+            var pluginsRoot = Path.Combine(bundleDir, "plugins");
+            if (Directory.Exists(pluginsRoot))
+            {
+                foreach (var pluginDir in Directory.EnumerateDirectories(pluginsRoot))
                 {
-                    manifests.Add(manifest);
-                    mcpServerNames.AddRange(RegisterBundleMcpServers(pluginDir, bundleId, manifest));
+                    var manifest = _pluginReader.Read(pluginDir);
+                    if (manifest is not null)
+                    {
+                        manifests.Add(manifest);
+                        RegisterBundleMcpServers(pluginDir, bundleId, manifest, mcpServerNames);
+                    }
                 }
             }
-        }
 
-        return (manifests, mcpServerNames);
+            return (manifests, mcpServerNames);
+        }
+        catch
+        {
+            foreach (var registered in mcpServerNames)
+                _bundleOwnedMcpServers.TryRemove(registered);
+
+            throw;
+        }
     }
 
     /// <summary>
     /// Merges one manifest's declared MCP servers into the shared <see cref="BundleOwnedMcpServerRegistry"/>
     /// — deliberately NOT the trusted, host-admin <c>McpServersConfig</c> — under a bundle-scoped key
-    /// (<c>{bundleId}:{serverName}</c>) and returns each registered key — the values that become
-    /// <see cref="StagedBundle.McpServerNames"/>, later unioned into the run's
-    /// <see cref="Domain.AI.Bundles.CapabilityEnvelope"/>. <paramref name="bundleId"/> alone (not the
-    /// manifest's own name) is the namespace, because <see cref="Domain.AI.Bundles.StagedBundle.BundleId"/>
-    /// is a fresh GUID per staging — two bundles can never collide — while a manifest's <c>Name</c> is
-    /// free text and not guaranteed unique. A malformed or missing <c>mcp.json</c> is skipped and logged,
-    /// never fails staging.
+    /// (<c>{bundleId}:{serverName}</c>), appending each registered key directly into
+    /// <paramref name="mcpServerNames"/> (shared with <see cref="ParsePluginManifests"/>'s rollback catch,
+    /// and eventually <see cref="StagedBundle.McpServerNames"/>) AS EACH SERVER REGISTERS — not into a
+    /// local list returned only once this whole method completes, so a throw anywhere in this method's own
+    /// loop still leaves every server it already registered visible to the caller's rollback (issue #372).
+    /// <paramref name="bundleId"/> alone (not the manifest's own name) is the namespace, because
+    /// <see cref="Domain.AI.Bundles.StagedBundle.BundleId"/> is a fresh GUID per staging — two bundles can
+    /// never collide — while a manifest's <c>Name</c> is free text and not guaranteed unique. A malformed
+    /// or missing <c>mcp.json</c> is skipped and logged, never fails staging.
     /// </summary>
-    private IReadOnlyList<string> RegisterBundleMcpServers(string manifestBaseDir, string bundleId, PluginManifest manifest)
+    private void RegisterBundleMcpServers(
+        string manifestBaseDir, string bundleId, PluginManifest manifest, List<string> mcpServerNames)
     {
-        var registered = new List<string>();
         if (string.IsNullOrEmpty(manifest.McpServers))
-            return registered;
+            return;
 
         // A bundle is untrusted, externally-authored input. Honouring its own declared MCP servers means
         // the host makes outbound connections a caller's CapabilityEnvelope never authorized — off by
@@ -462,13 +495,13 @@ public sealed class BundleStagingService : IBundleStagingService
                 "skipping, none registered. Set AppConfig:AI:BundleExecution:AllowBundleDeclaredMcpServers " +
                 "= true to enable this capability.",
                 bundleId);
-            return registered;
+            return;
         }
 
         using var block = Infrastructure.AI.Plugins.McpManifestReader.ReadMcpServersBlock(
             manifestBaseDir, manifest.McpServers, $"Bundle {bundleId}", _logger);
         if (block is null)
-            return registered;
+            return;
 
         // Loop-invariant: every server this manifest declares is checked against the SAME harness-wide
         // allowlist, so it is mapped from config once here rather than re-derived on every iteration.
@@ -478,10 +511,8 @@ public sealed class BundleStagingService : IBundleStagingService
         {
             var namespacedName = $"{bundleId}:{serverProp.Name}";
             if (TryBuildAndRegisterOneServer(bundleId, namespacedName, serverProp, allowlist))
-                registered.Add(namespacedName);
+                mcpServerNames.Add(namespacedName);
         }
-
-        return registered;
     }
 
     /// <summary>
@@ -492,20 +523,18 @@ public sealed class BundleStagingService : IBundleStagingService
     private bool TryBuildAndRegisterOneServer(
         string bundleId, string namespacedName, JsonProperty serverProp, IReadOnlyList<EgressAllowlistEntry> allowlist)
     {
-        McpServerDefinition definition;
-        try
+        var buildResult = McpServerDefinitionBuilder.Build(
+            // A bundle (unlike a host-installed plugin) has no declaration-level env overrides.
+            serverProp.Value, NoDeclarationEnv, $"[Bundle: {bundleId}]", serverProp.Name);
+        if (!buildResult.IsSuccess)
         {
-            definition = McpServerDefinitionBuilder.Build(
-                // A bundle (unlike a host-installed plugin) has no declaration-level env overrides.
-                serverProp.Value, NoDeclarationEnv, $"[Bundle: {bundleId}]", serverProp.Name);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex,
-                "Bundle {BundleId}: failed to build MCP server definition for '{ServerName}', skipping",
-                bundleId, serverProp.Name);
+            _logger.LogWarning(
+                "Bundle {BundleId}: failed to build MCP server definition for '{ServerName}', skipping: {Errors}",
+                bundleId, serverProp.Name, string.Join("; ", buildResult.Errors));
             return false;
         }
+
+        var definition = buildResult.Value!;
 
         if (!definition.IsRemoteServer)
         {

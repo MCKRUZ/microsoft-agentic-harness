@@ -1,6 +1,7 @@
 using System.IO.Compression;
 using System.Text;
 using Application.AI.Common.Interfaces.Governance;
+using Application.AI.Common.Interfaces.Plugins;
 using Domain.AI.Governance;
 using Domain.Common.Config;
 using Domain.Common.Config.AI;
@@ -288,6 +289,56 @@ public sealed class BundleStagingServiceTests : IDisposable
             "so a single returned name already proves exactly one entry reached bundleOwnedMcpServers");
     }
 
+    [Fact]
+    public async Task StageAsync_LaterManifestThrows_RollsBackEarlierManifestsRegisteredServers()
+    {
+        // Regression test for #372. The ROOT manifest registers a valid MCP server; a SINGLE nested
+        // plugin's manifest read throws (simulating any exception RegisterBundleMcpServers or the plugin
+        // reader can produce). Deliberately structured to be order-independent, not reliant on
+        // Directory.EnumerateDirectories' unspecified ordering (a /code-review finding on an earlier
+        // version of this test, which used two nested plugins and could pass vacuously if the throwing
+        // one happened to enumerate first — the assertion below would hold trivially because the "good"
+        // manifest was never reached, proving nothing about rollback): the root manifest is ALWAYS read
+        // before ParsePluginManifests even starts enumerating plugins/, and there is exactly one nested
+        // directory here, so there is no cross-item ordering left to depend on. Before this fix, the root
+        // manifest's registry entry survived — staging failed and deleted the extracted files, but
+        // nothing ever called TryRemove for a server registered before the failure, orphaning it for the
+        // life of the host process.
+        using var zip = ZipOf(
+            ("AGENT.md", "---\nid: rollback-bundle\nname: Rollback Bundle\n---\nx"),
+            ("plugin.json", "{ \"name\": \"root\", \"version\": \"1.0.0\", \"mcpServers\": \"./mcp.json\" }"),
+            ("mcp.json", "{ \"mcpServers\": { \"good-server\": { \"type\": \"http\", \"url\": \"https://one.example.com/mcp\" } } }"),
+            ("plugins/bad/plugin.json", "{ \"name\": \"bad\", \"version\": \"1.0.0\" }"));
+
+        var bundleOwnedMcpServers = new BundleOwnedMcpServerRegistry();
+        var appConfig = AllowlistedAppConfig("one.example.com");
+        var realReader = new PluginManifestReader(NullLogger<PluginManifestReader>.Instance);
+        string? bundleDir = null;
+
+        var throwingReader = new Mock<IPluginManifestReader>();
+        throwingReader
+            .Setup(r => r.Read(It.IsAny<string>()))
+            .Returns((string dir) =>
+            {
+                var normalized = dir.Replace('\\', '/');
+                if (normalized.EndsWith("/plugins/bad", StringComparison.Ordinal))
+                    throw new InvalidOperationException("simulated manifest-parsing failure");
+                if (!normalized.Contains("/plugins/", StringComparison.Ordinal))
+                    bundleDir = dir; // the root-manifest call always passes the bundle's own staged directory
+                return realReader.Read(dir);
+            });
+
+        var result = await CreateService(appConfig, bundleOwnedMcpServers, pluginReader: throwingReader.Object)
+            .StageAsync(zip);
+
+        result.IsSuccess.Should().BeFalse("a later manifest's parsing failure must fail the whole bundle");
+        bundleDir.Should().NotBeNull("the root manifest must have been read before the failing nested one");
+        var bundleId = Path.GetFileName(bundleDir);
+        bundleOwnedMcpServers.TryGetValue($"{bundleId}:good-server", out _).Should().BeFalse(
+            "the root manifest's server registration must be rolled back when a later manifest throws");
+        NoStagedDirectoriesRemain();
+    }
+
     // --- Hostile-archive guards ---------------------------------------------------------------------
 
     [Fact]
@@ -454,7 +505,8 @@ public sealed class BundleStagingServiceTests : IDisposable
         AppConfig appConfig,
         BundleOwnedMcpServerRegistry? bundleOwnedMcpServers = null,
         IMcpSecurityScanner? agentScanner = null,
-        IMcpSecurityScanner? skillScanner = null) =>
+        IMcpSecurityScanner? skillScanner = null,
+        IPluginManifestReader? pluginReader = null) =>
         new(
             new OptionsMonitorStub(appConfig),
             new AgentMetadataParser(
@@ -465,7 +517,7 @@ public sealed class BundleStagingServiceTests : IDisposable
                 skillScanner ?? TestMcpSecurityScanner.AlwaysSafe(),
                 Mock.Of<IOptionsMonitor<AIConfig>>(m => m.CurrentValue == appConfig.AI)),
             new UnsandboxedSkillFileReader(),
-            new PluginManifestReader(NullLogger<PluginManifestReader>.Instance),
+            pluginReader ?? new PluginManifestReader(NullLogger<PluginManifestReader>.Instance),
             bundleOwnedMcpServers ?? new BundleOwnedMcpServerRegistry(),
             NullLogger<BundleStagingService>.Instance);
 

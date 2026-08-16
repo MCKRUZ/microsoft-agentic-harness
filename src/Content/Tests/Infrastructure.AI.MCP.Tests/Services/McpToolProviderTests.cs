@@ -88,6 +88,6 @@ public sealed class McpToolProviderTests
             new Mock<ILoggerFactory>().Object,
             TestSsrf.HandlerFactory(),
             new Domain.Common.Config.AI.MCP.McpServersConfig(),
-            new Domain.Common.Config.AI.MCP.BundleOwnedMcpServerRegistry());
+            new Infrastructure.AI.Bundles.BundleOwnedMcpServerRegistry());
     }
 }

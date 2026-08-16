@@ -200,7 +200,7 @@ public sealed class PluginLoaderTests : IDisposable
             mcpServers = new Dictionary<string, object>
             {
                 ["good"] = new { command = "npx", args = new[] { "good-mcp" } },
-                ["bad"] = new { type = "http" } // no url -> McpServerDefinitionBuilder.Build throws
+                ["bad"] = new { type = "http" } // no url -> McpServerDefinitionBuilder.Build fails (#374: Result<T>, not a throw)
             }
         };
         File.WriteAllText(
