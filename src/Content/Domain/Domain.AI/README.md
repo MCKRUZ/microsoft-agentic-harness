@@ -253,8 +253,6 @@ var request = new SandboxExecutionRequest
     PermissionProfile = new ToolPermissionProfile
     {
         RequiredCapabilities = ToolCapability.FileRead | ToolCapability.Subprocess,
-        AllowedPaths = ["/workspace/src"],
-        DeniedPaths = ["/workspace/.env"],
         MinimumIsolation = SandboxIsolationLevel.Process
     },
     ArgumentList = ["--analyze", "Program.cs"],
@@ -266,7 +264,7 @@ var request = new SandboxExecutionRequest
 
 **ToolCapability** is a flags enum declaring what a tool needs to execute. The capability enforcer verifies these requirements before allowing execution. Values: `None`, `FileRead`, `FileWrite`, `NetworkAccess`, `Subprocess`, `EnvRead`, `DatabaseRead`, `DatabaseWrite`, `LlmInvocation`.
 
-**ToolPermissionProfile** declares a tool's full access scope with deny-overrides-allow semantics: `RequiredCapabilities`, `AllowedPaths`/`DeniedPaths`, `AllowedHosts`/`DeniedHosts`, `AllowedPrograms`, and `MinimumIsolation`.
+**ToolPermissionProfile** declares a tool's capability requirements and access scope: `RequiredCapabilities` (the tool's own undiminished declaration), `DeniedCapabilities` (an operator's per-tool override, kept separate rather than folded into `RequiredCapabilities`), `EffectiveCapabilities` (`RequiredCapabilities & ~DeniedCapabilities` — the value sandbox provisioning and attestation read), `AllowedPrograms`, and `MinimumIsolation`. An earlier version also scoped allow/deny to specific filesystem paths and network hosts (`AllowedPaths`/`DeniedPaths`/`AllowedHosts`/`DeniedHosts`); that mechanism was removed as dead configuration — nothing on the live tool-call path ever checked a requested path or host against it.
 
 A tool declares its required capabilities by overriding `ITool.RequiredCapabilities`/`ITool.MinimumIsolation` (in `Application.AI.Common`) — a default interface member, not a Domain-layer attribute, since `ITool` is the tool contract itself. Can be overridden (restricted, never expanded) at runtime via appsettings configuration.
 

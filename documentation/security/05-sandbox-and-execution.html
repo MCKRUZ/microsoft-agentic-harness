@@ -319,11 +319,19 @@
                     </div>
 
                     <p>
-                        Where capabilities are scoped to specific paths — read these files, never those — the harness
-                        uses <code>ToolPermissionProfile</code> with a
-                        <strong>deny-overrides-allow</strong> rule: if a path appears in both the allow list and the deny
-                        list, <em>deny wins</em>. There is no ambiguity to exploit and no ordering trick that lets an
-                        allow entry beat a deny entry.
+                        An operator can narrow what a specific tool is allowed to do below its own declaration via a
+                        per-tool <code>DeniedCapabilities</code> override in <code>ToolOverrideConfig</code>. The
+                        harness keeps the tool's own declaration (<code>ToolPermissionProfile.RequiredCapabilities</code>)
+                        and the operator's deny list separate rather than folding one into the other — a tool whose
+                        declared requirement overlaps the deny is refused outright, not silently granted a smaller
+                        set of capabilities than it actually needs. <code>EffectiveCapabilities</code>
+                        (<code>RequiredCapabilities</code> minus <code>DeniedCapabilities</code>) is the value sandbox
+                        provisioning and the attestation reads. There is no ambiguity to exploit and no ordering
+                        trick: <em>deny always wins</em>, and a denial that the tool actually needs is a hard refusal,
+                        never a quiet downgrade. (An earlier version of this control also scoped allow/deny to
+                        specific filesystem paths and network hosts; that mechanism was removed as dead
+                        configuration — nothing on the live tool-call path ever checked a requested path or host
+                        against it.)
                     </p>
 
                     <div class="callout callout-info">
