@@ -264,7 +264,16 @@ public sealed class EvalRunner : IEvalRunner
             var verdict = medianScore >= spec.Threshold ? Verdict.Pass : Verdict.Fail;
             var anyWarn = samples.Any(s => s.Verdict == Verdict.Warn);
 
-            byKey[spec.MetricKey] = new MetricScore
+            // A single repeat's evidence carried whole, not synthesized from a mix of
+            // repeats — a clause from repeat 1 paired with raw output from repeat 3 would
+            // misattribute what a human reviewing a failure is looking at. The repeat
+            // closest to the aggregated score is the best single representative of it.
+            // `with` (not a hand-copied field list) so RawOutput/Consensus/Spread/
+            // ViolatedClause/Evidence — and any field MetricScore gains later — ride along
+            // automatically instead of silently defaulting on the next addition.
+            var representative = PickRepresentative(samples, medianScore);
+
+            byKey[spec.MetricKey] = representative with
             {
                 MetricKey = spec.MetricKey,
                 Score = medianScore,
@@ -276,6 +285,12 @@ public sealed class EvalRunner : IEvalRunner
         }
         return byKey;
     }
+
+    // Ties (equal distance from the median) resolve to the first sample encountered, which
+    // is the earliest repeat — a stable, deterministic choice rather than an arbitrary one.
+    // MinBy is a single pass with no allocation, unlike OrderBy(...).First().
+    private static MetricScore PickRepresentative(IReadOnlyList<MetricScore> samples, double medianScore)
+        => samples.MinBy(s => Math.Abs(s.Score - medianScore))!;
 
     private static Verdict WorstVerdict(IEnumerable<MetricScore> scores)
     {

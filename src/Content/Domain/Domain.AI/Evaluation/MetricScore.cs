@@ -65,4 +65,27 @@ public sealed record MetricScore
     /// <see cref="Consensus"/> bucket and is shown alongside it on the dashboard.
     /// </summary>
     public double? Spread { get; init; }
+
+    /// <summary>
+    /// For a failing judge-backed score under the strict verdict contract, the exact
+    /// substring of the rubric the judge cited as the requirement it found violated.
+    /// <c>null</c> for non-judge metrics, judge metrics not using the strict contract, and
+    /// passing scores (a passing verdict has nothing to cite).
+    /// </summary>
+    /// <remarks>
+    /// Verified, not merely reported: the judge's response is rejected and retried unless
+    /// this text is a verbatim (whitespace-normalized) substring of the rubric it was
+    /// given — a judge cannot fail a case against a requirement the rubric never stated.
+    /// See <c>ViolatedClauseVerifier</c> and <c>JudgeVerdictContract</c>.
+    /// </remarks>
+    public string? ViolatedClause { get; init; }
+
+    /// <summary>
+    /// Supporting evidence entries the judge cited for its verdict (e.g. a tool name, a
+    /// quoted span of the assistant's output). Empty when the judge metric isn't using the
+    /// strict verdict contract, or the judge cited none. Captured and surfaced as-is;
+    /// resolution-checking each entry against the real trajectory is a follow-up, not
+    /// enforced here.
+    /// </summary>
+    public IReadOnlyList<string> Evidence { get; init; } = [];
 }

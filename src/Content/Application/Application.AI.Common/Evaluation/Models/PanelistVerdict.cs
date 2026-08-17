@@ -28,4 +28,17 @@ public sealed record PanelistVerdict
 
     /// <summary>USD cost of this panelist's call. Counted toward the jury total even when excluded from the score.</summary>
     public decimal CostUsd { get; init; }
+
+    /// <summary>
+    /// Under the strict verdict contract, this panelist's verified violated-clause citation
+    /// on a failing score. <c>null</c> when the call didn't use the strict contract, scored
+    /// a pass, or did not parse.
+    /// </summary>
+    public string? ViolatedClause { get; init; }
+
+    /// <summary>
+    /// Under the strict verdict contract, this panelist's supporting evidence entries.
+    /// Empty when the call didn't use the strict contract, or the panelist cited none.
+    /// </summary>
+    public IReadOnlyList<string> Evidence { get; init; } = [];
 }

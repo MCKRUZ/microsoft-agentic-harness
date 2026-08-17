@@ -161,6 +161,93 @@ public sealed class EvalRunnerTests
         report.Results[0].AggregatedScores["no_such_metric"].Verdict.Should().Be(Verdict.Warn);
     }
 
+    [Fact]
+    public async Task Median_aggregation_carries_the_violated_clause_from_the_representative_repeat()
+    {
+        // Scores [0.2, 0.5, 0.9] median to the middle sample exactly (distance 0) — the
+        // representative must be that repeat specifically, not repeat 1 or a synthesized mix.
+        var metric = new Mock<IEvalMetric>();
+        metric.SetupGet(m => m.Key).Returns("judged");
+        metric.SetupSequence(m => m.ScoreAsync(
+                It.IsAny<EvalCase>(), It.IsAny<AgentInvocationResult>(), It.IsAny<MetricSpec>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(JudgedScore(0.2, "repeat-1-clause"))
+            .ReturnsAsync(JudgedScore(0.5, "repeat-2-clause"))
+            .ReturnsAsync(JudgedScore(0.9, "repeat-3-clause"));
+
+        var invoker = new Mock<IAgentInvoker>(MockBehavior.Strict);
+        invoker.Setup(i => i.InvokeAsync(It.IsAny<EvalCase>(), It.IsAny<IReadOnlyDictionary<string, string>?>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new AgentInvocationResult { Success = true, Output = "out" });
+        var sut = new EvalRunner(invoker.Object, [metric.Object], NullLogger<EvalRunner>.Instance);
+        var dataset = DatasetWith(JudgedCase("c1"));
+
+        var report = await sut.RunAsync([dataset], new EvalRunOptions { Repeats = 3 }, CancellationToken.None);
+
+        report.Results[0].AggregatedScores["judged"].ViolatedClause.Should().Be("repeat-2-clause");
+    }
+
+    [Fact]
+    public async Task Median_aggregation_no_longer_drops_consensus_and_spread()
+    {
+        var metric = new Mock<IEvalMetric>();
+        metric.SetupGet(m => m.Key).Returns("judged");
+        metric.Setup(m => m.ScoreAsync(
+                It.IsAny<EvalCase>(), It.IsAny<AgentInvocationResult>(), It.IsAny<MetricSpec>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(JudgedScore(0.8, "clause", ConsensusBucket.Split, spread: 0.3));
+
+        var invoker = new Mock<IAgentInvoker>(MockBehavior.Strict);
+        invoker.Setup(i => i.InvokeAsync(It.IsAny<EvalCase>(), It.IsAny<IReadOnlyDictionary<string, string>?>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new AgentInvocationResult { Success = true, Output = "out" });
+        var sut = new EvalRunner(invoker.Object, [metric.Object], NullLogger<EvalRunner>.Instance);
+        var dataset = DatasetWith(JudgedCase("c1"));
+
+        var report = await sut.RunAsync([dataset], new EvalRunOptions { Repeats = 3 }, CancellationToken.None);
+
+        var aggregated = report.Results[0].AggregatedScores["judged"];
+        aggregated.Consensus.Should().Be(ConsensusBucket.Split);
+        aggregated.Spread.Should().Be(0.3);
+    }
+
+    [Fact]
+    public async Task Median_aggregation_reasoning_text_is_unchanged_for_multi_repeat()
+    {
+        // Pins the existing "Median of N repeats." summary text — the representative-repeat
+        // fix must not disturb it.
+        var metric = new Mock<IEvalMetric>();
+        metric.SetupGet(m => m.Key).Returns("judged");
+        metric.Setup(m => m.ScoreAsync(
+                It.IsAny<EvalCase>(), It.IsAny<AgentInvocationResult>(), It.IsAny<MetricSpec>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(JudgedScore(0.8, "clause"));
+
+        var invoker = new Mock<IAgentInvoker>(MockBehavior.Strict);
+        invoker.Setup(i => i.InvokeAsync(It.IsAny<EvalCase>(), It.IsAny<IReadOnlyDictionary<string, string>?>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new AgentInvocationResult { Success = true, Output = "out" });
+        var sut = new EvalRunner(invoker.Object, [metric.Object], NullLogger<EvalRunner>.Instance);
+        var dataset = DatasetWith(JudgedCase("c1"));
+
+        var report = await sut.RunAsync([dataset], new EvalRunOptions { Repeats = 3 }, CancellationToken.None);
+
+        report.Results[0].AggregatedScores["judged"].Reasoning.Should().Be("Median of 3 repeats.");
+    }
+
+    private static MetricScore JudgedScore(
+        double score, string violatedClause, ConsensusBucket? consensus = null, double? spread = null) => new()
+    {
+        MetricKey = "judged",
+        Score = score,
+        Verdict = Verdict.Pass,
+        RawOutput = $"raw-{violatedClause}",
+        ViolatedClause = violatedClause,
+        Consensus = consensus,
+        Spread = spread
+    };
+
+    private static EvalCase JudgedCase(string id) => new()
+    {
+        Id = id,
+        Input = "in-" + id,
+        MetricSpecs = [new MetricSpec { MetricKey = "judged", Threshold = 0.0 }]
+    };
+
     private static EvalCase Case(string id, string expected, IReadOnlyList<string>? tags = null) => new()
     {
         Id = id,

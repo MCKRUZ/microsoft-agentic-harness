@@ -108,7 +108,9 @@ public sealed class JuryLlmJudge : ILlmJudge
                 Score = pr.Result.Score,
                 Outcome = pr.Result.Outcome,
                 Reasoning = pr.Result.Reasoning,
-                CostUsd = pr.Result.CostUsd
+                CostUsd = pr.Result.CostUsd,
+                ViolatedClause = pr.Result.ViolatedClause,
+                Evidence = pr.Result.Evidence
             })
             .ToArray();
 
@@ -125,9 +127,15 @@ public sealed class JuryLlmJudge : ILlmJudge
         // emitting a Parsed result with a meaningless 0.0 score.
         if (aggregate.Panel.Responded == 0)
         {
-            var outcome = verdicts.Any(v => v.Outcome == LlmJudgeOutcome.Malformed)
-                ? LlmJudgeOutcome.Malformed
-                : LlmJudgeOutcome.InvocationFailed;
+            // Preference order matters only for the label on an all-failed panel: a
+            // contract violation ("returned valid JSON, content didn't hold up") is the
+            // most specific diagnosis when any panelist hit it, ahead of the more generic
+            // "returned no usable JSON at all".
+            var outcome = verdicts.Any(v => v.Outcome == LlmJudgeOutcome.ContractViolation)
+                ? LlmJudgeOutcome.ContractViolation
+                : verdicts.Any(v => v.Outcome == LlmJudgeOutcome.Malformed)
+                    ? LlmJudgeOutcome.Malformed
+                    : LlmJudgeOutcome.InvocationFailed;
 
             _logger.LogWarning(
                 "Jury produced no usable scores from {Total} panelists; soft-failing as {Outcome}.",
@@ -146,6 +154,14 @@ public sealed class JuryLlmJudge : ILlmJudge
             };
         }
 
+        // A single panelist's clause/evidence carried whole, not merged across panelists —
+        // same "pick the closest-to-aggregate responder" rule EvalRunner's median
+        // aggregation uses for the same reason: a clause from one judge paired with
+        // evidence from another would misattribute what a reviewer is looking at.
+        var representative = verdicts
+            .Where(v => v.Outcome == LlmJudgeOutcome.Parsed)
+            .MinBy(v => Math.Abs(v.Score - aggregate.Score));
+
         return new LlmJudgeResult
         {
             Outcome = LlmJudgeOutcome.Parsed,
@@ -155,7 +171,9 @@ public sealed class JuryLlmJudge : ILlmJudge
             CostUsd = totalCost,
             InputTokens = totalInput,
             OutputTokens = totalOutput,
-            Panel = aggregate.Panel
+            Panel = aggregate.Panel,
+            ViolatedClause = representative?.ViolatedClause,
+            Evidence = representative?.Evidence ?? []
         };
     }
 
@@ -191,7 +209,7 @@ public sealed class JuryLlmJudge : ILlmJudge
         }
 
         var result = await JudgeCallCore
-            .InvokeAsync(client, systemWithNonce, envelopedUser, cost, _logger, cancellationToken)
+            .InvokeAsync(client, systemWithNonce, envelopedUser, request.VerdictContract, cost, _logger, cancellationToken)
             .ConfigureAwait(false);
         return (name, result);
     }

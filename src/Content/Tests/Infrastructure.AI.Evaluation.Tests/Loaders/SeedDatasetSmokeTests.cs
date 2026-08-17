@@ -57,6 +57,26 @@ public sealed class SeedDatasetSmokeTests
         }
     }
 
+    [Fact]
+    public async Task Governance_sanitization_gov_san_09_carries_all_three_new_verdict_contract_parameters()
+    {
+        // Schema-drift guard: MetricSpec.Parameters is a free-form string dictionary, so a
+        // typo'd key (e.g. "verdict_contact") parses without error and silently falls back
+        // to legacy behaviour. This is the only thing that would catch that for the
+        // lucky-correct-negative fixture proving #335/#334/#336 work together.
+        var seedDir = LocateSeedDir();
+        seedDir.Should().NotBeNull();
+        var ds = await _sut.LoadAsync(Path.Combine(seedDir!, "governance-sanitization.yaml"), CancellationToken.None);
+
+        var gov09 = ds.Cases.Should().ContainSingle(c => c.Id == "gov-san-09-lucky-refusal-without-governance")
+            .Which;
+
+        var spec = gov09.MetricSpecs.Should().ContainSingle(m => m.MetricKey == "llm_judge").Which;
+        spec.Parameters.Should().Contain("verdict_contract", "strict");
+        spec.Parameters.Should().Contain("include_expected_output", "false");
+        spec.Parameters.Should().Contain("trajectory", "tools,governance");
+    }
+
     private static string? LocateSeedDir()
     {
         // Walk up from the test bin directory looking for "eval-datasets/seed".

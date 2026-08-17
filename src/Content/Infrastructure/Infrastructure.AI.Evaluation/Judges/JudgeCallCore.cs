@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Application.AI.Common.Evaluation;
+using Application.AI.Common.Evaluation.Judges;
 using Application.AI.Common.Evaluation.Models;
 using Application.AI.Common.Evaluation.Outcomes;
 using Application.AI.Common.Extensions;
@@ -131,14 +132,27 @@ internal static class JudgeCallCore
         return null;
     }
 
+    // Exact legacy literal — preserved byte-for-byte so a call with no verdict contract
+    // (every caller today, and any future caller that doesn't opt in) retries with the
+    // identical instruction it always has.
+    private const string MalformedJsonAddendum =
+        "Your previous reply was not valid JSON. You MUST return exactly one JSON object, no fences, no commentary.";
+
     /// <summary>
     /// Runs the two-attempt judge call against an already-resolved client and parses the
     /// score. Never throws for expected failures — see <see cref="LlmJudgeResult.Outcome"/>.
     /// </summary>
+    /// <param name="contract">
+    /// When non-null, opts this call into the strict verdict contract: a failing score must
+    /// cite a real clause from <see cref="JudgeVerdictContract.ClauseSource"/>, checked by
+    /// <see cref="ViolatedClauseVerifier"/> and retried with a specific reason on failure.
+    /// <c>null</c> preserves today's behaviour exactly.
+    /// </param>
     public static async Task<LlmJudgeResult> InvokeAsync(
         IChatClient chatClient,
         string systemPrompt,
         string userPrompt,
+        JudgeVerdictContract? contract,
         JudgeCostOptions? cost,
         ILogger logger,
         CancellationToken cancellationToken)
@@ -146,6 +160,12 @@ internal static class JudgeCallCore
         long totalInput = 0;
         long totalOutput = 0;
         string? lastRaw = null;
+        string? retryReason = null;
+        // Sticky, not "last attempt's failure kind": once any attempt establishes that the
+        // judge produced valid JSON but failed the citation check, that stays the more
+        // specific diagnosis even if a later attempt regresses to unparseable JSON — a
+        // contract violation is never downgraded to a plain "malformed" label.
+        var anyAttemptWasContractViolation = false;
 
         try
         {
@@ -153,8 +173,7 @@ internal static class JudgeCallCore
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
-                var stricter = attempt > 0;
-                var messages = BuildMessages(systemPrompt, userPrompt, stricter);
+                var messages = BuildMessages(systemPrompt, userPrompt, retryReason);
 
                 var response = await chatClient
                     .GetResponseAsync(messages, options: null, cancellationToken)
@@ -166,16 +185,16 @@ internal static class JudgeCallCore
                 if (LlmJsonResponseParser.TryParseObject<JudgeResponseShape>(lastRaw, JsonOptions, out var parsed)
                     && parsed is not null)
                 {
-                    return new LlmJudgeResult
+                    var (success, reason) = HandleParsedAttempt(
+                        parsed, contract, attempt, lastRaw, totalInput, totalOutput, cost, logger);
+                    if (success is not null)
                     {
-                        Outcome = LlmJudgeOutcome.Parsed,
-                        Score = ClampScore(parsed.Score),
-                        Reasoning = parsed.Reasoning,
-                        RawOutput = lastRaw,
-                        CostUsd = ComputeCost(totalInput, totalOutput, cost),
-                        InputTokens = totalInput,
-                        OutputTokens = totalOutput,
-                    };
+                        return success;
+                    }
+
+                    anyAttemptWasContractViolation = true;
+                    retryReason = reason;
+                    continue;
                 }
 
                 // An empty/whitespace body isn't a JSON-format problem; a stricter retry
@@ -185,31 +204,14 @@ internal static class JudgeCallCore
                     logger.LogWarning(
                         "Judge returned empty body on attempt {Attempt}; skipping retry (not a recoverable format issue).",
                         attempt + 1);
-                    return new LlmJudgeResult
-                    {
-                        Outcome = LlmJudgeOutcome.InvocationFailed,
-                        Score = 0.0,
-                        Reasoning = "Judge returned empty response body.",
-                        RawOutput = lastRaw,
-                        CostUsd = ComputeCost(totalInput, totalOutput, cost),
-                        InputTokens = totalInput,
-                        OutputTokens = totalOutput,
-                    };
+                    return BuildEmptyBodyResult(lastRaw, totalInput, totalOutput, cost);
                 }
 
                 logger.LogWarning("Judge attempt {Attempt} returned malformed JSON.", attempt + 1);
+                retryReason = MalformedJsonAddendum;
             }
 
-            return new LlmJudgeResult
-            {
-                Outcome = LlmJudgeOutcome.Malformed,
-                Score = 0.0,
-                Reasoning = "Judge returned malformed JSON on both attempts.",
-                RawOutput = lastRaw,
-                CostUsd = ComputeCost(totalInput, totalOutput, cost),
-                InputTokens = totalInput,
-                OutputTokens = totalOutput,
-            };
+            return BuildTerminalFailureResult(anyAttemptWasContractViolation, lastRaw, totalInput, totalOutput, cost);
         }
         catch (OperationCanceledException)
         {
@@ -230,6 +232,92 @@ internal static class JudgeCallCore
             };
         }
     }
+
+    /// <summary>
+    /// Verifies one successfully-parsed attempt against the strict contract (a no-op when
+    /// <paramref name="contract"/> is null). Returns a completed <see cref="LlmJudgeResult"/>
+    /// on success; otherwise <c>null</c> plus the retry addendum to use for the next attempt.
+    /// </summary>
+    private static (LlmJudgeResult? Success, string RetryReason) HandleParsedAttempt(
+        JudgeResponseShape parsed, JudgeVerdictContract? contract, int attempt, string? lastRaw,
+        long totalInput, long totalOutput, JudgeCostOptions? cost, ILogger logger)
+    {
+        var clampedScore = ClampScore(parsed.Score);
+        var violation = contract is null
+            ? null
+            : ViolatedClauseVerifier.Verify(clampedScore, parsed.ViolatedClause, contract);
+
+        if (violation is null)
+        {
+            return (BuildParsedResult(parsed, clampedScore, contract, lastRaw, totalInput, totalOutput, cost), string.Empty);
+        }
+
+        logger.LogWarning("Judge attempt {Attempt} failed the verdict contract: {Reason}", attempt + 1, violation);
+        return (null, ContractRetryAddendum(violation));
+    }
+
+    private static LlmJudgeResult BuildParsedResult(
+        JudgeResponseShape parsed, double clampedScore, JudgeVerdictContract? contract, string? lastRaw,
+        long totalInput, long totalOutput, JudgeCostOptions? cost)
+    {
+        // A passing score was never checked against the contract — HandleParsedAttempt only
+        // verifies a violated_clause when the score is failing. A model that sends one
+        // anyway (unprompted, or leftover from a prior turn) must not have it surface as if
+        // it had been verified: MetricScore.ViolatedClause is documented as "null for ...
+        // passing scores", and letting an unverified string through here breaks that.
+        var isVerifiedFailingClause = contract is not null && clampedScore < contract.FailingBelow;
+
+        return new LlmJudgeResult
+        {
+            Outcome = LlmJudgeOutcome.Parsed,
+            Score = clampedScore,
+            Reasoning = parsed.Reasoning,
+            RawOutput = lastRaw,
+            CostUsd = ComputeCost(totalInput, totalOutput, cost),
+            InputTokens = totalInput,
+            OutputTokens = totalOutput,
+            ViolatedClause = isVerifiedFailingClause ? parsed.ViolatedClause : null,
+            Evidence = parsed.Evidence ?? [],
+        };
+    }
+
+    private static LlmJudgeResult BuildEmptyBodyResult(
+        string? lastRaw, long totalInput, long totalOutput, JudgeCostOptions? cost) => new()
+    {
+        Outcome = LlmJudgeOutcome.InvocationFailed,
+        Score = 0.0,
+        Reasoning = "Judge returned empty response body.",
+        RawOutput = lastRaw,
+        CostUsd = ComputeCost(totalInput, totalOutput, cost),
+        InputTokens = totalInput,
+        OutputTokens = totalOutput,
+    };
+
+    private static LlmJudgeResult BuildTerminalFailureResult(
+        bool wasContractViolation, string? lastRaw, long totalInput, long totalOutput, JudgeCostOptions? cost) => new()
+    {
+        Outcome = wasContractViolation ? LlmJudgeOutcome.ContractViolation : LlmJudgeOutcome.Malformed,
+        Score = 0.0,
+        Reasoning = wasContractViolation
+            ? "Judge failed the verdict contract on both attempts."
+            : "Judge returned malformed JSON on both attempts.",
+        RawOutput = lastRaw,
+        CostUsd = ComputeCost(totalInput, totalOutput, cost),
+        InputTokens = totalInput,
+        OutputTokens = totalOutput,
+    };
+
+    // Generic — works for any strict-contract caller regardless of what its own
+    // SystemPromptCore said, since the caller doesn't know the specific validation failure.
+    // Deliberately does NOT say "return the same JSON object" — the retry never shows the
+    // model its own prior attempt (only lastRaw is captured, never appended as an assistant
+    // message), so an instruction implying continuity is unsatisfiable. Ask for a fresh
+    // scoring pass instead.
+    private static string ContractRetryAddendum(string violationReason) =>
+        $"Your previous response was rejected: {violationReason} Score the rubric and data again from " +
+        "scratch and return a single corrected JSON object. If the score is failing, \"violated_clause\" " +
+        "MUST be the exact sentence copied character-for-character from the rubric that the response " +
+        "violates. Do not paraphrase, summarize, or invent a requirement that is not present in the rubric.";
 
     /// <summary>Builds a zero-token soft-failure result with the supplied reason.</summary>
     public static LlmJudgeResult Failed(string reason, JudgeCostOptions? cost) => new()
@@ -262,11 +350,14 @@ internal static class JudgeCallCore
             input, output, usage.TotalTokens());
     }
 
-    private static IList<ChatMessage> BuildMessages(string systemPrompt, string userPrompt, bool stricter)
+    // retryReason is null on the first attempt and on any retry of a call with no verdict
+    // contract that hasn't yet failed — set from MalformedJsonAddendum or
+    // ContractRetryAddendum by the caller once an attempt fails.
+    private static IList<ChatMessage> BuildMessages(string systemPrompt, string userPrompt, string? retryReason)
     {
-        var effectiveSystem = stricter
-            ? systemPrompt + "\n\nYour previous reply was not valid JSON. You MUST return exactly one JSON object, no fences, no commentary."
-            : systemPrompt;
+        var effectiveSystem = retryReason is null
+            ? systemPrompt
+            : systemPrompt + "\n\n" + retryReason;
 
         return new List<ChatMessage>
         {
@@ -282,5 +373,19 @@ internal static class JudgeCallCore
 
         [JsonPropertyName("reasoning")]
         public string? Reasoning { get; init; }
+
+        /// <summary>
+        /// Under the strict verdict contract, the exact rubric substring the judge says a
+        /// failing score violates. Absent/null under the legacy contract.
+        /// </summary>
+        [JsonPropertyName("violated_clause")]
+        public string? ViolatedClause { get; init; }
+
+        /// <summary>
+        /// Under the strict verdict contract, supporting evidence entries. Absent/null under
+        /// the legacy contract.
+        /// </summary>
+        [JsonPropertyName("evidence")]
+        public IReadOnlyList<string>? Evidence { get; init; }
     }
 }

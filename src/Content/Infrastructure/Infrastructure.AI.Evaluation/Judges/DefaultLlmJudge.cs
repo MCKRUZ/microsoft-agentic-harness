@@ -77,7 +77,7 @@ public sealed class DefaultLlmJudge : ILlmJudge
         }
 
         return await JudgeCallCore
-            .InvokeAsync(chatClient, systemWithNonce, envelopedUser, cost, _logger, cancellationToken)
+            .InvokeAsync(chatClient, systemWithNonce, envelopedUser, request.VerdictContract, cost, _logger, cancellationToken)
             .ConfigureAwait(false);
     }
 }

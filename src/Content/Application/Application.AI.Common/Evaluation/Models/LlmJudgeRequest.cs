@@ -32,4 +32,13 @@ public sealed record LlmJudgeRequest
     /// </summary>
     public IReadOnlyDictionary<string, string?> Variables { get; init; }
         = new Dictionary<string, string?>();
+
+    /// <summary>
+    /// Opts this call into the strict verdict contract (a failing score must cite a real
+    /// clause from <see cref="JudgeVerdictContract.ClauseSource"/>, checked and retried on
+    /// failure). <c>null</c> (the default) preserves today's <c>{score, reasoning}</c>
+    /// contract exactly, byte-for-byte — existing callers that never set this are
+    /// unaffected.
+    /// </summary>
+    public JudgeVerdictContract? VerdictContract { get; init; }
 }
