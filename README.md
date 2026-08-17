@@ -613,4 +613,4 @@ The ConsoleUI launches an interactive [Spectre.Console](https://spectreconsole.n
 
 ## License
 
-This project is provided as-is for educational and reference purposes.
+Licensed under the [Apache License, Version 2.0](LICENSE).
