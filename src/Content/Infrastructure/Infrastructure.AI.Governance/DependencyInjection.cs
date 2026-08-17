@@ -1,12 +1,13 @@
 using AgentGovernance;
-using AgentGovernance.Audit;
 using AgentGovernance.Policy;
 using AgentGovernance.Security;
+using Application.AI.Common.Interfaces.Audit;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Services.Governance;
 using Application.Common.Factories;
 using Domain.Common.Config.AI;
 using Domain.Common.Config.AI.Governance;
+using Infrastructure.AI.Audit;
 using Infrastructure.AI.Governance.Adapters;
 using Infrastructure.AI.Governance.Classification;
 using Microsoft.Extensions.DependencyInjection;
@@ -156,21 +157,25 @@ public static class DependencyInjection
     /// <summary>
     /// Registers the real <see cref="IGovernanceAuditService"/>. Shared by
     /// <see cref="AddGovernanceDependencies"/> and <see cref="AddGovernanceNoOpDependencies"/>
-    /// because <c>AuditLogger</c> has no dependency on <see cref="GovernanceKernel"/> — auditing is
+    /// because the audit writer has no dependency on <see cref="GovernanceKernel"/> — auditing is
     /// not one of the features <see cref="GovernanceConfig.ArmsAgtKernel"/> decides between, so both
     /// composition paths wire it identically instead of each declaring their own copy.
     /// </summary>
     /// <remarks>
-    /// <c>AuditLogger</c>'s hash-chained entries are in-memory only — no trim, no eviction, no
-    /// persistence — so this trail does not survive a process restart and grows for the process
-    /// lifetime. Registering it unconditionally (this fix) widens that growth to every host that
-    /// previously took the no-op path, since <see cref="GovernanceConfig.EnableAudit"/> defaults
-    /// true. Tracked separately: https://github.com/MCKRUZ/microsoft-agentic-harness/issues/407.
+    /// Backed by <see cref="JsonlGovernanceAuditWriter"/> (#407) — a durable, hash-chained JSONL sink
+    /// that survives a process restart, replacing the previous <c>AgtAuditAdapter</c> wrapper over
+    /// <c>Microsoft.AgentGovernance.Audit.AuditLogger</c>'s in-memory-only chain. Registered
+    /// unconditionally, exactly as before: every host now creates <c>governance.jsonl</c> on first
+    /// write, even one with every other governance feature off — the same "wants an audit trail even
+    /// with governance disabled" intent this method already existed to serve.
     /// </remarks>
     private static void RegisterAudit(IServiceCollection services)
     {
-        services.AddSingleton<AuditLogger>();
-        services.AddSingleton<IGovernanceAuditService, AgtAuditAdapter>();
+        services.AddSingleton<JsonlGovernanceAuditWriter>();
+        services.AddSingleton<IGovernanceAuditService>(sp =>
+            sp.GetRequiredService<JsonlGovernanceAuditWriter>());
+        services.AddSingleton<IVerifiableAuditChain>(sp =>
+            sp.GetRequiredService<JsonlGovernanceAuditWriter>());
     }
 
     /// <summary>
