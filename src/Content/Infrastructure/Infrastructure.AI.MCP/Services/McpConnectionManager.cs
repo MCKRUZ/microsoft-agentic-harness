@@ -536,13 +536,21 @@ public sealed class McpConnectionManager : IAsyncDisposable
                 $"Host-wide bundle stdio sandbox session cap ({maxConcurrentSessions}) reached; refusing to start another.");
         }
 
-        var scope = _scopeFactory.CreateAsyncScope();
+        // Nullable, and assigned only once CreateAsyncScope() itself succeeds — that call is not
+        // guaranteed exception-free (e.g. an already-disposed root provider during host shutdown),
+        // and it sat outside this method's try/finally in an earlier draft, so a throw there
+        // leaked the slot claimed above for the rest of the process's life. Declaring it here and
+        // assigning inside the try means the finally below can tell "never created" (nothing to
+        // dispose) apart from "created but not yet transferred" (must dispose) via a single null
+        // check, without a second try/finally layer.
+        AsyncServiceScope? scope = null;
         var ownershipTransferred = false;
         try
         {
-            var sessionFactory = scope.ServiceProvider
+            scope = _scopeFactory.CreateAsyncScope();
+            var sessionFactory = scope.Value.ServiceProvider
                 .GetRequiredKeyedService<ISandboxSessionFactory>(SandboxIsolationLevel.Container);
-            var profileResolver = scope.ServiceProvider.GetRequiredService<ToolPermissionProfileResolver>();
+            var profileResolver = scope.Value.ServiceProvider.GetRequiredService<ToolPermissionProfileResolver>();
 
             var resolvedProfile = profileResolver.Resolve(serverName);
             var permissionProfile = resolvedProfile with
@@ -581,37 +589,42 @@ public sealed class McpConnectionManager : IAsyncDisposable
             if (!result.IsSuccess)
                 return result;
 
-            // From here on, ScopedSandboxSession owns BOTH the scope's lifetime and this session's
-            // claimed concurrency slot — its own DisposeAsync releases both once the session ends.
+            // From here on, ownership of both the scope AND this session's claimed concurrency slot
+            // transfers to the returned session — two composed decorators, each responsible for
+            // releasing exactly one of them on DisposeAsync, not one type juggling both.
             ownershipTransferred = true;
-            return Result<ISandboxSession>.Success(new ScopedSandboxSession(
-                result.Value!, scope, onDisposed: () => Interlocked.Decrement(ref _liveSandboxedStdioSessions)));
+            var scopedSession = new ScopedSandboxSession(result.Value!, scope.Value);
+            return Result<ISandboxSession>.Success(new SlotReleasingSandboxSession(
+                scopedSession, releaseSlot: () => Interlocked.Decrement(ref _liveSandboxedStdioSessions)));
         }
         finally
         {
             if (!ownershipTransferred)
             {
                 Interlocked.Decrement(ref _liveSandboxedStdioSessions);
-                await scope.DisposeAsync();
+                if (scope is { } createdScope)
+                    await createdScope.DisposeAsync();
             }
         }
     }
 
     /// <summary>
     /// Whether <paramref name="seedDirectory"/> resolves under the SAME bundle staging root
-    /// <c>BundleStagingService.ResolveStagingRoot</c> uses — the only tree a sandbox workspace may
+    /// <see cref="SkillContentRoots.BundleStaging"/> resolves — the only tree a sandbox workspace may
     /// ever be seeded from. Deliberately re-derives that resolution here rather than trusting the
     /// caller: see the containment-check remarks at this method's one call site.
     /// </summary>
-    private bool IsWithinConfiguredStagingRoot(string seedDirectory)
-    {
-        var bundleExecution = _appConfig.CurrentValue.AI.BundleExecution;
-        var stagingRoot = string.IsNullOrWhiteSpace(bundleExecution.TempRoot)
-            ? SkillContentRoots.BundleStaging(_appConfig.CurrentValue)
-            : SkillContentRoots.Resolve(bundleExecution.TempRoot);
-
-        return PathScope.IsSameOrUnderNormalized(PathScope.Normalize(seedDirectory), PathScope.Normalize(stagingRoot));
-    }
+    /// <remarks>
+    /// <see cref="SkillContentRoots.BundleStaging"/> already contains the "configured <c>TempRoot</c>,
+    /// or the system-temp fallback" branch internally — the ONE place that decision is made, per that
+    /// class's own doc comment — so this method must not (and no longer does) re-derive that branch a
+    /// second time itself; a caller re-deriving it is exactly the drift risk the class's own doc warns
+    /// about. A single containment check against one target uses <see cref="PathScope.IsSameOrUnder"/>,
+    /// which normalizes both sides internally, rather than the <c>*Normalized</c> overload meant for
+    /// comparing many targets against one already-normalized base.
+    /// </remarks>
+    private bool IsWithinConfiguredStagingRoot(string seedDirectory) =>
+        PathScope.IsSameOrUnder(seedDirectory, SkillContentRoots.BundleStaging(_appConfig.CurrentValue));
 
     private HttpClientTransport CreateHttpTransport(string serverName, McpServerDefinition definition, bool isBundleOwned)
     {

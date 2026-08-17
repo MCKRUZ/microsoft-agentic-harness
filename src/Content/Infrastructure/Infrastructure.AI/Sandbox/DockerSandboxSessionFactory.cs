@@ -94,24 +94,31 @@ public sealed class DockerSandboxSessionFactory(
         string? containerId = null;
         DockerSandboxSession? session = null;
         MultiplexedStream? attachStream = null;
+        // Populated once ResolveImage runs below; stays null for a failure ahead of that point, so
+        // the attestation signer's own fallback to request.ContainerImage still applies to those.
+        string? resolvedImage = null;
 
         try
         {
-            // Seeded before the container is created, so the bind mount below picks up the
-            // content in the same pass Docker already makes to read the workspace directory —
-            // no separate "write into a running container" step needed. SeedWorkspace is the
-            // preparer's own single call for this — not two direct SandboxWorkspace calls at
-            // this site — so ownership of "how a Docker-tier workspace gets initialized" stays
-            // with the one class already responsible for CreateWorkspace/CleanupWorkspace.
-            if (request.WorkspaceSeedDirectory is { } seedDirectory)
-                launchPreparer.SeedWorkspace(workspaceDir, seedDirectory);
-
-            var image = launchPreparer.ResolveImage(request.ToolName, request.ContainerImage);
-            await launchPreparer.EnsureImageAvailableAsync(image, ct);
+            // Seeding (blocking disk I/O, potentially a whole bundle's worth of files) and the
+            // image pull (Docker daemon I/O) have no data dependency on each other — both must
+            // finish before the container starts, but neither needs the other's result first, so
+            // they run concurrently rather than paying their sum. Same shape as the egress-check +
+            // Docker-ping pairing above in StartSessionAsync. SeedWorkspace itself stays the
+            // preparer's own single call — not two direct SandboxWorkspace calls at this site — so
+            // ownership of "how a Docker-tier workspace gets initialized" stays with the one class
+            // already responsible for CreateWorkspace/CleanupWorkspace; Task.Run only moves WHEN
+            // that call happens, not who owns it.
+            resolvedImage = launchPreparer.ResolveImage(request.ToolName, request.ContainerImage);
+            var seedTask = request.WorkspaceSeedDirectory is { } seedDirectory
+                ? Task.Run(() => launchPreparer.SeedWorkspace(workspaceDir, seedDirectory), ct)
+                : Task.CompletedTask;
+            var imagePullTask = launchPreparer.EnsureImageAvailableAsync(resolvedImage, ct);
+            await Task.WhenAll(seedTask, imagePullTask);
 
             var containerParams = launchPreparer.BuildContainerParams(
                 request.Command ?? request.ToolName, request.ArgumentList, request.Limits, request.PermissionProfile,
-                workspaceDir, image, interactive: true, environmentVariables: request.EnvironmentVariables,
+                workspaceDir, resolvedImage, interactive: true, environmentVariables: request.EnvironmentVariables,
                 workingDirectory: request.WorkspaceSeedDirectory is not null ? "/workspace" : null);
             var createResponse = await dockerClient.Containers.CreateContainerAsync(containerParams, ct);
             containerId = createResponse.ID;
@@ -139,7 +146,7 @@ public sealed class DockerSandboxSessionFactory(
             // session is the more consequential event. Deliberately not passed ct — see
             // SignStartAsync's own remarks for why signing this specific event must not be
             // abandonable by the caller's token.
-            await attestationSigner.SignStartAsync(request, egressDigest);
+            await attestationSigner.SignStartAsync(request, egressDigest, resolvedImage);
 
             return Result<ISandboxSession>.Success(session);
         }
@@ -171,7 +178,7 @@ public sealed class DockerSandboxSessionFactory(
             // harder to diagnose for no security benefit.
             await TearDownPartialStartAsync(session, attachStream, containerId, workspaceDir);
 
-            await attestationSigner.SignFailureAsync(request, ex.Message, egressDigest, ct);
+            await attestationSigner.SignFailureAsync(request, ex.Message, egressDigest, ct, resolvedImage);
             return Result<ISandboxSession>.Fail(ex.Message);
         }
         catch (Exception ex)
@@ -183,7 +190,7 @@ public sealed class DockerSandboxSessionFactory(
             await TearDownPartialStartAsync(session, attachStream, containerId, workspaceDir);
 
             sessionLogger.LogWarning(ex, "Docker sandbox session failed to start for tool {ToolName}", request.ToolName);
-            await attestationSigner.SignFailureAsync(request, $"Docker error: {ex.Message}", egressDigest, ct);
+            await attestationSigner.SignFailureAsync(request, $"Docker error: {ex.Message}", egressDigest, ct, resolvedImage);
             return Result<ISandboxSession>.Fail(DockerErrorFailureCode);
         }
     }

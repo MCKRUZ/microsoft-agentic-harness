@@ -325,6 +325,32 @@ public sealed class BundleStagingServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task StageAsync_RejectedStdioAttemptFollowedByValidOne_ValidOneStillRegisters()
+    {
+        // A stdio server rejected for a reason OTHER than the cap (here: empty command) must not
+        // itself consume a cap slot — only a server that actually registers may count against
+        // MaxServersPerBundle. With the cap set to 1, if a rejected attempt wrongly counted, this
+        // bundle's genuinely valid second server would be refused too, even though zero servers
+        // are actually registered yet.
+        using var zip = ZipOf(
+            ("AGENT.md", "---\nid: rejected-then-valid-bundle\nname: Rejected Then Valid Bundle\n---\nx"),
+            ("plugin.json", "{ \"name\": \"root\", \"version\": \"1.0.0\", \"mcpServers\": \"./mcp.json\" }"),
+            ("mcp.json", "{ \"mcpServers\": { " +
+                "\"first\": { \"type\": \"stdio\" }, " +
+                "\"second\": { \"type\": \"stdio\", \"command\": \"npx\" } } }"));
+
+        var bundleOwnedMcpServers = new BundleOwnedMcpServerRegistry();
+        var appConfig = StdioEnabledAppConfig(maxServersPerBundle: 1);
+        var result = await CreateService(appConfig, bundleOwnedMcpServers).StageAsync(zip);
+
+        result.IsSuccess.Should().BeTrue(string.Join("; ", result.Errors));
+        var namespacedName = $"{result.Value!.BundleId}:second";
+        result.Value!.McpServerNames.Should().ContainSingle().Which.Should().Be(namespacedName,
+            "the first server's empty-command rejection must not consume the per-bundle cap slot " +
+            "the second, valid server needs");
+    }
+
+    [Fact]
     public async Task StageAsync_BundleWithHttpMcpServer_RegistersHttpDefinitionWithUrl()
     {
         using var zip = ZipOf(

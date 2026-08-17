@@ -245,6 +245,51 @@ public sealed class McpConnectionManagerSandboxedStdioTests
     }
 
     [Fact]
+    public async Task GetClientAsync_ScopeFactoryThrowsDuringSessionStart_DoesNotLeakTheConcurrencySlot()
+    {
+        // /code-review finding (#371): the concurrency slot was claimed via Interlocked.Increment
+        // BEFORE _scopeFactory.CreateAsyncScope() — which sat outside the method's try/finally —
+        // so a throw during scope creation (e.g. an already-disposed root provider during host
+        // shutdown) permanently pinned that slot for the rest of the process's life. Proven here by
+        // a SECOND attempt after the first throws: if the slot leaked, it fails with "Host-wide
+        // bundle stdio sandbox session cap"; if released correctly, it fails at scope creation
+        // again instead, exactly like the first attempt.
+        var throwingScopeFactory = new ThrowingServiceScopeFactory();
+        var bundleOwned = new BundleOwnedMcpServerRegistry();
+        bundleOwned.TryAdd("b1:local-tool", new McpServerDefinition
+        {
+            Enabled = true, Type = McpServerType.Stdio, Command = "node", StartupTimeoutSeconds = 1,
+        });
+        var appConfig = new AppConfig
+        {
+            AI = new AIConfig
+            {
+                BundleExecution = new BundleExecutionConfig
+                {
+                    StdioMcpServers = new BundleStdioMcpServersConfig
+                    {
+                        ContainerImage = "mcr.microsoft.com/node:20",
+                        MaxConcurrentSessions = 1,
+                    },
+                },
+            },
+        };
+        var rootServices = McpConnectionManagerBundleEgressSupport.BuildRootServices(services =>
+        {
+            services.AddSingleton<IOptionsMonitor<AppConfig>>(new StaticAppConfigMonitor(appConfig));
+        });
+        var sut = new McpConnectionManager(
+            Mock.Of<ILogger<McpConnectionManager>>(), new Mock<ILoggerFactory>().Object,
+            TestSsrf.HandlerFactory(), new McpServersConfig(), bundleOwned,
+            throwingScopeFactory, McpConnectionManagerBundleEgressSupport.Args.AmbientScope, rootServices);
+
+        await Assert.ThrowsAsync<McpConnectionException>(() => sut.GetClientAsync("b1:local-tool"));
+        var secondException = await Assert.ThrowsAsync<McpConnectionException>(() => sut.GetClientAsync("b1:local-tool"));
+
+        secondException.Message.Should().NotContain("Host-wide bundle stdio sandbox session cap");
+    }
+
+    [Fact]
     public async Task GetClientAsync_BundleOwnedStdioServer_SeedDirectoryOutsideStagingRoot_RefusesWithoutStartingASession()
     {
         // Security-review finding: SandboxSeedDirectory is provenance-tagged by BundleStagingService
@@ -381,6 +426,13 @@ public sealed class McpConnectionManagerSandboxedStdioTests
             await Release.Task;
             return Result<ISandboxSession>.Fail("fake factory: not starting a real session");
         }
+    }
+
+    /// <summary>Its <see cref="CreateScope"/> always throws — stands in for an already-disposed root provider during host shutdown.</summary>
+    private sealed class ThrowingServiceScopeFactory : IServiceScopeFactory
+    {
+        public IServiceScope CreateScope() =>
+            throw new InvalidOperationException("test: scope factory intentionally throws");
     }
 
     private sealed class FakeSandboxSessionFactory : ISandboxSessionFactory

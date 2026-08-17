@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.Json;
 using Application.AI.Common.Interfaces.Attestation;
 using Application.AI.Common.Interfaces.Sandbox;
 using Application.AI.Common.Models.Sandbox;
@@ -375,6 +376,38 @@ public class DockerSandboxSessionFactoryTests
         result.IsSuccess.Should().BeTrue(string.Join("; ", result.Errors));
         await using var session = result.Value!;
         _capturedParams!.Image.Should().Be("mcr.microsoft.com/dotnet/sdk:10.0");
+    }
+
+    [Fact]
+    public async Task StartSessionAsync_NoRequestContainerImage_AttestsTheResolvedImageNotNull()
+    {
+        // /code-review finding (#371): DescribeSessionInput used to log request.ContainerImage
+        // directly, which is null for every first-party session (none of them populate that
+        // field — their image comes from ResolveImage's own ToolOverrides/default lookup, same
+        // as here). Two sessions on genuinely different resolved images would attest identical
+        // (null) input either way. The attested "image" must match what the container actually
+        // ran, not the raw per-request override.
+        SetUpAttachStream(BuildFrames(("stdout", "")));
+        AttestationRequest? signed = null;
+        _attestation
+            .Setup(x => x.SignAsync(It.Is<AttestationRequest>(r => !r.IsFailure), It.IsAny<CancellationToken>()))
+            .Callback<AttestationRequest, CancellationToken>((r, _) => signed = r)
+            .ReturnsAsync((AttestationRequest r, CancellationToken _) => new ToolExecutionAttestation
+            {
+                ToolName = r.ToolName, InputHash = "test-hash", Timestamp = DateTimeOffset.UtcNow,
+                Signature = "test-sig", KeyVersion = "v1", IsFailureAttestation = false
+            });
+
+        var result = await _sut.StartSessionAsync(CreateRequest(), CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue(string.Join("; ", result.Errors));
+        await using var session = result.Value!;
+        signed.Should().NotBeNull();
+        var attestedImage = JsonDocument.Parse(signed!.Input).RootElement.GetProperty("image").GetString();
+        attestedImage.Should().Be(_capturedParams!.Image,
+            "the attested image must be what ResolveImage actually picked, not the (always-null, for a " +
+            "first-party session) request-level override");
+        attestedImage.Should().NotBeNullOrEmpty();
     }
 
     [Fact]

@@ -48,7 +48,7 @@ public sealed partial class BundleStagingService
     /// the server's name later — so <c>McpConnectionManager.StartSandboxedStdioSessionAsync</c> can seed
     /// the server's sandbox workspace with the bundle's own files.
     /// <para>
-    /// The seed is always <paramref name="bundleDir"/> — the WHOLE bundle's staged root, not the
+    /// The seed is always <see cref="ServerRegistrationContext.BundleDir"/> — the WHOLE bundle's staged root, not the
     /// specific plugin manifest that declared this server — even when the declaration lives in a
     /// nested <c>plugins/&lt;name&gt;/mcp.json</c>. This was a deliberate choice, not an omission: the
     /// server may legitimately need sibling content elsewhere in the bundle. The consequence a bundle
@@ -59,34 +59,32 @@ public sealed partial class BundleStagingService
     /// </para>
     /// </summary>
     private bool TryRegisterStdioServer(
-        string bundleId, string namespacedName, JsonProperty serverProp, McpServerDefinition definition,
-        string bundleDir, BundleStdioMcpServersConfig stdioConfig, bool sandboxEnabled, ref int stdioServerCount)
+        ServerRegistrationContext context, string namespacedName, JsonProperty serverProp, McpServerDefinition definition,
+        int stdioServerCount)
     {
         if (!McpServerDefinitionBuilder.IsExplicitType(serverProp.Value, McpServerType.Stdio))
         {
-            LogStdioRejected(bundleId, serverProp.Name);
+            LogStdioRejected(context.BundleId, serverProp.Name);
             return false;
         }
+
+        var stdioConfig = context.BundleExecution.StdioMcpServers;
 
         // Short-circuiting || means the FIRST failing check logs and stops evaluation — the same
         // "log the first reason" ordering the inline checks this replaced had, just delegated one
         // guard per method instead of five inline blocks in one body.
-        if (!IsStdioCapabilityEnabled(bundleId, serverProp.Name, stdioConfig)
-            || !HasConfiguredContainerImage(bundleId, serverProp.Name, stdioConfig)
-            || !IsSandboxSubsystemEnabled(bundleId, serverProp.Name, sandboxEnabled)
-            || !HasNonEmptyCommand(bundleId, serverProp.Name, definition)
-            || !IsWithinPerBundleStdioServerCap(bundleId, serverProp.Name, stdioServerCount, stdioConfig))
+        if (!IsStdioCapabilityEnabled(context.BundleId, serverProp.Name, stdioConfig)
+            || !HasConfiguredContainerImage(context.BundleId, serverProp.Name, stdioConfig)
+            || !IsSandboxSubsystemEnabled(context.BundleId, serverProp.Name, context.SandboxEnabled)
+            || !HasNonEmptyCommand(context.BundleId, serverProp.Name, definition)
+            || !IsWithinPerBundleStdioServerCap(context.BundleId, serverProp.Name, stdioServerCount, stdioConfig))
         {
             return false;
         }
 
-        definition.SandboxSeedDirectory = bundleDir;
+        definition.SandboxSeedDirectory = context.BundleDir;
 
-        if (!TryAddOwnedServer(bundleId, namespacedName, serverProp.Name, definition))
-            return false;
-
-        stdioServerCount++;
-        return true;
+        return TryAddOwnedServer(context.BundleId, namespacedName, serverProp.Name, definition);
     }
 
     private bool IsStdioCapabilityEnabled(string bundleId, string serverName, BundleStdioMcpServersConfig stdioConfig)

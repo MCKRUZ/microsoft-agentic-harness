@@ -119,10 +119,11 @@ internal static class SandboxWorkspace
 
     /// <summary>
     /// Copies files and subdirectories one level at a time, skipping any entry that is itself a
-    /// symlink/junction (<see cref="FileSystemInfo.LinkTarget"/> non-null) rather than following
-    /// it — a symlink inside an untrusted source directory could otherwise point outside the
-    /// source tree entirely (e.g. to a host path the caller has no business exposing to the
-    /// sandbox), and this copy has no way to distinguish an intended relative link from that.
+    /// symlink/junction (<see cref="FileSystemInfo.Attributes"/> carries <see cref="FileAttributes.ReparsePoint"/>)
+    /// rather than following it — a symlink inside an untrusted source directory could otherwise
+    /// point outside the source tree entirely (e.g. to a host path the caller has no business
+    /// exposing to the sandbox), and this copy has no way to distinguish an intended relative link
+    /// from that.
     /// </summary>
     /// <remarks>
     /// Every copied entry gets its permissions set explicitly (other-readable, dirs also
@@ -132,6 +133,16 @@ internal static class SandboxWorkspace
     /// <see cref="SetContainerAccessiblePermissions"/>), so relying on an ambient umask default
     /// (which may be as restrictive as 0077 on a hardened host) would make the seed silently
     /// unreadable on exactly the hosts most likely to run this feature.
+    /// <para>
+    /// Uses a single <see cref="DirectoryInfo.EnumerateFileSystemInfos()"/> scan per level rather
+    /// than separate <c>EnumerateDirectories</c>/<c>EnumerateFiles</c> passes plus a fresh
+    /// <c>DirectoryInfo</c>/<c>FileInfo</c> per entry just to read <c>LinkTarget</c> — that shape
+    /// walked the same native directory listing twice and issued an extra stat/readlink syscall for
+    /// every entry, symlink or not. <see cref="FileSystemInfo.Attributes"/> is already populated from
+    /// the same scan that produced the entry, so both the dir-vs-file test and the symlink test are
+    /// free here. Cost scales with bundle content size (nested plugin directories, vendored
+    /// dependencies), so this isn't negligible for larger bundles.
+    /// </para>
     /// </remarks>
     /// <exception cref="InvalidOperationException">The source tree nests deeper than <see cref="MaxSeedDepth"/>.</exception>
     private static void CopyDirectory(string sourceDir, string destinationDir, int depth)
@@ -142,26 +153,25 @@ internal static class SandboxWorkspace
                 $"Seed source exceeds the maximum directory depth of {MaxSeedDepth}; refusing to copy.");
         }
 
-        foreach (var dir in Directory.EnumerateDirectories(sourceDir))
+        foreach (var entry in new DirectoryInfo(sourceDir).EnumerateFileSystemInfos())
         {
-            if (new DirectoryInfo(dir).LinkTarget is not null)
+            if (entry.Attributes.HasFlag(FileAttributes.ReparsePoint))
                 continue;
 
-            var destSubDir = Path.Combine(destinationDir, Path.GetFileName(dir));
-            Directory.CreateDirectory(destSubDir);
-            SetContainerAccessiblePermissions(destSubDir);
-            CopyDirectory(dir, destSubDir, depth + 1);
-        }
-
-        foreach (var file in Directory.EnumerateFiles(sourceDir))
-        {
-            if (new FileInfo(file).LinkTarget is not null)
-                continue;
-
-            var destFile = Path.Combine(destinationDir, Path.GetFileName(file));
-            File.Copy(file, destFile, overwrite: true);
-            if (!OperatingSystem.IsWindows())
-                File.SetUnixFileMode(destFile, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.OtherRead);
+            if (entry.Attributes.HasFlag(FileAttributes.Directory))
+            {
+                var destSubDir = Path.Combine(destinationDir, entry.Name);
+                Directory.CreateDirectory(destSubDir);
+                SetContainerAccessiblePermissions(destSubDir);
+                CopyDirectory(entry.FullName, destSubDir, depth + 1);
+            }
+            else
+            {
+                var destFile = Path.Combine(destinationDir, entry.Name);
+                File.Copy(entry.FullName, destFile, overwrite: true);
+                if (!OperatingSystem.IsWindows())
+                    File.SetUnixFileMode(destFile, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.OtherRead);
+            }
         }
     }
 
