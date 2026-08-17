@@ -47,4 +47,27 @@ public sealed record SandboxSessionRequest
     /// reserved-name rejection as <see cref="SandboxExecutionRequest.EnvironmentVariables"/>.
     /// </summary>
     public IReadOnlyDictionary<string, string>? EnvironmentVariables { get; init; }
+
+    /// <summary>
+    /// Container image to run the session in, overriding the sandbox's configured default image.
+    /// <strong>Docker-tier only</strong> — a factory for any other isolation level ignores this.
+    /// Still validated against <c>ContainerSandboxOptions.AllowedImagePrefixes</c> exactly like the
+    /// default image; a caller cannot use this to escape the operator's image allowlist, only to pick
+    /// among images the operator has already permitted. Null uses the sandbox's configured default.
+    /// </summary>
+    public string? ContainerImage { get; init; }
+
+    /// <summary>
+    /// Absolute path to a directory on the host whose contents are copied into the session's sandbox
+    /// workspace before it starts. <strong>Docker-tier only</strong> — a factory for any other
+    /// isolation level must refuse a request that sets this rather than silently ignore it, since the
+    /// process tier's workspace has no equivalent containment for caller-chosen content (see
+    /// <see cref="ToolPermissionProfile.MinimumIsolation"/>'s remarks on why untrusted, caller-supplied
+    /// commands require <see cref="SandboxIsolationLevel.Container"/>). Deliberately a copy contract,
+    /// not a bind-mount contract: the caller's source directory may be deleted by something outside
+    /// this session's lifetime (e.g. a bundle's staging directory on handle eviction), and a session
+    /// that depended on that directory staying mounted for its own duration would race that deletion.
+    /// Null starts with an empty workspace, as before this property existed.
+    /// </summary>
+    public string? WorkspaceSeedDirectory { get; init; }
 }

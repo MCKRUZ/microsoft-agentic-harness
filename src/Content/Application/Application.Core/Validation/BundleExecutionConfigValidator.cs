@@ -70,5 +70,13 @@ public sealed class BundleExecutionConfigValidator : AbstractValidator<BundleExe
         RuleFor(x => x.MaxConcurrentStreamsPerCaller)
             .GreaterThanOrEqualTo(1)
             .WithMessage("MaxConcurrentStreamsPerCaller must be >= 1 — a non-positive cap would deny every stream.");
+
+        RuleFor(x => x.StdioMcpServers.MaxServersPerBundle)
+            .GreaterThan(0)
+            .WithMessage("StdioMcpServers:MaxServersPerBundle must be > 0 — a non-positive cap would let no bundle register a stdio server even when the capability is enabled.");
+
+        RuleFor(x => x.StdioMcpServers.ContainerImage)
+            .Must(image => image.Length == 0 || image.Trim().Length > 0)
+            .WithMessage("StdioMcpServers:ContainerImage must not be whitespace-only — leave it empty to keep the capability inert, or set a real image reference.");
     }
 }

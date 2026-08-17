@@ -97,12 +97,26 @@ public sealed class DockerSandboxSessionFactory(
 
         try
         {
-            var image = launchPreparer.ResolveImage(request.ToolName);
+            // Seeded before the container is created, so the bind mount below picks up the
+            // content in the same pass Docker already makes to read the workspace directory —
+            // no separate "write into a running container" step needed. The workspace root's
+            // permissions are widened ONLY here, in the seeded branch — not unconditionally in
+            // CreateWorkspace for every Docker-tier session (an earlier version did that;
+            // /code-review caught it as broader exposure than the problem it solved). Every
+            // OTHER Docker-tier consumer keeps the tighter owner-only default.
+            if (request.WorkspaceSeedDirectory is { } seedDirectory)
+            {
+                SandboxWorkspace.SeedFrom(seedDirectory, workspaceDir);
+                SandboxWorkspace.SetContainerAccessiblePermissions(workspaceDir);
+            }
+
+            var image = launchPreparer.ResolveImage(request.ToolName, request.ContainerImage);
             await launchPreparer.EnsureImageAvailableAsync(image, ct);
 
             var containerParams = launchPreparer.BuildContainerParams(
                 request.Command ?? request.ToolName, request.ArgumentList, request.Limits, request.PermissionProfile,
-                workspaceDir, image, interactive: true, environmentVariables: request.EnvironmentVariables);
+                workspaceDir, image, interactive: true, environmentVariables: request.EnvironmentVariables,
+                workingDirectory: request.WorkspaceSeedDirectory is not null ? "/workspace" : null);
             var createResponse = await dockerClient.Containers.CreateContainerAsync(containerParams, ct);
             containerId = createResponse.ID;
 

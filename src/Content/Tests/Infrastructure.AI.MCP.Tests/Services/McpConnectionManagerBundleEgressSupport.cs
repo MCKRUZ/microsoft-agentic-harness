@@ -7,6 +7,7 @@ using Application.AI.Common.Services.Sandbox;
 using Application.AI.Common.Services.Tools;
 using Domain.AI.Egress;
 using Domain.AI.Identity;
+using Domain.Common.Config;
 using Domain.Common.Config.AI.MCP;
 using Domain.Common.Config.AI.Sandbox;
 using Infrastructure.AI.Bundles;
@@ -108,6 +109,12 @@ internal static class McpConnectionManagerBundleEgressSupport
         // in this minimal provider, so the empty key set correctly resolves every server name to
         // the same None/None base the production registration would give an unrecognised name.
         services.AddOptions<SandboxConfig>();
+        // McpConnectionManager also resolves IOptionsMonitor<AppConfig> eagerly at construction (the
+        // sandboxed-stdio path's container image comes from AppConfig.AI.BundleExecution.StdioMcpServers).
+        // Default-bound AppConfig — ContainerImage empty, capability off — matches production's own
+        // fail-inert-until-configured posture, so a test that does not opt in never accidentally reaches
+        // a real sandbox path via this shared provider.
+        services.AddOptions<AppConfig>();
         services.AddSingleton(sp => new FirstPartyToolLookup(sp, new HashSet<string>(StringComparer.Ordinal)));
         services.AddSingleton(sp => new ToolPermissionProfileResolver(
             sp.GetRequiredService<FirstPartyToolLookup>(), sp.GetRequiredService<IOptionsMonitor<SandboxConfig>>()));

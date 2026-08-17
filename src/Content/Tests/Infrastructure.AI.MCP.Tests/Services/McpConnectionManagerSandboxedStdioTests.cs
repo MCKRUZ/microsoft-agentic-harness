@@ -3,6 +3,9 @@ using Application.AI.Common.Exceptions;
 using Application.AI.Common.Interfaces.Sandbox;
 using Domain.AI.Sandbox;
 using Domain.Common;
+using Domain.Common.Config;
+using Domain.Common.Config.AI;
+using Domain.Common.Config.AI.BundleExecution;
 using Domain.Common.Config.AI.MCP;
 using Domain.Common.Config.AI.Sandbox;
 using FluentAssertions;
@@ -137,6 +140,74 @@ public sealed class McpConnectionManagerSandboxedStdioTests
     }
 
     [Fact]
+    public async Task GetClientAsync_BundleOwnedStdioServer_PassesSeedDirectoryAndConfiguredImageToTheSessionRequest()
+    {
+        // #371: the two facts that make a sandboxed stdio session actually able to run the bundle's own
+        // server — the seed directory tagged onto the definition at registration, and the operator's
+        // configured image (never a per-tool ToolOverrides image, since a bundle's GUID-namespaced name
+        // could never match one) — must both reach the sandbox session request.
+        const string seedDirectory = @"C:\staged\bundle-abc123";
+        var bundleOwned = new BundleOwnedMcpServerRegistry();
+        bundleOwned.TryAdd("b1:local-tool", new McpServerDefinition
+        {
+            Enabled = true,
+            Type = McpServerType.Stdio,
+            Command = "node",
+            StartupTimeoutSeconds = 1,
+            SandboxSeedDirectory = seedDirectory,
+        });
+
+        var appConfig = new AppConfig
+        {
+            AI = new AIConfig
+            {
+                BundleExecution = new BundleExecutionConfig
+                {
+                    StdioMcpServers = new BundleStdioMcpServersConfig { ContainerImage = "mcr.microsoft.com/node:20" },
+                },
+            },
+        };
+        var rootServices = McpConnectionManagerBundleEgressSupport.BuildRootServices(services =>
+        {
+            services.AddKeyedSingleton<ISandboxSessionFactory>(SandboxIsolationLevel.Container, _fakeSessionFactory);
+            // Registered after BuildRootServices' own IOptionsMonitor<AppConfig> — last registration
+            // wins for a non-keyed singleton, so this overrides the default (empty) AppConfig.
+            services.AddSingleton<IOptionsMonitor<AppConfig>>(new StaticAppConfigMonitor(appConfig));
+        });
+        var sut = McpConnectionManagerBundleEgressSupport.CreateManager(
+            Mock.Of<ILogger<McpConnectionManager>>(), new Mock<ILoggerFactory>().Object,
+            TestSsrf.HandlerFactory(), new McpServersConfig(), bundleOwned, rootServices);
+
+        await Assert.ThrowsAsync<McpConnectionException>(() => sut.GetClientAsync("b1:local-tool"));
+
+        _fakeSessionFactory.LastRequest.Should().NotBeNull();
+        _fakeSessionFactory.LastRequest!.WorkspaceSeedDirectory.Should().Be(seedDirectory);
+        _fakeSessionFactory.LastRequest.ContainerImage.Should().Be("mcr.microsoft.com/node:20");
+    }
+
+    [Fact]
+    public async Task GetClientAsync_BundleOwnedStdioServer_NoConfiguredImage_LeavesRequestImageNull()
+    {
+        var bundleOwned = new BundleOwnedMcpServerRegistry();
+        bundleOwned.TryAdd("b1:local-tool", new McpServerDefinition
+        {
+            Enabled = true,
+            Type = McpServerType.Stdio,
+            Command = "node",
+            StartupTimeoutSeconds = 1,
+        });
+        // BuildRootServices' default AppConfig has an empty (unconfigured) StdioMcpServers.ContainerImage.
+        var sut = CreateManager(new McpServersConfig(), bundleOwned);
+
+        await Assert.ThrowsAsync<McpConnectionException>(() => sut.GetClientAsync("b1:local-tool"));
+
+        _fakeSessionFactory.LastRequest.Should().NotBeNull();
+        _fakeSessionFactory.LastRequest!.ContainerImage.Should().BeNull(
+            "an unconfigured image must fall through to the session factory's own default resolution, " +
+            "not an empty string that would fail Docker's image reference parsing");
+    }
+
+    [Fact]
     public async Task GetClientAsync_HostConfiguredStdioServer_NeverReachesTheSandbox()
     {
         // The trust-tier boundary #371 must not blur: a host-installed plugin's stdio server keeps
@@ -161,6 +232,19 @@ public sealed class McpConnectionManagerSandboxedStdioTests
         await act.Should().ThrowAsync<McpConnectionException>();
         _fakeSessionFactory.WasCalled.Should().BeFalse(
             "a host-configured server is a different trust tier and must never route through the sandbox");
+    }
+
+    private sealed class StaticAppConfigMonitor(AppConfig value) : IOptionsMonitor<AppConfig>
+    {
+        public AppConfig CurrentValue => value;
+        public AppConfig Get(string? name) => value;
+        public IDisposable OnChange(Action<AppConfig, string?> listener) => NullDisposable.Instance;
+
+        private sealed class NullDisposable : IDisposable
+        {
+            public static readonly NullDisposable Instance = new();
+            public void Dispose() { }
+        }
     }
 
     private sealed class StaticSandboxConfigMonitor(SandboxConfig value) : IOptionsMonitor<SandboxConfig>

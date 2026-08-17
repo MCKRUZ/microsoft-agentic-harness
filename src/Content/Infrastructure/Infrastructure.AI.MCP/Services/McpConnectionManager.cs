@@ -7,12 +7,14 @@ using Application.AI.Common.Interfaces.Sandbox;
 using Application.AI.Common.Services.Sandbox;
 using Domain.AI.Sandbox;
 using Domain.Common;
+using Domain.Common.Config;
 using Domain.Common.Config.AI.MCP;
 using Infrastructure.AI.Egress;
 using Infrastructure.AI.Identity;
 using Infrastructure.AI.MCP.Egress;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using ModelContextProtocol.Client;
 
 namespace Infrastructure.AI.MCP.Services;
@@ -42,6 +44,7 @@ public sealed class McpConnectionManager : IAsyncDisposable
     private readonly IEgressAuditWriter _egressAuditWriter;
     private readonly ILogger<EgressPolicyDelegatingHandler> _egressHandlerLogger;
     private readonly TimeProvider _timeProvider;
+    private readonly IOptionsMonitor<AppConfig> _appConfig;
 
     // A single flat cache keyed by bare serverName, shared across BOTH _config and _bundleOwnedServers —
     // safe today because the two namespacing schemes never collide (host names are plain or
@@ -122,6 +125,7 @@ public sealed class McpConnectionManager : IAsyncDisposable
         _egressAuditWriter = rootServices.GetRequiredService<IEgressAuditWriter>();
         _egressHandlerLogger = rootServices.GetRequiredService<ILogger<EgressPolicyDelegatingHandler>>();
         _timeProvider = rootServices.GetService<TimeProvider>() ?? TimeProvider.System;
+        _appConfig = rootServices.GetRequiredService<IOptionsMonitor<AppConfig>>();
     }
 
     /// <summary>
@@ -424,10 +428,10 @@ public sealed class McpConnectionManager : IAsyncDisposable
         return definition.Type switch
         {
             // A bundle-owned stdio server runs inside the sandbox, never directly on the host —
-            // see #371 and BundleStagingService.LogStdioRejected for the RCE rationale. This arm
-            // is currently unreachable in production: staging still rejects a bundle-declared
-            // stdio server outright, so isBundleOwned is never true here yet. The registration
-            // gate that makes it reachable is #371's follow-up PR, not this one.
+            // see #371 and BundleStagingService.LogStdioRejected for the RCE rationale. Reachable
+            // only when an operator has both opted into AppConfig.AI.BundleExecution.StdioMcpServers
+            // and configured a container image; BundleStagingService.TryBuildAndRegisterOneServer
+            // is the gate that decides whether isBundleOwned is ever true here for a stdio server.
             McpServerType.Stdio when isBundleOwned => new SandboxedStdioClientTransport(
                 serverName,
                 ct => StartSandboxedStdioSessionAsync(serverName, definition, ct),
@@ -458,11 +462,19 @@ public sealed class McpConnectionManager : IAsyncDisposable
     /// resolution, not the same one.
     /// </summary>
     /// <remarks>
-    /// Container isolation only, for now: the harness has no per-bundle Process-tier allowlist
-    /// concept yet (that path is only safe when an operator has explicitly trusted a specific
-    /// command — see the remarks on <c>ProcessSandboxSessionFactory</c>), and building that
-    /// policy surface belongs with the registration gate that makes this arm reachable at all,
-    /// not with the transport plumbing here. Resource limits use sandbox defaults.
+    /// Container isolation only: the harness has no per-bundle Process-tier allowlist concept, and
+    /// <c>ProcessSandboxSessionFactory</c> refuses a request that carries
+    /// <see cref="SandboxSessionRequest.WorkspaceSeedDirectory"/> outright, so this path could never
+    /// downgrade to that tier even by misconfiguration. Resource limits use sandbox defaults.
+    /// <para>
+    /// The container image comes from <c>AppConfig.AI.BundleExecution.StdioMcpServers.ContainerImage</c>
+    /// — an operator-set default shared by every bundle-owned stdio server on this host, not a
+    /// per-bundle choice: a bundle-owned name contains a fresh GUID per staging, so the sandbox's
+    /// existing per-tool image override lookup can never match one. The workspace is seeded from
+    /// <see cref="McpServerDefinition.SandboxSeedDirectory"/> — the bundle's own staged directory,
+    /// set only by <c>BundleStagingService</c> at registration — so the server's own files are
+    /// present when its process starts.
+    /// </para>
     /// <para>
     /// The permission profile is resolved through <see cref="ToolPermissionProfileResolver"/> —
     /// not built as an inline literal — so this path consults the same override registry
@@ -520,7 +532,11 @@ public sealed class McpConnectionManager : IAsyncDisposable
                 PermissionProfile = permissionProfile,
                 Command = definition.Command,
                 ArgumentList = definition.Args,
-                EnvironmentVariables = definition.Env.Count > 0 ? definition.Env : null
+                EnvironmentVariables = definition.Env.Count > 0 ? definition.Env : null,
+                ContainerImage = _appConfig.CurrentValue.AI.BundleExecution.StdioMcpServers.ContainerImage is { Length: > 0 } image
+                    ? image
+                    : null,
+                WorkspaceSeedDirectory = definition.SandboxSeedDirectory
             };
 
             var result = await sessionFactory.StartSessionAsync(request, cancellationToken);
