@@ -6,7 +6,7 @@
         <title>05 · Sandbox &amp; Execution — Agentic Harness Security Guide</title>
         <meta
             name="description"
-            content="Layer 4 of the harness: when an allowed tool actually runs code, it runs inside an isolated box with no capabilities it wasn't granted — Windows Job Objects, Docker containers, a closed-by-default capability model, argument-injection prevention, and HMAC-signed execution attestation."
+            content="Layer 4 of the harness: when an allowed tool actually runs code, it runs inside an isolated box with no capabilities it wasn't granted — Windows Job Objects, Docker containers, long-lived sandboxed MCP sessions, a closed-by-default capability model, argument-injection prevention, and HMAC-signed execution attestation."
         />
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -336,6 +336,167 @@
                                 specific container execution. They are different types with different jobs. If you find
                                 yourself reaching for one and the field you want isn't there, you probably want the
                                 other.
+                            </p>
+                        </div>
+                    </div>
+
+                    <h2 id="stdio-sessions">Long-lived sessions: a bundle's own MCP server, sandboxed</h2>
+                    <p>
+                        Everything above assumes a tool runs once: input in, output out, box torn down. A
+                        <code>stdio</code>-style MCP (Model Context Protocol — the standard the harness uses to expose
+                        tools to the model) server doesn't fit that shape. It's a local process that stays running for
+                        the whole conversation, answering many tool calls over one open connection — closer to a phone
+                        call than a letter. The one-shot sandbox has no way to hold that call open, so a bundle (an
+                        uploaded, untrusted package of instructions and files) that declared its own local MCP server
+                        used to be rejected outright at upload time. This section covers the sandbox's second shape:
+                        one built to stay open.
+                    </p>
+
+                    <div class="def">
+                        <div class="def-term">ISandboxSession / ISandboxSessionFactory</div>
+                        <div class="def-desc">
+                            A duplex, long-lived counterpart to the one-shot executors above — a session stays open
+                            across many exchanges instead of closing after one. File:
+                            <code>src/Content/Application/Application.AI.Common/Interfaces/Sandbox/ISandboxSession.cs</code>
+                            (and its factory interface in the same folder).
+                        </div>
+                    </div>
+                    <div class="def">
+                        <div class="def-term">DockerSandboxSessionFactory</div>
+                        <div class="def-desc">
+                            The real containment boundary for this feature — unprivileged user, dropped capabilities,
+                            read-only root filesystem, no network unless explicitly granted. This is the only tier a
+                            bundle-owned server is allowed to run on. File:
+                            <code>src/Content/Infrastructure/Infrastructure.AI/Sandbox/DockerSandboxSessionFactory.cs</code>.
+                        </div>
+                    </div>
+                    <div class="def">
+                        <div class="def-term">ProcessSandboxSessionFactory</div>
+                        <div class="def-desc">
+                            Exists for the same reason the one-shot process sandbox does — lighter weight, no
+                            container runtime — but it is <strong>not a containment boundary</strong>, and the harness
+                            treats it that way: it fails closed and refuses any session request that carries a
+                            workspace seed, which is exactly what a bundle-owned server's files need. A bundle's
+                            <code>stdio</code> server can only ever land on the Docker tier.
+                        </div>
+                    </div>
+
+                    <p>
+                        The bridge between this new session shape and the MCP protocol is
+                        <code>SandboxedStdioClientTransport</code>
+                        (<code>src/Content/Infrastructure/Infrastructure.AI.MCP/Services/SandboxedStdioClientTransport.cs</code>)
+                        — it makes an <code>ISandboxSession</code> look, from the MCP SDK's point of view, like an
+                        ordinary local process it's talking to over standard input/output. The model's side of the
+                        conversation doesn't change at all; only where the other end of the pipe actually executes
+                        does.
+                    </p>
+
+                    <p>
+                        The registration gate that makes any of this reachable lives in <code>BundleStagingService</code>
+                        (<code>src/Content/Infrastructure/Infrastructure.AI/Bundles/BundleStagingService.StdioMcp.cs</code>).
+                        Before this capability existed — and still today, unless an operator turns it on — a bundle
+                        declaring a <code>stdio</code>-type MCP server in its manifest was rejected outright. Turning it
+                        on is a separate, explicit opt-in from the one that already lets a bundle register a
+                        <em>remote</em> (http/sse) server:
+                    </p>
+
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Setting</th>
+                                <th>Default</th>
+                                <th>What it controls</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><code>StdioMcpServers.Enabled</code></td>
+                                <td>false</td>
+                                <td>Master switch. Off: a bundle's <code>stdio</code> declaration is parsed (so it can
+                                    be logged) but never registered — no container is ever created.</td>
+                            </tr>
+                            <tr>
+                                <td><code>StdioMcpServers.ContainerImage</code></td>
+                                <td>"" (empty)</td>
+                                <td>The runtime image every bundle-owned stdio session runs in on this host. Left
+                                    empty, staging refuses to register a server even with <code>Enabled = true</code>
+                                    — an empty image would fall back to the harness's own .NET image, which can't run
+                                    most MCP servers. Whatever an operator sets is still checked against
+                                    <code>ContainerSandboxOptions.AllowedImagePrefixes</code>, the same allowlist every
+                                    other sandboxed image goes through.</td>
+                            </tr>
+                            <tr>
+                                <td><code>StdioMcpServers.MaxServersPerBundle</code></td>
+                                <td>2</td>
+                                <td>How many stdio servers one bundle may declare — each one is a long-lived container
+                                    for the life of the bundle's staged handle.</td>
+                            </tr>
+                            <tr>
+                                <td><code>StdioMcpServers.MaxConcurrentSessions</code></td>
+                                <td>8</td>
+                                <td>A separate, host-wide cap: how many bundle-owned sessions may be running <em>at
+                                    once, across every staged bundle</em>. Without this, the per-bundle cap alone
+                                    doesn't bound anything — enough concurrently-staged bundles could still pin an
+                                    unbounded number of containers between them. Enforced in
+                                    <code>McpConnectionManager.StartSandboxedStdioSessionAsync</code>.</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                    <p>
+                        All four live under <code>AppConfig:AI:BundleExecution:StdioMcpServers</code> — deliberately
+                        separate from <code>BundleExecutionConfig.AllowBundleDeclaredMcpServers</code>, the flag for
+                        remote servers. Opting into one does not opt into the other; each capability needs its own
+                        decision.
+                    </p>
+
+                    <p>
+                        The bundle's own files reach the container by <strong>copy, not mount</strong> — the sandbox
+                        workspace is seeded from the bundle's staged directory at session start
+                        (<code>src/Content/Infrastructure/Infrastructure.AI/Sandbox/SandboxWorkspace.cs</code>), never
+                        bind-mounted. A live session's lifetime and the staging directory's lifetime aren't the same
+                        thing; a mount would tie them together and let a running container see later changes to — or
+                        write changes back into — files outside the exact snapshot it was granted.
+                    </p>
+
+                    <div class="callout callout-danger">
+                        <span class="callout-icon">✕</span>
+                        <div class="callout-body">
+                            <div class="callout-title">Attack scenario: a bundle names its own command to run</div>
+                            <p>
+                                A bundle is just an uploaded package — its manifest is attacker-controllable by
+                                definition. A bundle that could name any local command in its own <code>mcp.json</code>
+                                and have the host launch it directly would be remote code execution gated by nothing
+                                stronger than upload permission.
+                            </p>
+                            <p style="margin-bottom: 0">
+                                It never reaches the host that way. It reaches the Docker sandbox instead: unprivileged
+                                user, dropped capabilities, read-only root filesystem, an operator-chosen and
+                                allowlist-checked image, and — see below — no network. The same containment this
+                                chapter already describes for every other sandboxed tool run, applied to a server that
+                                happens to stay open for longer than one call.
+                            </p>
+                        </div>
+                    </div>
+
+                    <div class="callout callout-info">
+                        <span class="callout-icon">i</span>
+                        <div class="callout-body">
+                            <div class="callout-title">Known limits, stated plainly</div>
+                            <p style="margin: 0">
+                                <strong>No network.</strong> A bundle-owned stdio server's capability grant resolves to
+                                <code>ToolCapability.None</code> the same way any other bundle-owned tool name does, so
+                                its container runs with <code>NetworkMode = "none"</code>. It must be fully
+                                self-contained in the bundle's own staged files — bridging it to the network would
+                                sidestep the egress attribution the remote (http/sse) bundle path already enforces; see
+                                <a href="06-egress-and-ssrf.html">Egress &amp; SSRF</a>.
+                                <strong>An operator must supply the runtime image</strong> — the capability stays inert
+                                until <code>ContainerImage</code> is set.
+                                <strong>A failed session start isn't cached</strong> — each tool call retries the
+                                container start; acceptable today, a candidate for a follow-up if it proves noisy in
+                                practice.
+                                <strong>Container lifetime follows the bundle's own handle</strong> — the default
+                                <code>HandleTtl</code> is 30 minutes, sliding — so operators sizing a host should
+                                account for that, separately from the one-shot executors' 30-second timeout above.
                             </p>
                         </div>
                     </div>
