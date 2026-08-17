@@ -57,12 +57,16 @@ public class SandboxAttestationBindingTests
             var sandboxConfig = new Mock<IOptionsMonitor<SandboxConfig>>();
             sandboxConfig.Setup(x => x.CurrentValue).Returns(new SandboxConfig());
 
+            var launchPreparer = new ProcessSandboxLaunchPreparer(
+                _limiter.Object, sandboxConfig.Object, Mock.Of<ILogger<ProcessSandboxLaunchPreparer>>());
+
             _sut = new ProcessSandboxExecutor(
-                _limiter.Object,
+                launchPreparer,
                 _attestation.Object,
                 Mock.Of<ILogger<ProcessSandboxExecutor>>(),
                 TimeProvider.System,
-                sandboxConfig.Object);
+                sandboxConfig.Object,
+                new SandboxEgressPreflightRunner(null, Mock.Of<ILogger<SandboxEgressPreflightRunner>>()));
         }
 
         [SkippableFact]
@@ -159,12 +163,16 @@ public class SandboxAttestationBindingTests
             var sandboxConfig = new Mock<IOptionsMonitor<SandboxConfig>>();
             sandboxConfig.Setup(x => x.CurrentValue).Returns(new SandboxConfig { Enabled = true });
 
+            var launchPreparer = new DockerContainerLaunchPreparer(
+                _dockerClient.Object, _options.Object, Mock.Of<ILogger<DockerContainerLaunchPreparer>>());
+
             _sut = new DockerSandboxExecutor(
                 _dockerClient.Object,
+                launchPreparer,
                 _attestation.Object,
-                _options.Object,
                 sandboxConfig.Object,
-                Mock.Of<ILogger<DockerSandboxExecutor>>());
+                Mock.Of<ILogger<DockerSandboxExecutor>>(),
+                new SandboxEgressPreflightRunner(null, Mock.Of<ILogger<SandboxEgressPreflightRunner>>()));
         }
 
         [Fact]

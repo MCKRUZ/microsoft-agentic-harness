@@ -17,6 +17,7 @@ public class ProcessSandboxExecutorTests : IDisposable
 {
     private readonly Mock<IProcessResourceLimiter> _limiter = new();
     private readonly Mock<IAttestationService> _attestation = new();
+    private readonly ProcessSandboxLaunchPreparer _launchPreparer;
     private readonly ProcessSandboxExecutor _sut;
     private readonly List<string> _createdWorkspaces = [];
 
@@ -32,12 +33,16 @@ public class ProcessSandboxExecutorTests : IDisposable
         var sandboxConfig = new Mock<IOptionsMonitor<SandboxConfig>>();
         sandboxConfig.Setup(x => x.CurrentValue).Returns(new SandboxConfig());
 
+        _launchPreparer = new ProcessSandboxLaunchPreparer(
+            _limiter.Object, sandboxConfig.Object, Mock.Of<ILogger<ProcessSandboxLaunchPreparer>>());
+
         _sut = new ProcessSandboxExecutor(
-            _limiter.Object,
+            _launchPreparer,
             _attestation.Object,
             Mock.Of<ILogger<ProcessSandboxExecutor>>(),
             TimeProvider.System,
-            sandboxConfig.Object);
+            sandboxConfig.Object,
+            new SandboxEgressPreflightRunner(null, Mock.Of<ILogger<SandboxEgressPreflightRunner>>()));
     }
 
     public void Dispose()
@@ -122,7 +127,7 @@ public class ProcessSandboxExecutorTests : IDisposable
         Skip.IfNot(OperatingSystem.IsWindows(), "Windows-only: uses cmd.exe and Windows Job Object resource limits.");
 
         string? capturedDir = null;
-        _sut.CreateWorkspaceDirectory = () =>
+        _launchPreparer.CreateWorkspaceDirectory = () =>
         {
             var dir = Path.Combine(Path.GetTempPath(), $"sandbox-test-{Guid.NewGuid():N}");
             Directory.CreateDirectory(dir);

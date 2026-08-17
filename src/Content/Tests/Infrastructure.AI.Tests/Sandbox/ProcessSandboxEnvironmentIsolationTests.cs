@@ -38,6 +38,9 @@ public class ProcessSandboxEnvironmentIsolationTests
     private readonly Mock<IProcessResourceLimiter> _limiter = new();
     private readonly Mock<IAttestationService> _attestation = new();
     private readonly Mock<IOptionsMonitor<SandboxConfig>> _sandboxConfig = new();
+    private readonly ProcessSandboxLaunchPreparer _launchPreparer;
+    private readonly SandboxEgressPreflightRunner _egressPreflightRunner =
+        new(null, Mock.Of<ILogger<SandboxEgressPreflightRunner>>());
 
     public ProcessSandboxEnvironmentIsolationTests()
     {
@@ -52,14 +55,18 @@ public class ProcessSandboxEnvironmentIsolationTests
                 : CreateAttestation(r.ToolName));
 
         _sandboxConfig.Setup(x => x.CurrentValue).Returns(new SandboxConfig());
+
+        _launchPreparer = new ProcessSandboxLaunchPreparer(
+            _limiter.Object, _sandboxConfig.Object, Mock.Of<ILogger<ProcessSandboxLaunchPreparer>>());
     }
 
     private ProcessSandboxExecutor CreateSut() => new(
-        _limiter.Object,
+        _launchPreparer,
         _attestation.Object,
         Mock.Of<ILogger<ProcessSandboxExecutor>>(),
         TimeProvider.System,
-        _sandboxConfig.Object);
+        _sandboxConfig.Object,
+        _egressPreflightRunner);
 
     [SkippableFact]
     public async Task ExecuteAsync_HostSecretEnvVar_NotVisibleToChildProcess()
@@ -157,7 +164,7 @@ public class ProcessSandboxEnvironmentIsolationTests
 
         var sut = CreateSut();
         string? workspaceDir = null;
-        sut.CreateWorkspaceDirectory = () =>
+        _launchPreparer.CreateWorkspaceDirectory = () =>
         {
             workspaceDir = Path.Combine(Path.GetTempPath(), $"sandbox-envtest-{Guid.NewGuid():N}");
             Directory.CreateDirectory(workspaceDir);
@@ -181,6 +188,13 @@ public class ProcessSandboxEnvironmentIsolationTests
     [InlineData("COMSPEC")]
     [InlineData("PathExt")]
     [InlineData("systemroot")]
+    // Dynamic-linker-hijack vectors: this tier runs as the harness's own OS user against a fully
+    // writable host filesystem, so an unguarded grant here loads an arbitrary shared library into
+    // an otherwise operator-allowlisted program before the allowlisted binary's own code ever
+    // runs — the exact gap a security review caught (#371).
+    [InlineData("LD_PRELOAD")]
+    [InlineData("ld_library_path")]
+    [InlineData("LD_AUDIT")]
     public async Task ExecuteAsync_ReservedEnvironmentGrant_RejectsRequestBeforeSpawning(string grantName)
     {
         // Reserved names are checked case-insensitively: Windows environment lookups are

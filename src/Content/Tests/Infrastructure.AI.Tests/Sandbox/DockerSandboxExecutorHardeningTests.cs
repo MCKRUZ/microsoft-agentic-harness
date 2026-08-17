@@ -73,12 +73,16 @@ public class DockerSandboxExecutorHardeningTests
         var sandboxConfig = new Mock<IOptionsMonitor<SandboxConfig>>();
         sandboxConfig.Setup(x => x.CurrentValue).Returns(new SandboxConfig { Enabled = true });
 
+        var launchPreparer = new DockerContainerLaunchPreparer(
+            _dockerClient.Object, _options.Object, Mock.Of<ILogger<DockerContainerLaunchPreparer>>());
+
         _sut = new DockerSandboxExecutor(
             _dockerClient.Object,
+            launchPreparer,
             _attestation.Object,
-            _options.Object,
             sandboxConfig.Object,
-            Mock.Of<ILogger<DockerSandboxExecutor>>());
+            Mock.Of<ILogger<DockerSandboxExecutor>>(),
+            new SandboxEgressPreflightRunner(null, Mock.Of<ILogger<SandboxEgressPreflightRunner>>()));
     }
 
     [Fact]
@@ -167,6 +171,27 @@ public class DockerSandboxExecutorHardeningTests
 
         result.Success.Should().BeFalse();
         result.ErrorMessage.Should().Contain("CpuCoreLimit");
+        result.Attestation.Should().NotBeNull("the rejection must leave a signed audit record");
+        result.Attestation!.IsFailureAttestation.Should().BeTrue();
+        _containers.Verify(x => x.CreateContainerAsync(
+            It.IsAny<CreateContainerParameters>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Theory]
+    [InlineData("LD_PRELOAD")]
+    [InlineData("LD_LIBRARY_PATH")]
+    [InlineData("LD_AUDIT")]
+    public async Task ExecuteAsync_DynamicLinkerHijackEnvironmentGrant_RejectsRequestWithoutCreatingContainer(string grantName)
+    {
+        var request = CreateRequest() with
+        {
+            EnvironmentVariables = new Dictionary<string, string> { [grantName] = "/workspace/evil.so" }
+        };
+
+        var result = await _sut.ExecuteAsync(request, CancellationToken.None);
+
+        result.Success.Should().BeFalse();
+        result.ErrorMessage.Should().Contain("dynamic-linker-hijack");
         result.Attestation.Should().NotBeNull("the rejection must leave a signed audit record");
         result.Attestation!.IsFailureAttestation.Should().BeTrue();
         _containers.Verify(x => x.CreateContainerAsync(

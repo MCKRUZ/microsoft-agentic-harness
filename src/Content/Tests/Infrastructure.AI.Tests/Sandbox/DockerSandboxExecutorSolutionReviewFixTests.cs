@@ -68,10 +68,12 @@ public class DockerSandboxExecutorSolutionReviewFixTests
 
     private DockerSandboxExecutor CreateSut() => new(
         _dockerClient.Object,
+        new DockerContainerLaunchPreparer(
+            _dockerClient.Object, _options.Object, Mock.Of<ILogger<DockerContainerLaunchPreparer>>()),
         _attestation.Object,
-        _options.Object,
         _sandboxConfig.Object,
-        Mock.Of<ILogger<DockerSandboxExecutor>>());
+        Mock.Of<ILogger<DockerSandboxExecutor>>(),
+        new SandboxEgressPreflightRunner(null, Mock.Of<ILogger<SandboxEgressPreflightRunner>>()));
 
     [Fact]
     public async Task ExecuteAsync_SandboxDisabled_ThrowsAndNeverCreatesContainer()

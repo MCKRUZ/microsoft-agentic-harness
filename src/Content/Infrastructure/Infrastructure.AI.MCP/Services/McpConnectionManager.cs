@@ -3,6 +3,10 @@ using Application.AI.Common.Exceptions;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Bundles;
 using Application.AI.Common.Interfaces.Egress;
+using Application.AI.Common.Interfaces.Sandbox;
+using Application.AI.Common.Services.Sandbox;
+using Domain.AI.Sandbox;
+using Domain.Common;
 using Domain.Common.Config.AI.MCP;
 using Infrastructure.AI.Egress;
 using Infrastructure.AI.Identity;
@@ -419,6 +423,15 @@ public sealed class McpConnectionManager : IAsyncDisposable
     {
         return definition.Type switch
         {
+            // A bundle-owned stdio server runs inside the sandbox, never directly on the host —
+            // see #371 and BundleStagingService.LogStdioRejected for the RCE rationale. This arm
+            // is currently unreachable in production: staging still rejects a bundle-declared
+            // stdio server outright, so isBundleOwned is never true here yet. The registration
+            // gate that makes it reachable is #371's follow-up PR, not this one.
+            McpServerType.Stdio when isBundleOwned => new SandboxedStdioClientTransport(
+                serverName,
+                ct => StartSandboxedStdioSessionAsync(serverName, definition, ct),
+                _loggerFactory),
             McpServerType.Stdio => new StdioClientTransport(new StdioClientTransportOptions
             {
                 Name = serverName,
@@ -432,6 +445,98 @@ public sealed class McpConnectionManager : IAsyncDisposable
             McpServerType.Http or McpServerType.Sse => CreateHttpTransport(serverName, definition, isBundleOwned),
             _ => throw new McpConnectionException($"Unsupported MCP transport type: {definition.Type}")
         };
+    }
+
+    /// <summary>
+    /// Starts the sandboxed session backing a bundle-owned stdio MCP server. Resolves
+    /// <see cref="ISandboxSessionFactory"/> from a fresh scope — it is scoped (it depends on
+    /// <c>ISandboxEgressPreflight</c>, which resolves the ambient agent identity per call) while
+    /// this manager is a process-lifetime singleton — and wraps the result in
+    /// <see cref="ScopedSandboxSession"/> so the scope survives exactly as long as the session
+    /// does, past the end of this method. See that type's own remarks for why that makes this a
+    /// different shape from <c>TerraformGenerator</c>'s per-run <c>ISandboxExecutor</c>
+    /// resolution, not the same one.
+    /// </summary>
+    /// <remarks>
+    /// Container isolation only, for now: the harness has no per-bundle Process-tier allowlist
+    /// concept yet (that path is only safe when an operator has explicitly trusted a specific
+    /// command — see the remarks on <c>ProcessSandboxSessionFactory</c>), and building that
+    /// policy surface belongs with the registration gate that makes this arm reachable at all,
+    /// not with the transport plumbing here. Resource limits use sandbox defaults.
+    /// <para>
+    /// The permission profile is resolved through <see cref="ToolPermissionProfileResolver"/> —
+    /// not built as an inline literal — so this path consults the same override registry
+    /// (<c>SandboxConfig.ToolOverrides</c>) that <c>SandboxExecutionOptions.ToolOverrides</c>
+    /// (read by <c>DockerContainerLaunchPreparer.ResolveImage</c> for the container image) is a
+    /// sibling of, instead of a second, unconsulted one. Precisely what this achieves today,
+    /// verified rather than assumed:
+    /// <list type="bullet">
+    /// <item><description>Only <see cref="ToolPermissionProfile.RequiredCapabilities"/> and
+    /// <see cref="ToolPermissionProfile.MinimumIsolation"/> reach the container launch (via
+    /// <c>DockerContainerLaunchPreparer.BuildContainerParams</c>) — <c>DeniedHosts</c>/
+    /// <c>AllowedHosts</c>/<c>AllowedPaths</c>/<c>DeniedPaths</c> have no consumer on this path
+    /// today (their only reader is <c>CapabilityEnforcer</c>, used elsewhere); an override
+    /// authored there has no effect here yet.</description></item>
+    /// <item><description>A bundle-owned name is outside the bounded first-party key set, so the
+    /// resolver's base declaration is <see cref="ToolCapability.None"/>/<see cref="SandboxIsolationLevel.None"/>
+    /// — <c>DeniedCapabilities</c> can only subtract from <c>None</c>, so it stays <c>None</c>
+    /// regardless of what an operator writes. The isolation floor is then raised to
+    /// <see cref="SandboxIsolationLevel.Container"/> unconditionally via <c>Math.Max</c>, so a
+    /// <c>MinimumIsolation</c> override can never lower it either.</description></item>
+    /// <item><description>A bundle-owned server name is <c>{bundleId}:{serverName}</c> —
+    /// <c>bundleId</c> is a fresh GUID per staging (<c>BundleStagingService</c>) — so no operator
+    /// can currently author a <c>ToolOverrides</c> key that matches one at all. The resolver call
+    /// is inert-by-construction today, not merely unexercised.</description></item>
+    /// </list>
+    /// The wiring is kept anyway: it is the correct long-term shape (one override registry
+    /// consulted uniformly by tool name, not two, one of them silently skipped), and the resolved
+    /// <see cref="ToolCapability.None"/> is itself the reason a bundle-owned container gets no
+    /// network access and a read-only workspace bind mount by default — a stronger posture than
+    /// leaving the override path unconsulted would suggest.
+    /// </para>
+    /// </remarks>
+    private async Task<Result<ISandboxSession>> StartSandboxedStdioSessionAsync(
+        string serverName, McpServerDefinition definition, CancellationToken cancellationToken)
+    {
+        var scope = _scopeFactory.CreateAsyncScope();
+        var ownershipTransferred = false;
+        try
+        {
+            var sessionFactory = scope.ServiceProvider
+                .GetRequiredKeyedService<ISandboxSessionFactory>(SandboxIsolationLevel.Container);
+            var profileResolver = scope.ServiceProvider.GetRequiredService<ToolPermissionProfileResolver>();
+
+            var resolvedProfile = profileResolver.Resolve(serverName);
+            var permissionProfile = resolvedProfile with
+            {
+                MinimumIsolation = (SandboxIsolationLevel)Math.Max(
+                    (int)resolvedProfile.MinimumIsolation, (int)SandboxIsolationLevel.Container)
+            };
+
+            var request = new SandboxSessionRequest
+            {
+                ToolName = serverName,
+                Limits = new ResourceLimits(),
+                PermissionProfile = permissionProfile,
+                Command = definition.Command,
+                ArgumentList = definition.Args,
+                EnvironmentVariables = definition.Env.Count > 0 ? definition.Env : null
+            };
+
+            var result = await sessionFactory.StartSessionAsync(request, cancellationToken);
+            if (!result.IsSuccess)
+                return result;
+
+            // From here on, ScopedSandboxSession owns the scope's lifetime — its own DisposeAsync
+            // releases it once the session ends.
+            ownershipTransferred = true;
+            return Result<ISandboxSession>.Success(new ScopedSandboxSession(result.Value!, scope));
+        }
+        finally
+        {
+            if (!ownershipTransferred)
+                await scope.DisposeAsync();
+        }
     }
 
     private HttpClientTransport CreateHttpTransport(string serverName, McpServerDefinition definition, bool isBundleOwned)

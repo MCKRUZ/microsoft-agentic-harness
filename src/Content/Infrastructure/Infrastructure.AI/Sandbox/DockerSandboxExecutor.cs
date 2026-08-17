@@ -1,6 +1,5 @@
 using Application.AI.Common.Interfaces.Attestation;
 using Application.AI.Common.Interfaces.Sandbox;
-using Application.AI.Common.Models.Sandbox;
 using Docker.DotNet;
 using Docker.DotNet.Models;
 using Domain.AI.Sandbox;
@@ -16,29 +15,35 @@ namespace Infrastructure.AI.Sandbox;
 /// Enforces the invariant: tools with <c>MinimumIsolation = Container</c> are never
 /// downgraded to process isolation when Docker is unavailable.
 /// </summary>
+/// <remarks>
+/// Daemon availability, image resolution/allowlist, container hardening parameters, and
+/// workspace lifecycle live in <see cref="DockerContainerLaunchPreparer"/>, shared with
+/// <see cref="DockerSandboxSessionFactory"/> so the two never drift from each other's security
+/// posture — see #371.
+/// </remarks>
 public sealed class DockerSandboxExecutor : ISandboxExecutor
 {
     private readonly IDockerClient _dockerClient;
+    private readonly DockerContainerLaunchPreparer _launchPreparer;
     private readonly IAttestationService _attestationService;
-    private readonly IOptionsMonitor<SandboxExecutionOptions> _options;
     private readonly IOptionsMonitor<SandboxConfig> _sandboxConfig;
     private readonly ILogger<DockerSandboxExecutor> _logger;
-    private readonly ISandboxEgressPreflight? _egressPreflight;
+    private readonly SandboxEgressPreflightRunner _egressPreflightRunner;
 
     public DockerSandboxExecutor(
         IDockerClient dockerClient,
+        DockerContainerLaunchPreparer launchPreparer,
         IAttestationService attestationService,
-        IOptionsMonitor<SandboxExecutionOptions> options,
         IOptionsMonitor<SandboxConfig> sandboxConfig,
         ILogger<DockerSandboxExecutor> logger,
-        ISandboxEgressPreflight? egressPreflight = null)
+        SandboxEgressPreflightRunner egressPreflightRunner)
     {
         _dockerClient = dockerClient;
+        _launchPreparer = launchPreparer;
         _attestationService = attestationService;
-        _options = options;
         _sandboxConfig = sandboxConfig;
         _logger = logger;
-        _egressPreflight = egressPreflight;
+        _egressPreflightRunner = egressPreflightRunner;
     }
 
     public async Task<SandboxExecutionResult> ExecuteAsync(
@@ -47,23 +52,27 @@ public sealed class DockerSandboxExecutor : ISandboxExecutor
         if (!_sandboxConfig.CurrentValue.Enabled)
             throw new InvalidOperationException("Sandbox execution is disabled by configuration (Sandbox:Enabled=false).");
 
-        // NanoCPUs = 0 means "unlimited" to Docker, so a non-positive (or NaN) core limit
-        // must be rejected as invalid input rather than silently granting the container the
-        // whole host. Validated at the boundary, before any container work happens.
-        if (!(request.Limits.CpuCoreLimit > 0))
+        if (!DockerContainerLaunchPreparer.IsValidCpuCoreLimit(request.Limits.CpuCoreLimit))
             return await RejectInvalidCpuLimitAsync(request, ct);
 
-        var egress = await RunEgressPreflightAsync(request, ct);
+        if (DockerContainerLaunchPreparer.FindReservedEnvironmentGrant(request.EnvironmentVariables) is { } reservedGrant)
+            return await RejectReservedEnvironmentGrantAsync(request, reservedGrant, ct);
+
+        // Egress-policy evaluation and the Docker daemon ping are independent I/O with nothing to
+        // wait on each other for — run them concurrently rather than paying their sum, matching
+        // DockerSandboxSessionFactory's identical preflight (#371).
+        var egressTask = RunEgressPreflightAsync(request, ct);
+        var dockerAvailableTask = _launchPreparer.IsDockerAvailableAsync(ct);
+        await Task.WhenAll(egressTask, dockerAvailableTask);
+
+        var egress = await egressTask;
         if (egress.Blocked is { } block)
             return block;
 
-        if (!await IsDockerAvailableAsync(ct))
+        if (!await dockerAvailableTask)
             return await HandleDockerUnavailableAsync(request, ct);
 
-        var workspaceDir = Path.Combine(Path.GetTempPath(), $"docker-sandbox-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(workspaceDir);
-        if (!OperatingSystem.IsWindows())
-            File.SetUnixFileMode(workspaceDir, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        var workspaceDir = _launchPreparer.CreateWorkspace();
         string? containerId = null;
 
         try
@@ -71,10 +80,12 @@ public sealed class DockerSandboxExecutor : ISandboxExecutor
             await File.WriteAllTextAsync(
                 Path.Combine(workspaceDir, "input.json"), request.Input, ct);
 
-            var image = ResolveImage(request.ToolName);
-            await EnsureImageAvailableAsync(image, ct);
+            var image = _launchPreparer.ResolveImage(request.ToolName);
+            await _launchPreparer.EnsureImageAvailableAsync(image, ct);
 
-            var containerParams = BuildContainerParams(request, workspaceDir, image);
+            var containerParams = _launchPreparer.BuildContainerParams(
+                request.Command ?? request.ToolName, request.ArgumentList, request.Limits, request.PermissionProfile,
+                workspaceDir, image, environmentVariables: request.EnvironmentVariables);
             var createResponse = await _dockerClient.Containers.CreateContainerAsync(containerParams, ct);
             containerId = createResponse.ID;
 
@@ -115,8 +126,8 @@ public sealed class DockerSandboxExecutor : ISandboxExecutor
         }
         finally
         {
-            await RemoveContainerSafeAsync(containerId);
-            CleanupWorkspace(workspaceDir);
+            await _launchPreparer.RemoveContainerSafeAsync(containerId);
+            _launchPreparer.CleanupWorkspace(workspaceDir);
         }
     }
 
@@ -132,9 +143,7 @@ public sealed class DockerSandboxExecutor : ISandboxExecutor
             "Docker sandbox refused request for tool {ToolName}: CpuCoreLimit {CpuCoreLimit} is not a positive core count",
             request.ToolName, request.Limits.CpuCoreLimit);
 
-        var errorMessage =
-            $"Invalid resource limits: CpuCoreLimit must be a positive number of cores (was {request.Limits.CpuCoreLimit}). " +
-            "A non-positive value would map to NanoCPUs=0, which Docker treats as unlimited.";
+        var errorMessage = DockerContainerLaunchPreparer.InvalidCpuCoreLimitMessage(request.Limits.CpuCoreLimit);
 
         var attestation = await _attestationService.SignAsync(
             Domain.AI.Attestation.AttestationRequest.Failure(request.ToolName, request.Input, errorMessage), ct);
@@ -147,18 +156,31 @@ public sealed class DockerSandboxExecutor : ISandboxExecutor
         };
     }
 
-    private async Task<bool> IsDockerAvailableAsync(CancellationToken ct)
+    /// <summary>
+    /// Rejects a request whose environment grants include a dynamic-linker-hijack variable and
+    /// leaves a signed failure attestation for the audit trail — see
+    /// <see cref="DockerContainerLaunchPreparer.FindReservedEnvironmentGrant"/> for the threat
+    /// this closes.
+    /// </summary>
+    private async Task<SandboxExecutionResult> RejectReservedEnvironmentGrantAsync(
+        SandboxExecutionRequest request, string reservedGrant, CancellationToken ct)
     {
-        try
+        _logger.LogWarning(
+            "Docker sandbox refused request for tool {ToolName}: environment grant '{GrantName}' is a dynamic-linker-hijack vector",
+            request.ToolName, reservedGrant);
+
+        var errorMessage = $"Environment grant rejected: '{reservedGrant}' is a dynamic-linker-hijack " +
+            "vector and cannot be set for a container-isolated tool.";
+
+        var attestation = await _attestationService.SignAsync(
+            Domain.AI.Attestation.AttestationRequest.Failure(request.ToolName, request.Input, errorMessage), ct);
+
+        return new SandboxExecutionResult
         {
-            await _dockerClient.System.PingAsync(ct);
-            return true;
-        }
-        catch (Exception ex)
-        {
-            _logger.LogDebug(ex, "Docker daemon not reachable");
-            return false;
-        }
+            Success = false,
+            ErrorMessage = errorMessage,
+            Attestation = attestation
+        };
     }
 
     private async Task<SandboxExecutionResult> HandleDockerUnavailableAsync(
@@ -195,109 +217,10 @@ public sealed class DockerSandboxExecutor : ISandboxExecutor
         };
     }
 
-    private CreateContainerParameters BuildContainerParams(
-        SandboxExecutionRequest request, string workspaceDir, string image)
-    {
-        var hasNetworkAccess = request.PermissionProfile.RequiredCapabilities
-            .HasFlag(ToolCapability.NetworkAccess);
-
-        List<string>? cmd = null;
-        if (request.Command is not null)
-        {
-            cmd = [request.Command];
-            if (request.ArgumentList is { Count: > 0 })
-                cmd.AddRange(request.ArgumentList);
-        }
-
-        return new CreateContainerParameters
-        {
-            Image = image,
-            Cmd = cmd,
-            User = "65534:65534",
-            HostConfig = new HostConfig
-            {
-                Memory = request.Limits.MemoryLimitBytes,
-                // CPU cap alongside the memory cap: an unlimited container can starve the
-                // host. NanoCPUs is the core count scaled by 1e9 (Docker's CpuQuota/CpuPeriod
-                // shorthand); 1.0 core by default, callers opt into more via ResourceLimits.
-                NanoCPUs = (long)(request.Limits.CpuCoreLimit * 1_000_000_000),
-                NetworkMode = hasNetworkAccess ? "bridge" : "none",
-                ReadonlyRootfs = true,
-                AutoRemove = false,
-                Binds = [request.PermissionProfile.RequiredCapabilities.HasFlag(ToolCapability.FileWrite)
-                    ? $"{workspaceDir}:/workspace:rw"
-                    : $"{workspaceDir}:/workspace:ro"],
-                PidsLimit = request.Limits.MaxSubprocesses,
-                SecurityOpt = ["no-new-privileges:true"],
-                CapDrop = ["ALL"]
-            }
-        };
-    }
-
-    private string ResolveImage(string toolName)
-    {
-        var options = _options.CurrentValue;
-
-        if (options.ToolOverrides.TryGetValue(toolName, out var toolOverride)
-            && !string.IsNullOrEmpty(toolOverride.ContainerImage))
-        {
-            var overrideImage = toolOverride.ContainerImage;
-            ValidateImageAllowed(overrideImage);
-            return overrideImage;
-        }
-
-        return options.Container.DefaultImage;
-    }
-
-    private void ValidateImageAllowed(string image)
-    {
-        var allowedPrefixes = _options.CurrentValue.Container.AllowedImagePrefixes;
-        if (allowedPrefixes.Count == 0)
-            return;
-
-        foreach (var prefix in allowedPrefixes)
-        {
-            if (image.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
-                return;
-        }
-
-        throw new InvalidOperationException(
-            $"Image '{image}' not in allowed registry list. Allowed prefixes: {string.Join(", ", allowedPrefixes)}");
-    }
-
-    private async Task EnsureImageAvailableAsync(string image, CancellationToken ct)
-    {
-        try
-        {
-            await _dockerClient.Images.InspectImageAsync(image, ct);
-        }
-        catch (DockerImageNotFoundException)
-        {
-            _logger.LogInformation("Pulling image {Image}", image);
-            await _dockerClient.Images.CreateImageAsync(
-                new ImagesCreateParameters { FromImage = image },
-                null,
-                new Progress<JSONMessage>(),
-                ct);
-        }
-    }
-
     private async Task<SandboxExecutionResult> HandleTimeoutAsync(
         string containerId, SandboxExecutionRequest request, string? egressDigest, CancellationToken ct)
     {
-        var gracePeriod = _options.CurrentValue.Container.StopGracePeriodSeconds;
-        _logger.LogWarning("Container {ContainerId} timed out, stopping with {GracePeriod}s grace period",
-            containerId, gracePeriod);
-
-        try
-        {
-            await _dockerClient.Containers.StopContainerAsync(containerId,
-                new ContainerStopParameters { WaitBeforeKillSeconds = (uint)gracePeriod }, ct);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogDebug(ex, "Stop container after timeout failed (may already be removed)");
-        }
+        await _launchPreparer.StopContainerGracefullyAsync(containerId, ct);
 
         var attestation = await SignFailureAsync(
             request.ToolName, request.Input,
@@ -385,38 +308,21 @@ public sealed class DockerSandboxExecutor : ISandboxExecutor
     private async Task<(SandboxExecutionResult? Blocked, string? Digest)> RunEgressPreflightAsync(
         SandboxExecutionRequest request, CancellationToken ct)
     {
-        if (_egressPreflight is null || request.EgressPrecheckTargets is not { Count: > 0 } targets)
+        var outcome = await _egressPreflightRunner.EvaluateAsync(request.ToolName, request.EgressPrecheckTargets, ct);
+        if (!outcome.IsDenied)
+            return (null, outcome.Digest);
+
+        var attestation = await _attestationService.SignAsync(
+            Domain.AI.Attestation.AttestationRequest.Failure(
+                request.ToolName, request.Input, outcome.FailureReason!, egressDigest: outcome.Digest),
+            ct);
+
+        return (new SandboxExecutionResult
         {
-            return (null, null);
-        }
-
-        var decisions = await _egressPreflight.EvaluateAsync(targets, ct);
-        var digest = _egressPreflight.ComputeDigest(decisions);
-
-        var denied = decisions.FirstOrDefault(d => !d.Allowed);
-        if (denied is not null)
-        {
-            _logger.LogWarning(
-                "Docker sandbox refused to spawn container for tool {ToolName}: egress preflight denied '{Host}'",
-                request.ToolName, denied.Target.Host);
-
-            var attestation = await _attestationService.SignAsync(
-                Domain.AI.Attestation.AttestationRequest.Failure(
-                    request.ToolName,
-                    request.Input,
-                    $"Egress preflight denied: {denied.Target} ({denied.Reason})",
-                    egressDigest: digest),
-                ct);
-
-            return (new SandboxExecutionResult
-            {
-                Success = false,
-                ErrorMessage = $"Egress preflight denied: {denied.Target}",
-                Attestation = attestation
-            }, digest);
-        }
-
-        return (null, digest);
+            Success = false,
+            ErrorMessage = outcome.ErrorMessage,
+            Attestation = attestation
+        }, outcome.Digest);
     }
 
     private Task<Domain.AI.Attestation.ToolExecutionAttestation> SignFailureAsync(
@@ -430,44 +336,4 @@ public sealed class DockerSandboxExecutor : ISandboxExecutor
         => _attestationService.SignAsync(
             Domain.AI.Attestation.AttestationRequest.Success(toolName, input, output, egressDigest),
             ct);
-
-    /// <summary>
-    /// Force-kills and removes the container on a dedicated cleanup token. The caller's
-    /// token is deliberately NOT used: when an execution is cancelled or times out, that
-    /// token is already cancelled, and using it here would abort the removal call and leak
-    /// the container running unbounded on the host. Cleanup gets its own bounded window
-    /// (<c>ContainerSandboxOptions.CleanupTimeoutSeconds</c>) instead.
-    /// </summary>
-    private async Task RemoveContainerSafeAsync(string? containerId)
-    {
-        if (containerId is null)
-            return;
-
-        using var cleanupCts = new CancellationTokenSource(
-            TimeSpan.FromSeconds(_options.CurrentValue.Container.CleanupTimeoutSeconds));
-
-        try
-        {
-            await _dockerClient.Containers.RemoveContainerAsync(containerId,
-                new ContainerRemoveParameters { Force = true }, cleanupCts.Token);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex,
-                "Container {ContainerId} removal failed — it may still be running on the host", containerId);
-        }
-    }
-
-    private void CleanupWorkspace(string path)
-    {
-        try
-        {
-            if (Directory.Exists(path))
-                Directory.Delete(path, recursive: true);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Failed to clean up Docker sandbox workspace {Path}", path);
-        }
-    }
 }
