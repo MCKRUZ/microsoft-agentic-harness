@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Application.AI.Common.Evaluation;
 using Application.AI.Common.Evaluation.Interfaces;
 using Application.AI.Common.Evaluation.Models;
 using Domain.AI.Evaluation;
@@ -264,7 +265,14 @@ public sealed class EvalRunner : IEvalRunner
             var verdict = medianScore >= spec.Threshold ? Verdict.Pass : Verdict.Fail;
             var anyWarn = samples.Any(s => s.Verdict == Verdict.Warn);
 
-            byKey[spec.MetricKey] = new MetricScore
+            // A single repeat's evidence carried whole (RawOutput/Consensus/Spread/
+            // ViolatedClause/Evidence, via `with` so any field MetricScore gains later
+            // rides along automatically) rather than synthesized from a mix of repeats —
+            // a clause from repeat 1 paired with raw output from repeat 3 would
+            // misattribute what a human reviewing a failure is looking at.
+            var representative = RepresentativeSelector.PickClosest(samples, s => s.Score, medianScore);
+
+            byKey[spec.MetricKey] = representative with
             {
                 MetricKey = spec.MetricKey,
                 Score = medianScore,

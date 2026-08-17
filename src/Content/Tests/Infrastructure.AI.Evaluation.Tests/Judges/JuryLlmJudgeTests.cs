@@ -69,6 +69,34 @@ public sealed class JuryLlmJudgeTests
     }
 
     [Fact]
+    public async Task Panel_forwards_the_verdict_contract_to_every_panelist_and_surfaces_the_representative_clause()
+    {
+        // Two panelists disagree on the score but both fail; the aggregate's clause must
+        // come from the panelist closest to the aggregated score, not be silently dropped
+        // (the bug this test guards: JuryLlmJudge used to never copy ViolatedClause/Evidence
+        // from any panelist onto the aggregate result at all).
+        var provider = new Mock<IJudgeChatClientProvider>();
+        provider.Setup(p => p.GetJudgeAsync(It.IsAny<AIAgentFrameworkClientType>(), "a", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(ClientReturning(
+                """{"score": 0.1, "reasoning": "bad", "violated_clause": "must not leak secrets", "evidence": ["write_file"]}""").Object);
+        provider.Setup(p => p.GetJudgeAsync(It.IsAny<AIAgentFrameworkClientType>(), "b", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(ClientReturning(
+                """{"score": 0.3, "reasoning": "also bad", "violated_clause": "must not leak secrets"}""").Object);
+
+        var jury = new JuryOptions { Panelists = [Panelist("a", "a"), Panelist("b", "b")] };
+        var sut = MakeSut(provider, jury);
+        var request = Request() with
+        {
+            VerdictContract = new JudgeVerdictContract { ClauseSource = "must not leak secrets", FailingBelow = 0.7 }
+        };
+
+        var result = await sut.JudgeAsync(request, CancellationToken.None);
+
+        result.Outcome.Should().Be(LlmJudgeOutcome.Parsed);
+        result.ViolatedClause.Should().Be("must not leak secrets");
+    }
+
+    [Fact]
     public async Task No_panel_delegates_to_single_judge_with_no_panel_metadata()
     {
         var provider = new Mock<IJudgeChatClientProvider>();

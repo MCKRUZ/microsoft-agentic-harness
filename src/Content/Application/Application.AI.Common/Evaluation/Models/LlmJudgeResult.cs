@@ -51,4 +51,18 @@ public sealed record LlmJudgeResult
     /// onto their <c>MetricScore</c> for the dashboard.
     /// </remarks>
     public JuryPanelResult? Panel { get; init; }
+
+    /// <summary>
+    /// Under the strict verdict contract, the exact rubric substring the judge cited as the
+    /// requirement it found violated on a failing score. <c>null</c> when the call didn't
+    /// use the strict contract, or the score passed (nothing to cite).
+    /// </summary>
+    public string? ViolatedClause { get; init; }
+
+    /// <summary>
+    /// Supporting evidence entries the judge cited for its verdict. Empty when the call
+    /// didn't use the strict contract, or the judge cited none. Captured as-is; not
+    /// resolution-checked against the real trajectory.
+    /// </summary>
+    public IReadOnlyList<string> Evidence { get; init; } = [];
 }

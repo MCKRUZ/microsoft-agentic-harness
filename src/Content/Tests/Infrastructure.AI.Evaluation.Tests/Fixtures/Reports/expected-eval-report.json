@@ -80,7 +80,8 @@
             "verdict": "pass",
             "reasoning": "Output equals expected.",
             "cost_usd": 0,
-            "duration": "00:00:00.0020000"
+            "duration": "00:00:00.0020000",
+            "evidence": []
           }
         ]
       ],
@@ -91,7 +92,8 @@
           "verdict": "pass",
           "reasoning": "Output equals expected.",
           "cost_usd": 0,
-          "duration": "00:00:00.0020000"
+          "duration": "00:00:00.0020000",
+          "evidence": []
         }
       },
       "verdict": "pass",
@@ -124,7 +126,8 @@
             "verdict": "fail",
             "reasoning": "Output differs from expected.",
             "cost_usd": 0,
-            "duration": "00:00:00.0030000"
+            "duration": "00:00:00.0030000",
+            "evidence": []
           }
         ]
       ],
@@ -135,7 +138,8 @@
           "verdict": "fail",
           "reasoning": "Output differs from expected.",
           "cost_usd": 0,
-          "duration": "00:00:00.0030000"
+          "duration": "00:00:00.0030000",
+          "evidence": []
         }
       },
       "verdict": "fail",
@@ -167,7 +171,8 @@
             "verdict": "warn",
             "reasoning": "llm_judge requires a 'rubric' parameter.",
             "cost_usd": 0,
-            "duration": "00:00:00.0010000"
+            "duration": "00:00:00.0010000",
+            "evidence": []
           }
         ]
       ],
@@ -178,7 +183,8 @@
           "verdict": "warn",
           "reasoning": "llm_judge requires a 'rubric' parameter.",
           "cost_usd": 0,
-          "duration": "00:00:00.0010000"
+          "duration": "00:00:00.0010000",
+          "evidence": []
         }
       },
       "verdict": "warn",

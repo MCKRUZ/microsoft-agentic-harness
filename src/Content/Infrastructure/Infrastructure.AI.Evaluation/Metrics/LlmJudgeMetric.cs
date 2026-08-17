@@ -1,4 +1,6 @@
 using System.Diagnostics;
+using Application.AI.Common.Evaluation;
+using Application.AI.Common.Evaluation.Governance;
 using Application.AI.Common.Evaluation.Interfaces;
 using Application.AI.Common.Evaluation.Models;
 using Application.AI.Common.Evaluation.Outcomes;
@@ -34,28 +36,36 @@ public sealed class LlmJudgeMetric : IEvalMetric
     // wraps around the rendered body. Keeping the inner per-field wrappers
     // nonce-suffixed would be belt-and-suspenders, but two layers invite refactor
     // confusion ("is the outer envelope redundant?"). One layer, clearly owned.
-    private const string UserPromptTemplate = """
-        <rubric>
-        {{rubric}}
-        </rubric>
+    //
+    // Each opt-in toggles one named block on or off in BuildUserPromptTemplate — never
+    // string surgery on a rendered template. Composing RubricBlock + InputBlock +
+    // ExpectedOutputBlock + AssistantOutputBlock, in that order, reproduces the template
+    // this class shipped with byte-for-byte; that identity is pinned by a test.
+    private const string RubricBlock = "<rubric>\n{{rubric}}\n</rubric>";
+    private const string InputBlock = "<case_input>\n{{input}}\n</case_input>";
+    private const string ExpectedOutputBlock = "<expected_output>\n{{expected_output}}\n</expected_output>";
+    private const string AssistantOutputBlock = "<assistant_output>\n{{output}}\n</assistant_output>";
+    private const string ToolsInvokedBlock = "<tools_invoked>\n{{tools_invoked}}\n</tools_invoked>";
+    private const string GovernanceBlock = "<governance_trace>\n{{governance}}\n</governance_trace>";
 
-        <case_input>
-        {{input}}
-        </case_input>
-
-        <expected_output>
-        {{expected_output}}
-        </expected_output>
-
-        <assistant_output>
-        {{output}}
-        </assistant_output>
-        """;
-
-    private const string SystemPromptBase =
+    private const string SystemPromptLegacy =
         "You are an evaluation judge. Score the assistant's response against the rubric. " +
         "Respond ONLY with a single JSON object: {\"score\": <0.0-1.0>, \"reasoning\": \"<one or two sentences>\"}. " +
         "Do not include markdown fences, prose, or any text outside the JSON object.";
+
+    private const string SystemPromptStrict =
+        "You are an evaluation judge. Score the assistant's response against the rubric. " +
+        "Respond ONLY with a single JSON object: {\"score\": <0.0-1.0>, \"reasoning\": \"<one or two sentences>\", " +
+        "\"violated_clause\": \"<required on a failing score: the exact sentence copied character-for-character " +
+        "from the rubric that the response violates; omit or leave empty on a passing score>\", " +
+        "\"evidence\": [\"<optional: a tool name or quoted span of the assistant's output supporting the score>\"]}. " +
+        "Do not include markdown fences, prose, or any text outside the JSON object. If you fail the response, " +
+        "you MUST quote the specific rubric requirement it violates verbatim in \"violated_clause\" — do not " +
+        "paraphrase or invent a requirement that is not present in the rubric.";
+
+    private const string VerdictContractKey = "verdict_contract";
+    private const string TrajectoryKey = "trajectory";
+    private const string IncludeExpectedOutputKey = "include_expected_output";
 
     private readonly ILlmJudge _judge;
     private readonly ILogger<LlmJudgeMetric> _logger;
@@ -93,32 +103,38 @@ public sealed class LlmJudgeMetric : IEvalMetric
             return Warn(sw, "llm_judge requires a 'rubric' parameter.");
         }
 
+        var options = ParseOptions(spec);
+
+        // Deterministic, zero-token guard: a rubric that declared a governance dependency
+        // and got nothing must not silently score as if the agent complied. This runs
+        // before the judge is ever called — the whole point of the strict contract is that
+        // we stopped trusting the judge to police itself, so it isn't asked to here either.
+        if (options.IncludeGovernance && !GovernanceTraceRenderer.IsEngaged(output.Governance))
+        {
+            return Warn(sw,
+                "Rubric declares a governance-trace dependency (trajectory: governance) but no governance " +
+                "decisions were recorded for this run — the verdict cannot be graded.");
+        }
+
         // Note: previously accepted a 'system' parameter that appended to the system
         // prompt. Removed — case-author input is untrusted; appending it to the
         // system role would let crafted cases coerce arbitrary scores. The rubric
         // (also case-authored) is safely positioned inside the user-data envelope.
-        var systemPrompt = SystemPromptBase;
-
-        var variables = new Dictionary<string, string?>(StringComparer.Ordinal)
+        var request = new LlmJudgeRequest
         {
-            ["rubric"] = rubric,
-            ["input"] = @case.Input,
-            ["expected_output"] = @case.ExpectedOutput ?? "(not provided)",
-            ["output"] = output.Output,
+            SystemPromptCore = options.Strict ? SystemPromptStrict : SystemPromptLegacy,
+            UserPromptTemplate = BuildUserPromptTemplate(
+                options.IncludeExpectedOutput, options.IncludeTools, options.IncludeGovernance),
+            Variables = BuildVariables(rubric, @case, output, options),
+            VerdictContract = options.Strict
+                ? new JudgeVerdictContract { ClauseSource = rubric, FailingBelow = spec.Threshold }
+                : null,
         };
 
         LlmJudgeResult result;
         try
         {
-            result = await _judge.JudgeAsync(
-                new LlmJudgeRequest
-                {
-                    SystemPromptCore = systemPrompt,
-                    UserPromptTemplate = UserPromptTemplate,
-                    Variables = variables,
-                },
-                cancellationToken)
-                .ConfigureAwait(false);
+            result = await _judge.JudgeAsync(request, cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
@@ -133,6 +149,127 @@ public sealed class LlmJudgeMetric : IEvalMetric
         sw.Stop();
 
         return JudgeMetricScoreMapper.ToMetricScore(Key, result, spec.Threshold, sw.Elapsed);
+    }
+
+    /// <summary>The three opt-in toggles parsed from a case's <see cref="MetricSpec.Parameters"/>.</summary>
+    private readonly record struct ParsedOptions(
+        bool Strict, bool IncludeExpectedOutput, bool IncludeTools, bool IncludeGovernance);
+
+    private ParsedOptions ParseOptions(MetricSpec spec)
+    {
+        var (tools, governance) = ParseTrajectory(spec);
+        var includeExpectedOutput = spec.GetBool(IncludeExpectedOutputKey, defaultValue: true, _logger);
+        return new ParsedOptions(ParseVerdictContractStrict(spec), includeExpectedOutput, tools, governance);
+    }
+
+    private static Dictionary<string, string?> BuildVariables(
+        string rubric, EvalCase @case, AgentInvocationResult output, ParsedOptions options)
+    {
+        var variables = new Dictionary<string, string?>(StringComparer.Ordinal)
+        {
+            ["rubric"] = rubric,
+            ["input"] = @case.Input,
+            ["output"] = output.Output,
+        };
+        if (options.IncludeExpectedOutput)
+        {
+            variables["expected_output"] = @case.ExpectedOutput ?? "(not provided)";
+        }
+        if (options.IncludeTools)
+        {
+            variables["tools_invoked"] = RenderToolsInvoked(output.ToolsInvoked);
+        }
+        if (options.IncludeGovernance)
+        {
+            variables["governance"] = GovernanceTraceRenderer.Render(output.Governance);
+        }
+        return variables;
+    }
+
+    /// <summary>
+    /// Composes the user-prompt template from named blocks in a fixed order (rubric, input,
+    /// [expected], output, [tools], [governance]) so each opt-in is a block toggle, not
+    /// string surgery on a rendered template. With every opt-in off this reproduces the
+    /// template this class has always used, character-for-character.
+    /// </summary>
+    private static string BuildUserPromptTemplate(bool includeExpectedOutput, bool includeTools, bool includeGovernance)
+    {
+        var blocks = new List<string> { RubricBlock, InputBlock };
+        if (includeExpectedOutput)
+        {
+            blocks.Add(ExpectedOutputBlock);
+        }
+        blocks.Add(AssistantOutputBlock);
+        if (includeTools)
+        {
+            blocks.Add(ToolsInvokedBlock);
+        }
+        if (includeGovernance)
+        {
+            blocks.Add(GovernanceBlock);
+        }
+        return string.Join("\n\n", blocks);
+    }
+
+    private static string RenderToolsInvoked(IReadOnlyList<string> toolsInvoked)
+        => toolsInvoked.Count == 0
+            ? "(no tools were invoked)"
+            : string.Join("\n", toolsInvoked.Select((tool, i) => $"{i + 1}. {tool}"));
+
+    /// <summary>
+    /// Fail-soft: an unrecognized value defaults to the legacy contract with a warning
+    /// rather than throwing — a typo in a case's YAML must not take down the whole eval run.
+    /// </summary>
+    private bool ParseVerdictContractStrict(MetricSpec spec)
+    {
+        var raw = spec.GetString(VerdictContractKey);
+        if (raw is null)
+        {
+            return false;
+        }
+        if (raw.Equals("strict", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+        if (raw.Equals("legacy", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        _logger.LogWarning(
+            "Unknown {Key} value '{Value}' in an llm_judge case; defaulting to legacy.", VerdictContractKey, raw);
+        return false;
+    }
+
+    /// <summary>Fail-soft: an unrecognized token is logged and ignored, not thrown on.</summary>
+    private (bool Tools, bool Governance) ParseTrajectory(MetricSpec spec)
+    {
+        var raw = spec.GetString(TrajectoryKey);
+        if (raw is null)
+        {
+            return (false, false);
+        }
+
+        var tools = false;
+        var governance = false;
+        foreach (var token in raw.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
+        {
+            if (token.Equals("tools", StringComparison.OrdinalIgnoreCase))
+            {
+                tools = true;
+            }
+            else if (token.Equals("governance", StringComparison.OrdinalIgnoreCase))
+            {
+                governance = true;
+            }
+            else
+            {
+                _logger.LogWarning(
+                    "Unknown {Key} token '{Token}' in an llm_judge case; ignoring.", TrajectoryKey, token);
+            }
+        }
+
+        return (tools, governance);
     }
 
     private MetricScore Warn(Stopwatch sw, string reasoning)

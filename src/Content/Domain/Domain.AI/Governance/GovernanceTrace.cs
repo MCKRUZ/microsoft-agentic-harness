@@ -54,6 +54,23 @@ public sealed record GovernanceTrace
     public IReadOnlyList<string> EscalationReasonCodes { get; init; } = [];
 
     /// <summary>
+    /// True when the per-invocation governor actually engaged: either enforcement was
+    /// active, or at least one tool call was recorded.
+    /// </summary>
+    /// <remarks>
+    /// Exists because an ungoverned run does not surface as a <c>null</c> trace — the
+    /// recorder returns the shared <see cref="Empty"/> singleton for the overwhelmingly
+    /// common default case (enforcement off, nothing recorded). A consumer that checks
+    /// <c>trace is null</c> instead of this property will read every ungoverned run as if
+    /// it had a clean, engaged trace. Deliberately
+    /// <c>EnforcementEnabled || ToolInvocationCount &gt; 0</c>, not just the invocation
+    /// count: enforcement on with zero tool calls is still informative (e.g. "did it get
+    /// approval before writing" — zero calls means it didn't write, a legitimate pass, not
+    /// an unscoreable case).
+    /// </remarks>
+    public bool IsEngaged => EnforcementEnabled || ToolInvocationCount > 0;
+
+    /// <summary>
     /// Merges several traces (e.g. per-turn traces of a conversation) into one. Decisions are
     /// concatenated in order; flags and reason codes are unioned; enforcement is true when any
     /// component had it on.

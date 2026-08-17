@@ -43,7 +43,11 @@ internal static class JudgeMetricScoreMapper
             // When a jury produced the score, surface its agreement on the dashboard.
             // Null for single-judge runs.
             Consensus = result.Panel?.Bucket,
-            Spread = result.Panel?.Spread
+            Spread = result.Panel?.Spread,
+            // Only present under the strict verdict contract; null/empty for every legacy
+            // caller (the RAG metric pack, any jury without a contract) — additive.
+            ViolatedClause = result.ViolatedClause,
+            Evidence = result.Evidence
         },
         _ => new MetricScore
         {
@@ -53,7 +57,12 @@ internal static class JudgeMetricScoreMapper
             Reasoning = result.Reasoning,
             RawOutput = result.RawOutput,
             CostUsd = result.CostUsd,
-            Duration = duration
+            Duration = duration,
+            // Always empty today (no non-Parsed LlmJudgeResult populates it) — read
+            // through rather than hardcoded [] so a future non-Parsed producer with real
+            // evidence needs no change here. ViolatedClause is never carried on this arm:
+            // an unverified clause must not surface looking verified.
+            Evidence = result.Evidence
         }
     };
 }
