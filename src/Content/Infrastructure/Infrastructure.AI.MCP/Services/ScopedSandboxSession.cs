@@ -16,7 +16,7 @@ namespace Infrastructure.AI.MCP.Services;
 /// the first genuine scope-outlives-its-creating-method case in this codebase, not a copy of an
 /// existing one. Every member below is a pure delegation except <see cref="DisposeAsync"/>.
 /// </summary>
-public sealed class ScopedSandboxSession(ISandboxSession inner, AsyncServiceScope scope) : ISandboxSession
+public sealed class ScopedSandboxSession(ISandboxSession inner, AsyncServiceScope scope, Action? onDisposed = null) : ISandboxSession
 {
     /// <inheritdoc />
     public Stream StandardInput => inner.StandardInput;
@@ -30,16 +30,30 @@ public sealed class ScopedSandboxSession(ISandboxSession inner, AsyncServiceScop
     /// <inheritdoc />
     public async ValueTask DisposeAsync()
     {
-        // try/finally, not a plain sequence: if the inner session's own teardown throws, the
+        // Nested try/finally, not a plain sequence: if the inner session's own teardown throws, the
         // scope must still be released — otherwise a single bad disposal leaks the DI scope (and
-        // every scoped disposable it resolved) for the lifetime of the singleton that held it.
+        // every scoped disposable it resolved) for the lifetime of the singleton that held it. The
+        // outer finally runs regardless of either inner failure — see onDisposed's own remarks for
+        // why it must fire even when teardown itself throws.
         try
         {
-            await inner.DisposeAsync();
+            try
+            {
+                await inner.DisposeAsync();
+            }
+            finally
+            {
+                await scope.DisposeAsync();
+            }
         }
         finally
         {
-            await scope.DisposeAsync();
+            // Releases a slot the caller reserved BEFORE this session was ever handed back to it
+            // (see McpConnectionManager.StartSandboxedStdioSessionAsync's host-wide concurrency
+            // cap) — must fire even when the disposal above throws, or a session whose own
+            // teardown failed would permanently pin its slot for the rest of the host process's
+            // life, eventually starving every other bundle of the sandbox capability entirely.
+            onDisposed?.Invoke();
         }
     }
 }

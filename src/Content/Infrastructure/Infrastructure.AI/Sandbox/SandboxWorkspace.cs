@@ -19,6 +19,20 @@ internal static class SandboxWorkspace
     }
 
     /// <summary>
+    /// Owner full access, other-EXECUTE (traverse) but not other-READ (list) — for a shared parent
+    /// directory that individually-permissioned children live under. Lets a caller who already knows
+    /// a specific child's name walk into it (required for the container's fixed unprivileged UID to
+    /// resolve the bind-mount path down to a seeded, other-readable workspace), without letting an
+    /// unrelated local account enumerate which workspace names currently exist.
+    /// </summary>
+    internal static void SetTraverseOnlyPermissions(string path)
+    {
+        if (!OperatingSystem.IsWindows())
+            File.SetUnixFileMode(path,
+                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute | UnixFileMode.OtherExecute);
+    }
+
+    /// <summary>
     /// Owner-only PLUS other-readable-and-traversable — widens a Docker-tier workspace beyond
     /// <see cref="SetRestrictivePermissions"/>'s owner-only 0700, ONLY for a session that seeds the
     /// workspace with content the container's own UID must be able to read (see
@@ -88,8 +102,20 @@ internal static class SandboxWorkspace
         if (!Directory.Exists(source))
             throw new DirectoryNotFoundException($"Seed source directory '{source}' does not exist.");
 
-        CopyDirectory(source, destination);
+        CopyDirectory(source, destination, depth: 0);
     }
+
+    /// <summary>
+    /// Deepest directory nesting <see cref="CopyDirectory"/> will descend before refusing to continue.
+    /// Extraction's own <c>MaxEntryCount</c> guard (default 2000) permits a path nested up to ~2000
+    /// levels deep within a single-path-length budget, and this is the only RECURSIVE walk anywhere in
+    /// the staging/seeding pipeline over attacker-shaped content — extraction itself is a flat loop, and
+    /// symlink validation uses the iterative <c>EnumerateFileSystemEntries(AllDirectories)</c>. Recursing
+    /// thousands of frames risks <see cref="StackOverflowException"/>, which .NET cannot catch and which
+    /// kills the entire host process — a bounded, catchable <see cref="InvalidOperationException"/> well
+    /// before that point is the only sane failure mode for a directory tree no legitimate bundle needs.
+    /// </summary>
+    private const int MaxSeedDepth = 64;
 
     /// <summary>
     /// Copies files and subdirectories one level at a time, skipping any entry that is itself a
@@ -107,8 +133,15 @@ internal static class SandboxWorkspace
     /// (which may be as restrictive as 0077 on a hardened host) would make the seed silently
     /// unreadable on exactly the hosts most likely to run this feature.
     /// </remarks>
-    private static void CopyDirectory(string sourceDir, string destinationDir)
+    /// <exception cref="InvalidOperationException">The source tree nests deeper than <see cref="MaxSeedDepth"/>.</exception>
+    private static void CopyDirectory(string sourceDir, string destinationDir, int depth)
     {
+        if (depth > MaxSeedDepth)
+        {
+            throw new InvalidOperationException(
+                $"Seed source exceeds the maximum directory depth of {MaxSeedDepth}; refusing to copy.");
+        }
+
         foreach (var dir in Directory.EnumerateDirectories(sourceDir))
         {
             if (new DirectoryInfo(dir).LinkTarget is not null)
@@ -117,7 +150,7 @@ internal static class SandboxWorkspace
             var destSubDir = Path.Combine(destinationDir, Path.GetFileName(dir));
             Directory.CreateDirectory(destSubDir);
             SetContainerAccessiblePermissions(destSubDir);
-            CopyDirectory(dir, destSubDir);
+            CopyDirectory(dir, destSubDir, depth + 1);
         }
 
         foreach (var file in Directory.EnumerateFiles(sourceDir))

@@ -32,7 +32,7 @@ namespace Infrastructure.AI.Skills;
 /// there would make discovery depend on how the host was launched.
 /// </para>
 /// </remarks>
-internal static class SkillContentRoots
+public static class SkillContentRoots
 {
     /// <summary>
     /// The default staging location for expanded bundles when none is configured.

@@ -79,12 +79,23 @@ public sealed class SandboxSessionAttestationSigner(IAttestationService attestat
     /// but values are not — a value may itself be a secret, and should not be persisted verbatim
     /// into an audit record.
     /// </summary>
+    /// <remarks>
+    /// <c>image</c> and <c>seeded</c> (#371) are both new inputs that materially determine what
+    /// actually ran a container without changing <c>command</c>/<c>args</c>/<c>envNames</c> at all
+    /// — two sessions with identical logged command/args/env-names but a different runtime image,
+    /// or one seeded with a bundle's own files and one started empty, would otherwise produce
+    /// byte-identical attested input. <c>seeded</c> is recorded as a bool, not the raw
+    /// <see cref="SandboxSessionRequest.WorkspaceSeedDirectory"/> path, so no host path lands in
+    /// the audit store — consistent with the env-values-excluded posture above.
+    /// </remarks>
     private static string DescribeSessionInput(SandboxSessionRequest request) => JsonSerializer.Serialize(new
     {
         command = request.Command ?? request.ToolName,
         args = request.ArgumentList ?? [],
         envNames = request.EnvironmentVariables?.Keys.Order().ToArray() ?? [],
         isolation = request.PermissionProfile.MinimumIsolation.ToString(),
-        capabilities = request.PermissionProfile.RequiredCapabilities.ToString()
+        capabilities = request.PermissionProfile.RequiredCapabilities.ToString(),
+        image = request.ContainerImage,
+        seeded = request.WorkspaceSeedDirectory is not null
     });
 }

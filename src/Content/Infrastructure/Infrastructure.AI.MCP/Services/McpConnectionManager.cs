@@ -8,10 +8,13 @@ using Application.AI.Common.Services.Sandbox;
 using Domain.AI.Sandbox;
 using Domain.Common;
 using Domain.Common.Config;
+using Domain.Common.Config.AI.BundleExecution;
 using Domain.Common.Config.AI.MCP;
+using Domain.Common.Helpers;
 using Infrastructure.AI.Egress;
 using Infrastructure.AI.Identity;
 using Infrastructure.AI.MCP.Egress;
+using Infrastructure.AI.Skills;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -66,6 +69,15 @@ public sealed class McpConnectionManager : IAsyncDisposable
 
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _connectionLocks = new();
     private bool _disposed;
+
+    /// <summary>
+    /// Live bundle-owned sandboxed stdio sessions across the whole host, bounded by
+    /// <see cref="BundleStdioMcpServersConfig.MaxConcurrentSessions"/> — see the security-review
+    /// finding recorded on that property. Incremented before <see cref="ISandboxSessionFactory.StartSessionAsync"/>
+    /// is ever called; decremented either immediately on a failed start or via
+    /// <see cref="ScopedSandboxSession"/>'s disposal callback once a session actually ends.
+    /// </summary>
+    private int _liveSandboxedStdioSessions;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="McpConnectionManager"/> class.
@@ -510,6 +522,20 @@ public sealed class McpConnectionManager : IAsyncDisposable
     private async Task<Result<ISandboxSession>> StartSandboxedStdioSessionAsync(
         string serverName, McpServerDefinition definition, CancellationToken cancellationToken)
     {
+        // Claimed before anything else — cheapest possible check, and it must bracket every failure
+        // path below (a resolver throwing, the containment check rejecting, the factory itself
+        // failing), not just the success path, or a slot leaks. ownershipTransferred below (already
+        // tracking whether the DI scope's lifetime transferred to the returned session) transfers
+        // this slot's ownership at the exact same point, so one flag does double duty rather than
+        // needing a second.
+        var maxConcurrentSessions = _appConfig.CurrentValue.AI.BundleExecution.StdioMcpServers.MaxConcurrentSessions;
+        if (Interlocked.Increment(ref _liveSandboxedStdioSessions) > maxConcurrentSessions)
+        {
+            Interlocked.Decrement(ref _liveSandboxedStdioSessions);
+            return Result<ISandboxSession>.Fail(
+                $"Host-wide bundle stdio sandbox session cap ({maxConcurrentSessions}) reached; refusing to start another.");
+        }
+
         var scope = _scopeFactory.CreateAsyncScope();
         var ownershipTransferred = false;
         try
@@ -524,6 +550,18 @@ public sealed class McpConnectionManager : IAsyncDisposable
                 MinimumIsolation = (SandboxIsolationLevel)Math.Max(
                     (int)resolvedProfile.MinimumIsolation, (int)SandboxIsolationLevel.Container)
             };
+
+            if (definition.SandboxSeedDirectory is { } seedDirectory && !IsWithinConfiguredStagingRoot(seedDirectory))
+            {
+                // A structural containment check, not just a convention: today's ONLY writer of
+                // SandboxSeedDirectory (BundleStagingService) only ever sets it to the bundle's own
+                // staged root, so this never fires in production. It exists so a future caller of
+                // this field cannot turn "seed a sandbox workspace" into "copy an arbitrary host
+                // directory into an untrusted, bundle-launched container" without this check also
+                // having to be deliberately bypassed, not merely never written in the first place.
+                return Result<ISandboxSession>.Fail(
+                    "Sandbox workspace seed directory is outside the configured bundle staging root — refusing to seed.");
+            }
 
             var request = new SandboxSessionRequest
             {
@@ -543,16 +581,36 @@ public sealed class McpConnectionManager : IAsyncDisposable
             if (!result.IsSuccess)
                 return result;
 
-            // From here on, ScopedSandboxSession owns the scope's lifetime — its own DisposeAsync
-            // releases it once the session ends.
+            // From here on, ScopedSandboxSession owns BOTH the scope's lifetime and this session's
+            // claimed concurrency slot — its own DisposeAsync releases both once the session ends.
             ownershipTransferred = true;
-            return Result<ISandboxSession>.Success(new ScopedSandboxSession(result.Value!, scope));
+            return Result<ISandboxSession>.Success(new ScopedSandboxSession(
+                result.Value!, scope, onDisposed: () => Interlocked.Decrement(ref _liveSandboxedStdioSessions)));
         }
         finally
         {
             if (!ownershipTransferred)
+            {
+                Interlocked.Decrement(ref _liveSandboxedStdioSessions);
                 await scope.DisposeAsync();
+            }
         }
+    }
+
+    /// <summary>
+    /// Whether <paramref name="seedDirectory"/> resolves under the SAME bundle staging root
+    /// <c>BundleStagingService.ResolveStagingRoot</c> uses — the only tree a sandbox workspace may
+    /// ever be seeded from. Deliberately re-derives that resolution here rather than trusting the
+    /// caller: see the containment-check remarks at this method's one call site.
+    /// </summary>
+    private bool IsWithinConfiguredStagingRoot(string seedDirectory)
+    {
+        var bundleExecution = _appConfig.CurrentValue.AI.BundleExecution;
+        var stagingRoot = string.IsNullOrWhiteSpace(bundleExecution.TempRoot)
+            ? SkillContentRoots.BundleStaging(_appConfig.CurrentValue)
+            : SkillContentRoots.Resolve(bundleExecution.TempRoot);
+
+        return PathScope.IsSameOrUnderNormalized(PathScope.Normalize(seedDirectory), PathScope.Normalize(stagingRoot));
     }
 
     private HttpClientTransport CreateHttpTransport(string serverName, McpServerDefinition definition, bool isBundleOwned)

@@ -50,4 +50,15 @@ public sealed class BundleStdioMcpServersConfig
     /// </summary>
     /// <value>Default: 2</value>
     public int MaxServersPerBundle { get; set; } = 2;
+
+    /// <summary>
+    /// Maximum number of bundle-owned stdio sandbox sessions live across the WHOLE host at once —
+    /// distinct from <see cref="MaxServersPerBundle"/>, which bounds one bundle's own container count
+    /// but has nothing to say about how many bundles are concurrently staged. Enforced in
+    /// <c>McpConnectionManager.StartSandboxedStdioSessionAsync</c> as a caller admitted with upload +
+    /// run permission could otherwise pin <see cref="MaxServersPerBundle"/> containers per bundle
+    /// times an unbounded number of concurrently-staged bundles. Must be positive.
+    /// </summary>
+    /// <value>Default: 8</value>
+    public int MaxConcurrentSessions { get; set; } = 8;
 }

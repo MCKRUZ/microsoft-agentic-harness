@@ -216,12 +216,17 @@ public sealed class DockerContainerLaunchPreparer(
                 Binds = [permissionProfile.RequiredCapabilities.HasFlag(ToolCapability.FileWrite)
                     ? $"{workspaceDir}:/workspace:rw"
                     : $"{workspaceDir}:/workspace:ro"],
-                // ReadonlyRootfs plus a possibly read-only /workspace bind leaves NO writable path
-                // anywhere in the container by default. Most real programs (npm/pip caches, lock
+                // ReadonlyRootfs plus a possibly read-only /workspace bind would otherwise leave NO
+                // writable path anywhere in the container. Most real programs (npm/pip caches, lock
                 // files, a temp file mid-write) touch /tmp unconditionally regardless of whether
                 // ToolCapability.FileWrite was granted, so this tmpfs is unconditional too — sized
                 // off the same ResourceLimits.DiskQuotaBytes the workspace bind is implicitly bounded
-                // by, capped by the tmpfs's own noexec/nosuid mount options.
+                // by, capped by the tmpfs's own noexec/nosuid mount options. Security-review note:
+                // this means ToolCapability.FileWrite governs writes to the /workspace bind
+                // specifically, not "can this container write anything at all" — every Docker-tier
+                // container, regardless of that capability, gets 100 MB of ephemeral, non-executable,
+                // per-container scratch space that is destroyed with the container and never shared
+                // with the host or another container.
                 Tmpfs = new Dictionary<string, string> { ["/tmp"] = $"rw,noexec,nosuid,size={limits.DiskQuotaBytes}" },
                 PidsLimit = limits.MaxSubprocesses,
                 SecurityOpt = ["no-new-privileges:true"],
@@ -230,10 +235,28 @@ public sealed class DockerContainerLaunchPreparer(
         };
     }
 
+    /// <summary>
+    /// Shared parent directory every Docker-tier workspace nests under, one level below
+    /// <see cref="Path.GetTempPath"/> (which is typically world-listable, e.g. mode 1777 on Linux).
+    /// </summary>
+    /// <remarks>
+    /// A seeded workspace's own directory is deliberately other-readable so the container's fixed
+    /// unprivileged UID can traverse it (see <see cref="SandboxWorkspace.SetContainerAccessiblePermissions"/>),
+    /// but that says nothing about whether another local account can find its unguessable GUID name in
+    /// the first place. This parent is other-EXECUTABLE (traverse) but not other-READABLE (list), so a
+    /// local account without the exact GUID cannot enumerate live bundle-owned workspace names — only
+    /// walk into one it already knows.
+    /// </remarks>
+    private const string WorkspaceParentDirName = "agentic-harness-sandbox";
+
     /// <summary>Creates a fresh, restrictively-permissioned temp directory bind-mounted into the container as <c>/workspace</c>.</summary>
     public string CreateWorkspace()
     {
-        var workspaceDir = Path.Combine(Path.GetTempPath(), $"docker-sandbox-{Guid.NewGuid():N}");
+        var parent = Path.Combine(Path.GetTempPath(), WorkspaceParentDirName);
+        Directory.CreateDirectory(parent);
+        SandboxWorkspace.SetTraverseOnlyPermissions(parent);
+
+        var workspaceDir = Path.Combine(parent, $"docker-sandbox-{Guid.NewGuid():N}");
         Directory.CreateDirectory(workspaceDir);
         SandboxWorkspace.SetRestrictivePermissions(workspaceDir);
         return workspaceDir;

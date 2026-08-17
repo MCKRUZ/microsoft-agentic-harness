@@ -545,6 +545,18 @@ public sealed class BundleStagingService : IBundleStagingService
         string bundleId, string namespacedName, JsonProperty serverProp, IReadOnlyList<EgressAllowlistEntry> allowlist,
         string bundleDir, BundleExecutionConfig bundleExecution, bool sandboxEnabled, ref int stdioServerCount)
     {
+        if (!IsSafeServerNameIdentifier(serverProp.Name))
+        {
+            // Deliberately does not echo the offending name: it is exactly the untrusted value this
+            // check exists to keep out of a plain-text log sink (control characters / newlines could
+            // otherwise forge log lines), and this diff makes it load-bearing in a second place —
+            // the sandbox ToolName used for the egress preflight key and the attestation record.
+            _logger.LogWarning(
+                "Bundle {BundleId}: rejected an MCP server whose declared name is not a safe identifier.",
+                bundleId);
+            return false;
+        }
+
         var buildResult = McpServerDefinitionBuilder.Build(
             // A bundle (unlike a host-installed plugin) has no declaration-level env overrides.
             serverProp.Value, NoDeclarationEnv, $"[Bundle: {bundleId}]", serverProp.Name);
@@ -693,7 +705,7 @@ public sealed class BundleStagingService : IBundleStagingService
 
         _logger.LogWarning(
             "Bundle {BundleId}: MCP server '{ServerName}' explicitly declares a stdio transport, but the " +
-            "sandbox subsystem (AppConfig:Sandbox:Enabled) is disabled — rejected, not registered.",
+            "sandbox subsystem (AppConfig:AI:SandboxCapabilities:Enabled) is disabled — rejected, not registered.",
             bundleId, serverName);
         return false;
     }
@@ -709,6 +721,17 @@ public sealed class BundleStagingService : IBundleStagingService
             bundleId, serverName);
         return false;
     }
+
+    /// <summary>
+    /// Whether a manifest-declared server name is safe to use as a structured-log field, a sandbox
+    /// <c>ToolName</c> (the egress preflight key and the attestation record — both new consumers this
+    /// PR adds), and a namespaced registry key segment. Bounded ASCII identifier characters only —
+    /// no control characters or newlines that could forge a plain-text log line, no length unbounded
+    /// by anything upstream.
+    /// </summary>
+    private static bool IsSafeServerNameIdentifier(string serverName) =>
+        serverName.Length is > 0 and <= 128
+        && serverName.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_' or '.');
 
     private bool IsWithinPerBundleStdioServerCap(
         string bundleId, string serverName, int stdioServerCount, BundleStdioMcpServersConfig stdioConfig)

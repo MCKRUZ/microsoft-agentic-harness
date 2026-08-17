@@ -75,6 +75,10 @@ public sealed class BundleExecutionConfigValidator : AbstractValidator<BundleExe
             .GreaterThan(0)
             .WithMessage("StdioMcpServers:MaxServersPerBundle must be > 0 — a non-positive cap would let no bundle register a stdio server even when the capability is enabled.");
 
+        RuleFor(x => x.StdioMcpServers.MaxConcurrentSessions)
+            .GreaterThan(0)
+            .WithMessage("StdioMcpServers:MaxConcurrentSessions must be > 0 — a non-positive cap would refuse every sandboxed stdio session host-wide.");
+
         RuleFor(x => x.StdioMcpServers.ContainerImage)
             .Must(image => image.Length == 0 || image.Trim().Length > 0)
             .WithMessage("StdioMcpServers:ContainerImage must not be whitespace-only — leave it empty to keep the capability inert, or set a real image reference.");
