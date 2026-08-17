@@ -309,9 +309,15 @@ public class DockerSandboxSessionFactoryTests
             await using var session = result.Value!;
             var bind = _capturedParams!.HostConfig!.Binds!.Should().ContainSingle().Subject;
             var hostWorkspaceDir = bind[..bind.IndexOf(":/workspace:", StringComparison.Ordinal)];
-            var mode = File.GetUnixFileMode(hostWorkspaceDir);
-            mode.Should().HaveFlag(UnixFileMode.OtherRead | UnixFileMode.OtherExecute,
-                "the container's own fixed UID must be able to traverse a workspace that was seeded with content it needs to read");
+            // Skip.If above already makes this unreachable on Windows at runtime; the extra static
+            // guard is for the CA1416 platform-compatibility analyzer, which recognizes
+            // OperatingSystem.IsWindows() if-guards but not xunit's SkippableFact runtime skip.
+            if (!OperatingSystem.IsWindows())
+            {
+                var mode = File.GetUnixFileMode(hostWorkspaceDir);
+                mode.Should().HaveFlag(UnixFileMode.OtherRead | UnixFileMode.OtherExecute,
+                    "the container's own fixed UID must be able to traverse a workspace that was seeded with content it needs to read");
+            }
         }
         finally
         {
@@ -334,9 +340,15 @@ public class DockerSandboxSessionFactoryTests
         await using var session = result.Value!;
         var bind = _capturedParams!.HostConfig!.Binds!.Should().ContainSingle().Subject;
         var hostWorkspaceDir = bind[..bind.IndexOf(":/workspace:", StringComparison.Ordinal)];
-        var mode = File.GetUnixFileMode(hostWorkspaceDir);
-        mode.Should().NotHaveFlag(UnixFileMode.OtherRead,
-            "an ordinary (non-bundle) Docker-tier workspace must not be widened just because the seeded case exists elsewhere");
+        // Skip.If above already makes this unreachable on Windows at runtime; the extra static guard
+        // is for the CA1416 platform-compatibility analyzer, which recognizes OperatingSystem.IsWindows()
+        // if-guards but not xunit's SkippableFact runtime skip.
+        if (!OperatingSystem.IsWindows())
+        {
+            var mode = File.GetUnixFileMode(hostWorkspaceDir);
+            mode.Should().NotHaveFlag(UnixFileMode.OtherRead,
+                "an ordinary (non-bundle) Docker-tier workspace must not be widened just because the seeded case exists elsewhere");
+        }
     }
 
     [Fact]

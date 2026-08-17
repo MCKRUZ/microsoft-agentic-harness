@@ -231,22 +231,35 @@ public sealed class DockerContainerLaunchPreparer(
     }
 
     /// <summary>Creates a fresh, restrictively-permissioned temp directory bind-mounted into the container as <c>/workspace</c>.</summary>
-    /// <remarks>
-    /// Owner-only (0700) by default, matching every consumer before #371. A caller that seeds this
-    /// workspace with content the container's own fixed unprivileged UID must read (see
-    /// <see cref="SandboxWorkspace.SeedFrom"/>) must widen it explicitly, scoped to exactly that case,
-    /// via <see cref="SandboxWorkspace.SetContainerAccessiblePermissions"/> — NOT here, unconditionally,
-    /// for every Docker-tier workspace regardless of whether it holds seeded content. /code-review
-    /// caught an earlier version of this method doing exactly that: it would have made every ordinary
-    /// (non-bundle) Docker-tier workspace on the host readable by any local OS account, not just the
-    /// container's own UID, to fix a problem that only exists for a seeded one.
-    /// </remarks>
     public string CreateWorkspace()
     {
         var workspaceDir = Path.Combine(Path.GetTempPath(), $"docker-sandbox-{Guid.NewGuid():N}");
         Directory.CreateDirectory(workspaceDir);
         SandboxWorkspace.SetRestrictivePermissions(workspaceDir);
         return workspaceDir;
+    }
+
+    /// <summary>
+    /// Seeds an already-created <paramref name="workspaceDir"/> from <paramref name="seedDirectory"/>
+    /// and widens its permissions so the container's own fixed unprivileged UID can read what was
+    /// just seeded into it.
+    /// </summary>
+    /// <remarks>
+    /// Owned here — one call, through the same class that already owns <see cref="CreateWorkspace"/>
+    /// and <see cref="CleanupWorkspace"/> — rather than left as a two-step "seed, then widen, in that
+    /// exact order" ritual for each call site to reimplement correctly. A prior version of #371 did
+    /// leave it as a bare two-line sequence at the one call site that needed it; caught in review as
+    /// a structural risk (an easy order-of-operations mistake for a future second call site to make),
+    /// not a concrete bug in the one call site that existed. The widening must stay scoped to exactly
+    /// a workspace this method actually seeded — never applied unconditionally to every Docker-tier
+    /// workspace regardless of whether it holds seeded content, which a still-earlier version did and
+    /// /code-review caught as broader host-filesystem exposure than the problem it solved (see
+    /// <see cref="SandboxWorkspace.SetContainerAccessiblePermissions"/>'s own remarks).
+    /// </remarks>
+    public void SeedWorkspace(string workspaceDir, string seedDirectory)
+    {
+        SandboxWorkspace.SeedFrom(seedDirectory, workspaceDir);
+        SandboxWorkspace.SetContainerAccessiblePermissions(workspaceDir);
     }
 
     /// <summary>Best-effort recursive delete of a workspace created by <see cref="CreateWorkspace"/>. Never throws.</summary>

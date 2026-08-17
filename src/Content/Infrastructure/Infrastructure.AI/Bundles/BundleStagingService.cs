@@ -514,14 +514,17 @@ public sealed class BundleStagingService : IBundleStagingService
         if (block is null)
             return;
 
-        // Loop-invariant: every server this manifest declares is checked against the SAME harness-wide
-        // allowlist, so it is mapped from config once here rather than re-derived on every iteration.
+        // Loop-invariants: every server this manifest declares is checked against the SAME harness-wide
+        // allowlist and the SAME sandbox-enabled flag, so both are read from config once here rather than
+        // re-derived (an extra IOptionsMonitor<AppConfig>.CurrentValue dictionary read) on every iteration.
         var allowlist = EgressAllowlistMapper.Map(_appConfig.CurrentValue.AI.Egress.DefaultAllowlist);
+        var sandboxEnabled = _appConfig.CurrentValue.AI.SandboxCapabilities.Enabled;
 
         foreach (var serverProp in block.Value.ServersElement.EnumerateObject())
         {
             var namespacedName = $"{bundleId}:{serverProp.Name}";
-            if (TryBuildAndRegisterOneServer(bundleId, namespacedName, serverProp, allowlist, bundleDir, ref stdioServerCount))
+            if (TryBuildAndRegisterOneServer(
+                    bundleId, namespacedName, serverProp, allowlist, bundleDir, bundleExecution, sandboxEnabled, ref stdioServerCount))
                 mcpServerNames.Add(namespacedName);
         }
     }
@@ -540,7 +543,7 @@ public sealed class BundleStagingService : IBundleStagingService
     /// </remarks>
     private bool TryBuildAndRegisterOneServer(
         string bundleId, string namespacedName, JsonProperty serverProp, IReadOnlyList<EgressAllowlistEntry> allowlist,
-        string bundleDir, ref int stdioServerCount)
+        string bundleDir, BundleExecutionConfig bundleExecution, bool sandboxEnabled, ref int stdioServerCount)
     {
         var buildResult = McpServerDefinitionBuilder.Build(
             // A bundle (unlike a host-installed plugin) has no declaration-level env overrides.
@@ -556,9 +559,13 @@ public sealed class BundleStagingService : IBundleStagingService
         var definition = buildResult.Value!;
 
         if (!definition.IsRemoteServer)
-            return TryRegisterStdioServer(bundleId, namespacedName, serverProp, definition, bundleDir, ref stdioServerCount);
+        {
+            return TryRegisterStdioServer(
+                bundleId, namespacedName, serverProp, definition, bundleDir, bundleExecution.StdioMcpServers, sandboxEnabled,
+                ref stdioServerCount);
+        }
 
-        if (!_appConfig.CurrentValue.AI.BundleExecution.AllowBundleDeclaredMcpServers)
+        if (!bundleExecution.AllowBundleDeclaredMcpServers)
         {
             _logger.LogInformation(
                 "Bundle {BundleId}: MCP server '{ServerName}' declares a remote transport, but " +
@@ -570,14 +577,7 @@ public sealed class BundleStagingService : IBundleStagingService
         if (!IsUrlAllowlisted(bundleId, serverProp.Name, definition.Url, allowlist))
             return false;
 
-        if (_bundleOwnedMcpServers.TryAdd(namespacedName, definition))
-            return true;
-
-        _logger.LogWarning(
-            "Bundle {BundleId}: duplicate MCP server name '{ServerName}' declared across " +
-            "more than one plugin manifest; keeping the first",
-            bundleId, serverProp.Name);
-        return false;
+        return TryAddOwnedServer(bundleId, namespacedName, serverProp.Name, definition);
     }
 
     /// <summary>
@@ -614,7 +614,7 @@ public sealed class BundleStagingService : IBundleStagingService
     /// </summary>
     private bool TryRegisterStdioServer(
         string bundleId, string namespacedName, JsonProperty serverProp, McpServerDefinition definition,
-        string bundleDir, ref int stdioServerCount)
+        string bundleDir, BundleStdioMcpServersConfig stdioConfig, bool sandboxEnabled, ref int stdioServerCount)
     {
         if (!IsExplicitStdioDeclaration(serverProp.Value))
         {
@@ -622,14 +622,12 @@ public sealed class BundleStagingService : IBundleStagingService
             return false;
         }
 
-        var stdioConfig = _appConfig.CurrentValue.AI.BundleExecution.StdioMcpServers;
-
         // Short-circuiting || means the FIRST failing check logs and stops evaluation — the same
         // "log the first reason" ordering the inline checks this replaced had, just delegated one
         // guard per method instead of five inline blocks in one body.
         if (!IsStdioCapabilityEnabled(bundleId, serverProp.Name, stdioConfig)
             || !HasConfiguredContainerImage(bundleId, serverProp.Name, stdioConfig)
-            || !IsSandboxSubsystemEnabled(bundleId, serverProp.Name)
+            || !IsSandboxSubsystemEnabled(bundleId, serverProp.Name, sandboxEnabled)
             || !HasNonEmptyCommand(bundleId, serverProp.Name, definition)
             || !IsWithinPerBundleStdioServerCap(bundleId, serverProp.Name, stdioServerCount, stdioConfig))
         {
@@ -638,16 +636,27 @@ public sealed class BundleStagingService : IBundleStagingService
 
         definition.SandboxSeedDirectory = bundleDir;
 
+        if (!TryAddOwnedServer(bundleId, namespacedName, serverProp.Name, definition))
+            return false;
+
+        stdioServerCount++;
+        return true;
+    }
+
+    /// <summary>
+    /// Shared tail of both registration paths (remote and stdio): registers into
+    /// <see cref="_bundleOwnedMcpServers"/> under <paramref name="namespacedName"/>, or logs and
+    /// rejects a duplicate declared across more than one plugin manifest.
+    /// </summary>
+    private bool TryAddOwnedServer(string bundleId, string namespacedName, string serverName, McpServerDefinition definition)
+    {
         if (_bundleOwnedMcpServers.TryAdd(namespacedName, definition))
-        {
-            stdioServerCount++;
             return true;
-        }
 
         _logger.LogWarning(
             "Bundle {BundleId}: duplicate MCP server name '{ServerName}' declared across " +
             "more than one plugin manifest; keeping the first",
-            bundleId, serverProp.Name);
+            bundleId, serverName);
         return false;
     }
 
@@ -677,9 +686,9 @@ public sealed class BundleStagingService : IBundleStagingService
         return false;
     }
 
-    private bool IsSandboxSubsystemEnabled(string bundleId, string serverName)
+    private bool IsSandboxSubsystemEnabled(string bundleId, string serverName, bool sandboxEnabled)
     {
-        if (_appConfig.CurrentValue.AI.SandboxCapabilities.Enabled)
+        if (sandboxEnabled)
             return true;
 
         _logger.LogWarning(

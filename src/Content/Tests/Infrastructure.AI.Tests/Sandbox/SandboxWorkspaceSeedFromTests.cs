@@ -99,12 +99,18 @@ public class SandboxWorkspaceSeedFromTests : IDisposable
 
         SandboxWorkspace.SeedFrom(source, destination);
 
-        var fileMode = File.GetUnixFileMode(Path.Combine(destination, "server.js"));
-        fileMode.Should().HaveFlag(UnixFileMode.OtherRead,
-            "a container process running as a different UID must be able to read the seeded file");
+        // Skip.If above already makes this unreachable on Windows at runtime; the extra static guard
+        // is for the CA1416 platform-compatibility analyzer, which recognizes OperatingSystem.IsWindows()
+        // if-guards but not xunit's SkippableFact runtime skip.
+        if (!OperatingSystem.IsWindows())
+        {
+            var fileMode = File.GetUnixFileMode(Path.Combine(destination, "server.js"));
+            fileMode.Should().HaveFlag(UnixFileMode.OtherRead,
+                "a container process running as a different UID must be able to read the seeded file");
 
-        var dirMode = File.GetUnixFileMode(Path.Combine(destination, "nested"));
-        dirMode.Should().HaveFlag(UnixFileMode.OtherRead | UnixFileMode.OtherExecute,
-            "a container process running as a different UID must be able to traverse into the seeded directory");
+            var dirMode = File.GetUnixFileMode(Path.Combine(destination, "nested"));
+            dirMode.Should().HaveFlag(UnixFileMode.OtherRead | UnixFileMode.OtherExecute,
+                "a container process running as a different UID must be able to traverse into the seeded directory");
+        }
     }
 }
