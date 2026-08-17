@@ -95,6 +95,15 @@ jobs:
           name: coverage
           path: coverage/
 
+      # Lets owasp-agentic-gate skip its own restore+build (#380). Only this one test
+      # project's output is needed — dotnet vstest runs directly against the built DLL,
+      # so no obj/ or solution-wide output has to travel with it.
+      - name: Upload OWASP gate test project build output
+        uses: actions/upload-artifact@v7
+        with:
+          name: owasp-gate-build-output
+          path: src/Content/Tests/Application.AI.Common.Tests/bin/Release/net10.0/
+
   # Until this job existed, NOTHING in CI ran npm: not a build, not a test, not a lint.
   # The two frontends carry 527 passing tests (Dashboard 385 in 52 files, WebUI 142 in 26)
   # that no pipeline had ever executed, and 175 tracked .tsx files that reached main on the
@@ -176,11 +185,17 @@ jobs:
         with:
           dotnet-version: '10.x'
 
-      - name: Restore
-        run: dotnet restore src/AgenticHarness.slnx
-
-      - name: Build
-        run: dotnet build src/AgenticHarness.slnx --no-restore --configuration Release
+      # Reuses build-and-test's Release output instead of building a second time (#380).
+      # A prior attempt at this (`dotnet test <csproj> --no-build`) failed: the project-to-DLL
+      # resolution step it depends on rejected the path it resolved once the build had round-tripped
+      # through actions/upload-artifact+download-artifact, even though the exact same build passed
+      # when tested in the job that produced it. dotnet vstest runs directly against the DLL, so
+      # that resolution step — and the failure mode — doesn't exist here.
+      - name: Download OWASP gate test project build output
+        uses: actions/download-artifact@v7
+        with:
+          name: owasp-gate-build-output
+          path: src/Content/Tests/Application.AI.Common.Tests/bin/Release/net10.0/
 
       - name: Run OWASP Agentic eval fixtures (hard gate)
         id: owasp-tests
@@ -194,13 +209,11 @@ jobs:
         # six lines to explain wherever it can happen — not just where it happened first.
         run: |
           set -euo pipefail
-          dotnet test \
-            src/Content/Tests/Application.AI.Common.Tests/Application.AI.Common.Tests.csproj \
-            --no-build \
-            --configuration Release \
-            --filter "Category=OwaspAgentic" \
-            --logger "trx;LogFileName=owasp-agentic-gate.trx" \
-            --results-directory owasp-results 2>&1 | tee owasp-test-output.log
+          dotnet vstest \
+            src/Content/Tests/Application.AI.Common.Tests/bin/Release/net10.0/Application.AI.Common.Tests.dll \
+            --TestCaseFilter:"Category=OwaspAgentic" \
+            --logger:"trx;LogFileName=owasp-agentic-gate.trx" \
+            --ResultsDirectory:owasp-results 2>&1 | tee owasp-test-output.log
 
       - name: Explain a test-runner crash
         if: steps.owasp-tests.outcome == 'failure'
