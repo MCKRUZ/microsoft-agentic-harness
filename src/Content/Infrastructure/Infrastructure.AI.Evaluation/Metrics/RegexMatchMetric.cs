@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text.RegularExpressions;
+using Application.AI.Common.Evaluation;
 using Application.AI.Common.Evaluation.Interfaces;
 using Application.AI.Common.Evaluation.Models;
 using Domain.AI.Evaluation;
@@ -11,6 +12,10 @@ namespace Infrastructure.AI.Evaluation.Metrics;
 /// parameter, else 0.0. Uses <see cref="RegexOptions.None"/> by default with a 1-second
 /// timeout to defend against catastrophic backtracking.
 /// </summary>
+/// <remarks>
+/// Set the <c>must_not_match</c> parameter to <c>true</c> to invert the check — the case
+/// passes when the pattern does NOT appear (e.g. asserting a secret was redacted).
+/// </remarks>
 public sealed class RegexMatchMetric : IEvalMetric
 {
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromSeconds(1);
@@ -55,15 +60,22 @@ public sealed class RegexMatchMetric : IEvalMetric
             return Task.FromResult(Warn(sw, "Regex evaluation timed out (possible catastrophic backtracking)."));
         }
 
+        var mustNotMatch = spec.GetBool("must_not_match", defaultValue: false);
+        var passed = mustNotMatch ? !isMatch : isMatch;
+
         sw.Stop();
         return Task.FromResult(new MetricScore
         {
             MetricKey = Key,
-            Score = isMatch ? 1.0 : 0.0,
-            Verdict = isMatch ? Verdict.Pass : Verdict.Fail,
-            Reasoning = isMatch
-                ? $"Output matched pattern: {pattern}"
-                : $"Output did not match pattern: {pattern}",
+            Score = passed ? 1.0 : 0.0,
+            Verdict = passed ? Verdict.Pass : Verdict.Fail,
+            Reasoning = mustNotMatch
+                ? (isMatch
+                    ? $"Output matched forbidden pattern: {pattern}"
+                    : $"Output did not match forbidden pattern: {pattern}")
+                : (isMatch
+                    ? $"Output matched pattern: {pattern}"
+                    : $"Output did not match pattern: {pattern}"),
             Duration = sw.Elapsed
         });
     }
