@@ -84,14 +84,17 @@ public sealed class JsonlGovernanceAuditWriter : IGovernanceAuditService, IVerif
             Decision = decision,
         };
 
-        var appended = false;
         try
         {
             var json = JsonSerializer.Serialize(record, SerializeOptions);
             var result = _chain.AppendAsync(json, CancellationToken.None).GetAwaiter().GetResult();
             if (result.IsSuccess)
             {
-                appended = true;
+                // Only on a confirmed append — counting a failed write here would make a dashboard
+                // built on this metric read as a healthy, growing audit trail while governance.jsonl
+                // silently stopped receiving records.
+                GovernanceMetrics.AuditEvents.Add(1,
+                    new KeyValuePair<string, object?>(GovernanceConventions.Action, action));
             }
             else
             {
@@ -111,15 +114,6 @@ public sealed class JsonlGovernanceAuditWriter : IGovernanceAuditService, IVerif
             _logger.LogError(ex,
                 "Failed to append governance audit record for agent {AgentId}, action {Action}",
                 agentId, action);
-        }
-
-        // Only on a confirmed append — counting a failed write here would make a dashboard built on
-        // this metric read as a healthy, growing audit trail while governance.jsonl silently stopped
-        // receiving records.
-        if (appended)
-        {
-            GovernanceMetrics.AuditEvents.Add(1,
-                new KeyValuePair<string, object?>(GovernanceConventions.Action, action));
         }
     }
 

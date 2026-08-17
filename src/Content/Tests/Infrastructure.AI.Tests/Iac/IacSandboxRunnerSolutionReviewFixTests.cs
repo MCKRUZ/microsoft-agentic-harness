@@ -26,10 +26,20 @@ public sealed class IacSandboxRunnerSolutionReviewFixTests
     private const string ModuleDir = "/tmp/iac/module";
 
     /// <summary>An empty-override resolver — these tests exercise egress precheck, not #405's merge.</summary>
-    private static ToolPermissionProfileResolver NoOverrideResolver()
+    private static ToolPermissionProfileResolver NoOverrideResolver() => ResolverWithOverride(null, null);
+
+    /// <summary>
+    /// A resolver with a single <see cref="ToolOverrideConfig"/> entry, or no override at all when
+    /// <paramref name="toolName"/> is <see langword="null"/>.
+    /// </summary>
+    private static ToolPermissionProfileResolver ResolverWithOverride(string? toolName, ToolOverrideConfig? config)
     {
         var services = new ServiceCollection();
-        services.AddOptions<SandboxConfig>();
+        services.AddOptions<SandboxConfig>().Configure(c =>
+        {
+            if (toolName is not null && config is not null)
+                c.ToolOverrides[toolName] = config;
+        });
         var provider = services.BuildServiceProvider();
         var lookup = new FirstPartyToolLookup(provider, new HashSet<string>());
         return new ToolPermissionProfileResolver(lookup, provider.GetRequiredService<IOptionsMonitor<SandboxConfig>>());
@@ -109,16 +119,11 @@ public sealed class IacSandboxRunnerSolutionReviewFixTests
         // what iac_plan actually requires (FileRead|FileWrite|Subprocess|NetworkAccess), so the call
         // still dispatches with the deny carried on the profile.
         var sandbox = new RecordingIacSandbox().WithDefault(true, 0, string.Empty);
-        var services = new ServiceCollection();
-        services.AddOptions<SandboxConfig>().Configure(c => c.ToolOverrides["iac_plan"] = new ToolOverrideConfig
+        var resolver = ResolverWithOverride("iac_plan", new ToolOverrideConfig
         {
             DeniedCapabilities = ["DatabaseRead"],
             MinimumIsolation = "Container"
         });
-        var provider = services.BuildServiceProvider();
-        var resolver = new ToolPermissionProfileResolver(
-            new FirstPartyToolLookup(provider, new HashSet<string>()),
-            provider.GetRequiredService<IOptionsMonitor<SandboxConfig>>());
 
         await IacSandboxRunner.RunAsync(
             program: "terraform",
@@ -145,15 +150,10 @@ public sealed class IacSandboxRunnerSolutionReviewFixTests
         // fix — IacSandboxRunner never calls ICapabilityEnforcer, so nothing else on this dispatch
         // path would have refused it).
         var sandbox = new RecordingIacSandbox().WithDefault(true, 0, string.Empty);
-        var services = new ServiceCollection();
-        services.AddOptions<SandboxConfig>().Configure(c => c.ToolOverrides["iac_plan"] = new ToolOverrideConfig
+        var resolver = ResolverWithOverride("iac_plan", new ToolOverrideConfig
         {
             DeniedCapabilities = ["NetworkAccess"]
         });
-        var provider = services.BuildServiceProvider();
-        var resolver = new ToolPermissionProfileResolver(
-            new FirstPartyToolLookup(provider, new HashSet<string>()),
-            provider.GetRequiredService<IOptionsMonitor<SandboxConfig>>());
 
         var result = await IacSandboxRunner.RunAsync(
             program: "terraform",
