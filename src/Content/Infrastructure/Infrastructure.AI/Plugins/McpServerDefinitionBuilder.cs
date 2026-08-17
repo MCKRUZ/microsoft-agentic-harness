@@ -132,12 +132,53 @@ public static class McpServerDefinitionBuilder
     /// (see <c>BundleStagingService.LogStdioRejected</c>).
     /// </summary>
     private static Result<McpServerType> ParseType(JsonElement serverElement, string serverName) =>
-        ReadOptionalString(serverElement, "type", serverName).Map(raw => raw?.ToLowerInvariant() switch
-        {
-            "http" => McpServerType.Http,
-            "sse" => McpServerType.Sse,
-            _ => McpServerType.Stdio
-        });
+        ReadOptionalString(serverElement, "type", serverName).Map(raw => ParseTypeValue(raw));
+
+    /// <summary>Maps a raw, already-extracted <c>type</c> string the way <see cref="ParseType"/> does — the ONE mapping rule.</summary>
+    private static McpServerType ParseTypeValue(string? raw) => raw?.ToLowerInvariant() switch
+    {
+        "http" => McpServerType.Http,
+        "sse" => McpServerType.Sse,
+        _ => McpServerType.Stdio
+    };
+
+    /// <summary>
+    /// The manifest string <see cref="ParseTypeValue"/> recognizes for <paramref name="type"/> —
+    /// deliberately NOT the inverse of the whole switch (its default arm maps every unrecognized string
+    /// to <see cref="McpServerType.Stdio"/> too, which is exactly the ambiguity
+    /// <see cref="IsExplicitType"/> exists to resolve; "recognized" and "defaulted-to" must stay
+    /// distinguishable, not merged into one lookup).
+    /// </summary>
+    private static string? RecognizedTypeLiteral(McpServerType type) => type switch
+    {
+        McpServerType.Http => "http",
+        McpServerType.Sse => "sse",
+        McpServerType.Stdio => "stdio",
+        _ => null
+    };
+
+    /// <summary>
+    /// Whether a manifest declares <c>"type"</c> as the exact recognized string for
+    /// <paramref name="type"/> — distinct from <see cref="ParseType"/>'s own default-to-stdio behavior
+    /// for an absent or unrecognized value. <c>BundleStagingService.TryRegisterStdioServer</c> needs
+    /// exactly this distinction for <see cref="McpServerType.Stdio"/> specifically: a bundle author's
+    /// typo'd remote transport (<c>"type": "htp"</c>) must not silently land on a sandboxed process
+    /// launch just because unrecognized values default to the same enum value an explicit
+    /// <c>"stdio"</c> would. Shares <see cref="RecognizedTypeLiteral"/> with <see cref="ParseTypeValue"/>
+    /// rather than a second, independently-written comparison, so the two mapping rules cannot drift —
+    /// a caller that instead re-implemented "read type, compare case-insensitively" would have no
+    /// build-time signal if this class's own recognized aliases ever changed.
+    /// </summary>
+    /// <remarks>
+    /// Callers of this method are expected to have already called <see cref="Build"/> successfully on
+    /// the same <paramref name="serverElement"/> — this method does not itself validate that <c>type</c>
+    /// has a string shape (an absent/wrong-shaped property both resolve to <c>false</c> here, harmlessly),
+    /// because <see cref="Build"/> already rejects that shape before any caller could reach this check.
+    /// </remarks>
+    public static bool IsExplicitType(JsonElement serverElement, McpServerType type) =>
+        serverElement.TryGetProperty("type", out var value)
+        && value.ValueKind == JsonValueKind.String
+        && string.Equals(value.GetString()?.ToLowerInvariant(), RecognizedTypeLiteral(type), StringComparison.Ordinal);
 
     /// <summary>
     /// Reads an optional string property. Absent is success with a <see langword="null"/> value —

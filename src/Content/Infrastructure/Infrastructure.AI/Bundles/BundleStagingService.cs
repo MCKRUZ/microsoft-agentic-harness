@@ -32,7 +32,7 @@ namespace Infrastructure.AI.Bundles;
 /// failure deletes the partial extraction before returning. The service never surfaces archive content
 /// in a failure reason — reasons describe the guard, not the payload.
 /// </remarks>
-public sealed class BundleStagingService : IBundleStagingService
+public sealed partial class BundleStagingService : IBundleStagingService
 {
     private const int CopyBufferSize = 81920;
 
@@ -593,69 +593,6 @@ public sealed class BundleStagingService : IBundleStagingService
     }
 
     /// <summary>
-    /// Registers a bundle-owned <c>stdio</c> (local-command) MCP server — reachable only when every one
-    /// of these holds, checked in order so the log line always names the FIRST reason a caller could fix:
-    /// <list type="number">
-    /// <item><description>The manifest declares <c>"type": "stdio"</c> <strong>explicitly</strong>. A
-    /// server that merely defaulted to stdio (absent or unrecognized <c>type</c> —
-    /// <see cref="McpServerDefinitionBuilder"/>'s <c>ParseType</c> maps both to
-    /// <see cref="McpServerType.Stdio"/>) is rejected via <see cref="LogStdioRejected"/> exactly as
-    /// before this capability existed — a bundle author who typos a remote transport must not silently
-    /// land on a sandboxed process launch instead.</description></item>
-    /// <item><description><see cref="BundleStdioMcpServersConfig.Enabled"/> is on — a separate opt-in
-    /// from <see cref="BundleExecutionConfig.AllowBundleDeclaredMcpServers"/>, which governs remote
-    /// servers only.</description></item>
-    /// <item><description>An operator has configured <see cref="BundleStdioMcpServersConfig.ContainerImage"/>
-    /// — otherwise every bundle stdio server would run in the harness's own default (.NET runtime) image,
-    /// which cannot run most MCP servers, so registering one would be pointless.</description></item>
-    /// <item><description>The sandbox subsystem itself is enabled
-    /// (<c>AppConfig.AI.SandboxCapabilities.Enabled</c>) — both session factories refuse to start when
-    /// it is off; checking here means staging never registers something that can never run.</description></item>
-    /// <item><description>The manifest declares a non-empty <c>command</c> —
-    /// <see cref="McpServerDefinitionBuilder"/> does not itself enforce this for stdio the way it enforces
-    /// a URL for remote servers.</description></item>
-    /// <item><description>The bundle has not already reached
-    /// <see cref="BundleStdioMcpServersConfig.MaxServersPerBundle"/> — each registered stdio server
-    /// becomes a long-lived sandbox container for the life of the bundle's staged handle.</description></item>
-    /// </list>
-    /// On success, tags <see cref="McpServerDefinition.SandboxSeedDirectory"/> with the bundle's staged
-    /// root directory <strong>before</strong> <see cref="IBundleOwnedMcpServerRegistry.TryAdd"/> — tagged
-    /// at the moment of creation, per this repo's provenance-tracking pattern, rather than re-derived from
-    /// the server's name later — so <c>McpConnectionManager.StartSandboxedStdioSessionAsync</c> can seed
-    /// the server's sandbox workspace with the bundle's own files.
-    /// </summary>
-    private bool TryRegisterStdioServer(
-        string bundleId, string namespacedName, JsonProperty serverProp, McpServerDefinition definition,
-        string bundleDir, BundleStdioMcpServersConfig stdioConfig, bool sandboxEnabled, ref int stdioServerCount)
-    {
-        if (!IsExplicitStdioDeclaration(serverProp.Value))
-        {
-            LogStdioRejected(bundleId, serverProp.Name);
-            return false;
-        }
-
-        // Short-circuiting || means the FIRST failing check logs and stops evaluation — the same
-        // "log the first reason" ordering the inline checks this replaced had, just delegated one
-        // guard per method instead of five inline blocks in one body.
-        if (!IsStdioCapabilityEnabled(bundleId, serverProp.Name, stdioConfig)
-            || !HasConfiguredContainerImage(bundleId, serverProp.Name, stdioConfig)
-            || !IsSandboxSubsystemEnabled(bundleId, serverProp.Name, sandboxEnabled)
-            || !HasNonEmptyCommand(bundleId, serverProp.Name, definition)
-            || !IsWithinPerBundleStdioServerCap(bundleId, serverProp.Name, stdioServerCount, stdioConfig))
-        {
-            return false;
-        }
-
-        definition.SandboxSeedDirectory = bundleDir;
-
-        if (!TryAddOwnedServer(bundleId, namespacedName, serverProp.Name, definition))
-            return false;
-
-        stdioServerCount++;
-        return true;
-    }
-
-    /// <summary>
     /// Shared tail of both registration paths (remote and stdio): registers into
     /// <see cref="_bundleOwnedMcpServers"/> under <paramref name="namespacedName"/>, or logs and
     /// rejects a duplicate declared across more than one plugin manifest.
@@ -672,56 +609,6 @@ public sealed class BundleStagingService : IBundleStagingService
         return false;
     }
 
-    private bool IsStdioCapabilityEnabled(string bundleId, string serverName, BundleStdioMcpServersConfig stdioConfig)
-    {
-        if (stdioConfig.Enabled)
-            return true;
-
-        _logger.LogInformation(
-            "Bundle {BundleId}: MCP server '{ServerName}' explicitly declares a stdio transport, but " +
-            "AppConfig:AI:BundleExecution:StdioMcpServers:Enabled is disabled — rejected, not registered. " +
-            "Set it to true to enable sandboxed bundle-owned stdio MCP servers.",
-            bundleId, serverName);
-        return false;
-    }
-
-    private bool HasConfiguredContainerImage(string bundleId, string serverName, BundleStdioMcpServersConfig stdioConfig)
-    {
-        if (!string.IsNullOrEmpty(stdioConfig.ContainerImage))
-            return true;
-
-        _logger.LogWarning(
-            "Bundle {BundleId}: MCP server '{ServerName}' explicitly declares a stdio transport, but no " +
-            "AppConfig:AI:BundleExecution:StdioMcpServers:ContainerImage is configured — rejected, not " +
-            "registered. The capability stays inert until an operator sets a runtime image.",
-            bundleId, serverName);
-        return false;
-    }
-
-    private bool IsSandboxSubsystemEnabled(string bundleId, string serverName, bool sandboxEnabled)
-    {
-        if (sandboxEnabled)
-            return true;
-
-        _logger.LogWarning(
-            "Bundle {BundleId}: MCP server '{ServerName}' explicitly declares a stdio transport, but the " +
-            "sandbox subsystem (AppConfig:AI:SandboxCapabilities:Enabled) is disabled — rejected, not registered.",
-            bundleId, serverName);
-        return false;
-    }
-
-    private bool HasNonEmptyCommand(string bundleId, string serverName, McpServerDefinition definition)
-    {
-        if (!string.IsNullOrWhiteSpace(definition.Command))
-            return true;
-
-        _logger.LogWarning(
-            "Bundle {BundleId}: MCP server '{ServerName}' declares a stdio transport with no command — " +
-            "rejected, not registered.",
-            bundleId, serverName);
-        return false;
-    }
-
     /// <summary>
     /// Whether a manifest-declared server name is safe to use as a structured-log field, a sandbox
     /// <c>ToolName</c> (the egress preflight key and the attestation record — both new consumers this
@@ -732,46 +619,6 @@ public sealed class BundleStagingService : IBundleStagingService
     private static bool IsSafeServerNameIdentifier(string serverName) =>
         serverName.Length is > 0 and <= 128
         && serverName.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_' or '.');
-
-    private bool IsWithinPerBundleStdioServerCap(
-        string bundleId, string serverName, int stdioServerCount, BundleStdioMcpServersConfig stdioConfig)
-    {
-        if (stdioServerCount < stdioConfig.MaxServersPerBundle)
-            return true;
-
-        _logger.LogWarning(
-            "Bundle {BundleId}: MCP server '{ServerName}' exceeds the per-bundle stdio server cap of " +
-            "{MaxServersPerBundle} — rejected, not registered.",
-            bundleId, serverName, stdioConfig.MaxServersPerBundle);
-        return false;
-    }
-
-    /// <summary>
-    /// Whether the manifest declares <c>"type": "stdio"</c> as an explicit JSON string — mirrors
-    /// <see cref="McpServerDefinitionBuilder"/>'s own <c>ParseType</c> matching exactly (property name
-    /// <c>type</c>, value compared case-insensitively) so the two can never independently drift on what
-    /// counts as an explicit declaration.
-    /// </summary>
-    private static bool IsExplicitStdioDeclaration(JsonElement serverElement) =>
-        serverElement.ValueKind == JsonValueKind.Object
-        && serverElement.TryGetProperty("type", out var typeElement)
-        && typeElement.ValueKind == JsonValueKind.String
-        && string.Equals(typeElement.GetString(), "stdio", StringComparison.OrdinalIgnoreCase);
-
-    // A bundle is untrusted, uploader-supplied content. A server whose manifest never explicitly declared
-    // "type": "stdio" — an absent or unrecognized value, which McpServerDefinitionBuilder.ParseType
-    // defaults to Stdio too — is rejected rather than treated as an intentional local-command request: a
-    // bundle author who typos a remote transport must not silently land on a sandboxed process launch.
-    // An EXPLICIT stdio declaration is handled by TryRegisterStdioServer instead, not here (#371).
-    private void LogStdioRejected(string bundleId, string serverName)
-    {
-        _logger.LogWarning(
-            "Bundle {BundleId}: MCP server '{ServerName}' resolved to a stdio (local-command) transport " +
-            "without an explicit 'type': 'stdio' declaration — rejected, not registered. The transport " +
-            "either defaulted to stdio because 'type' was missing or unrecognized (only 'http'/'sse'/'stdio' " +
-            "are recognized), which this host never treats as an intentional stdio request.",
-            bundleId, serverName);
-    }
 
     /// <summary>
     /// Registration-time pre-check against the SAME harness-wide allowlist a bundle-owned server's live

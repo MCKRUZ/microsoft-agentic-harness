@@ -80,7 +80,9 @@ public sealed class BundleExecutionConfigValidator : AbstractValidator<BundleExe
             .WithMessage("StdioMcpServers:MaxConcurrentSessions must be > 0 — a non-positive cap would refuse every sandboxed stdio session host-wide.");
 
         RuleFor(x => x.StdioMcpServers.ContainerImage)
-            .Must(image => image.Length == 0 || image.Trim().Length > 0)
-            .WithMessage("StdioMcpServers:ContainerImage must not be whitespace-only — leave it empty to keep the capability inert, or set a real image reference.");
+            .Must(image => image.Length == 0 || (image.Trim().Length > 0 && image == image.Trim()))
+            .WithMessage("StdioMcpServers:ContainerImage must not be whitespace-only, and must not carry leading/trailing " +
+                "whitespace (nothing downstream trims it before it reaches Docker's image-reference parser) — leave it " +
+                "empty to keep the capability inert, or set a real image reference.");
     }
 }
