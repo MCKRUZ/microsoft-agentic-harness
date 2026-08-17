@@ -95,6 +95,17 @@ public class McpServerDefinition
     /// </remarks>
     public bool TrustToolAnnotations { get; set; }
 
+    /// <summary>
+    /// Absolute path to a bundle's staged directory, set only for a bundle-owned <c>stdio</c> server
+    /// at registration time (<c>BundleStagingService.TryBuildAndRegisterOneServer</c>) and read only by
+    /// <c>McpConnectionManager.StartSandboxedStdioSessionAsync</c> to seed that server's sandbox
+    /// workspace. Deliberately distinct from <see cref="WorkingDirectory"/>, which already means "the
+    /// trusted host process's working directory" on the unsandboxed stdio arm — the two describe
+    /// different trust tiers and must never be conflated onto one field. Null on every host-configured
+    /// and bundle-owned-remote definition.
+    /// </summary>
+    public string? SandboxSeedDirectory { get; set; }
+
     /// <summary>Gets whether this server requires authentication.</summary>
     public bool RequiresAuth => Auth?.IsConfigured ?? false;
 

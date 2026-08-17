@@ -143,6 +143,10 @@ public sealed class BundleMcpEgressAttributionTests
             // handler itself from DI" remarks on ResolveBundleEgressClient) — not from a registration of
             // EgressPolicyDelegatingHandler itself, which would be resolved-but-never-invoked here.
             .AddSingleton<ILogger<EgressPolicyDelegatingHandler>>(NullLogger<EgressPolicyDelegatingHandler>.Instance)
+            // McpConnectionManager also resolves IOptionsMonitor<AppConfig> eagerly at construction (the
+            // sandboxed-stdio path's container image comes from AppConfig.AI.BundleExecution.StdioMcpServers)
+            // — irrelevant to these bundle-owned HTTP/SSE tests, but required for construction to succeed.
+            .AddSingleton<Microsoft.Extensions.Options.IOptionsMonitor<AppConfig>>(new TestConfig.StaticOptionsMonitor<AppConfig>(new AppConfig()))
             .BuildServiceProvider();
 
         var antiSsrfFactory = new AntiSsrfHandlerFactory(new TestConfig.StaticOptionsMonitor<AppConfig>(new AppConfig()));

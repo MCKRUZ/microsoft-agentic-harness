@@ -32,7 +32,7 @@ namespace Infrastructure.AI.Bundles;
 /// failure deletes the partial extraction before returning. The service never surfaces archive content
 /// in a failure reason — reasons describe the guard, not the payload.
 /// </remarks>
-public sealed class BundleStagingService : IBundleStagingService
+public sealed partial class BundleStagingService : IBundleStagingService
 {
     private const int CopyBufferSize = 81920;
 
@@ -430,6 +430,12 @@ public sealed class BundleStagingService : IBundleStagingService
     {
         var manifests = new List<PluginManifest>();
         var mcpServerNames = new List<string>();
+        // Threaded through every RegisterBundleMcpServers call for this bundle (root manifest plus
+        // every nested plugin manifest) via its return value — not a ref parameter, so neither that
+        // method nor the ones it calls need to distinguish "not yet mutated" from "mutated to the
+        // same value" — so the per-bundle stdio server cap is enforced across all of a bundle's
+        // manifests, not reset per manifest.
+        var stdioServerCount = 0;
 
         try
         {
@@ -437,7 +443,7 @@ public sealed class BundleStagingService : IBundleStagingService
             if (rootManifest is not null)
             {
                 manifests.Add(rootManifest);
-                RegisterBundleMcpServers(bundleDir, bundleId, rootManifest, mcpServerNames);
+                stdioServerCount = RegisterBundleMcpServers(bundleDir, bundleId, rootManifest, mcpServerNames, bundleDir, stdioServerCount);
             }
 
             var pluginsRoot = Path.Combine(bundleDir, "plugins");
@@ -449,7 +455,7 @@ public sealed class BundleStagingService : IBundleStagingService
                     if (manifest is not null)
                     {
                         manifests.Add(manifest);
-                        RegisterBundleMcpServers(pluginDir, bundleId, manifest, mcpServerNames);
+                        stdioServerCount = RegisterBundleMcpServers(pluginDir, bundleId, manifest, mcpServerNames, bundleDir, stdioServerCount);
                     }
                 }
             }
@@ -478,103 +484,189 @@ public sealed class BundleStagingService : IBundleStagingService
     /// never collide — while a manifest's <c>Name</c> is free text and not guaranteed unique. A malformed
     /// or missing <c>mcp.json</c> is skipped and logged, never fails staging.
     /// </summary>
-    private void RegisterBundleMcpServers(
-        string manifestBaseDir, string bundleId, PluginManifest manifest, List<string> mcpServerNames)
+    /// <returns>
+    /// The stdio server count after processing this manifest — <paramref name="stdioServerCount"/>
+    /// unchanged when the manifest declares no MCP servers or neither capability is enabled, otherwise
+    /// incremented once per server this manifest registered as stdio. The caller threads this back in
+    /// as the next call's <paramref name="stdioServerCount"/> — see <see cref="ParsePluginManifests"/>.
+    /// </returns>
+    private int RegisterBundleMcpServers(
+        string manifestBaseDir, string bundleId, PluginManifest manifest, List<string> mcpServerNames,
+        string bundleDir, int stdioServerCount)
     {
         if (string.IsNullOrEmpty(manifest.McpServers))
-            return;
+            return stdioServerCount;
 
-        // A bundle is untrusted, externally-authored input. Honouring its own declared MCP servers means
-        // the host makes outbound connections a caller's CapabilityEnvelope never authorized — off by
-        // default until an operator opts in. The manifest is never even opened when off, so a disabled
-        // host pays no parsing cost for a capability it doesn't have.
-        if (!_appConfig.CurrentValue.AI.BundleExecution.AllowBundleDeclaredMcpServers)
+        // A bundle is untrusted, externally-authored input, and each transport is its own capability with
+        // its own opt-in (AllowBundleDeclaredMcpServers for remote, StdioMcpServers.Enabled for sandboxed
+        // local) — see BundleStdioMcpServersConfig's remarks for why the two are deliberately separate.
+        // The manifest is parsed only when AT LEAST ONE is on; a host with neither enabled never opens
+        // mcp.json, so it pays no parsing cost for a capability it doesn't have. When exactly one is on,
+        // parsing still proceeds so the OTHER transport's server can register — the per-server checks in
+        // TryBuildAndRegisterOneServer/TryRegisterStdioServer are what actually enforce which capability a
+        // given declared server needs.
+        var bundleExecution = _appConfig.CurrentValue.AI.BundleExecution;
+        if (!bundleExecution.AllowBundleDeclaredMcpServers && !bundleExecution.StdioMcpServers.Enabled)
         {
             _logger.LogInformation(
-                "Bundle {BundleId}: declares MCP servers but AllowBundleDeclaredMcpServers is disabled — " +
-                "skipping, none registered. Set AppConfig:AI:BundleExecution:AllowBundleDeclaredMcpServers " +
-                "= true to enable this capability.",
+                "Bundle {BundleId}: declares MCP servers but neither AllowBundleDeclaredMcpServers nor " +
+                "StdioMcpServers:Enabled is on — skipping, none registered. Set " +
+                "AppConfig:AI:BundleExecution:AllowBundleDeclaredMcpServers and/or " +
+                "AppConfig:AI:BundleExecution:StdioMcpServers:Enabled to enable this capability.",
                 bundleId);
-            return;
+            return stdioServerCount;
         }
 
         using var block = Infrastructure.AI.Plugins.McpManifestReader.ReadMcpServersBlock(
             manifestBaseDir, manifest.McpServers, $"Bundle {bundleId}", _logger);
         if (block is null)
-            return;
+            return stdioServerCount;
 
-        // Loop-invariant: every server this manifest declares is checked against the SAME harness-wide
-        // allowlist, so it is mapped from config once here rather than re-derived on every iteration.
-        var allowlist = EgressAllowlistMapper.Map(_appConfig.CurrentValue.AI.Egress.DefaultAllowlist);
+        // Loop-invariant across every server this manifest declares — the same harness-wide allowlist,
+        // sandbox-enabled flag, bundle id/dir, and execution config apply to all of them, so they're
+        // read from config once here (rather than re-derived per iteration) and bundled into one
+        // context value instead of threading five separate parameters through both registration methods.
+        var context = new ServerRegistrationContext(
+            bundleId, bundleDir, bundleExecution,
+            SandboxEnabled: _appConfig.CurrentValue.AI.SandboxCapabilities.Enabled,
+            Allowlist: EgressAllowlistMapper.Map(_appConfig.CurrentValue.AI.Egress.DefaultAllowlist));
 
         foreach (var serverProp in block.Value.ServersElement.EnumerateObject())
         {
             var namespacedName = $"{bundleId}:{serverProp.Name}";
-            if (TryBuildAndRegisterOneServer(bundleId, namespacedName, serverProp, allowlist))
+            var (registered, wasStdio) = TryBuildAndRegisterOneServer(context, namespacedName, serverProp, stdioServerCount);
+            if (registered)
+            {
                 mcpServerNames.Add(namespacedName);
+                // Only a server that both took the stdio branch AND actually registered counts
+                // against the per-bundle cap — a rejected stdio attempt (wrong capability off, no
+                // command, cap already reached, etc.) must not itself consume a cap slot.
+                if (wasStdio)
+                    stdioServerCount++;
+            }
         }
+
+        return stdioServerCount;
     }
 
     /// <summary>
-    /// Builds one manifest-declared server and registers it under <paramref name="namespacedName"/>,
-    /// rejecting a stdio (local-command) transport, a disallowed destination, and a duplicate name — see
-    /// <see cref="RegisterBundleMcpServers"/>. Returns whether registration succeeded.
+    /// The per-manifest-loop-invariant values every server registration check needs — bundled here so
+    /// <see cref="TryBuildAndRegisterOneServer"/> and <see cref="TryRegisterStdioServer"/> each take one
+    /// parameter for "the bundle and its config" instead of four separate ones repeated across both
+    /// signatures. A /simplify finding on #371's original 8-positional-parameter shape.
     /// </summary>
-    private bool TryBuildAndRegisterOneServer(
-        string bundleId, string namespacedName, JsonProperty serverProp, IReadOnlyList<EgressAllowlistEntry> allowlist)
+    private readonly record struct ServerRegistrationContext(
+        string BundleId,
+        string BundleDir,
+        BundleExecutionConfig BundleExecution,
+        bool SandboxEnabled,
+        IReadOnlyList<EgressAllowlistEntry> Allowlist);
+
+    /// <summary>
+    /// Builds one manifest-declared server and registers it under <paramref name="namespacedName"/> —
+    /// remote (http/sse) through its own capability check, then the allowlist + duplicate-name checks
+    /// unchanged since #370, local (stdio) through <see cref="TryRegisterStdioServer"/>'s
+    /// sandboxed-registration gate (#371). Returns whether registration succeeded.
+    /// </summary>
+    /// <remarks>
+    /// The caller (<see cref="RegisterBundleMcpServers"/>) opens a manifest once EITHER capability is on,
+    /// so a remote server's own <see cref="BundleExecutionConfig.AllowBundleDeclaredMcpServers"/> check
+    /// has to live HERE, per-server — it cannot rely on the caller's gate alone, since that gate now also
+    /// admits a manifest whose only enabled capability is <see cref="BundleStdioMcpServersConfig.Enabled"/>.
+    /// </remarks>
+    /// <returns>
+    /// <c>Registered</c>: whether the server was added to the registry. <c>WasStdio</c>: whether this
+    /// declaration took the stdio branch at all — true even when a stdio-specific guard inside
+    /// <see cref="TryRegisterStdioServer"/> rejected it, false for every remote-branch outcome. The
+    /// caller (<see cref="RegisterBundleMcpServers"/>) increments its per-bundle stdio count only when
+    /// BOTH are true — a rejected stdio attempt must not itself consume a cap slot.
+    /// </returns>
+    private (bool Registered, bool WasStdio) TryBuildAndRegisterOneServer(
+        ServerRegistrationContext context, string namespacedName, JsonProperty serverProp, int stdioServerCount)
     {
+        if (!IsSafeServerNameIdentifier(serverProp.Name))
+        {
+            // Deliberately does not echo the offending name: it is exactly the untrusted value this
+            // check exists to keep out of a plain-text log sink (control characters / newlines could
+            // otherwise forge log lines), and this diff makes it load-bearing in a second place —
+            // the sandbox ToolName used for the egress preflight key and the attestation record.
+            _logger.LogWarning(
+                "Bundle {BundleId}: rejected an MCP server whose declared name is not a safe identifier.",
+                context.BundleId);
+            return (false, false);
+        }
+
         var buildResult = McpServerDefinitionBuilder.Build(
             // A bundle (unlike a host-installed plugin) has no declaration-level env overrides.
-            serverProp.Value, NoDeclarationEnv, $"[Bundle: {bundleId}]", serverProp.Name);
+            serverProp.Value, NoDeclarationEnv, $"[Bundle: {context.BundleId}]", serverProp.Name);
         if (!buildResult.IsSuccess)
         {
             _logger.LogWarning(
                 "Bundle {BundleId}: failed to build MCP server definition for '{ServerName}', skipping: {Errors}",
-                bundleId, serverProp.Name, string.Join("; ", buildResult.Errors));
-            return false;
+                context.BundleId, serverProp.Name, string.Join("; ", buildResult.Errors));
+            return (false, false);
         }
 
         var definition = buildResult.Value!;
 
         if (!definition.IsRemoteServer)
         {
-            LogStdioRejected(bundleId, serverProp.Name);
-            return false;
+            var registered = TryRegisterStdioServer(context, namespacedName, serverProp, definition, stdioServerCount);
+            return (registered, true);
         }
 
-        if (!IsUrlAllowlisted(bundleId, serverProp.Name, definition.Url, allowlist))
-            return false;
+        if (!context.BundleExecution.AllowBundleDeclaredMcpServers)
+        {
+            _logger.LogInformation(
+                "Bundle {BundleId}: MCP server '{ServerName}' declares a remote transport, but " +
+                "AllowBundleDeclaredMcpServers is disabled — rejected, not registered.",
+                context.BundleId, serverProp.Name);
+            return (false, false);
+        }
 
+        if (!IsUrlAllowlisted(context.BundleId, serverProp.Name, definition.Url, context.Allowlist))
+            return (false, false);
+
+        return (TryAddOwnedServer(context.BundleId, namespacedName, serverProp.Name, definition), false);
+    }
+
+    /// <summary>
+    /// Shared tail of both registration paths (remote and stdio): registers into
+    /// <see cref="_bundleOwnedMcpServers"/> under <paramref name="namespacedName"/>, or logs and
+    /// rejects a duplicate declared across more than one plugin manifest.
+    /// </summary>
+    private bool TryAddOwnedServer(string bundleId, string namespacedName, string serverName, McpServerDefinition definition)
+    {
         if (_bundleOwnedMcpServers.TryAdd(namespacedName, definition))
             return true;
 
         _logger.LogWarning(
             "Bundle {BundleId}: duplicate MCP server name '{ServerName}' declared across " +
             "more than one plugin manifest; keeping the first",
-            bundleId, serverProp.Name);
+            bundleId, serverName);
         return false;
     }
 
-    // A bundle is untrusted, uploader-supplied content. A stdio server's Command/Args/Env come
-    // straight from the bundle's own manifest, and connecting to it launches that command as a
-    // real host process (via McpConnectionManager -> StdioClientTransport) — arbitrary command
-    // execution on the harness host, gated only by upload permission. Host-installed plugins
-    // (PluginLoader) are a different trust tier and are unaffected: only this bundle path rejects
-    // Stdio. Tracked follow-up to run a bundle's stdio server inside the existing process/Docker
-    // sandbox instead of rejecting it outright: #371.
-    private void LogStdioRejected(string bundleId, string serverName)
-    {
-        // "resolved to", not "declares": McpServerDefinitionBuilder.ParseType defaults an ABSENT or
-        // UNRECOGNIZED 'type' value to Stdio too (only "http"/"sse" are matched), so a bundle author
-        // who misspells a real remote transport lands here as well — this message must stay accurate
-        // for both cases, not assert an explicit stdio declaration that may not exist.
-        _logger.LogWarning(
-            "Bundle {BundleId}: MCP server '{ServerName}' resolved to a stdio (local-command) " +
-            "transport, which is not permitted for bundle-owned servers — rejected, not registered. " +
-            "The transport was either explicitly declared, or defaulted to stdio because 'type' was " +
-            "missing or unrecognized (only 'http'/'sse' are supported).",
-            bundleId, serverName);
-    }
+    /// <summary>
+    /// Whether a manifest-declared server name is safe to use as a structured-log field, a sandbox
+    /// <c>ToolName</c> (the egress preflight key and the attestation record — both new consumers this
+    /// PR adds), and a namespaced registry key segment. Bounded ASCII identifier characters only —
+    /// no control characters or newlines that could forge a plain-text log line, no length unbounded
+    /// by anything upstream.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately NOT <c>IPlanRunExecutor.IsWellFormedAgentId</c>,
+    /// though the two check the same shape (bounded length, ASCII-letter-or-digit-plus-separators):
+    /// that charset permits <c>:</c>, which is exactly the delimiter <c>namespacedName</c> below uses
+    /// to join <paramref name="serverName"/>'s bundle-scoped enclosing identifier to it — a server
+    /// name that itself contained <c>:</c> would let a bundle author forge a colliding namespaced
+    /// key. A future tightening of one identifier-safety rule (e.g. disallowing a leading
+    /// <c>.</c>) should be considered for the other too, but the charsets themselves may not
+    /// converge for this reason.
+    /// </remarks>
+    private static bool IsSafeServerNameIdentifier(string serverName) =>
+        serverName.Length is > 0 and <= 128
+        && serverName.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_' or '.');
 
     /// <summary>
     /// Registration-time pre-check against the SAME harness-wide allowlist a bundle-owned server's live

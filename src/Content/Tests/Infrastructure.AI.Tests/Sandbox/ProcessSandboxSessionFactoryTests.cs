@@ -141,6 +141,20 @@ public class ProcessSandboxSessionFactoryTests
     }
 
     [Fact]
+    public async Task StartSessionAsync_WorkspaceSeedRequested_RejectedBeforeSpawning()
+    {
+        // #371: this tier is not a containment boundary, so a request carrying caller-supplied content
+        // to seed the workspace (e.g. a bundle's staged files) must be refused outright — never silently
+        // downgraded from the Container tier that seeding actually requires.
+        var request = CreateRequest() with { WorkspaceSeedDirectory = Path.GetTempPath() };
+
+        var result = await _sut.StartSessionAsync(request, CancellationToken.None);
+
+        result.IsSuccess.Should().BeFalse();
+        result.Errors.Should().ContainSingle(e => e.Contains("container isolation", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
     public async Task StartSessionAsync_CommandNotAllowlisted_FailsWithoutSpawning()
     {
         var request = CreateRequest() with

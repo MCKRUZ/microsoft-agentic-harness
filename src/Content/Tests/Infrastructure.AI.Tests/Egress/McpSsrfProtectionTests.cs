@@ -68,6 +68,10 @@ public sealed class McpSsrfProtectionTests
         var rootServices = new ServiceCollection()
             .AddSingleton<IEgressAuditWriter>(new InMemoryEgressAuditWriter())
             .AddSingleton<ILogger<EgressPolicyDelegatingHandler>>(NullLogger<EgressPolicyDelegatingHandler>.Instance)
+            // McpConnectionManager also resolves IOptionsMonitor<AppConfig> eagerly at construction (the
+            // sandboxed-stdio path's container image comes from AppConfig.AI.BundleExecution.StdioMcpServers)
+            // — irrelevant to this host-configured-server test, but required for construction to succeed.
+            .AddSingleton<Microsoft.Extensions.Options.IOptionsMonitor<AppConfig>>(new TestConfig.StaticOptionsMonitor<AppConfig>(cfg))
             .BuildServiceProvider();
 
         return new McpConnectionManager(

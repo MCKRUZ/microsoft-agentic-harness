@@ -7,6 +7,7 @@ using Domain.Common.Config;
 using Domain.Common.Config.AI;
 using Domain.Common.Config.AI.BundleExecution;
 using Domain.Common.Config.AI.MCP;
+using Domain.Common.Config.AI.Sandbox;
 using FluentAssertions;
 using Infrastructure.AI.Agents;
 using Infrastructure.AI.Bundles;
@@ -161,11 +162,13 @@ public sealed class BundleStagingServiceTests : IDisposable
     // --- Bundle-owned MCP servers (issue #368) -------------------------------------------------------
 
     [Fact]
-    public async Task StageAsync_BundleWithStdioMcpServer_IsRejectedNotRegistered()
+    public async Task StageAsync_BundleWithDefaultedStdioMcpServer_IsRejectedNotRegistered()
     {
-        // A bundle is untrusted, uploader-supplied content. Registering its self-declared `command` as a
-        // live stdio server would let any bundle author run an arbitrary process on the harness host —
-        // staging must reject it, not register it under a namespaced key.
+        // No "type" property, so McpServerDefinitionBuilder.ParseType DEFAULTS this to stdio — the
+        // gate treats a defaulted stdio resolution differently from an EXPLICIT "type": "stdio"
+        // declaration (see StageAsync_ExplicitStdioServer_RegistersWhenEnabled below): only an explicit
+        // declaration can ever reach the sandboxed-registration path, so this must still be rejected via
+        // LogStdioRejected even with every stdio capability flag turned on.
         using var zip = ZipOf(
             ("AGENT.md", "---\nid: mcp-bundle\nname: MCP Bundle\n---\nx"),
             ("plugin.json", "{ \"name\": \"root\", \"version\": \"1.0.0\", \"mcpServers\": \"./mcp.json\" }"),
@@ -174,16 +177,177 @@ public sealed class BundleStagingServiceTests : IDisposable
         var bundleOwnedMcpServers = new BundleOwnedMcpServerRegistry();
         // AllowBundleDeclaredMcpServers must be ON here — otherwise the flag-off guard short-circuits
         // RegisterBundleMcpServers before mcp.json is even parsed, and this test would pass for that
-        // reason instead of exercising the stdio-transport rejection it names and documents.
-        var appConfig = AllowlistedAppConfig();
+        // reason instead of exercising the stdio-transport rejection it names and documents. StdioMcpServers
+        // is also fully enabled with a configured image, to prove the rejection is about the MISSING
+        // explicit declaration, not about either capability being off.
+        var appConfig = StdioEnabledAppConfig();
         var result = await CreateService(appConfig, bundleOwnedMcpServers).StageAsync(zip);
 
         result.IsSuccess.Should().BeTrue(string.Join("; ", result.Errors));
         var bundle = result.Value!;
         var namespacedName = $"{bundle.BundleId}:echo";
 
-        bundle.McpServerNames.Should().BeEmpty("a stdio server must be rejected, not registered");
+        bundle.McpServerNames.Should().BeEmpty("a defaulted (non-explicit) stdio server must be rejected, not registered");
         bundleOwnedMcpServers.TryGetValue(namespacedName, out _).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task StageAsync_ExplicitStdioServer_RegistersWhenEnabled()
+    {
+        using var zip = ZipOf(
+            ("AGENT.md", "---\nid: stdio-bundle\nname: Stdio Bundle\n---\nx"),
+            ("plugin.json", "{ \"name\": \"root\", \"version\": \"1.0.0\", \"mcpServers\": \"./mcp.json\" }"),
+            ("mcp.json", "{ \"mcpServers\": { \"echo\": { \"type\": \"stdio\", \"command\": \"npx\", \"args\": [\"echo-mcp\"] } } }"));
+
+        var bundleOwnedMcpServers = new BundleOwnedMcpServerRegistry();
+        var appConfig = StdioEnabledAppConfig();
+        var result = await CreateService(appConfig, bundleOwnedMcpServers).StageAsync(zip);
+
+        result.IsSuccess.Should().BeTrue(string.Join("; ", result.Errors));
+        var bundle = result.Value!;
+        var namespacedName = $"{bundle.BundleId}:echo";
+
+        bundle.McpServerNames.Should().ContainSingle().Which.Should().Be(namespacedName);
+        bundleOwnedMcpServers.TryGetValue(namespacedName, out var definition).Should().BeTrue();
+        definition!.Type.Should().Be(McpServerType.Stdio);
+        definition.Command.Should().Be("npx");
+        definition.SandboxSeedDirectory.Should().Be(bundle.StagedRootDirectory,
+            "the sandbox session needs the bundle's own staged files to seed the container workspace");
+    }
+
+    [Fact]
+    public async Task StageAsync_ExplicitStdioServer_RejectedWhenStdioFlagOff()
+    {
+        using var zip = ZipOf(
+            ("AGENT.md", "---\nid: stdio-off-bundle\nname: Stdio Off Bundle\n---\nx"),
+            ("plugin.json", "{ \"name\": \"root\", \"version\": \"1.0.0\", \"mcpServers\": \"./mcp.json\" }"),
+            ("mcp.json", "{ \"mcpServers\": { \"echo\": { \"type\": \"stdio\", \"command\": \"npx\" } } }"));
+
+        var bundleOwnedMcpServers = new BundleOwnedMcpServerRegistry();
+        // AllowBundleDeclaredMcpServers must be ON here so RegisterBundleMcpServers' own top-level gate
+        // (either capability admits the manifest) doesn't short-circuit before mcp.json is ever parsed —
+        // otherwise this test would pass for that reason instead of exercising StdioMcpServers.Enabled's
+        // OWN check inside TryRegisterStdioServer, which is what it names and documents.
+        var appConfig = StdioEnabledAppConfig(stdioServersEnabled: false);
+        appConfig.AI.BundleExecution.AllowBundleDeclaredMcpServers = true;
+        var result = await CreateService(appConfig, bundleOwnedMcpServers).StageAsync(zip);
+
+        result.IsSuccess.Should().BeTrue(string.Join("; ", result.Errors));
+        result.Value!.McpServerNames.Should().BeEmpty("the stdio capability is off by default even for an explicit declaration");
+    }
+
+    [Fact]
+    public async Task StageAsync_ExplicitStdioServer_RejectedWhenNoContainerImageConfigured()
+    {
+        using var zip = ZipOf(
+            ("AGENT.md", "---\nid: no-image-bundle\nname: No Image Bundle\n---\nx"),
+            ("plugin.json", "{ \"name\": \"root\", \"version\": \"1.0.0\", \"mcpServers\": \"./mcp.json\" }"),
+            ("mcp.json", "{ \"mcpServers\": { \"echo\": { \"type\": \"stdio\", \"command\": \"npx\" } } }"));
+
+        var bundleOwnedMcpServers = new BundleOwnedMcpServerRegistry();
+        var appConfig = StdioEnabledAppConfig(containerImage: string.Empty);
+        var result = await CreateService(appConfig, bundleOwnedMcpServers).StageAsync(zip);
+
+        result.IsSuccess.Should().BeTrue(string.Join("; ", result.Errors));
+        result.Value!.McpServerNames.Should().BeEmpty(
+            "an unconfigured container image means the capability is inert even when the flag is on");
+    }
+
+    [Fact]
+    public async Task StageAsync_ExplicitStdioServer_RejectedWhenSandboxDisabled()
+    {
+        using var zip = ZipOf(
+            ("AGENT.md", "---\nid: sandbox-off-bundle\nname: Sandbox Off Bundle\n---\nx"),
+            ("plugin.json", "{ \"name\": \"root\", \"version\": \"1.0.0\", \"mcpServers\": \"./mcp.json\" }"),
+            ("mcp.json", "{ \"mcpServers\": { \"echo\": { \"type\": \"stdio\", \"command\": \"npx\" } } }"));
+
+        var bundleOwnedMcpServers = new BundleOwnedMcpServerRegistry();
+        var appConfig = StdioEnabledAppConfig(sandboxEnabled: false);
+        var result = await CreateService(appConfig, bundleOwnedMcpServers).StageAsync(zip);
+
+        result.IsSuccess.Should().BeTrue(string.Join("; ", result.Errors));
+        result.Value!.McpServerNames.Should().BeEmpty(
+            "registering a server that could never start would be pointless");
+    }
+
+    [Fact]
+    public async Task StageAsync_StdioServerWithEmptyCommand_Rejected()
+    {
+        using var zip = ZipOf(
+            ("AGENT.md", "---\nid: empty-command-bundle\nname: Empty Command Bundle\n---\nx"),
+            ("plugin.json", "{ \"name\": \"root\", \"version\": \"1.0.0\", \"mcpServers\": \"./mcp.json\" }"),
+            ("mcp.json", "{ \"mcpServers\": { \"echo\": { \"type\": \"stdio\" } } }"));
+
+        var bundleOwnedMcpServers = new BundleOwnedMcpServerRegistry();
+        var appConfig = StdioEnabledAppConfig();
+        var result = await CreateService(appConfig, bundleOwnedMcpServers).StageAsync(zip);
+
+        result.IsSuccess.Should().BeTrue(string.Join("; ", result.Errors));
+        result.Value!.McpServerNames.Should().BeEmpty(
+            "McpServerDefinitionBuilder does not itself require a command for stdio; this gate must");
+    }
+
+    [Fact]
+    public async Task StageAsync_UnrecognizedTypeValue_StillRejected()
+    {
+        // A typo'd remote-transport name ("htp") must not silently land on a sandboxed process launch —
+        // only an explicit, exact "stdio" counts as an intentional local-command declaration.
+        using var zip = ZipOf(
+            ("AGENT.md", "---\nid: typo-bundle\nname: Typo Bundle\n---\nx"),
+            ("plugin.json", "{ \"name\": \"root\", \"version\": \"1.0.0\", \"mcpServers\": \"./mcp.json\" }"),
+            ("mcp.json", "{ \"mcpServers\": { \"echo\": { \"type\": \"htp\", \"command\": \"npx\" } } }"));
+
+        var bundleOwnedMcpServers = new BundleOwnedMcpServerRegistry();
+        var appConfig = StdioEnabledAppConfig();
+        var result = await CreateService(appConfig, bundleOwnedMcpServers).StageAsync(zip);
+
+        result.IsSuccess.Should().BeTrue(string.Join("; ", result.Errors));
+        result.Value!.McpServerNames.Should().BeEmpty("an unrecognized type value must never be treated as an explicit stdio request");
+    }
+
+    [Fact]
+    public async Task StageAsync_StdioServersBeyondCap_Rejected()
+    {
+        using var zip = ZipOf(
+            ("AGENT.md", "---\nid: capped-bundle\nname: Capped Bundle\n---\nx"),
+            ("plugin.json", "{ \"name\": \"root\", \"version\": \"1.0.0\", \"mcpServers\": \"./mcp.json\" }"),
+            ("mcp.json", "{ \"mcpServers\": { " +
+                "\"first\": { \"type\": \"stdio\", \"command\": \"npx\" }, " +
+                "\"second\": { \"type\": \"stdio\", \"command\": \"npx\" } } }"));
+
+        var bundleOwnedMcpServers = new BundleOwnedMcpServerRegistry();
+        var appConfig = StdioEnabledAppConfig(maxServersPerBundle: 1);
+        var result = await CreateService(appConfig, bundleOwnedMcpServers).StageAsync(zip);
+
+        result.IsSuccess.Should().BeTrue(string.Join("; ", result.Errors));
+        result.Value!.McpServerNames.Should().ContainSingle(
+            "the per-bundle cap of 1 must admit the first declared server and reject the second");
+    }
+
+    [Fact]
+    public async Task StageAsync_RejectedStdioAttemptFollowedByValidOne_ValidOneStillRegisters()
+    {
+        // A stdio server rejected for a reason OTHER than the cap (here: empty command) must not
+        // itself consume a cap slot — only a server that actually registers may count against
+        // MaxServersPerBundle. With the cap set to 1, if a rejected attempt wrongly counted, this
+        // bundle's genuinely valid second server would be refused too, even though zero servers
+        // are actually registered yet.
+        using var zip = ZipOf(
+            ("AGENT.md", "---\nid: rejected-then-valid-bundle\nname: Rejected Then Valid Bundle\n---\nx"),
+            ("plugin.json", "{ \"name\": \"root\", \"version\": \"1.0.0\", \"mcpServers\": \"./mcp.json\" }"),
+            ("mcp.json", "{ \"mcpServers\": { " +
+                "\"first\": { \"type\": \"stdio\" }, " +
+                "\"second\": { \"type\": \"stdio\", \"command\": \"npx\" } } }"));
+
+        var bundleOwnedMcpServers = new BundleOwnedMcpServerRegistry();
+        var appConfig = StdioEnabledAppConfig(maxServersPerBundle: 1);
+        var result = await CreateService(appConfig, bundleOwnedMcpServers).StageAsync(zip);
+
+        result.IsSuccess.Should().BeTrue(string.Join("; ", result.Errors));
+        var namespacedName = $"{result.Value!.BundleId}:second";
+        result.Value!.McpServerNames.Should().ContainSingle().Which.Should().Be(namespacedName,
+            "the first server's empty-command rejection must not consume the per-bundle cap slot " +
+            "the second, valid server needs");
     }
 
     [Fact]
@@ -229,6 +393,33 @@ public sealed class BundleStagingServiceTests : IDisposable
             "an unparsable URL must be rejected at registration time, not silently registered");
         var namespacedName = $"{result.Value.BundleId}:remote";
         bundleOwnedMcpServers.TryGetValue(namespacedName, out _).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task StageAsync_RemoteServer_RejectedWhenOnlyStdioFlagOn()
+    {
+        // Regression: RegisterBundleMcpServers' own top-level gate now opens mcp.json when EITHER
+        // AllowBundleDeclaredMcpServers OR StdioMcpServers.Enabled is on (#371, so a bundle declaring
+        // only a stdio server doesn't need the remote flag). TryBuildAndRegisterOneServer's remote
+        // branch must therefore carry its OWN AllowBundleDeclaredMcpServers check — without it, opting
+        // into stdio alone would silently also open the door to remote servers.
+        using var zip = ZipOf(
+            ("AGENT.md", "---\nid: remote-via-stdio-flag-bundle\nname: X\n---\nx"),
+            ("plugin.json", "{ \"name\": \"root\", \"version\": \"1.0.0\", \"mcpServers\": \"./mcp.json\" }"),
+            ("mcp.json", "{ \"mcpServers\": { \"remote\": { \"type\": \"http\", \"url\": \"https://tools.example.com/mcp\" } } }"));
+
+        var bundleOwnedMcpServers = new BundleOwnedMcpServerRegistry();
+        var appConfig = StdioEnabledAppConfig();
+        appConfig.AI.Egress = new EgressConfig
+        {
+            DefaultAllowlist = [new EgressAllowlistConfigEntry { Host = "tools.example.com", Schemes = ["https"], Ports = [443] }],
+        };
+        var result = await CreateService(appConfig, bundleOwnedMcpServers).StageAsync(zip);
+
+        result.IsSuccess.Should().BeTrue(string.Join("; ", result.Errors));
+        result.Value!.McpServerNames.Should().BeEmpty(
+            "AllowBundleDeclaredMcpServers stayed off in this config — a remote server must not register " +
+            "just because the unrelated stdio capability happened to be on");
     }
 
     [Fact]
@@ -498,6 +689,36 @@ public sealed class BundleStagingServiceTests : IDisposable
                     })
                     .ToList(),
             },
+        },
+    };
+
+    /// <summary>
+    /// An <see cref="AppConfig"/> fully opted into bundle-owned <strong>stdio</strong> MCP servers:
+    /// <see cref="BundleStdioMcpServersConfig.Enabled"/> on, a container image configured, and
+    /// (via the class default) the sandbox subsystem enabled — the three preconditions
+    /// <c>TryRegisterStdioServer</c> checks beyond the explicit-declaration and non-empty-command gates
+    /// that live in the manifest content itself. Each parameter defaults to the "capability fully on"
+    /// value so a test only needs to override the ONE precondition it means to violate.
+    /// </summary>
+    private AppConfig StdioEnabledAppConfig(
+        bool stdioServersEnabled = true,
+        string containerImage = "mcr.microsoft.com/dotnet/runtime:10.0",
+        int maxServersPerBundle = 2,
+        bool sandboxEnabled = true) => new()
+    {
+        AI = new AIConfig
+        {
+            BundleExecution = new BundleExecutionConfig
+            {
+                TempRoot = _stagingRoot,
+                StdioMcpServers = new BundleStdioMcpServersConfig
+                {
+                    Enabled = stdioServersEnabled,
+                    ContainerImage = containerImage,
+                    MaxServersPerBundle = maxServersPerBundle,
+                },
+            },
+            SandboxCapabilities = new SandboxConfig { Enabled = sandboxEnabled },
         },
     };
 

@@ -80,13 +80,25 @@ public sealed class DockerContainerLaunchPreparer(
         dockerClient.Containers.WaitContainerAsync(containerId, ct);
 
     /// <summary>
-    /// Resolves the container image for a tool: a per-tool <c>ContainerImage</c> override from
-    /// <see cref="SandboxExecutionOptions.ToolOverrides"/> when one is configured (validated
-    /// against <see cref="ContainerSandboxOptions.AllowedImagePrefixes"/>), otherwise the
-    /// configured default image.
+    /// Resolves the container image to run: <paramref name="requestImage"/> when the caller
+    /// specified one (e.g. <see cref="Domain.AI.Sandbox.SandboxSessionRequest.ContainerImage"/> —
+    /// used for a bundle-owned stdio MCP server, whose registered name contains a fresh GUID per
+    /// staging and so can never match a <paramref name="toolName"/>-keyed
+    /// <see cref="SandboxExecutionOptions.ToolOverrides"/> entry), else a per-tool
+    /// <c>ContainerImage</c> override from <see cref="SandboxExecutionOptions.ToolOverrides"/> when
+    /// one is configured, else the configured default image. Every non-default image — caller-
+    /// specified or tool-override — is validated against
+    /// <see cref="ContainerSandboxOptions.AllowedImagePrefixes"/>: a caller can choose among images
+    /// the operator has already permitted, never escape that allowlist.
     /// </summary>
-    public string ResolveImage(string toolName)
+    public string ResolveImage(string toolName, string? requestImage = null)
     {
+        if (!string.IsNullOrEmpty(requestImage))
+        {
+            ValidateImageAllowed(requestImage);
+            return requestImage;
+        }
+
         var currentOptions = options.CurrentValue;
 
         if (currentOptions.ToolOverrides.TryGetValue(toolName, out var toolOverride)
@@ -163,7 +175,8 @@ public sealed class DockerContainerLaunchPreparer(
         string workspaceDir,
         string image,
         bool interactive = false,
-        IReadOnlyDictionary<string, string>? environmentVariables = null)
+        IReadOnlyDictionary<string, string>? environmentVariables = null,
+        string? workingDirectory = null)
     {
         var hasNetworkAccess = permissionProfile.RequiredCapabilities.HasFlag(ToolCapability.NetworkAccess);
 
@@ -179,6 +192,7 @@ public sealed class DockerContainerLaunchPreparer(
         {
             Image = image,
             Cmd = cmd,
+            WorkingDir = workingDirectory,
             Env = environmentVariables is { Count: > 0 }
                 ? environmentVariables.Select(kvp => $"{kvp.Key}={kvp.Value}").ToList()
                 : null,
@@ -202,6 +216,18 @@ public sealed class DockerContainerLaunchPreparer(
                 Binds = [permissionProfile.RequiredCapabilities.HasFlag(ToolCapability.FileWrite)
                     ? $"{workspaceDir}:/workspace:rw"
                     : $"{workspaceDir}:/workspace:ro"],
+                // ReadonlyRootfs plus a possibly read-only /workspace bind would otherwise leave NO
+                // writable path anywhere in the container. Most real programs (npm/pip caches, lock
+                // files, a temp file mid-write) touch /tmp unconditionally regardless of whether
+                // ToolCapability.FileWrite was granted, so this tmpfs is unconditional too — sized
+                // off the same ResourceLimits.DiskQuotaBytes the workspace bind is implicitly bounded
+                // by, capped by the tmpfs's own noexec/nosuid mount options. Security-review note:
+                // this means ToolCapability.FileWrite governs writes to the /workspace bind
+                // specifically, not "can this container write anything at all" — every Docker-tier
+                // container, regardless of that capability, gets 100 MB of ephemeral, non-executable,
+                // per-container scratch space that is destroyed with the container and never shared
+                // with the host or another container.
+                Tmpfs = new Dictionary<string, string> { ["/tmp"] = $"rw,noexec,nosuid,size={limits.DiskQuotaBytes}" },
                 PidsLimit = limits.MaxSubprocesses,
                 SecurityOpt = ["no-new-privileges:true"],
                 CapDrop = ["ALL"]
@@ -209,13 +235,54 @@ public sealed class DockerContainerLaunchPreparer(
         };
     }
 
+    /// <summary>
+    /// Shared parent directory every Docker-tier workspace nests under, one level below
+    /// <see cref="Path.GetTempPath"/> (which is typically world-listable, e.g. mode 1777 on Linux).
+    /// </summary>
+    /// <remarks>
+    /// A seeded workspace's own directory is deliberately other-readable so the container's fixed
+    /// unprivileged UID can traverse it (see <see cref="SandboxWorkspace.SetContainerAccessiblePermissions"/>),
+    /// but that says nothing about whether another local account can find its unguessable GUID name in
+    /// the first place. This parent is other-EXECUTABLE (traverse) but not other-READABLE (list), so a
+    /// local account without the exact GUID cannot enumerate live bundle-owned workspace names — only
+    /// walk into one it already knows.
+    /// </remarks>
+    private const string WorkspaceParentDirName = "agentic-harness-sandbox";
+
     /// <summary>Creates a fresh, restrictively-permissioned temp directory bind-mounted into the container as <c>/workspace</c>.</summary>
     public string CreateWorkspace()
     {
-        var workspaceDir = Path.Combine(Path.GetTempPath(), $"docker-sandbox-{Guid.NewGuid():N}");
+        var parent = Path.Combine(Path.GetTempPath(), WorkspaceParentDirName);
+        Directory.CreateDirectory(parent);
+        SandboxWorkspace.SetTraverseOnlyPermissions(parent);
+
+        var workspaceDir = Path.Combine(parent, $"docker-sandbox-{Guid.NewGuid():N}");
         Directory.CreateDirectory(workspaceDir);
         SandboxWorkspace.SetRestrictivePermissions(workspaceDir);
         return workspaceDir;
+    }
+
+    /// <summary>
+    /// Seeds an already-created <paramref name="workspaceDir"/> from <paramref name="seedDirectory"/>
+    /// and widens its permissions so the container's own fixed unprivileged UID can read what was
+    /// just seeded into it.
+    /// </summary>
+    /// <remarks>
+    /// Owned here — one call, through the same class that already owns <see cref="CreateWorkspace"/>
+    /// and <see cref="CleanupWorkspace"/> — rather than left as a two-step "seed, then widen, in that
+    /// exact order" ritual for each call site to reimplement correctly. A prior version of #371 did
+    /// leave it as a bare two-line sequence at the one call site that needed it; caught in review as
+    /// a structural risk (an easy order-of-operations mistake for a future second call site to make),
+    /// not a concrete bug in the one call site that existed. The widening must stay scoped to exactly
+    /// a workspace this method actually seeded — never applied unconditionally to every Docker-tier
+    /// workspace regardless of whether it holds seeded content, which a still-earlier version did and
+    /// /code-review caught as broader host-filesystem exposure than the problem it solved (see
+    /// <see cref="SandboxWorkspace.SetContainerAccessiblePermissions"/>'s own remarks).
+    /// </remarks>
+    public void SeedWorkspace(string workspaceDir, string seedDirectory)
+    {
+        SandboxWorkspace.SeedFrom(seedDirectory, workspaceDir);
+        SandboxWorkspace.SetContainerAccessiblePermissions(workspaceDir);
     }
 
     /// <summary>Best-effort recursive delete of a workspace created by <see cref="CreateWorkspace"/>. Never throws.</summary>

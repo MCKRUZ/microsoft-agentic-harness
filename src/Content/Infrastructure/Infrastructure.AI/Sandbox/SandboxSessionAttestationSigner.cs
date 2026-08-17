@@ -26,18 +26,24 @@ public sealed class SandboxSessionAttestationSigner(IAttestationService attestat
 
     /// <summary>Signs a failure attestation for <paramref name="reason"/> and wraps it as a failure <see cref="Result{T}"/>.</summary>
     public async Task<Result<ISandboxSession>> RejectAsync(
-        SandboxSessionRequest request, string reason, CancellationToken ct, string? egressDigest = null)
+        SandboxSessionRequest request, string reason, CancellationToken ct, string? egressDigest = null, string? resolvedImage = null)
     {
-        await SignFailureAsync(request, reason, egressDigest, ct);
+        await SignFailureAsync(request, reason, egressDigest, ct, resolvedImage);
         return Result<ISandboxSession>.Fail(reason);
     }
 
-    /// <summary>Signs a failure attestation only, for a caller that builds its own <see cref="Result{T}"/> (e.g. to preserve exception context).</summary>
+    /// <summary>
+    /// Signs a failure attestation only, for a caller that builds its own <see cref="Result{T}"/>
+    /// (e.g. to preserve exception context). <paramref name="resolvedImage"/> is the image
+    /// <c>DockerContainerLaunchPreparer.ResolveImage</c> actually picked, when a caller has already
+    /// reached that step by the time of failure — see <see cref="DescribeSessionInput"/>'s remarks
+    /// for why this must win over <see cref="SandboxSessionRequest.ContainerImage"/>.
+    /// </summary>
     public Task SignFailureAsync(
-        SandboxSessionRequest request, string failureReason, string? egressDigest, CancellationToken ct) =>
+        SandboxSessionRequest request, string failureReason, string? egressDigest, CancellationToken ct, string? resolvedImage = null) =>
         attestationService.SignAsync(
             Domain.AI.Attestation.AttestationRequest.Failure(
-                request.ToolName, DescribeSessionInput(request), failureReason, egressDigest: egressDigest),
+                request.ToolName, DescribeSessionInput(request, resolvedImage), failureReason, egressDigest: egressDigest),
             ct);
 
     /// <summary>
@@ -58,14 +64,14 @@ public sealed class SandboxSessionAttestationSigner(IAttestationService attestat
     /// caller's token — the same reasoning <c>DockerContainerLaunchPreparer.RemoveContainerSafeAsync</c>
     /// already applies to a different post-hoc cleanup call.
     /// </remarks>
-    public async Task SignStartAsync(SandboxSessionRequest request, string? egressDigest)
+    public async Task SignStartAsync(SandboxSessionRequest request, string? egressDigest, string? resolvedImage = null)
     {
         // Must await inside this scope, not just return the Task, or `using` would dispose the
         // CancellationTokenSource — and disarm its timeout — before the write actually completes.
         using var cts = new CancellationTokenSource(StartAttestationWriteTimeout);
         await attestationService.SignAsync(
             Domain.AI.Attestation.AttestationRequest.Success(
-                request.ToolName, DescribeSessionInput(request), output: "session-started", egressDigest),
+                request.ToolName, DescribeSessionInput(request, resolvedImage), output: "session-started", egressDigest),
             cts.Token);
     }
 
@@ -79,12 +85,35 @@ public sealed class SandboxSessionAttestationSigner(IAttestationService attestat
     /// but values are not — a value may itself be a secret, and should not be persisted verbatim
     /// into an audit record.
     /// </summary>
-    private static string DescribeSessionInput(SandboxSessionRequest request) => JsonSerializer.Serialize(new
+    /// <remarks>
+    /// <c>image</c> and <c>seeded</c> (#371) are both new inputs that materially determine what
+    /// actually ran a container without changing <c>command</c>/<c>args</c>/<c>envNames</c> at all
+    /// — two sessions with identical logged command/args/env-names but a different runtime image,
+    /// or one seeded with a bundle's own files and one started empty, would otherwise produce
+    /// byte-identical attested input. <c>seeded</c> is recorded as a bool, not the raw
+    /// <see cref="SandboxSessionRequest.WorkspaceSeedDirectory"/> path, so no host path lands in
+    /// the audit store — consistent with the env-values-excluded posture above.
+    /// <para>
+    /// <paramref name="resolvedImage"/>, not <see cref="SandboxSessionRequest.ContainerImage"/>,
+    /// is what <c>image</c> records whenever a caller has one to give — a first-party tool never
+    /// populates <see cref="SandboxSessionRequest.ContainerImage"/> (its image comes from
+    /// <c>DockerContainerLaunchPreparer.ResolveImage</c>'s own <c>SandboxExecutionOptions.ToolOverrides</c>
+    /// lookup, not a request-level override), so reading the raw request field alone would attest
+    /// <c>image: null</c> for every first-party session regardless of which image genuinely ran —
+    /// an operator could repoint a tool's override to a different image between two runs and the
+    /// attested input would be silently identical either way. Callers that have not yet reached
+    /// image resolution when a failure occurs (e.g. a pre-flight rejection) correctly omit this
+    /// argument; <c>DescribeSessionInput</c> then falls back to whatever the request itself carried.
+    /// </para>
+    /// </remarks>
+    private static string DescribeSessionInput(SandboxSessionRequest request, string? resolvedImage = null) => JsonSerializer.Serialize(new
     {
         command = request.Command ?? request.ToolName,
         args = request.ArgumentList ?? [],
         envNames = request.EnvironmentVariables?.Keys.Order().ToArray() ?? [],
         isolation = request.PermissionProfile.MinimumIsolation.ToString(),
-        capabilities = request.PermissionProfile.RequiredCapabilities.ToString()
+        capabilities = request.PermissionProfile.RequiredCapabilities.ToString(),
+        image = resolvedImage ?? request.ContainerImage,
+        seeded = request.WorkspaceSeedDirectory is not null
     });
 }

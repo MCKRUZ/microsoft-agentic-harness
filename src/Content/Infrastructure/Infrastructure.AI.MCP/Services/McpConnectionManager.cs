@@ -7,12 +7,17 @@ using Application.AI.Common.Interfaces.Sandbox;
 using Application.AI.Common.Services.Sandbox;
 using Domain.AI.Sandbox;
 using Domain.Common;
+using Domain.Common.Config;
+using Domain.Common.Config.AI.BundleExecution;
 using Domain.Common.Config.AI.MCP;
+using Domain.Common.Helpers;
 using Infrastructure.AI.Egress;
 using Infrastructure.AI.Identity;
 using Infrastructure.AI.MCP.Egress;
+using Infrastructure.AI.Skills;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using ModelContextProtocol.Client;
 
 namespace Infrastructure.AI.MCP.Services;
@@ -42,6 +47,7 @@ public sealed class McpConnectionManager : IAsyncDisposable
     private readonly IEgressAuditWriter _egressAuditWriter;
     private readonly ILogger<EgressPolicyDelegatingHandler> _egressHandlerLogger;
     private readonly TimeProvider _timeProvider;
+    private readonly IOptionsMonitor<AppConfig> _appConfig;
 
     // A single flat cache keyed by bare serverName, shared across BOTH _config and _bundleOwnedServers —
     // safe today because the two namespacing schemes never collide (host names are plain or
@@ -63,6 +69,15 @@ public sealed class McpConnectionManager : IAsyncDisposable
 
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _connectionLocks = new();
     private bool _disposed;
+
+    /// <summary>
+    /// Live bundle-owned sandboxed stdio sessions across the whole host, bounded by
+    /// <see cref="BundleStdioMcpServersConfig.MaxConcurrentSessions"/> — see the security-review
+    /// finding recorded on that property. Incremented before <see cref="ISandboxSessionFactory.StartSessionAsync"/>
+    /// is ever called; decremented either immediately on a failed start or via
+    /// <see cref="ScopedSandboxSession"/>'s disposal callback once a session actually ends.
+    /// </summary>
+    private int _liveSandboxedStdioSessions;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="McpConnectionManager"/> class.
@@ -122,6 +137,7 @@ public sealed class McpConnectionManager : IAsyncDisposable
         _egressAuditWriter = rootServices.GetRequiredService<IEgressAuditWriter>();
         _egressHandlerLogger = rootServices.GetRequiredService<ILogger<EgressPolicyDelegatingHandler>>();
         _timeProvider = rootServices.GetService<TimeProvider>() ?? TimeProvider.System;
+        _appConfig = rootServices.GetRequiredService<IOptionsMonitor<AppConfig>>();
     }
 
     /// <summary>
@@ -424,10 +440,10 @@ public sealed class McpConnectionManager : IAsyncDisposable
         return definition.Type switch
         {
             // A bundle-owned stdio server runs inside the sandbox, never directly on the host —
-            // see #371 and BundleStagingService.LogStdioRejected for the RCE rationale. This arm
-            // is currently unreachable in production: staging still rejects a bundle-declared
-            // stdio server outright, so isBundleOwned is never true here yet. The registration
-            // gate that makes it reachable is #371's follow-up PR, not this one.
+            // see #371 and BundleStagingService.LogStdioRejected for the RCE rationale. Reachable
+            // only when an operator has both opted into AppConfig.AI.BundleExecution.StdioMcpServers
+            // and configured a container image; BundleStagingService.TryBuildAndRegisterOneServer
+            // is the gate that decides whether isBundleOwned is ever true here for a stdio server.
             McpServerType.Stdio when isBundleOwned => new SandboxedStdioClientTransport(
                 serverName,
                 ct => StartSandboxedStdioSessionAsync(serverName, definition, ct),
@@ -458,11 +474,19 @@ public sealed class McpConnectionManager : IAsyncDisposable
     /// resolution, not the same one.
     /// </summary>
     /// <remarks>
-    /// Container isolation only, for now: the harness has no per-bundle Process-tier allowlist
-    /// concept yet (that path is only safe when an operator has explicitly trusted a specific
-    /// command — see the remarks on <c>ProcessSandboxSessionFactory</c>), and building that
-    /// policy surface belongs with the registration gate that makes this arm reachable at all,
-    /// not with the transport plumbing here. Resource limits use sandbox defaults.
+    /// Container isolation only: the harness has no per-bundle Process-tier allowlist concept, and
+    /// <c>ProcessSandboxSessionFactory</c> refuses a request that carries
+    /// <see cref="SandboxSessionRequest.WorkspaceSeedDirectory"/> outright, so this path could never
+    /// downgrade to that tier even by misconfiguration. Resource limits use sandbox defaults.
+    /// <para>
+    /// The container image comes from <c>AppConfig.AI.BundleExecution.StdioMcpServers.ContainerImage</c>
+    /// — an operator-set default shared by every bundle-owned stdio server on this host, not a
+    /// per-bundle choice: a bundle-owned name contains a fresh GUID per staging, so the sandbox's
+    /// existing per-tool image override lookup can never match one. The workspace is seeded from
+    /// <see cref="McpServerDefinition.SandboxSeedDirectory"/> — the bundle's own staged directory,
+    /// set only by <c>BundleStagingService</c> at registration — so the server's own files are
+    /// present when its process starts.
+    /// </para>
     /// <para>
     /// The permission profile is resolved through <see cref="ToolPermissionProfileResolver"/> —
     /// not built as an inline literal — so this path consults the same override registry
@@ -498,13 +522,35 @@ public sealed class McpConnectionManager : IAsyncDisposable
     private async Task<Result<ISandboxSession>> StartSandboxedStdioSessionAsync(
         string serverName, McpServerDefinition definition, CancellationToken cancellationToken)
     {
-        var scope = _scopeFactory.CreateAsyncScope();
+        // Claimed before anything else — cheapest possible check, and it must bracket every failure
+        // path below (a resolver throwing, the containment check rejecting, the factory itself
+        // failing), not just the success path, or a slot leaks. ownershipTransferred below (already
+        // tracking whether the DI scope's lifetime transferred to the returned session) transfers
+        // this slot's ownership at the exact same point, so one flag does double duty rather than
+        // needing a second.
+        var maxConcurrentSessions = _appConfig.CurrentValue.AI.BundleExecution.StdioMcpServers.MaxConcurrentSessions;
+        if (Interlocked.Increment(ref _liveSandboxedStdioSessions) > maxConcurrentSessions)
+        {
+            Interlocked.Decrement(ref _liveSandboxedStdioSessions);
+            return Result<ISandboxSession>.Fail(
+                $"Host-wide bundle stdio sandbox session cap ({maxConcurrentSessions}) reached; refusing to start another.");
+        }
+
+        // Nullable, and assigned only once CreateAsyncScope() itself succeeds — that call is not
+        // guaranteed exception-free (e.g. an already-disposed root provider during host shutdown),
+        // and it sat outside this method's try/finally in an earlier draft, so a throw there
+        // leaked the slot claimed above for the rest of the process's life. Declaring it here and
+        // assigning inside the try means the finally below can tell "never created" (nothing to
+        // dispose) apart from "created but not yet transferred" (must dispose) via a single null
+        // check, without a second try/finally layer.
+        AsyncServiceScope? scope = null;
         var ownershipTransferred = false;
         try
         {
-            var sessionFactory = scope.ServiceProvider
+            scope = _scopeFactory.CreateAsyncScope();
+            var sessionFactory = scope.Value.ServiceProvider
                 .GetRequiredKeyedService<ISandboxSessionFactory>(SandboxIsolationLevel.Container);
-            var profileResolver = scope.ServiceProvider.GetRequiredService<ToolPermissionProfileResolver>();
+            var profileResolver = scope.Value.ServiceProvider.GetRequiredService<ToolPermissionProfileResolver>();
 
             var resolvedProfile = profileResolver.Resolve(serverName);
             var permissionProfile = resolvedProfile with
@@ -513,6 +559,18 @@ public sealed class McpConnectionManager : IAsyncDisposable
                     (int)resolvedProfile.MinimumIsolation, (int)SandboxIsolationLevel.Container)
             };
 
+            if (definition.SandboxSeedDirectory is { } seedDirectory && !IsWithinConfiguredStagingRoot(seedDirectory))
+            {
+                // A structural containment check, not just a convention: today's ONLY writer of
+                // SandboxSeedDirectory (BundleStagingService) only ever sets it to the bundle's own
+                // staged root, so this never fires in production. It exists so a future caller of
+                // this field cannot turn "seed a sandbox workspace" into "copy an arbitrary host
+                // directory into an untrusted, bundle-launched container" without this check also
+                // having to be deliberately bypassed, not merely never written in the first place.
+                return Result<ISandboxSession>.Fail(
+                    "Sandbox workspace seed directory is outside the configured bundle staging root — refusing to seed.");
+            }
+
             var request = new SandboxSessionRequest
             {
                 ToolName = serverName,
@@ -520,24 +578,53 @@ public sealed class McpConnectionManager : IAsyncDisposable
                 PermissionProfile = permissionProfile,
                 Command = definition.Command,
                 ArgumentList = definition.Args,
-                EnvironmentVariables = definition.Env.Count > 0 ? definition.Env : null
+                EnvironmentVariables = definition.Env.Count > 0 ? definition.Env : null,
+                ContainerImage = _appConfig.CurrentValue.AI.BundleExecution.StdioMcpServers.ContainerImage is { Length: > 0 } image
+                    ? image
+                    : null,
+                WorkspaceSeedDirectory = definition.SandboxSeedDirectory
             };
 
             var result = await sessionFactory.StartSessionAsync(request, cancellationToken);
             if (!result.IsSuccess)
                 return result;
 
-            // From here on, ScopedSandboxSession owns the scope's lifetime — its own DisposeAsync
-            // releases it once the session ends.
+            // From here on, ownership of both the scope AND this session's claimed concurrency slot
+            // transfers to the returned session — two composed decorators, each responsible for
+            // releasing exactly one of them on DisposeAsync, not one type juggling both.
             ownershipTransferred = true;
-            return Result<ISandboxSession>.Success(new ScopedSandboxSession(result.Value!, scope));
+            var scopedSession = new ScopedSandboxSession(result.Value!, scope.Value);
+            return Result<ISandboxSession>.Success(new SlotReleasingSandboxSession(
+                scopedSession, releaseSlot: () => Interlocked.Decrement(ref _liveSandboxedStdioSessions)));
         }
         finally
         {
             if (!ownershipTransferred)
-                await scope.DisposeAsync();
+            {
+                Interlocked.Decrement(ref _liveSandboxedStdioSessions);
+                if (scope is { } createdScope)
+                    await createdScope.DisposeAsync();
+            }
         }
     }
+
+    /// <summary>
+    /// Whether <paramref name="seedDirectory"/> resolves under the SAME bundle staging root
+    /// <see cref="SkillContentRoots.BundleStaging"/> resolves — the only tree a sandbox workspace may
+    /// ever be seeded from. Deliberately re-derives that resolution here rather than trusting the
+    /// caller: see the containment-check remarks at this method's one call site.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="SkillContentRoots.BundleStaging"/> already contains the "configured <c>TempRoot</c>,
+    /// or the system-temp fallback" branch internally — the ONE place that decision is made, per that
+    /// class's own doc comment — so this method must not (and no longer does) re-derive that branch a
+    /// second time itself; a caller re-deriving it is exactly the drift risk the class's own doc warns
+    /// about. A single containment check against one target uses <see cref="PathScope.IsSameOrUnder"/>,
+    /// which normalizes both sides internally, rather than the <c>*Normalized</c> overload meant for
+    /// comparing many targets against one already-normalized base.
+    /// </remarks>
+    private bool IsWithinConfiguredStagingRoot(string seedDirectory) =>
+        PathScope.IsSameOrUnder(seedDirectory, SkillContentRoots.BundleStaging(_appConfig.CurrentValue));
 
     private HttpClientTransport CreateHttpTransport(string serverName, McpServerDefinition definition, bool isBundleOwned)
     {

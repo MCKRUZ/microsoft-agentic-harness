@@ -164,4 +164,48 @@ public sealed class McpServerDefinitionBuilderTests
         result.IsSuccess.Should().BeTrue(string.Join("; ", result.Errors));
         result.Value!.Type.Should().Be(McpServerType.Stdio);
     }
+
+    // --- IsExplicitType (#371, /code-review finding: shared with ParseType so a bundle-owned
+    // registration gate that needs "explicit vs. defaulted" cannot independently drift on the rule) ---
+
+    [Theory]
+    [InlineData("stdio")]
+    [InlineData("STDIO")]
+    [InlineData("StDiO")]
+    public void IsExplicitType_ExplicitStdioStringAnyCase_ReturnsTrue(string typeValue)
+    {
+        var element = Parse($$"""{ "type": "{{typeValue}}", "command": "npx" }""");
+
+        McpServerDefinitionBuilder.IsExplicitType(element, McpServerType.Stdio).Should().BeTrue();
+    }
+
+    [Fact]
+    public void IsExplicitType_AbsentTypeProperty_ReturnsFalseForStdio()
+    {
+        // The whole point of this method: an ABSENT type defaults to Stdio via ParseType, but that is
+        // not an explicit declaration — the two must never be conflated.
+        var element = Parse("""{ "command": "npx" }""");
+
+        McpServerDefinitionBuilder.IsExplicitType(element, McpServerType.Stdio).Should().BeFalse();
+    }
+
+    [Fact]
+    public void IsExplicitType_UnrecognizedTypeString_ReturnsFalseForStdio()
+    {
+        // The exact regression this method fixes: an unrecognized string ALSO defaults to Stdio via
+        // ParseType's mapping rule, but a typo'd remote transport must not be treated as an explicit
+        // stdio declaration just because they resolve to the same enum value.
+        var element = Parse("""{ "type": "htp", "command": "npx" }""");
+
+        McpServerDefinitionBuilder.IsExplicitType(element, McpServerType.Stdio).Should().BeFalse();
+    }
+
+    [Fact]
+    public void IsExplicitType_ExplicitHttpType_ReturnsFalseForStdioAndTrueForHttp()
+    {
+        var element = Parse("""{ "type": "http", "url": "https://example.com/mcp" }""");
+
+        McpServerDefinitionBuilder.IsExplicitType(element, McpServerType.Stdio).Should().BeFalse();
+        McpServerDefinitionBuilder.IsExplicitType(element, McpServerType.Http).Should().BeTrue();
+    }
 }

@@ -3,6 +3,9 @@ using Application.AI.Common.Exceptions;
 using Application.AI.Common.Interfaces.Sandbox;
 using Domain.AI.Sandbox;
 using Domain.Common;
+using Domain.Common.Config;
+using Domain.Common.Config.AI;
+using Domain.Common.Config.AI.BundleExecution;
 using Domain.Common.Config.AI.MCP;
 using Domain.Common.Config.AI.Sandbox;
 using FluentAssertions;
@@ -137,6 +140,232 @@ public sealed class McpConnectionManagerSandboxedStdioTests
     }
 
     [Fact]
+    public async Task GetClientAsync_BundleOwnedStdioServer_PassesSeedDirectoryAndConfiguredImageToTheSessionRequest()
+    {
+        // #371: the two facts that make a sandboxed stdio session actually able to run the bundle's own
+        // server — the seed directory tagged onto the definition at registration, and the operator's
+        // configured image (never a per-tool ToolOverrides image, since a bundle's GUID-namespaced name
+        // could never match one) — must both reach the sandbox session request.
+        // Under BundleExecution.TempRoot below — StartSandboxedStdioSessionAsync's containment check
+        // (#371, a code-review/security-review finding) refuses a seed directory outside the
+        // configured staging root, so this test's own seed path must actually resolve under it.
+        // Built via Path.Combine (never a hardcoded "C:\..." literal): a Windows-style absolute path
+        // is not rooted at all on Linux, so PathScope.IsSameOrUnder's Path.GetFullPath-based
+        // normalization would treat the whole literal as one opaque path segment relative to the
+        // working directory — the seed would never resolve as "under" the staging root there, and
+        // this positive-containment test would fail in Linux CI while passing on a Windows dev
+        // machine. Caught when this exact thing happened on this PR's first CI run.
+        var stagingRoot = Path.Combine(Path.GetTempPath(), "staged");
+        var seedDirectory = Path.Combine(stagingRoot, "bundle-abc123");
+        var bundleOwned = new BundleOwnedMcpServerRegistry();
+        bundleOwned.TryAdd("b1:local-tool", new McpServerDefinition
+        {
+            Enabled = true,
+            Type = McpServerType.Stdio,
+            Command = "node",
+            StartupTimeoutSeconds = 1,
+            SandboxSeedDirectory = seedDirectory,
+        });
+
+        var appConfig = new AppConfig
+        {
+            AI = new AIConfig
+            {
+                BundleExecution = new BundleExecutionConfig
+                {
+                    TempRoot = stagingRoot,
+                    StdioMcpServers = new BundleStdioMcpServersConfig { ContainerImage = "mcr.microsoft.com/node:20" },
+                },
+            },
+        };
+        var rootServices = McpConnectionManagerBundleEgressSupport.BuildRootServices(services =>
+        {
+            services.AddKeyedSingleton<ISandboxSessionFactory>(SandboxIsolationLevel.Container, _fakeSessionFactory);
+            // Registered after BuildRootServices' own IOptionsMonitor<AppConfig> — last registration
+            // wins for a non-keyed singleton, so this overrides the default (empty) AppConfig.
+            services.AddSingleton<IOptionsMonitor<AppConfig>>(new StaticAppConfigMonitor(appConfig));
+        });
+        var sut = McpConnectionManagerBundleEgressSupport.CreateManager(
+            Mock.Of<ILogger<McpConnectionManager>>(), new Mock<ILoggerFactory>().Object,
+            TestSsrf.HandlerFactory(), new McpServersConfig(), bundleOwned, rootServices);
+
+        await Assert.ThrowsAsync<McpConnectionException>(() => sut.GetClientAsync("b1:local-tool"));
+
+        _fakeSessionFactory.LastRequest.Should().NotBeNull();
+        _fakeSessionFactory.LastRequest!.WorkspaceSeedDirectory.Should().Be(seedDirectory);
+        _fakeSessionFactory.LastRequest.ContainerImage.Should().Be("mcr.microsoft.com/node:20");
+    }
+
+    [Fact]
+    public async Task GetClientAsync_ConcurrentSandboxedStdioSessions_RefusesBeyondTheHostWideCap()
+    {
+        // Security-review finding: MaxServersPerBundle bounds one bundle's own container count, but
+        // nothing bounded how many bundles could be concurrently staged — an authenticated caller
+        // could otherwise pin an unbounded number of containers by staging enough bundles. This test
+        // holds one session "in flight" (its factory call never completes until released) to prove a
+        // SECOND concurrent attempt is refused while the cap (deliberately set to 1) is exhausted,
+        // without needing a real session to ever succeed.
+        var blockingFactory = new BlockingSandboxSessionFactory();
+        var bundleOwned = new BundleOwnedMcpServerRegistry();
+        bundleOwned.TryAdd("b1:local-tool", new McpServerDefinition
+        {
+            Enabled = true, Type = McpServerType.Stdio, Command = "node", StartupTimeoutSeconds = 1,
+        });
+        bundleOwned.TryAdd("b2:local-tool", new McpServerDefinition
+        {
+            Enabled = true, Type = McpServerType.Stdio, Command = "node", StartupTimeoutSeconds = 1,
+        });
+        var appConfig = new AppConfig
+        {
+            AI = new AIConfig
+            {
+                BundleExecution = new BundleExecutionConfig
+                {
+                    StdioMcpServers = new BundleStdioMcpServersConfig
+                    {
+                        ContainerImage = "mcr.microsoft.com/node:20",
+                        MaxConcurrentSessions = 1,
+                    },
+                },
+            },
+        };
+        var rootServices = McpConnectionManagerBundleEgressSupport.BuildRootServices(services =>
+        {
+            services.AddKeyedSingleton<ISandboxSessionFactory>(SandboxIsolationLevel.Container, blockingFactory);
+            services.AddSingleton<IOptionsMonitor<AppConfig>>(new StaticAppConfigMonitor(appConfig));
+        });
+        var sut = McpConnectionManagerBundleEgressSupport.CreateManager(
+            Mock.Of<ILogger<McpConnectionManager>>(), new Mock<ILoggerFactory>().Object,
+            TestSsrf.HandlerFactory(), new McpServersConfig(), bundleOwned, rootServices);
+
+        var firstCallTask = sut.GetClientAsync("b1:local-tool");
+        await blockingFactory.EntrySignaled.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var act = () => sut.GetClientAsync("b2:local-tool");
+
+        var exception = await act.Should().ThrowAsync<McpConnectionException>();
+        exception.Which.Message.Should().Contain("Host-wide bundle stdio sandbox session cap");
+
+        blockingFactory.Release.SetResult();
+        await Assert.ThrowsAsync<McpConnectionException>(() => firstCallTask);
+    }
+
+    [Fact]
+    public async Task GetClientAsync_ScopeFactoryThrowsDuringSessionStart_DoesNotLeakTheConcurrencySlot()
+    {
+        // /code-review finding (#371): the concurrency slot was claimed via Interlocked.Increment
+        // BEFORE _scopeFactory.CreateAsyncScope() — which sat outside the method's try/finally —
+        // so a throw during scope creation (e.g. an already-disposed root provider during host
+        // shutdown) permanently pinned that slot for the rest of the process's life. Proven here by
+        // a SECOND attempt after the first throws: if the slot leaked, it fails with "Host-wide
+        // bundle stdio sandbox session cap"; if released correctly, it fails at scope creation
+        // again instead, exactly like the first attempt.
+        var throwingScopeFactory = new ThrowingServiceScopeFactory();
+        var bundleOwned = new BundleOwnedMcpServerRegistry();
+        bundleOwned.TryAdd("b1:local-tool", new McpServerDefinition
+        {
+            Enabled = true, Type = McpServerType.Stdio, Command = "node", StartupTimeoutSeconds = 1,
+        });
+        var appConfig = new AppConfig
+        {
+            AI = new AIConfig
+            {
+                BundleExecution = new BundleExecutionConfig
+                {
+                    StdioMcpServers = new BundleStdioMcpServersConfig
+                    {
+                        ContainerImage = "mcr.microsoft.com/node:20",
+                        MaxConcurrentSessions = 1,
+                    },
+                },
+            },
+        };
+        var rootServices = McpConnectionManagerBundleEgressSupport.BuildRootServices(services =>
+        {
+            services.AddSingleton<IOptionsMonitor<AppConfig>>(new StaticAppConfigMonitor(appConfig));
+        });
+        var sut = new McpConnectionManager(
+            Mock.Of<ILogger<McpConnectionManager>>(), new Mock<ILoggerFactory>().Object,
+            TestSsrf.HandlerFactory(), new McpServersConfig(), bundleOwned,
+            throwingScopeFactory, McpConnectionManagerBundleEgressSupport.Args.AmbientScope, rootServices);
+
+        await Assert.ThrowsAsync<McpConnectionException>(() => sut.GetClientAsync("b1:local-tool"));
+        var secondException = await Assert.ThrowsAsync<McpConnectionException>(() => sut.GetClientAsync("b1:local-tool"));
+
+        secondException.Message.Should().NotContain("Host-wide bundle stdio sandbox session cap");
+    }
+
+    [Fact]
+    public async Task GetClientAsync_BundleOwnedStdioServer_SeedDirectoryOutsideStagingRoot_RefusesWithoutStartingASession()
+    {
+        // Security-review finding: SandboxSeedDirectory is provenance-tagged by BundleStagingService
+        // today, but the field itself is just a public string with no structural guarantee. This test
+        // proves the containment check is real, not just documented convention — a seed directory
+        // that resolves outside the configured staging root must never reach the sandbox session
+        // factory at all. Sibling of (never nested under) the staging root, both built via
+        // Path.Combine so the "outside" relationship holds on any OS — see the positive-containment
+        // test above for why a hardcoded "C:\..." literal doesn't portably mean what it looks like.
+        var bundleOwned = new BundleOwnedMcpServerRegistry();
+        bundleOwned.TryAdd("b1:local-tool", new McpServerDefinition
+        {
+            Enabled = true,
+            Type = McpServerType.Stdio,
+            Command = "node",
+            StartupTimeoutSeconds = 1,
+            SandboxSeedDirectory = Path.Combine(Path.GetTempPath(), "definitely-not-the-staging-root", "evil"),
+        });
+
+        var appConfig = new AppConfig
+        {
+            AI = new AIConfig
+            {
+                BundleExecution = new BundleExecutionConfig
+                {
+                    TempRoot = Path.Combine(Path.GetTempPath(), "staged"),
+                    StdioMcpServers = new BundleStdioMcpServersConfig { ContainerImage = "mcr.microsoft.com/node:20" },
+                },
+            },
+        };
+        var rootServices = McpConnectionManagerBundleEgressSupport.BuildRootServices(services =>
+        {
+            services.AddKeyedSingleton<ISandboxSessionFactory>(SandboxIsolationLevel.Container, _fakeSessionFactory);
+            services.AddSingleton<IOptionsMonitor<AppConfig>>(new StaticAppConfigMonitor(appConfig));
+        });
+        var sut = McpConnectionManagerBundleEgressSupport.CreateManager(
+            Mock.Of<ILogger<McpConnectionManager>>(), new Mock<ILoggerFactory>().Object,
+            TestSsrf.HandlerFactory(), new McpServersConfig(), bundleOwned, rootServices);
+
+        var act = () => sut.GetClientAsync("b1:local-tool");
+
+        var exception = await act.Should().ThrowAsync<McpConnectionException>();
+        exception.Which.Message.Should().Contain("outside the configured bundle staging root");
+        _fakeSessionFactory.WasCalled.Should().BeFalse(
+            "an out-of-bounds seed directory must be refused before the sandbox session factory is ever called");
+    }
+
+    [Fact]
+    public async Task GetClientAsync_BundleOwnedStdioServer_NoConfiguredImage_LeavesRequestImageNull()
+    {
+        var bundleOwned = new BundleOwnedMcpServerRegistry();
+        bundleOwned.TryAdd("b1:local-tool", new McpServerDefinition
+        {
+            Enabled = true,
+            Type = McpServerType.Stdio,
+            Command = "node",
+            StartupTimeoutSeconds = 1,
+        });
+        // BuildRootServices' default AppConfig has an empty (unconfigured) StdioMcpServers.ContainerImage.
+        var sut = CreateManager(new McpServersConfig(), bundleOwned);
+
+        await Assert.ThrowsAsync<McpConnectionException>(() => sut.GetClientAsync("b1:local-tool"));
+
+        _fakeSessionFactory.LastRequest.Should().NotBeNull();
+        _fakeSessionFactory.LastRequest!.ContainerImage.Should().BeNull(
+            "an unconfigured image must fall through to the session factory's own default resolution, " +
+            "not an empty string that would fail Docker's image reference parsing");
+    }
+
+    [Fact]
     public async Task GetClientAsync_HostConfiguredStdioServer_NeverReachesTheSandbox()
     {
         // The trust-tier boundary #371 must not blur: a host-installed plugin's stdio server keeps
@@ -163,6 +392,19 @@ public sealed class McpConnectionManagerSandboxedStdioTests
             "a host-configured server is a different trust tier and must never route through the sandbox");
     }
 
+    private sealed class StaticAppConfigMonitor(AppConfig value) : IOptionsMonitor<AppConfig>
+    {
+        public AppConfig CurrentValue => value;
+        public AppConfig Get(string? name) => value;
+        public IDisposable OnChange(Action<AppConfig, string?> listener) => NullDisposable.Instance;
+
+        private sealed class NullDisposable : IDisposable
+        {
+            public static readonly NullDisposable Instance = new();
+            public void Dispose() { }
+        }
+    }
+
     private sealed class StaticSandboxConfigMonitor(SandboxConfig value) : IOptionsMonitor<SandboxConfig>
     {
         public SandboxConfig CurrentValue => value;
@@ -174,6 +416,31 @@ public sealed class McpConnectionManagerSandboxedStdioTests
             public static readonly NullDisposable Instance = new();
             public void Dispose() { }
         }
+    }
+
+    /// <summary>
+    /// A session factory whose <see cref="StartSessionAsync"/> does not complete until the test
+    /// explicitly releases it — lets a test hold a "slot" open to prove the host-wide concurrency cap
+    /// rejects a second concurrent attempt while it's exhausted, without needing a real session.
+    /// </summary>
+    private sealed class BlockingSandboxSessionFactory : ISandboxSessionFactory
+    {
+        public TaskCompletionSource EntrySignaled { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public async Task<Result<ISandboxSession>> StartSessionAsync(SandboxSessionRequest request, CancellationToken ct)
+        {
+            EntrySignaled.TrySetResult();
+            await Release.Task;
+            return Result<ISandboxSession>.Fail("fake factory: not starting a real session");
+        }
+    }
+
+    /// <summary>Its <see cref="CreateScope"/> always throws — stands in for an already-disposed root provider during host shutdown.</summary>
+    private sealed class ThrowingServiceScopeFactory : IServiceScopeFactory
+    {
+        public IServiceScope CreateScope() =>
+            throw new InvalidOperationException("test: scope factory intentionally throws");
     }
 
     private sealed class FakeSandboxSessionFactory : ISandboxSessionFactory

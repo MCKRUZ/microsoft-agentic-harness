@@ -62,6 +62,19 @@ public sealed class ProcessSandboxSessionFactory(
             return await attestationSigner.RejectAsync(request, reason, ct);
         }
 
+        // Workspace seeding exists to give caller-supplied content (e.g. a bundle's staged files)
+        // to the sandbox — content this backend's "not a containment boundary" caveat (see this
+        // class's own remarks) makes unsafe to expose to a process running as the harness's own
+        // OS user. A future caller that rewires this factory into a path it isn't reachable from
+        // today must not silently downgrade seeded content to this tier — it must fail loudly here
+        // instead.
+        if (request.WorkspaceSeedDirectory is not null)
+        {
+            const string reason = "Workspace seeding requires container isolation and is not supported " +
+                "on the process sandbox tier, which is not a containment boundary.";
+            return await attestationSigner.RejectAsync(request, reason, ct);
+        }
+
         var egress = await egressPreflightRunner.EvaluateAsync(request.ToolName, request.EgressPrecheckTargets, ct);
         if (egress.IsDenied)
             return await attestationSigner.RejectAsync(request, egress.ErrorMessage!, ct, egress.Digest);

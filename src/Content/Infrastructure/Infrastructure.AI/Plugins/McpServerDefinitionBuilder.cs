@@ -2,6 +2,7 @@ using System.Text.Json;
 using Domain.Common;
 using Domain.Common.Config.AI.MCP;
 using Domain.Common.Extensions;
+using Domain.Common.Helpers;
 
 namespace Infrastructure.AI.Plugins;
 
@@ -132,12 +133,39 @@ public static class McpServerDefinitionBuilder
     /// (see <c>BundleStagingService.LogStdioRejected</c>).
     /// </summary>
     private static Result<McpServerType> ParseType(JsonElement serverElement, string serverName) =>
-        ReadOptionalString(serverElement, "type", serverName).Map(raw => raw?.ToLowerInvariant() switch
-        {
-            "http" => McpServerType.Http,
-            "sse" => McpServerType.Sse,
-            _ => McpServerType.Stdio
-        });
+        ReadOptionalString(serverElement, "type", serverName).Map(ParseTypeValue);
+
+    /// <summary>
+    /// Maps a raw, already-extracted <c>type</c> string the way <see cref="ParseType"/> does — the ONE
+    /// mapping rule, via <see cref="EnumNameHelper.TryParseName{TEnum}"/> (#296/#312: the shared,
+    /// case-insensitive, numeric-form-rejecting enum-by-name parser every layer that reads a wire/config
+    /// enum value is expected to use, rather than a hand-rolled switch a second reader could drift from).
+    /// </summary>
+    private static McpServerType ParseTypeValue(string? raw) =>
+        EnumNameHelper.TryParseName<McpServerType>(raw, out var parsed) ? parsed : McpServerType.Stdio;
+
+    /// <summary>
+    /// Whether a manifest declares <c>"type"</c> as the exact, recognized name of <paramref name="type"/>
+    /// — distinct from <see cref="ParseType"/>'s own default-to-stdio behavior for an absent or
+    /// unrecognized value. <c>BundleStagingService.TryRegisterStdioServer</c> needs exactly this
+    /// distinction for <see cref="McpServerType.Stdio"/> specifically: a bundle author's typo'd remote
+    /// transport (<c>"type": "htp"</c>) must not silently land on a sandboxed process launch just because
+    /// unrecognized values default to the same enum value an explicit <c>"stdio"</c> would.
+    /// <see cref="EnumNameHelper.TryParseName{TEnum}"/> already refuses anything that isn't a genuinely
+    /// defined member — no separate "recognized literal" lookup table is needed to keep "recognized" and
+    /// "defaulted-to" distinguishable; a failed parse simply cannot equal <paramref name="type"/>.
+    /// </summary>
+    /// <remarks>
+    /// Callers of this method are expected to have already called <see cref="Build"/> successfully on
+    /// the same <paramref name="serverElement"/> — this method does not itself validate that <c>type</c>
+    /// has a string shape (an absent/wrong-shaped property both resolve to <c>false</c> here, harmlessly),
+    /// because <see cref="Build"/> already rejects that shape before any caller could reach this check.
+    /// </remarks>
+    public static bool IsExplicitType(JsonElement serverElement, McpServerType type) =>
+        serverElement.TryGetProperty("type", out var value)
+        && value.ValueKind == JsonValueKind.String
+        && EnumNameHelper.TryParseName<McpServerType>(value.GetString(), out var parsed)
+        && parsed == type;
 
     /// <summary>
     /// Reads an optional string property. Absent is success with a <see langword="null"/> value —

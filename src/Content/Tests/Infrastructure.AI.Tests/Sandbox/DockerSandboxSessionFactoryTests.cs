@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.Json;
 using Application.AI.Common.Interfaces.Attestation;
 using Application.AI.Common.Interfaces.Sandbox;
 using Application.AI.Common.Models.Sandbox;
@@ -252,6 +253,161 @@ public class DockerSandboxSessionFactoryTests
         _capturedParams.Should().NotBeNull();
         _capturedParams!.Env.Should().Contain("API_KEY=secret-value",
             "a bundle-owned MCP server that needs an API key/config via env var must actually receive it");
+    }
+
+    [Fact]
+    public async Task StartSessionAsync_WorkspaceSeedDirectory_SeedsContainerWorkspaceAndSetsWorkingDir()
+    {
+        // #371: the bundle's own staged files must actually be present in the container's workspace for
+        // its stdio MCP server to have anything to run — this is the wiring that turns the registration
+        // gate into a working feature rather than a container that starts and immediately fails.
+        SetUpAttachStream(BuildFrames(("stdout", "")));
+        var seedSource = Path.Combine(Path.GetTempPath(), $"seed-source-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(seedSource);
+        File.WriteAllText(Path.Combine(seedSource, "server.js"), "console.log('hi');");
+        try
+        {
+            var request = CreateRequest() with { WorkspaceSeedDirectory = seedSource };
+
+            var result = await _sut.StartSessionAsync(request, CancellationToken.None);
+
+            result.IsSuccess.Should().BeTrue(string.Join("; ", result.Errors));
+            await using var session = result.Value!;
+            _capturedParams.Should().NotBeNull();
+            _capturedParams!.WorkingDir.Should().Be("/workspace");
+            // Bind format is "{workspaceDir}:/workspace:{ro|rw}" — split on the known ":/workspace:"
+            // separator rather than the last ':' in the string, since a Windows host path itself
+            // contains a drive-letter colon (e.g. "C:\...\docker-sandbox-xxx").
+            var bind = _capturedParams.HostConfig!.Binds!.Should().ContainSingle().Subject;
+            var hostWorkspaceDir = bind[..bind.IndexOf(":/workspace:", StringComparison.Ordinal)];
+            File.Exists(Path.Combine(hostWorkspaceDir, "server.js")).Should().BeTrue(
+                "the seed source's files must have been copied into the container's actual bind-mounted workspace");
+        }
+        finally
+        {
+            Directory.Delete(seedSource, recursive: true);
+        }
+    }
+
+    [SkippableFact]
+    public async Task StartSessionAsync_WorkspaceSeedDirectory_WidensPermissionsOnlyForTheSeededWorkspace()
+    {
+        // Regression for a /code-review finding: an earlier version widened EVERY Docker-tier
+        // workspace's permissions unconditionally in CreateWorkspace, not just a seeded one — readable
+        // by any local OS account on the host, not only the container's own fixed UID. The widening
+        // must be scoped to exactly the seeded case.
+        Skip.If(OperatingSystem.IsWindows(), "Unix file-mode bits have no meaning on Windows.");
+        SetUpAttachStream(BuildFrames(("stdout", "")));
+        var seedSource = Path.Combine(Path.GetTempPath(), $"seed-source-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(seedSource);
+        try
+        {
+            var request = CreateRequest() with { WorkspaceSeedDirectory = seedSource };
+
+            var result = await _sut.StartSessionAsync(request, CancellationToken.None);
+
+            result.IsSuccess.Should().BeTrue(string.Join("; ", result.Errors));
+            await using var session = result.Value!;
+            var bind = _capturedParams!.HostConfig!.Binds!.Should().ContainSingle().Subject;
+            var hostWorkspaceDir = bind[..bind.IndexOf(":/workspace:", StringComparison.Ordinal)];
+            // Skip.If above already makes this unreachable on Windows at runtime; the extra static
+            // guard is for the CA1416 platform-compatibility analyzer, which recognizes
+            // OperatingSystem.IsWindows() if-guards but not xunit's SkippableFact runtime skip.
+            if (!OperatingSystem.IsWindows())
+            {
+                var mode = File.GetUnixFileMode(hostWorkspaceDir);
+                mode.Should().HaveFlag(UnixFileMode.OtherRead | UnixFileMode.OtherExecute,
+                    "the container's own fixed UID must be able to traverse a workspace that was seeded with content it needs to read");
+            }
+        }
+        finally
+        {
+            Directory.Delete(seedSource, recursive: true);
+        }
+    }
+
+    [SkippableFact]
+    public async Task StartSessionAsync_NoWorkspaceSeedDirectory_KeepsWorkspaceOwnerOnly()
+    {
+        // The other half of the same regression: an UNSEEDED session's workspace must stay at the
+        // tighter owner-only default — the widening in the test above must not have become the new
+        // baseline for every Docker-tier session.
+        Skip.If(OperatingSystem.IsWindows(), "Unix file-mode bits have no meaning on Windows.");
+        SetUpAttachStream(BuildFrames(("stdout", "")));
+
+        var result = await _sut.StartSessionAsync(CreateRequest(), CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue(string.Join("; ", result.Errors));
+        await using var session = result.Value!;
+        var bind = _capturedParams!.HostConfig!.Binds!.Should().ContainSingle().Subject;
+        var hostWorkspaceDir = bind[..bind.IndexOf(":/workspace:", StringComparison.Ordinal)];
+        // Skip.If above already makes this unreachable on Windows at runtime; the extra static guard
+        // is for the CA1416 platform-compatibility analyzer, which recognizes OperatingSystem.IsWindows()
+        // if-guards but not xunit's SkippableFact runtime skip.
+        if (!OperatingSystem.IsWindows())
+        {
+            var mode = File.GetUnixFileMode(hostWorkspaceDir);
+            mode.Should().NotHaveFlag(UnixFileMode.OtherRead,
+                "an ordinary (non-bundle) Docker-tier workspace must not be widened just because the seeded case exists elsewhere");
+        }
+    }
+
+    [Fact]
+    public async Task StartSessionAsync_NoWorkspaceSeedDirectory_LeavesWorkingDirUnset()
+    {
+        SetUpAttachStream(BuildFrames(("stdout", "")));
+
+        var result = await _sut.StartSessionAsync(CreateRequest(), CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue(string.Join("; ", result.Errors));
+        await using var session = result.Value!;
+        _capturedParams!.WorkingDir.Should().BeNullOrEmpty(
+            "unseeded sessions (the one-shot executor's own callers, and every pre-#371 session) must keep the prior unset behavior");
+    }
+
+    [Fact]
+    public async Task StartSessionAsync_RequestContainerImage_IsUsedInsteadOfDefault()
+    {
+        SetUpAttachStream(BuildFrames(("stdout", "")));
+        var request = CreateRequest() with { ContainerImage = "mcr.microsoft.com/dotnet/sdk:10.0" };
+
+        var result = await _sut.StartSessionAsync(request, CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue(string.Join("; ", result.Errors));
+        await using var session = result.Value!;
+        _capturedParams!.Image.Should().Be("mcr.microsoft.com/dotnet/sdk:10.0");
+    }
+
+    [Fact]
+    public async Task StartSessionAsync_NoRequestContainerImage_AttestsTheResolvedImageNotNull()
+    {
+        // /code-review finding (#371): DescribeSessionInput used to log request.ContainerImage
+        // directly, which is null for every first-party session (none of them populate that
+        // field — their image comes from ResolveImage's own ToolOverrides/default lookup, same
+        // as here). Two sessions on genuinely different resolved images would attest identical
+        // (null) input either way. The attested "image" must match what the container actually
+        // ran, not the raw per-request override.
+        SetUpAttachStream(BuildFrames(("stdout", "")));
+        AttestationRequest? signed = null;
+        _attestation
+            .Setup(x => x.SignAsync(It.Is<AttestationRequest>(r => !r.IsFailure), It.IsAny<CancellationToken>()))
+            .Callback<AttestationRequest, CancellationToken>((r, _) => signed = r)
+            .ReturnsAsync((AttestationRequest r, CancellationToken _) => new ToolExecutionAttestation
+            {
+                ToolName = r.ToolName, InputHash = "test-hash", Timestamp = DateTimeOffset.UtcNow,
+                Signature = "test-sig", KeyVersion = "v1", IsFailureAttestation = false
+            });
+
+        var result = await _sut.StartSessionAsync(CreateRequest(), CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue(string.Join("; ", result.Errors));
+        await using var session = result.Value!;
+        signed.Should().NotBeNull();
+        var attestedImage = JsonDocument.Parse(signed!.Input).RootElement.GetProperty("image").GetString();
+        attestedImage.Should().Be(_capturedParams!.Image,
+            "the attested image must be what ResolveImage actually picked, not the (always-null, for a " +
+            "first-party session) request-level override");
+        attestedImage.Should().NotBeNullOrEmpty();
     }
 
     [Fact]

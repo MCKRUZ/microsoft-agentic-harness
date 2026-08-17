@@ -140,6 +140,79 @@ public class BundleExecutionConfigValidatorTests
     }
 
     [Fact]
+    public async Task Validate_ZeroMaxServersPerBundle_HasError()
+    {
+        var config = new BundleExecutionConfig
+        {
+            StdioMcpServers = new BundleStdioMcpServersConfig { MaxServersPerBundle = 0 },
+        };
+
+        var result = await _validator.ValidateAsync(config);
+
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.PropertyName == "StdioMcpServers.MaxServersPerBundle");
+    }
+
+    [Fact]
+    public async Task Validate_ZeroMaxConcurrentSessions_HasError()
+    {
+        var config = new BundleExecutionConfig
+        {
+            StdioMcpServers = new BundleStdioMcpServersConfig { MaxConcurrentSessions = 0 },
+        };
+
+        var result = await _validator.ValidateAsync(config);
+
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.PropertyName == "StdioMcpServers.MaxConcurrentSessions");
+    }
+
+    [Fact]
+    public async Task Validate_WhitespaceOnlyContainerImage_HasError()
+    {
+        var config = new BundleExecutionConfig
+        {
+            StdioMcpServers = new BundleStdioMcpServersConfig { ContainerImage = "   " },
+        };
+
+        var result = await _validator.ValidateAsync(config);
+
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.PropertyName == "StdioMcpServers.ContainerImage");
+    }
+
+    [Fact]
+    public async Task Validate_ContainerImageWithLeadingOrTrailingWhitespace_HasError()
+    {
+        // /code-review finding: the original rule checked image.Trim().Length > 0 but never rejected
+        // (or trimmed) a value that merely HAD padding — "mcr.microsoft.com/node:20 " passed validation
+        // while reaching Docker's image-reference parser unsanitized, with nothing downstream trimming it.
+        var config = new BundleExecutionConfig
+        {
+            StdioMcpServers = new BundleStdioMcpServersConfig { ContainerImage = "mcr.microsoft.com/node:20 " },
+        };
+
+        var result = await _validator.ValidateAsync(config);
+
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.PropertyName == "StdioMcpServers.ContainerImage");
+    }
+
+    [Fact]
+    public async Task Validate_EmptyContainerImage_NoError()
+    {
+        // Empty is the valid "capability stays inert" default — must not be conflated with whitespace-only.
+        var config = new BundleExecutionConfig
+        {
+            StdioMcpServers = new BundleStdioMcpServersConfig { ContainerImage = string.Empty },
+        };
+
+        var result = await _validator.ValidateAsync(config);
+
+        result.IsValid.Should().BeTrue(string.Join("; ", result.Errors.Select(e => e.ErrorMessage)));
+    }
+
+    [Fact]
     public async Task Validate_DisabledConfigWithBadValue_StillFails()
     {
         // Rules are unconditional: switching the subsystem off does not license a non-positive TTL.

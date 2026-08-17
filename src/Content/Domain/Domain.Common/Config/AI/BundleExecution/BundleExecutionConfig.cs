@@ -20,12 +20,14 @@ namespace Domain.Common.Config.AI.BundleExecution;
 /// </para>
 /// <code>
 /// AppConfig.AI.BundleExecution
-/// ├── Enabled                     — Master toggle (default false)
-/// ├── TempRoot                    — Directory under which each bundle is staged in its own subfolder
-/// ├── MaxArchiveBytes             — Reject archives larger than this on the wire (compressed size)
-/// ├── MaxEntryCount               — Reject archives with more than this many entries
-/// ├── MaxTotalUncompressedBytes   — Reject when the sum of entry sizes exceeds this (bomb guard)
-/// └── MaxCompressionRatio         — Reject when uncompressed/compressed exceeds this (bomb guard)
+/// ├── Enabled                       — Master toggle (default false)
+/// ├── TempRoot                      — Directory under which each bundle is staged in its own subfolder
+/// ├── MaxArchiveBytes               — Reject archives larger than this on the wire (compressed size)
+/// ├── MaxEntryCount                 — Reject archives with more than this many entries
+/// ├── MaxTotalUncompressedBytes     — Reject when the sum of entry sizes exceeds this (bomb guard)
+/// ├── MaxCompressionRatio           — Reject when uncompressed/compressed exceeds this (bomb guard)
+/// ├── AllowBundleDeclaredMcpServers — Allow a bundle's own REMOTE (http/sse) MCP server declarations
+/// └── StdioMcpServers               — Allow + configure a bundle's own LOCAL (stdio) MCP servers, sandboxed
 /// </code>
 /// </remarks>
 public class BundleExecutionConfig
@@ -140,15 +142,28 @@ public class BundleExecutionConfig
     public BundleApiAuthConfig Auth { get; set; } = new();
 
     /// <summary>
-    /// Whether a bundle's own manifest may declare a remote (http/sse) MCP server that the host will connect
-    /// to on the bundle's behalf. Off by default: a bundle is untrusted, externally-authored input, and
-    /// honouring its own declared network endpoints means the host makes outbound requests a caller's
-    /// <c>CapabilityEnvelope</c> never authorized. When disabled, a bundle's declared <c>mcp.json</c> is
-    /// ignored entirely at staging time — the bundle registers no MCP servers, staging does not fail. Even
-    /// when enabled, a declared server's URL must still match <c>AppConfig.AI.Egress.DefaultAllowlist</c>
-    /// (checked at registration) and every connection is attributed and audited like any other outbound
-    /// request (checked live, on every call) — this flag only controls whether the capability exists at all.
+    /// Whether a bundle's own manifest may declare a <strong>remote</strong> (http/sse) MCP server that the
+    /// host will connect to on the bundle's behalf. Off by default: a bundle is untrusted, externally-authored
+    /// input, and honouring its own declared network endpoints means the host makes outbound requests a
+    /// caller's <c>CapabilityEnvelope</c> never authorized. When disabled, a bundle's declared <c>mcp.json</c>
+    /// is ignored entirely at staging time for remote servers — the bundle registers no remote MCP servers,
+    /// staging does not fail. Even when enabled, a declared server's URL must still match
+    /// <c>AppConfig.AI.Egress.DefaultAllowlist</c> (checked at registration) and every connection is
+    /// attributed and audited like any other outbound request (checked live, on every call) — this flag only
+    /// controls whether the capability exists at all.
     /// </summary>
+    /// <remarks>
+    /// Governs remote servers only. A <strong>local (stdio)</strong> server declaration is governed
+    /// independently by <see cref="StdioMcpServers"/> — the two are separate capabilities with separate risk
+    /// profiles, and enabling one does not enable the other.
+    /// </remarks>
     /// <value>Default: false</value>
     public bool AllowBundleDeclaredMcpServers { get; set; }
+
+    /// <summary>
+    /// Whether, and how, a bundle's own manifest may declare a <strong>local (stdio)</strong> MCP server —
+    /// run inside the sandbox rather than on the host. See <see cref="BundleStdioMcpServersConfig"/> for the
+    /// full contract. Defaults to a disabled configuration.
+    /// </summary>
+    public BundleStdioMcpServersConfig StdioMcpServers { get; set; } = new();
 }
