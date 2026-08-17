@@ -149,8 +149,14 @@ public sealed class McpConnectionManagerSandboxedStdioTests
         // Under BundleExecution.TempRoot below — StartSandboxedStdioSessionAsync's containment check
         // (#371, a code-review/security-review finding) refuses a seed directory outside the
         // configured staging root, so this test's own seed path must actually resolve under it.
-        const string stagingRoot = @"C:\staged";
-        const string seedDirectory = @"C:\staged\bundle-abc123";
+        // Built via Path.Combine (never a hardcoded "C:\..." literal): a Windows-style absolute path
+        // is not rooted at all on Linux, so PathScope.IsSameOrUnder's Path.GetFullPath-based
+        // normalization would treat the whole literal as one opaque path segment relative to the
+        // working directory — the seed would never resolve as "under" the staging root there, and
+        // this positive-containment test would fail in Linux CI while passing on a Windows dev
+        // machine. Caught when this exact thing happened on this PR's first CI run.
+        var stagingRoot = Path.Combine(Path.GetTempPath(), "staged");
+        var seedDirectory = Path.Combine(stagingRoot, "bundle-abc123");
         var bundleOwned = new BundleOwnedMcpServerRegistry();
         bundleOwned.TryAdd("b1:local-tool", new McpServerDefinition
         {
@@ -296,7 +302,9 @@ public sealed class McpConnectionManagerSandboxedStdioTests
         // today, but the field itself is just a public string with no structural guarantee. This test
         // proves the containment check is real, not just documented convention — a seed directory
         // that resolves outside the configured staging root must never reach the sandbox session
-        // factory at all.
+        // factory at all. Sibling of (never nested under) the staging root, both built via
+        // Path.Combine so the "outside" relationship holds on any OS — see the positive-containment
+        // test above for why a hardcoded "C:\..." literal doesn't portably mean what it looks like.
         var bundleOwned = new BundleOwnedMcpServerRegistry();
         bundleOwned.TryAdd("b1:local-tool", new McpServerDefinition
         {
@@ -304,7 +312,7 @@ public sealed class McpConnectionManagerSandboxedStdioTests
             Type = McpServerType.Stdio,
             Command = "node",
             StartupTimeoutSeconds = 1,
-            SandboxSeedDirectory = @"C:\definitely-not-the-staging-root\evil",
+            SandboxSeedDirectory = Path.Combine(Path.GetTempPath(), "definitely-not-the-staging-root", "evil"),
         });
 
         var appConfig = new AppConfig
@@ -313,7 +321,7 @@ public sealed class McpConnectionManagerSandboxedStdioTests
             {
                 BundleExecution = new BundleExecutionConfig
                 {
-                    TempRoot = @"C:\staged",
+                    TempRoot = Path.Combine(Path.GetTempPath(), "staged"),
                     StdioMcpServers = new BundleStdioMcpServersConfig { ContainerImage = "mcr.microsoft.com/node:20" },
                 },
             },
