@@ -66,10 +66,11 @@ public static class IacSandboxRunner
     /// <param name="permissionResolver">
     /// Resolves the operator's <c>ToolOverrideConfig</c> for <paramref name="toolName"/> — this
     /// runner used to build its permission profile inline, so a per-tool <c>DeniedCapabilities</c>
-    /// or <c>MinimumIsolation</c> override never reached it (#405). Only the override's
-    /// <c>DeniedCapabilities</c> and <c>MinimumIsolation</c> are taken; <paramref name="requiredCapabilities"/>
-    /// stays caller-supplied, and merged isolation never downgrades below
-    /// <see cref="SandboxIsolationLevel.Process"/>, the floor this runner requires.
+    /// or <c>MinimumIsolation</c> override never reached it (#405). Via
+    /// <see cref="ToolPermissionProfileResolver.ResolveForUngovernedDispatch"/>, which also refuses
+    /// outright when the override intersects <paramref name="requiredCapabilities"/> — the CLI never
+    /// spawns — matching the governed-call semantics <c>CapabilityEnforcer</c> guarantees rather than
+    /// silently narrowing what gets provisioned.
     /// </param>
     /// <param name="timeout">Optional wall-clock timeout. Defaults to 5 minutes — terraform init/plan can be slow.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
@@ -94,15 +95,16 @@ public static class IacSandboxRunner
         ArgumentException.ThrowIfNullOrWhiteSpace(toolName);
         ArgumentNullException.ThrowIfNull(permissionResolver);
 
-        var overridden = permissionResolver.Resolve(toolName);
-        var profile = new ToolPermissionProfile
+        var profileResult = permissionResolver.ResolveForUngovernedDispatch(
+            toolName, requiredCapabilities, [program]);
+        if (!profileResult.IsSuccess)
         {
-            RequiredCapabilities = requiredCapabilities,
-            DeniedCapabilities = overridden.DeniedCapabilities,
-            AllowedPrograms = [program],
-            MinimumIsolation = (SandboxIsolationLevel)Math.Max(
-                (int)SandboxIsolationLevel.Process, (int)overridden.MinimumIsolation)
-        };
+            return new SandboxExecutionResult
+            {
+                Success = false,
+                ErrorMessage = string.Join("; ", profileResult.Errors)
+            };
+        }
 
         var request = new SandboxExecutionRequest
         {
@@ -111,7 +113,7 @@ public static class IacSandboxRunner
             Command = program,
             ArgumentList = arguments,
             Limits = new ResourceLimits(),
-            PermissionProfile = profile,
+            PermissionProfile = profileResult.Value!,
             Timeout = timeout ?? TimeSpan.FromMinutes(5),
             EgressPrecheckTargets = BuildEgressPrecheckTargets(registryAllowlist)
         };

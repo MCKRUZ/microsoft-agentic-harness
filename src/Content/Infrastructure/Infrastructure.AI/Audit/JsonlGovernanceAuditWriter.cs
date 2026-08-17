@@ -84,19 +84,28 @@ public sealed class JsonlGovernanceAuditWriter : IGovernanceAuditService, IVerif
             Decision = decision,
         };
 
+        var appended = false;
         try
         {
             var json = JsonSerializer.Serialize(record, SerializeOptions);
             var result = _chain.AppendAsync(json, CancellationToken.None).GetAwaiter().GetResult();
-            if (!result.IsSuccess)
+            if (result.IsSuccess)
+            {
+                appended = true;
+            }
+            else
             {
                 _logger.LogError(
                     "Failed to append governance audit record for agent {AgentId}, action {Action}: {Reason}",
                     agentId, action, string.Join("; ", result.Errors));
             }
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        catch (Exception ex)
         {
+            // Catch-all, deliberately: HashChainedJsonlWriter.AppendAsync already catches IOException
+            // and UnauthorizedAccessException internally and returns a failed Result rather than
+            // throwing, so narrower typed catches here are unreachable dead code — what can actually
+            // escape is e.g. ObjectDisposedException from a shutdown race on this writer's semaphore.
             // See this class's remarks: a governance audit write failure degrades the audit trail's
             // completeness, it must never fail the tool-call decision it is recording.
             _logger.LogError(ex,
@@ -104,8 +113,14 @@ public sealed class JsonlGovernanceAuditWriter : IGovernanceAuditService, IVerif
                 agentId, action);
         }
 
-        GovernanceMetrics.AuditEvents.Add(1,
-            new KeyValuePair<string, object?>(GovernanceConventions.Action, action));
+        // Only on a confirmed append — counting a failed write here would make a dashboard built on
+        // this metric read as a healthy, growing audit trail while governance.jsonl silently stopped
+        // receiving records.
+        if (appended)
+        {
+            GovernanceMetrics.AuditEvents.Add(1,
+                new KeyValuePair<string, object?>(GovernanceConventions.Action, action));
+        }
     }
 
     /// <inheritdoc />

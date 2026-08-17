@@ -49,12 +49,14 @@ public sealed class WorkspaceRunCommandsToolTests
     }
 
     [Fact]
-    public async Task RunTests_OperatorDeniedCapabilityOverride_ReachesTheRunner()
+    public async Task RunTests_OperatorOverride_NonIntersectingDeny_ReachesTheRunner()
     {
         // Regression for #405's bypass gap: WorkspaceCommandRunner used to build its permission
         // profile inline, so an operator's ToolOverrides["run_tests"] never reached it. It now goes
         // through the shared resolver, so a DeniedCapabilities/MinimumIsolation override must show up
-        // on the request the sandbox actually receives.
+        // on the request the sandbox actually receives — here the deny (NetworkAccess) doesn't
+        // intersect what run_tests actually requires (FileRead|FileWrite|Subprocess), so the call
+        // still dispatches with the deny carried on the profile.
         using var fx = new WorkspaceTestFixture(testCommand: "dotnet test");
         var sandbox = new RecordingSandbox(success: true, exitCode: 0, output: "ok");
         var overrideConfig = new SandboxConfig
@@ -63,7 +65,7 @@ public sealed class WorkspaceRunCommandsToolTests
             {
                 ["run_tests"] = new ToolOverrideConfig
                 {
-                    DeniedCapabilities = ["FileWrite"],
+                    DeniedCapabilities = ["NetworkAccess"],
                     MinimumIsolation = "Container"
                 }
             }
@@ -74,11 +76,35 @@ public sealed class WorkspaceRunCommandsToolTests
 
         sandbox.Requests.Should().ContainSingle();
         var profile = sandbox.Requests[0].PermissionProfile;
-        profile.DeniedCapabilities.Should().Be(ToolCapability.FileWrite);
-        profile.EffectiveCapabilities.HasFlag(ToolCapability.FileWrite).Should().BeFalse(
-            "the operator's deny must be reflected in what gets provisioned");
+        profile.DeniedCapabilities.Should().Be(ToolCapability.NetworkAccess);
         profile.MinimumIsolation.Should().Be(SandboxIsolationLevel.Container,
             "an operator-configured floor above Process must be honoured, not silently dropped");
+    }
+
+    [Fact]
+    public async Task RunTests_OperatorOverride_IntersectingDeny_RefusesOutrightWithoutDispatching()
+    {
+        // The #405 fix this cluster made everywhere else: a deny that intersects what the tool
+        // actually requires must refuse the call outright, not silently narrow what gets
+        // provisioned to the sandbox and let it run anyway (a code-review finding on the original
+        // fix — WorkspaceCommandRunner/IacSandboxRunner never call ICapabilityEnforcer, so nothing
+        // else on this dispatch path would have refused it).
+        using var fx = new WorkspaceTestFixture(testCommand: "dotnet test");
+        var sandbox = new RecordingSandbox(success: true, exitCode: 0, output: "ok");
+        var overrideConfig = new SandboxConfig
+        {
+            ToolOverrides = new()
+            {
+                ["run_tests"] = new ToolOverrideConfig { DeniedCapabilities = ["FileWrite"] }
+            }
+        };
+        var sut = new WorkspaceRunTestsTool(fx.Accessor, TestScopeFactory.ForSandbox(sandbox, overrideConfig));
+
+        var result = await sut.ExecuteAsync("run", new Dictionary<string, object?>());
+
+        result.Success.Should().BeFalse();
+        sandbox.Requests.Should().BeEmpty(
+            "a denied capability the tool actually requires must refuse before the sandbox is ever invoked");
     }
 
     [Fact]

@@ -15,12 +15,17 @@ public static partial class DependencyInjection
 {
     /// <summary>
     /// Registers audit-chain verification: forwards each of the four hash-chained audit writers
-    /// as an <see cref="IVerifiableAuditChain"/> (pointing at the existing singleton, not a new
-    /// instance) and, when enabled, the scheduled <see cref="AuditChainVerificationService"/>.
+    /// owned by this project as an <see cref="IVerifiableAuditChain"/> (pointing at the existing
+    /// singleton, not a new instance) and, when enabled, the scheduled
+    /// <see cref="AuditChainVerificationService"/>.
     /// </summary>
     /// <remarks>
     /// The forwarding registrations must run after the change, egress, escalation, and drift
-    /// audit writers are registered. The hosted service is gated on
+    /// audit writers are registered. A fifth chain, the governance audit writer, is registered
+    /// separately by <c>Infrastructure.AI.Governance/DependencyInjection.cs</c> (#407) — this method
+    /// does not need to know about it: <see cref="AuditChainVerificationService"/> resolves every
+    /// <see cref="IVerifiableAuditChain"/> registration via <c>IEnumerable&lt;&gt;</c>, from whichever
+    /// project registered it. The hosted service is gated on
     /// <c>AppConfig.AI.Audit.VerificationEnabled</c> (on by default) and resolves
     /// <see cref="TimeProvider"/> with a system fallback so it works whether or not the host
     /// registered one.

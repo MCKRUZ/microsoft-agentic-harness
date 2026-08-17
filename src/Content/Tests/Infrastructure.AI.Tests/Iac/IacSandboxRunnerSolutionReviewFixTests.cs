@@ -100,17 +100,19 @@ public sealed class IacSandboxRunnerSolutionReviewFixTests
     }
 
     [Fact]
-    public async Task RunAsync_OperatorDeniedCapabilityOverride_ReachesTheRunner()
+    public async Task RunAsync_OperatorOverride_NonIntersectingDeny_ReachesTheRunner()
     {
         // Regression for #405's bypass gap: IacSandboxRunner used to build its permission profile
         // inline, so an operator's ToolOverrides["iac_plan"] never reached it. It now goes through
         // the shared resolver, so a DeniedCapabilities/MinimumIsolation override must show up on the
-        // request the sandbox actually receives.
+        // request the sandbox actually receives — here the deny (DatabaseRead) doesn't intersect
+        // what iac_plan actually requires (FileRead|FileWrite|Subprocess|NetworkAccess), so the call
+        // still dispatches with the deny carried on the profile.
         var sandbox = new RecordingIacSandbox().WithDefault(true, 0, string.Empty);
         var services = new ServiceCollection();
         services.AddOptions<SandboxConfig>().Configure(c => c.ToolOverrides["iac_plan"] = new ToolOverrideConfig
         {
-            DeniedCapabilities = ["NetworkAccess"],
+            DeniedCapabilities = ["DatabaseRead"],
             MinimumIsolation = "Container"
         });
         var provider = services.BuildServiceProvider();
@@ -129,10 +131,42 @@ public sealed class IacSandboxRunnerSolutionReviewFixTests
             permissionResolver: resolver);
 
         var profile = sandbox.RequestFor("terraform").PermissionProfile;
-        profile.DeniedCapabilities.Should().Be(ToolCapability.NetworkAccess);
-        profile.EffectiveCapabilities.HasFlag(ToolCapability.NetworkAccess).Should().BeFalse(
-            "the operator's deny must be reflected in what gets provisioned");
+        profile.DeniedCapabilities.Should().Be(ToolCapability.DatabaseRead);
         profile.MinimumIsolation.Should().Be(SandboxIsolationLevel.Container,
             "an operator-configured floor above Process must be honoured, not silently dropped");
+    }
+
+    [Fact]
+    public async Task RunAsync_OperatorOverride_IntersectingDeny_RefusesOutrightWithoutDispatching()
+    {
+        // The #405 fix this cluster made everywhere else: a deny that intersects what the tool
+        // actually requires must refuse the call outright, not silently narrow what gets
+        // provisioned to the sandbox and let it run anyway (a code-review finding on the original
+        // fix — IacSandboxRunner never calls ICapabilityEnforcer, so nothing else on this dispatch
+        // path would have refused it).
+        var sandbox = new RecordingIacSandbox().WithDefault(true, 0, string.Empty);
+        var services = new ServiceCollection();
+        services.AddOptions<SandboxConfig>().Configure(c => c.ToolOverrides["iac_plan"] = new ToolOverrideConfig
+        {
+            DeniedCapabilities = ["NetworkAccess"]
+        });
+        var provider = services.BuildServiceProvider();
+        var resolver = new ToolPermissionProfileResolver(
+            new FirstPartyToolLookup(provider, new HashSet<string>()),
+            provider.GetRequiredService<IOptionsMonitor<SandboxConfig>>());
+
+        var result = await IacSandboxRunner.RunAsync(
+            program: "terraform",
+            arguments: ["plan"],
+            moduleDirectory: ModuleDir,
+            registryAllowlist: [],
+            executor: sandbox,
+            toolName: "iac_plan",
+            requiredCapabilities: IacPlanTool.RequiredSandboxCapabilities,
+            permissionResolver: resolver);
+
+        result.Success.Should().BeFalse();
+        sandbox.Requests.Should().BeEmpty(
+            "a denied capability the tool actually requires must refuse before the sandbox is ever invoked");
     }
 }

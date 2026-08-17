@@ -33,12 +33,16 @@ namespace Infrastructure.AI.Tools.Workspace;
 public static class WorkspaceCommandRunner
 {
     /// <summary>
-    /// Runs <paramref name="commandLine"/> inside the sandbox at the
-    /// workspace's working copy. Returns a <see cref="ToolResult"/> that
-    /// includes stdout/stderr and the exit code.
+    /// Runs <paramref name="commandLine"/> inside the sandbox. Returns a <see cref="ToolResult"/>
+    /// that includes stdout/stderr and the exit code.
     /// </summary>
     /// <param name="commandLine">The whitespace-delimited command line. First token is the program; remaining tokens are arguments.</param>
-    /// <param name="workspace">The active workspace context — supplies the working copy path the sandbox roots its capabilities to.</param>
+    /// <param name="workspace">
+    /// The active workspace context. Not itself an enforced filesystem boundary on this dispatch
+    /// path — the profile's old <c>AllowedPaths</c> was removed as dead config (#405); the caller
+    /// (<c>WorkspaceRunTestsTool</c>/<c>WorkspaceRunLintTool</c>) reads the command to run from it
+    /// before calling here.
+    /// </param>
     /// <param name="executor">The sandbox executor to dispatch through.</param>
     /// <param name="toolName">Tool name for diagnostic attribution in the sandbox request, and the
     /// keyed-DI name <paramref name="permissionResolver"/> looks up an operator's per-tool override
@@ -51,11 +55,11 @@ public static class WorkspaceCommandRunner
     /// <param name="permissionResolver">
     /// Resolves the operator's <c>ToolOverrideConfig</c> for <paramref name="toolName"/> — this runner
     /// used to build its permission profile inline, so a per-tool <c>DeniedCapabilities</c> or
-    /// <c>MinimumIsolation</c> override never reached it (#405). Only the override's
-    /// <c>DeniedCapabilities</c> and <c>MinimumIsolation</c> are taken; <paramref name="requiredCapabilities"/>
-    /// and the workspace-derived <c>AllowedPrograms</c> below stay caller-supplied — the resolver's base
-    /// declaration would be redundant with what the caller already knows, and merging isolation must
-    /// never downgrade below <see cref="SandboxIsolationLevel.Process"/>, the floor this runner requires.
+    /// <c>MinimumIsolation</c> override never reached it (#405). Via
+    /// <see cref="ToolPermissionProfileResolver.ResolveForUngovernedDispatch"/>, which also refuses
+    /// outright when the override intersects <paramref name="requiredCapabilities"/>, matching the
+    /// governed-call semantics <c>CapabilityEnforcer</c> guarantees rather than silently narrowing
+    /// what gets provisioned.
     /// </param>
     /// <param name="timeout">Optional wall-clock timeout for the command. Defaults to 5 minutes — tests can be slow.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
@@ -83,15 +87,10 @@ public static class WorkspaceCommandRunner
         var program = tokens[0];
         var arguments = tokens.Length > 1 ? tokens[1..] : Array.Empty<string>();
 
-        var overridden = permissionResolver.Resolve(toolName);
-        var profile = new ToolPermissionProfile
-        {
-            RequiredCapabilities = requiredCapabilities,
-            DeniedCapabilities = overridden.DeniedCapabilities,
-            AllowedPrograms = [program],
-            MinimumIsolation = (SandboxIsolationLevel)Math.Max(
-                (int)SandboxIsolationLevel.Process, (int)overridden.MinimumIsolation)
-        };
+        var profileResult = permissionResolver.ResolveForUngovernedDispatch(
+            toolName, requiredCapabilities, [program]);
+        if (!profileResult.IsSuccess)
+            return ToolResult.Fail(string.Join("; ", profileResult.Errors));
 
         var request = new SandboxExecutionRequest
         {
@@ -100,7 +99,7 @@ public static class WorkspaceCommandRunner
             Command = program,
             ArgumentList = arguments,
             Limits = new ResourceLimits(),
-            PermissionProfile = profile,
+            PermissionProfile = profileResult.Value!,
             Timeout = timeout ?? TimeSpan.FromMinutes(5)
         };
 

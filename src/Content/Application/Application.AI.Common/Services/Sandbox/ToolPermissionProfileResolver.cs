@@ -1,5 +1,6 @@
 using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Services.Tools;
+using Domain.Common;
 using Domain.Common.Helpers;
 using Domain.AI.Sandbox;
 using Domain.Common.Config.AI.Sandbox;
@@ -82,6 +83,53 @@ public sealed class ToolPermissionProfileResolver
             DeniedCapabilities = deniedCaps,
             MinimumIsolation = effectiveIsolation
         };
+    }
+
+    /// <summary>
+    /// Resolves a permission profile for a caller that dispatches directly to an
+    /// <c>ISandboxExecutor</c> without going through <c>ICapabilityEnforcer</c>/
+    /// <c>IToolInvocationGovernor</c> — <c>WorkspaceCommandRunner</c> and <c>IacSandboxRunner</c>,
+    /// which are not governed tool calls, so nothing else on their path ever checks an operator's
+    /// <c>DeniedCapabilities</c> against <paramref name="requiredCapabilities"/> the way
+    /// <c>CapabilityEnforcer.EnforceAsync</c> does for every governed call (#405).
+    /// </summary>
+    /// <param name="toolName">The keyed DI tool name, used to look up the operator's override.</param>
+    /// <param name="requiredCapabilities">
+    /// The caller-supplied capabilities this run needs — kept as the caller's own declaration rather
+    /// than re-derived from the base lookup, so a caller whose name is outside the bounded first-party
+    /// key set (or whose declaration legitimately differs per call) isn't second-guessed.
+    /// </param>
+    /// <param name="allowedPrograms">The runtime-derived allowed-programs list for this run.</param>
+    /// <returns>
+    /// A forbidden <see cref="Result{T}"/> when the deny override intersects
+    /// <paramref name="requiredCapabilities"/> — refusing outright, the same as a governed call, rather
+    /// than silently narrowing what gets provisioned. Otherwise the merged profile: the override's
+    /// <c>DeniedCapabilities</c> carried through (for <see cref="ToolPermissionProfile.EffectiveCapabilities"/>),
+    /// and isolation floored at <see cref="SandboxIsolationLevel.Process"/> — never downgraded even
+    /// when no override is configured (this dispatch path requires at least process isolation).
+    /// </returns>
+    public Result<ToolPermissionProfile> ResolveForUngovernedDispatch(
+        string toolName,
+        ToolCapability requiredCapabilities,
+        IReadOnlyList<string> allowedPrograms)
+    {
+        var overridden = Resolve(toolName);
+
+        var denied = requiredCapabilities & overridden.DeniedCapabilities;
+        if (denied != ToolCapability.None)
+        {
+            return Result<ToolPermissionProfile>.Forbidden(
+                $"Tool '{toolName}' requires capabilities denied by operator override: {denied}");
+        }
+
+        return Result<ToolPermissionProfile>.Success(new ToolPermissionProfile
+        {
+            RequiredCapabilities = requiredCapabilities,
+            DeniedCapabilities = overridden.DeniedCapabilities,
+            AllowedPrograms = allowedPrograms,
+            MinimumIsolation = (SandboxIsolationLevel)Math.Max(
+                (int)SandboxIsolationLevel.Process, (int)overridden.MinimumIsolation)
+        });
     }
 
     /// <summary>

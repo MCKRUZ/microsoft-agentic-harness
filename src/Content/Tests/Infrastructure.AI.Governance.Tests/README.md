@@ -13,14 +13,18 @@ Files are organized into `Adapters/` (one test class per adapter) and root-level
 | Test Class | What It Tests | Approx Test Count | Unit/Integration |
 |------------|---------------|-------------------|------------------|
 | `AgtPolicyEngineAdapterTests` | Policy engine: load YAML, evaluate tool calls, allow/deny | 6 | Unit |
-| `AgtAuditAdapterTests` | Audit logging: entry counting, chain integrity verification | 5 | Unit |
 | `AgtPromptInjectionAdapterTests` | Injection detection: benign pass, override detect, confidence | 3 | Unit |
 | `McpSecurityScannerAdapterTests` | MCP security: tool poisoning, hidden chars, description injection, base64, batch | 8 | Unit |
 | `ApiDiscoveryTests` | Reflection-based AGT public API surface dump (diagnostic) | 5 | Unit |
+| `AllToolsCapabilityCoverageTests` | Every registered `ITool` declares capabilities deliberately (#406) | 1 | Unit |
+
+Audit logging is no longer an AGT adapter (#407) — it moved to `JsonlGovernanceAuditWriter`
+(`Infrastructure.AI/Audit/`), tested by `JsonlGovernanceAuditWriterTests` in
+`Infrastructure.AI.Tests/Audit/`, alongside its sibling JSONL audit sinks.
 
 ## Testing Patterns and Example
 
-Tests use real AGT library instances (not mocked) since the adapters are thin wrappers. The underlying `PolicyEngine`, `AuditLogger`, `PromptInjectionDetector`, and `McpSecurityScanner` are instantiated directly.
+Tests use real AGT library instances (not mocked) since the adapters are thin wrappers. The underlying `PolicyEngine` and `PromptInjectionDetector` are instantiated directly.
 
 ```csharp
 [Fact]
