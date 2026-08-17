@@ -204,7 +204,9 @@ internal static class JudgeCallCore
                     logger.LogWarning(
                         "Judge returned empty body on attempt {Attempt}; skipping retry (not a recoverable format issue).",
                         attempt + 1);
-                    return BuildEmptyBodyResult(lastRaw, totalInput, totalOutput, cost);
+                    return Fail(
+                        LlmJudgeOutcome.InvocationFailed, "Judge returned empty response body.",
+                        lastRaw, totalInput, totalOutput, cost);
                 }
 
                 logger.LogWarning("Judge attempt {Attempt} returned malformed JSON.", attempt + 1);
@@ -220,16 +222,9 @@ internal static class JudgeCallCore
         catch (Exception ex)
         {
             logger.LogWarning(ex, "Judge invocation failed.");
-            return new LlmJudgeResult
-            {
-                Outcome = LlmJudgeOutcome.InvocationFailed,
-                Score = 0.0,
-                Reasoning = $"Judge invocation failed: {ex.Message}",
-                RawOutput = lastRaw,
-                CostUsd = ComputeCost(totalInput, totalOutput, cost),
-                InputTokens = totalInput,
-                OutputTokens = totalOutput,
-            };
+            return Fail(
+                LlmJudgeOutcome.InvocationFailed, $"Judge invocation failed: {ex.Message}",
+                lastRaw, totalInput, totalOutput, cost);
         }
     }
 
@@ -281,31 +276,15 @@ internal static class JudgeCallCore
         };
     }
 
-    private static LlmJudgeResult BuildEmptyBodyResult(
-        string? lastRaw, long totalInput, long totalOutput, JudgeCostOptions? cost) => new()
-    {
-        Outcome = LlmJudgeOutcome.InvocationFailed,
-        Score = 0.0,
-        Reasoning = "Judge returned empty response body.",
-        RawOutput = lastRaw,
-        CostUsd = ComputeCost(totalInput, totalOutput, cost),
-        InputTokens = totalInput,
-        OutputTokens = totalOutput,
-    };
-
     private static LlmJudgeResult BuildTerminalFailureResult(
-        bool wasContractViolation, string? lastRaw, long totalInput, long totalOutput, JudgeCostOptions? cost) => new()
+        bool wasContractViolation, string? lastRaw, long totalInput, long totalOutput, JudgeCostOptions? cost)
     {
-        Outcome = wasContractViolation ? LlmJudgeOutcome.ContractViolation : LlmJudgeOutcome.Malformed,
-        Score = 0.0,
-        Reasoning = wasContractViolation
+        var outcome = wasContractViolation ? LlmJudgeOutcome.ContractViolation : LlmJudgeOutcome.Malformed;
+        var reasoning = wasContractViolation
             ? "Judge failed the verdict contract on both attempts."
-            : "Judge returned malformed JSON on both attempts.",
-        RawOutput = lastRaw,
-        CostUsd = ComputeCost(totalInput, totalOutput, cost),
-        InputTokens = totalInput,
-        OutputTokens = totalOutput,
-    };
+            : "Judge returned malformed JSON on both attempts.";
+        return Fail(outcome, reasoning, lastRaw, totalInput, totalOutput, cost);
+    }
 
     // Generic — works for any strict-contract caller regardless of what its own
     // SystemPromptCore said, since the caller doesn't know the specific validation failure.
@@ -320,15 +299,23 @@ internal static class JudgeCallCore
         "violates. Do not paraphrase, summarize, or invent a requirement that is not present in the rubric.";
 
     /// <summary>Builds a zero-token soft-failure result with the supplied reason.</summary>
-    public static LlmJudgeResult Failed(string reason, JudgeCostOptions? cost) => new()
+    public static LlmJudgeResult Failed(string reason, JudgeCostOptions? cost)
+        => Fail(LlmJudgeOutcome.InvocationFailed, reason, rawOutput: null, inputTokens: 0, outputTokens: 0, cost);
+
+    // Single owner of the shared 0.0-score, non-Parsed result shape — every soft-failure
+    // path (empty body, malformed/contract-violation terminal, escaped exception, and the
+    // zero-token TryBuildPrompt validation failures) differs only in outcome/reasoning/raw.
+    private static LlmJudgeResult Fail(
+        LlmJudgeOutcome outcome, string reasoning, string? rawOutput,
+        long inputTokens, long outputTokens, JudgeCostOptions? cost) => new()
     {
-        Outcome = LlmJudgeOutcome.InvocationFailed,
+        Outcome = outcome,
         Score = 0.0,
-        Reasoning = reason,
-        RawOutput = null,
-        CostUsd = ComputeCost(0, 0, cost),
-        InputTokens = 0,
-        OutputTokens = 0,
+        Reasoning = reasoning,
+        RawOutput = rawOutput,
+        CostUsd = ComputeCost(inputTokens, outputTokens, cost),
+        InputTokens = inputTokens,
+        OutputTokens = outputTokens,
     };
 
     private static decimal ComputeCost(long inputTokens, long outputTokens, JudgeCostOptions? cost)

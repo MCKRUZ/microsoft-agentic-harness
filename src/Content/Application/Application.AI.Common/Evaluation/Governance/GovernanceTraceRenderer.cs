@@ -41,19 +41,11 @@ public static class GovernanceTraceRenderer
     private const int MaxRenderedDecisions = 20;
 
     /// <summary>
-    /// True when the per-invocation governor actually engaged during the run: either
-    /// enforcement was active, or at least one tool call was recorded. False for a
-    /// <c>null</c> trace or an unengaged one (including the shared
-    /// <see cref="GovernanceTrace.Empty"/> default) — content-based, not a null check.
+    /// Null-safe wrapper over <see cref="GovernanceTrace.IsEngaged"/> — false for a
+    /// <c>null</c> trace, otherwise the trace's own answer. See that property for why this
+    /// is content-based rather than a null check.
     /// </summary>
-    /// <remarks>
-    /// Deliberately <c>EnforcementEnabled || ToolInvocationCount &gt; 0</c>, not just the
-    /// invocation count: enforcement on with zero tool calls is still informative for a
-    /// rubric asking "did it get approval before writing" — zero calls means it didn't
-    /// write, a legitimate pass, not an unscoreable case.
-    /// </remarks>
-    public static bool IsEngaged(GovernanceTrace? trace)
-        => trace is not null && (trace.EnforcementEnabled || trace.ToolInvocationCount > 0);
+    public static bool IsEngaged(GovernanceTrace? trace) => trace?.IsEngaged ?? false;
 
     /// <summary>
     /// Renders the trace as compact text for a judge prompt: enforcement mode, tallies,
@@ -70,13 +62,13 @@ public static class GovernanceTraceRenderer
 
         var sb = new StringBuilder();
         sb.Append("enforcement: ").AppendLine(trace!.EnforcementEnabled ? "enabled" : "observe-only");
-        sb.Append("tool_calls: ").Append(trace.ToolInvocationCount.ToString(CultureInfo.InvariantCulture))
-            .Append(" (allowed ").Append(trace.AllowedCount.ToString(CultureInfo.InvariantCulture))
-            .Append(", denied ").Append(trace.DeniedCount.ToString(CultureInfo.InvariantCulture))
+        sb.Append("tool_calls: ").Append(trace.ToolInvocationCount)
+            .Append(" (allowed ").Append(trace.AllowedCount)
+            .Append(", denied ").Append(trace.DeniedCount)
             .AppendLine(")");
-        sb.Append("approval_gate: encountered=").Append(trace.ApprovalGateEncountered ? "true" : "false")
-            .Append(" granted=").Append(trace.ApprovalGranted ? "true" : "false")
-            .Append(" bypassed=").AppendLine(trace.ApprovalBypassed ? "true" : "false");
+        sb.Append("approval_gate: encountered=").Append(Lower(trace.ApprovalGateEncountered))
+            .Append(" granted=").Append(Lower(trace.ApprovalGranted))
+            .Append(" bypassed=").AppendLine(Lower(trace.ApprovalBypassed));
         sb.Append("escalations: ").AppendLine(
             trace.EscalationReasonCodes.Count == 0 ? "none" : string.Join(", ", trace.EscalationReasonCodes));
 
@@ -94,23 +86,25 @@ public static class GovernanceTraceRenderer
         }
 
         sb.AppendLine("decisions:");
-        var shown = decisions.Take(MaxRenderedDecisions).ToList();
-        for (var i = 0; i < shown.Count; i++)
+        var shown = Math.Min(decisions.Count, MaxRenderedDecisions);
+        for (var i = 0; i < shown; i++)
         {
-            var d = shown[i];
-            sb.Append("  ").Append((i + 1).ToString(CultureInfo.InvariantCulture)).Append(". ")
+            var d = decisions[i];
+            sb.Append("  ").Append(i + 1).Append(". ")
                 .Append(d.ToolName).Append(" -> ").Append(d.Outcome)
                 .Append(" [").Append(d.Enforced ? "enforced" : "observe-only").Append(']')
                 .Append(" (blast=").Append(d.BlastRadius)
-                .Append(", approval_required=").Append(d.RequiredApproval ? "true" : "false")
-                .Append(", approval_granted=").Append(d.ApprovalGranted ? "true" : "false")
+                .Append(", approval_required=").Append(Lower(d.RequiredApproval))
+                .Append(", approval_granted=").Append(Lower(d.ApprovalGranted))
                 .Append(") reason: ").AppendLine(d.Reason);
         }
 
-        var omitted = decisions.Count - shown.Count;
+        var omitted = decisions.Count - shown;
         if (omitted > 0)
         {
-            sb.Append("  ... (").Append(omitted.ToString(CultureInfo.InvariantCulture)).Append(" more omitted)");
+            sb.Append("  ... (").Append(omitted).Append(" more omitted)");
         }
     }
+
+    private static string Lower(bool value) => value ? "true" : "false";
 }

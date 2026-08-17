@@ -127,15 +127,7 @@ public sealed class JuryLlmJudge : ILlmJudge
         // emitting a Parsed result with a meaningless 0.0 score.
         if (aggregate.Panel.Responded == 0)
         {
-            // Preference order matters only for the label on an all-failed panel: a
-            // contract violation ("returned valid JSON, content didn't hold up") is the
-            // most specific diagnosis when any panelist hit it, ahead of the more generic
-            // "returned no usable JSON at all".
-            var outcome = verdicts.Any(v => v.Outcome == LlmJudgeOutcome.ContractViolation)
-                ? LlmJudgeOutcome.ContractViolation
-                : verdicts.Any(v => v.Outcome == LlmJudgeOutcome.Malformed)
-                    ? LlmJudgeOutcome.Malformed
-                    : LlmJudgeOutcome.InvocationFailed;
+            var outcome = PickAllFailedOutcome(verdicts);
 
             _logger.LogWarning(
                 "Jury produced no usable scores from {Total} panelists; soft-failing as {Outcome}.",
@@ -155,12 +147,13 @@ public sealed class JuryLlmJudge : ILlmJudge
         }
 
         // A single panelist's clause/evidence carried whole, not merged across panelists —
-        // same "pick the closest-to-aggregate responder" rule EvalRunner's median
-        // aggregation uses for the same reason: a clause from one judge paired with
-        // evidence from another would misattribute what a reviewer is looking at.
-        var representative = verdicts
-            .Where(v => v.Outcome == LlmJudgeOutcome.Parsed)
-            .MinBy(v => Math.Abs(v.Score - aggregate.Score));
+        // same RepresentativeSelector EvalRunner's median aggregation uses for the same
+        // reason: a clause from one judge paired with evidence from another would
+        // misattribute what a reviewer is looking at.
+        var responders = verdicts.Where(v => v.Outcome == LlmJudgeOutcome.Parsed).ToArray();
+        var representative = responders.Length == 0
+            ? null
+            : RepresentativeSelector.PickClosest(responders, v => v.Score, aggregate.Score);
 
         return new LlmJudgeResult
         {
@@ -232,6 +225,23 @@ public sealed class JuryLlmJudge : ILlmJudge
         }
 
         return _judgeProvider.GetJudgeAsync(cancellationToken);
+    }
+
+    // Preference order matters only for the label on an all-failed panel: a contract
+    // violation ("returned valid JSON, content didn't hold up") is the most specific
+    // diagnosis when any panelist hit it, ahead of the more generic "returned no usable
+    // JSON at all".
+    private static LlmJudgeOutcome PickAllFailedOutcome(IReadOnlyList<PanelistVerdict> verdicts)
+    {
+        if (verdicts.Any(v => v.Outcome == LlmJudgeOutcome.ContractViolation))
+        {
+            return LlmJudgeOutcome.ContractViolation;
+        }
+        if (verdicts.Any(v => v.Outcome == LlmJudgeOutcome.Malformed))
+        {
+            return LlmJudgeOutcome.Malformed;
+        }
+        return LlmJudgeOutcome.InvocationFailed;
     }
 
     private static string BuildSummary(JuryAggregator.JuryAggregate aggregate, IReadOnlyList<PanelistVerdict> verdicts)

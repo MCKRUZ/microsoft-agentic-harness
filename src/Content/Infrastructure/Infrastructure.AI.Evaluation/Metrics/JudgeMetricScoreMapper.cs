@@ -58,14 +58,10 @@ internal static class JudgeMetricScoreMapper
             RawOutput = result.RawOutput,
             CostUsd = result.CostUsd,
             Duration = duration,
-            // Evidence is always empty here today: every non-Parsed LlmJudgeResult
-            // (JudgeCallCore's malformed/empty-body/invocation-failed builders, and
-            // JuryLlmJudge's all-panelists-failed branch) leaves Evidence at its []
-            // default — there is no path that both fails to parse and has evidence to
-            // carry. Read from result.Evidence anyway rather than hardcoding [] so a
-            // future producer of a non-Parsed result with real evidence doesn't need this
-            // mapper touched. ViolatedClause is never carried here regardless — an
-            // unverified clause must not surface looking verified.
+            // Always empty today (no non-Parsed LlmJudgeResult populates it) — read
+            // through rather than hardcoded [] so a future non-Parsed producer with real
+            // evidence needs no change here. ViolatedClause is never carried on this arm:
+            // an unverified clause must not surface looking verified.
             Evidence = result.Evidence
         }
     };

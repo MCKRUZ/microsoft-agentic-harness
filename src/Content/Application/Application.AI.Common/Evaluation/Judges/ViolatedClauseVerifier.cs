@@ -40,9 +40,10 @@ namespace Application.AI.Common.Evaluation.Judges;
 /// specific hole of an unfalsifiable *failing* verdict, which is what #335 asked for.
 /// </para>
 /// </remarks>
-public static class ViolatedClauseVerifier
+public static partial class ViolatedClauseVerifier
 {
-    private static readonly Regex WhitespaceRun = new(@"\s+", RegexOptions.Compiled);
+    [GeneratedRegex(@"\s+")]
+    private static partial Regex WhitespaceRunRegex();
 
     /// <summary>
     /// Checks a parsed judge response against the strict contract. Returns <c>null</c> when
@@ -87,5 +88,5 @@ public static class ViolatedClauseVerifier
     /// the prompt pipeline don't produce false mismatches.
     /// </summary>
     internal static string Normalize(string value)
-        => WhitespaceRun.Replace(WebUtility.HtmlDecode(value), " ").Trim();
+        => WhitespaceRunRegex().Replace(WebUtility.HtmlDecode(value), " ").Trim();
 }

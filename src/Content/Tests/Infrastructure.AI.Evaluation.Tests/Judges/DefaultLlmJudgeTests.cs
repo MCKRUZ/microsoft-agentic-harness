@@ -13,14 +13,17 @@ namespace Infrastructure.AI.Evaluation.Tests.Judges;
 
 public sealed class DefaultLlmJudgeTests
 {
-    private static (Mock<IJudgeChatClientProvider> provider, Mock<IChatClient> client) Plumbing(params string[] responses)
+    private static (Mock<IJudgeChatClientProvider> provider, Mock<IChatClient> client, List<IEnumerable<ChatMessage>> sent)
+        Plumbing(params string[] responses)
     {
+        var sent = new List<IEnumerable<ChatMessage>>();
         var clientMock = new Mock<IChatClient>();
         var queue = new Queue<string>(responses);
         clientMock.Setup(c => c.GetResponseAsync(
                 It.IsAny<IEnumerable<ChatMessage>>(),
                 It.IsAny<ChatOptions?>(),
                 It.IsAny<CancellationToken>()))
+            .Callback<IEnumerable<ChatMessage>, ChatOptions?, CancellationToken>((msgs, _, _) => sent.Add(msgs))
             .ReturnsAsync(() =>
             {
                 var text = queue.Count > 0 ? queue.Dequeue() : "{}";
@@ -34,7 +37,7 @@ public sealed class DefaultLlmJudgeTests
         provider.Setup(p => p.GetJudgeAsync(It.IsAny<CancellationToken>()))
             .ReturnsAsync(clientMock.Object);
 
-        return (provider, clientMock);
+        return (provider, clientMock, sent);
     }
 
     private static IOptionsMonitor<JudgeCostOptions> CostRates(decimal inputRate, decimal outputRate)
@@ -65,7 +68,7 @@ public sealed class DefaultLlmJudgeTests
     [Fact]
     public async Task JudgeAsync_parses_clean_response_and_computes_cost()
     {
-        var (provider, _) = Plumbing("""{"score": 0.8, "reasoning": "good"}""");
+        var (provider, _, _) = Plumbing("""{"score": 0.8, "reasoning": "good"}""");
         var sut = MakeSut(provider.Object, CostRates(10m, 30m));
 
         var result = await sut.JudgeAsync(MakeRequest(), CancellationToken.None);
@@ -81,7 +84,7 @@ public sealed class DefaultLlmJudgeTests
     [Fact]
     public async Task JudgeAsync_retries_once_and_returns_parsed_on_recovery()
     {
-        var (provider, client) = Plumbing("garbage", """{"score": 0.5, "reasoning": "ok"}""");
+        var (provider, client, _) = Plumbing("garbage", """{"score": 0.5, "reasoning": "ok"}""");
         var sut = MakeSut(provider.Object);
 
         var result = await sut.JudgeAsync(MakeRequest(), CancellationToken.None);
@@ -99,7 +102,7 @@ public sealed class DefaultLlmJudgeTests
     [Fact]
     public async Task JudgeAsync_returns_malformed_when_both_attempts_unparseable_nonempty()
     {
-        var (provider, _) = Plumbing("nope", "still nope");
+        var (provider, _, _) = Plumbing("nope", "still nope");
         var sut = MakeSut(provider.Object);
 
         var result = await sut.JudgeAsync(MakeRequest(), CancellationToken.None);
@@ -112,7 +115,7 @@ public sealed class DefaultLlmJudgeTests
     [Fact]
     public async Task JudgeAsync_short_circuits_empty_response_to_invocation_failed_without_retry()
     {
-        var (provider, client) = Plumbing("", "would-be-recovery");
+        var (provider, client, _) = Plumbing("", "would-be-recovery");
         var sut = MakeSut(provider.Object);
 
         var result = await sut.JudgeAsync(MakeRequest(), CancellationToken.None);
@@ -163,7 +166,7 @@ public sealed class DefaultLlmJudgeTests
     [Fact]
     public async Task JudgeAsync_clamps_score_to_zero_one_and_rejects_nan()
     {
-        var (provider, _) = Plumbing("""{"score": 1.5, "reasoning": "over"}""");
+        var (provider, _, _) = Plumbing("""{"score": 1.5, "reasoning": "over"}""");
         var sut = MakeSut(provider.Object);
 
         var result = await sut.JudgeAsync(MakeRequest(), CancellationToken.None);
@@ -191,7 +194,7 @@ public sealed class DefaultLlmJudgeTests
     [Fact]
     public async Task JudgeAsync_returns_invocation_failed_on_empty_system_prompt()
     {
-        var (provider, client) = Plumbing("""{"score": 1.0, "reasoning": "ok"}""");
+        var (provider, client, _) = Plumbing("""{"score": 1.0, "reasoning": "ok"}""");
         var sut = MakeSut(provider.Object);
 
         var result = await sut.JudgeAsync(MakeRequest(system: ""), CancellationToken.None);
@@ -207,7 +210,7 @@ public sealed class DefaultLlmJudgeTests
     [Fact]
     public async Task JudgeAsync_returns_invocation_failed_on_empty_user_template()
     {
-        var (provider, client) = Plumbing("""{"score": 1.0, "reasoning": "ok"}""");
+        var (provider, client, _) = Plumbing("""{"score": 1.0, "reasoning": "ok"}""");
         var sut = MakeSut(provider.Object);
 
         var result = await sut.JudgeAsync(MakeRequest(template: ""), CancellationToken.None);
@@ -225,27 +228,12 @@ public sealed class DefaultLlmJudgeTests
     {
         // Wire-level byte identity: this is the exact literal every caller has always seen
         // on retry. Pinned so the bool->string? BuildMessages refactor can't silently change it.
-        IEnumerable<ChatMessage>? secondAttemptMessages = null;
-        var responses = new Queue<string>(["garbage", """{"score": 0.5, "reasoning": "ok"}"""]);
-        var callCount = 0;
-        var clientMock = new Mock<IChatClient>();
-        clientMock.Setup(c => c.GetResponseAsync(
-                It.IsAny<IEnumerable<ChatMessage>>(),
-                It.IsAny<ChatOptions?>(),
-                It.IsAny<CancellationToken>()))
-            .Callback<IEnumerable<ChatMessage>, ChatOptions?, CancellationToken>((msgs, _, _) =>
-            {
-                callCount++;
-                if (callCount == 2) secondAttemptMessages = msgs;
-            })
-            .ReturnsAsync(() => new ChatResponse(new ChatMessage(ChatRole.Assistant, responses.Dequeue())));
-        var provider = new Mock<IJudgeChatClientProvider>();
-        provider.Setup(p => p.GetJudgeAsync(It.IsAny<CancellationToken>())).ReturnsAsync(clientMock.Object);
+        var (provider, _, sent) = Plumbing("garbage", """{"score": 0.5, "reasoning": "ok"}""");
         var sut = MakeSut(provider.Object);
 
         await sut.JudgeAsync(MakeRequest(), CancellationToken.None);
 
-        var systemText = secondAttemptMessages!.First(m => m.Role == ChatRole.System).Text!;
+        var systemText = sent[1].First(m => m.Role == ChatRole.System).Text!;
         systemText.Should().Contain(
             "Your previous reply was not valid JSON. You MUST return exactly one JSON object, no fences, no commentary.");
         systemText.Should().NotContain("violated_clause");
@@ -254,7 +242,7 @@ public sealed class DefaultLlmJudgeTests
     [Fact]
     public async Task JudgeAsync_contract_violation_triggers_a_retry_naming_the_specific_failure()
     {
-        var (provider, client) = Plumbing(
+        var (provider, client, _) = Plumbing(
             """{"score": 0.0, "reasoning": "bad", "violated_clause": "something not in the rubric"}""",
             """{"score": 0.0, "reasoning": "bad", "violated_clause": "must not leak secrets"}""");
         var sut = MakeSut(provider.Object);
@@ -276,23 +264,9 @@ public sealed class DefaultLlmJudgeTests
     [Fact]
     public async Task JudgeAsync_second_attempt_addendum_names_the_violation_not_the_generic_json_message()
     {
-        IEnumerable<ChatMessage>? secondAttemptMessages = null;
-        var callCount = 0;
-        var responses = new Queue<string>([
+        var (provider, _, sent) = Plumbing(
             """{"score": 0.0, "reasoning": "bad", "violated_clause": "not real"}""",
-            """{"score": 1.0, "reasoning": "fine"}"""
-        ]);
-        var clientMock = new Mock<IChatClient>();
-        clientMock.Setup(c => c.GetResponseAsync(
-                It.IsAny<IEnumerable<ChatMessage>>(), It.IsAny<ChatOptions?>(), It.IsAny<CancellationToken>()))
-            .Callback<IEnumerable<ChatMessage>, ChatOptions?, CancellationToken>((msgs, _, _) =>
-            {
-                callCount++;
-                if (callCount == 2) secondAttemptMessages = msgs;
-            })
-            .ReturnsAsync(() => new ChatResponse(new ChatMessage(ChatRole.Assistant, responses.Dequeue())));
-        var provider = new Mock<IJudgeChatClientProvider>();
-        provider.Setup(p => p.GetJudgeAsync(It.IsAny<CancellationToken>())).ReturnsAsync(clientMock.Object);
+            """{"score": 1.0, "reasoning": "fine"}""");
         var sut = MakeSut(provider.Object);
         var request = MakeRequest(system: "rubric text") with
         {
@@ -301,7 +275,7 @@ public sealed class DefaultLlmJudgeTests
 
         await sut.JudgeAsync(request, CancellationToken.None);
 
-        var systemText = secondAttemptMessages!.First(m => m.Role == ChatRole.System).Text!;
+        var systemText = sent[1].First(m => m.Role == ChatRole.System).Text!;
         systemText.Should().Contain("violated_clause");
         systemText.Should().NotContain("was not valid JSON");
     }
@@ -309,7 +283,7 @@ public sealed class DefaultLlmJudgeTests
     [Fact]
     public async Task JudgeAsync_two_consecutive_contract_violations_return_ContractViolation_not_Malformed()
     {
-        var (provider, _) = Plumbing(
+        var (provider, _, _) = Plumbing(
             """{"score": 0.0, "reasoning": "bad", "violated_clause": "fabricated one"}""",
             """{"score": 0.0, "reasoning": "still bad", "violated_clause": "fabricated two"}""");
         var sut = MakeSut(provider.Object);
@@ -330,7 +304,7 @@ public sealed class DefaultLlmJudgeTests
         // ViolatedClauseVerifier never even inspects violated_clause when the score
         // passes — a model can send one anyway (unprompted, or leftover reasoning). It
         // must not surface as if it had been checked.
-        var (provider, _) = Plumbing(
+        var (provider, _, _) = Plumbing(
             """{"score": 0.9, "reasoning": "good", "violated_clause": "the assistant leaked a secret"}""");
         var sut = MakeSut(provider.Object);
         var request = MakeRequest(system: "rubric text") with
@@ -350,7 +324,7 @@ public sealed class DefaultLlmJudgeTests
         // Attempt 1 parses but fails the clause check (a real, more specific diagnosis);
         // attempt 2 regresses to unparseable JSON. The terminal label must not silently
         // downgrade to the more generic "malformed" just because it was the last attempt.
-        var (provider, _) = Plumbing(
+        var (provider, _, _) = Plumbing(
             """{"score": 0.0, "reasoning": "bad", "violated_clause": "fabricated, not in the rubric"}""",
             "not json at all");
         var sut = MakeSut(provider.Object);
@@ -369,23 +343,9 @@ public sealed class DefaultLlmJudgeTests
     {
         // The retry never shows the model its own attempt-1 output, so an addendum
         // implying "return the SAME object" would be an unsatisfiable instruction.
-        IEnumerable<ChatMessage>? secondAttemptMessages = null;
-        var callCount = 0;
-        var responses = new Queue<string>([
+        var (provider, _, sent) = Plumbing(
             """{"score": 0.0, "reasoning": "bad", "violated_clause": "not real"}""",
-            """{"score": 1.0, "reasoning": "fine"}"""
-        ]);
-        var clientMock = new Mock<IChatClient>();
-        clientMock.Setup(c => c.GetResponseAsync(
-                It.IsAny<IEnumerable<ChatMessage>>(), It.IsAny<ChatOptions?>(), It.IsAny<CancellationToken>()))
-            .Callback<IEnumerable<ChatMessage>, ChatOptions?, CancellationToken>((msgs, _, _) =>
-            {
-                callCount++;
-                if (callCount == 2) secondAttemptMessages = msgs;
-            })
-            .ReturnsAsync(() => new ChatResponse(new ChatMessage(ChatRole.Assistant, responses.Dequeue())));
-        var provider = new Mock<IJudgeChatClientProvider>();
-        provider.Setup(p => p.GetJudgeAsync(It.IsAny<CancellationToken>())).ReturnsAsync(clientMock.Object);
+            """{"score": 1.0, "reasoning": "fine"}""");
         var sut = MakeSut(provider.Object);
         var request = MakeRequest(system: "rubric text") with
         {
@@ -394,7 +354,7 @@ public sealed class DefaultLlmJudgeTests
 
         await sut.JudgeAsync(request, CancellationToken.None);
 
-        var systemText = secondAttemptMessages!.First(m => m.Role == ChatRole.System).Text!;
+        var systemText = sent[1].First(m => m.Role == ChatRole.System).Text!;
         systemText.Should().NotContain("the same JSON object");
         systemText.Should().Contain("again from");
     }
@@ -402,7 +362,7 @@ public sealed class DefaultLlmJudgeTests
     [Fact]
     public async Task JudgeAsync_contract_satisfied_returns_evidence_alongside_the_clause()
     {
-        var (provider, _) = Plumbing(
+        var (provider, _, _) = Plumbing(
             """{"score": 0.0, "reasoning": "bad", "violated_clause": "must not leak secrets", "evidence": ["write_file"]}""");
         var sut = MakeSut(provider.Object);
         var request = MakeRequest(system: "must not leak secrets") with

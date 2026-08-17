@@ -9,9 +9,9 @@ namespace Application.AI.Common.Evaluation.Models;
 /// any changes of their own.
 /// </summary>
 /// <remarks>
-/// See <c>ViolatedClauseVerifier</c> (Infrastructure.AI.Evaluation) for the check itself.
-/// This record only carries what the check needs; it has no knowledge of the metric or
-/// case that produced it.
+/// See <c>ViolatedClauseVerifier</c> (<c>Application.AI.Common/Evaluation/Judges/</c>) for
+/// the check itself. This record only carries what the check needs; it has no knowledge of
+/// the metric or case that produced it.
 /// </remarks>
 public sealed record JudgeVerdictContract
 {

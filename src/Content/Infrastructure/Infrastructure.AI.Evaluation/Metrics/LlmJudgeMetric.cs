@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Application.AI.Common.Evaluation;
 using Application.AI.Common.Evaluation.Governance;
 using Application.AI.Common.Evaluation.Interfaces;
 using Application.AI.Common.Evaluation.Models;
@@ -157,7 +158,8 @@ public sealed class LlmJudgeMetric : IEvalMetric
     private ParsedOptions ParseOptions(MetricSpec spec)
     {
         var (tools, governance) = ParseTrajectory(spec);
-        return new ParsedOptions(ParseVerdictContractStrict(spec), ParseIncludeExpectedOutput(spec), tools, governance);
+        var includeExpectedOutput = spec.GetBool(IncludeExpectedOutputKey, defaultValue: true, _logger);
+        return new ParsedOptions(ParseVerdictContractStrict(spec), includeExpectedOutput, tools, governance);
     }
 
     private static Dictionary<string, string?> BuildVariables(
@@ -220,49 +222,30 @@ public sealed class LlmJudgeMetric : IEvalMetric
     /// </summary>
     private bool ParseVerdictContractStrict(MetricSpec spec)
     {
-        if (!spec.Parameters.TryGetValue(VerdictContractKey, out var raw) || string.IsNullOrWhiteSpace(raw))
+        var raw = spec.GetString(VerdictContractKey);
+        if (raw is null)
+        {
+            return false;
+        }
+        if (raw.Equals("strict", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+        if (raw.Equals("legacy", StringComparison.OrdinalIgnoreCase))
         {
             return false;
         }
 
-        return raw.Trim().ToLowerInvariant() switch
-        {
-            "strict" => true,
-            "legacy" => false,
-            _ => LogUnknownVerdictContractAndDefault(raw)
-        };
-    }
-
-    private bool LogUnknownVerdictContractAndDefault(string raw)
-    {
         _logger.LogWarning(
             "Unknown {Key} value '{Value}' in an llm_judge case; defaulting to legacy.", VerdictContractKey, raw);
         return false;
     }
 
-    /// <summary>Fail-soft: an unparseable value defaults to today's behaviour (included).</summary>
-    private bool ParseIncludeExpectedOutput(MetricSpec spec)
-    {
-        if (!spec.Parameters.TryGetValue(IncludeExpectedOutputKey, out var raw) || string.IsNullOrWhiteSpace(raw))
-        {
-            return true;
-        }
-
-        if (bool.TryParse(raw, out var value))
-        {
-            return value;
-        }
-
-        _logger.LogWarning(
-            "Unparseable {Key} value '{Value}' in an llm_judge case; defaulting to true.",
-            IncludeExpectedOutputKey, raw);
-        return true;
-    }
-
     /// <summary>Fail-soft: an unrecognized token is logged and ignored, not thrown on.</summary>
     private (bool Tools, bool Governance) ParseTrajectory(MetricSpec spec)
     {
-        if (!spec.Parameters.TryGetValue(TrajectoryKey, out var raw) || string.IsNullOrWhiteSpace(raw))
+        var raw = spec.GetString(TrajectoryKey);
+        if (raw is null)
         {
             return (false, false);
         }
@@ -271,18 +254,18 @@ public sealed class LlmJudgeMetric : IEvalMetric
         var governance = false;
         foreach (var token in raw.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
         {
-            switch (token.ToLowerInvariant())
+            if (token.Equals("tools", StringComparison.OrdinalIgnoreCase))
             {
-                case "tools":
-                    tools = true;
-                    break;
-                case "governance":
-                    governance = true;
-                    break;
-                default:
-                    _logger.LogWarning(
-                        "Unknown {Key} token '{Token}' in an llm_judge case; ignoring.", TrajectoryKey, token);
-                    break;
+                tools = true;
+            }
+            else if (token.Equals("governance", StringComparison.OrdinalIgnoreCase))
+            {
+                governance = true;
+            }
+            else
+            {
+                _logger.LogWarning(
+                    "Unknown {Key} token '{Token}' in an llm_judge case; ignoring.", TrajectoryKey, token);
             }
         }
 
