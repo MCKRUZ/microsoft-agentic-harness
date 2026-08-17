@@ -1,5 +1,6 @@
 using Application.AI.Common.Interfaces.Iac;
 using Application.AI.Common.Interfaces.Sandbox;
+using Application.AI.Common.Services.Sandbox;
 using Domain.AI.Iac;
 using Domain.AI.Sandbox;
 using Domain.Common;
@@ -190,10 +191,11 @@ public sealed class TerraformGenerator : IIacGenerator
             // so this singleton generator never captures scope-bound state.
             await using var scope = _scopeFactory.CreateAsyncScope();
             var sandbox = scope.ServiceProvider.GetRequiredKeyedService<ISandboxExecutor>(_isolationLevel);
+            var permissionResolver = scope.ServiceProvider.GetRequiredService<ToolPermissionProfileResolver>();
 
             return await IacSandboxRunner.RunAsync(
                 program, args, moduleDirectory, allowlist, sandbox, toolName, requiredCapabilities,
-                cancellationToken: cancellationToken);
+                permissionResolver, cancellationToken: cancellationToken);
         }
         catch (OperationCanceledException)
         {

@@ -50,7 +50,7 @@ public sealed class ToolCompositionPostureTests
             .ReturnsAsync(PermissionDecision.Allow("allowed by default"));
         _capabilities
             .Setup(x => x.EnforceAsync(It.IsAny<string>(), It.IsAny<Domain.AI.Sandbox.ToolCapability>(),
-                It.IsAny<IReadOnlyList<string>?>(), It.IsAny<IReadOnlyList<string>?>(), It.IsAny<CancellationToken>()))
+                It.IsAny<CancellationToken>()))
             .ReturnsAsync(Domain.Common.Result.Success());
         _policyEngine.SetupGet(x => x.HasPolicies).Returns(false);
         _approvalRouter

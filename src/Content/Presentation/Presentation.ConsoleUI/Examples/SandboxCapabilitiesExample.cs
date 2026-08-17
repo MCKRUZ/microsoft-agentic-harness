@@ -108,8 +108,9 @@ public class SandboxCapabilitiesExample
         var table = new Table().Border(TableBorder.Rounded);
         table.AddColumn("[bold]Tool[/]");
         table.AddColumn("[bold]Required Capabilities[/]");
+        table.AddColumn("[bold]Denied Capabilities[/]");
+        table.AddColumn("[bold]Effective Capabilities[/]");
         table.AddColumn("[bold]Isolation Level[/]");
-        table.AddColumn("[bold]Allowed Paths[/]");
 
         foreach (var toolName in tools)
         {
@@ -121,15 +122,20 @@ public class SandboxCapabilitiesExample
                     ? "[grey]None[/]"
                     : $"[green]{FormatCapabilities(profile.RequiredCapabilities)}[/]";
 
-                var pathsDisplay = profile.AllowedPaths.Count > 0
-                    ? $"[cyan]{string.Join(", ", profile.AllowedPaths.Take(2))}[/]"
-                    : "[grey]None[/]";
+                var deniedDisplay = profile.DeniedCapabilities == ToolCapability.None
+                    ? "[grey]None[/]"
+                    : $"[red]{FormatCapabilities(profile.DeniedCapabilities)}[/]";
+
+                var effectiveDisplay = profile.EffectiveCapabilities == ToolCapability.None
+                    ? "[grey]None[/]"
+                    : $"[green]{FormatCapabilities(profile.EffectiveCapabilities)}[/]";
 
                 table.AddRow(
                     $"[yellow]{toolName}[/]",
                     capsDisplay,
-                    $"[magenta]{profile.MinimumIsolation}[/]",
-                    pathsDisplay);
+                    deniedDisplay,
+                    effectiveDisplay,
+                    $"[magenta]{profile.MinimumIsolation}[/]");
             }
             catch (Exception ex)
             {
@@ -137,6 +143,7 @@ public class SandboxCapabilitiesExample
                 table.AddRow(
                     $"[yellow]{toolName}[/]",
                     "[red](profile not found)[/]",
+                    "-",
                     "-",
                     "-");
             }
@@ -155,7 +162,6 @@ public class SandboxCapabilitiesExample
         var result = await _enforcer.EnforceAsync(
             "file_system",
             ToolCapability.FileRead,
-            requestedPaths: new[] { "/app/data/config.json" },
             ct: cancellationToken);
 
         if (result.IsSuccess)
@@ -174,24 +180,23 @@ public class SandboxCapabilitiesExample
     private async Task Step4_InvalidEnforcementAsync(CancellationToken cancellationToken)
     {
         ConsoleHelper.DisplayStep(4, 5, "Invalid Enforcement");
-        AnsiConsole.WriteLine("Checking: Can 'file_system' tool make network requests? (read-only tool)");
+        AnsiConsole.WriteLine("Checking: does granting only NetworkAccess satisfy 'file_system', which needs FileRead/FileWrite?");
         AnsiConsole.WriteLine();
 
         var result = await _enforcer.EnforceAsync(
             "file_system",
             ToolCapability.NetworkAccess,
-            requestedHosts: new[] { "api.example.com" },
             ct: cancellationToken);
 
         if (!result.IsSuccess)
         {
             var errorMsg = string.Join("; ", result.Errors);
             ConsoleHelper.DisplayError($"✗ Enforcement check denied: {errorMsg}");
-            AnsiConsole.WriteLine("[yellow]This is expected — a read-only file tool should not have network access.[/]");
+            AnsiConsole.WriteLine("[yellow]This is expected — file_system needs FileRead/FileWrite, which a NetworkAccess-only grant does not cover.[/]");
         }
         else
         {
-            ConsoleHelper.DisplaySuccess("✓ Enforcement check passed (unexpected — file_system should not have NetworkAccess).");
+            ConsoleHelper.DisplaySuccess("✓ Enforcement check passed (unexpected — file_system requires FileRead/FileWrite).");
         }
 
         AnsiConsole.WriteLine();
@@ -199,17 +204,17 @@ public class SandboxCapabilitiesExample
 
     private static void Step5_DisplayResolutionProcess()
     {
-        ConsoleHelper.DisplayStep(5, 5, "Deny-Overrides-Allow Resolution");
-        AnsiConsole.WriteLine("The 5-step capability resolution process:");
+        ConsoleHelper.DisplayStep(5, 5, "Capability Resolution");
+        AnsiConsole.WriteLine("The capability resolution process:");
         AnsiConsole.WriteLine();
 
         var steps = new[]
         {
             ("1. Resolve the Tool", "ToolPermissionProfileResolver looks up the tool by name via bounded-key-set keyed DI — the same tool instance the agent would call."),
-            ("2. Read Its Declaration", "Read the resolved ITool's own RequiredCapabilities and MinimumIsolation overrides — the tool's single source of truth for what it may do."),
-            ("3. Read Runtime Configuration", "Check appsettings SandboxConfig for per-tool overrides (DeniedCapabilities, AllowedPaths, etc.)."),
-            ("4. Merge with Deny Override", "Apply deny-overrides-allow: if a capability is in both allowed and denied, deny wins. Formula: BaseCapabilities & ~DeniedCapabilities."),
-            ("5. Return Merged Profile", "Return ToolPermissionProfile with effective capabilities, allowed/denied paths/hosts, and isolation level.")
+            ("2. Read Its Declaration", "Read the resolved ITool's own RequiredCapabilities and MinimumIsolation — the tool's single source of truth for what it needs, kept undiminished on the profile."),
+            ("3. Read Runtime Configuration", "Check appsettings SandboxConfig for a per-tool DeniedCapabilities/MinimumIsolation override — kept as a separate field, never folded into the declaration."),
+            ("4. Enforce the Grant", "CapabilityEnforcer checks RequiredCapabilities against (grantedCapabilities & ~DeniedCapabilities) — a requirement the deny list touches is refused outright, not silently let through."),
+            ("5. Provision the Effective Set", "Sandbox launch and attestation read EffectiveCapabilities (RequiredCapabilities & ~DeniedCapabilities) — what should actually be provisioned, distinct from the undiminished requirement.")
         };
 
         var table = new Table().Border(TableBorder.Rounded);
@@ -226,9 +231,9 @@ public class SandboxCapabilitiesExample
         AnsiConsole.Write(table);
         AnsiConsole.WriteLine();
 
-        AnsiConsole.MarkupLine("[yellow]Key Principle:[/] Deny-overrides-allow means [bold]security is pessimistic[/]. " +
-                               "A tool must be explicitly allowed at every level (compile-time + runtime) to gain a capability. " +
-                               "A single deny at any level blocks the capability regardless of other allows.");
+        AnsiConsole.MarkupLine("[yellow]Key Principle:[/] A per-tool deny genuinely restricts. " +
+                               "It narrows what gets granted and what gets provisioned, kept apart from the tool's own declaration " +
+                               "of what it requires — the two answer different questions and must never be collapsed into one field.");
         AnsiConsole.WriteLine();
     }
 

@@ -1,5 +1,6 @@
 using Application.AI.Common.Interfaces.Sandbox;
 using Domain.AI.Sandbox;
+using Domain.Common.Config.AI.Sandbox;
 using FluentAssertions;
 using Infrastructure.AI.Tests.Support;
 using Infrastructure.AI.Tests.Tools.Workspace.Support;
@@ -36,16 +37,48 @@ public sealed class WorkspaceRunCommandsToolTests
         req.Command.Should().Be("dotnet");
         req.ArgumentList.Should().NotBeNull().And.Equal("test", "src/Solution.slnx");
 
-        // Permission profile sanity: no NetworkAccess capability (egress is deny-all for this skill);
-        // only the working copy is allow-listed.
+        // Permission profile sanity: no NetworkAccess capability (egress is deny-all for this skill).
         req.PermissionProfile.RequiredCapabilities.HasFlag(ToolCapability.NetworkAccess).Should().BeFalse();
         req.PermissionProfile.RequiredCapabilities.HasFlag(ToolCapability.FileRead).Should().BeTrue();
         req.PermissionProfile.RequiredCapabilities.HasFlag(ToolCapability.FileWrite).Should().BeTrue();
         req.PermissionProfile.RequiredCapabilities.HasFlag(ToolCapability.Subprocess).Should().BeTrue();
-        req.PermissionProfile.AllowedHosts.Should().BeEmpty();
-        req.PermissionProfile.AllowedPaths.Should().ContainSingle()
-            .Which.Should().Be(fx.Context.WorkingCopyPath);
+        req.PermissionProfile.DeniedCapabilities.Should().Be(ToolCapability.None);
+        req.PermissionProfile.MinimumIsolation.Should().Be(SandboxIsolationLevel.Process,
+            "the runner floors isolation at Process even with no operator override present (#405)");
         req.PermissionProfile.AllowedPrograms.Should().Contain("dotnet");
+    }
+
+    [Fact]
+    public async Task RunTests_OperatorDeniedCapabilityOverride_ReachesTheRunner()
+    {
+        // Regression for #405's bypass gap: WorkspaceCommandRunner used to build its permission
+        // profile inline, so an operator's ToolOverrides["run_tests"] never reached it. It now goes
+        // through the shared resolver, so a DeniedCapabilities/MinimumIsolation override must show up
+        // on the request the sandbox actually receives.
+        using var fx = new WorkspaceTestFixture(testCommand: "dotnet test");
+        var sandbox = new RecordingSandbox(success: true, exitCode: 0, output: "ok");
+        var overrideConfig = new SandboxConfig
+        {
+            ToolOverrides = new()
+            {
+                ["run_tests"] = new ToolOverrideConfig
+                {
+                    DeniedCapabilities = ["FileWrite"],
+                    MinimumIsolation = "Container"
+                }
+            }
+        };
+        var sut = new WorkspaceRunTestsTool(fx.Accessor, TestScopeFactory.ForSandbox(sandbox, overrideConfig));
+
+        await sut.ExecuteAsync("run", new Dictionary<string, object?>());
+
+        sandbox.Requests.Should().ContainSingle();
+        var profile = sandbox.Requests[0].PermissionProfile;
+        profile.DeniedCapabilities.Should().Be(ToolCapability.FileWrite);
+        profile.EffectiveCapabilities.HasFlag(ToolCapability.FileWrite).Should().BeFalse(
+            "the operator's deny must be reflected in what gets provisioned");
+        profile.MinimumIsolation.Should().Be(SandboxIsolationLevel.Container,
+            "an operator-configured floor above Process must be honoured, not silently dropped");
     }
 
     [Fact]

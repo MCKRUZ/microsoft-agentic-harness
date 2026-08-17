@@ -66,7 +66,6 @@ public sealed class ToolPermissionProfileResolver
         }
 
         var deniedCaps = ParseCapabilities(overrideConfig.DeniedCapabilities);
-        var effectiveCapabilities = baseCapabilities & ~deniedCaps;
 
         var overrideIsolation = EnumNameHelper.TryParseName<SandboxIsolationLevel>(
             overrideConfig.MinimumIsolation, out var parsed)
@@ -77,11 +76,10 @@ public sealed class ToolPermissionProfileResolver
 
         return new ToolPermissionProfile
         {
-            RequiredCapabilities = effectiveCapabilities,
-            AllowedPaths = overrideConfig.AllowedPaths.AsReadOnly(),
-            DeniedPaths = overrideConfig.DeniedPaths.AsReadOnly(),
-            AllowedHosts = overrideConfig.AllowedHosts.AsReadOnly(),
-            DeniedHosts = overrideConfig.DeniedHosts.AsReadOnly(),
+            // The tool's undiminished declaration — never folded with the deny list (#405). See
+            // ToolPermissionProfile.EffectiveCapabilities for the value consumers should read.
+            RequiredCapabilities = baseCapabilities,
+            DeniedCapabilities = deniedCaps,
             MinimumIsolation = effectiveIsolation
         };
     }
@@ -118,11 +116,13 @@ public sealed class ToolPermissionProfileResolver
     /// A comma inside one entry is split and each token parsed by name, rather than rejected. The
     /// distinction matters because this method also feeds a <em>deny</em> list
     /// (<c>ToolOverrideConfig.DeniedCapabilities</c>), where dropping an entry fails <em>open</em>:
-    /// the capability stays granted, and <c>DockerSandboxExecutor</c> reads those same bits to decide
-    /// container network access and whether the bind mount is read-only. Refusing
-    /// <c>"NetworkAccess,FileWrite"</c> outright would silently convert a working deny into a live
-    /// grant on upgrade. Splitting keeps every name the operator wrote meaningful while still
-    /// refusing the numeric form, which is the shape that actually loses information.
+    /// the capability stays granted, and <c>ToolPermissionProfile.EffectiveCapabilities</c> — read
+    /// by <c>DockerContainerLaunchPreparer</c> to decide container network access and whether the
+    /// bind mount is read-only, and by <c>CapabilityEnforcer</c> to decide what to grant — resolves
+    /// as if the deny were never written. Refusing <c>"NetworkAccess,FileWrite"</c> outright would
+    /// silently convert a working deny into a live grant on upgrade. Splitting keeps every name the
+    /// operator wrote meaningful while still refusing the numeric form, which is the shape that
+    /// actually loses information.
     /// </para>
     /// </remarks>
     public static ToolCapability ParseCapabilities(IEnumerable<string> names)

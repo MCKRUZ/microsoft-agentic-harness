@@ -62,7 +62,7 @@ public sealed class ToolInvocationGovernorTests
             .ReturnsAsync(PermissionDecision.Allow("allowed by default"));
         _capabilities
             .Setup(x => x.EnforceAsync(It.IsAny<string>(), It.IsAny<Domain.AI.Sandbox.ToolCapability>(),
-                It.IsAny<IReadOnlyList<string>?>(), It.IsAny<IReadOnlyList<string>?>(), It.IsAny<CancellationToken>()))
+                It.IsAny<CancellationToken>()))
             .ReturnsAsync(Result.Success());
         _policyEngine.SetupGet(x => x.HasPolicies).Returns(false);
         _behavior.Setup(x => x.Resolve(It.IsAny<string>())).Returns(ToolBehavior.Unknown);
@@ -218,7 +218,7 @@ public sealed class ToolInvocationGovernorTests
     {
         _capabilities
             .Setup(x => x.EnforceAsync(It.IsAny<string>(), It.IsAny<Domain.AI.Sandbox.ToolCapability>(),
-                It.IsAny<IReadOnlyList<string>?>(), It.IsAny<IReadOnlyList<string>?>(), It.IsAny<CancellationToken>()))
+                It.IsAny<CancellationToken>()))
             .ReturnsAsync(Result.Fail("filesystem capability not granted"));
         var governor = Build();
 
@@ -334,7 +334,7 @@ public sealed class ToolInvocationGovernorTests
         RouterAnswers(ToolApprovalResult.Approved("approved by alice", Guid.NewGuid()));
         _capabilities
             .Setup(x => x.EnforceAsync(It.IsAny<string>(), It.IsAny<Domain.AI.Sandbox.ToolCapability>(),
-                It.IsAny<IReadOnlyList<string>?>(), It.IsAny<IReadOnlyList<string>?>(), It.IsAny<CancellationToken>()))
+                It.IsAny<CancellationToken>()))
             .ReturnsAsync(Result.Fail("tool requires a capability the sandbox did not grant"));
         var governor = Build();
 
@@ -370,7 +370,7 @@ public sealed class ToolInvocationGovernorTests
         AskingPermission();
         _capabilities
             .Setup(x => x.EnforceAsync(It.IsAny<string>(), It.IsAny<Domain.AI.Sandbox.ToolCapability>(),
-                It.IsAny<IReadOnlyList<string>?>(), It.IsAny<IReadOnlyList<string>?>(), It.IsAny<CancellationToken>()))
+                It.IsAny<CancellationToken>()))
             .ReturnsAsync(Result.Fail("tool requires a capability the sandbox did not grant"));
         var governor = Build();
 
@@ -619,9 +619,9 @@ public sealed class ToolInvocationGovernorTests
         Domain.AI.Sandbox.ToolCapability granted = default;
         _capabilities
             .Setup(x => x.EnforceAsync(It.IsAny<string>(), It.IsAny<Domain.AI.Sandbox.ToolCapability>(),
-                It.IsAny<IReadOnlyList<string>?>(), It.IsAny<IReadOnlyList<string>?>(), It.IsAny<CancellationToken>()))
-            .Callback<string, Domain.AI.Sandbox.ToolCapability, IReadOnlyList<string>?, IReadOnlyList<string>?, CancellationToken>(
-                (_, caps, _, _, _) => granted = caps)
+                It.IsAny<CancellationToken>()))
+            .Callback<string, Domain.AI.Sandbox.ToolCapability, CancellationToken>(
+                (_, caps, _) => granted = caps)
             .ReturnsAsync(Result.Success());
 
         _sandbox.DefaultGrantedCapabilities.Clear();
@@ -643,9 +643,9 @@ public sealed class ToolInvocationGovernorTests
         Domain.AI.Sandbox.ToolCapability granted = default;
         _capabilities
             .Setup(x => x.EnforceAsync(It.IsAny<string>(), It.IsAny<Domain.AI.Sandbox.ToolCapability>(),
-                It.IsAny<IReadOnlyList<string>?>(), It.IsAny<IReadOnlyList<string>?>(), It.IsAny<CancellationToken>()))
-            .Callback<string, Domain.AI.Sandbox.ToolCapability, IReadOnlyList<string>?, IReadOnlyList<string>?, CancellationToken>(
-                (_, caps, _, _, _) => granted = caps)
+                It.IsAny<CancellationToken>()))
+            .Callback<string, Domain.AI.Sandbox.ToolCapability, CancellationToken>(
+                (_, caps, _) => granted = caps)
             .ReturnsAsync(Result.Success());
 
         _sandbox.DefaultGrantedCapabilities.Clear();

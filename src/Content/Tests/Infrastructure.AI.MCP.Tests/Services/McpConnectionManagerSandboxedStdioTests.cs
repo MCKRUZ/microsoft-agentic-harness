@@ -115,7 +115,7 @@ public sealed class McpConnectionManagerSandboxedStdioTests
         {
             ToolOverrides = new Dictionary<string, ToolOverrideConfig>
             {
-                ["b1:local-tool"] = new ToolOverrideConfig { DeniedHosts = ["evil.example.com"] }
+                ["b1:local-tool"] = new ToolOverrideConfig { DeniedCapabilities = ["NetworkAccess"] }
             }
         };
         var rootServices = McpConnectionManagerBundleEgressSupport.BuildRootServices(services =>
@@ -132,7 +132,7 @@ public sealed class McpConnectionManagerSandboxedStdioTests
         await Assert.ThrowsAsync<McpConnectionException>(() => sut.GetClientAsync("b1:local-tool"));
 
         _fakeSessionFactory.LastRequest.Should().NotBeNull();
-        _fakeSessionFactory.LastRequest!.PermissionProfile.DeniedHosts.Should().Contain("evil.example.com",
+        _fakeSessionFactory.LastRequest!.PermissionProfile.DeniedCapabilities.Should().Be(ToolCapability.NetworkAccess,
             "an operator's SandboxConfig.ToolOverrides entry for this bundle server name must be honored, " +
             "the same way it already is for a first-party tool name");
         _fakeSessionFactory.LastRequest.PermissionProfile.MinimumIsolation.Should().Be(SandboxIsolationLevel.Container,

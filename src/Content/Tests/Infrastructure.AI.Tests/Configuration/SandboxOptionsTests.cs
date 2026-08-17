@@ -76,8 +76,6 @@ public sealed class SandboxOptionsTests
             {
                 ["AppConfig:AI:Sandbox:ToolOverrides:file_system:DeniedCapabilities:0"] = "NetworkAccess",
                 ["AppConfig:AI:Sandbox:ToolOverrides:file_system:DeniedCapabilities:1"] = "Subprocess",
-                ["AppConfig:AI:Sandbox:ToolOverrides:file_system:AllowedPaths:0"] = "./workspace",
-                ["AppConfig:AI:Sandbox:ToolOverrides:file_system:AllowedPaths:1"] = "/tmp",
                 ["AppConfig:AI:Sandbox:ToolOverrides:file_system:MinimumIsolation"] = "Process",
                 ["AppConfig:AI:Sandbox:ToolOverrides:file_system:MemoryLimitMb"] = "128",
                 ["AppConfig:AI:Sandbox:ToolOverrides:file_system:CpuTimeSeconds"] = "15",
@@ -90,7 +88,6 @@ public sealed class SandboxOptionsTests
         options.ToolOverrides.Should().ContainKey("file_system");
         var fileSystem = options.ToolOverrides["file_system"];
         fileSystem.DeniedCapabilities.Should().Contain("NetworkAccess").And.Contain("Subprocess");
-        fileSystem.AllowedPaths.Should().Contain("./workspace").And.Contain("/tmp");
         fileSystem.MinimumIsolation.Should().Be("Process");
         fileSystem.MemoryLimitMb.Should().Be(128);
         fileSystem.CpuTimeSeconds.Should().Be(15);

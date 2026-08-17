@@ -112,7 +112,9 @@ public sealed class SandboxSessionAttestationSigner(IAttestationService attestat
         args = request.ArgumentList ?? [],
         envNames = request.EnvironmentVariables?.Keys.Order().ToArray() ?? [],
         isolation = request.PermissionProfile.MinimumIsolation.ToString(),
-        capabilities = request.PermissionProfile.RequiredCapabilities.ToString(),
+        // EffectiveCapabilities — signs what the container was actually provisioned with, not the
+        // tool's undiminished requirement (#405).
+        capabilities = request.PermissionProfile.EffectiveCapabilities.ToString(),
         image = resolvedImage ?? request.ContainerImage,
         seeded = request.WorkspaceSeedDirectory is not null
     });

@@ -154,7 +154,7 @@ public sealed class SubPlanEnvelopeConfinementTests
         var capabilityEnforcer = new Mock<ICapabilityEnforcer>();
         capabilityEnforcer
             .Setup(x => x.EnforceAsync(It.IsAny<string>(), It.IsAny<Domain.AI.Sandbox.ToolCapability>(),
-                It.IsAny<IReadOnlyList<string>?>(), It.IsAny<IReadOnlyList<string>?>(), It.IsAny<CancellationToken>()))
+                It.IsAny<CancellationToken>()))
             .ReturnsAsync(Result.Success());
 
         var services = new ServiceCollection();

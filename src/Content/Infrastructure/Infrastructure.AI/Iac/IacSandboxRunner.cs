@@ -1,4 +1,5 @@
 using Application.AI.Common.Interfaces.Sandbox;
+using Application.AI.Common.Services.Sandbox;
 using Domain.AI.Sandbox;
 
 namespace Infrastructure.AI.Iac;
@@ -20,9 +21,12 @@ namespace Infrastructure.AI.Iac;
 /// The permission profile grants whatever <see cref="ToolCapability"/> the caller declares — see
 /// <c>IacPlanTool.RequiredSandboxCapabilities</c>/<c>IacScanTool.RequiredSandboxCapabilities</c>,
 /// the single source of truth this runner used to duplicate as a hardcoded literal (#387). Network
-/// access is scoped to the provider/module registries via
-/// <see cref="ToolPermissionProfile.AllowedHosts"/>. The filesystem scope is the single module
-/// directory.
+/// access is scoped to the provider/module registries via the egress preflight below
+/// (<see cref="SandboxExecutionRequest.EgressPrecheckTargets"/>), not via the permission profile.
+/// The module directory itself is not part of the profile at all — the profile's old
+/// <c>AllowedPaths</c>/<c>DeniedPaths</c>/<c>AllowedHosts</c>/<c>DeniedHosts</c> were removed as
+/// dead config (#405): nothing on this dispatch path (which bypasses
+/// <c>CapabilityEnforcer</c> entirely, see below) ever read them.
 /// </para>
 /// <para>
 /// Egress enforcement is the registry allowlist from
@@ -43,11 +47,14 @@ namespace Infrastructure.AI.Iac;
 public static class IacSandboxRunner
 {
     /// <summary>
-    /// Runs an IaC CLI inside the sandbox rooted at <paramref name="moduleDirectory"/>.
+    /// Runs an IaC CLI inside the sandbox for the module at <paramref name="moduleDirectory"/>.
     /// </summary>
     /// <param name="program">The CLI program to launch (e.g. <c>terraform</c>, <c>bicep</c>, <c>checkov</c>).</param>
     /// <param name="arguments">The discrete CLI arguments — each entry is passed verbatim, never shell-interpreted.</param>
-    /// <param name="moduleDirectory">The sandbox-rooted directory the CLI runs against; the sole allowed filesystem path.</param>
+    /// <param name="moduleDirectory">
+    /// The module directory the caller resolved <paramref name="requiredCapabilities"/> for. Not
+    /// itself an enforced filesystem boundary on this dispatch path — see this class's remarks.
+    /// </param>
     /// <param name="registryAllowlist">The provider/module-registry hosts the run may reach. Seeds the sandbox egress allowlist.</param>
     /// <param name="executor">The sandbox executor to dispatch through.</param>
     /// <param name="toolName">Tool name for diagnostic attribution in the sandbox request.</param>
@@ -55,6 +62,14 @@ public static class IacSandboxRunner
     /// The sandbox capabilities this run needs — supplied by the caller (e.g.
     /// <c>IacPlanTool.RequiredSandboxCapabilities</c>) rather than hardcoded here, so there is one
     /// place that states what an <c>iac_plan</c>/<c>iac_scan</c> call may do, not two (#387).
+    /// </param>
+    /// <param name="permissionResolver">
+    /// Resolves the operator's <c>ToolOverrideConfig</c> for <paramref name="toolName"/> — this
+    /// runner used to build its permission profile inline, so a per-tool <c>DeniedCapabilities</c>
+    /// or <c>MinimumIsolation</c> override never reached it (#405). Only the override's
+    /// <c>DeniedCapabilities</c> and <c>MinimumIsolation</c> are taken; <paramref name="requiredCapabilities"/>
+    /// stays caller-supplied, and merged isolation never downgrades below
+    /// <see cref="SandboxIsolationLevel.Process"/>, the floor this runner requires.
     /// </param>
     /// <param name="timeout">Optional wall-clock timeout. Defaults to 5 minutes — terraform init/plan can be slow.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
@@ -67,6 +82,7 @@ public static class IacSandboxRunner
         ISandboxExecutor executor,
         string toolName,
         ToolCapability requiredCapabilities,
+        ToolPermissionProfileResolver permissionResolver,
         TimeSpan? timeout = null,
         CancellationToken cancellationToken = default)
     {
@@ -76,16 +92,16 @@ public static class IacSandboxRunner
         ArgumentNullException.ThrowIfNull(registryAllowlist);
         ArgumentNullException.ThrowIfNull(executor);
         ArgumentException.ThrowIfNullOrWhiteSpace(toolName);
+        ArgumentNullException.ThrowIfNull(permissionResolver);
 
+        var overridden = permissionResolver.Resolve(toolName);
         var profile = new ToolPermissionProfile
         {
             RequiredCapabilities = requiredCapabilities,
-            AllowedPaths = [moduleDirectory],
+            DeniedCapabilities = overridden.DeniedCapabilities,
             AllowedPrograms = [program],
-            AllowedHosts = registryAllowlist,
-            DeniedHosts = [],
-            DeniedPaths = [],
-            MinimumIsolation = SandboxIsolationLevel.Process
+            MinimumIsolation = (SandboxIsolationLevel)Math.Max(
+                (int)SandboxIsolationLevel.Process, (int)overridden.MinimumIsolation)
         };
 
         var request = new SandboxExecutionRequest

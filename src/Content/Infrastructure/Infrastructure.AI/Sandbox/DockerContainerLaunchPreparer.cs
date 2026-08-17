@@ -178,7 +178,9 @@ public sealed class DockerContainerLaunchPreparer(
         IReadOnlyDictionary<string, string>? environmentVariables = null,
         string? workingDirectory = null)
     {
-        var hasNetworkAccess = permissionProfile.RequiredCapabilities.HasFlag(ToolCapability.NetworkAccess);
+        // EffectiveCapabilities, not RequiredCapabilities — a per-tool DeniedCapabilities override
+        // must genuinely restrict what the container is provisioned with (#405).
+        var hasNetworkAccess = permissionProfile.EffectiveCapabilities.HasFlag(ToolCapability.NetworkAccess);
 
         List<string>? cmd = null;
         if (command is not null)
@@ -213,7 +215,7 @@ public sealed class DockerContainerLaunchPreparer(
                 NetworkMode = hasNetworkAccess ? "bridge" : "none",
                 ReadonlyRootfs = true,
                 AutoRemove = false,
-                Binds = [permissionProfile.RequiredCapabilities.HasFlag(ToolCapability.FileWrite)
+                Binds = [permissionProfile.EffectiveCapabilities.HasFlag(ToolCapability.FileWrite)
                     ? $"{workspaceDir}:/workspace:rw"
                     : $"{workspaceDir}:/workspace:ro"],
                 // ReadonlyRootfs plus a possibly read-only /workspace bind would otherwise leave NO

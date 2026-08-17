@@ -1,6 +1,7 @@
 using Application.AI.Common.Interfaces.Sandbox;
 using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Interfaces.Workspace;
+using Application.AI.Common.Services.Sandbox;
 using Domain.AI.Changes;
 using Domain.Common.Config.AI.Governance;
 using Domain.AI.Models;
@@ -108,6 +109,7 @@ public sealed class WorkspaceRunTestsTool : ITool
         // so this singleton tool never captures scope-bound state.
         await using var scope = _scopeFactory.CreateAsyncScope();
         var sandbox = scope.ServiceProvider.GetRequiredKeyedService<ISandboxExecutor>(_isolationLevel);
+        var permissionResolver = scope.ServiceProvider.GetRequiredService<ToolPermissionProfileResolver>();
 
         return await WorkspaceCommandRunner.RunAsync(
             workspace.TestCommand,
@@ -115,6 +117,7 @@ public sealed class WorkspaceRunTestsTool : ITool
             sandbox,
             ToolName,
             RequiredSandboxCapabilities,
+            permissionResolver,
             timeout: null,
             cancellationToken);
     }

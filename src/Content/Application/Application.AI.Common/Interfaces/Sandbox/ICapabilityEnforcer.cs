@@ -20,19 +20,15 @@ public interface ICapabilityEnforcer
     Task<ToolPermissionProfile> ResolveProfileAsync(string toolName, CancellationToken ct);
 
     /// <summary>
-    /// Enforces that the granted capabilities satisfy the tool's requirements,
-    /// including path and host allow/deny checks.
+    /// Enforces that the granted capabilities satisfy the tool's requirements, honoring any
+    /// per-tool <c>DeniedCapabilities</c> override (#405).
     /// </summary>
     /// <param name="toolName">The keyed DI tool name.</param>
     /// <param name="grantedCapabilities">Capabilities currently available.</param>
-    /// <param name="requestedPaths">Filesystem paths the tool wants to access.</param>
-    /// <param name="requestedHosts">Network hosts the tool wants to contact.</param>
     /// <param name="ct">Cancellation token.</param>
     /// <returns>Success if allowed; failure with the specific violation reason.</returns>
     Task<Result> EnforceAsync(
         string toolName,
         ToolCapability grantedCapabilities,
-        IReadOnlyList<string>? requestedPaths = null,
-        IReadOnlyList<string>? requestedHosts = null,
         CancellationToken ct = default);
 }

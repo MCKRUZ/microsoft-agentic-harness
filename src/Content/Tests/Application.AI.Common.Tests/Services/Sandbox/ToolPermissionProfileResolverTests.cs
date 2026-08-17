@@ -55,10 +55,7 @@ public sealed class ToolPermissionProfileResolverTests
         var profile = resolver.Resolve("unknown_tool");
 
         profile.RequiredCapabilities.Should().Be(ToolCapability.None);
-        profile.AllowedPaths.Should().BeEmpty();
-        profile.DeniedPaths.Should().BeEmpty();
-        profile.AllowedHosts.Should().BeEmpty();
-        profile.DeniedHosts.Should().BeEmpty();
+        profile.DeniedCapabilities.Should().Be(ToolCapability.None);
         profile.MinimumIsolation.Should().Be(SandboxIsolationLevel.None);
     }
 
@@ -74,16 +71,18 @@ public sealed class ToolPermissionProfileResolverTests
     }
 
     [Fact]
-    public void Resolve_OverrideOnly_MergesWithDefaults()
+    public void Resolve_OverrideOnly_UnregisteredTool_DeniedCapabilitiesStillPopulatedButHasNoEffect()
     {
+        // A deny against a tool with no declared requirement (None) has nothing to narrow — proves
+        // AND-against-None stays None regardless of what an operator writes (#405; see
+        // McpConnectionManager's remarks on why this matters for bundle-owned tool names).
         var config = new SandboxConfig
         {
             ToolOverrides = new()
             {
                 ["custom_tool"] = new ToolOverrideConfig
                 {
-                    AllowedPaths = ["./data"],
-                    DeniedPaths = ["./data/secrets"],
+                    DeniedCapabilities = ["FileRead"],
                     MinimumIsolation = "Process"
                 }
             }
@@ -93,14 +92,17 @@ public sealed class ToolPermissionProfileResolverTests
         var profile = resolver.Resolve("custom_tool");
 
         profile.RequiredCapabilities.Should().Be(ToolCapability.None);
-        profile.AllowedPaths.Should().Contain("./data");
-        profile.DeniedPaths.Should().Contain("./data/secrets");
+        profile.DeniedCapabilities.Should().Be(ToolCapability.FileRead);
+        profile.EffectiveCapabilities.Should().Be(ToolCapability.None);
         profile.MinimumIsolation.Should().Be(SandboxIsolationLevel.Process);
     }
 
     [Fact]
-    public void Resolve_OverrideDeniedCapabilities_RemovesFromDeclaration()
+    public void Resolve_OverrideDeniedCapabilities_KeptSeparateFromRequired_NarrowsOnlyEffective()
     {
+        // The core #405 fix: DeniedCapabilities must not be folded into RequiredCapabilities — the
+        // tool's own declaration stays undiminished, and only EffectiveCapabilities (what sandbox
+        // provisioning and the enforcer's grant check read) is narrowed.
         var config = new SandboxConfig
         {
             ToolOverrides = new()
@@ -112,8 +114,11 @@ public sealed class ToolPermissionProfileResolverTests
 
         var profile = resolver.Resolve("full_tool");
 
-        profile.RequiredCapabilities.Should().Be(ToolCapability.FileRead | ToolCapability.FileWrite);
-        profile.RequiredCapabilities.Should().NotHaveFlag(ToolCapability.NetworkAccess);
+        profile.RequiredCapabilities.Should().Be(
+            ToolCapability.FileRead | ToolCapability.FileWrite | ToolCapability.NetworkAccess,
+            "the tool's own declaration must never be reduced by a deny override");
+        profile.DeniedCapabilities.Should().Be(ToolCapability.NetworkAccess);
+        profile.EffectiveCapabilities.Should().Be(ToolCapability.FileRead | ToolCapability.FileWrite);
     }
 
     [Fact]
@@ -131,32 +136,6 @@ public sealed class ToolPermissionProfileResolverTests
         var profile = resolver.Resolve("container_tool");
 
         profile.MinimumIsolation.Should().Be(SandboxIsolationLevel.Container);
-    }
-
-    [Fact]
-    public void Resolve_OverridePaths_MergesLists()
-    {
-        var config = new SandboxConfig
-        {
-            ToolOverrides = new()
-            {
-                ["file_system"] = new ToolOverrideConfig
-                {
-                    AllowedPaths = ["./workspace", "./temp"],
-                    DeniedPaths = ["./workspace/.secrets"],
-                    AllowedHosts = ["api.example.com"],
-                    DeniedHosts = ["evil.example.com"]
-                }
-            }
-        };
-        var resolver = BuildResolver(config, ("file_system", FileTool()));
-
-        var profile = resolver.Resolve("file_system");
-
-        profile.AllowedPaths.Should().Contain("./workspace").And.Contain("./temp");
-        profile.DeniedPaths.Should().Contain("./workspace/.secrets");
-        profile.AllowedHosts.Should().Contain("api.example.com");
-        profile.DeniedHosts.Should().Contain("evil.example.com");
     }
 
     [Fact]
@@ -222,10 +201,11 @@ public sealed class ToolPermissionProfileResolverTests
     {
         // Deliberately NOT treated as a rejected composite, unlike every other enum in the #300
         // sweep. This method also feeds ToolOverrideConfig.DeniedCapabilities, where dropping an
-        // entry fails OPEN — the capability stays granted, and DockerSandboxExecutor reads those
-        // same bits for container network access and read-only bind mounts. Refusing a comma entry
-        // would silently turn a working deny into a live grant on upgrade. Each token is still
-        // validated by name individually, so the numeric form gains nothing.
+        // entry fails OPEN — the capability stays granted, and ToolPermissionProfile.EffectiveCapabilities
+        // (read by DockerContainerLaunchPreparer for container network access and read-only bind
+        // mounts, and by CapabilityEnforcer for the grant check) resolves as if the deny were never
+        // written. Refusing a comma entry would silently turn a working deny into a live grant on
+        // upgrade. Each token is still validated by name individually, so the numeric form gains nothing.
         var caps = ToolPermissionProfileResolver.ParseCapabilities(["NetworkAccess, FileWrite"]);
 
         caps.Should().Be(ToolCapability.NetworkAccess | ToolCapability.FileWrite);
@@ -246,9 +226,10 @@ public sealed class ToolPermissionProfileResolverTests
 
         var profile = resolver.Resolve("full_tool");
 
-        profile.RequiredCapabilities.Should().Be(ToolCapability.FileRead);
-        profile.RequiredCapabilities.Should().NotHaveFlag(ToolCapability.NetworkAccess);
-        profile.RequiredCapabilities.Should().NotHaveFlag(ToolCapability.FileWrite);
+        profile.DeniedCapabilities.Should().Be(ToolCapability.NetworkAccess | ToolCapability.FileWrite);
+        profile.EffectiveCapabilities.Should().Be(ToolCapability.FileRead);
+        profile.EffectiveCapabilities.Should().NotHaveFlag(ToolCapability.NetworkAccess);
+        profile.EffectiveCapabilities.Should().NotHaveFlag(ToolCapability.FileWrite);
     }
 
     [Fact]
@@ -267,7 +248,8 @@ public sealed class ToolPermissionProfileResolverTests
 
         var profile = resolver.Resolve("full_tool");
 
-        profile.RequiredCapabilities.Should().Be(
+        profile.DeniedCapabilities.Should().Be(ToolCapability.None);
+        profile.EffectiveCapabilities.Should().Be(
             ToolCapability.FileRead | ToolCapability.FileWrite | ToolCapability.NetworkAccess);
     }
 
