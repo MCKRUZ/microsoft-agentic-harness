@@ -5,6 +5,7 @@ using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Services.Tools;
 using Domain.AI.Governance;
 using Domain.Common;
+using Domain.Common.Config.AI;
 using Domain.Common.Helpers;
 using Domain.AI.Sandbox;
 using Domain.Common.Config.AI.Sandbox;
@@ -32,6 +33,7 @@ public sealed class ToolPermissionProfileResolver
     private readonly FirstPartyToolLookup _firstPartyLookup;
     private readonly IOptionsMonitor<SandboxConfig> _config;
     private readonly IGovernanceAuditService? _auditService;
+    private readonly IOptionsMonitor<GovernanceConfig>? _governanceConfig;
 
     /// <summary>Initializes a new instance of the <see cref="ToolPermissionProfileResolver"/> class.</summary>
     /// <param name="firstPartyLookup">
@@ -49,10 +51,21 @@ public sealed class ToolPermissionProfileResolver
     /// than required, so a composition root that never calls <c>AddGovernance</c> still constructs
     /// this widely-used singleton; it just gets no durable audit trail for this path.
     /// </param>
+    /// <param name="governanceConfig">
+    /// Gates <paramref name="auditService"/>'s <c>.Log(...)</c> calls on <c>GovernanceConfig.EnableAudit</c>
+    /// (#419 code-review finding) — every other audit call site in the codebase honors this same
+    /// toggle (<c>ToolInvocationGovernor</c>, <c>PromptInjectionBehavior</c>), so an operator who sets
+    /// it <see langword="false"/> must not keep seeing writes to <c>governance.jsonl</c> from this
+    /// path alone. Optional for the same reason <paramref name="auditService"/> is: when absent,
+    /// <see cref="GovernanceConfig.EnableAudit"/>'s own default (<see langword="true"/>) applies, so a
+    /// composition root that doesn't wire this still gets the historically-correct "audit on" behavior
+    /// rather than silently losing the trail.
+    /// </param>
     public ToolPermissionProfileResolver(
         FirstPartyToolLookup firstPartyLookup,
         IOptionsMonitor<SandboxConfig> config,
-        IGovernanceAuditService? auditService = null)
+        IGovernanceAuditService? auditService = null,
+        IOptionsMonitor<GovernanceConfig>? governanceConfig = null)
     {
         ArgumentNullException.ThrowIfNull(firstPartyLookup);
         ArgumentNullException.ThrowIfNull(config);
@@ -60,6 +73,7 @@ public sealed class ToolPermissionProfileResolver
         _firstPartyLookup = firstPartyLookup;
         _config = config;
         _auditService = auditService;
+        _governanceConfig = governanceConfig;
     }
 
     /// <summary>
@@ -200,7 +214,7 @@ public sealed class ToolPermissionProfileResolver
             var underDeclared = firstPartyTool.RequiredCapabilities & ~requiredCapabilities;
             if (underDeclared != ToolCapability.None)
             {
-                _auditService?.Log(agentId ?? "unknown", toolName, ToolDecisionOutcome.Denied.ToString());
+                LogRefusal(agentId, toolName);
                 return Result<ToolPermissionProfile>.Forbidden(
                     $"Tool '{toolName}' was dispatched with capabilities narrower than its own " +
                     $"registered declaration: missing {underDeclared}.");
@@ -213,7 +227,7 @@ public sealed class ToolPermissionProfileResolver
         var denied = requiredCapabilities & deniedCaps;
         if (denied != ToolCapability.None)
         {
-            _auditService?.Log(agentId ?? "unknown", toolName, ToolDecisionOutcome.Denied.ToString());
+            LogRefusal(agentId, toolName);
             return Result<ToolPermissionProfile>.Forbidden(
                 $"Tool '{toolName}' requires capabilities denied by operator override: {denied}");
         }
@@ -226,6 +240,24 @@ public sealed class ToolPermissionProfileResolver
             MinimumIsolation = (SandboxIsolationLevel)Math.Max(
                 (int)defaultIsolationLevel, (int)overrideIsolation)
         });
+    }
+
+    /// <summary>
+    /// Writes a refusal to the durable audit trail — gated on <see cref="GovernanceConfig.EnableAudit"/>
+    /// (#419 code-review finding), matching every other <see cref="IGovernanceAuditService"/> call site
+    /// in the codebase (<c>ToolInvocationGovernor</c>, <c>PromptInjectionBehavior</c>). An operator who
+    /// sets that flag <see langword="false"/> expects every tamper-evident write to stop, not just the
+    /// governed ones — a single unconditional call site here would silently break that contract.
+    /// </summary>
+    private void LogRefusal(string? agentId, string toolName)
+    {
+        if (_auditService is null)
+            return;
+
+        if (_governanceConfig is not null && !_governanceConfig.CurrentValue.EnableAudit)
+            return;
+
+        _auditService.Log(agentId ?? "unknown", toolName, ToolDecisionOutcome.Denied.ToString());
     }
 
     /// <summary>

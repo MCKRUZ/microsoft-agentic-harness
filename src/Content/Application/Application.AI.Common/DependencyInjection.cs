@@ -22,6 +22,7 @@ using Application.AI.Common.Services.Sandbox;
 using Application.AI.Common.Services.Skills;
 using Application.AI.Common.Services.Tools;
 using Application.Common.Interfaces.Telemetry;
+using Domain.Common.Config.AI;
 using Domain.Common.Config.AI.Sandbox;
 using FluentValidation;
 using MediatR;
@@ -136,10 +137,12 @@ public static class DependencyInjection
         services.AddSingleton(sp => new ToolPermissionProfileResolver(
             sp.GetRequiredService<Services.Tools.FirstPartyToolLookup>(),
             sp.GetRequiredService<IOptionsMonitor<SandboxConfig>>(),
-            // Optional (#419): a composition root that never calls AddGovernance still constructs
-            // this widely-used singleton — it just gets no durable audit trail for an ungoverned-
-            // dispatch refusal. See the constructor's own remarks.
-            sp.GetService<IGovernanceAuditService>()));
+            // Both optional (#419): a composition root that never calls AddGovernance still
+            // constructs this widely-used singleton — it just gets no durable audit trail for an
+            // ungoverned-dispatch refusal, and (absent an EnableAudit toggle to read) defaults to
+            // the historically-correct "audit on" behavior. See the constructor's own remarks.
+            sp.GetService<IGovernanceAuditService>(),
+            sp.GetService<IOptionsMonitor<GovernanceConfig>>()));
         services.AddScoped<ICapabilityEnforcer, CapabilityEnforcer>();
 
         // Scoped agent execution context — carries agent identity through the pipeline
