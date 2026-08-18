@@ -27,7 +27,7 @@ cases:
     metrics:
       - key: contains_all
         parameters:
-          substrings: "459.9849"
+          values: "459.9849"
 
   - id: tools-03-tool-schema-respected
     input: "Use the search tool to find documents matching 'circuit breaker'."

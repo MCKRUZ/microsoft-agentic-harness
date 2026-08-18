@@ -27,7 +27,7 @@ cases:
     metrics:
       - key: contains_all
         parameters:
-          substrings: "Paris"
+          values: "Paris"
 
   - id: pipe-03-performance-logged
     input: "Compute fibonacci(10) — performance behavior should log duration."
@@ -37,7 +37,7 @@ cases:
     metrics:
       - key: contains_all
         parameters:
-          substrings: "55"
+          values: "55"
 
   - id: pipe-04-large-tool-output-compressed
     input: "Read a very large file and show me a summary (tool-output-compression should kick in)."

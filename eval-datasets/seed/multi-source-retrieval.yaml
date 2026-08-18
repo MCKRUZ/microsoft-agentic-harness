@@ -13,7 +13,7 @@ cases:
     metrics:
       - key: contains_all
         parameters:
-          substrings: "vector|dense"
+          values: "vector|dense"
 
   - id: msr-02-bm25-keyword-heavy
     input: "Find the exact phrase 'reciprocal rank fusion' in our documentation."
@@ -23,7 +23,7 @@ cases:
     metrics:
       - key: contains_all
         parameters:
-          substrings: "reciprocal rank fusion"
+          values: "reciprocal rank fusion"
 
   - id: msr-03-graph-traversal
     input: "Which services depend on the auth service indirectly (2+ hops)?"

@@ -62,6 +62,8 @@ public sealed class RegexMatchMetric : IEvalMetric
 
         var mustNotMatch = spec.GetBool("must_not_match", defaultValue: false);
         var passed = mustNotMatch ? !isMatch : isMatch;
+        var verb = isMatch ? "matched" : "did not match";
+        var qualifier = mustNotMatch ? "forbidden " : "";
 
         sw.Stop();
         return Task.FromResult(new MetricScore
@@ -69,13 +71,7 @@ public sealed class RegexMatchMetric : IEvalMetric
             MetricKey = Key,
             Score = passed ? 1.0 : 0.0,
             Verdict = passed ? Verdict.Pass : Verdict.Fail,
-            Reasoning = mustNotMatch
-                ? (isMatch
-                    ? $"Output matched forbidden pattern: {pattern}"
-                    : $"Output did not match forbidden pattern: {pattern}")
-                : (isMatch
-                    ? $"Output matched pattern: {pattern}"
-                    : $"Output did not match pattern: {pattern}"),
+            Reasoning = $"Output {verb} {qualifier}pattern: {pattern}",
             Duration = sw.Elapsed
         });
     }
