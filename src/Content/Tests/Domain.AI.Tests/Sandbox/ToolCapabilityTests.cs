@@ -27,17 +27,29 @@ public sealed class ToolCapabilityTests
     }
 
     [Fact]
-    public void ToolPermissionProfile_DeniedPaths_OverrideAllowedPaths()
+    public void ToolPermissionProfile_EffectiveCapabilities_SubtractsDeniedFromRequired()
     {
         var profile = new ToolPermissionProfile
         {
-            RequiredCapabilities = ToolCapability.FileRead,
-            AllowedPaths = ["/workspace"],
-            DeniedPaths = ["/workspace/secret"]
+            RequiredCapabilities = ToolCapability.FileRead | ToolCapability.NetworkAccess,
+            DeniedCapabilities = ToolCapability.NetworkAccess
         };
 
-        Assert.Contains("/workspace/secret", profile.DeniedPaths);
-        Assert.Contains("/workspace", profile.AllowedPaths);
+        // RequiredCapabilities stays the tool's undiminished declaration (#405) — only
+        // EffectiveCapabilities, the value sandbox provisioning reads, is narrowed.
+        Assert.Equal(ToolCapability.FileRead | ToolCapability.NetworkAccess, profile.RequiredCapabilities);
+        Assert.Equal(ToolCapability.FileRead, profile.EffectiveCapabilities);
+    }
+
+    [Fact]
+    public void ToolPermissionProfile_EffectiveCapabilities_NoDeny_EqualsRequired()
+    {
+        var profile = new ToolPermissionProfile
+        {
+            RequiredCapabilities = ToolCapability.FileRead | ToolCapability.FileWrite
+        };
+
+        Assert.Equal(profile.RequiredCapabilities, profile.EffectiveCapabilities);
     }
 
     [Fact]

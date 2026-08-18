@@ -87,6 +87,7 @@ public sealed class FoundryHostBootstrapTests
         const string root = "/home/agent/agent-state";
         overrides["AppConfig__AI__Planner__DatabasePath"].Should().Be($"{root}/planner/planner.db");
         overrides["AppConfig__AI__DriftDetection__AuditPath"].Should().Be($"{root}/audit");
+        overrides["AppConfig__AI__Governance__AuditStoragePath"].Should().Be($"{root}/governance");
         overrides["AppConfig__AI__Governance__Escalation__AuditStoragePath"].Should().Be($"{root}/escalations");
         overrides["AppConfig__AI__Changes__AuditStoragePath"].Should().Be($"{root}/changes");
         overrides["AppConfig__AI__Changes__EvidenceStoragePath"].Should().Be($"{root}/changes/evidence");

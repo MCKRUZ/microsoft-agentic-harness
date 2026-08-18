@@ -6,6 +6,7 @@ using FluentAssertions;
 using Infrastructure.AI.Tools.Workspace;
 using MediatR;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Xunit;
 
 namespace Infrastructure.AI.Tests.Tools.Workspace;
@@ -22,6 +23,7 @@ public sealed class WorkspaceDependencyInjectionTests
         var services = new ServiceCollection();
 
         // Dependencies the workspace tools consume that aren't part of this DI module.
+        services.AddLogging();
         services.AddSingleton<IMediator>(_ => new NoOpMediator());
         services.AddKeyedSingleton<ISandboxExecutor>(SandboxIsolationLevel.Process, new NoOpSandbox());
 

@@ -92,57 +92,32 @@ public sealed class CapabilityEnforcementTests
     }
 
     [Fact]
-    public async Task DeniedPath_ReturnsFail()
+    public async Task DeniedCapability_ThatToolRequires_FailsEnforcement()
     {
+        // The core #405 behavior change: a tool whose requirement intersects its own per-tool deny
+        // is refused outright by EnforceAsync, even when the caller granted every capability the
+        // tool's undiminished declaration lists.
         var config = new SandboxConfig
         {
             ToolOverrides = new()
             {
-                ["file_system"] = new ToolOverrideConfig
-                {
-                    AllowedPaths = ["./workspace"],
-                    DeniedPaths = ["./workspace/secrets"]
-                }
+                ["full_tool"] = new ToolOverrideConfig { DeniedCapabilities = ["NetworkAccess"] }
             }
         };
-        var (_, enforcer) = Build(config, ("file_system", FileTool()));
+        var (_, enforcer) = Build(config, ("full_tool", FullTool()));
 
         var result = await enforcer.EnforceAsync(
-            "file_system",
-            ToolCapability.FileRead | ToolCapability.FileWrite,
-            requestedPaths: ["./workspace/secrets/key.pem"]);
+            "full_tool",
+            ToolCapability.FileRead | ToolCapability.FileWrite | ToolCapability.NetworkAccess);
 
-        result.IsSuccess.Should().BeFalse();
-    }
-
-    [Fact]
-    public async Task DeniedHost_ReturnsFail()
-    {
-        var config = new SandboxConfig
-        {
-            ToolOverrides = new()
-            {
-                ["web_fetch"] = new ToolOverrideConfig
-                {
-                    AllowedHosts = ["*.example.com"],
-                    DeniedHosts = ["admin.example.com"]
-                }
-            }
-        };
-        var (_, enforcer) = Build(config, ("web_fetch", NetworkFileTool()));
-
-        var result = await enforcer.EnforceAsync(
-            "web_fetch",
-            ToolCapability.FileRead | ToolCapability.NetworkAccess,
-            requestedHosts: ["admin.example.com"]);
-
-        result.IsSuccess.Should().BeFalse();
+        result.IsSuccess.Should().BeFalse(
+            "a per-tool deny must refuse the call, not silently shrink the requirement");
     }
 
     // --- appsettings Override Behavior ---
 
     [Fact]
-    public async Task AppsettingsOverride_RestrictsDeclaredDefaults()
+    public async Task AppsettingsOverride_KeepsDeclarationUndiminished_NarrowsOnlyEffective()
     {
         var config = new SandboxConfig
         {
@@ -156,7 +131,9 @@ public sealed class CapabilityEnforcementTests
         var profile = await enforcer.ResolveProfileAsync("full_tool", CancellationToken.None);
 
         profile.RequiredCapabilities.Should().Be(
-            ToolCapability.FileRead | ToolCapability.FileWrite);
+            ToolCapability.FileRead | ToolCapability.FileWrite | ToolCapability.NetworkAccess,
+            "the tool's own declaration must never be reduced by a deny override");
+        profile.EffectiveCapabilities.Should().Be(ToolCapability.FileRead | ToolCapability.FileWrite);
     }
 
     [Fact]
@@ -177,88 +154,6 @@ public sealed class CapabilityEnforcementTests
     }
 
     // --- Adversarial / Edge Cases ---
-
-    [Fact]
-    public async Task PathTraversal_DeniedEvenWhenPrefixMatches()
-    {
-        var config = new SandboxConfig
-        {
-            ToolOverrides = new() { ["file_system"] = new ToolOverrideConfig { AllowedPaths = ["./workspace"] } }
-        };
-        var (_, enforcer) = Build(config, ("file_system", FileTool()));
-
-        var result = await enforcer.EnforceAsync(
-            "file_system",
-            ToolCapability.FileRead | ToolCapability.FileWrite,
-            requestedPaths: ["./workspace/../../../etc/passwd"]);
-
-        result.IsSuccess.Should().BeFalse();
-    }
-
-    [Fact]
-    public async Task MixedSeparators_NormalizedCorrectly()
-    {
-        var config = new SandboxConfig
-        {
-            ToolOverrides = new() { ["file_system"] = new ToolOverrideConfig { AllowedPaths = ["./workspace"] } }
-        };
-        var (_, enforcer) = Build(config, ("file_system", FileTool()));
-
-        var result = await enforcer.EnforceAsync(
-            "file_system",
-            ToolCapability.FileRead | ToolCapability.FileWrite,
-            requestedPaths: [".\\workspace\\file.txt"]);
-
-        result.IsSuccess.Should().BeTrue();
-    }
-
-    [Fact]
-    public async Task HostWithPort_MatchesDeniedHost()
-    {
-        var config = new SandboxConfig
-        {
-            ToolOverrides = new()
-            {
-                ["web_fetch"] = new ToolOverrideConfig
-                {
-                    AllowedHosts = ["*.example.com"],
-                    DeniedHosts = ["admin.example.com"]
-                }
-            }
-        };
-        var (_, enforcer) = Build(config, ("web_fetch", NetworkFileTool()));
-
-        var result = await enforcer.EnforceAsync(
-            "web_fetch",
-            ToolCapability.FileRead | ToolCapability.NetworkAccess,
-            requestedHosts: ["admin.example.com:8080"]);
-
-        result.IsSuccess.Should().BeFalse();
-    }
-
-    [Fact]
-    public async Task EmptyRequestedPaths_PassesThrough()
-    {
-        var config = new SandboxConfig
-        {
-            ToolOverrides = new()
-            {
-                ["file_system"] = new ToolOverrideConfig
-                {
-                    AllowedPaths = ["./workspace"],
-                    DeniedPaths = ["./workspace/secrets"]
-                }
-            }
-        };
-        var (_, enforcer) = Build(config, ("file_system", FileTool()));
-
-        var result = await enforcer.EnforceAsync(
-            "file_system",
-            ToolCapability.FileRead | ToolCapability.FileWrite,
-            requestedPaths: []);
-
-        result.IsSuccess.Should().BeTrue();
-    }
 
     [Fact]
     public async Task UnregisteredTool_NoCapabilitiesRequired_PassesThrough()
@@ -296,7 +191,7 @@ public sealed class CapabilityEnforcementTests
                 ["minimal_tool"] = new ToolOverrideConfig
                 {
                     MinimumIsolation = "Process",
-                    DeniedPaths = ["./secret"]
+                    DeniedCapabilities = ["FileRead"]
                 }
             }
         };
@@ -305,6 +200,6 @@ public sealed class CapabilityEnforcementTests
         var profile = await enforcer.ResolveProfileAsync("minimal_tool", CancellationToken.None);
 
         profile.MinimumIsolation.Should().Be(SandboxIsolationLevel.Process);
-        profile.DeniedPaths.Should().Contain("./secret");
+        profile.DeniedCapabilities.Should().Be(ToolCapability.FileRead);
     }
 }

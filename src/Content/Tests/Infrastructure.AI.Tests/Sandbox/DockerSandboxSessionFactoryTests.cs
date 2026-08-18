@@ -10,6 +10,7 @@ using Domain.AI.Sandbox;
 using Domain.Common.Config.AI.Sandbox;
 using FluentAssertions;
 using Infrastructure.AI.Sandbox;
+using Infrastructure.AI.Tests.Sandbox.Support;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Moq;
@@ -379,6 +380,29 @@ public class DockerSandboxSessionFactoryTests
     }
 
     [Fact]
+    public async Task StartSessionAsync_ContainerTier_AttestsCapabilitiesAsEnforced()
+    {
+        // A security-review finding on #405's follow-up: only the Container tier is a genuine
+        // confinement for the signed capability set — DockerContainerLaunchPreparer reads
+        // EffectiveCapabilities for network mode and mount read/write-ness.
+        SetUpAttachStream(BuildFrames(("stdout", "")));
+        var getSigned = _attestation.CaptureNonFailureAttestation();
+        var request = CreateRequest() with
+        {
+            PermissionProfile = CreateRequest().PermissionProfile with { MinimumIsolation = SandboxIsolationLevel.Container }
+        };
+
+        var result = await _sut.StartSessionAsync(request, CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue(string.Join("; ", result.Errors));
+        await using var session = result.Value!;
+        var signed = getSigned();
+        signed.Should().NotBeNull();
+        JsonDocument.Parse(signed!.Input).RootElement
+            .GetProperty("capabilitiesEnforcedBy").GetString().Should().Be("container");
+    }
+
+    [Fact]
     public async Task StartSessionAsync_NoRequestContainerImage_AttestsTheResolvedImageNotNull()
     {
         // /code-review finding (#371): DescribeSessionInput used to log request.ContainerImage
@@ -388,20 +412,13 @@ public class DockerSandboxSessionFactoryTests
         // (null) input either way. The attested "image" must match what the container actually
         // ran, not the raw per-request override.
         SetUpAttachStream(BuildFrames(("stdout", "")));
-        AttestationRequest? signed = null;
-        _attestation
-            .Setup(x => x.SignAsync(It.Is<AttestationRequest>(r => !r.IsFailure), It.IsAny<CancellationToken>()))
-            .Callback<AttestationRequest, CancellationToken>((r, _) => signed = r)
-            .ReturnsAsync((AttestationRequest r, CancellationToken _) => new ToolExecutionAttestation
-            {
-                ToolName = r.ToolName, InputHash = "test-hash", Timestamp = DateTimeOffset.UtcNow,
-                Signature = "test-sig", KeyVersion = "v1", IsFailureAttestation = false
-            });
+        var getSigned = _attestation.CaptureNonFailureAttestation();
 
         var result = await _sut.StartSessionAsync(CreateRequest(), CancellationToken.None);
 
         result.IsSuccess.Should().BeTrue(string.Join("; ", result.Errors));
         await using var session = result.Value!;
+        var signed = getSigned();
         signed.Should().NotBeNull();
         var attestedImage = JsonDocument.Parse(signed!.Input).RootElement.GetProperty("image").GetString();
         attestedImage.Should().Be(_capturedParams!.Image,

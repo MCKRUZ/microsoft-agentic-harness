@@ -1,11 +1,13 @@
 using Application.AI.Common.Interfaces.Sandbox;
 using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Interfaces.Workspace;
+using Application.AI.Common.Services.Sandbox;
 using Domain.AI.Changes;
 using Domain.Common.Config.AI.Governance;
 using Domain.AI.Models;
 using Domain.AI.Sandbox;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 
 namespace Infrastructure.AI.Tools.Workspace;
 
@@ -50,22 +52,27 @@ public sealed class WorkspaceRunTestsTool : ITool
     private readonly IWorkspaceContextAccessor _workspace;
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly SandboxIsolationLevel _isolationLevel;
+    private readonly ILogger<WorkspaceRunTestsTool> _logger;
 
     /// <summary>
     /// Initialises a new instance of the <see cref="WorkspaceRunTestsTool"/> class.
     /// </summary>
     /// <param name="workspace">Ambient accessor exposing the active sandbox workspace.</param>
     /// <param name="scopeFactory">Scope factory used to resolve the scoped sandbox executor per execution.</param>
+    /// <param name="logger">Structured logger, passed to <see cref="WorkspaceCommandRunner.RunAsync"/> to record a governance refusal before dispatch.</param>
     /// <param name="isolationLevel">The sandbox isolation level to resolve the executor for. Defaults to <see cref="SandboxIsolationLevel.Process"/>.</param>
     public WorkspaceRunTestsTool(
         IWorkspaceContextAccessor workspace,
         IServiceScopeFactory scopeFactory,
+        ILogger<WorkspaceRunTestsTool> logger,
         SandboxIsolationLevel isolationLevel = SandboxIsolationLevel.Process)
     {
         ArgumentNullException.ThrowIfNull(workspace);
         ArgumentNullException.ThrowIfNull(scopeFactory);
+        ArgumentNullException.ThrowIfNull(logger);
         _workspace = workspace;
         _scopeFactory = scopeFactory;
+        _logger = logger;
         _isolationLevel = isolationLevel;
     }
 
@@ -105,16 +112,20 @@ public sealed class WorkspaceRunTestsTool : ITool
             return ToolResult.Fail("Workspace has no TestCommand configured.");
 
         // The executor is SCOPED — resolve it from a fresh scope per execution
-        // so this singleton tool never captures scope-bound state.
+        // so this singleton tool never captures scope-bound state. Resolved inside RunAsync, after
+        // the profile, so an operator's MinimumIsolation override actually selects the executor.
         await using var scope = _scopeFactory.CreateAsyncScope();
-        var sandbox = scope.ServiceProvider.GetRequiredKeyedService<ISandboxExecutor>(_isolationLevel);
+        var permissionResolver = scope.ServiceProvider.GetRequiredService<ToolPermissionProfileResolver>();
 
         return await WorkspaceCommandRunner.RunAsync(
             workspace.TestCommand,
             workspace,
-            sandbox,
+            scope.ServiceProvider,
+            _isolationLevel,
             ToolName,
             RequiredSandboxCapabilities,
+            permissionResolver,
+            _logger,
             timeout: null,
             cancellationToken);
     }

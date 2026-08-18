@@ -377,15 +377,18 @@
                     <p>
                         Every governance decision is logged so that "the agent did X, and it was approved by Y" is
                         provable after the fact. The logging path is
-                        <code>src/Content/Infrastructure/Infrastructure.AI.Governance/Adapters/AgtAuditAdapter.cs</code>,
-                        which wraps the AgentGovernance Toolkit (AGT) <code>AuditLogger</code> behind the harness's
-                        <code>IGovernanceAuditService</code> interface.
+                        <code>src/Content/Infrastructure/Infrastructure.AI/Audit/JsonlGovernanceAuditWriter.cs</code>,
+                        implementing the harness's <code>IGovernanceAuditService</code> interface. It reuses the same
+                        tamper-evident JSONL hash-chain primitive as the escalation, drift, change, and egress audit
+                        trails — a durable replacement for the original implementation's AgentGovernance Toolkit
+                        (AGT) <code>AuditLogger</code> wrapper, whose hash chain was in-memory only and did not
+                        survive a process restart.
                     </p>
                     <p>
                         <code>Log(agentId, action, decision)</code> writes a structured JSONL entry — one JSON object
                         per line — recording who acted, what they did, and how it was decided. The integrity guarantee
-                        comes from <code>VerifyChainIntegrity()</code>, which delegates to AGT's tamper-evident hash-chain
-                        verification.
+                        comes from <code>VerifyChainIntegrity()</code>, which walks the persisted chain from genesis
+                        and recomputes every link.
                     </p>
 
                     <div class="callout callout-jargon">

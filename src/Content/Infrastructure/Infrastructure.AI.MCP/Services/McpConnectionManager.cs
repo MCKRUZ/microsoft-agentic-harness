@@ -495,16 +495,18 @@ public sealed class McpConnectionManager : IAsyncDisposable
     /// sibling of, instead of a second, unconsulted one. Precisely what this achieves today,
     /// verified rather than assumed:
     /// <list type="bullet">
-    /// <item><description>Only <see cref="ToolPermissionProfile.RequiredCapabilities"/> and
+    /// <item><description>Only <see cref="ToolPermissionProfile.EffectiveCapabilities"/> and
     /// <see cref="ToolPermissionProfile.MinimumIsolation"/> reach the container launch (via
-    /// <c>DockerContainerLaunchPreparer.BuildContainerParams</c>) — <c>DeniedHosts</c>/
-    /// <c>AllowedHosts</c>/<c>AllowedPaths</c>/<c>DeniedPaths</c> have no consumer on this path
-    /// today (their only reader is <c>CapabilityEnforcer</c>, used elsewhere); an override
-    /// authored there has no effect here yet.</description></item>
+    /// <c>DockerContainerLaunchPreparer.BuildContainerParams</c>) — the path/host allow/deny
+    /// config that once lived on this profile was removed as dead code (#405): it was read from
+    /// config but nothing on the live tool-call path ever checked a requested path or host against
+    /// it.</description></item>
     /// <item><description>A bundle-owned name is outside the bounded first-party key set, so the
     /// resolver's base declaration is <see cref="ToolCapability.None"/>/<see cref="SandboxIsolationLevel.None"/>
-    /// — <c>DeniedCapabilities</c> can only subtract from <c>None</c>, so it stays <c>None</c>
-    /// regardless of what an operator writes. The isolation floor is then raised to
+    /// — <c>EffectiveCapabilities</c> is <c>RequiredCapabilities &amp; ~DeniedCapabilities</c>, and
+    /// ANDing anything against a <c>None</c> requirement is still <c>None</c>, so a
+    /// <c>DeniedCapabilities</c> override has no observable effect here regardless of what an
+    /// operator writes. The isolation floor is then raised to
     /// <see cref="SandboxIsolationLevel.Container"/> unconditionally via <c>Math.Max</c>, so a
     /// <c>MinimumIsolation</c> override can never lower it either.</description></item>
     /// <item><description>A bundle-owned server name is <c>{bundleId}:{serverName}</c> —

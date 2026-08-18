@@ -5,6 +5,7 @@ using Domain.AI.Sandbox;
 using Domain.Common.Config.AI.Sandbox;
 using FluentAssertions;
 using Infrastructure.AI.Sandbox;
+using Infrastructure.AI.Tests.Sandbox.Support;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Moq;
@@ -75,6 +76,26 @@ public class ProcessSandboxSessionFactoryTests
             It.IsAny<CancellationToken>()), Times.Once,
             "a session that actually ran untrusted bundle code must leave a signed audit record — " +
             "the more consequential event than any of the rejection paths, which were already attested");
+    }
+
+    [SkippableFact]
+    public async Task StartSessionAsync_ProcessTier_AttestsCapabilitiesAsDeclarationOnly()
+    {
+        // A security-review finding on #405's follow-up: neither ProcessSandboxExecutor nor
+        // ProcessSandboxLaunchPreparer read Isolation or any capability bit, so a Process-tier
+        // attestation's signed capability set is not an enforced boundary — only Container-tier is.
+        Skip.IfNot(OperatingSystem.IsWindows(), "Windows-only: uses cmd.exe /c more.");
+
+        var getSigned = _attestation.CaptureNonFailureAttestation();
+
+        var result = await _sut.StartSessionAsync(CreateRequest(), CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue(string.Join("; ", result.Errors));
+        await using var session = result.Value!;
+        var signed = getSigned();
+        signed.Should().NotBeNull();
+        System.Text.Json.JsonDocument.Parse(signed!.Input).RootElement
+            .GetProperty("capabilitiesEnforcedBy").GetString().Should().Be("declaration-only");
     }
 
     [SkippableFact]

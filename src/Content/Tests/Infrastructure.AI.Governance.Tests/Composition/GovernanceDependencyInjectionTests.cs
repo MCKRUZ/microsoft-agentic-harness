@@ -1,6 +1,7 @@
 using Application.AI.Common.Interfaces.Governance;
 using Domain.Common.Config.AI;
 using FluentAssertions;
+using Infrastructure.AI.Audit;
 using Infrastructure.AI.Governance.Adapters;
 using Microsoft.Extensions.DependencyInjection;
 using Xunit;
@@ -216,7 +217,7 @@ public sealed class GovernanceDependencyInjectionTests
     // EnablePromptInjectionDetection, EnableMcpSecurity, EnableResponseSanitization, DataClassification)
     // but still had EnableAudit=true (the default) silently lost every audit record — the call sites
     // that gate on EnableAudit (ToolInvocationGovernor, PromptInjectionBehavior, etc.) believed
-    // auditing was active. AuditLogger has no dependency on GovernanceKernel, so it is now registered
+    // auditing was active. The audit writer has no dependency on GovernanceKernel, so it is registered
     // for real regardless of ArmsAgtKernel.
     [Fact]
     public void AddGovernance_AllFlagsOff_StillResolvesRealAuditService()
@@ -235,8 +236,9 @@ public sealed class GovernanceDependencyInjectionTests
         services.AddGovernance(config);
 
         using var provider = services.BuildServiceProvider();
+        // #407: durable JSONL writer, not the old in-memory-only AgtAuditAdapter.
         provider.GetRequiredService<IGovernanceAuditService>()
-            .Should().BeOfType<AgtAuditAdapter>(
+            .Should().BeOfType<JsonlGovernanceAuditWriter>(
                 "EnableAudit defaults true and its call sites must not silently lose their audit trail " +
                 "just because no other governance feature armed the kernel");
     }

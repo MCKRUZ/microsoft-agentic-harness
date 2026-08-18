@@ -1,5 +1,6 @@
 using Application.AI.Common.Interfaces.Iac;
 using Application.AI.Common.Interfaces.Sandbox;
+using Application.AI.Common.Services.Sandbox;
 using Domain.AI.Iac;
 using Domain.AI.Sandbox;
 using Domain.Common;
@@ -111,6 +112,14 @@ public sealed class TerraformGenerator : IIacGenerator
 
         if (!validate.Success)
         {
+            // A governance refusal (e.g. an operator's DeniedCapabilities override on iac_plan) must
+            // never present as a real validate failure.
+            if (IacSandboxRunner.FailIfRefused<IacPlanResult>(
+                    validate, _logger, "Terraform", "iac_plan", moduleDirectory, "iac.plan.sandbox_denied") is { } refused)
+            {
+                return refused;
+            }
+
             _logger.LogWarning("Terraform validate failed in {Module}: exit={Exit}", moduleDirectory, validate.ExitCode);
             return Result<IacPlanResult>.Success(FailedPlan(moduleDirectory, validate.Output ?? string.Empty, "validate failed"));
         }
@@ -121,6 +130,14 @@ public sealed class TerraformGenerator : IIacGenerator
         if (plan is null)
         {
             return Result<IacPlanResult>.Fail("iac.plan.sandbox_error");
+        }
+
+        // The same refusal-vs-real-failure ambiguity applies to `plan` too — a config-override reload
+        // between the two calls could refuse this second dispatch even though validate succeeded.
+        if (IacSandboxRunner.FailIfRefused<IacPlanResult>(
+                plan, _logger, "Terraform", "iac_plan (plan)", moduleDirectory, "iac.plan.sandbox_denied") is { } refusedPlan)
+        {
+            return refusedPlan;
         }
 
         return Result<IacPlanResult>.Success(ParsePlan(moduleDirectory, plan));
@@ -140,15 +157,34 @@ public sealed class TerraformGenerator : IIacGenerator
             return Result<IacScanResult>.Fail("iac.scan.invalid_blocking_severity");
         }
 
-        var checkov = await Run(
+        // Independent dispatches — each opens its own DI scope and resolves its own executor, so
+        // there is no shared mutable state and both can run concurrently.
+        var checkovTask = Run(
             [ "-d", ".", "--compact", "--quiet" ], moduleDirectory, iac.RegistryAllowlist, "iac_scan",
             IacScanTool.RequiredSandboxCapabilities, cancellationToken, CheckovProgram);
-        var tfsec = await Run(
+        var tfsecTask = Run(
             [ ".", "--no-colour" ], moduleDirectory, iac.RegistryAllowlist, "iac_scan",
             IacScanTool.RequiredSandboxCapabilities, cancellationToken, TfsecProgram);
+        await Task.WhenAll(checkovTask, tfsecTask);
+        var checkov = checkovTask.Result;
+        var tfsec = tfsecTask.Result;
         if (checkov is null || tfsec is null)
         {
             return Result<IacScanResult>.Fail("iac.scan.sandbox_error");
+        }
+
+        // A scanner the sandbox refused to dispatch must never fall through to the parsers below,
+        // which would parse empty output into zero findings — silently reporting a security scan that
+        // never ran as "passed, no findings."
+        if (IacSandboxRunner.FailIfRefused<IacScanResult>(
+                checkov, _logger, "Terraform", "iac_scan (checkov)", moduleDirectory, "iac.scan.sandbox_denied") is { } refusedCheckov)
+        {
+            return refusedCheckov;
+        }
+        if (IacSandboxRunner.FailIfRefused<IacScanResult>(
+                tfsec, _logger, "Terraform", "iac_scan (tfsec)", moduleDirectory, "iac.scan.sandbox_denied") is { } refusedTfsec)
+        {
+            return refusedTfsec;
         }
 
         var findings = new List<IacScanFinding>();
@@ -187,13 +223,15 @@ public sealed class TerraformGenerator : IIacGenerator
         try
         {
             // The executor is SCOPED — resolve it from a fresh scope per run
-            // so this singleton generator never captures scope-bound state.
+            // so this singleton generator never captures scope-bound state. Resolved inside
+            // RunAsync, after the profile, so an operator's MinimumIsolation override actually
+            // selects the executor.
             await using var scope = _scopeFactory.CreateAsyncScope();
-            var sandbox = scope.ServiceProvider.GetRequiredKeyedService<ISandboxExecutor>(_isolationLevel);
+            var permissionResolver = scope.ServiceProvider.GetRequiredService<ToolPermissionProfileResolver>();
 
             return await IacSandboxRunner.RunAsync(
-                program, args, moduleDirectory, allowlist, sandbox, toolName, requiredCapabilities,
-                cancellationToken: cancellationToken);
+                program, args, moduleDirectory, allowlist, scope.ServiceProvider, _isolationLevel,
+                toolName, requiredCapabilities, permissionResolver, cancellationToken: cancellationToken);
         }
         catch (OperationCanceledException)
         {

@@ -114,6 +114,13 @@ public sealed class GovernanceConfig
     /// <summary>Whether tamper-evident governance audit logging is enabled.</summary>
     public bool EnableAudit { get; init; } = true;
 
+    /// <summary>
+    /// Directory path for the JSONL governance audit store (#407). Relative paths resolve from the
+    /// application working directory, matching <see cref="EscalationConfig.AuditStoragePath"/>'s
+    /// convention.
+    /// </summary>
+    public string AuditStoragePath { get; init; } = ".agent-sessions/governance";
+
     /// <summary>Whether governance OTel metrics are emitted.</summary>
     public bool EnableMetrics { get; init; } = true;
 

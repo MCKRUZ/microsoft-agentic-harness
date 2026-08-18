@@ -1,7 +1,15 @@
+using Application.AI.Common.Services.Sandbox;
+using Application.AI.Common.Services.Tools;
 using Domain.AI.Iac;
+using Domain.AI.Sandbox;
+using Domain.Common.Config.AI.Sandbox;
 using FluentAssertions;
 using Infrastructure.AI.Iac;
+using Infrastructure.AI.Tools.Iac;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
+using Moq;
 using Xunit;
 
 namespace Infrastructure.AI.Tests.Iac;
@@ -20,6 +28,66 @@ public sealed class TerraformGeneratorTests
             Support.TestScopeFactory.ForSandbox(sandbox),
             NullLogger<TerraformGenerator>.Instance,
             TimeProvider.System);
+
+    /// <summary>
+    /// A generator whose iac_plan/iac_scan dispatch is refused outright by an operator
+    /// <c>DeniedCapabilities</c> override intersecting <see cref="IacPlanTool.RequiredSandboxCapabilities"/>/
+    /// <see cref="IacScanTool.RequiredSandboxCapabilities"/> — for the code-review regression tests below
+    /// proving a refusal is never mistaken for "ran and found nothing"/"ran and failed."
+    /// </summary>
+    private static TerraformGenerator CreateWithDeniedDispatch(Application.AI.Common.Interfaces.Sandbox.ISandboxExecutor sandbox)
+    {
+        var deniedConfig = new SandboxConfig
+        {
+            ToolOverrides = new()
+            {
+                ["iac_plan"] = new ToolOverrideConfig { DeniedCapabilities = ["NetworkAccess"] },
+                ["iac_scan"] = new ToolOverrideConfig { DeniedCapabilities = ["NetworkAccess"] }
+            }
+        };
+        return new TerraformGenerator(
+            IacTestConfig.ValidMonitor(),
+            Support.TestScopeFactory.ForSandbox(sandbox, deniedConfig),
+            NullLogger<TerraformGenerator>.Instance,
+            TimeProvider.System);
+    }
+
+    /// <summary>
+    /// A generator whose operator override config changes between successive
+    /// <c>IOptionsMonitor{SandboxConfig}.CurrentValue</c> reads — the first read carries no override
+    /// (so an earlier CLI step in a multi-step method like <c>PlanAsync</c> succeeds), every read after
+    /// carries a <c>DeniedCapabilities</c> override intersecting the tool's requirement (so a later step
+    /// is refused). Models a hot-reloaded config change landing mid-<c>PlanAsync</c> — terraform plan can
+    /// run for minutes, long enough for an operator's override to land between the validate and plan
+    /// dispatches, per the code-review finding this test guards.
+    /// </summary>
+    private static TerraformGenerator CreateWithDispatchRefusedAfterFirstStep(Application.AI.Common.Interfaces.Sandbox.ISandboxExecutor sandbox)
+    {
+        var reads = 0;
+        var configMock = new Mock<IOptionsMonitor<SandboxConfig>>();
+        configMock.Setup(m => m.CurrentValue).Returns(() =>
+        {
+            reads++;
+            return reads == 1
+                ? new SandboxConfig()
+                : new SandboxConfig
+                {
+                    ToolOverrides = new()
+                    {
+                        ["iac_plan"] = new ToolOverrideConfig { DeniedCapabilities = ["NetworkAccess"] }
+                    }
+                };
+        });
+
+        var services = new ServiceCollection().AddKeyedSingleton(SandboxIsolationLevel.Process, sandbox);
+        services.AddSingleton(sp => new FirstPartyToolLookup(sp, new HashSet<string>()));
+        services.AddSingleton(sp => new ToolPermissionProfileResolver(
+            sp.GetRequiredService<FirstPartyToolLookup>(), configMock.Object));
+        var scopeFactory = services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
+
+        return new TerraformGenerator(
+            IacTestConfig.ValidMonitor(), scopeFactory, NullLogger<TerraformGenerator>.Instance, TimeProvider.System);
+    }
 
     private static IacGenerationRequest Request() => new()
     {
@@ -143,6 +211,40 @@ public sealed class TerraformGeneratorTests
         result.Errors.Should().Contain("iac.plan.invalid_module_directory");
     }
 
+    [Fact]
+    public async Task PlanAsync_DispatchRefused_FailsRatherThanReportingAFakeValidateFailure()
+    {
+        // A code-review finding: the sandbox refusing to dispatch (governance denial — never actually
+        // ran terraform) used to be indistinguishable from a real "terraform validate" syntax error,
+        // both reported as Result.Success(FailedPlan(..., "validate failed")). A refusal must fail
+        // loudly instead of presenting as if terraform ran and found a problem in the module.
+        var sut = CreateWithDeniedDispatch(new RecordingIacSandbox().WithDefault(true, 0, string.Empty));
+
+        var result = await sut.PlanAsync("modules/network", CancellationToken.None);
+
+        result.IsSuccess.Should().BeFalse(
+            "a governance refusal before dispatch must never present as a completed (if failed) plan");
+        result.Errors.Should().Contain("iac.plan.sandbox_denied");
+    }
+
+    [Fact]
+    public async Task PlanAsync_PlanStepRefusedAfterValidateSucceeded_FailsRatherThanReportingAFakePlanError()
+    {
+        // A code-review finding on the fix above: it only guarded the `validate` dispatch, not `plan`
+        // — reachable if a hot-reloaded operator override refuses the call between the two (terraform
+        // plan can run for minutes). validate succeeds (no override yet); plan is then refused
+        // (override now denies NetworkAccess) and must fail loudly, not report Succeeded=false/"plan
+        // errored" as if terraform itself found a problem.
+        var sut = CreateWithDispatchRefusedAfterFirstStep(
+            new RecordingIacSandbox().WithDefault(true, 0, string.Empty));
+
+        var result = await sut.PlanAsync("modules/network", CancellationToken.None);
+
+        result.IsSuccess.Should().BeFalse(
+            "a governance refusal on the second dispatch must never present as a completed (if failed) plan");
+        result.Errors.Should().Contain("iac.plan.sandbox_denied");
+    }
+
     // ---------- ScanAsync ----------
 
     [Fact]
@@ -246,6 +348,22 @@ public sealed class TerraformGeneratorTests
 
         result.IsSuccess.Should().BeFalse();
         result.Errors.Should().Contain("iac.scan.invalid_blocking_severity");
+    }
+
+    [Fact]
+    public async Task ScanAsync_DispatchRefused_FailsRatherThanReportingAFalseCleanScan()
+    {
+        // A code-review finding: a scanner the sandbox refused to dispatch used to fall straight
+        // through to the parsers, which parse the (null) output into zero findings — silently
+        // reporting a security scan that never ran as "passed, no findings." A refusal must fail
+        // loudly instead of presenting as a clean scan.
+        var sut = CreateWithDeniedDispatch(new RecordingIacSandbox().WithDefault(true, 0, string.Empty));
+
+        var result = await sut.ScanAsync("modules/network", CancellationToken.None);
+
+        result.IsSuccess.Should().BeFalse(
+            "a governance refusal before dispatch must never present as a completed, passing scan");
+        result.Errors.Should().Contain("iac.scan.sandbox_denied");
     }
 
     private sealed class ThrowingSandbox : Application.AI.Common.Interfaces.Sandbox.ISandboxExecutor

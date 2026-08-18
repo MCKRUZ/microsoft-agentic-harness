@@ -55,10 +55,7 @@ public sealed class ToolPermissionProfileResolverTests
         var profile = resolver.Resolve("unknown_tool");
 
         profile.RequiredCapabilities.Should().Be(ToolCapability.None);
-        profile.AllowedPaths.Should().BeEmpty();
-        profile.DeniedPaths.Should().BeEmpty();
-        profile.AllowedHosts.Should().BeEmpty();
-        profile.DeniedHosts.Should().BeEmpty();
+        profile.DeniedCapabilities.Should().Be(ToolCapability.None);
         profile.MinimumIsolation.Should().Be(SandboxIsolationLevel.None);
     }
 
@@ -74,16 +71,18 @@ public sealed class ToolPermissionProfileResolverTests
     }
 
     [Fact]
-    public void Resolve_OverrideOnly_MergesWithDefaults()
+    public void Resolve_OverrideOnly_UnregisteredTool_DeniedCapabilitiesStillPopulatedButHasNoEffect()
     {
+        // A deny against a tool with no declared requirement (None) has nothing to narrow — proves
+        // AND-against-None stays None regardless of what an operator writes (#405; see
+        // McpConnectionManager's remarks on why this matters for bundle-owned tool names).
         var config = new SandboxConfig
         {
             ToolOverrides = new()
             {
                 ["custom_tool"] = new ToolOverrideConfig
                 {
-                    AllowedPaths = ["./data"],
-                    DeniedPaths = ["./data/secrets"],
+                    DeniedCapabilities = ["FileRead"],
                     MinimumIsolation = "Process"
                 }
             }
@@ -93,14 +92,17 @@ public sealed class ToolPermissionProfileResolverTests
         var profile = resolver.Resolve("custom_tool");
 
         profile.RequiredCapabilities.Should().Be(ToolCapability.None);
-        profile.AllowedPaths.Should().Contain("./data");
-        profile.DeniedPaths.Should().Contain("./data/secrets");
+        profile.DeniedCapabilities.Should().Be(ToolCapability.FileRead);
+        profile.EffectiveCapabilities.Should().Be(ToolCapability.None);
         profile.MinimumIsolation.Should().Be(SandboxIsolationLevel.Process);
     }
 
     [Fact]
-    public void Resolve_OverrideDeniedCapabilities_RemovesFromDeclaration()
+    public void Resolve_OverrideDeniedCapabilities_KeptSeparateFromRequired_NarrowsOnlyEffective()
     {
+        // The core #405 fix: DeniedCapabilities must not be folded into RequiredCapabilities — the
+        // tool's own declaration stays undiminished, and only EffectiveCapabilities (what sandbox
+        // provisioning and the enforcer's grant check read) is narrowed.
         var config = new SandboxConfig
         {
             ToolOverrides = new()
@@ -112,8 +114,11 @@ public sealed class ToolPermissionProfileResolverTests
 
         var profile = resolver.Resolve("full_tool");
 
-        profile.RequiredCapabilities.Should().Be(ToolCapability.FileRead | ToolCapability.FileWrite);
-        profile.RequiredCapabilities.Should().NotHaveFlag(ToolCapability.NetworkAccess);
+        profile.RequiredCapabilities.Should().Be(
+            ToolCapability.FileRead | ToolCapability.FileWrite | ToolCapability.NetworkAccess,
+            "the tool's own declaration must never be reduced by a deny override");
+        profile.DeniedCapabilities.Should().Be(ToolCapability.NetworkAccess);
+        profile.EffectiveCapabilities.Should().Be(ToolCapability.FileRead | ToolCapability.FileWrite);
     }
 
     [Fact]
@@ -131,32 +136,6 @@ public sealed class ToolPermissionProfileResolverTests
         var profile = resolver.Resolve("container_tool");
 
         profile.MinimumIsolation.Should().Be(SandboxIsolationLevel.Container);
-    }
-
-    [Fact]
-    public void Resolve_OverridePaths_MergesLists()
-    {
-        var config = new SandboxConfig
-        {
-            ToolOverrides = new()
-            {
-                ["file_system"] = new ToolOverrideConfig
-                {
-                    AllowedPaths = ["./workspace", "./temp"],
-                    DeniedPaths = ["./workspace/.secrets"],
-                    AllowedHosts = ["api.example.com"],
-                    DeniedHosts = ["evil.example.com"]
-                }
-            }
-        };
-        var resolver = BuildResolver(config, ("file_system", FileTool()));
-
-        var profile = resolver.Resolve("file_system");
-
-        profile.AllowedPaths.Should().Contain("./workspace").And.Contain("./temp");
-        profile.DeniedPaths.Should().Contain("./workspace/.secrets");
-        profile.AllowedHosts.Should().Contain("api.example.com");
-        profile.DeniedHosts.Should().Contain("evil.example.com");
     }
 
     [Fact]
@@ -222,10 +201,11 @@ public sealed class ToolPermissionProfileResolverTests
     {
         // Deliberately NOT treated as a rejected composite, unlike every other enum in the #300
         // sweep. This method also feeds ToolOverrideConfig.DeniedCapabilities, where dropping an
-        // entry fails OPEN — the capability stays granted, and DockerSandboxExecutor reads those
-        // same bits for container network access and read-only bind mounts. Refusing a comma entry
-        // would silently turn a working deny into a live grant on upgrade. Each token is still
-        // validated by name individually, so the numeric form gains nothing.
+        // entry fails OPEN — the capability stays granted, and ToolPermissionProfile.EffectiveCapabilities
+        // (read by DockerContainerLaunchPreparer for container network access and read-only bind
+        // mounts, and by CapabilityEnforcer for the grant check) resolves as if the deny were never
+        // written. Refusing a comma entry would silently turn a working deny into a live grant on
+        // upgrade. Each token is still validated by name individually, so the numeric form gains nothing.
         var caps = ToolPermissionProfileResolver.ParseCapabilities(["NetworkAccess, FileWrite"]);
 
         caps.Should().Be(ToolCapability.NetworkAccess | ToolCapability.FileWrite);
@@ -246,9 +226,10 @@ public sealed class ToolPermissionProfileResolverTests
 
         var profile = resolver.Resolve("full_tool");
 
-        profile.RequiredCapabilities.Should().Be(ToolCapability.FileRead);
-        profile.RequiredCapabilities.Should().NotHaveFlag(ToolCapability.NetworkAccess);
-        profile.RequiredCapabilities.Should().NotHaveFlag(ToolCapability.FileWrite);
+        profile.DeniedCapabilities.Should().Be(ToolCapability.NetworkAccess | ToolCapability.FileWrite);
+        profile.EffectiveCapabilities.Should().Be(ToolCapability.FileRead);
+        profile.EffectiveCapabilities.Should().NotHaveFlag(ToolCapability.NetworkAccess);
+        profile.EffectiveCapabilities.Should().NotHaveFlag(ToolCapability.FileWrite);
     }
 
     [Fact]
@@ -267,7 +248,8 @@ public sealed class ToolPermissionProfileResolverTests
 
         var profile = resolver.Resolve("full_tool");
 
-        profile.RequiredCapabilities.Should().Be(
+        profile.DeniedCapabilities.Should().Be(ToolCapability.None);
+        profile.EffectiveCapabilities.Should().Be(
             ToolCapability.FileRead | ToolCapability.FileWrite | ToolCapability.NetworkAccess);
     }
 
@@ -304,5 +286,224 @@ public sealed class ToolPermissionProfileResolverTests
         var profile = resolver.Resolve("container_tool");
 
         profile.MinimumIsolation.Should().Be(SandboxIsolationLevel.Container);
+    }
+
+    // --- ResolveForUngovernedDispatch (#405 — WorkspaceCommandRunner/IacSandboxRunner's shared
+    // merge, previously only exercised indirectly through those two runners; direct unit coverage
+    // added after a code-review finding on the duplicated refusal formula) ---
+
+    [Fact]
+    public void ResolveForUngovernedDispatch_NoOverride_Succeeds_FloorsIsolationAtProcess()
+    {
+        var resolver = BuildResolver();
+
+        var result = resolver.ResolveForUngovernedDispatch(
+            "unregistered_tool", ToolCapability.FileRead | ToolCapability.Subprocess, ["dotnet"]);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value!.RequiredCapabilities.Should().Be(ToolCapability.FileRead | ToolCapability.Subprocess);
+        result.Value.DeniedCapabilities.Should().Be(ToolCapability.None);
+        result.Value.AllowedPrograms.Should().ContainSingle().Which.Should().Be("dotnet");
+        result.Value.MinimumIsolation.Should().Be(SandboxIsolationLevel.Process,
+            "this dispatch path requires at least process isolation even with no operator override");
+    }
+
+    [Fact]
+    public void ResolveForUngovernedDispatch_NonIntersectingDeny_Succeeds_CarriesTheDenyForward()
+    {
+        var config = new SandboxConfig
+        {
+            ToolOverrides = new()
+            {
+                ["iac_plan"] = new ToolOverrideConfig { DeniedCapabilities = ["DatabaseRead"] }
+            }
+        };
+        var resolver = BuildResolver(config);
+
+        var result = resolver.ResolveForUngovernedDispatch(
+            "iac_plan",
+            ToolCapability.FileRead | ToolCapability.FileWrite | ToolCapability.Subprocess | ToolCapability.NetworkAccess,
+            ["terraform"]);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value!.DeniedCapabilities.Should().Be(ToolCapability.DatabaseRead);
+    }
+
+    [Fact]
+    public void ResolveForUngovernedDispatch_IntersectingDeny_RefusesOutright()
+    {
+        var config = new SandboxConfig
+        {
+            ToolOverrides = new()
+            {
+                ["iac_plan"] = new ToolOverrideConfig { DeniedCapabilities = ["NetworkAccess"] }
+            }
+        };
+        var resolver = BuildResolver(config);
+
+        var result = resolver.ResolveForUngovernedDispatch(
+            "iac_plan",
+            ToolCapability.FileRead | ToolCapability.NetworkAccess,
+            ["terraform"]);
+
+        result.IsSuccess.Should().BeFalse(
+            "a deny that intersects what the caller actually requires must refuse, not silently narrow");
+        result.Errors.Should().ContainSingle(e => e.Contains("NetworkAccess"));
+    }
+
+    [Fact]
+    public void ResolveForUngovernedDispatch_OverrideMinimumIsolation_ElevatesButNeverDowngrades()
+    {
+        var config = new SandboxConfig
+        {
+            ToolOverrides = new()
+            {
+                ["iac_plan"] = new ToolOverrideConfig { MinimumIsolation = "Container" }
+            }
+        };
+        var resolver = BuildResolver(config);
+
+        var result = resolver.ResolveForUngovernedDispatch(
+            "iac_plan", ToolCapability.FileRead, ["terraform"]);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value!.MinimumIsolation.Should().Be(SandboxIsolationLevel.Container);
+    }
+
+    [Fact]
+    public void ResolveForUngovernedDispatch_CallerDefaultIsolationLevel_IsReflectedInTheReturnedProfile()
+    {
+        // A code-review finding on this same follow-up: the returned profile used to hardcode
+        // MinimumIsolation to Process regardless of the caller's own floor, so a caller constructed
+        // with an elevated defaultIsolationLevel (WorkspaceCommandRunner/IacSandboxRunner both expose
+        // this) got the right ISandboxExecutor selected — the caller computed the max itself — but
+        // the profile embedded in the sandbox request still read Process. SandboxSessionAttestationSigner's
+        // capabilitiesEnforcedBy field and a Docker-unavailable fallback gate both read this field, so
+        // a caller with an elevated floor got the correct executor but a stale, mislabeled record. No
+        // operator override configured here — the elevation must come from the caller's own parameter.
+        var resolver = BuildResolver();
+
+        var result = resolver.ResolveForUngovernedDispatch(
+            "unregistered_tool", ToolCapability.FileRead, ["dotnet"],
+            defaultIsolationLevel: SandboxIsolationLevel.Container);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value!.MinimumIsolation.Should().Be(SandboxIsolationLevel.Container,
+            "the caller's own floor must reach the returned profile, not just the caller's local executor selection");
+    }
+
+    // --- Under-declaration cross-check (M6, a security-review finding on the #405 follow-up):
+    // requiredCapabilities is the CALLER's own, separately-maintained declaration on this ungoverned
+    // dispatch path — nothing previously stopped it from drifting under the tool's own registered
+    // ITool.RequiredCapabilities. ---
+
+    [Fact]
+    public void ResolveForUngovernedDispatch_CallerUnderDeclaresRelativeToRegisteredTool_RefusesOutright()
+    {
+        // full_tool is registered declaring FileRead|FileWrite|NetworkAccess; the caller passes only
+        // FileRead — missing FileWrite and NetworkAccess relative to the tool's own declaration.
+        var resolver = BuildResolver(tools: ("full_tool", FullTool()));
+
+        var result = resolver.ResolveForUngovernedDispatch(
+            "full_tool", ToolCapability.FileRead, ["program"]);
+
+        result.IsSuccess.Should().BeFalse(
+            "a caller-supplied capability set narrower than the tool's own registered declaration " +
+            "must refuse, not silently dispatch with less than the tool claims to need");
+        result.Errors.Should().ContainSingle(e =>
+            e.Contains("FileWrite") && e.Contains("NetworkAccess"));
+    }
+
+    [Fact]
+    public void ResolveForUngovernedDispatch_CallerDeclarationMatchesRegisteredTool_Succeeds()
+    {
+        var resolver = BuildResolver(tools: ("full_tool", FullTool()));
+
+        var result = resolver.ResolveForUngovernedDispatch(
+            "full_tool",
+            ToolCapability.FileRead | ToolCapability.FileWrite | ToolCapability.NetworkAccess,
+            ["program"]);
+
+        result.IsSuccess.Should().BeTrue();
+    }
+
+    [Fact]
+    public void ResolveForUngovernedDispatch_CallerDeclarationExceedsRegisteredTool_Succeeds()
+    {
+        // Declaring MORE than the tool's own registration is not under-declaration — this check only
+        // guards against declaring less.
+        var resolver = BuildResolver(tools: ("file_tool", FileTool()));
+
+        var result = resolver.ResolveForUngovernedDispatch(
+            "file_tool",
+            ToolCapability.FileRead | ToolCapability.FileWrite | ToolCapability.Subprocess,
+            ["program"]);
+
+        result.IsSuccess.Should().BeTrue();
+    }
+
+    [Fact]
+    public void ResolveForUngovernedDispatch_ToolNameOutsideBoundedKeySet_SkipsUnderDeclarationCheck()
+    {
+        // A name outside the bounded first-party key set (e.g. MCP or bundle-owned) has nothing
+        // registered to compare against — the under-declaration check must not fire for it.
+        var resolver = BuildResolver();
+
+        var result = resolver.ResolveForUngovernedDispatch(
+            "mcp_tool", ToolCapability.None, ["program"]);
+
+        result.IsSuccess.Should().BeTrue();
+    }
+
+    // --- ResolveExecutorForUngovernedDispatch (a /simplify finding: WorkspaceCommandRunner and
+    // IacSandboxRunner each independently resolved the profile then separately selected the executor
+    // from it, with only a comment protecting the ordering — folded into one method here so the
+    // invariant is structural, not reproduced per caller.) ---
+
+    private static IServiceProvider ScopedServices(SandboxIsolationLevel level, Application.AI.Common.Interfaces.Sandbox.ISandboxExecutor executor) =>
+        new ServiceCollection().AddKeyedSingleton(level, executor).BuildServiceProvider();
+
+    [Fact]
+    public void ResolveExecutorForUngovernedDispatch_Success_ResolvesTheExecutorForTheProfilesTier()
+    {
+        var executor = Mock.Of<Application.AI.Common.Interfaces.Sandbox.ISandboxExecutor>();
+        var config = new SandboxConfig
+        {
+            ToolOverrides = new()
+            {
+                ["iac_plan"] = new ToolOverrideConfig { MinimumIsolation = "Container" }
+            }
+        };
+        var resolver = BuildResolver(config);
+
+        var result = resolver.ResolveExecutorForUngovernedDispatch(
+            "iac_plan", ToolCapability.FileRead, ["terraform"],
+            ScopedServices(SandboxIsolationLevel.Container, executor));
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value!.Profile.MinimumIsolation.Should().Be(SandboxIsolationLevel.Container);
+        result.Value!.Executor.Should().BeSameAs(executor,
+            "the executor must be resolved for the profile's resolved tier, not a fixed default");
+    }
+
+    [Fact]
+    public void ResolveExecutorForUngovernedDispatch_ProfileForbidden_NeverResolvesAnExecutor()
+    {
+        var config = new SandboxConfig
+        {
+            ToolOverrides = new()
+            {
+                ["iac_plan"] = new ToolOverrideConfig { DeniedCapabilities = ["NetworkAccess"] }
+            }
+        };
+        var resolver = BuildResolver(config);
+        // An empty scope: if this were ever reached, GetRequiredKeyedService would throw — proving
+        // the refusal short-circuits before any executor lookup is attempted.
+        var emptyScope = new ServiceCollection().BuildServiceProvider();
+
+        var result = resolver.ResolveExecutorForUngovernedDispatch(
+            "iac_plan", ToolCapability.FileRead | ToolCapability.NetworkAccess, ["terraform"], emptyScope);
+
+        result.IsSuccess.Should().BeFalse();
     }
 }

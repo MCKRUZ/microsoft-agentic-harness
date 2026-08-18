@@ -14,6 +14,7 @@ public static class GovernanceConventions
     public const string EvaluationDuration = "agent.governance.evaluation_duration";
     public const string RateLimitHits = "agent.governance.rate_limit_hits";
     public const string AuditEvents = "agent.governance.audit_events";
+    public const string AuditWriteFailures = "agent.governance.audit_write_failures";
     public const string InjectionDetections = "agent.governance.injection_detections";
     public const string McpScans = "agent.governance.mcp_scans";
     public const string McpThreats = "agent.governance.mcp_threats";

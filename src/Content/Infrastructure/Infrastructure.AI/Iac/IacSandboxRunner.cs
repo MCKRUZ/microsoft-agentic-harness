@@ -1,5 +1,8 @@
 using Application.AI.Common.Interfaces.Sandbox;
+using Application.AI.Common.Services.Sandbox;
 using Domain.AI.Sandbox;
+using Domain.Common;
+using Microsoft.Extensions.Logging;
 
 namespace Infrastructure.AI.Iac;
 
@@ -20,9 +23,12 @@ namespace Infrastructure.AI.Iac;
 /// The permission profile grants whatever <see cref="ToolCapability"/> the caller declares — see
 /// <c>IacPlanTool.RequiredSandboxCapabilities</c>/<c>IacScanTool.RequiredSandboxCapabilities</c>,
 /// the single source of truth this runner used to duplicate as a hardcoded literal (#387). Network
-/// access is scoped to the provider/module registries via
-/// <see cref="ToolPermissionProfile.AllowedHosts"/>. The filesystem scope is the single module
-/// directory.
+/// access is scoped to the provider/module registries via the egress preflight below
+/// (<see cref="SandboxExecutionRequest.EgressPrecheckTargets"/>), not via the permission profile.
+/// The module directory itself is not part of the profile at all — the profile's old
+/// <c>AllowedPaths</c>/<c>DeniedPaths</c>/<c>AllowedHosts</c>/<c>DeniedHosts</c> were removed as
+/// dead config (#405): nothing on this dispatch path (which bypasses
+/// <c>CapabilityEnforcer</c> entirely, see below) ever read them.
 /// </para>
 /// <para>
 /// Egress enforcement is the registry allowlist from
@@ -43,18 +49,41 @@ namespace Infrastructure.AI.Iac;
 public static class IacSandboxRunner
 {
     /// <summary>
-    /// Runs an IaC CLI inside the sandbox rooted at <paramref name="moduleDirectory"/>.
+    /// Runs an IaC CLI inside the sandbox for the module at <paramref name="moduleDirectory"/>.
     /// </summary>
     /// <param name="program">The CLI program to launch (e.g. <c>terraform</c>, <c>bicep</c>, <c>checkov</c>).</param>
     /// <param name="arguments">The discrete CLI arguments — each entry is passed verbatim, never shell-interpreted.</param>
-    /// <param name="moduleDirectory">The sandbox-rooted directory the CLI runs against; the sole allowed filesystem path.</param>
+    /// <param name="moduleDirectory">
+    /// The module directory the caller resolved <paramref name="requiredCapabilities"/> for. Not
+    /// itself an enforced filesystem boundary on this dispatch path — see this class's remarks.
+    /// </param>
     /// <param name="registryAllowlist">The provider/module-registry hosts the run may reach. Seeds the sandbox egress allowlist.</param>
-    /// <param name="executor">The sandbox executor to dispatch through.</param>
+    /// <param name="scopedServices">
+    /// The per-execution DI scope's provider, used to resolve the keyed-scoped
+    /// <see cref="ISandboxExecutor"/> for the effective isolation tier — resolved here, after the
+    /// profile, rather than passed in already-resolved (#405 follow-up, a security-review finding
+    /// mirroring the identical fix in <c>WorkspaceCommandRunner</c>): the executor must be selected
+    /// for the tier the operator's <c>MinimumIsolation</c> override actually resolves to, not a tier
+    /// fixed before that override was consulted.
+    /// </param>
+    /// <param name="defaultIsolationLevel">
+    /// The generator's own minimum isolation requirement, independent of any operator override — the
+    /// floor this run never drops below even absent a <c>MinimumIsolation</c> override.
+    /// </param>
     /// <param name="toolName">Tool name for diagnostic attribution in the sandbox request.</param>
     /// <param name="requiredCapabilities">
     /// The sandbox capabilities this run needs — supplied by the caller (e.g.
     /// <c>IacPlanTool.RequiredSandboxCapabilities</c>) rather than hardcoded here, so there is one
     /// place that states what an <c>iac_plan</c>/<c>iac_scan</c> call may do, not two (#387).
+    /// </param>
+    /// <param name="permissionResolver">
+    /// Resolves the operator's <c>ToolOverrideConfig</c> for <paramref name="toolName"/> — this
+    /// runner used to build its permission profile inline, so a per-tool <c>DeniedCapabilities</c>
+    /// or <c>MinimumIsolation</c> override never reached it (#405). Via
+    /// <see cref="ToolPermissionProfileResolver.ResolveForUngovernedDispatch"/>, which also refuses
+    /// outright when the override intersects <paramref name="requiredCapabilities"/> — the CLI never
+    /// spawns — matching the governed-call semantics <c>CapabilityEnforcer</c> guarantees rather than
+    /// silently narrowing what gets provisioned.
     /// </param>
     /// <param name="timeout">Optional wall-clock timeout. Defaults to 5 minutes — terraform init/plan can be slow.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
@@ -64,9 +93,11 @@ public static class IacSandboxRunner
         IReadOnlyList<string> arguments,
         string moduleDirectory,
         IReadOnlyList<string> registryAllowlist,
-        ISandboxExecutor executor,
+        IServiceProvider scopedServices,
+        SandboxIsolationLevel defaultIsolationLevel,
         string toolName,
         ToolCapability requiredCapabilities,
+        ToolPermissionProfileResolver permissionResolver,
         TimeSpan? timeout = null,
         CancellationToken cancellationToken = default)
     {
@@ -74,19 +105,27 @@ public static class IacSandboxRunner
         ArgumentNullException.ThrowIfNull(arguments);
         ArgumentException.ThrowIfNullOrWhiteSpace(moduleDirectory);
         ArgumentNullException.ThrowIfNull(registryAllowlist);
-        ArgumentNullException.ThrowIfNull(executor);
+        ArgumentNullException.ThrowIfNull(scopedServices);
         ArgumentException.ThrowIfNullOrWhiteSpace(toolName);
+        ArgumentNullException.ThrowIfNull(permissionResolver);
 
-        var profile = new ToolPermissionProfile
+        // Profile and executor resolved together — the ordering invariant (executor only after the
+        // profile, at its resolved tier) is now structural inside ResolveExecutorForUngovernedDispatch
+        // rather than reproduced here, a /simplify finding: this runner and WorkspaceCommandRunner had
+        // independently copy-pasted the same resolve-then-select sequence, with only a comment at each
+        // site — not a shared implementation — protecting the ordering the stale-tier bug depended on.
+        var dispatchResult = permissionResolver.ResolveExecutorForUngovernedDispatch(
+            toolName, requiredCapabilities, [program], scopedServices, defaultIsolationLevel);
+        if (!dispatchResult.IsSuccess)
         {
-            RequiredCapabilities = requiredCapabilities,
-            AllowedPaths = [moduleDirectory],
-            AllowedPrograms = [program],
-            AllowedHosts = registryAllowlist,
-            DeniedHosts = [],
-            DeniedPaths = [],
-            MinimumIsolation = SandboxIsolationLevel.Process
-        };
+            return new SandboxExecutionResult
+            {
+                Success = false,
+                ErrorMessage = string.Join("; ", dispatchResult.Errors)
+            };
+        }
+
+        var (profile, executor) = dispatchResult.Value!;
 
         var request = new SandboxExecutionRequest
         {
@@ -101,6 +140,69 @@ public static class IacSandboxRunner
         };
 
         return await executor.ExecuteAsync(request, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// True when <paramref name="result"/> is the sandbox refusing to dispatch a CLI at all — a
+    /// governance denial from <see cref="ToolPermissionProfileResolver.ResolveForUngovernedDispatch"/>
+    /// (deny-intersection or under-declaration) — rather than a genuine CLI run that failed.
+    /// </summary>
+    /// <remarks>
+    /// A code-review finding: <see cref="TerraformGenerator"/>/<see cref="BicepGenerator"/> each
+    /// independently re-derived this same check at every CLI dispatch site (7 sites across the two
+    /// generators), and the duplication already caused one real miss during this PR's own
+    /// development — the <c>plan</c> step's check was added a commit after <c>validate</c>'s, caught
+    /// only by a later review pass. Centralizing the discriminator here means a caller can still
+    /// forget to <em>call</em> it at a new dispatch site, but can no longer get the check itself
+    /// subtly wrong (e.g. checking <c>ExitCode</c> instead of <c>Attestation</c>, or dropping the
+    /// <c>!Success</c> guard). See <see cref="ToolPermissionProfileResolver.ResolveExecutorForUngovernedDispatch"/>'s
+    /// remarks for why <c>Attestation</c>, not <c>ExitCode</c>, is the reliable signal: both
+    /// <c>ProcessSandboxExecutor</c> and <c>DockerSandboxExecutor</c> sign a failure attestation on
+    /// every genuinely-dispatched outcome (crash, timeout, egress-block, reserved-grant rejection) —
+    /// only the pre-dispatch refusal in <see cref="RunAsync"/> above never reaches an executor, so
+    /// it's the one case with none.
+    /// </remarks>
+    public static bool WasRefusedBeforeDispatch(SandboxExecutionResult result) =>
+        !result.Success && result.Attestation is null;
+
+    /// <summary>
+    /// Applies <see cref="WasRefusedBeforeDispatch"/> and, on a refusal, logs and returns the
+    /// scrubbed failure the caller should return immediately. Returns <c>null</c> when
+    /// <paramref name="result"/> is not a pre-dispatch refusal, so the caller's own
+    /// success/real-failure handling proceeds unchanged.
+    /// </summary>
+    /// <remarks>
+    /// Centralizes the log-and-return block that used to be pasted at every one of the 7 CLI
+    /// dispatch sites across <see cref="TerraformGenerator"/> and <see cref="BicepGenerator"/> —
+    /// the same duplication shape (a check correct everywhere it was pasted, but pasted, not
+    /// shared) that let the <c>plan</c> dispatch in <see cref="TerraformGenerator.PlanAsync"/>
+    /// miss the check for a full commit during this PR's own development.
+    /// </remarks>
+    /// <typeparam name="T">The result payload type of the caller's own <see cref="Result{T}"/>.</typeparam>
+    /// <param name="result">The dispatch outcome to classify.</param>
+    /// <param name="logger">The caller's own logger, used so the log entry attributes to the right category.</param>
+    /// <param name="backendLabel">The IaC backend name for the log message (e.g. <c>"Terraform"</c>, <c>"Bicep"</c>).</param>
+    /// <param name="operationLabel">The operation for the log message (e.g. <c>"iac_plan"</c>, <c>"iac_scan (checkov)"</c>).</param>
+    /// <param name="moduleDirectory">The module directory the run targeted.</param>
+    /// <param name="failCode">The stable <c>iac.*</c> failure code to return.</param>
+    /// <returns>A failed <see cref="Result{T}"/> if refused before dispatch; otherwise <c>null</c>.</returns>
+    public static Result<T>? FailIfRefused<T>(
+        SandboxExecutionResult result,
+        ILogger logger,
+        string backendLabel,
+        string operationLabel,
+        string moduleDirectory,
+        string failCode)
+    {
+        if (!WasRefusedBeforeDispatch(result))
+        {
+            return null;
+        }
+
+        logger.LogError(
+            "{Backend} {Operation} for {Module} was refused before dispatch: {Reason}",
+            backendLabel, operationLabel, moduleDirectory, result.ErrorMessage);
+        return Result<T>.Fail(failCode);
     }
 
     /// <summary>

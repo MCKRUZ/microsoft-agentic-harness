@@ -21,6 +21,10 @@
 
   <ItemGroup>
     <ProjectReference Include="../../Application/Application.AI.Common/Application.AI.Common.csproj" />
+    <!-- JsonlGovernanceAuditWriter (#407) reuses HashChainedJsonlWriter, the shared tamper-evident
+         JSONL primitive already backing the escalation/drift/change/egress audit sinks in
+         Infrastructure.AI. Acyclic: Infrastructure.AI does not reference Infrastructure.AI.Governance. -->
+    <ProjectReference Include="../Infrastructure.AI/Infrastructure.AI.csproj" />
   </ItemGroup>
 
   <ItemGroup>

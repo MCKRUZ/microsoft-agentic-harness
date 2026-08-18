@@ -3,6 +3,7 @@ using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Interfaces.Workspace;
 using Domain.AI.Sandbox;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 
 namespace Infrastructure.AI.Tools.Workspace;
 
@@ -72,12 +73,14 @@ public static class WorkspaceDependencyInjection
             new WorkspaceRunTestsTool(
                 sp.GetRequiredService<IWorkspaceContextAccessor>(),
                 sp.GetRequiredService<IServiceScopeFactory>(),
+                sp.GetRequiredService<ILogger<WorkspaceRunTestsTool>>(),
                 SandboxIsolationLevel.Process));
 
         services.AddKeyedSingleton<ITool>(WorkspaceRunLintTool.ToolName, (sp, _) =>
             new WorkspaceRunLintTool(
                 sp.GetRequiredService<IWorkspaceContextAccessor>(),
                 sp.GetRequiredService<IServiceScopeFactory>(),
+                sp.GetRequiredService<ILogger<WorkspaceRunLintTool>>(),
                 SandboxIsolationLevel.Process));
 
         return services;

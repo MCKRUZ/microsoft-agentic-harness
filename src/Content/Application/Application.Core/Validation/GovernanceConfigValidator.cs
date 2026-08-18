@@ -61,6 +61,15 @@ public sealed class GovernanceConfigValidator : AbstractValidator<GovernanceConf
                 "PolicyPaths contains a blank entry. A blank path never resolves to a file — remove it " +
                 "or supply the policy file path.");
 
+        // JsonlGovernanceAuditWriter.Log catches every exception it throws (so a broken audit sink
+        // can never take down a tool call) — which means a blank/unwritable path fails silently on
+        // every write instead of failing loudly at startup. This mirrors EscalationConfigValidator's
+        // identical rule for the same reason: registration is unconditional (#407), so every host
+        // needs a usable path even with every other governance feature off.
+        RuleFor(x => x.AuditStoragePath)
+            .NotEmpty()
+            .WithMessage("AuditStoragePath must be configured.");
+
         // #386: EnablePromptInjectionDetection and EnableMcpSecurity used to require Enabled=true,
         // because the composition root only ever wired the AGT kernel path when Enabled was true —
         // turning one on while governance was "disabled" was a silent no-op. That coupling is gone:

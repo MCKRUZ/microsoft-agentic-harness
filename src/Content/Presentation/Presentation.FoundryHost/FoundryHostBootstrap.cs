@@ -100,9 +100,11 @@ internal static class FoundryHostBootstrap
         // Planner checkpoint/resume database (SQLite).
         overrides["AppConfig__AI__Planner__DatabasePath"] = $"{stateRoot}/planner/planner.db";
 
-        // JSONL audit trails — drift, governance escalations, change proposals (+ gate evidence),
-        // and egress decisions. Each is append-only forensic state worth preserving across resumes.
+        // JSONL audit trails — drift, governance decisions, governance escalations, change proposals
+        // (+ gate evidence), and egress decisions. Each is append-only forensic state worth
+        // preserving across resumes.
         overrides["AppConfig__AI__DriftDetection__AuditPath"] = $"{stateRoot}/audit";
+        overrides["AppConfig__AI__Governance__AuditStoragePath"] = $"{stateRoot}/governance";
         overrides["AppConfig__AI__Governance__Escalation__AuditStoragePath"] = $"{stateRoot}/escalations";
         overrides["AppConfig__AI__Changes__AuditStoragePath"] = $"{stateRoot}/changes";
         overrides["AppConfig__AI__Changes__EvidenceStoragePath"] = $"{stateRoot}/changes/evidence";

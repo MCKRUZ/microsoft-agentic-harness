@@ -17,10 +17,9 @@ Microsoft.AgentGovernance (NuGet)
   GovernanceKernel
   PolicyEngine                  Application.AI.Common
   PromptInjectionDetector         IGovernancePolicyEngine
-  AuditLogger                     IPromptInjectionScanner
-       |                          IGovernanceAuditService
-       v                          IMcpSecurityScanner
-+----------------------------------------------+
+       |                          IPromptInjectionScanner
+       v                          IGovernanceAuditService
++----------------------------------------------+  IMcpSecurityScanner
 |       Infrastructure.AI.Governance            |
 |                                               |
 |  GovernanceKernel (singleton)                 |
@@ -28,8 +27,14 @@ Microsoft.AgentGovernance (NuGet)
 |  Adapters:                                    |
 |    AgtPolicyEngineAdapter --> IGovernance...   |
 |    AgtPromptInjectionAdapter --> IPrompt...    |
-|    AgtAuditAdapter --> IGovernanceAudit...     |
 |    McpSecurityScannerAdapter --> IMcpSec...    |
+|                                               |
+|  Audit — NOT an AGT adapter (#407): registers  |
+|  JsonlGovernanceAuditWriter (Infrastructure.AI |
+|  /Audit/, reused via a project reference) as   |
+|  IGovernanceAuditService — a durable JSONL     |
+|  hash chain, the same primitive backing the    |
+|  escalation/drift/change/egress audit sinks.   |
 |                                               |
 |  NoOp fallbacks (when disabled):              |
 |    NoOpPolicyEngine, NoOpInjectionScanner,    |
@@ -45,9 +50,10 @@ Microsoft.AgentGovernance (NuGet)
     //    independent flags is on: Enabled, EnablePromptInjectionDetection,
     //    EnableMcpSecurity, EnableResponseSanitization, or
     //    DataClassification.Mode != Off. IGovernanceAuditService is
-    //    registered identically by both branches (RegisterAudit): AuditLogger
-    //    has no dependency on GovernanceKernel, so audit does not follow
-    //    ArmsAgtKernel — see GovernanceConfig.ArmsAgtKernel's remarks.
+    //    registered identically by both branches (RegisterAudit):
+    //    JsonlGovernanceAuditWriter has no dependency on GovernanceKernel, so
+    //    audit does not follow ArmsAgtKernel — see
+    //    GovernanceConfig.ArmsAgtKernel's remarks.
 ```
 
 ## Key Concepts
@@ -58,14 +64,15 @@ Microsoft.AgentGovernance (NuGet)
 
 **Why it exists:** The harness must not depend directly on AGT types throughout the codebase. If AGT changes its API surface in v4, only the adapter layer needs updating. The rest of the system programs against stable harness interfaces.
 
-**The four adapters:**
+**The three AGT adapters** (audit is not one — see below):
 
 | Adapter | Wraps (AGT) | Implements (Harness) |
 |---------|-------------|---------------------|
 | `AgtPolicyEngineAdapter` | `PolicyEngine` | `IGovernancePolicyEngine` |
 | `AgtPromptInjectionAdapter` | `PromptInjectionDetector` | `IPromptInjectionScanner` |
-| `AgtAuditAdapter` | `AuditLogger` | `IGovernanceAuditService` |
 | `McpSecurityScannerAdapter` | (standalone) | `IMcpSecurityScanner` |
+
+`IGovernanceAuditService` is implemented by `JsonlGovernanceAuditWriter` (`Infrastructure.AI/Audit/`), not an AGT adapter — see [Audit Logging](#audit-logging) below (#407).
 
 ### Policy Engine
 
@@ -123,21 +130,22 @@ if (result.IsInjection)
 
 ### Audit Logging
 
-**What it is:** A tamper-evident (hash-chained) log of all governance decisions.
+**What it is:** A durable, tamper-evident (hash-chained) log of all governance decisions, persisted to `governance.jsonl`.
 
-**Why it exists:** Compliance requires proving what decisions were made, by whom, and that the log hasn't been modified after the fact. AGT's `AuditLogger` maintains a hash chain where each entry's hash includes the previous entry's hash.
+**Why it exists:** Compliance requires proving what decisions were made, by whom, and that the log hasn't been modified after the fact — and that the log itself survives a process restart. The original implementation wrapped AGT's `AuditLogger`, whose hash chain is in-memory only; #407 replaced it with `JsonlGovernanceAuditWriter` (`Infrastructure.AI/Audit/`), which reuses `HashChainedJsonlWriter` — the same tamper-evident JSONL primitive already backing the escalation, drift, change, and egress audit sinks. Each entry's hash still includes the previous entry's hash; it now also lands on disk.
 
 **How it works:**
-- `Log(agentId, action, decision)` appends to the chain
-- `VerifyChainIntegrity()` validates the full hash chain is unbroken
-- `EntryCount` provides the current log size
-- Every log emits `GovernanceMetrics.AuditEvents`
+- `Log(agentId, action, decision)` appends to the chain (synchronous; blocks briefly on the disk write, never throws — a write failure is logged, not propagated to the caller)
+- `VerifyChainIntegrity()` walks the chain from genesis and validates every link
+- `EntryCount` walks the chain and returns its length (no production caller reads this today)
+- Every log emits `GovernanceMetrics.AuditEvents`, counted only when the write actually succeeded
+- Also joins the scheduled `AuditChainVerificationService` job as a fifth `IVerifiableAuditChain` (see `Infrastructure.AI/DependencyInjection.Audit.cs`), so the governance chain is periodically re-verified like its siblings
 
 ### No-Op Implementations
 
 **What they are:** Lightweight implementations that satisfy DI requirements when governance is disabled.
 
-**Why they exist:** The harness interfaces are consumed throughout the codebase. Code that calls `_policyEngine.EvaluateToolCall()` shouldn't need null checks. No-ops return "allowed" for policy checks, "clean" for injection scans, "safe" for MCP scans, and are no-ops for audit logging.
+**Why they exist:** The harness interfaces are consumed throughout the codebase. Code that calls `_policyEngine.EvaluateToolCall()` shouldn't need null checks. No-ops return "allowed" for policy checks, "clean" for injection scans, "safe" for MCP scans. Audit logging is the one exception — it is real (`JsonlGovernanceAuditWriter`) on both the armed and no-op composition paths, never a no-op; see [Audit Logging](#audit-logging).
 
 ## Data Flow
 
@@ -182,11 +190,13 @@ Infrastructure.AI.Governance/
 ├── Adapters/
 │   ├── AgtPolicyEngineAdapter.cs       Wraps AGT PolicyEngine
 │   ├── AgtPromptInjectionAdapter.cs    Wraps AGT PromptInjectionDetector
-│   ├── AgtAuditAdapter.cs             Wraps AGT AuditLogger
 │   ├── McpSecurityScannerAdapter.cs    Standalone MCP security scanning
 │   └── NoOpAdapters.cs                All no-op implementations in one file
 ├── Policies/                           YAML policy files (copied to output)
-├── DependencyInjection.cs              Conditional registration (real vs no-op)
+├── DependencyInjection.cs              Conditional registration (real vs no-op);
+│                                        RegisterAudit registers
+│                                        Infrastructure.AI/Audit/JsonlGovernanceAuditWriter.cs,
+│                                        not an adapter in this folder (#407)
 └── Infrastructure.AI.Governance.csproj
 ```
 
@@ -196,7 +206,7 @@ Infrastructure.AI.Governance/
 |------|---------|-----------|----------|
 | `AgtPolicyEngineAdapter` | Policy evaluation with metrics | `IGovernancePolicyEngine` | Singleton |
 | `AgtPromptInjectionAdapter` | Injection detection with metrics | `IPromptInjectionScanner` | Singleton |
-| `AgtAuditAdapter` | Hash-chained audit logging — registered by both `AddGovernanceDependencies` and `AddGovernanceNoOpDependencies`, since audit does not follow `ArmsAgtKernel` | `IGovernanceAuditService` | Singleton |
+| `JsonlGovernanceAuditWriter` (`Infrastructure.AI/Audit/`) | Durable, hash-chained audit logging — registered by both `AddGovernanceDependencies` and `AddGovernanceNoOpDependencies`, since audit does not follow `ArmsAgtKernel`. Also implements `IVerifiableAuditChain` (#407) | `IGovernanceAuditService` | Singleton |
 | `McpSecurityScannerAdapter` | MCP tool vetting | `IMcpSecurityScanner` | Singleton |
 | `NoOpPolicyEngine` | Passthrough (disabled) | `IGovernancePolicyEngine` | Singleton |
 | `NoOpInjectionScanner` | Always clean (disabled) | `IPromptInjectionScanner` | Singleton |

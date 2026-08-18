@@ -105,6 +105,16 @@ public sealed class SandboxSessionAttestationSigner(IAttestationService attestat
     /// image resolution when a failure occurs (e.g. a pre-flight rejection) correctly omit this
     /// argument; <c>DescribeSessionInput</c> then falls back to whatever the request itself carried.
     /// </para>
+    /// <para>
+    /// <c>capabilitiesEnforcedBy</c> (security-review finding on #405's follow-up): the signed
+    /// <c>capabilities</c> field is only an actual confinement at the Container tier —
+    /// <c>DockerContainerLaunchPreparer</c> reads <c>EffectiveCapabilities</c> to set container
+    /// network mode and mount read/write-ness. At the Process tier neither
+    /// <c>ProcessSandboxExecutor</c> nor <c>ProcessSandboxLaunchPreparer</c> read <c>Isolation</c>
+    /// or any capability bit — only <see cref="ToolPermissionProfile.AllowedPrograms"/>. Without
+    /// this field an auditor reading a Process-tier attestation could mistake the signed capability
+    /// set for an enforced boundary, when for that tier it is a declaration only.
+    /// </para>
     /// </remarks>
     private static string DescribeSessionInput(SandboxSessionRequest request, string? resolvedImage = null) => JsonSerializer.Serialize(new
     {
@@ -112,7 +122,12 @@ public sealed class SandboxSessionAttestationSigner(IAttestationService attestat
         args = request.ArgumentList ?? [],
         envNames = request.EnvironmentVariables?.Keys.Order().ToArray() ?? [],
         isolation = request.PermissionProfile.MinimumIsolation.ToString(),
-        capabilities = request.PermissionProfile.RequiredCapabilities.ToString(),
+        // EffectiveCapabilities — signs what the container was actually provisioned with, not the
+        // tool's undiminished requirement (#405).
+        capabilities = request.PermissionProfile.EffectiveCapabilities.ToString(),
+        capabilitiesEnforcedBy = request.PermissionProfile.MinimumIsolation >= SandboxIsolationLevel.Container
+            ? "container"
+            : "declaration-only",
         image = resolvedImage ?? request.ContainerImage,
         seeded = request.WorkspaceSeedDirectory is not null
     });

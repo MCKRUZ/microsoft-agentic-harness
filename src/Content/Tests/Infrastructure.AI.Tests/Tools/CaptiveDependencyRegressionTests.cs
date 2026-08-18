@@ -2,8 +2,11 @@ using Application.AI.Common.Interfaces.GitOps;
 using Application.AI.Common.Interfaces.Iac;
 using Application.AI.Common.Interfaces.Sandbox;
 using Application.AI.Common.Interfaces.Tools;
+using Application.AI.Common.Services.Sandbox;
+using Application.AI.Common.Services.Tools;
 using Domain.AI.Iac;
 using Domain.AI.Sandbox;
+using Domain.Common.Config.AI.Sandbox;
 using FluentAssertions;
 using Infrastructure.AI.Orchestration.Magentic;
 using Infrastructure.AI.Tests.Iac;
@@ -55,6 +58,15 @@ public sealed class CaptiveDependencyRegressionTests
             SandboxIsolationLevel.Process, (_, _) => sandbox);
 
         services.AddScoped(_ => mediator);
+
+        // WorkspaceCommandRunner resolves this from the same scope as the sandbox executor since
+        // #405 closed its permission-profile bypass — a real, no-override resolver so ExecuteAsync
+        // doesn't throw under scope validation.
+        services.AddOptions<SandboxConfig>();
+        services.AddSingleton(sp => new FirstPartyToolLookup(sp, new HashSet<string>()));
+        services.AddSingleton(sp => new ToolPermissionProfileResolver(
+            sp.GetRequiredService<FirstPartyToolLookup>(),
+            sp.GetRequiredService<Microsoft.Extensions.Options.IOptionsMonitor<SandboxConfig>>()));
 
         return services.BuildServiceProvider(new ServiceProviderOptions
         {

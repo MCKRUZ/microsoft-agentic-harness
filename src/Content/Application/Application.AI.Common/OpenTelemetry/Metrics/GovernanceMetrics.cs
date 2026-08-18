@@ -30,6 +30,15 @@ public static class GovernanceMetrics
     public static Counter<long> AuditEvents { get; } =
         AppInstrument.Meter.CreateCounter<long>(GovernanceConventions.AuditEvents, "{event}", "Governance audit events");
 
+    /// <summary>
+    /// Governance audit writes that failed to append (disk full, permission denied, broken
+    /// <c>AuditStoragePath</c>, etc). The writer never throws on a write failure — the tool-call
+    /// decision it's recording must never fail because of it — so this counter is the only
+    /// non-log-line signal a write failure ever produces. Tags: agent.governance.action.
+    /// </summary>
+    public static Counter<long> AuditWriteFailures { get; } =
+        AppInstrument.Meter.CreateCounter<long>(GovernanceConventions.AuditWriteFailures, "{failure}", "Governance audit writes that failed to append");
+
     /// <summary>Prompt injection detections. Tags: agent.safety.category.</summary>
     public static Counter<long> InjectionDetections { get; } =
         AppInstrument.Meter.CreateCounter<long>(GovernanceConventions.InjectionDetections, "{detection}", "Prompt injection detections");
