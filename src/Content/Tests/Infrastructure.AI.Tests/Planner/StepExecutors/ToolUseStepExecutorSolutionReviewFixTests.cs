@@ -167,13 +167,17 @@ public sealed class ToolUseStepExecutorSolutionReviewFixTests
     {
         // The other half of #420's guarantee: when DetermineIsolation doesn't elevate (no autonomy
         // requirement, no override), the profile embedded in the request must be the exact instance
-        // resolved by the capability enforcer -- not a needlessly rebuilt copy.
+        // resolved by the capability enforcer -- not a needlessly rebuilt copy. Asserted by reference
+        // identity, not just value equality: ToolPermissionProfile is a record, so `with` would
+        // produce a value-equal but distinct instance even when unconditionally rebuilding -- a value
+        // check alone can't tell that apart from the guarded, no-op case this test exists to prove.
+        var resolvedProfile = new ToolPermissionProfile
+        {
+            RequiredCapabilities = ToolCapability.FileRead,
+            MinimumIsolation = SandboxIsolationLevel.Process
+        };
         _capabilityEnforcer.Setup(c => c.ResolveProfileAsync("read_only_tool", It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new ToolPermissionProfile
-            {
-                RequiredCapabilities = ToolCapability.FileRead,
-                MinimumIsolation = SandboxIsolationLevel.Process
-            });
+            .ReturnsAsync(resolvedProfile);
 
         SandboxExecutionRequest? dispatchedRequest = null;
         _processExecutor.Setup(s => s.ExecuteAsync(It.IsAny<SandboxExecutionRequest>(), It.IsAny<CancellationToken>()))
@@ -193,6 +197,6 @@ public sealed class ToolUseStepExecutorSolutionReviewFixTests
 
         Assert.Equal(StepExecutionStatus.Completed, result.Status);
         Assert.NotNull(dispatchedRequest);
-        Assert.Equal(SandboxIsolationLevel.Process, dispatchedRequest!.PermissionProfile.MinimumIsolation);
+        Assert.Same(resolvedProfile, dispatchedRequest!.PermissionProfile);
     }
 }

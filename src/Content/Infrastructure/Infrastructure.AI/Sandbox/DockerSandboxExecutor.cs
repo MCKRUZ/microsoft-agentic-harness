@@ -208,6 +208,12 @@ public sealed class DockerSandboxExecutor : ISandboxExecutor
             };
         }
 
+        // Defensive-only as of #420: this class is registered exclusively under the Container keyed-DI
+        // slot, and every first-party caller (ToolUseStepExecutor, IacSandboxRunner,
+        // WorkspaceCommandRunner) now syncs an elevated tier into PermissionProfile.MinimumIsolation
+        // before embedding it — so a request that reached this executor always has isRequired true
+        // above. This branch stays as a guard against a future caller that resolves the Container
+        // executor without that sync, not because any current path can reach it.
         _logger.LogWarning("Docker unavailable for tool {ToolName}. Caller may fall back to process isolation", request.ToolName);
 
         return new SandboxExecutionResult
