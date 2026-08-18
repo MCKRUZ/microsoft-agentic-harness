@@ -205,28 +205,17 @@ public sealed class BicepGenerator : IIacGenerator
         ToolCapability requiredCapabilities,
         CancellationToken cancellationToken)
     {
-        try
-        {
-            // The executor is SCOPED — resolve it from a fresh scope per run
-            // so this singleton generator never captures scope-bound state. Resolved inside
-            // RunAsync, after the profile, so an operator's MinimumIsolation override actually
-            // selects the executor.
-            await using var scope = _scopeFactory.CreateAsyncScope();
-            var permissionResolver = scope.ServiceProvider.GetRequiredService<ToolPermissionProfileResolver>();
+        // The executor is SCOPED — resolve it from a fresh scope per run
+        // so this singleton generator never captures scope-bound state. Resolved inside
+        // RunAsync, after the profile, so an operator's MinimumIsolation override actually
+        // selects the executor.
+        await using var scope = _scopeFactory.CreateAsyncScope();
+        var permissionResolver = scope.ServiceProvider.GetRequiredService<ToolPermissionProfileResolver>();
 
-            return await IacSandboxRunner.RunAsync(
-                program, args, moduleDirectory, allowlist, scope.ServiceProvider, _isolationLevel,
-                toolName, requiredCapabilities, permissionResolver, cancellationToken: cancellationToken);
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Bicep sandbox run failed for {Program} in {Module}.", program, moduleDirectory);
-            return Result<SandboxExecutionResult>.Fail($"Sandbox execution failed: {ex.GetType().Name}.");
-        }
+        return await IacSandboxRunner.RunAsync(
+            program, args, moduleDirectory, allowlist, scope.ServiceProvider, _isolationLevel,
+            toolName, requiredCapabilities, permissionResolver, _logger, "Bicep",
+            cancellationToken: cancellationToken);
     }
 
     private static string BuildMainBicep(IacGenerationRequest request)

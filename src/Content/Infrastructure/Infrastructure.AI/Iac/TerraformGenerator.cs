@@ -194,7 +194,7 @@ public sealed class TerraformGenerator : IIacGenerator
         });
     }
 
-    private Task<Result<SandboxExecutionResult>> Run(
+    private async Task<Result<SandboxExecutionResult>> Run(
         IReadOnlyList<string> args,
         string moduleDirectory,
         IReadOnlyList<string> allowlist,
@@ -202,39 +202,18 @@ public sealed class TerraformGenerator : IIacGenerator
         ToolCapability requiredCapabilities,
         CancellationToken cancellationToken,
         string program = CliProgram)
-        => RunGuarded(program, args, moduleDirectory, allowlist, toolName, requiredCapabilities, cancellationToken);
-
-    private async Task<Result<SandboxExecutionResult>> RunGuarded(
-        string program,
-        IReadOnlyList<string> args,
-        string moduleDirectory,
-        IReadOnlyList<string> allowlist,
-        string toolName,
-        ToolCapability requiredCapabilities,
-        CancellationToken cancellationToken)
     {
-        try
-        {
-            // The executor is SCOPED — resolve it from a fresh scope per run
-            // so this singleton generator never captures scope-bound state. Resolved inside
-            // RunAsync, after the profile, so an operator's MinimumIsolation override actually
-            // selects the executor.
-            await using var scope = _scopeFactory.CreateAsyncScope();
-            var permissionResolver = scope.ServiceProvider.GetRequiredService<ToolPermissionProfileResolver>();
+        // The executor is SCOPED — resolve it from a fresh scope per run
+        // so this singleton generator never captures scope-bound state. Resolved inside
+        // RunAsync, after the profile, so an operator's MinimumIsolation override actually
+        // selects the executor.
+        await using var scope = _scopeFactory.CreateAsyncScope();
+        var permissionResolver = scope.ServiceProvider.GetRequiredService<ToolPermissionProfileResolver>();
 
-            return await IacSandboxRunner.RunAsync(
-                program, args, moduleDirectory, allowlist, scope.ServiceProvider, _isolationLevel,
-                toolName, requiredCapabilities, permissionResolver, cancellationToken: cancellationToken);
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Terraform sandbox run failed for {Program} in {Module}.", program, moduleDirectory);
-            return Result<SandboxExecutionResult>.Fail($"Sandbox execution failed: {ex.GetType().Name}.");
-        }
+        return await IacSandboxRunner.RunAsync(
+            program, args, moduleDirectory, allowlist, scope.ServiceProvider, _isolationLevel,
+            toolName, requiredCapabilities, permissionResolver, _logger, "Terraform",
+            cancellationToken: cancellationToken);
     }
 
     private static IacPlanResult ParsePlan(string moduleDirectory, SandboxExecutionResult plan)

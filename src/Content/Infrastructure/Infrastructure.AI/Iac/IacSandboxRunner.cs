@@ -86,16 +86,27 @@ public static class IacSandboxRunner
     /// spawns — matching the governed-call semantics <c>CapabilityEnforcer</c> guarantees rather than
     /// silently narrowing what gets provisioned.
     /// </param>
+    /// <param name="logger">
+    /// The caller's own logger — used both to record a governance refusal (see
+    /// <see cref="MapDispatchFailure{T}"/>, called on the returned <see cref="Result{T}"/>) and, since
+    /// #421's /simplify pass, to log a sandbox-level exception here directly rather than in each
+    /// generator's own try/catch. The two generators' exception handling around this method used to
+    /// be pasted identically at both call sites — the same "pasted, not shared" duplication shape
+    /// this issue's own fix exists to close on the refusal path — so it moved here instead.
+    /// </param>
+    /// <param name="backendLabel">The IaC backend name for log messages (e.g. <c>"Terraform"</c>, <c>"Bicep"</c>).</param>
     /// <param name="timeout">Optional wall-clock timeout. Defaults to 5 minutes — terraform init/plan can be slow.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>
     /// <see cref="Result{T}.Forbidden"/> when the sandbox refused to dispatch the CLI at all — a
     /// governance denial from <see cref="ToolPermissionProfileResolver.ResolveForUngovernedDispatch"/>
-    /// (deny-intersection or under-declaration) — never reaching an executor. Otherwise
-    /// <see cref="Result{T}.Success"/> wrapping the raw <see cref="SandboxExecutionResult"/> for the
-    /// caller to parse, which may itself report a failed CLI run (<c>Success = false</c>) — that is a
-    /// genuine dispatch outcome, not a refusal, and is deliberately not folded into this method's own
-    /// failure case.
+    /// (deny-intersection or under-declaration) — never reaching an executor.
+    /// <see cref="Result{T}.Fail"/> when the executor itself threw before returning a result (a
+    /// misbehaving or unconfigured <see cref="ISandboxExecutor"/> — a template extensibility seam).
+    /// Otherwise <see cref="Result{T}.Success"/> wrapping the raw <see cref="SandboxExecutionResult"/>
+    /// for the caller to parse, which may itself report a failed CLI run (<c>Success = false</c>) —
+    /// that is a genuine dispatch outcome, not a refusal or an exception, and is deliberately not
+    /// folded into either of this method's own failure cases.
     /// </returns>
     public static async Task<Result<SandboxExecutionResult>> RunAsync(
         string program,
@@ -107,6 +118,8 @@ public static class IacSandboxRunner
         string toolName,
         ToolCapability requiredCapabilities,
         ToolPermissionProfileResolver permissionResolver,
+        ILogger logger,
+        string backendLabel,
         TimeSpan? timeout = null,
         CancellationToken cancellationToken = default)
     {
@@ -117,6 +130,8 @@ public static class IacSandboxRunner
         ArgumentNullException.ThrowIfNull(scopedServices);
         ArgumentException.ThrowIfNullOrWhiteSpace(toolName);
         ArgumentNullException.ThrowIfNull(permissionResolver);
+        ArgumentNullException.ThrowIfNull(logger);
+        ArgumentException.ThrowIfNullOrWhiteSpace(backendLabel);
 
         // Profile and executor resolved together — the ordering invariant (executor only after the
         // profile, at its resolved tier) is now structural inside ResolveExecutorForUngovernedDispatch
@@ -147,8 +162,20 @@ public static class IacSandboxRunner
             EgressPrecheckTargets = BuildEgressPrecheckTargets(registryAllowlist)
         };
 
-        var executionResult = await executor.ExecuteAsync(request, cancellationToken).ConfigureAwait(false);
-        return Result<SandboxExecutionResult>.Success(executionResult);
+        try
+        {
+            var executionResult = await executor.ExecuteAsync(request, cancellationToken).ConfigureAwait(false);
+            return Result<SandboxExecutionResult>.Success(executionResult);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "{Backend} sandbox run failed for {Program} in {Module}.", backendLabel, program, moduleDirectory);
+            return Result<SandboxExecutionResult>.Fail($"Sandbox execution failed: {ex.GetType().Name}.");
+        }
     }
 
     /// <summary>
@@ -179,8 +206,8 @@ public static class IacSandboxRunner
     /// reads can no longer drift to the wrong field.
     /// </para>
     /// <para>
-    /// A dispatch that failed for any other reason (the sandbox threw before returning a result —
-    /// see each generator's own try/catch around <see cref="RunAsync"/>) maps to
+    /// A dispatch that failed for any other reason (the sandbox threw before returning a result — see
+    /// <see cref="RunAsync"/>'s own try/catch around the executor call) maps to
     /// <paramref name="errorCode"/> instead of <paramref name="deniedCode"/>, preserving the
     /// existing three-way split between "refused", "sandbox-level error", and "ran, parse the result".
     /// </para>
@@ -194,8 +221,8 @@ public static class IacSandboxRunner
     /// <param name="deniedCode">The stable <c>iac.*.sandbox_denied</c> code to return for a governance refusal.</param>
     /// <param name="errorCode">
     /// The stable <c>iac.*.sandbox_error</c> code to return for any other dispatch failure — always a
-    /// sandbox-level exception the caller's own <c>Run</c>/<c>RunGuarded</c> wrapper already caught and
-    /// logged with the full exception detail, so this branch does not log a second time.
+    /// sandbox-level exception <see cref="RunAsync"/> itself already caught and logged with the full
+    /// exception detail, so this branch does not log a second time.
     /// </param>
     /// <returns>A failed <see cref="Result{T}"/> if <paramref name="dispatch"/> failed; otherwise <c>null</c>.</returns>
     public static Result<T>? MapDispatchFailure<T>(

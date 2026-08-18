@@ -8,6 +8,7 @@ using FluentAssertions;
 using Infrastructure.AI.Iac;
 using Infrastructure.AI.Tools.Iac;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Xunit;
 
@@ -75,7 +76,9 @@ public sealed class IacSandboxRunnerSolutionReviewFixTests
             defaultIsolationLevel: SandboxIsolationLevel.Process,
             toolName: "terraform_plan",
             requiredCapabilities: IacPlanTool.RequiredSandboxCapabilities,
-            permissionResolver: NoOverrideResolver());
+            permissionResolver: NoOverrideResolver(),
+            logger: NullLogger.Instance,
+            backendLabel: "Terraform");
 
         var request = sandbox.RequestFor("terraform");
 
@@ -100,7 +103,9 @@ public sealed class IacSandboxRunnerSolutionReviewFixTests
             defaultIsolationLevel: SandboxIsolationLevel.Process,
             toolName: "terraform_plan",
             requiredCapabilities: IacPlanTool.RequiredSandboxCapabilities,
-            permissionResolver: NoOverrideResolver());
+            permissionResolver: NoOverrideResolver(),
+            logger: NullLogger.Instance,
+            backendLabel: "Terraform");
 
         // No declared registries means nothing to precheck — the preflight is allowed
         // to short-circuit only because there is genuinely no egress claim to enforce.
@@ -121,7 +126,9 @@ public sealed class IacSandboxRunnerSolutionReviewFixTests
             defaultIsolationLevel: SandboxIsolationLevel.Process,
             toolName: "terraform_plan",
             requiredCapabilities: IacPlanTool.RequiredSandboxCapabilities,
-            permissionResolver: NoOverrideResolver());
+            permissionResolver: NoOverrideResolver(),
+            logger: NullLogger.Instance,
+            backendLabel: "Terraform");
 
         var targets = sandbox.RequestFor("terraform").EgressPrecheckTargets!;
         targets.Select(u => u.Host).Should().ContainSingle().Which.Should().Be("registry.terraform.io");
@@ -152,7 +159,9 @@ public sealed class IacSandboxRunnerSolutionReviewFixTests
             defaultIsolationLevel: SandboxIsolationLevel.Process,
             toolName: "iac_plan",
             requiredCapabilities: IacPlanTool.RequiredSandboxCapabilities,
-            permissionResolver: resolver);
+            permissionResolver: resolver,
+            logger: NullLogger.Instance,
+            backendLabel: "Terraform");
 
         var profile = sandbox.RequestFor("terraform").PermissionProfile;
         profile.DeniedCapabilities.Should().Be(ToolCapability.DatabaseRead);
@@ -183,7 +192,9 @@ public sealed class IacSandboxRunnerSolutionReviewFixTests
             defaultIsolationLevel: SandboxIsolationLevel.Process,
             toolName: "iac_plan",
             requiredCapabilities: IacPlanTool.RequiredSandboxCapabilities,
-            permissionResolver: resolver);
+            permissionResolver: resolver,
+            logger: NullLogger.Instance,
+            backendLabel: "Terraform");
 
         result.IsSuccess.Should().BeFalse();
         result.FailureType.Should().Be(ResultFailureType.Forbidden,
@@ -210,7 +221,9 @@ public sealed class IacSandboxRunnerSolutionReviewFixTests
             defaultIsolationLevel: SandboxIsolationLevel.Process,
             toolName: "iac_plan",
             requiredCapabilities: IacPlanTool.RequiredSandboxCapabilities,
-            permissionResolver: NoOverrideResolver());
+            permissionResolver: NoOverrideResolver(),
+            logger: NullLogger.Instance,
+            backendLabel: "Terraform");
 
         result.IsSuccess.Should().BeTrue("a genuine CLI failure is a completed dispatch, not a refusal");
         result.Value!.Success.Should().BeFalse();
