@@ -20,8 +20,15 @@ public sealed class RegexMatchMetric : IEvalMetric
 {
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromSeconds(1);
 
+    private const string PatternKey = "pattern";
+    private const string MustNotMatchKey = "must_not_match";
+
     /// <inheritdoc />
     public string Key => "regex_match";
+
+    /// <inheritdoc />
+    public IReadOnlySet<string> RecognizedParameterKeys { get; } =
+        new HashSet<string> { PatternKey, MustNotMatchKey };
 
     /// <inheritdoc />
     public Task<MetricScore> ScoreAsync(
@@ -32,7 +39,7 @@ public sealed class RegexMatchMetric : IEvalMetric
     {
         var sw = Stopwatch.StartNew();
 
-        if (!spec.Parameters.TryGetValue("pattern", out var pattern) || string.IsNullOrWhiteSpace(pattern))
+        if (!spec.Parameters.TryGetValue(PatternKey, out var pattern) || string.IsNullOrWhiteSpace(pattern))
         {
             sw.Stop();
             return Task.FromResult(Warn(sw, "Missing required 'pattern' parameter."));
@@ -60,7 +67,7 @@ public sealed class RegexMatchMetric : IEvalMetric
             return Task.FromResult(Warn(sw, "Regex evaluation timed out (possible catastrophic backtracking)."));
         }
 
-        var mustNotMatch = spec.GetBool("must_not_match", defaultValue: false);
+        var mustNotMatch = spec.GetBool(MustNotMatchKey, defaultValue: false);
         var passed = mustNotMatch ? !isMatch : isMatch;
         var verb = isMatch ? "matched" : "did not match";
         var qualifier = mustNotMatch ? "forbidden " : "";

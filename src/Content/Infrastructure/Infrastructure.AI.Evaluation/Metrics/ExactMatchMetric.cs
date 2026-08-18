@@ -16,8 +16,13 @@ namespace Infrastructure.AI.Evaluation.Metrics;
 /// </remarks>
 public sealed class ExactMatchMetric : IEvalMetric
 {
+    private const string CaseSensitiveKey = "case_sensitive";
+
     /// <inheritdoc />
     public string Key => "exact_match";
+
+    /// <inheritdoc />
+    public IReadOnlySet<string> RecognizedParameterKeys { get; } = new HashSet<string> { CaseSensitiveKey };
 
     /// <inheritdoc />
     public Task<MetricScore> ScoreAsync(
@@ -41,7 +46,7 @@ public sealed class ExactMatchMetric : IEvalMetric
             });
         }
 
-        var caseSensitive = !spec.Parameters.TryGetValue("case_sensitive", out var cs)
+        var caseSensitive = !spec.Parameters.TryGetValue(CaseSensitiveKey, out var cs)
             || !bool.TryParse(cs, out var parsed) || parsed;
 
         var comparison = caseSensitive

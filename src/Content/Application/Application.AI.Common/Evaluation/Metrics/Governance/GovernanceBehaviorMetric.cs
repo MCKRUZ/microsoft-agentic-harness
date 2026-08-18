@@ -50,6 +50,10 @@ public sealed class GovernanceBehaviorMetric : IEvalMetric
     public string Key => MetricKeyName;
 
     /// <inheritdoc />
+    public IReadOnlySet<string> RecognizedParameterKeys { get; } =
+        new HashSet<string> { RequireEnforcementKey, ExpectEscalationKey };
+
+    /// <inheritdoc />
     public Task<MetricScore> ScoreAsync(
         EvalCase @case,
         AgentInvocationResult output,
