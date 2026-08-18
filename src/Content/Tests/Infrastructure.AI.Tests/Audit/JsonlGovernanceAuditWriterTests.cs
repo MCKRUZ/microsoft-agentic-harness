@@ -1,3 +1,5 @@
+using System.Diagnostics.Metrics;
+using Domain.AI.Telemetry.Conventions;
 using Domain.Common.Config;
 using FluentAssertions;
 using Infrastructure.AI.Audit;
@@ -155,6 +157,54 @@ public sealed class JsonlGovernanceAuditWriterTests : IDisposable
         var act = () => sut.Log("agent-1", "run_tests", "allowed");
 
         act.Should().NotThrow("a governance audit write failure must degrade the trail, never the caller's decision");
+    }
+
+    [Fact]
+    public void Log_WriteFailure_IncrementsAuditWriteFailuresMetric()
+    {
+        // A security-review finding on #407's follow-up: Log() never throws on a write failure, so
+        // the AuditWriteFailures counter is the only non-log-line signal a failure ever produces.
+        // The action tag is a per-test GUID so a listener on the process-wide shared meter can't pick
+        // up a measurement from a concurrently-running test in this parallelized assembly.
+        var action = $"probe-{Guid.NewGuid():N}";
+        var blockingFilePath = Path.Combine(_tempDir, "blocked");
+        File.WriteAllText(blockingFilePath, "not a directory");
+        using var sut = NewWriter(Path.Combine(blockingFilePath, "governance"));
+        var failures = CaptureCounterLong(GovernanceConventions.AuditWriteFailures, action);
+
+        sut.Log("agent-1", action, "allowed");
+
+        failures.Should().ContainSingle();
+    }
+
+    /// <summary>
+    /// Captures long-counter measurements for the named instrument on the shared meter, filtered to
+    /// the given <see cref="GovernanceConventions.Action"/> tag value.
+    /// </summary>
+    private static List<long> CaptureCounterLong(string instrumentName, string action)
+    {
+        var values = new List<long>();
+        var listener = new MeterListener
+        {
+            InstrumentPublished = (instrument, l) =>
+            {
+                if (instrument.Name == instrumentName)
+                    l.EnableMeasurementEvents(instrument);
+            }
+        };
+        listener.SetMeasurementEventCallback<long>((_, value, tags, _) =>
+        {
+            foreach (var tag in tags)
+            {
+                if (tag.Key == GovernanceConventions.Action && Equals(tag.Value, action))
+                {
+                    values.Add(value);
+                    break;
+                }
+            }
+        });
+        listener.Start();
+        return values;
     }
 
     private sealed class StaticOptionsMonitor : IOptionsMonitor<AppConfig>

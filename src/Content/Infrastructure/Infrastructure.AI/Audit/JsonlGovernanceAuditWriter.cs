@@ -44,6 +44,14 @@ namespace Infrastructure.AI.Audit;
 /// logging instead — "the audit is the record, not the control" is the same policy
 /// <c>TrainSkillCommandHandler</c>'s audit call sites already state explicitly.
 /// </para>
+/// <para>
+/// <strong>A write failure is never silent, even though it never throws</strong> (a security-review
+/// finding on #407's follow-up): <see cref="Log"/> increments
+/// <c>GovernanceMetrics.AuditWriteFailures</c> on every failed append, alongside the structured log
+/// line — a broken (non-blank) <c>AuditStoragePath</c> is caught by neither the boot-time
+/// <c>NotEmpty</c> validator nor an exception, so the metric is the only signal an operator not
+/// tailing logs ever gets that the audit trail has gone dark.
+/// </para>
 /// </remarks>
 public sealed class JsonlGovernanceAuditWriter : IGovernanceAuditService, IVerifiableAuditChain, IDisposable
 {
@@ -100,6 +108,8 @@ public sealed class JsonlGovernanceAuditWriter : IGovernanceAuditService, IVerif
             }
             else
             {
+                GovernanceMetrics.AuditWriteFailures.Add(1,
+                    new KeyValuePair<string, object?>(GovernanceConventions.Action, action));
                 _logger.LogError(
                     "Failed to append governance audit record for agent {AgentId}, action {Action}: {Reason}",
                     agentId, action, string.Join("; ", result.Errors));
@@ -113,6 +123,8 @@ public sealed class JsonlGovernanceAuditWriter : IGovernanceAuditService, IVerif
             // escape is e.g. ObjectDisposedException from a shutdown race on this writer's semaphore.
             // See this class's remarks: a governance audit write failure degrades the audit trail's
             // completeness, it must never fail the tool-call decision it is recording.
+            GovernanceMetrics.AuditWriteFailures.Add(1,
+                new KeyValuePair<string, object?>(GovernanceConventions.Action, action));
             _logger.LogError(ex,
                 "Failed to append governance audit record for agent {AgentId}, action {Action}",
                 agentId, action);
