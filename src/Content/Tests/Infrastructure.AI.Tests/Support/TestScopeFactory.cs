@@ -72,4 +72,20 @@ internal static class TestScopeFactory
 
         return services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
     }
+
+    /// <summary>
+    /// Scope factory with no keyed <see cref="ISandboxExecutor"/> registered for any tier — models a
+    /// template consumer whose DI wiring doesn't cover every isolation tier an operator override can
+    /// select, so a <c>WorkspaceCommandRunner</c>/<c>IacSandboxRunner</c> dispatch resolving that tier
+    /// must fail gracefully rather than throw. Shared by the Workspace and Iac test suites, which used
+    /// to each keep a byte-for-byte private copy of this same builder (#426 code-review finding).
+    /// </summary>
+    public static IServiceScopeFactory WithoutExecutors()
+    {
+        var services = new ServiceCollection();
+        services.AddOptions<SandboxConfig>();
+        services.AddSingleton(sp => new FirstPartyToolLookup(sp, new HashSet<string>()));
+        services.AddSingleton<ToolPermissionProfileResolver>();
+        return services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
+    }
 }

@@ -5,6 +5,7 @@ using FluentAssertions;
 using Infrastructure.AI.Tests.Support;
 using Infrastructure.AI.Tests.Tools.Workspace.Support;
 using Infrastructure.AI.Tools.Workspace;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
@@ -176,6 +177,44 @@ public sealed class WorkspaceRunCommandsToolTests
         result.Success.Should().BeFalse();
         result.Error.Should().Contain("workspace context is active");
         sandbox.Requests.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task RunTests_NoExecutorRegisteredForResolvedIsolationTier_ReturnsFailureInsteadOfThrowing()
+    {
+        // #426 (mirrors #421's IacSandboxRunner fix): WorkspaceCommandRunner.RunAsync's try/catch must
+        // cover ResolveExecutorForUngovernedDispatch's own executor lookup, not just
+        // executor.ExecuteAsync — an operator's MinimumIsolation override can select a tier a template
+        // consumer never registered a keyed ISandboxExecutor for at all.
+        using var fx = new WorkspaceTestFixture(testCommand: "dotnet test");
+        var sut = new WorkspaceRunTestsTool(
+            fx.Accessor, TestScopeFactory.WithoutExecutors(), NullLogger<WorkspaceRunTestsTool>.Instance);
+
+        var result = await sut.ExecuteAsync("run", new Dictionary<string, object?>());
+
+        result.Success.Should().BeFalse(
+            "an unconfigured executor is a sandbox-level error — it must not throw out of ExecuteAsync uncaught");
+    }
+
+    [Fact]
+    public async Task RunTests_ScopeFactoryHasNoPermissionResolverRegistered_ReturnsFailureInsteadOfThrowing()
+    {
+        // #426 (mirrors #421's IacSandboxRunner fix): scope creation and ToolPermissionProfileResolver
+        // resolution used to happen in the caller, outside RunAsync's try/catch entirely, so a
+        // DI-resolution failure there threw uncaught out of ITool.ExecuteAsync. RunAsync now creates
+        // the scope and resolves the resolver itself, inside the same try/catch as dispatch/execution.
+        using var fx = new WorkspaceTestFixture(testCommand: "dotnet test");
+        var servicesWithNoResolver = new ServiceCollection().BuildServiceProvider();
+        var sut = new WorkspaceRunTestsTool(
+            fx.Accessor,
+            servicesWithNoResolver.GetRequiredService<IServiceScopeFactory>(),
+            NullLogger<WorkspaceRunTestsTool>.Instance);
+
+        var result = await sut.ExecuteAsync("run", new Dictionary<string, object?>());
+
+        result.Success.Should().BeFalse(
+            "a DI-resolution failure for ToolPermissionProfileResolver is a sandbox-level error — it " +
+            "must not throw out of ExecuteAsync uncaught");
     }
 
     /// <summary>

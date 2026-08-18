@@ -7,6 +7,7 @@ using Domain.Common;
 using Domain.Common.Config.AI.Sandbox;
 using FluentAssertions;
 using Infrastructure.AI.Iac;
+using Infrastructure.AI.Tests.Support;
 using Infrastructure.AI.Tools.Iac;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -56,20 +57,6 @@ public sealed class IacSandboxRunnerSolutionReviewFixTests
             if (overrideToolName is not null && overrideConfig is not null)
                 c.ToolOverrides[overrideToolName] = overrideConfig;
         });
-        services.AddSingleton(sp => new FirstPartyToolLookup(sp, new HashSet<string>()));
-        services.AddSingleton<ToolPermissionProfileResolver>();
-        return services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
-    }
-
-    /// <summary>
-    /// As <see cref="ScopeFactory"/>, but with no keyed <see cref="ISandboxExecutor"/> registered for
-    /// any tier — models a template consumer whose DI wiring doesn't cover every isolation tier an
-    /// operator override can select.
-    /// </summary>
-    private static IServiceScopeFactory ScopeFactoryWithoutExecutors()
-    {
-        var services = new ServiceCollection();
-        services.AddOptions<SandboxConfig>();
         services.AddSingleton(sp => new FirstPartyToolLookup(sp, new HashSet<string>()));
         services.AddSingleton<ToolPermissionProfileResolver>();
         return services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
@@ -250,7 +237,7 @@ public sealed class IacSandboxRunnerSolutionReviewFixTests
             arguments: ["plan"],
             moduleDirectory: ModuleDir,
             registryAllowlist: [],
-            scopeFactory: ScopeFactoryWithoutExecutors(),
+            scopeFactory: TestScopeFactory.WithoutExecutors(),
             defaultIsolationLevel: SandboxIsolationLevel.Process,
             toolName: "iac_plan",
             requiredCapabilities: IacPlanTool.RequiredSandboxCapabilities,
