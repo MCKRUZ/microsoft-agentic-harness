@@ -287,4 +287,86 @@ public sealed class ToolPermissionProfileResolverTests
 
         profile.MinimumIsolation.Should().Be(SandboxIsolationLevel.Container);
     }
+
+    // --- ResolveForUngovernedDispatch (#405 — WorkspaceCommandRunner/IacSandboxRunner's shared
+    // merge, previously only exercised indirectly through those two runners; direct unit coverage
+    // added after a code-review finding on the duplicated refusal formula) ---
+
+    [Fact]
+    public void ResolveForUngovernedDispatch_NoOverride_Succeeds_FloorsIsolationAtProcess()
+    {
+        var resolver = BuildResolver();
+
+        var result = resolver.ResolveForUngovernedDispatch(
+            "unregistered_tool", ToolCapability.FileRead | ToolCapability.Subprocess, ["dotnet"]);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value!.RequiredCapabilities.Should().Be(ToolCapability.FileRead | ToolCapability.Subprocess);
+        result.Value.DeniedCapabilities.Should().Be(ToolCapability.None);
+        result.Value.AllowedPrograms.Should().ContainSingle().Which.Should().Be("dotnet");
+        result.Value.MinimumIsolation.Should().Be(SandboxIsolationLevel.Process,
+            "this dispatch path requires at least process isolation even with no operator override");
+    }
+
+    [Fact]
+    public void ResolveForUngovernedDispatch_NonIntersectingDeny_Succeeds_CarriesTheDenyForward()
+    {
+        var config = new SandboxConfig
+        {
+            ToolOverrides = new()
+            {
+                ["iac_plan"] = new ToolOverrideConfig { DeniedCapabilities = ["DatabaseRead"] }
+            }
+        };
+        var resolver = BuildResolver(config);
+
+        var result = resolver.ResolveForUngovernedDispatch(
+            "iac_plan",
+            ToolCapability.FileRead | ToolCapability.FileWrite | ToolCapability.Subprocess | ToolCapability.NetworkAccess,
+            ["terraform"]);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value!.DeniedCapabilities.Should().Be(ToolCapability.DatabaseRead);
+    }
+
+    [Fact]
+    public void ResolveForUngovernedDispatch_IntersectingDeny_RefusesOutright()
+    {
+        var config = new SandboxConfig
+        {
+            ToolOverrides = new()
+            {
+                ["iac_plan"] = new ToolOverrideConfig { DeniedCapabilities = ["NetworkAccess"] }
+            }
+        };
+        var resolver = BuildResolver(config);
+
+        var result = resolver.ResolveForUngovernedDispatch(
+            "iac_plan",
+            ToolCapability.FileRead | ToolCapability.NetworkAccess,
+            ["terraform"]);
+
+        result.IsSuccess.Should().BeFalse(
+            "a deny that intersects what the caller actually requires must refuse, not silently narrow");
+        result.Errors.Should().ContainSingle(e => e.Contains("NetworkAccess"));
+    }
+
+    [Fact]
+    public void ResolveForUngovernedDispatch_OverrideMinimumIsolation_ElevatesButNeverDowngrades()
+    {
+        var config = new SandboxConfig
+        {
+            ToolOverrides = new()
+            {
+                ["iac_plan"] = new ToolOverrideConfig { MinimumIsolation = "Container" }
+            }
+        };
+        var resolver = BuildResolver(config);
+
+        var result = resolver.ResolveForUngovernedDispatch(
+            "iac_plan", ToolCapability.FileRead, ["terraform"]);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value!.MinimumIsolation.Should().Be(SandboxIsolationLevel.Container);
+    }
 }

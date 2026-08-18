@@ -69,15 +69,31 @@ public sealed class AllToolsCapabilityCoverageTests
         toolTypes.Should().Contain(typeof(FileSystemTool),
             "the scan must reach production tools, not just an empty or filtered set");
 
-        using var _ = new FluentAssertions.Execution.AssertionScope();
+        using var scope = new FluentAssertions.Execution.AssertionScope();
         foreach (var type in toolTypes)
         {
-            // Bypasses every constructor and its dependencies — safe only because every
-            // RequiredCapabilities implementation in this codebase is a constant expression; see this
-            // class's remarks.
-            var instance = (ITool)RuntimeHelpers.GetUninitializedObject(type);
+            ToolCapability capabilities;
+            try
+            {
+                // Bypasses every constructor and its dependencies — safe only because every
+                // RequiredCapabilities implementation in this codebase is a constant expression; see
+                // this class's remarks. A future violation (a getter that reads an injected field)
+                // throws here rather than in production — recorded as this one tool's failure via the
+                // assertion scope below, not a raw exception that would abort the sweep for every tool
+                // enumerated after it.
+                var instance = (ITool)RuntimeHelpers.GetUninitializedObject(type);
+                capabilities = instance.RequiredCapabilities;
+            }
+            catch (Exception ex)
+            {
+                scope.AddPreFormattedFailure(
+                    $"'{type.Name}'.RequiredCapabilities threw {ex.GetType().Name} when read off an " +
+                    "uninitialized instance — it must be a constant expression (no injected-field " +
+                    "access) for this reflection sweep to read it safely. See this class's remarks.");
+                continue;
+            }
 
-            if (instance.RequiredCapabilities != ToolCapability.None)
+            if (capabilities != ToolCapability.None)
                 continue;
 
             IntentionallyNoCapabilities.Should().ContainKey(type,

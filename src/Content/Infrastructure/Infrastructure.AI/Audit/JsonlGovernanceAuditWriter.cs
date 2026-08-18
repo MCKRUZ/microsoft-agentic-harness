@@ -33,14 +33,16 @@ namespace Infrastructure.AI.Audit;
 /// <see cref="VerifyChainIntegrity"/> and <see cref="EntryCount"/> block the same way.
 /// </para>
 /// <para>
-/// <strong><see cref="Log"/> never throws.</strong> Unlike <c>JsonlEscalationAuditStore</c> (whose
-/// primary operation IS the audit record, so a write failure legitimately propagates), every caller
-/// here treats the audit write as a side effect of a decision already made — the tool call is already
-/// being allowed, denied, or blocked before <c>Log</c> runs, and none of the 15 call sites today
-/// expects or handles an exception from it. A disk failure here should degrade the audit trail's
-/// completeness, not turn a clean deny into an unhandled exception on the tool-call path. The failure
-/// is logged via structured logging instead — "the audit is the record, not the control" is the same
-/// policy <c>TrainSkillCommandHandler</c>'s audit call sites already state explicitly.
+/// <strong>No member of this class throws.</strong> <see cref="Log"/>, <see cref="VerifyChainIntegrity"/>,
+/// and <see cref="EntryCount"/> all catch broadly and degrade rather than propagate. For
+/// <see cref="Log"/> specifically: unlike <c>JsonlEscalationAuditStore</c> (whose primary operation IS
+/// the audit record, so a write failure legitimately propagates), every caller here treats the audit
+/// write as a side effect of a decision already made — the tool call is already being allowed, denied,
+/// or blocked before <c>Log</c> runs, and none of the 15 call sites today expects or handles an
+/// exception from it. A disk failure here should degrade the audit trail's completeness, not turn a
+/// clean deny into an unhandled exception on the tool-call path. The failure is logged via structured
+/// logging instead — "the audit is the record, not the control" is the same policy
+/// <c>TrainSkillCommandHandler</c>'s audit call sites already state explicitly.
 /// </para>
 /// </remarks>
 public sealed class JsonlGovernanceAuditWriter : IGovernanceAuditService, IVerifiableAuditChain, IDisposable
@@ -118,16 +120,41 @@ public sealed class JsonlGovernanceAuditWriter : IGovernanceAuditService, IVerif
     }
 
     /// <inheritdoc />
-    public bool VerifyChainIntegrity() =>
-        _chain.VerifyChainAsync(CancellationToken.None).GetAwaiter().GetResult().IsValid;
+    public bool VerifyChainIntegrity()
+    {
+        try
+        {
+            return _chain.VerifyChainAsync(CancellationToken.None).GetAwaiter().GetResult().IsValid;
+        }
+        catch (Exception ex)
+        {
+            // Same exception-safety contract as Log (see this class's remarks): an inability to
+            // verify is reported as "not verified," never as an unhandled exception.
+            _logger.LogError(ex, "Failed to verify the governance audit chain at {FilePath}", _filePath);
+            return false;
+        }
+    }
 
     /// <summary>
     /// Gets the total number of audit entries in the chain, computed by walking it end to end. No
     /// production caller reads this today (verified — see #407's implementation notes); the full-chain
     /// scan is acceptable only because of that.
     /// </summary>
-    public int EntryCount =>
-        (int)_chain.VerifyChainAsync(CancellationToken.None).GetAwaiter().GetResult().VerifiedCount;
+    public int EntryCount
+    {
+        get
+        {
+            try
+            {
+                return (int)_chain.VerifyChainAsync(CancellationToken.None).GetAwaiter().GetResult().VerifiedCount;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to count entries in the governance audit chain at {FilePath}", _filePath);
+                return 0;
+            }
+        }
+    }
 
     /// <inheritdoc />
     public Task<AuditChainVerificationResult> VerifyChainAsync(CancellationToken cancellationToken) =>
