@@ -1,7 +1,11 @@
+using Application.AI.Common.Interfaces.Agent;
+using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Services.Sandbox;
 using Application.AI.Common.Services.Tools;
+using Domain.AI.Governance;
 using Domain.AI.Sandbox;
+using Domain.Common.Config.AI;
 using Domain.Common.Config.AI.Sandbox;
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
@@ -25,6 +29,15 @@ public sealed class ToolPermissionProfileResolverTests
         SandboxConfig? config = null,
         params (string Name, ITool Tool)[] tools)
     {
+        return BuildResolver(config, auditService: null, tools: tools);
+    }
+
+    private static ToolPermissionProfileResolver BuildResolver(
+        SandboxConfig? config,
+        IGovernanceAuditService? auditService,
+        IOptionsMonitor<GovernanceConfig>? governanceConfig = null,
+        params (string Name, ITool Tool)[] tools)
+    {
         var services = new ServiceCollection();
         foreach (var (name, tool) in tools)
             services.AddKeyedSingleton<ITool>(name, (_, _) => tool);
@@ -34,7 +47,7 @@ public sealed class ToolPermissionProfileResolverTests
 
         var lookup = new FirstPartyToolLookup(
             services.BuildServiceProvider(), new HashSet<string>(tools.Select(t => t.Name)));
-        return new ToolPermissionProfileResolver(lookup, configMock.Object);
+        return new ToolPermissionProfileResolver(lookup, configMock.Object, auditService, governanceConfig);
     }
 
     private static ITool FileTool() => Mock.Of<ITool>(t =>
@@ -453,6 +466,173 @@ public sealed class ToolPermissionProfileResolverTests
             "mcp_tool", ToolCapability.None, ["program"]);
 
         result.IsSuccess.Should().BeTrue();
+    }
+
+    // --- Governance audit trail on refusal (#419 — every governed refusal already reaches
+    // governance.jsonl via CapabilityEnforcer/ToolInvocationGovernor's use of the same
+    // IGovernanceAuditService; a refusal on this ungoverned-dispatch path previously reached
+    // neither that trail nor an app log (the app-log gap was closed separately in #421/#426)). ---
+
+    [Fact]
+    public void ResolveForUngovernedDispatch_IntersectingDeny_LogsDenialToAuditTrail()
+    {
+        var auditMock = new Mock<IGovernanceAuditService>();
+        var config = new SandboxConfig
+        {
+            ToolOverrides = new()
+            {
+                ["iac_plan"] = new ToolOverrideConfig { DeniedCapabilities = ["NetworkAccess"] }
+            }
+        };
+        var resolver = BuildResolver(config, auditMock.Object);
+
+        resolver.ResolveForUngovernedDispatch(
+            "iac_plan", ToolCapability.FileRead | ToolCapability.NetworkAccess, ["terraform"],
+            agentId: "agent-42");
+
+        auditMock.Verify(a => a.Log("agent-42", "iac_plan", ToolDecisionOutcome.Denied.ToString()), Times.Once);
+    }
+
+    [Fact]
+    public void ResolveForUngovernedDispatch_UnderDeclaration_LogsDenialToAuditTrail()
+    {
+        var auditMock = new Mock<IGovernanceAuditService>();
+        var resolver = BuildResolver(null, auditMock.Object, tools: ("full_tool", FullTool()));
+
+        resolver.ResolveForUngovernedDispatch(
+            "full_tool", ToolCapability.FileRead, ["program"], agentId: "agent-7");
+
+        auditMock.Verify(a => a.Log("agent-7", "full_tool", ToolDecisionOutcome.Denied.ToString()), Times.Once);
+    }
+
+    [Fact]
+    public void ResolveForUngovernedDispatch_NoAgentIdSupplied_LogsUnknownRatherThanOmittingTheEntry()
+    {
+        var auditMock = new Mock<IGovernanceAuditService>();
+        var config = new SandboxConfig
+        {
+            ToolOverrides = new()
+            {
+                ["iac_plan"] = new ToolOverrideConfig { DeniedCapabilities = ["NetworkAccess"] }
+            }
+        };
+        var resolver = BuildResolver(config, auditMock.Object);
+
+        resolver.ResolveForUngovernedDispatch(
+            "iac_plan", ToolCapability.NetworkAccess, ["terraform"]);
+
+        auditMock.Verify(a => a.Log("unknown", "iac_plan", ToolDecisionOutcome.Denied.ToString()), Times.Once);
+    }
+
+    [Fact]
+    public void ResolveForUngovernedDispatch_Succeeds_NeverLogsToTheAuditTrail()
+    {
+        // A successful dispatch is not a governance decision — only a refusal is. Proves the audit
+        // call is refusal-gated, not fired unconditionally on every call.
+        var auditMock = new Mock<IGovernanceAuditService>();
+        var resolver = BuildResolver(null, auditMock.Object);
+
+        resolver.ResolveForUngovernedDispatch(
+            "unregistered_tool", ToolCapability.FileRead, ["dotnet"]);
+
+        auditMock.Verify(a => a.Log(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>()), Times.Never);
+    }
+
+    [Fact]
+    public void ResolveForUngovernedDispatch_NoAuditServiceConfigured_RefusalStillWorksWithoutThrowing()
+    {
+        // The optional-dependency contract (#419): a composition root that never wires
+        // IGovernanceAuditService must still get a working resolver, just with no durable audit
+        // trail for this path — mirrors ProvenanceMemoryWriteGate's IGovernanceAuditService? convention.
+        var config = new SandboxConfig
+        {
+            ToolOverrides = new()
+            {
+                ["iac_plan"] = new ToolOverrideConfig { DeniedCapabilities = ["NetworkAccess"] }
+            }
+        };
+        var resolver = BuildResolver(config, auditService: null);
+
+        var act = () => resolver.ResolveForUngovernedDispatch(
+            "iac_plan", ToolCapability.NetworkAccess, ["terraform"]);
+
+        act.Should().NotThrow();
+        act().IsSuccess.Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void ResolveForUngovernedDispatch_HonorsEnableAuditFlag(bool enableAudit)
+    {
+        // #419 code-review finding: every other IGovernanceAuditService call site in the codebase
+        // (ToolInvocationGovernor, PromptInjectionBehavior) honors GovernanceConfig.EnableAudit — an
+        // operator who disables it must not keep seeing writes to governance.jsonl from this path alone.
+        var auditMock = new Mock<IGovernanceAuditService>();
+        var governanceConfigMock = new Mock<IOptionsMonitor<GovernanceConfig>>();
+        governanceConfigMock.Setup(m => m.CurrentValue).Returns(new GovernanceConfig { EnableAudit = enableAudit });
+        var config = new SandboxConfig
+        {
+            ToolOverrides = new()
+            {
+                ["iac_plan"] = new ToolOverrideConfig { DeniedCapabilities = ["NetworkAccess"] }
+            }
+        };
+        var resolver = BuildResolver(config, auditMock.Object, governanceConfigMock.Object);
+
+        var result = resolver.ResolveForUngovernedDispatch(
+            "iac_plan", ToolCapability.NetworkAccess, ["terraform"], agentId: "agent-1");
+
+        result.IsSuccess.Should().BeFalse("the refusal itself must still happen — only the audit write is gated");
+        auditMock.Verify(
+            a => a.Log("agent-1", "iac_plan", ToolDecisionOutcome.Denied.ToString()),
+            enableAudit ? Times.Once : Times.Never);
+    }
+
+    [Fact]
+    public void ResolveExecutorForUngovernedDispatch_RefusalOnResolvedTier_ForwardsAgentIdFromScopedExecutionContext()
+    {
+        // The one production wiring point for agentId (#419): IAgentExecutionContext is scoped, so it
+        // is read from the caller's own per-execution scope — never captured on this singleton's
+        // constructor — and forwarded down to ResolveForUngovernedDispatch's audit call.
+        var auditMock = new Mock<IGovernanceAuditService>();
+        var config = new SandboxConfig
+        {
+            ToolOverrides = new()
+            {
+                ["iac_plan"] = new ToolOverrideConfig { DeniedCapabilities = ["NetworkAccess"] }
+            }
+        };
+        var resolver = BuildResolver(config, auditMock.Object);
+        var executionContext = Mock.Of<IAgentExecutionContext>(c => c.AgentId == "scoped-agent-99");
+        var scopedServices = new ServiceCollection()
+            .AddSingleton(executionContext)
+            .BuildServiceProvider();
+
+        resolver.ResolveExecutorForUngovernedDispatch(
+            "iac_plan", ToolCapability.NetworkAccess, ["terraform"], scopedServices);
+
+        auditMock.Verify(a => a.Log("scoped-agent-99", "iac_plan", ToolDecisionOutcome.Denied.ToString()), Times.Once);
+    }
+
+    [Fact]
+    public void ResolveExecutorForUngovernedDispatch_RefusalWithNoExecutionContextInScope_LogsUnknown()
+    {
+        var auditMock = new Mock<IGovernanceAuditService>();
+        var config = new SandboxConfig
+        {
+            ToolOverrides = new()
+            {
+                ["iac_plan"] = new ToolOverrideConfig { DeniedCapabilities = ["NetworkAccess"] }
+            }
+        };
+        var resolver = BuildResolver(config, auditMock.Object);
+        var scopedServices = new ServiceCollection().BuildServiceProvider();
+
+        resolver.ResolveExecutorForUngovernedDispatch(
+            "iac_plan", ToolCapability.NetworkAccess, ["terraform"], scopedServices);
+
+        auditMock.Verify(a => a.Log("unknown", "iac_plan", ToolDecisionOutcome.Denied.ToString()), Times.Once);
     }
 
     // --- ResolveExecutorForUngovernedDispatch (a /simplify finding: WorkspaceCommandRunner and

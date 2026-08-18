@@ -9,6 +9,7 @@ using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.AI;
 using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Context;
+using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Sandbox;
 using Application.AI.Common.Interfaces.Skills;
 using Application.AI.Common.Interfaces.Tools;
@@ -21,6 +22,7 @@ using Application.AI.Common.Services.Sandbox;
 using Application.AI.Common.Services.Skills;
 using Application.AI.Common.Services.Tools;
 using Application.Common.Interfaces.Telemetry;
+using Domain.Common.Config.AI;
 using Domain.Common.Config.AI.Sandbox;
 using FluentValidation;
 using MediatR;
@@ -134,7 +136,13 @@ public static class DependencyInjection
         services.AddOptions<SandboxConfig>();
         services.AddSingleton(sp => new ToolPermissionProfileResolver(
             sp.GetRequiredService<Services.Tools.FirstPartyToolLookup>(),
-            sp.GetRequiredService<IOptionsMonitor<SandboxConfig>>()));
+            sp.GetRequiredService<IOptionsMonitor<SandboxConfig>>(),
+            // Both optional (#419): a composition root that never calls AddGovernance still
+            // constructs this widely-used singleton — it just gets no durable audit trail for an
+            // ungoverned-dispatch refusal, and (absent an EnableAudit toggle to read) defaults to
+            // the historically-correct "audit on" behavior. See the constructor's own remarks.
+            sp.GetService<IGovernanceAuditService>(),
+            sp.GetService<IOptionsMonitor<GovernanceConfig>>()));
         services.AddScoped<ICapabilityEnforcer, CapabilityEnforcer>();
 
         // Scoped agent execution context — carries agent identity through the pipeline
