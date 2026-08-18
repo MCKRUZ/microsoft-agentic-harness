@@ -119,14 +119,11 @@ public sealed class BicepGenerator : IIacGenerator
         if (!build.Success)
         {
             // A governance refusal (e.g. an operator's DeniedCapabilities override on iac_plan) must
-            // never present as a real build failure — see IacSandboxRunner.WasRefusedBeforeDispatch's
-            // remarks for the discriminator and why it's centralized there, not re-derived per call site.
-            if (IacSandboxRunner.WasRefusedBeforeDispatch(build))
+            // never present as a real build failure.
+            if (IacSandboxRunner.FailIfRefused<IacPlanResult>(
+                    build, _logger, "Bicep", "iac_plan", moduleDirectory, "iac.plan.sandbox_denied") is { } refused)
             {
-                _logger.LogError(
-                    "Bicep iac_plan for {Module} was refused before dispatch: {Reason}",
-                    moduleDirectory, build.ErrorMessage);
-                return Result<IacPlanResult>.Fail("iac.plan.sandbox_denied");
+                return refused;
             }
 
             _logger.LogWarning("Bicep build failed in {Module}: exit={Exit}", moduleDirectory, build.ExitCode);
@@ -158,12 +155,17 @@ public sealed class BicepGenerator : IIacGenerator
             return Result<IacScanResult>.Fail("iac.scan.invalid_blocking_severity");
         }
 
-        var armTtk = await Run(
+        // Independent dispatches — each opens its own DI scope and resolves its own executor, so
+        // there is no shared mutable state and both can run concurrently.
+        var armTtkTask = Run(
             ArmTtkProgram, [ "-TemplatePath", "." ], moduleDirectory, iac.RegistryAllowlist, "iac_scan",
             IacScanTool.RequiredSandboxCapabilities, cancellationToken);
-        var checkov = await Run(
+        var checkovTask = Run(
             CheckovProgram, [ "-d", ".", "--compact", "--quiet" ], moduleDirectory, iac.RegistryAllowlist, "iac_scan",
             IacScanTool.RequiredSandboxCapabilities, cancellationToken);
+        await Task.WhenAll(armTtkTask, checkovTask);
+        var armTtk = armTtkTask.Result;
+        var checkov = checkovTask.Result;
         if (armTtk is null || checkov is null)
         {
             return Result<IacScanResult>.Fail("iac.scan.sandbox_error");
@@ -171,21 +173,16 @@ public sealed class BicepGenerator : IIacGenerator
 
         // A scanner the sandbox refused to dispatch must never fall through to the parsers below,
         // which would parse empty output into zero findings — silently reporting a security scan that
-        // never ran as "passed, no findings." See IacSandboxRunner.WasRefusedBeforeDispatch's remarks
-        // for the discriminator.
-        if (IacSandboxRunner.WasRefusedBeforeDispatch(armTtk))
+        // never ran as "passed, no findings."
+        if (IacSandboxRunner.FailIfRefused<IacScanResult>(
+                armTtk, _logger, "Bicep", "iac_scan (arm-ttk)", moduleDirectory, "iac.scan.sandbox_denied") is { } refusedArmTtk)
         {
-            _logger.LogError(
-                "Bicep iac_scan (arm-ttk) for {Module} was refused before dispatch: {Reason}",
-                moduleDirectory, armTtk.ErrorMessage);
-            return Result<IacScanResult>.Fail("iac.scan.sandbox_denied");
+            return refusedArmTtk;
         }
-        if (IacSandboxRunner.WasRefusedBeforeDispatch(checkov))
+        if (IacSandboxRunner.FailIfRefused<IacScanResult>(
+                checkov, _logger, "Bicep", "iac_scan (checkov)", moduleDirectory, "iac.scan.sandbox_denied") is { } refusedCheckov)
         {
-            _logger.LogError(
-                "Bicep iac_scan (checkov) for {Module} was refused before dispatch: {Reason}",
-                moduleDirectory, checkov.ErrorMessage);
-            return Result<IacScanResult>.Fail("iac.scan.sandbox_denied");
+            return refusedCheckov;
         }
 
         var findings = new List<IacScanFinding>();

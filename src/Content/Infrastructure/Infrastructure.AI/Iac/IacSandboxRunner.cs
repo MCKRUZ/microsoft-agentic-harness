@@ -1,6 +1,8 @@
 using Application.AI.Common.Interfaces.Sandbox;
 using Application.AI.Common.Services.Sandbox;
 using Domain.AI.Sandbox;
+using Domain.Common;
+using Microsoft.Extensions.Logging;
 
 namespace Infrastructure.AI.Iac;
 
@@ -162,6 +164,46 @@ public static class IacSandboxRunner
     /// </remarks>
     public static bool WasRefusedBeforeDispatch(SandboxExecutionResult result) =>
         !result.Success && result.Attestation is null;
+
+    /// <summary>
+    /// Applies <see cref="WasRefusedBeforeDispatch"/> and, on a refusal, logs and returns the
+    /// scrubbed failure the caller should return immediately. Returns <c>null</c> when
+    /// <paramref name="result"/> is not a pre-dispatch refusal, so the caller's own
+    /// success/real-failure handling proceeds unchanged.
+    /// </summary>
+    /// <remarks>
+    /// Centralizes the log-and-return block that used to be pasted at every one of the 7 CLI
+    /// dispatch sites across <see cref="TerraformGenerator"/> and <see cref="BicepGenerator"/> —
+    /// the same duplication shape (a check correct everywhere it was pasted, but pasted, not
+    /// shared) that let the <c>plan</c> dispatch in <see cref="TerraformGenerator.PlanAsync"/>
+    /// miss the check for a full commit during this PR's own development.
+    /// </remarks>
+    /// <typeparam name="T">The result payload type of the caller's own <see cref="Result{T}"/>.</typeparam>
+    /// <param name="result">The dispatch outcome to classify.</param>
+    /// <param name="logger">The caller's own logger, used so the log entry attributes to the right category.</param>
+    /// <param name="backendLabel">The IaC backend name for the log message (e.g. <c>"Terraform"</c>, <c>"Bicep"</c>).</param>
+    /// <param name="operationLabel">The operation for the log message (e.g. <c>"iac_plan"</c>, <c>"iac_scan (checkov)"</c>).</param>
+    /// <param name="moduleDirectory">The module directory the run targeted.</param>
+    /// <param name="failCode">The stable <c>iac.*</c> failure code to return.</param>
+    /// <returns>A failed <see cref="Result{T}"/> if refused before dispatch; otherwise <c>null</c>.</returns>
+    public static Result<T>? FailIfRefused<T>(
+        SandboxExecutionResult result,
+        ILogger logger,
+        string backendLabel,
+        string operationLabel,
+        string moduleDirectory,
+        string failCode)
+    {
+        if (!WasRefusedBeforeDispatch(result))
+        {
+            return null;
+        }
+
+        logger.LogError(
+            "{Backend} {Operation} for {Module} was refused before dispatch: {Reason}",
+            backendLabel, operationLabel, moduleDirectory, result.ErrorMessage);
+        return Result<T>.Fail(failCode);
+    }
 
     /// <summary>
     /// Projects the bare-hostname registry allowlist into concrete
