@@ -115,7 +115,7 @@ public sealed class BicepGenerator : IIacGenerator
             IacPlanTool.RequiredSandboxCapabilities, cancellationToken);
         if (IacSandboxRunner.MapDispatchFailure<IacPlanResult>(
                 buildDispatch, _logger, "Bicep", "iac_plan", moduleDirectory,
-                "iac.plan.sandbox_denied", "iac.plan.sandbox_error") is { } refused)
+                "iac.plan") is { } refused)
         {
             return refused;
         }
@@ -169,13 +169,13 @@ public sealed class BicepGenerator : IIacGenerator
 
         if (IacSandboxRunner.MapDispatchFailure<IacScanResult>(
                 armTtkDispatch, _logger, "Bicep", "iac_scan (arm-ttk)", moduleDirectory,
-                "iac.scan.sandbox_denied", "iac.scan.sandbox_error") is { } refusedArmTtk)
+                "iac.scan") is { } refusedArmTtk)
         {
             return refusedArmTtk;
         }
         if (IacSandboxRunner.MapDispatchFailure<IacScanResult>(
                 checkovDispatch, _logger, "Bicep", "iac_scan (checkov)", moduleDirectory,
-                "iac.scan.sandbox_denied", "iac.scan.sandbox_error") is { } refusedCheckov)
+                "iac.scan") is { } refusedCheckov)
         {
             return refusedCheckov;
         }

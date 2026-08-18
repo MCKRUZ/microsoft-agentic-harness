@@ -301,8 +301,7 @@ public sealed class IacSandboxRunnerSolutionReviewFixTests
         var forbidden = Result<SandboxExecutionResult>.Forbidden("denied");
 
         var mapped = IacSandboxRunner.MapDispatchFailure<IacPlanResult>(
-            forbidden, NullLogger.Instance, "Terraform", "iac_plan", ModuleDir,
-            deniedCode: "iac.plan.sandbox_denied", errorCode: "iac.plan.sandbox_error");
+            forbidden, NullLogger.Instance, "Terraform", "iac_plan", ModuleDir, codePrefix: "iac.plan");
 
         mapped.Should().NotBeNull();
         mapped!.FailureType.Should().Be(ResultFailureType.Forbidden);

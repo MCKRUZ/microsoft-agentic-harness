@@ -236,9 +236,10 @@ public static class IacSandboxRunner
     /// </para>
     /// <para>
     /// A dispatch that failed for any other reason (the sandbox threw before returning a result — see
-    /// <see cref="RunAsync"/>'s own try/catch around the executor call) maps to
-    /// <paramref name="errorCode"/> instead of <paramref name="deniedCode"/>, preserving the
-    /// existing three-way split between "refused", "sandbox-level error", and "ran, parse the result".
+    /// <see cref="RunAsync"/>'s own try/catch around scope creation, resolution, and execution) maps
+    /// to <c>{codePrefix}.sandbox_error</c> instead of <c>{codePrefix}.sandbox_denied</c>, preserving
+    /// the existing three-way split between "refused", "sandbox-level error", and "ran, parse the
+    /// result".
     /// </para>
     /// </remarks>
     /// <typeparam name="T">The result payload type of the caller's own <see cref="Result{T}"/>.</typeparam>
@@ -247,11 +248,13 @@ public static class IacSandboxRunner
     /// <param name="backendLabel">The IaC backend name for the log message (e.g. <c>"Terraform"</c>, <c>"Bicep"</c>).</param>
     /// <param name="operationLabel">The operation for the log message (e.g. <c>"iac_plan"</c>, <c>"iac_scan (checkov)"</c>).</param>
     /// <param name="moduleDirectory">The module directory the run targeted.</param>
-    /// <param name="deniedCode">The stable <c>iac.*.sandbox_denied</c> code to return for a governance refusal.</param>
-    /// <param name="errorCode">
-    /// The stable <c>iac.*.sandbox_error</c> code to return for any other dispatch failure — always a
-    /// sandbox-level exception <see cref="RunAsync"/> itself already caught and logged with the full
-    /// exception detail, so this branch does not log a second time.
+    /// <param name="codePrefix">
+    /// The stable <c>iac.plan</c>/<c>iac.scan</c> code family for this dispatch — a governance
+    /// refusal returns <c>{codePrefix}.sandbox_denied</c>, any other failure returns
+    /// <c>{codePrefix}.sandbox_error</c>. A /simplify finding: earlier revisions took the two codes as
+    /// independent parameters, but across all 7 call sites <c>sandbox_error</c> was never anything
+    /// other than <c>sandbox_denied</c> with the suffix swapped — derivable state passed as if it were
+    /// two facts a caller could mismatch by copy-paste.
     /// </param>
     /// <returns>A failed <see cref="Result{T}"/> if <paramref name="dispatch"/> failed; otherwise <c>null</c>.</returns>
     public static Result<T>? MapDispatchFailure<T>(
@@ -260,8 +263,7 @@ public static class IacSandboxRunner
         string backendLabel,
         string operationLabel,
         string moduleDirectory,
-        string deniedCode,
-        string errorCode)
+        string codePrefix)
     {
         if (dispatch.IsSuccess)
         {
@@ -277,10 +279,10 @@ public static class IacSandboxRunner
             // than collapsing it back to General at the one boundary this issue exists to keep it
             // distinct across (a code-review finding: no caller reads FailureType today, but silently
             // discarding it here would defeat any future consumer that does).
-            return Result<T>.Forbidden(deniedCode);
+            return Result<T>.Forbidden($"{codePrefix}.sandbox_denied");
         }
 
-        return Result<T>.Fail(errorCode);
+        return Result<T>.Fail($"{codePrefix}.sandbox_error");
     }
 
     /// <summary>

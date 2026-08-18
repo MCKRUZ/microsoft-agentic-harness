@@ -109,7 +109,7 @@ public sealed class TerraformGenerator : IIacGenerator
             IacPlanTool.RequiredSandboxCapabilities, cancellationToken);
         if (IacSandboxRunner.MapDispatchFailure<IacPlanResult>(
                 validateDispatch, _logger, "Terraform", "iac_plan", moduleDirectory,
-                "iac.plan.sandbox_denied", "iac.plan.sandbox_error") is { } refused)
+                "iac.plan") is { } refused)
         {
             return refused;
         }
@@ -128,7 +128,7 @@ public sealed class TerraformGenerator : IIacGenerator
             IacPlanTool.RequiredSandboxCapabilities, cancellationToken);
         if (IacSandboxRunner.MapDispatchFailure<IacPlanResult>(
                 planDispatch, _logger, "Terraform", "iac_plan (plan)", moduleDirectory,
-                "iac.plan.sandbox_denied", "iac.plan.sandbox_error") is { } refusedPlan)
+                "iac.plan") is { } refusedPlan)
         {
             return refusedPlan;
         }
@@ -167,13 +167,13 @@ public sealed class TerraformGenerator : IIacGenerator
 
         if (IacSandboxRunner.MapDispatchFailure<IacScanResult>(
                 checkovDispatch, _logger, "Terraform", "iac_scan (checkov)", moduleDirectory,
-                "iac.scan.sandbox_denied", "iac.scan.sandbox_error") is { } refusedCheckov)
+                "iac.scan") is { } refusedCheckov)
         {
             return refusedCheckov;
         }
         if (IacSandboxRunner.MapDispatchFailure<IacScanResult>(
                 tfsecDispatch, _logger, "Terraform", "iac_scan (tfsec)", moduleDirectory,
-                "iac.scan.sandbox_denied", "iac.scan.sandbox_error") is { } refusedTfsec)
+                "iac.scan") is { } refusedTfsec)
         {
             return refusedTfsec;
         }
