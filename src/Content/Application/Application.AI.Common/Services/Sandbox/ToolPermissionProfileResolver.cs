@@ -54,17 +54,33 @@ public sealed class ToolPermissionProfileResolver
     public ToolPermissionProfile Resolve(string toolName)
     {
         var (baseCapabilities, baseIsolation) = ResolveBase(toolName);
+        var (deniedCaps, effectiveIsolation) = ResolveOverride(toolName, baseIsolation);
 
-        _config.CurrentValue.ToolOverrides.TryGetValue(toolName, out var overrideConfig);
-
-        if (overrideConfig is null)
+        return new ToolPermissionProfile
         {
-            return new ToolPermissionProfile
-            {
-                RequiredCapabilities = baseCapabilities,
-                MinimumIsolation = baseIsolation
-            };
-        }
+            // The tool's undiminished declaration — never folded with the deny list (#405). See
+            // ToolPermissionProfile.EffectiveCapabilities for the value consumers should read.
+            RequiredCapabilities = baseCapabilities,
+            DeniedCapabilities = deniedCaps,
+            MinimumIsolation = effectiveIsolation
+        };
+    }
+
+    /// <summary>
+    /// Parses <paramref name="toolName"/>'s <see cref="ToolOverrideConfig"/>, if any, into a
+    /// <c>DeniedCapabilities</c> value and an isolation floor merged with <paramref name="baseIsolation"/>
+    /// — the override-parsing logic shared by <see cref="Resolve"/> and
+    /// <see cref="ResolveForUngovernedDispatch"/>, factored out so the latter no longer needs a second
+    /// <see cref="FirstPartyToolLookup.Resolve"/> call just to reach this (a security-review finding:
+    /// real keyed-DI resolution, not a dictionary read, so the duplicate lookup was a real, if small,
+    /// per-call cost on a hot dispatch path).
+    /// </summary>
+    private (ToolCapability DeniedCapabilities, SandboxIsolationLevel EffectiveIsolation) ResolveOverride(
+        string toolName, SandboxIsolationLevel baseIsolation)
+    {
+        _config.CurrentValue.ToolOverrides.TryGetValue(toolName, out var overrideConfig);
+        if (overrideConfig is null)
+            return (ToolCapability.None, baseIsolation);
 
         var deniedCaps = ParseCapabilities(overrideConfig.DeniedCapabilities);
 
@@ -75,14 +91,7 @@ public sealed class ToolPermissionProfileResolver
         var effectiveIsolation = (SandboxIsolationLevel)Math.Max(
             (int)baseIsolation, (int)overrideIsolation);
 
-        return new ToolPermissionProfile
-        {
-            // The tool's undiminished declaration — never folded with the deny list (#405). See
-            // ToolPermissionProfile.EffectiveCapabilities for the value consumers should read.
-            RequiredCapabilities = baseCapabilities,
-            DeniedCapabilities = deniedCaps,
-            MinimumIsolation = effectiveIsolation
-        };
+        return (deniedCaps, effectiveIsolation);
     }
 
     /// <summary>
@@ -100,6 +109,12 @@ public sealed class ToolPermissionProfileResolver
     /// key set (or whose declaration legitimately differs per call) isn't second-guessed.
     /// </param>
     /// <param name="allowedPrograms">The runtime-derived allowed-programs list for this run.</param>
+    /// <param name="defaultIsolationLevel">
+    /// The caller's own minimum isolation requirement, independent of any operator override — the
+    /// floor the returned profile's <see cref="ToolPermissionProfile.MinimumIsolation"/> never drops
+    /// below. Defaults to <see cref="SandboxIsolationLevel.Process"/>, since this dispatch path
+    /// requires at least process isolation even absent an explicit floor.
+    /// </param>
     /// <returns>
     /// A forbidden <see cref="Result{T}"/> when the deny override intersects
     /// <paramref name="requiredCapabilities"/> — refusing outright, the same as a governed call, rather
@@ -107,11 +122,12 @@ public sealed class ToolPermissionProfileResolver
     /// is a registered first-party tool and <paramref name="requiredCapabilities"/> under-declares
     /// relative to that tool's own <see cref="ITool.RequiredCapabilities"/> — see the under-declaration
     /// remarks below. Otherwise the merged profile: the override's <c>DeniedCapabilities</c> carried
-    /// through (for <see cref="ToolPermissionProfile.EffectiveCapabilities"/>), and isolation floored
-    /// at <see cref="SandboxIsolationLevel.Process"/> — never downgraded even when no override is
-    /// configured (this dispatch path requires at least process isolation).
+    /// through (for <see cref="ToolPermissionProfile.EffectiveCapabilities"/>), and isolation set to
+    /// <c>Math.Max(</c><paramref name="defaultIsolationLevel"/><c>, operatorOverride)</c> — never
+    /// downgraded below the caller's own floor even when no override is configured.
     /// </returns>
     /// <remarks>
+    /// <para>
     /// <strong>Under-declaration check (#405 follow-up, a security-review finding):</strong>
     /// <paramref name="requiredCapabilities"/> is the caller's own, separately-maintained
     /// declaration — <c>WorkspaceRunTestsTool.RequiredSandboxCapabilities</c> and its siblings — not
@@ -124,18 +140,40 @@ public sealed class ToolPermissionProfileResolver
     /// rather than silently widening to the registered declaration, matching this method's existing
     /// deny-intersection posture: a mismatch is a configuration defect to surface, not one to paper
     /// over by picking a value for the caller.
+    /// </para>
+    /// <para>
+    /// <strong><paramref name="defaultIsolationLevel"/> (security-review finding, #405 follow-up):</strong>
+    /// this method used to hardcode the returned floor to <see cref="SandboxIsolationLevel.Process"/>
+    /// regardless of what the caller actually required, so a consumer constructed with an elevated
+    /// floor (the constructor parameter every first-party caller of this dispatch path exposes) got
+    /// the right sandbox executor selected — the caller computes
+    /// <c>Math.Max(defaultIsolationLevel, profile.MinimumIsolation)</c> for that — but a profile whose
+    /// own <see cref="ToolPermissionProfile.MinimumIsolation"/> still read the un-elevated value.
+    /// <c>SandboxSessionAttestationSigner</c>'s <c>capabilitiesEnforcedBy</c> field and
+    /// <c>DockerSandboxExecutor</c>'s Docker-unavailable fallback gate both read that field, so a
+    /// caller with an elevated floor got the correct executor but a signed record and a fallback
+    /// decision both based on the wrong tier. Unreachable today — every shipped call site's floor
+    /// defaults to <see cref="SandboxIsolationLevel.Process"/> — but latent for the first consumer
+    /// that isn't. Now that this method receives the floor directly, the caller no longer needs its
+    /// own outer <c>Math.Max</c> against the returned profile — <see cref="ToolPermissionProfile.MinimumIsolation"/>
+    /// already reflects it.
+    /// </para>
     /// </remarks>
     public Result<ToolPermissionProfile> ResolveForUngovernedDispatch(
         string toolName,
         ToolCapability requiredCapabilities,
-        IReadOnlyList<string> allowedPrograms)
+        IReadOnlyList<string> allowedPrograms,
+        SandboxIsolationLevel defaultIsolationLevel = SandboxIsolationLevel.Process)
     {
-        var overridden = Resolve(toolName);
+        // Single FirstPartyToolLookup.Resolve call, reused for the under-declaration check below and
+        // as ResolveOverride's isolation floor — this used to call Resolve(toolName) (itself a lookup,
+        // via ResolveBase) AND a second direct lookup just for RequiredCapabilities (a security-review
+        // finding: real keyed-DI resolution, not a dictionary read, paid twice on this dispatch path).
+        var firstPartyTool = _firstPartyLookup.Resolve(toolName);
 
-        var registered = _firstPartyLookup.Resolve(toolName)?.RequiredCapabilities;
-        if (registered is { } declared)
+        if (firstPartyTool is not null)
         {
-            var underDeclared = declared & ~requiredCapabilities;
+            var underDeclared = firstPartyTool.RequiredCapabilities & ~requiredCapabilities;
             if (underDeclared != ToolCapability.None)
             {
                 return Result<ToolPermissionProfile>.Forbidden(
@@ -144,7 +182,10 @@ public sealed class ToolPermissionProfileResolver
             }
         }
 
-        var denied = requiredCapabilities & overridden.DeniedCapabilities;
+        var baseIsolation = firstPartyTool?.MinimumIsolation ?? SandboxIsolationLevel.None;
+        var (deniedCaps, overrideIsolation) = ResolveOverride(toolName, baseIsolation);
+
+        var denied = requiredCapabilities & deniedCaps;
         if (denied != ToolCapability.None)
         {
             return Result<ToolPermissionProfile>.Forbidden(
@@ -154,10 +195,10 @@ public sealed class ToolPermissionProfileResolver
         return Result<ToolPermissionProfile>.Success(new ToolPermissionProfile
         {
             RequiredCapabilities = requiredCapabilities,
-            DeniedCapabilities = overridden.DeniedCapabilities,
+            DeniedCapabilities = deniedCaps,
             AllowedPrograms = allowedPrograms,
             MinimumIsolation = (SandboxIsolationLevel)Math.Max(
-                (int)SandboxIsolationLevel.Process, (int)overridden.MinimumIsolation)
+                (int)defaultIsolationLevel, (int)overrideIsolation)
         });
     }
 

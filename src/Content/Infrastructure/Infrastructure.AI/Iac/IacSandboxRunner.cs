@@ -109,7 +109,7 @@ public static class IacSandboxRunner
         ArgumentNullException.ThrowIfNull(permissionResolver);
 
         var profileResult = permissionResolver.ResolveForUngovernedDispatch(
-            toolName, requiredCapabilities, [program]);
+            toolName, requiredCapabilities, [program], defaultIsolationLevel);
         if (!profileResult.IsSuccess)
         {
             return new SandboxExecutionResult
@@ -119,11 +119,14 @@ public static class IacSandboxRunner
             };
         }
 
-        // The executor for the EFFECTIVE tier — never the caller's fixed default alone. See
-        // scopedServices' remarks above for why resolving this before the profile was wrong.
-        var tier = (SandboxIsolationLevel)Math.Max(
-            (int)defaultIsolationLevel, (int)profileResult.Value!.MinimumIsolation);
-        var executor = scopedServices.GetRequiredKeyedService<ISandboxExecutor>(tier);
+        // The executor for the EFFECTIVE tier the profile now carries — ResolveForUngovernedDispatch
+        // folds defaultIsolationLevel into MinimumIsolation itself (a security-review finding: this
+        // used to re-derive the same Math.Max locally against a profile whose own MinimumIsolation
+        // still read the un-elevated value, so a downstream reader of the profile alone — the signed
+        // attestation, a Docker-unavailable fallback gate — saw a stale tier even though the right
+        // executor ran). See scopedServices' remarks above for why resolving the executor before the
+        // profile was wrong in the first place.
+        var executor = scopedServices.GetRequiredKeyedService<ISandboxExecutor>(profileResult.Value!.MinimumIsolation);
 
         var request = new SandboxExecutionRequest
         {

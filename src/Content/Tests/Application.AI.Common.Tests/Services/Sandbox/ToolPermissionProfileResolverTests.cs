@@ -370,6 +370,28 @@ public sealed class ToolPermissionProfileResolverTests
         result.Value!.MinimumIsolation.Should().Be(SandboxIsolationLevel.Container);
     }
 
+    [Fact]
+    public void ResolveForUngovernedDispatch_CallerDefaultIsolationLevel_IsReflectedInTheReturnedProfile()
+    {
+        // A code-review finding on this same follow-up: the returned profile used to hardcode
+        // MinimumIsolation to Process regardless of the caller's own floor, so a caller constructed
+        // with an elevated defaultIsolationLevel (WorkspaceCommandRunner/IacSandboxRunner both expose
+        // this) got the right ISandboxExecutor selected — the caller computed the max itself — but
+        // the profile embedded in the sandbox request still read Process. SandboxSessionAttestationSigner's
+        // capabilitiesEnforcedBy field and a Docker-unavailable fallback gate both read this field, so
+        // a caller with an elevated floor got the correct executor but a stale, mislabeled record. No
+        // operator override configured here — the elevation must come from the caller's own parameter.
+        var resolver = BuildResolver();
+
+        var result = resolver.ResolveForUngovernedDispatch(
+            "unregistered_tool", ToolCapability.FileRead, ["dotnet"],
+            defaultIsolationLevel: SandboxIsolationLevel.Container);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value!.MinimumIsolation.Should().Be(SandboxIsolationLevel.Container,
+            "the caller's own floor must reach the returned profile, not just the caller's local executor selection");
+    }
+
     // --- Under-declaration cross-check (M6, a security-review finding on the #405 follow-up):
     // requiredCapabilities is the CALLER's own, separately-maintained declaration on this ungoverned
     // dispatch path — nothing previously stopped it from drifting under the tool's own registered
