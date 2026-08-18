@@ -29,21 +29,13 @@ public sealed class ToolPermissionProfileResolverTests
         SandboxConfig? config = null,
         params (string Name, ITool Tool)[] tools)
     {
-        return BuildResolver(config, auditService: null, tools);
+        return BuildResolver(config, auditService: null, tools: tools);
     }
 
     private static ToolPermissionProfileResolver BuildResolver(
         SandboxConfig? config,
         IGovernanceAuditService? auditService,
-        params (string Name, ITool Tool)[] tools)
-    {
-        return BuildResolver(config, auditService, governanceConfig: null, tools);
-    }
-
-    private static ToolPermissionProfileResolver BuildResolver(
-        SandboxConfig? config,
-        IGovernanceAuditService? auditService,
-        IOptionsMonitor<GovernanceConfig>? governanceConfig,
+        IOptionsMonitor<GovernanceConfig>? governanceConfig = null,
         params (string Name, ITool Tool)[] tools)
     {
         var services = new ServiceCollection();
@@ -505,7 +497,7 @@ public sealed class ToolPermissionProfileResolverTests
     public void ResolveForUngovernedDispatch_UnderDeclaration_LogsDenialToAuditTrail()
     {
         var auditMock = new Mock<IGovernanceAuditService>();
-        var resolver = BuildResolver(null, auditMock.Object, ("full_tool", FullTool()));
+        var resolver = BuildResolver(null, auditMock.Object, tools: ("full_tool", FullTool()));
 
         resolver.ResolveForUngovernedDispatch(
             "full_tool", ToolCapability.FileRead, ["program"], agentId: "agent-7");
@@ -568,15 +560,17 @@ public sealed class ToolPermissionProfileResolverTests
         act().IsSuccess.Should().BeFalse();
     }
 
-    [Fact]
-    public void ResolveForUngovernedDispatch_EnableAuditFalse_SuppressesTheAuditLogCall()
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void ResolveForUngovernedDispatch_HonorsEnableAuditFlag(bool enableAudit)
     {
         // #419 code-review finding: every other IGovernanceAuditService call site in the codebase
         // (ToolInvocationGovernor, PromptInjectionBehavior) honors GovernanceConfig.EnableAudit — an
         // operator who disables it must not keep seeing writes to governance.jsonl from this path alone.
         var auditMock = new Mock<IGovernanceAuditService>();
         var governanceConfigMock = new Mock<IOptionsMonitor<GovernanceConfig>>();
-        governanceConfigMock.Setup(m => m.CurrentValue).Returns(new GovernanceConfig { EnableAudit = false });
+        governanceConfigMock.Setup(m => m.CurrentValue).Returns(new GovernanceConfig { EnableAudit = enableAudit });
         var config = new SandboxConfig
         {
             ToolOverrides = new()
@@ -587,31 +581,12 @@ public sealed class ToolPermissionProfileResolverTests
         var resolver = BuildResolver(config, auditMock.Object, governanceConfigMock.Object);
 
         var result = resolver.ResolveForUngovernedDispatch(
-            "iac_plan", ToolCapability.NetworkAccess, ["terraform"]);
-
-        result.IsSuccess.Should().BeFalse("the refusal itself must still happen — only the audit write is gated");
-        auditMock.Verify(a => a.Log(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>()), Times.Never);
-    }
-
-    [Fact]
-    public void ResolveForUngovernedDispatch_EnableAuditTrue_StillLogsToTheAuditTrail()
-    {
-        var auditMock = new Mock<IGovernanceAuditService>();
-        var governanceConfigMock = new Mock<IOptionsMonitor<GovernanceConfig>>();
-        governanceConfigMock.Setup(m => m.CurrentValue).Returns(new GovernanceConfig { EnableAudit = true });
-        var config = new SandboxConfig
-        {
-            ToolOverrides = new()
-            {
-                ["iac_plan"] = new ToolOverrideConfig { DeniedCapabilities = ["NetworkAccess"] }
-            }
-        };
-        var resolver = BuildResolver(config, auditMock.Object, governanceConfigMock.Object);
-
-        resolver.ResolveForUngovernedDispatch(
             "iac_plan", ToolCapability.NetworkAccess, ["terraform"], agentId: "agent-1");
 
-        auditMock.Verify(a => a.Log("agent-1", "iac_plan", ToolDecisionOutcome.Denied.ToString()), Times.Once);
+        result.IsSuccess.Should().BeFalse("the refusal itself must still happen — only the audit write is gated");
+        auditMock.Verify(
+            a => a.Log("agent-1", "iac_plan", ToolDecisionOutcome.Denied.ToString()),
+            enableAudit ? Times.Once : Times.Never);
     }
 
     [Fact]
