@@ -10,7 +10,6 @@ using Infrastructure.AI.Iac;
 using Infrastructure.AI.Tools.Iac;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
-using Microsoft.Extensions.Options;
 using Xunit;
 
 namespace Infrastructure.AI.Tests.Iac;
@@ -29,37 +28,51 @@ public sealed class IacSandboxRunnerSolutionReviewFixTests
 {
     private const string ModuleDir = "/tmp/iac/module";
 
-    /// <summary>An empty-override resolver — these tests exercise egress precheck, not #405's merge.</summary>
-    private static ToolPermissionProfileResolver NoOverrideResolver() => ResolverWithOverride(null, null);
-
     /// <summary>
-    /// A scoped-services provider resolving <paramref name="sandbox"/> as the keyed
-    /// <see cref="ISandboxExecutor"/> under both production-keyed isolation tiers (Process and
-    /// Container) — <see cref="IacSandboxRunner.RunAsync"/> now resolves the executor for
-    /// whichever tier the resolved profile's <c>MinimumIsolation</c> lands on, which for these
-    /// tests can be either the Process floor or an operator's Container override (#405 follow-up).
+    /// Builds an <see cref="IServiceScopeFactory"/> whose scopes resolve <paramref name="sandbox"/> as
+    /// the keyed <see cref="ISandboxExecutor"/> under both production-keyed isolation tiers (Process
+    /// and Container — <see cref="IacSandboxRunner.RunAsync"/> resolves the executor for whichever
+    /// tier the resolved profile's <c>MinimumIsolation</c> lands on) and a
+    /// <see cref="ToolPermissionProfileResolver"/> carrying the given override, or no override at all
+    /// when <paramref name="overrideToolName"/> is <see langword="null"/>.
     /// </summary>
-    private static IServiceProvider ScopedServices(ISandboxExecutor sandbox) =>
-        new ServiceCollection()
-            .AddKeyedSingleton(SandboxIsolationLevel.Process, sandbox)
-            .AddKeyedSingleton(SandboxIsolationLevel.Container, sandbox)
-            .BuildServiceProvider();
-
-    /// <summary>
-    /// A resolver with a single <see cref="ToolOverrideConfig"/> entry, or no override at all when
-    /// <paramref name="toolName"/> is <see langword="null"/>.
-    /// </summary>
-    private static ToolPermissionProfileResolver ResolverWithOverride(string? toolName, ToolOverrideConfig? config)
+    /// <remarks>
+    /// Mirrors what the real DI container provides <see cref="IacSandboxRunner.RunAsync"/> via its own
+    /// <c>scopeFactory</c> parameter — a code-review finding (3rd occurrence on this method): RunAsync
+    /// used to receive an already-created scope's provider and an already-resolved resolver, so scope
+    /// creation and resolver lookup happened in the caller, outside RunAsync's own try/catch. Two prior
+    /// fixes widened that try/catch (first to cover dispatch resolution, then nothing further), but the
+    /// generator-side scope/resolver setup stayed unprotected until RunAsync took over owning the whole
+    /// scope lifecycle itself, via a scope factory instead of a pre-built provider.
+    /// </remarks>
+    private static IServiceScopeFactory ScopeFactory(
+        ISandboxExecutor sandbox, string? overrideToolName = null, ToolOverrideConfig? overrideConfig = null)
     {
         var services = new ServiceCollection();
+        services.AddKeyedSingleton(SandboxIsolationLevel.Process, sandbox);
+        services.AddKeyedSingleton(SandboxIsolationLevel.Container, sandbox);
         services.AddOptions<SandboxConfig>().Configure(c =>
         {
-            if (toolName is not null && config is not null)
-                c.ToolOverrides[toolName] = config;
+            if (overrideToolName is not null && overrideConfig is not null)
+                c.ToolOverrides[overrideToolName] = overrideConfig;
         });
-        var provider = services.BuildServiceProvider();
-        var lookup = new FirstPartyToolLookup(provider, new HashSet<string>());
-        return new ToolPermissionProfileResolver(lookup, provider.GetRequiredService<IOptionsMonitor<SandboxConfig>>());
+        services.AddSingleton(sp => new FirstPartyToolLookup(sp, new HashSet<string>()));
+        services.AddSingleton<ToolPermissionProfileResolver>();
+        return services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
+    }
+
+    /// <summary>
+    /// As <see cref="ScopeFactory"/>, but with no keyed <see cref="ISandboxExecutor"/> registered for
+    /// any tier — models a template consumer whose DI wiring doesn't cover every isolation tier an
+    /// operator override can select.
+    /// </summary>
+    private static IServiceScopeFactory ScopeFactoryWithoutExecutors()
+    {
+        var services = new ServiceCollection();
+        services.AddOptions<SandboxConfig>();
+        services.AddSingleton(sp => new FirstPartyToolLookup(sp, new HashSet<string>()));
+        services.AddSingleton<ToolPermissionProfileResolver>();
+        return services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
     }
 
     [Fact]
@@ -73,11 +86,10 @@ public sealed class IacSandboxRunnerSolutionReviewFixTests
             arguments: ["init"],
             moduleDirectory: ModuleDir,
             registryAllowlist: allowlist,
-            scopedServices: ScopedServices(sandbox),
+            scopeFactory: ScopeFactory(sandbox),
             defaultIsolationLevel: SandboxIsolationLevel.Process,
             toolName: "terraform_plan",
             requiredCapabilities: IacPlanTool.RequiredSandboxCapabilities,
-            permissionResolver: NoOverrideResolver(),
             logger: NullLogger.Instance,
             backendLabel: "Terraform");
 
@@ -100,11 +112,10 @@ public sealed class IacSandboxRunnerSolutionReviewFixTests
             arguments: ["init"],
             moduleDirectory: ModuleDir,
             registryAllowlist: [],
-            scopedServices: ScopedServices(sandbox),
+            scopeFactory: ScopeFactory(sandbox),
             defaultIsolationLevel: SandboxIsolationLevel.Process,
             toolName: "terraform_plan",
             requiredCapabilities: IacPlanTool.RequiredSandboxCapabilities,
-            permissionResolver: NoOverrideResolver(),
             logger: NullLogger.Instance,
             backendLabel: "Terraform");
 
@@ -123,11 +134,10 @@ public sealed class IacSandboxRunnerSolutionReviewFixTests
             arguments: ["init"],
             moduleDirectory: ModuleDir,
             registryAllowlist: ["registry.terraform.io", "  ", "registry.terraform.io"],
-            scopedServices: ScopedServices(sandbox),
+            scopeFactory: ScopeFactory(sandbox),
             defaultIsolationLevel: SandboxIsolationLevel.Process,
             toolName: "terraform_plan",
             requiredCapabilities: IacPlanTool.RequiredSandboxCapabilities,
-            permissionResolver: NoOverrideResolver(),
             logger: NullLogger.Instance,
             backendLabel: "Terraform");
 
@@ -145,22 +155,20 @@ public sealed class IacSandboxRunnerSolutionReviewFixTests
         // what iac_plan actually requires (FileRead|FileWrite|Subprocess|NetworkAccess), so the call
         // still dispatches with the deny carried on the profile.
         var sandbox = new RecordingIacSandbox().WithDefault(true, 0, string.Empty);
-        var resolver = ResolverWithOverride("iac_plan", new ToolOverrideConfig
-        {
-            DeniedCapabilities = ["DatabaseRead"],
-            MinimumIsolation = "Container"
-        });
 
         await IacSandboxRunner.RunAsync(
             program: "terraform",
             arguments: ["plan"],
             moduleDirectory: ModuleDir,
             registryAllowlist: [],
-            scopedServices: ScopedServices(sandbox),
+            scopeFactory: ScopeFactory(sandbox, "iac_plan", new ToolOverrideConfig
+            {
+                DeniedCapabilities = ["DatabaseRead"],
+                MinimumIsolation = "Container"
+            }),
             defaultIsolationLevel: SandboxIsolationLevel.Process,
             toolName: "iac_plan",
             requiredCapabilities: IacPlanTool.RequiredSandboxCapabilities,
-            permissionResolver: resolver,
             logger: NullLogger.Instance,
             backendLabel: "Terraform");
 
@@ -179,21 +187,19 @@ public sealed class IacSandboxRunnerSolutionReviewFixTests
         // fix — IacSandboxRunner never calls ICapabilityEnforcer, so nothing else on this dispatch
         // path would have refused it).
         var sandbox = new RecordingIacSandbox().WithDefault(true, 0, string.Empty);
-        var resolver = ResolverWithOverride("iac_plan", new ToolOverrideConfig
-        {
-            DeniedCapabilities = ["NetworkAccess"]
-        });
 
         var result = await IacSandboxRunner.RunAsync(
             program: "terraform",
             arguments: ["plan"],
             moduleDirectory: ModuleDir,
             registryAllowlist: [],
-            scopedServices: ScopedServices(sandbox),
+            scopeFactory: ScopeFactory(sandbox, "iac_plan", new ToolOverrideConfig
+            {
+                DeniedCapabilities = ["NetworkAccess"]
+            }),
             defaultIsolationLevel: SandboxIsolationLevel.Process,
             toolName: "iac_plan",
             requiredCapabilities: IacPlanTool.RequiredSandboxCapabilities,
-            permissionResolver: resolver,
             logger: NullLogger.Instance,
             backendLabel: "Terraform");
 
@@ -218,11 +224,10 @@ public sealed class IacSandboxRunnerSolutionReviewFixTests
             arguments: ["validate"],
             moduleDirectory: ModuleDir,
             registryAllowlist: [],
-            scopedServices: ScopedServices(sandbox),
+            scopeFactory: ScopeFactory(sandbox),
             defaultIsolationLevel: SandboxIsolationLevel.Process,
             toolName: "iac_plan",
             requiredCapabilities: IacPlanTool.RequiredSandboxCapabilities,
-            permissionResolver: NoOverrideResolver(),
             logger: NullLogger.Instance,
             backendLabel: "Terraform");
 
@@ -239,20 +244,16 @@ public sealed class IacSandboxRunnerSolutionReviewFixTests
         // #421 follow-up (code-review finding): RunAsync's try/catch must cover
         // ResolveExecutorForUngovernedDispatch's own executor lookup, not just executor.ExecuteAsync —
         // an operator's MinimumIsolation override can select a tier a template consumer never
-        // registered a keyed ISandboxExecutor for at all. The first /simplify pass narrowed the
-        // try/catch to only ExecuteAsync, silently dropping coverage for this scenario.
-        var noExecutorsRegistered = new ServiceCollection().BuildServiceProvider();
-
+        // registered a keyed ISandboxExecutor for at all.
         var result = await IacSandboxRunner.RunAsync(
             program: "terraform",
             arguments: ["plan"],
             moduleDirectory: ModuleDir,
             registryAllowlist: [],
-            scopedServices: noExecutorsRegistered,
+            scopeFactory: ScopeFactoryWithoutExecutors(),
             defaultIsolationLevel: SandboxIsolationLevel.Process,
             toolName: "iac_plan",
             requiredCapabilities: IacPlanTool.RequiredSandboxCapabilities,
-            permissionResolver: NoOverrideResolver(),
             logger: NullLogger.Instance,
             backendLabel: "Terraform");
 
@@ -260,6 +261,34 @@ public sealed class IacSandboxRunnerSolutionReviewFixTests
         result.FailureType.Should().Be(ResultFailureType.General,
             "an unconfigured executor is a sandbox-level error, not a governance refusal — it must not " +
             "throw out of RunAsync uncaught");
+    }
+
+    [Fact]
+    public async Task RunAsync_ScopeFactoryHasNoPermissionResolverRegistered_ReturnsGeneralFailureInsteadOfThrowing()
+    {
+        // #421 follow-up (code-review finding, 3rd occurrence on this method): the generators' own
+        // scope-creation and ToolPermissionProfileResolver lookup used to happen outside RunAsync
+        // entirely, so a DI-resolution failure there threw uncaught out of PlanAsync/ScanAsync and
+        // reached SelfValidationGate as a raw, unscrubbed exception message. RunAsync now creates the
+        // scope and resolves the resolver itself, inside the same try/catch as dispatch and execution.
+        var servicesWithNoResolver = new ServiceCollection().BuildServiceProvider();
+
+        var result = await IacSandboxRunner.RunAsync(
+            program: "terraform",
+            arguments: ["plan"],
+            moduleDirectory: ModuleDir,
+            registryAllowlist: [],
+            scopeFactory: servicesWithNoResolver.GetRequiredService<IServiceScopeFactory>(),
+            defaultIsolationLevel: SandboxIsolationLevel.Process,
+            toolName: "iac_plan",
+            requiredCapabilities: IacPlanTool.RequiredSandboxCapabilities,
+            logger: NullLogger.Instance,
+            backendLabel: "Terraform");
+
+        result.IsSuccess.Should().BeFalse();
+        result.FailureType.Should().Be(ResultFailureType.General,
+            "a DI-resolution failure for ToolPermissionProfileResolver is a sandbox-level error, not a " +
+            "governance refusal — it must not throw out of RunAsync uncaught");
     }
 
     [Fact]

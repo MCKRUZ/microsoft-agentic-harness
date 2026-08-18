@@ -196,7 +196,7 @@ public sealed class BicepGenerator : IIacGenerator
         });
     }
 
-    private async Task<Result<SandboxExecutionResult>> Run(
+    private Task<Result<SandboxExecutionResult>> Run(
         string program,
         IReadOnlyList<string> args,
         string moduleDirectory,
@@ -204,19 +204,13 @@ public sealed class BicepGenerator : IIacGenerator
         string toolName,
         ToolCapability requiredCapabilities,
         CancellationToken cancellationToken)
-    {
-        // The executor is SCOPED — resolve it from a fresh scope per run
-        // so this singleton generator never captures scope-bound state. Resolved inside
-        // RunAsync, after the profile, so an operator's MinimumIsolation override actually
-        // selects the executor.
-        await using var scope = _scopeFactory.CreateAsyncScope();
-        var permissionResolver = scope.ServiceProvider.GetRequiredService<ToolPermissionProfileResolver>();
-
-        return await IacSandboxRunner.RunAsync(
-            program, args, moduleDirectory, allowlist, scope.ServiceProvider, _isolationLevel,
-            toolName, requiredCapabilities, permissionResolver, _logger, "Bicep",
+        // Scope creation and ToolPermissionProfileResolver resolution now live inside RunAsync itself,
+        // covered by its own try/catch — this generator no longer needs its own scope or a local
+        // try/catch to protect a DI-resolution failure here (#421 follow-up, a code-review finding).
+        => IacSandboxRunner.RunAsync(
+            program, args, moduleDirectory, allowlist, _scopeFactory, _isolationLevel,
+            toolName, requiredCapabilities, _logger, "Bicep",
             cancellationToken: cancellationToken);
-    }
 
     private static string BuildMainBicep(IacGenerationRequest request)
     {
