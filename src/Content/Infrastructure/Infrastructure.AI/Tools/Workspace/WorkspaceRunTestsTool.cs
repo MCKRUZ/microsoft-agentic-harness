@@ -7,6 +7,7 @@ using Domain.Common.Config.AI.Governance;
 using Domain.AI.Models;
 using Domain.AI.Sandbox;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 
 namespace Infrastructure.AI.Tools.Workspace;
 
@@ -51,22 +52,27 @@ public sealed class WorkspaceRunTestsTool : ITool
     private readonly IWorkspaceContextAccessor _workspace;
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly SandboxIsolationLevel _isolationLevel;
+    private readonly ILogger<WorkspaceRunTestsTool> _logger;
 
     /// <summary>
     /// Initialises a new instance of the <see cref="WorkspaceRunTestsTool"/> class.
     /// </summary>
     /// <param name="workspace">Ambient accessor exposing the active sandbox workspace.</param>
     /// <param name="scopeFactory">Scope factory used to resolve the scoped sandbox executor per execution.</param>
+    /// <param name="logger">Structured logger, passed to <see cref="WorkspaceCommandRunner.RunAsync"/> to record a governance refusal before dispatch.</param>
     /// <param name="isolationLevel">The sandbox isolation level to resolve the executor for. Defaults to <see cref="SandboxIsolationLevel.Process"/>.</param>
     public WorkspaceRunTestsTool(
         IWorkspaceContextAccessor workspace,
         IServiceScopeFactory scopeFactory,
+        ILogger<WorkspaceRunTestsTool> logger,
         SandboxIsolationLevel isolationLevel = SandboxIsolationLevel.Process)
     {
         ArgumentNullException.ThrowIfNull(workspace);
         ArgumentNullException.ThrowIfNull(scopeFactory);
+        ArgumentNullException.ThrowIfNull(logger);
         _workspace = workspace;
         _scopeFactory = scopeFactory;
+        _logger = logger;
         _isolationLevel = isolationLevel;
     }
 
@@ -119,6 +125,7 @@ public sealed class WorkspaceRunTestsTool : ITool
             ToolName,
             RequiredSandboxCapabilities,
             permissionResolver,
+            _logger,
             timeout: null,
             cancellationToken);
     }

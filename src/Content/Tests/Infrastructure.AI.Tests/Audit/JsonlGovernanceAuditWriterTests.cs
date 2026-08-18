@@ -3,6 +3,7 @@ using Domain.AI.Telemetry.Conventions;
 using Domain.Common.Config;
 using FluentAssertions;
 using Infrastructure.AI.Audit;
+using Infrastructure.AI.Tests.Changes.Support;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Xunit;
@@ -45,7 +46,7 @@ public sealed class JsonlGovernanceAuditWriterTests : IDisposable
                 Governance = new() { AuditStoragePath = storagePath }
             }
         };
-        return new StaticOptionsMonitor(cfg);
+        return new TestConfig.StaticOptionsMonitor<AppConfig>(cfg);
     }
 
     [Fact]
@@ -205,13 +206,5 @@ public sealed class JsonlGovernanceAuditWriterTests : IDisposable
         });
         listener.Start();
         return values;
-    }
-
-    private sealed class StaticOptionsMonitor : IOptionsMonitor<AppConfig>
-    {
-        public StaticOptionsMonitor(AppConfig value) => CurrentValue = value;
-        public AppConfig CurrentValue { get; }
-        public AppConfig Get(string? name) => CurrentValue;
-        public IDisposable? OnChange(Action<AppConfig, string?> listener) => null;
     }
 }

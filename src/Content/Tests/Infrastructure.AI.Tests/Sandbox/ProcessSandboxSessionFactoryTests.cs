@@ -5,6 +5,7 @@ using Domain.AI.Sandbox;
 using Domain.Common.Config.AI.Sandbox;
 using FluentAssertions;
 using Infrastructure.AI.Sandbox;
+using Infrastructure.AI.Tests.Sandbox.Support;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Moq;
@@ -85,20 +86,13 @@ public class ProcessSandboxSessionFactoryTests
         // attestation's signed capability set is not an enforced boundary — only Container-tier is.
         Skip.IfNot(OperatingSystem.IsWindows(), "Windows-only: uses cmd.exe /c more.");
 
-        AttestationRequest? signed = null;
-        _attestation
-            .Setup(x => x.SignAsync(It.Is<AttestationRequest>(r => !r.IsFailure), It.IsAny<CancellationToken>()))
-            .Callback<AttestationRequest, CancellationToken>((r, _) => signed = r)
-            .ReturnsAsync((AttestationRequest r, CancellationToken _) => new ToolExecutionAttestation
-            {
-                ToolName = r.ToolName, InputHash = "test-hash", Timestamp = DateTimeOffset.UtcNow,
-                Signature = "test-sig", KeyVersion = "v1", IsFailureAttestation = false
-            });
+        var getSigned = _attestation.CaptureNonFailureAttestation();
 
         var result = await _sut.StartSessionAsync(CreateRequest(), CancellationToken.None);
 
         result.IsSuccess.Should().BeTrue(string.Join("; ", result.Errors));
         await using var session = result.Value!;
+        var signed = getSigned();
         signed.Should().NotBeNull();
         System.Text.Json.JsonDocument.Parse(signed!.Input).RootElement
             .GetProperty("capabilitiesEnforcedBy").GetString().Should().Be("declaration-only");

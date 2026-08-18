@@ -3,6 +3,7 @@ using Application.AI.Common.Services.Sandbox;
 using Domain.AI.Models;
 using Domain.AI.Sandbox;
 using Domain.AI.Workspace;
+using Microsoft.Extensions.Logging;
 
 namespace Infrastructure.AI.Tools.Workspace;
 
@@ -73,6 +74,11 @@ public static class WorkspaceCommandRunner
     /// governed-call semantics <c>CapabilityEnforcer</c> guarantees rather than silently narrowing
     /// what gets provisioned.
     /// </param>
+    /// <param name="logger">
+    /// The caller's own logger, used to record a governance refusal before dispatch — the sibling
+    /// <c>IacSandboxRunner.FailIfRefused</c> logs this same event on the <c>iac_plan</c>/<c>iac_scan</c>
+    /// dispatch path; this runner's equivalent refusal used to return silently.
+    /// </param>
     /// <param name="timeout">Optional wall-clock timeout for the command. Defaults to 5 minutes — tests can be slow.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>A <see cref="ToolResult"/> describing the run outcome.</returns>
@@ -84,6 +90,7 @@ public static class WorkspaceCommandRunner
         string toolName,
         ToolCapability requiredCapabilities,
         ToolPermissionProfileResolver permissionResolver,
+        ILogger logger,
         TimeSpan? timeout = null,
         CancellationToken cancellationToken = default)
     {
@@ -92,6 +99,7 @@ public static class WorkspaceCommandRunner
         ArgumentNullException.ThrowIfNull(scopedServices);
         ArgumentException.ThrowIfNullOrWhiteSpace(toolName);
         ArgumentNullException.ThrowIfNull(permissionResolver);
+        ArgumentNullException.ThrowIfNull(logger);
 
         var tokens = commandLine.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         if (tokens.Length == 0)
@@ -108,7 +116,13 @@ public static class WorkspaceCommandRunner
         var dispatchResult = permissionResolver.ResolveExecutorForUngovernedDispatch(
             toolName, requiredCapabilities, [program], scopedServices, defaultIsolationLevel);
         if (!dispatchResult.IsSuccess)
-            return ToolResult.Fail(string.Join("; ", dispatchResult.Errors));
+        {
+            var reason = string.Join("; ", dispatchResult.Errors);
+            logger.LogError(
+                "{ToolName} for {WorkingCopyPath} was refused before dispatch: {Reason}",
+                toolName, workspace.WorkingCopyPath, reason);
+            return ToolResult.Fail(reason);
+        }
 
         var (profile, executor) = dispatchResult.Value!;
 
