@@ -98,7 +98,7 @@ cases:
     metrics:
       - key: contains_all
         parameters:
-          substrings: "ITokenBudgetTracker"
+          values: "ITokenBudgetTracker"
 
   - id: rag-09-graph-hop
     input: "Trace which agent skills depend on tools provided by Infrastructure.AI.MCP."

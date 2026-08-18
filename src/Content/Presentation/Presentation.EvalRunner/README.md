@@ -69,7 +69,7 @@ cases:
     metrics:
       - key: does_not_contain
         parameters:
-          substrings: "hunter2"
+          values: "hunter2"
       - key: llm_judge
         threshold: 0.7
         parameters:
@@ -83,8 +83,8 @@ cases:
 |---|---|---|
 | `exact_match` | Score 1.0 when output byte-equals `expected_output`. | `case_sensitive` (optional, default true) |
 | `regex_match` | Score 1.0 when output matches `pattern`. Invert via `must_not_match: "true"`. | `pattern` |
-| `contains_all` | Score 1.0 when output contains every pipe-separated substring. | `substrings` |
-| `does_not_contain` | Score 0.0 if any pipe-separated substring is present. | `substrings` |
+| `contains_all` | Score 1.0 when output contains every pipe-separated substring. | `values` |
+| `does_not_contain` | Score 0.0 if any pipe-separated substring is present. | `values` |
 | `is_valid_json` | Score 1.0 when output parses as JSON. | _none_ |
 | `llm_judge` | Asks a judge model to score against `rubric`. | `rubric`; optional `verdict_contract`, `trajectory`, `include_expected_output` |
 
