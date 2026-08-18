@@ -108,24 +108,21 @@ public sealed class BicepGenerator : IIacGenerator
 
         var allowlist = _config.CurrentValue.AI.Iac.RegistryAllowlist;
 
-        var build = await Run(
+        // A governance refusal (e.g. an operator's DeniedCapabilities override on iac_plan) must
+        // never present as a real build failure.
+        var buildDispatch = await Run(
             CliProgram, [ "build", MainFile, "--stdout" ], moduleDirectory, allowlist, "iac_plan",
             IacPlanTool.RequiredSandboxCapabilities, cancellationToken);
-        if (build is null)
+        if (IacSandboxRunner.MapDispatchFailure<IacPlanResult>(
+                buildDispatch, _logger, "Bicep", "iac_plan", moduleDirectory,
+                "iac.plan") is { } refused)
         {
-            return Result<IacPlanResult>.Fail("iac.plan.sandbox_error");
+            return refused;
         }
 
+        var build = buildDispatch.Value!;
         if (!build.Success)
         {
-            // A governance refusal (e.g. an operator's DeniedCapabilities override on iac_plan) must
-            // never present as a real build failure.
-            if (IacSandboxRunner.FailIfRefused<IacPlanResult>(
-                    build, _logger, "Bicep", "iac_plan", moduleDirectory, "iac.plan.sandbox_denied") is { } refused)
-            {
-                return refused;
-            }
-
             _logger.LogWarning("Bicep build failed in {Module}: exit={Exit}", moduleDirectory, build.ExitCode);
         }
 
@@ -157,6 +154,9 @@ public sealed class BicepGenerator : IIacGenerator
 
         // Independent dispatches — each opens its own DI scope and resolves its own executor, so
         // there is no shared mutable state and both can run concurrently.
+        // A scanner the sandbox refused to dispatch must never fall through to the parsers below,
+        // which would parse empty output into zero findings — silently reporting a security scan that
+        // never ran as "passed, no findings."
         var armTtkTask = Run(
             ArmTtkProgram, [ "-TemplatePath", "." ], moduleDirectory, iac.RegistryAllowlist, "iac_scan",
             IacScanTool.RequiredSandboxCapabilities, cancellationToken);
@@ -164,27 +164,24 @@ public sealed class BicepGenerator : IIacGenerator
             CheckovProgram, [ "-d", ".", "--compact", "--quiet" ], moduleDirectory, iac.RegistryAllowlist, "iac_scan",
             IacScanTool.RequiredSandboxCapabilities, cancellationToken);
         await Task.WhenAll(armTtkTask, checkovTask);
-        var armTtk = armTtkTask.Result;
-        var checkov = checkovTask.Result;
-        if (armTtk is null || checkov is null)
-        {
-            return Result<IacScanResult>.Fail("iac.scan.sandbox_error");
-        }
+        var armTtkDispatch = armTtkTask.Result;
+        var checkovDispatch = checkovTask.Result;
 
-        // A scanner the sandbox refused to dispatch must never fall through to the parsers below,
-        // which would parse empty output into zero findings — silently reporting a security scan that
-        // never ran as "passed, no findings."
-        if (IacSandboxRunner.FailIfRefused<IacScanResult>(
-                armTtk, _logger, "Bicep", "iac_scan (arm-ttk)", moduleDirectory, "iac.scan.sandbox_denied") is { } refusedArmTtk)
+        if (IacSandboxRunner.MapDispatchFailure<IacScanResult>(
+                armTtkDispatch, _logger, "Bicep", "iac_scan (arm-ttk)", moduleDirectory,
+                "iac.scan") is { } refusedArmTtk)
         {
             return refusedArmTtk;
         }
-        if (IacSandboxRunner.FailIfRefused<IacScanResult>(
-                checkov, _logger, "Bicep", "iac_scan (checkov)", moduleDirectory, "iac.scan.sandbox_denied") is { } refusedCheckov)
+        if (IacSandboxRunner.MapDispatchFailure<IacScanResult>(
+                checkovDispatch, _logger, "Bicep", "iac_scan (checkov)", moduleDirectory,
+                "iac.scan") is { } refusedCheckov)
         {
             return refusedCheckov;
         }
 
+        var armTtk = armTtkDispatch.Value!;
+        var checkov = checkovDispatch.Value!;
         var findings = new List<IacScanFinding>();
         findings.AddRange(ArmTtkParser.Parse(armTtk.Output ?? string.Empty));
         findings.AddRange(CheckovParser.Parse(checkov.Output ?? string.Empty));
@@ -199,7 +196,7 @@ public sealed class BicepGenerator : IIacGenerator
         });
     }
 
-    private async Task<SandboxExecutionResult?> Run(
+    private Task<Result<SandboxExecutionResult>> Run(
         string program,
         IReadOnlyList<string> args,
         string moduleDirectory,
@@ -207,30 +204,13 @@ public sealed class BicepGenerator : IIacGenerator
         string toolName,
         ToolCapability requiredCapabilities,
         CancellationToken cancellationToken)
-    {
-        try
-        {
-            // The executor is SCOPED — resolve it from a fresh scope per run
-            // so this singleton generator never captures scope-bound state. Resolved inside
-            // RunAsync, after the profile, so an operator's MinimumIsolation override actually
-            // selects the executor.
-            await using var scope = _scopeFactory.CreateAsyncScope();
-            var permissionResolver = scope.ServiceProvider.GetRequiredService<ToolPermissionProfileResolver>();
-
-            return await IacSandboxRunner.RunAsync(
-                program, args, moduleDirectory, allowlist, scope.ServiceProvider, _isolationLevel,
-                toolName, requiredCapabilities, permissionResolver, cancellationToken: cancellationToken);
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Bicep sandbox run failed for {Program} in {Module}.", program, moduleDirectory);
-            return null;
-        }
-    }
+        // Scope creation and ToolPermissionProfileResolver resolution now live inside RunAsync itself,
+        // covered by its own try/catch — this generator no longer needs its own scope or a local
+        // try/catch to protect a DI-resolution failure here (#421 follow-up, a code-review finding).
+        => IacSandboxRunner.RunAsync(
+            program, args, moduleDirectory, allowlist, _scopeFactory, _isolationLevel,
+            toolName, requiredCapabilities, _logger, "Bicep",
+            cancellationToken: cancellationToken);
 
     private static string BuildMainBicep(IacGenerationRequest request)
     {

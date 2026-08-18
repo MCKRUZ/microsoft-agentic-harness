@@ -76,7 +76,7 @@ public static class WorkspaceCommandRunner
     /// </param>
     /// <param name="logger">
     /// The caller's own logger, used to record a governance refusal before dispatch — the sibling
-    /// <c>IacSandboxRunner.FailIfRefused</c> logs this same event on the <c>iac_plan</c>/<c>iac_scan</c>
+    /// <c>IacSandboxRunner.MapDispatchFailure</c> logs this same event on the <c>iac_plan</c>/<c>iac_scan</c>
     /// dispatch path; this runner's equivalent refusal used to return silently.
     /// </param>
     /// <param name="timeout">Optional wall-clock timeout for the command. Defaults to 5 minutes — tests can be slow.</param>

@@ -102,45 +102,38 @@ public sealed class TerraformGenerator : IIacGenerator
 
         var allowlist = _config.CurrentValue.AI.Iac.RegistryAllowlist;
 
-        var validate = await Run(
+        // A governance refusal (e.g. an operator's DeniedCapabilities override on iac_plan) must
+        // never present as a real validate failure.
+        var validateDispatch = await Run(
             [ "validate", "-no-color" ], moduleDirectory, allowlist, "iac_plan",
             IacPlanTool.RequiredSandboxCapabilities, cancellationToken);
-        if (validate is null)
+        if (IacSandboxRunner.MapDispatchFailure<IacPlanResult>(
+                validateDispatch, _logger, "Terraform", "iac_plan", moduleDirectory,
+                "iac.plan") is { } refused)
         {
-            return Result<IacPlanResult>.Fail("iac.plan.sandbox_error");
+            return refused;
         }
 
+        var validate = validateDispatch.Value!;
         if (!validate.Success)
         {
-            // A governance refusal (e.g. an operator's DeniedCapabilities override on iac_plan) must
-            // never present as a real validate failure.
-            if (IacSandboxRunner.FailIfRefused<IacPlanResult>(
-                    validate, _logger, "Terraform", "iac_plan", moduleDirectory, "iac.plan.sandbox_denied") is { } refused)
-            {
-                return refused;
-            }
-
             _logger.LogWarning("Terraform validate failed in {Module}: exit={Exit}", moduleDirectory, validate.ExitCode);
             return Result<IacPlanResult>.Success(FailedPlan(moduleDirectory, validate.Output ?? string.Empty, "validate failed"));
         }
 
-        var plan = await Run(
-            [ "plan", "-no-color", "-detailed-exitcode" ], moduleDirectory, allowlist, "iac_plan",
-            IacPlanTool.RequiredSandboxCapabilities, cancellationToken);
-        if (plan is null)
-        {
-            return Result<IacPlanResult>.Fail("iac.plan.sandbox_error");
-        }
-
         // The same refusal-vs-real-failure ambiguity applies to `plan` too — a config-override reload
         // between the two calls could refuse this second dispatch even though validate succeeded.
-        if (IacSandboxRunner.FailIfRefused<IacPlanResult>(
-                plan, _logger, "Terraform", "iac_plan (plan)", moduleDirectory, "iac.plan.sandbox_denied") is { } refusedPlan)
+        var planDispatch = await Run(
+            [ "plan", "-no-color", "-detailed-exitcode" ], moduleDirectory, allowlist, "iac_plan",
+            IacPlanTool.RequiredSandboxCapabilities, cancellationToken);
+        if (IacSandboxRunner.MapDispatchFailure<IacPlanResult>(
+                planDispatch, _logger, "Terraform", "iac_plan (plan)", moduleDirectory,
+                "iac.plan") is { } refusedPlan)
         {
             return refusedPlan;
         }
 
-        return Result<IacPlanResult>.Success(ParsePlan(moduleDirectory, plan));
+        return Result<IacPlanResult>.Success(ParsePlan(moduleDirectory, planDispatch.Value!));
     }
 
     /// <inheritdoc />
@@ -159,6 +152,9 @@ public sealed class TerraformGenerator : IIacGenerator
 
         // Independent dispatches — each opens its own DI scope and resolves its own executor, so
         // there is no shared mutable state and both can run concurrently.
+        // A scanner the sandbox refused to dispatch must never fall through to the parsers below,
+        // which would parse empty output into zero findings — silently reporting a security scan that
+        // never ran as "passed, no findings."
         var checkovTask = Run(
             [ "-d", ".", "--compact", "--quiet" ], moduleDirectory, iac.RegistryAllowlist, "iac_scan",
             IacScanTool.RequiredSandboxCapabilities, cancellationToken, CheckovProgram);
@@ -166,27 +162,24 @@ public sealed class TerraformGenerator : IIacGenerator
             [ ".", "--no-colour" ], moduleDirectory, iac.RegistryAllowlist, "iac_scan",
             IacScanTool.RequiredSandboxCapabilities, cancellationToken, TfsecProgram);
         await Task.WhenAll(checkovTask, tfsecTask);
-        var checkov = checkovTask.Result;
-        var tfsec = tfsecTask.Result;
-        if (checkov is null || tfsec is null)
-        {
-            return Result<IacScanResult>.Fail("iac.scan.sandbox_error");
-        }
+        var checkovDispatch = checkovTask.Result;
+        var tfsecDispatch = tfsecTask.Result;
 
-        // A scanner the sandbox refused to dispatch must never fall through to the parsers below,
-        // which would parse empty output into zero findings — silently reporting a security scan that
-        // never ran as "passed, no findings."
-        if (IacSandboxRunner.FailIfRefused<IacScanResult>(
-                checkov, _logger, "Terraform", "iac_scan (checkov)", moduleDirectory, "iac.scan.sandbox_denied") is { } refusedCheckov)
+        if (IacSandboxRunner.MapDispatchFailure<IacScanResult>(
+                checkovDispatch, _logger, "Terraform", "iac_scan (checkov)", moduleDirectory,
+                "iac.scan") is { } refusedCheckov)
         {
             return refusedCheckov;
         }
-        if (IacSandboxRunner.FailIfRefused<IacScanResult>(
-                tfsec, _logger, "Terraform", "iac_scan (tfsec)", moduleDirectory, "iac.scan.sandbox_denied") is { } refusedTfsec)
+        if (IacSandboxRunner.MapDispatchFailure<IacScanResult>(
+                tfsecDispatch, _logger, "Terraform", "iac_scan (tfsec)", moduleDirectory,
+                "iac.scan") is { } refusedTfsec)
         {
             return refusedTfsec;
         }
 
+        var checkov = checkovDispatch.Value!;
+        var tfsec = tfsecDispatch.Value!;
         var findings = new List<IacScanFinding>();
         findings.AddRange(CheckovParser.Parse(checkov.Output ?? string.Empty));
         findings.AddRange(TfsecParser.Parse(tfsec.Output ?? string.Empty));
@@ -201,7 +194,7 @@ public sealed class TerraformGenerator : IIacGenerator
         });
     }
 
-    private Task<SandboxExecutionResult?> Run(
+    private Task<Result<SandboxExecutionResult>> Run(
         IReadOnlyList<string> args,
         string moduleDirectory,
         IReadOnlyList<string> allowlist,
@@ -209,40 +202,13 @@ public sealed class TerraformGenerator : IIacGenerator
         ToolCapability requiredCapabilities,
         CancellationToken cancellationToken,
         string program = CliProgram)
-        => RunGuarded(program, args, moduleDirectory, allowlist, toolName, requiredCapabilities, cancellationToken);
-
-    private async Task<SandboxExecutionResult?> RunGuarded(
-        string program,
-        IReadOnlyList<string> args,
-        string moduleDirectory,
-        IReadOnlyList<string> allowlist,
-        string toolName,
-        ToolCapability requiredCapabilities,
-        CancellationToken cancellationToken)
-    {
-        try
-        {
-            // The executor is SCOPED — resolve it from a fresh scope per run
-            // so this singleton generator never captures scope-bound state. Resolved inside
-            // RunAsync, after the profile, so an operator's MinimumIsolation override actually
-            // selects the executor.
-            await using var scope = _scopeFactory.CreateAsyncScope();
-            var permissionResolver = scope.ServiceProvider.GetRequiredService<ToolPermissionProfileResolver>();
-
-            return await IacSandboxRunner.RunAsync(
-                program, args, moduleDirectory, allowlist, scope.ServiceProvider, _isolationLevel,
-                toolName, requiredCapabilities, permissionResolver, cancellationToken: cancellationToken);
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Terraform sandbox run failed for {Program} in {Module}.", program, moduleDirectory);
-            return null;
-        }
-    }
+        // Scope creation and ToolPermissionProfileResolver resolution now live inside RunAsync itself,
+        // covered by its own try/catch — this generator no longer needs its own scope or a local
+        // try/catch to protect a DI-resolution failure here (#421 follow-up, a code-review finding).
+        => IacSandboxRunner.RunAsync(
+            program, args, moduleDirectory, allowlist, _scopeFactory, _isolationLevel,
+            toolName, requiredCapabilities, _logger, "Terraform",
+            cancellationToken: cancellationToken);
 
     private static IacPlanResult ParsePlan(string moduleDirectory, SandboxExecutionResult plan)
     {

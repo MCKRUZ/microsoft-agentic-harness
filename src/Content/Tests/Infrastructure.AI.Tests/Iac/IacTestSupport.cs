@@ -96,9 +96,11 @@ internal sealed class RecordingIacSandbox : ISandboxExecutor
     /// every genuine executor result carries — both <c>ProcessSandboxExecutor</c> and
     /// <c>DockerSandboxExecutor</c> sign one on every outcome, success or failure, so
     /// <see cref="SandboxExecutionResult.Attestation"/> being non-null here mirrors that invariant.
-    /// <c>IacSandboxRunner</c>'s own pre-dispatch refusal branch — the one case generator code now
-    /// discriminates on <c>Attestation is null</c> — never reaches this fake at all, so it stays the
-    /// only path that legitimately produces a null one.
+    /// <c>IacSandboxRunner</c>'s own pre-dispatch refusal branch never reaches an executor — and,
+    /// since #421, never reaches this fake either: a refusal is now a distinct
+    /// <c>Result&lt;SandboxExecutionResult&gt;.Forbidden(...)</c> outcome rather than a
+    /// look-alike <see cref="SandboxExecutionResult"/>, so generator code no longer discriminates on
+    /// <c>Attestation is null</c> at all.
     /// </summary>
     private static ToolExecutionAttestation FakeAttestation() => new()
     {

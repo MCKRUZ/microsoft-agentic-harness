@@ -2,6 +2,7 @@ using Application.AI.Common.Interfaces.Sandbox;
 using Application.AI.Common.Services.Sandbox;
 using Domain.AI.Sandbox;
 using Domain.Common;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
 namespace Infrastructure.AI.Iac;
@@ -10,8 +11,9 @@ namespace Infrastructure.AI.Iac;
 /// Shared dispatch helper for the IaC generators. Builds a
 /// <see cref="SandboxExecutionRequest"/> for an infrastructure-as-code CLI
 /// (terraform / bicep / checkov / tfsec / arm-ttk), runs it through the supplied
-/// <see cref="ISandboxExecutor"/>, and returns the raw
-/// <see cref="SandboxExecutionResult"/> for the caller to parse.
+/// <see cref="ISandboxExecutor"/>, and returns a <see cref="Result{T}"/> distinguishing a
+/// pre-dispatch governance refusal from a completed run — see <see cref="RunAsync"/>'s own
+/// <c>returns</c> doc for the exact contract.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -58,37 +60,108 @@ public static class IacSandboxRunner
     /// itself an enforced filesystem boundary on this dispatch path — see this class's remarks.
     /// </param>
     /// <param name="registryAllowlist">The provider/module-registry hosts the run may reach. Seeds the sandbox egress allowlist.</param>
-    /// <param name="scopedServices">
-    /// The per-execution DI scope's provider, used to resolve the keyed-scoped
-    /// <see cref="ISandboxExecutor"/> for the effective isolation tier — resolved here, after the
-    /// profile, rather than passed in already-resolved (#405 follow-up, a security-review finding
-    /// mirroring the identical fix in <c>WorkspaceCommandRunner</c>): the executor must be selected
-    /// for the tier the operator's <c>MinimumIsolation</c> override actually resolves to, not a tier
-    /// fixed before that override was consulted.
+    /// <param name="scopeFactory">
+    /// The caller's <see cref="IServiceScopeFactory"/>. This method opens one fresh scope per run —
+    /// so the caller's own singleton generator never captures scope-bound state — and resolves both
+    /// the <see cref="ToolPermissionProfileResolver"/> and the keyed-scoped <see cref="ISandboxExecutor"/>
+    /// for the effective isolation tier from it. The executor is resolved after the profile (#405
+    /// follow-up, a security-review finding mirroring the identical fix in <c>WorkspaceCommandRunner</c>):
+    /// it must be selected for the tier the operator's <c>MinimumIsolation</c> override actually
+    /// resolves to, not a tier fixed before that override was consulted.
     /// </param>
     /// <param name="defaultIsolationLevel">
     /// The generator's own minimum isolation requirement, independent of any operator override — the
     /// floor this run never drops below even absent a <c>MinimumIsolation</c> override.
     /// </param>
-    /// <param name="toolName">Tool name for diagnostic attribution in the sandbox request.</param>
+    /// <param name="toolName">
+    /// Tool name for diagnostic attribution in the sandbox request, and the keyed-DI name the
+    /// resolved <see cref="ToolPermissionProfileResolver"/> looks up an operator's per-tool override
+    /// under via <see cref="ToolPermissionProfileResolver.ResolveForUngovernedDispatch"/>, which also
+    /// refuses outright when the override intersects <paramref name="requiredCapabilities"/> — the
+    /// CLI never spawns — matching the governed-call semantics <c>CapabilityEnforcer</c> guarantees
+    /// rather than silently narrowing what gets provisioned.
+    /// </param>
     /// <param name="requiredCapabilities">
     /// The sandbox capabilities this run needs — supplied by the caller (e.g.
     /// <c>IacPlanTool.RequiredSandboxCapabilities</c>) rather than hardcoded here, so there is one
     /// place that states what an <c>iac_plan</c>/<c>iac_scan</c> call may do, not two (#387).
     /// </param>
-    /// <param name="permissionResolver">
-    /// Resolves the operator's <c>ToolOverrideConfig</c> for <paramref name="toolName"/> — this
-    /// runner used to build its permission profile inline, so a per-tool <c>DeniedCapabilities</c>
-    /// or <c>MinimumIsolation</c> override never reached it (#405). Via
-    /// <see cref="ToolPermissionProfileResolver.ResolveForUngovernedDispatch"/>, which also refuses
-    /// outright when the override intersects <paramref name="requiredCapabilities"/> — the CLI never
-    /// spawns — matching the governed-call semantics <c>CapabilityEnforcer</c> guarantees rather than
-    /// silently narrowing what gets provisioned.
+    /// <param name="logger">
+    /// The caller's own logger — used both to record a governance refusal (see
+    /// <see cref="MapDispatchFailure{T}"/>, called on the returned <see cref="Result{T}"/>) and to log
+    /// a sandbox-level exception here directly rather than in each generator's own try/catch. The two
+    /// generators' exception handling around this method used to be pasted identically at both call
+    /// sites — the same "pasted, not shared" duplication shape this issue's own fix exists to close on
+    /// the refusal path — so it moved here instead.
     /// </param>
+    /// <param name="backendLabel">The IaC backend name for log messages (e.g. <c>"Terraform"</c>, <c>"Bicep"</c>).</param>
     /// <param name="timeout">Optional wall-clock timeout. Defaults to 5 minutes — terraform init/plan can be slow.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
-    /// <returns>The raw <see cref="SandboxExecutionResult"/> for the caller to parse.</returns>
-    public static async Task<SandboxExecutionResult> RunAsync(
+    /// <returns>
+    /// <see cref="Result{T}.Forbidden"/> when the sandbox refused to dispatch the CLI at all — a
+    /// governance denial from <see cref="ToolPermissionProfileResolver.ResolveForUngovernedDispatch"/>
+    /// (deny-intersection or under-declaration) — never reaching an executor.
+    /// <see cref="Result{T}.Fail"/> when anything else in the dispatch threw before returning a result
+    /// — scope creation, <see cref="ToolPermissionProfileResolver"/> resolution, executor resolution,
+    /// or the executor itself (a misbehaving or unconfigured <see cref="ISandboxExecutor"/> — a
+    /// template extensibility seam). Otherwise <see cref="Result{T}.Success"/> wrapping the raw
+    /// <see cref="SandboxExecutionResult"/> for the caller to parse, which may itself report a failed
+    /// CLI run (<c>Success = false</c>) — that is a genuine dispatch outcome, not a refusal or an
+    /// exception, and is deliberately not folded into either of this method's own failure cases.
+    /// </returns>
+    public static async Task<Result<SandboxExecutionResult>> RunAsync(
+        string program,
+        IReadOnlyList<string> arguments,
+        string moduleDirectory,
+        IReadOnlyList<string> registryAllowlist,
+        IServiceScopeFactory scopeFactory,
+        SandboxIsolationLevel defaultIsolationLevel,
+        string toolName,
+        ToolCapability requiredCapabilities,
+        ILogger logger,
+        string backendLabel,
+        TimeSpan? timeout = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(program);
+        ArgumentNullException.ThrowIfNull(arguments);
+        ArgumentException.ThrowIfNullOrWhiteSpace(moduleDirectory);
+        ArgumentNullException.ThrowIfNull(registryAllowlist);
+        ArgumentNullException.ThrowIfNull(scopeFactory);
+        ArgumentException.ThrowIfNullOrWhiteSpace(toolName);
+        ArgumentNullException.ThrowIfNull(logger);
+        ArgumentException.ThrowIfNullOrWhiteSpace(backendLabel);
+
+        try
+        {
+            // Scope creation, ToolPermissionProfileResolver resolution, executor resolution, and
+            // execution all live inside this one try/catch now — a code-review finding (3rd occurrence
+            // on this method): the generators used to create this scope and resolve the resolver
+            // themselves, outside RunAsync's try/catch entirely, so a DI-resolution failure there threw
+            // uncaught out of PlanAsync/ScanAsync and reached SelfValidationGate as a raw, unscrubbed
+            // exception message — breaking the stable-failure-code convention this class's own remarks
+            // document. Two earlier fixes each widened the try/catch one layer further out (first to
+            // cover dispatch resolution, not just execution) without going all the way to the actual
+            // boundary of what this method's caller used to protect.
+            await using var scope = scopeFactory.CreateAsyncScope();
+            var permissionResolver = scope.ServiceProvider.GetRequiredService<ToolPermissionProfileResolver>();
+
+            return await DispatchAsync(
+                program, arguments, moduleDirectory, registryAllowlist, scope.ServiceProvider, defaultIsolationLevel,
+                toolName, requiredCapabilities, permissionResolver, timeout, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "{Backend} sandbox run failed for {Program} in {Module}.", backendLabel, program, moduleDirectory);
+            return Result<SandboxExecutionResult>.Fail($"Sandbox execution failed: {ex.GetType().Name}.");
+        }
+    }
+
+    private static async Task<Result<SandboxExecutionResult>> DispatchAsync(
         string program,
         IReadOnlyList<string> arguments,
         string moduleDirectory,
@@ -98,17 +171,9 @@ public static class IacSandboxRunner
         string toolName,
         ToolCapability requiredCapabilities,
         ToolPermissionProfileResolver permissionResolver,
-        TimeSpan? timeout = null,
-        CancellationToken cancellationToken = default)
+        TimeSpan? timeout,
+        CancellationToken cancellationToken)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(program);
-        ArgumentNullException.ThrowIfNull(arguments);
-        ArgumentException.ThrowIfNullOrWhiteSpace(moduleDirectory);
-        ArgumentNullException.ThrowIfNull(registryAllowlist);
-        ArgumentNullException.ThrowIfNull(scopedServices);
-        ArgumentException.ThrowIfNullOrWhiteSpace(toolName);
-        ArgumentNullException.ThrowIfNull(permissionResolver);
-
         // Profile and executor resolved together — the ordering invariant (executor only after the
         // profile, at its resolved tier) is now structural inside ResolveExecutorForUngovernedDispatch
         // rather than reproduced here, a /simplify finding: this runner and WorkspaceCommandRunner had
@@ -118,11 +183,10 @@ public static class IacSandboxRunner
             toolName, requiredCapabilities, [program], scopedServices, defaultIsolationLevel);
         if (!dispatchResult.IsSuccess)
         {
-            return new SandboxExecutionResult
-            {
-                Success = false,
-                ErrorMessage = string.Join("; ", dispatchResult.Errors)
-            };
+            // A distinct Forbidden Result, not a look-alike SandboxExecutionResult{Success=false} —
+            // see MapDispatchFailure's remarks for why this replaced the old Attestation-is-null
+            // discriminator (#421).
+            return Result<SandboxExecutionResult>.Forbidden(string.Join("; ", dispatchResult.Errors));
         }
 
         var (profile, executor) = dispatchResult.Value!;
@@ -139,70 +203,86 @@ public static class IacSandboxRunner
             EgressPrecheckTargets = BuildEgressPrecheckTargets(registryAllowlist)
         };
 
-        return await executor.ExecuteAsync(request, cancellationToken).ConfigureAwait(false);
+        var executionResult = await executor.ExecuteAsync(request, cancellationToken).ConfigureAwait(false);
+        return Result<SandboxExecutionResult>.Success(executionResult);
     }
 
     /// <summary>
-    /// True when <paramref name="result"/> is the sandbox refusing to dispatch a CLI at all — a
-    /// governance denial from <see cref="ToolPermissionProfileResolver.ResolveForUngovernedDispatch"/>
-    /// (deny-intersection or under-declaration) — rather than a genuine CLI run that failed.
+    /// Maps a failed <see cref="RunAsync"/> dispatch to the caller's own <see cref="Result{T}"/> —
+    /// logging and choosing the matching stable failure code. Returns <c>null</c> when
+    /// <paramref name="dispatch"/> succeeded, so the caller's own success/real-CLI-failure handling
+    /// (inspecting the wrapped <see cref="SandboxExecutionResult"/>) proceeds unchanged.
     /// </summary>
     /// <remarks>
-    /// A code-review finding: <see cref="TerraformGenerator"/>/<see cref="BicepGenerator"/> each
-    /// independently re-derived this same check at every CLI dispatch site (7 sites across the two
-    /// generators), and the duplication already caused one real miss during this PR's own
-    /// development — the <c>plan</c> step's check was added a commit after <c>validate</c>'s, caught
-    /// only by a later review pass. Centralizing the discriminator here means a caller can still
-    /// forget to <em>call</em> it at a new dispatch site, but can no longer get the check itself
-    /// subtly wrong (e.g. checking <c>ExitCode</c> instead of <c>Attestation</c>, or dropping the
-    /// <c>!Success</c> guard). See <see cref="ToolPermissionProfileResolver.ResolveExecutorForUngovernedDispatch"/>'s
-    /// remarks for why <c>Attestation</c>, not <c>ExitCode</c>, is the reliable signal: both
-    /// <c>ProcessSandboxExecutor</c> and <c>DockerSandboxExecutor</c> sign a failure attestation on
-    /// every genuinely-dispatched outcome (crash, timeout, egress-block, reserved-grant rejection) —
-    /// only the pre-dispatch refusal in <see cref="RunAsync"/> above never reaches an executor, so
-    /// it's the one case with none.
-    /// </remarks>
-    public static bool WasRefusedBeforeDispatch(SandboxExecutionResult result) =>
-        !result.Success && result.Attestation is null;
-
-    /// <summary>
-    /// Applies <see cref="WasRefusedBeforeDispatch"/> and, on a refusal, logs and returns the
-    /// scrubbed failure the caller should return immediately. Returns <c>null</c> when
-    /// <paramref name="result"/> is not a pre-dispatch refusal, so the caller's own
-    /// success/real-failure handling proceeds unchanged.
-    /// </summary>
-    /// <remarks>
+    /// <para>
     /// Centralizes the log-and-return block that used to be pasted at every one of the 7 CLI
     /// dispatch sites across <see cref="TerraformGenerator"/> and <see cref="BicepGenerator"/> —
-    /// the same duplication shape (a check correct everywhere it was pasted, but pasted, not
-    /// shared) that let the <c>plan</c> dispatch in <see cref="TerraformGenerator.PlanAsync"/>
-    /// miss the check for a full commit during this PR's own development.
+    /// the same duplication shape that let the <c>plan</c> dispatch in
+    /// <see cref="TerraformGenerator.PlanAsync"/> miss the equivalent check for a full commit during
+    /// this method's predecessor's own development.
+    /// </para>
+    /// <para>
+    /// <strong>#421:</strong> <see cref="RunAsync"/> used to represent a pre-dispatch governance
+    /// refusal as a look-alike <see cref="SandboxExecutionResult"/> (<c>Success = false</c>,
+    /// <c>Attestation = null</c>), so every caller had to remember to call a helper re-deriving "was
+    /// this a refusal" from that shared field — the same defect shape recorded twice already against
+    /// this type in the project's Common Mistakes (first <c>ExitCode</c>, then <c>Attestation</c>; both
+    /// corrections picked a better field, neither removed the need for callers to remember). Now
+    /// <see cref="RunAsync"/> returns a genuinely distinct <see cref="ResultFailureType.Forbidden"/>
+    /// outcome for a refusal, and a real dispatch outcome — success or a genuine CLI failure — is
+    /// always <see cref="Result.IsSuccess"/>. This mapper reads that type-level distinction
+    /// directly; a caller can still forget to call it at a new dispatch site, but the distinction it
+    /// reads can no longer drift to the wrong field.
+    /// </para>
+    /// <para>
+    /// A dispatch that failed for any other reason (the sandbox threw before returning a result — see
+    /// <see cref="RunAsync"/>'s own try/catch around scope creation, resolution, and execution) maps
+    /// to <c>{codePrefix}.sandbox_error</c> instead of <c>{codePrefix}.sandbox_denied</c>, preserving
+    /// the existing three-way split between "refused", "sandbox-level error", and "ran, parse the
+    /// result".
+    /// </para>
     /// </remarks>
     /// <typeparam name="T">The result payload type of the caller's own <see cref="Result{T}"/>.</typeparam>
-    /// <param name="result">The dispatch outcome to classify.</param>
+    /// <param name="dispatch">The outcome of a <see cref="RunAsync"/> call.</param>
     /// <param name="logger">The caller's own logger, used so the log entry attributes to the right category.</param>
     /// <param name="backendLabel">The IaC backend name for the log message (e.g. <c>"Terraform"</c>, <c>"Bicep"</c>).</param>
     /// <param name="operationLabel">The operation for the log message (e.g. <c>"iac_plan"</c>, <c>"iac_scan (checkov)"</c>).</param>
     /// <param name="moduleDirectory">The module directory the run targeted.</param>
-    /// <param name="failCode">The stable <c>iac.*</c> failure code to return.</param>
-    /// <returns>A failed <see cref="Result{T}"/> if refused before dispatch; otherwise <c>null</c>.</returns>
-    public static Result<T>? FailIfRefused<T>(
-        SandboxExecutionResult result,
+    /// <param name="codePrefix">
+    /// The stable <c>iac.plan</c>/<c>iac.scan</c> code family for this dispatch — a governance
+    /// refusal returns <c>{codePrefix}.sandbox_denied</c>, any other failure returns
+    /// <c>{codePrefix}.sandbox_error</c>. A /simplify finding: earlier revisions took the two codes as
+    /// independent parameters, but across all 7 call sites <c>sandbox_error</c> was never anything
+    /// other than <c>sandbox_denied</c> with the suffix swapped — derivable state passed as if it were
+    /// two facts a caller could mismatch by copy-paste.
+    /// </param>
+    /// <returns>A failed <see cref="Result{T}"/> if <paramref name="dispatch"/> failed; otherwise <c>null</c>.</returns>
+    public static Result<T>? MapDispatchFailure<T>(
+        Result<SandboxExecutionResult> dispatch,
         ILogger logger,
         string backendLabel,
         string operationLabel,
         string moduleDirectory,
-        string failCode)
+        string codePrefix)
     {
-        if (!WasRefusedBeforeDispatch(result))
+        if (dispatch.IsSuccess)
         {
             return null;
         }
 
-        logger.LogError(
-            "{Backend} {Operation} for {Module} was refused before dispatch: {Reason}",
-            backendLabel, operationLabel, moduleDirectory, result.ErrorMessage);
-        return Result<T>.Fail(failCode);
+        if (dispatch.FailureType == ResultFailureType.Forbidden)
+        {
+            logger.LogError(
+                "{Backend} {Operation} for {Module} was refused before dispatch: {Reason}",
+                backendLabel, operationLabel, moduleDirectory, string.Join("; ", dispatch.Errors));
+            // Forbidden, not Fail — preserves the same distinct FailureType RunAsync just set, rather
+            // than collapsing it back to General at the one boundary this issue exists to keep it
+            // distinct across (a code-review finding: no caller reads FailureType today, but silently
+            // discarding it here would defeat any future consumer that does).
+            return Result<T>.Forbidden($"{codePrefix}.sandbox_denied");
+        }
+
+        return Result<T>.Fail($"{codePrefix}.sandbox_error");
     }
 
     /// <summary>
