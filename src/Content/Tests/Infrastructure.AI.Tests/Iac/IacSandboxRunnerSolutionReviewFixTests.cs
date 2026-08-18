@@ -2,6 +2,7 @@ using Application.AI.Common.Interfaces.Sandbox;
 using Application.AI.Common.Services.Sandbox;
 using Application.AI.Common.Services.Tools;
 using Domain.AI.Sandbox;
+using Domain.Common;
 using Domain.Common.Config.AI.Sandbox;
 using FluentAssertions;
 using Infrastructure.AI.Iac;
@@ -184,8 +185,37 @@ public sealed class IacSandboxRunnerSolutionReviewFixTests
             requiredCapabilities: IacPlanTool.RequiredSandboxCapabilities,
             permissionResolver: resolver);
 
-        result.Success.Should().BeFalse();
+        result.IsSuccess.Should().BeFalse();
+        result.FailureType.Should().Be(ResultFailureType.Forbidden,
+            "a pre-dispatch governance refusal must be a structurally distinct outcome (#421), not a " +
+            "look-alike SandboxExecutionResult a caller has to reinterpret");
         sandbox.Requests.Should().BeEmpty(
             "a denied capability the tool actually requires must refuse before the sandbox is ever invoked");
+    }
+
+    [Fact]
+    public async Task RunAsync_DispatchSucceeds_ReturnsSuccessfulResultEvenWhenTheCliItselfFails()
+    {
+        // The other half of #421's guarantee: a genuine CLI failure (the executor actually ran and
+        // reported failure) must come back as a *successful* dispatch carrying a failed
+        // SandboxExecutionResult — never conflated with the sandbox refusing to dispatch at all.
+        var sandbox = new RecordingIacSandbox().WithDefault(false, 1, "terraform: syntax error");
+
+        var result = await IacSandboxRunner.RunAsync(
+            program: "terraform",
+            arguments: ["validate"],
+            moduleDirectory: ModuleDir,
+            registryAllowlist: [],
+            scopedServices: ScopedServices(sandbox),
+            defaultIsolationLevel: SandboxIsolationLevel.Process,
+            toolName: "iac_plan",
+            requiredCapabilities: IacPlanTool.RequiredSandboxCapabilities,
+            permissionResolver: NoOverrideResolver());
+
+        result.IsSuccess.Should().BeTrue("a genuine CLI failure is a completed dispatch, not a refusal");
+        result.Value!.Success.Should().BeFalse();
+        result.Value.ExitCode.Should().Be(1);
+        sandbox.Requests.Should().ContainSingle(
+            "the CLI must actually have been invoked for this to be a real (not refused) failure");
     }
 }
