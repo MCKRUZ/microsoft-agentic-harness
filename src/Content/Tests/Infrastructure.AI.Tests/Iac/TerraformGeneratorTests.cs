@@ -1,10 +1,15 @@
+using Application.AI.Common.Services.Sandbox;
+using Application.AI.Common.Services.Tools;
 using Domain.AI.Iac;
 using Domain.AI.Sandbox;
 using Domain.Common.Config.AI.Sandbox;
 using FluentAssertions;
 using Infrastructure.AI.Iac;
 using Infrastructure.AI.Tools.Iac;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
+using Moq;
 using Xunit;
 
 namespace Infrastructure.AI.Tests.Iac;
@@ -45,6 +50,43 @@ public sealed class TerraformGeneratorTests
             Support.TestScopeFactory.ForSandbox(sandbox, deniedConfig),
             NullLogger<TerraformGenerator>.Instance,
             TimeProvider.System);
+    }
+
+    /// <summary>
+    /// A generator whose operator override config changes between successive
+    /// <c>IOptionsMonitor{SandboxConfig}.CurrentValue</c> reads — the first read carries no override
+    /// (so an earlier CLI step in a multi-step method like <c>PlanAsync</c> succeeds), every read after
+    /// carries a <c>DeniedCapabilities</c> override intersecting the tool's requirement (so a later step
+    /// is refused). Models a hot-reloaded config change landing mid-<c>PlanAsync</c> — terraform plan can
+    /// run for minutes, long enough for an operator's override to land between the validate and plan
+    /// dispatches, per the code-review finding this test guards.
+    /// </summary>
+    private static TerraformGenerator CreateWithDispatchRefusedAfterFirstStep(Application.AI.Common.Interfaces.Sandbox.ISandboxExecutor sandbox)
+    {
+        var reads = 0;
+        var configMock = new Mock<IOptionsMonitor<SandboxConfig>>();
+        configMock.Setup(m => m.CurrentValue).Returns(() =>
+        {
+            reads++;
+            return reads == 1
+                ? new SandboxConfig()
+                : new SandboxConfig
+                {
+                    ToolOverrides = new()
+                    {
+                        ["iac_plan"] = new ToolOverrideConfig { DeniedCapabilities = ["NetworkAccess"] }
+                    }
+                };
+        });
+
+        var services = new ServiceCollection().AddKeyedSingleton(SandboxIsolationLevel.Process, sandbox);
+        services.AddSingleton(sp => new FirstPartyToolLookup(sp, new HashSet<string>()));
+        services.AddSingleton(sp => new ToolPermissionProfileResolver(
+            sp.GetRequiredService<FirstPartyToolLookup>(), configMock.Object));
+        var scopeFactory = services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
+
+        return new TerraformGenerator(
+            IacTestConfig.ValidMonitor(), scopeFactory, NullLogger<TerraformGenerator>.Instance, TimeProvider.System);
     }
 
     private static IacGenerationRequest Request() => new()
@@ -182,6 +224,24 @@ public sealed class TerraformGeneratorTests
 
         result.IsSuccess.Should().BeFalse(
             "a governance refusal before dispatch must never present as a completed (if failed) plan");
+        result.Errors.Should().Contain("iac.plan.sandbox_denied");
+    }
+
+    [Fact]
+    public async Task PlanAsync_PlanStepRefusedAfterValidateSucceeded_FailsRatherThanReportingAFakePlanError()
+    {
+        // A code-review finding on the fix above: it only guarded the `validate` dispatch, not `plan`
+        // — reachable if a hot-reloaded operator override refuses the call between the two (terraform
+        // plan can run for minutes). validate succeeds (no override yet); plan is then refused
+        // (override now denies NetworkAccess) and must fail loudly, not report Succeeded=false/"plan
+        // errored" as if terraform itself found a problem.
+        var sut = CreateWithDispatchRefusedAfterFirstStep(
+            new RecordingIacSandbox().WithDefault(true, 0, string.Empty));
+
+        var result = await sut.PlanAsync("modules/network", CancellationToken.None);
+
+        result.IsSuccess.Should().BeFalse(
+            "a governance refusal on the second dispatch must never present as a completed (if failed) plan");
         result.Errors.Should().Contain("iac.plan.sandbox_denied");
     }
 

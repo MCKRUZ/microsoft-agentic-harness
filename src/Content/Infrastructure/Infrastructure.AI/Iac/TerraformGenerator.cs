@@ -145,6 +145,19 @@ public sealed class TerraformGenerator : IIacGenerator
             return Result<IacPlanResult>.Fail("iac.plan.sandbox_error");
         }
 
+        // A code-review finding: the same governance-refused-vs-real-failure ambiguity fixed above
+        // for `validate` applies to `plan` too — a config-override reload between the two calls could
+        // refuse this second dispatch even though validate succeeded. ParsePlan reads plan.ExitCode
+        // (null here) and would otherwise report Succeeded=false/"plan errored" for what was actually
+        // a governance denial.
+        if (!plan.Success && plan.Attestation is null)
+        {
+            _logger.LogError(
+                "Terraform iac_plan (plan) for {Module} was refused before dispatch: {Reason}",
+                moduleDirectory, plan.ErrorMessage);
+            return Result<IacPlanResult>.Fail("iac.plan.sandbox_denied");
+        }
+
         return Result<IacPlanResult>.Success(ParsePlan(moduleDirectory, plan));
     }
 
