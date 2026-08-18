@@ -16,8 +16,15 @@ namespace Infrastructure.AI.Evaluation.Metrics;
 /// </remarks>
 public sealed class ContainsAllMetric : IEvalMetric
 {
+    private const string ValuesKey = "values";
+    private const string CaseSensitiveKey = "case_sensitive";
+
     /// <inheritdoc />
     public string Key => "contains_all";
+
+    /// <inheritdoc />
+    public IReadOnlySet<string> RecognizedParameterKeys { get; } =
+        new HashSet<string> { ValuesKey, CaseSensitiveKey };
 
     /// <inheritdoc />
     public Task<MetricScore> ScoreAsync(
@@ -28,7 +35,7 @@ public sealed class ContainsAllMetric : IEvalMetric
     {
         var sw = Stopwatch.StartNew();
 
-        if (!spec.Parameters.TryGetValue("values", out var valuesRaw) || string.IsNullOrWhiteSpace(valuesRaw))
+        if (!spec.Parameters.TryGetValue(ValuesKey, out var valuesRaw) || string.IsNullOrWhiteSpace(valuesRaw))
         {
             sw.Stop();
             return Task.FromResult(new MetricScore
@@ -41,7 +48,7 @@ public sealed class ContainsAllMetric : IEvalMetric
             });
         }
 
-        var caseSensitive = spec.Parameters.TryGetValue("case_sensitive", out var cs)
+        var caseSensitive = spec.Parameters.TryGetValue(CaseSensitiveKey, out var cs)
             && bool.TryParse(cs, out var parsed) && parsed;
 
         var comparison = caseSensitive ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase;

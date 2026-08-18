@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using Application.AI.Common.Evaluation.Models;
 using Domain.AI.Evaluation;
 
@@ -23,6 +24,23 @@ public interface IEvalMetric
 {
     /// <summary>The stable string key by which this metric is referenced from cases (e.g. "exact_match").</summary>
     string Key { get; }
+
+    /// <summary>
+    /// The <see cref="MetricSpec.Parameters"/> keys this metric actually reads. Empty by default —
+    /// only a metric that reads case-author-supplied parameters needs to override this.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="Application.AI.Common.Evaluation.MetricSpecExtensions"/>'s accessors are
+    /// deliberately fail-soft: a missing or unparseable parameter falls back to a default rather
+    /// than throwing, so a bad case must not take down an eval run. The cost is that a typo'd key
+    /// is architecturally indistinguishable from an absent one at score time — both hit the same
+    /// silent-default path (#423, first surfaced by #410's six silently-no-op'd eval cases). This
+    /// property exists so that distinction can be made at dataset-load time instead: a validation
+    /// pass can compare a case's declared <see cref="MetricSpec.Parameters"/> keys against the
+    /// resolved metric's own declared set and flag anything neither side recognizes, without
+    /// needing to inspect <see cref="ScoreAsync"/>'s behavior to find out what it actually reads.
+    /// </remarks>
+    IReadOnlySet<string> RecognizedParameterKeys => ImmutableHashSet<string>.Empty;
 
     /// <summary>
     /// Scores the given case's output.

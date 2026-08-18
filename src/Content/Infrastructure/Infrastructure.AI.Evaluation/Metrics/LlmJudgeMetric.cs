@@ -63,6 +63,7 @@ public sealed class LlmJudgeMetric : IEvalMetric
         "you MUST quote the specific rubric requirement it violates verbatim in \"violated_clause\" — do not " +
         "paraphrase or invent a requirement that is not present in the rubric.";
 
+    private const string RubricKey = "rubric";
     private const string VerdictContractKey = "verdict_contract";
     private const string TrajectoryKey = "trajectory";
     private const string IncludeExpectedOutputKey = "include_expected_output";
@@ -86,6 +87,12 @@ public sealed class LlmJudgeMetric : IEvalMetric
     public string Key => "llm_judge";
 
     /// <inheritdoc />
+    public IReadOnlySet<string> RecognizedParameterKeys { get; } = new HashSet<string>
+    {
+        RubricKey, VerdictContractKey, TrajectoryKey, IncludeExpectedOutputKey
+    };
+
+    /// <inheritdoc />
     public async Task<MetricScore> ScoreAsync(
         EvalCase @case,
         AgentInvocationResult output,
@@ -98,7 +105,7 @@ public sealed class LlmJudgeMetric : IEvalMetric
 
         var sw = Stopwatch.StartNew();
 
-        if (!spec.Parameters.TryGetValue("rubric", out var rubric) || string.IsNullOrWhiteSpace(rubric))
+        if (!spec.Parameters.TryGetValue(RubricKey, out var rubric) || string.IsNullOrWhiteSpace(rubric))
         {
             return Warn(sw, "llm_judge requires a 'rubric' parameter.");
         }
