@@ -29,6 +29,7 @@ public sealed class ToolUseStepExecutorSolutionReviewFixTests
     private readonly Mock<ICompositeResponseSanitizer> _responseSanitizer = new();
     private readonly Mock<IPlanProgressNotifier> _notifier = new();
     private readonly Mock<ISandboxExecutor> _processExecutor = new();
+    private readonly Mock<ISandboxExecutor> _containerExecutor = new();
     private readonly PlanExecutionContext _context = new() { CurrentPlanId = new PlanId(Guid.NewGuid()) };
     private readonly ToolUseStepExecutor _sut;
 
@@ -47,7 +48,7 @@ public sealed class ToolUseStepExecutorSolutionReviewFixTests
         // the gap the fix protects against.
         var services = new ServiceCollection();
         services.AddKeyedSingleton<ISandboxExecutor>(SandboxIsolationLevel.Process, _processExecutor.Object);
-        services.AddKeyedSingleton<ISandboxExecutor>(SandboxIsolationLevel.Container, new Mock<ISandboxExecutor>().Object);
+        services.AddKeyedSingleton<ISandboxExecutor>(SandboxIsolationLevel.Container, _containerExecutor.Object);
         var sp = services.BuildServiceProvider();
 
         _sut = new ToolUseStepExecutor(
@@ -102,5 +103,87 @@ public sealed class ToolUseStepExecutorSolutionReviewFixTests
         Assert.Equal(SandboxIsolationLevel.Process, dispatchedLevel);
         _processExecutor.Verify(
             s => s.ExecuteAsync(It.IsAny<SandboxExecutionRequest>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_SupervisedStepElevatesAboveProfileFloor_EmbedsTheElevatedTierInTheDispatchedRequest()
+    {
+        // #420: DetermineIsolation elevates isolation for a Supervised/Restricted step even when the
+        // tool's own profile only declares Process — but the elevated tier must also reach the
+        // *embedded* PermissionProfile.MinimumIsolation on the dispatched request, not just select
+        // the right keyed executor. SandboxSessionAttestationSigner signs both `isolation` and
+        // `capabilitiesEnforcedBy` from that embedded field on every successful run, and
+        // DockerSandboxExecutor.HandleDockerUnavailableAsync reads the same field to decide whether a
+        // Docker outage is a hard, attested refusal or a soft fallback hint — both misread a stale,
+        // un-elevated profile.
+        _capabilityEnforcer.Setup(c => c.ResolveProfileAsync("shell_tool", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ToolPermissionProfile
+            {
+                RequiredCapabilities = ToolCapability.Subprocess,
+                MinimumIsolation = SandboxIsolationLevel.Process
+            });
+
+        SandboxExecutionRequest? dispatchedRequest = null;
+        _containerExecutor.Setup(s => s.ExecuteAsync(It.IsAny<SandboxExecutionRequest>(), It.IsAny<CancellationToken>()))
+            .Callback<SandboxExecutionRequest, CancellationToken>((req, _) => dispatchedRequest = req)
+            .ReturnsAsync(new SandboxExecutionResult { Success = true, Output = "ok", ResourceUsage = new ResourceUsage() });
+
+        var step = new PlanStep
+        {
+            Id = new PlanStepId(Guid.NewGuid()),
+            Name = "supervised-step",
+            Type = StepType.ToolUse,
+            Configuration = new ToolUseConfig { ToolName = "shell_tool" },
+            RetryPolicy = new RetryPolicy(),
+            RequiredAutonomyLevel = AutonomyLevel.Supervised
+        };
+
+        var result = await _sut.ExecuteAsync(step, new Dictionary<PlanStepId, string>(), CancellationToken.None);
+
+        Assert.Equal(StepExecutionStatus.Completed, result.Status);
+        _containerExecutor.Verify(
+            s => s.ExecuteAsync(It.IsAny<SandboxExecutionRequest>(), It.IsAny<CancellationToken>()), Times.Once,
+            "the elevated tier must select the Container executor, not the tool's own Process floor");
+        Assert.NotNull(dispatchedRequest);
+        Assert.Equal(SandboxIsolationLevel.Container, dispatchedRequest!.PermissionProfile.MinimumIsolation);
+        Assert.Equal(ToolCapability.Subprocess, dispatchedRequest.PermissionProfile.RequiredCapabilities);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_NoElevationNeeded_ProfileMinimumIsolationUnchanged()
+    {
+        // The other half of #420's guarantee: when DetermineIsolation doesn't elevate (no autonomy
+        // requirement, no override), the profile embedded in the request must be the exact instance
+        // resolved by the capability enforcer -- not a needlessly rebuilt copy. Asserted by reference
+        // identity, not just value equality: ToolPermissionProfile is a record, so `with` would
+        // produce a value-equal but distinct instance even when unconditionally rebuilding -- a value
+        // check alone can't tell that apart from the guarded, no-op case this test exists to prove.
+        var resolvedProfile = new ToolPermissionProfile
+        {
+            RequiredCapabilities = ToolCapability.FileRead,
+            MinimumIsolation = SandboxIsolationLevel.Process
+        };
+        _capabilityEnforcer.Setup(c => c.ResolveProfileAsync("read_only_tool", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(resolvedProfile);
+
+        SandboxExecutionRequest? dispatchedRequest = null;
+        _processExecutor.Setup(s => s.ExecuteAsync(It.IsAny<SandboxExecutionRequest>(), It.IsAny<CancellationToken>()))
+            .Callback<SandboxExecutionRequest, CancellationToken>((req, _) => dispatchedRequest = req)
+            .ReturnsAsync(new SandboxExecutionResult { Success = true, Output = "ok", ResourceUsage = new ResourceUsage() });
+
+        var step = new PlanStep
+        {
+            Id = new PlanStepId(Guid.NewGuid()),
+            Name = "read-only-step-2",
+            Type = StepType.ToolUse,
+            Configuration = new ToolUseConfig { ToolName = "read_only_tool" },
+            RetryPolicy = new RetryPolicy()
+        };
+
+        var result = await _sut.ExecuteAsync(step, new Dictionary<PlanStepId, string>(), CancellationToken.None);
+
+        Assert.Equal(StepExecutionStatus.Completed, result.Status);
+        Assert.NotNull(dispatchedRequest);
+        Assert.Same(resolvedProfile, dispatchedRequest!.PermissionProfile);
     }
 }
