@@ -29,6 +29,7 @@ public sealed class ToolUseStepExecutorSolutionReviewFixTests
     private readonly Mock<ICompositeResponseSanitizer> _responseSanitizer = new();
     private readonly Mock<IPlanProgressNotifier> _notifier = new();
     private readonly Mock<ISandboxExecutor> _processExecutor = new();
+    private readonly Mock<ISandboxExecutor> _containerExecutor = new();
     private readonly PlanExecutionContext _context = new() { CurrentPlanId = new PlanId(Guid.NewGuid()) };
     private readonly ToolUseStepExecutor _sut;
 
@@ -47,7 +48,7 @@ public sealed class ToolUseStepExecutorSolutionReviewFixTests
         // the gap the fix protects against.
         var services = new ServiceCollection();
         services.AddKeyedSingleton<ISandboxExecutor>(SandboxIsolationLevel.Process, _processExecutor.Object);
-        services.AddKeyedSingleton<ISandboxExecutor>(SandboxIsolationLevel.Container, new Mock<ISandboxExecutor>().Object);
+        services.AddKeyedSingleton<ISandboxExecutor>(SandboxIsolationLevel.Container, _containerExecutor.Object);
         var sp = services.BuildServiceProvider();
 
         _sut = new ToolUseStepExecutor(
@@ -115,20 +116,6 @@ public sealed class ToolUseStepExecutorSolutionReviewFixTests
         // DockerSandboxExecutor.HandleDockerUnavailableAsync reads the same field to decide whether a
         // Docker outage is a hard, attested refusal or a soft fallback hint — both misread a stale,
         // un-elevated profile.
-        var containerExecutor = new Mock<ISandboxExecutor>();
-        var services = new ServiceCollection();
-        services.AddKeyedSingleton<ISandboxExecutor>(SandboxIsolationLevel.Process, _processExecutor.Object);
-        services.AddKeyedSingleton<ISandboxExecutor>(SandboxIsolationLevel.Container, containerExecutor.Object);
-        var sut = new ToolUseStepExecutor(
-            _capabilityEnforcer.Object,
-            PermissiveAdmission.Pipeline(),
-            services.BuildServiceProvider(),
-            _attestationService.Object,
-            _responseSanitizer.Object,
-            _notifier.Object,
-            _context,
-            NullLogger<ToolUseStepExecutor>.Instance);
-
         _capabilityEnforcer.Setup(c => c.ResolveProfileAsync("shell_tool", It.IsAny<CancellationToken>()))
             .ReturnsAsync(new ToolPermissionProfile
             {
@@ -137,7 +124,7 @@ public sealed class ToolUseStepExecutorSolutionReviewFixTests
             });
 
         SandboxExecutionRequest? dispatchedRequest = null;
-        containerExecutor.Setup(s => s.ExecuteAsync(It.IsAny<SandboxExecutionRequest>(), It.IsAny<CancellationToken>()))
+        _containerExecutor.Setup(s => s.ExecuteAsync(It.IsAny<SandboxExecutionRequest>(), It.IsAny<CancellationToken>()))
             .Callback<SandboxExecutionRequest, CancellationToken>((req, _) => dispatchedRequest = req)
             .ReturnsAsync(new SandboxExecutionResult { Success = true, Output = "ok", ResourceUsage = new ResourceUsage() });
 
@@ -151,10 +138,10 @@ public sealed class ToolUseStepExecutorSolutionReviewFixTests
             RequiredAutonomyLevel = AutonomyLevel.Supervised
         };
 
-        var result = await sut.ExecuteAsync(step, new Dictionary<PlanStepId, string>(), CancellationToken.None);
+        var result = await _sut.ExecuteAsync(step, new Dictionary<PlanStepId, string>(), CancellationToken.None);
 
         Assert.Equal(StepExecutionStatus.Completed, result.Status);
-        containerExecutor.Verify(
+        _containerExecutor.Verify(
             s => s.ExecuteAsync(It.IsAny<SandboxExecutionRequest>(), It.IsAny<CancellationToken>()), Times.Once,
             "the elevated tier must select the Container executor, not the tool's own Process floor");
         Assert.NotNull(dispatchedRequest);

@@ -208,12 +208,13 @@ public sealed class DockerSandboxExecutor : ISandboxExecutor
             };
         }
 
-        // Defensive-only as of #420: this class is registered exclusively under the Container keyed-DI
-        // slot, and every first-party caller (ToolUseStepExecutor, IacSandboxRunner,
-        // WorkspaceCommandRunner) now syncs an elevated tier into PermissionProfile.MinimumIsolation
-        // before embedding it — so a request that reached this executor always has isRequired true
-        // above. This branch stays as a guard against a future caller that resolves the Container
-        // executor without that sync, not because any current path can reach it.
+        // Unreachable from any first-party caller as of #420: this class is registered exclusively
+        // under the Container keyed-DI slot, so isRequired above is re-deriving from a caller-supplied
+        // field a fact the DI key already proves structurally — every first-party caller now also
+        // syncs an elevated tier into PermissionProfile.MinimumIsolation before embedding it, so
+        // isRequired is always true in practice. #434 tracks removing this branch (and its identical
+        // twin in DockerSandboxSessionFactory) rather than continuing to trust a caller-controlled
+        // field for something the DI key already guarantees.
         _logger.LogWarning("Docker unavailable for tool {ToolName}. Caller may fall back to process isolation", request.ToolName);
 
         return new SandboxExecutionResult
