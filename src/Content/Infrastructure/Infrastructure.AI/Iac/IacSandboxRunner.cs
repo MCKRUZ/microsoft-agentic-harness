@@ -141,6 +141,29 @@ public static class IacSandboxRunner
     }
 
     /// <summary>
+    /// True when <paramref name="result"/> is the sandbox refusing to dispatch a CLI at all — a
+    /// governance denial from <see cref="ToolPermissionProfileResolver.ResolveForUngovernedDispatch"/>
+    /// (deny-intersection or under-declaration) — rather than a genuine CLI run that failed.
+    /// </summary>
+    /// <remarks>
+    /// A code-review finding: <see cref="TerraformGenerator"/>/<see cref="BicepGenerator"/> each
+    /// independently re-derived this same check at every CLI dispatch site (7 sites across the two
+    /// generators), and the duplication already caused one real miss during this PR's own
+    /// development — the <c>plan</c> step's check was added a commit after <c>validate</c>'s, caught
+    /// only by a later review pass. Centralizing the discriminator here means a caller can still
+    /// forget to <em>call</em> it at a new dispatch site, but can no longer get the check itself
+    /// subtly wrong (e.g. checking <c>ExitCode</c> instead of <c>Attestation</c>, or dropping the
+    /// <c>!Success</c> guard). See <see cref="ToolPermissionProfileResolver.ResolveExecutorForUngovernedDispatch"/>'s
+    /// remarks for why <c>Attestation</c>, not <c>ExitCode</c>, is the reliable signal: both
+    /// <c>ProcessSandboxExecutor</c> and <c>DockerSandboxExecutor</c> sign a failure attestation on
+    /// every genuinely-dispatched outcome (crash, timeout, egress-block, reserved-grant rejection) —
+    /// only the pre-dispatch refusal in <see cref="RunAsync"/> above never reaches an executor, so
+    /// it's the one case with none.
+    /// </remarks>
+    public static bool WasRefusedBeforeDispatch(SandboxExecutionResult result) =>
+        !result.Success && result.Attestation is null;
+
+    /// <summary>
     /// Projects the bare-hostname registry allowlist into concrete
     /// <see cref="Uri"/> targets so the sandbox egress preflight evaluates each
     /// declared registry against the active per-skill <c>IEgressPolicy</c> before the

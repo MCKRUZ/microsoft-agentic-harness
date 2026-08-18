@@ -112,21 +112,11 @@ public sealed class TerraformGenerator : IIacGenerator
 
         if (!validate.Success)
         {
-            if (validate.Attestation is null)
+            // A governance refusal (e.g. an operator's DeniedCapabilities override on iac_plan) must
+            // never present as a real validate failure — see IacSandboxRunner.WasRefusedBeforeDispatch's
+            // remarks for the discriminator and why it's centralized there, not re-derived per call site.
+            if (IacSandboxRunner.WasRefusedBeforeDispatch(validate))
             {
-                // The sandbox never dispatched terraform at all — a governance refusal (e.g. an
-                // operator's DeniedCapabilities override on iac_plan), not a real validate failure.
-                // A code-review finding: this used to fall into the branch below and get reported as
-                // Result.Success(FailedPlan(..., "validate failed")) — a governance denial silently
-                // presenting as "terraform found a syntax error," with the real reason (validate.ErrorMessage)
-                // never logged or surfaced anywhere. Log it via structured logging (never the raw
-                // message in a Result error — see this class's remarks on why) and fail loudly instead.
-                // Discriminated on Attestation, not ExitCode (a code-review finding on the first cut of
-                // this fix): both ProcessSandboxExecutor and DockerSandboxExecutor sign a failure
-                // attestation on every genuinely-dispatched outcome — timeout, reserved-env-grant
-                // rejection, egress-preflight block, and a real crash all leave ExitCode null too, but
-                // all of them sign one. Only the pre-dispatch refusal branch in IacSandboxRunner never
-                // reaches an executor at all, so it's the one case Attestation is reliably null for.
                 _logger.LogError(
                     "Terraform iac_plan for {Module} was refused before dispatch: {Reason}",
                     moduleDirectory, validate.ErrorMessage);
@@ -145,12 +135,9 @@ public sealed class TerraformGenerator : IIacGenerator
             return Result<IacPlanResult>.Fail("iac.plan.sandbox_error");
         }
 
-        // A code-review finding: the same governance-refused-vs-real-failure ambiguity fixed above
-        // for `validate` applies to `plan` too — a config-override reload between the two calls could
-        // refuse this second dispatch even though validate succeeded. ParsePlan reads plan.ExitCode
-        // (null here) and would otherwise report Succeeded=false/"plan errored" for what was actually
-        // a governance denial.
-        if (!plan.Success && plan.Attestation is null)
+        // The same refusal-vs-real-failure ambiguity applies to `plan` too — a config-override reload
+        // between the two calls could refuse this second dispatch even though validate succeeded.
+        if (IacSandboxRunner.WasRefusedBeforeDispatch(plan))
         {
             _logger.LogError(
                 "Terraform iac_plan (plan) for {Module} was refused before dispatch: {Reason}",
@@ -186,24 +173,18 @@ public sealed class TerraformGenerator : IIacGenerator
             return Result<IacScanResult>.Fail("iac.scan.sandbox_error");
         }
 
-        // A code-review finding: a scanner the sandbox refused to dispatch (no signed attestation —
-        // e.g. a governance denial on iac_scan) used to fall straight through to the parsers below,
-        // which parse empty output into zero findings — silently reporting a security scan that never
-        // ran as "passed, no findings." Refuse loudly instead of reporting a false clean result.
-        // Discriminated on Attestation, not ExitCode (a code-review finding on the first cut of this
-        // fix): every genuinely-dispatched outcome — including timeout, a reserved-env-grant rejection,
-        // an egress-preflight block, and a real crash — signs a failure attestation and also leaves
-        // ExitCode null, so ExitCode alone would have misclassified those as refusals too. Only the
-        // pre-dispatch refusal branch in IacSandboxRunner never reaches an executor, so Attestation is
-        // the one field reliably null for that case alone.
-        if (checkov.Attestation is null)
+        // A scanner the sandbox refused to dispatch must never fall through to the parsers below,
+        // which would parse empty output into zero findings — silently reporting a security scan that
+        // never ran as "passed, no findings." See IacSandboxRunner.WasRefusedBeforeDispatch's remarks
+        // for the discriminator.
+        if (IacSandboxRunner.WasRefusedBeforeDispatch(checkov))
         {
             _logger.LogError(
                 "Terraform iac_scan (checkov) for {Module} was refused before dispatch: {Reason}",
                 moduleDirectory, checkov.ErrorMessage);
             return Result<IacScanResult>.Fail("iac.scan.sandbox_denied");
         }
-        if (tfsec.Attestation is null)
+        if (IacSandboxRunner.WasRefusedBeforeDispatch(tfsec))
         {
             _logger.LogError(
                 "Terraform iac_scan (tfsec) for {Module} was refused before dispatch: {Reason}",
