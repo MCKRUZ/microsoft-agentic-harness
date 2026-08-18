@@ -118,7 +118,7 @@ public sealed class BicepGenerator : IIacGenerator
 
         if (!build.Success)
         {
-            if (build.ExitCode is null)
+            if (build.Attestation is null)
             {
                 // The sandbox never dispatched bicep at all — a governance refusal (e.g. an operator's
                 // DeniedCapabilities override on iac_plan), not a real build failure. A code-review
@@ -127,6 +127,12 @@ public sealed class BicepGenerator : IIacGenerator
                 // template syntax error, with the real reason (build.ErrorMessage) never logged or
                 // surfaced anywhere. Log it via structured logging (never the raw message in a Result
                 // error — see this class's remarks on why) and fail loudly instead.
+                // Discriminated on Attestation, not ExitCode (a code-review finding on the first cut of
+                // this fix): both ProcessSandboxExecutor and DockerSandboxExecutor sign a failure
+                // attestation on every genuinely-dispatched outcome — timeout, reserved-env-grant
+                // rejection, egress-preflight block, and a real crash all leave ExitCode null too, but
+                // all of them sign one. Only the pre-dispatch refusal branch in IacSandboxRunner never
+                // reaches an executor at all, so it's the one case Attestation is reliably null for.
                 _logger.LogError(
                     "Bicep iac_plan for {Module} was refused before dispatch: {Reason}",
                     moduleDirectory, build.ErrorMessage);
@@ -173,18 +179,24 @@ public sealed class BicepGenerator : IIacGenerator
             return Result<IacScanResult>.Fail("iac.scan.sandbox_error");
         }
 
-        // A code-review finding: a scanner the sandbox refused to dispatch (ExitCode null — e.g. a
-        // governance denial on iac_scan) used to fall straight through to the parsers below, which
-        // parse empty output into zero findings — silently reporting a security scan that never ran
-        // as "passed, no findings." Refuse loudly instead of reporting a false clean result.
-        if (armTtk.ExitCode is null)
+        // A code-review finding: a scanner the sandbox refused to dispatch (no signed attestation —
+        // e.g. a governance denial on iac_scan) used to fall straight through to the parsers below,
+        // which parse empty output into zero findings — silently reporting a security scan that never
+        // ran as "passed, no findings." Refuse loudly instead of reporting a false clean result.
+        // Discriminated on Attestation, not ExitCode (a code-review finding on the first cut of this
+        // fix): every genuinely-dispatched outcome — including timeout, a reserved-env-grant rejection,
+        // an egress-preflight block, and a real crash — signs a failure attestation and also leaves
+        // ExitCode null, so ExitCode alone would have misclassified those as refusals too. Only the
+        // pre-dispatch refusal branch in IacSandboxRunner never reaches an executor, so Attestation is
+        // the one field reliably null for that case alone.
+        if (armTtk.Attestation is null)
         {
             _logger.LogError(
                 "Bicep iac_scan (arm-ttk) for {Module} was refused before dispatch: {Reason}",
                 moduleDirectory, armTtk.ErrorMessage);
             return Result<IacScanResult>.Fail("iac.scan.sandbox_denied");
         }
-        if (checkov.ExitCode is null)
+        if (checkov.Attestation is null)
         {
             _logger.LogError(
                 "Bicep iac_scan (checkov) for {Module} was refused before dispatch: {Reason}",

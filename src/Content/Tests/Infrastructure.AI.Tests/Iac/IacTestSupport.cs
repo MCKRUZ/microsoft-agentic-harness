@@ -1,4 +1,5 @@
 using Application.AI.Common.Interfaces.Sandbox;
+using Domain.AI.Attestation;
 using Domain.AI.Sandbox;
 using Domain.Common.Config;
 using Domain.Common.Config.AI;
@@ -54,7 +55,7 @@ internal static class IacTestConfig
 internal sealed class RecordingIacSandbox : ISandboxExecutor
 {
     private readonly Dictionary<string, SandboxExecutionResult> _byProgram = new(StringComparer.OrdinalIgnoreCase);
-    private SandboxExecutionResult _default = new() { Success = true, ExitCode = 0, Output = string.Empty };
+    private SandboxExecutionResult _default = new() { Success = true, ExitCode = 0, Output = string.Empty, Attestation = FakeAttestation() };
 
     /// <summary>Every request the generator dispatched, in order.</summary>
     public List<SandboxExecutionRequest> Requests { get; } = [];
@@ -70,7 +71,8 @@ internal sealed class RecordingIacSandbox : ISandboxExecutor
             Success = success,
             ExitCode = exitCode,
             Output = output,
-            ErrorMessage = success ? null : output
+            ErrorMessage = success ? null : output,
+            Attestation = FakeAttestation()
         };
         return this;
     }
@@ -83,10 +85,29 @@ internal sealed class RecordingIacSandbox : ISandboxExecutor
             Success = success,
             ExitCode = exitCode,
             Output = output,
-            ErrorMessage = success ? null : output
+            ErrorMessage = success ? null : output,
+            Attestation = FakeAttestation()
         };
         return this;
     }
+
+    /// <summary>
+    /// A minimal fake attestation standing in for the real <c>IAttestationService</c>-signed one
+    /// every genuine executor result carries — both <c>ProcessSandboxExecutor</c> and
+    /// <c>DockerSandboxExecutor</c> sign one on every outcome, success or failure, so
+    /// <see cref="SandboxExecutionResult.Attestation"/> being non-null here mirrors that invariant.
+    /// <c>IacSandboxRunner</c>'s own pre-dispatch refusal branch — the one case generator code now
+    /// discriminates on <c>Attestation is null</c> — never reaches this fake at all, so it stays the
+    /// only path that legitimately produces a null one.
+    /// </summary>
+    private static ToolExecutionAttestation FakeAttestation() => new()
+    {
+        ToolName = "test",
+        InputHash = "test-hash",
+        Timestamp = DateTimeOffset.UnixEpoch,
+        Signature = "test-signature",
+        KeyVersion = "test"
+    };
 
     /// <summary>The single request whose program matches <paramref name="program"/>.</summary>
     public SandboxExecutionRequest RequestFor(string program)
