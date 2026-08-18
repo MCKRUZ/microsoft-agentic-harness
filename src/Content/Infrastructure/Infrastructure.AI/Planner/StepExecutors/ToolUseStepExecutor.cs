@@ -93,6 +93,19 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
 
         var profile = await _capabilityEnforcer.ResolveProfileAsync(config.ToolName, ct);
         var isolationLevel = DetermineIsolation(config, profile, step);
+        // DetermineIsolation only ever elevates (config.IsolationLevelOverride, or a
+        // Supervised/Restricted step forcing Container) — never lowers — so isolationLevel is always
+        // >= profile.MinimumIsolation. The embedded profile must reflect the tier actually selected,
+        // not just the tool's own declared floor: SandboxSessionAttestationSigner signs both
+        // `isolation` and `capabilitiesEnforcedBy` from PermissionProfile.MinimumIsolation on every
+        // successful run, and DockerSandboxExecutor.HandleDockerUnavailableAsync reads the same field
+        // to decide whether a Docker outage is a hard, attested refusal or a soft fallback hint (#420).
+        // Without this sync, an autonomy-elevated step's stale, un-elevated profile mislabels the
+        // signed attestation on success and can misroute the outage branch on failure — the same
+        // "sync the actually-selected tier into the profile before embedding it" pattern
+        // McpConnectionManager already follows for its own sandbox-session dispatch.
+        if (isolationLevel != profile.MinimumIsolation)
+            profile = profile with { MinimumIsolation = isolationLevel };
 
         var (sandboxResult, sandboxFailure) = await RunSandboxAsync(
             config, step, profile, isolationLevel, arguments, admission, sw, ct);
