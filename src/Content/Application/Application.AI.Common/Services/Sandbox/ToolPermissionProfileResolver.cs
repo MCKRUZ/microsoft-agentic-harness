@@ -1,9 +1,11 @@
+using Application.AI.Common.Interfaces.Sandbox;
 using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Services.Tools;
 using Domain.Common;
 using Domain.Common.Helpers;
 using Domain.AI.Sandbox;
 using Domain.Common.Config.AI.Sandbox;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 
 namespace Application.AI.Common.Services.Sandbox;
@@ -200,6 +202,48 @@ public sealed class ToolPermissionProfileResolver
             MinimumIsolation = (SandboxIsolationLevel)Math.Max(
                 (int)defaultIsolationLevel, (int)overrideIsolation)
         });
+    }
+
+    /// <summary>
+    /// As <see cref="ResolveForUngovernedDispatch"/>, but also resolves the keyed-scoped
+    /// <see cref="ISandboxExecutor"/> for the profile's resolved
+    /// <see cref="ToolPermissionProfile.MinimumIsolation"/> tier — the profile-then-executor ordering
+    /// invariant folded into this method's own implementation, not left for each caller to reproduce
+    /// (a /simplify finding on the #405 follow-up: <c>WorkspaceCommandRunner.RunAsync</c> and
+    /// <c>IacSandboxRunner.RunAsync</c> each independently resolved the profile, then separately
+    /// resolved the executor from it, with the ordering explained only in a comment repeated at both
+    /// call sites — nothing but that prose stopped a future edit at either site from resolving the
+    /// executor before the profile again, which is exactly the stale-tier bug this same follow-up
+    /// fixed once already).
+    /// </summary>
+    /// <param name="scopedServices">
+    /// The per-execution DI scope's provider, used to resolve the keyed-scoped
+    /// <see cref="ISandboxExecutor"/> only after the profile — never a caller-supplied, already-resolved
+    /// executor, which is exactly what made the ordering violable in the first place.
+    /// </param>
+    /// <returns>
+    /// The same forbidden <see cref="Result{T}"/> cases as <see cref="ResolveForUngovernedDispatch"/>,
+    /// or the resolved profile paired with the executor selected for its
+    /// <see cref="ToolPermissionProfile.MinimumIsolation"/>.
+    /// </returns>
+    public Result<(ToolPermissionProfile Profile, ISandboxExecutor Executor)> ResolveExecutorForUngovernedDispatch(
+        string toolName,
+        ToolCapability requiredCapabilities,
+        IReadOnlyList<string> allowedPrograms,
+        IServiceProvider scopedServices,
+        SandboxIsolationLevel defaultIsolationLevel = SandboxIsolationLevel.Process)
+    {
+        ArgumentNullException.ThrowIfNull(scopedServices);
+
+        var profileResult = ResolveForUngovernedDispatch(
+            toolName, requiredCapabilities, allowedPrograms, defaultIsolationLevel);
+        if (!profileResult.IsSuccess)
+            return Result<(ToolPermissionProfile, ISandboxExecutor)>.Forbidden(
+                string.Join("; ", profileResult.Errors));
+
+        var executor = scopedServices.GetRequiredKeyedService<ISandboxExecutor>(
+            profileResult.Value!.MinimumIsolation);
+        return Result<(ToolPermissionProfile, ISandboxExecutor)>.Success((profileResult.Value!, executor));
     }
 
     /// <summary>

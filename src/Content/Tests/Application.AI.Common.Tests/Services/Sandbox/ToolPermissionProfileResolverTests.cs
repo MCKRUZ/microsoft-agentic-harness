@@ -454,4 +454,56 @@ public sealed class ToolPermissionProfileResolverTests
 
         result.IsSuccess.Should().BeTrue();
     }
+
+    // --- ResolveExecutorForUngovernedDispatch (a /simplify finding: WorkspaceCommandRunner and
+    // IacSandboxRunner each independently resolved the profile then separately selected the executor
+    // from it, with only a comment protecting the ordering — folded into one method here so the
+    // invariant is structural, not reproduced per caller.) ---
+
+    private static IServiceProvider ScopedServices(SandboxIsolationLevel level, Application.AI.Common.Interfaces.Sandbox.ISandboxExecutor executor) =>
+        new ServiceCollection().AddKeyedSingleton(level, executor).BuildServiceProvider();
+
+    [Fact]
+    public void ResolveExecutorForUngovernedDispatch_Success_ResolvesTheExecutorForTheProfilesTier()
+    {
+        var executor = Mock.Of<Application.AI.Common.Interfaces.Sandbox.ISandboxExecutor>();
+        var config = new SandboxConfig
+        {
+            ToolOverrides = new()
+            {
+                ["iac_plan"] = new ToolOverrideConfig { MinimumIsolation = "Container" }
+            }
+        };
+        var resolver = BuildResolver(config);
+
+        var result = resolver.ResolveExecutorForUngovernedDispatch(
+            "iac_plan", ToolCapability.FileRead, ["terraform"],
+            ScopedServices(SandboxIsolationLevel.Container, executor));
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value!.Profile.MinimumIsolation.Should().Be(SandboxIsolationLevel.Container);
+        result.Value!.Executor.Should().BeSameAs(executor,
+            "the executor must be resolved for the profile's resolved tier, not a fixed default");
+    }
+
+    [Fact]
+    public void ResolveExecutorForUngovernedDispatch_ProfileForbidden_NeverResolvesAnExecutor()
+    {
+        var config = new SandboxConfig
+        {
+            ToolOverrides = new()
+            {
+                ["iac_plan"] = new ToolOverrideConfig { DeniedCapabilities = ["NetworkAccess"] }
+            }
+        };
+        var resolver = BuildResolver(config);
+        // An empty scope: if this were ever reached, GetRequiredKeyedService would throw — proving
+        // the refusal short-circuits before any executor lookup is attempted.
+        var emptyScope = new ServiceCollection().BuildServiceProvider();
+
+        var result = resolver.ResolveExecutorForUngovernedDispatch(
+            "iac_plan", ToolCapability.FileRead | ToolCapability.NetworkAccess, ["terraform"], emptyScope);
+
+        result.IsSuccess.Should().BeFalse();
+    }
 }

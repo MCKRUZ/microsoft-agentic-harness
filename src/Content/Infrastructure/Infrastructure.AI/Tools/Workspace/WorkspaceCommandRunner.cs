@@ -3,7 +3,6 @@ using Application.AI.Common.Services.Sandbox;
 using Domain.AI.Models;
 using Domain.AI.Sandbox;
 using Domain.AI.Workspace;
-using Microsoft.Extensions.DependencyInjection;
 
 namespace Infrastructure.AI.Tools.Workspace;
 
@@ -101,19 +100,17 @@ public static class WorkspaceCommandRunner
         var program = tokens[0];
         var arguments = tokens.Length > 1 ? tokens[1..] : Array.Empty<string>();
 
-        var profileResult = permissionResolver.ResolveForUngovernedDispatch(
-            toolName, requiredCapabilities, [program], defaultIsolationLevel);
-        if (!profileResult.IsSuccess)
-            return ToolResult.Fail(string.Join("; ", profileResult.Errors));
+        // Profile and executor resolved together — the ordering invariant (executor only after the
+        // profile, at its resolved tier) is now structural inside ResolveExecutorForUngovernedDispatch
+        // rather than reproduced here, a /simplify finding: this runner and IacSandboxRunner had
+        // independently copy-pasted the same resolve-then-select sequence, with only a comment at each
+        // site — not a shared implementation — protecting the ordering the stale-tier bug depended on.
+        var dispatchResult = permissionResolver.ResolveExecutorForUngovernedDispatch(
+            toolName, requiredCapabilities, [program], scopedServices, defaultIsolationLevel);
+        if (!dispatchResult.IsSuccess)
+            return ToolResult.Fail(string.Join("; ", dispatchResult.Errors));
 
-        // The executor for the EFFECTIVE tier the profile now carries — ResolveForUngovernedDispatch
-        // folds defaultIsolationLevel into MinimumIsolation itself (a security-review finding: this
-        // used to re-derive the same Math.Max locally against a profile whose own MinimumIsolation
-        // still read the un-elevated value, so a downstream reader of the profile alone — the signed
-        // attestation, a Docker-unavailable fallback gate — saw a stale tier even though the right
-        // executor ran). See scopedServices' remarks above for why resolving the executor before the
-        // profile was wrong in the first place.
-        var executor = scopedServices.GetRequiredKeyedService<ISandboxExecutor>(profileResult.Value!.MinimumIsolation);
+        var (profile, executor) = dispatchResult.Value!;
 
         var request = new SandboxExecutionRequest
         {
@@ -122,7 +119,7 @@ public static class WorkspaceCommandRunner
             Command = program,
             ArgumentList = arguments,
             Limits = new ResourceLimits(),
-            PermissionProfile = profileResult.Value!,
+            PermissionProfile = profile,
             Timeout = timeout ?? TimeSpan.FromMinutes(5)
         };
 
