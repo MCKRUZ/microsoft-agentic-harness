@@ -110,20 +110,17 @@ public sealed class WorkspaceRunLintTool : ITool
         if (!workspace.HasLintCommand)
             return ToolResult.Fail("Workspace has no LintCommand configured.");
 
-        // The executor is SCOPED — resolve it from a fresh scope per execution
-        // so this singleton tool never captures scope-bound state. Resolved inside RunAsync, after
-        // the profile, so an operator's MinimumIsolation override actually selects the executor.
-        await using var scope = _scopeFactory.CreateAsyncScope();
-        var permissionResolver = scope.ServiceProvider.GetRequiredService<ToolPermissionProfileResolver>();
-
+        // Scope creation, resolver resolution, executor resolution, and execution all live inside
+        // WorkspaceCommandRunner.RunAsync's own try/catch now (#426) — this singleton tool no longer
+        // creates the scope itself, so a DI-resolution failure can no longer throw uncaught out of
+        // ExecuteAsync before RunAsync's exception handling is even reached.
         return await WorkspaceCommandRunner.RunAsync(
             workspace.LintCommand,
             workspace,
-            scope.ServiceProvider,
+            _scopeFactory,
             _isolationLevel,
             ToolName,
             RequiredSandboxCapabilities,
-            permissionResolver,
             _logger,
             timeout: null,
             cancellationToken);

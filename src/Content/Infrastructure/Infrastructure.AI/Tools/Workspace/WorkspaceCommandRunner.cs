@@ -3,6 +3,7 @@ using Application.AI.Common.Services.Sandbox;
 using Domain.AI.Models;
 using Domain.AI.Sandbox;
 using Domain.AI.Workspace;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
 namespace Infrastructure.AI.Tools.Workspace;
@@ -43,41 +44,36 @@ public static class WorkspaceCommandRunner
     /// (<c>WorkspaceRunTestsTool</c>/<c>WorkspaceRunLintTool</c>) reads the command to run from it
     /// before calling here.
     /// </param>
-    /// <param name="scopedServices">
-    /// The per-execution DI scope's provider, used to resolve the keyed-scoped
-    /// <see cref="ISandboxExecutor"/> for the effective isolation tier — resolved here, after the
-    /// profile, rather than passed in already-resolved (#405 follow-up, a security-review finding on
-    /// the original fix): the executor must be selected for the tier the operator's
-    /// <c>MinimumIsolation</c> override actually resolves to, not a tier fixed before that override
-    /// was consulted. Selecting the executor from a caller-fixed tier while the profile silently
-    /// carries a different, elevated one is the same "one field, two meanings" defect class #405
-    /// exists to close, reproduced on the isolation axis instead of the capability axis.
+    /// <param name="scopeFactory">
+    /// The caller's <see cref="IServiceScopeFactory"/>. This method opens one fresh scope per run — so
+    /// the caller's own singleton tool never captures scope-bound state — and resolves both the
+    /// <see cref="ToolPermissionProfileResolver"/> and the keyed-scoped <see cref="ISandboxExecutor"/>
+    /// for the effective isolation tier from it, entirely inside the try/catch below (#426: the two
+    /// callers used to create this scope and resolve the resolver themselves, outside any try/catch,
+    /// mirroring the exact gap #421 fixed for <c>IacSandboxRunner</c>/<c>TerraformGenerator</c>/
+    /// <c>BicepGenerator</c> — a DI-resolution or executor-lookup failure threw uncaught out of
+    /// <c>ITool.ExecuteAsync</c>). The executor is resolved after the profile (#405 follow-up, a
+    /// security-review finding mirroring the identical fix in <c>IacSandboxRunner</c>): it must be
+    /// selected for the tier the operator's <c>MinimumIsolation</c> override actually resolves to, not
+    /// a tier fixed before that override was consulted.
     /// </param>
     /// <param name="defaultIsolationLevel">
     /// The tool's own minimum isolation requirement, independent of any operator override — the floor
     /// this run never drops below even absent a <c>MinimumIsolation</c> override.
     /// </param>
     /// <param name="toolName">Tool name for diagnostic attribution in the sandbox request, and the
-    /// keyed-DI name <paramref name="permissionResolver"/> looks up an operator's per-tool override
-    /// under.</param>
+    /// keyed-DI name the resolved <see cref="ToolPermissionProfileResolver"/> looks up an operator's
+    /// per-tool override under.</param>
     /// <param name="requiredCapabilities">
     /// The sandbox capabilities this run needs — supplied by the caller (e.g.
     /// <c>WorkspaceRunTestsTool.RequiredSandboxCapabilities</c>) rather than hardcoded here, so there
     /// is one place that states what a <c>run_tests</c>/<c>run_lint</c> call may do, not two (#387).
     /// </param>
-    /// <param name="permissionResolver">
-    /// Resolves the operator's <c>ToolOverrideConfig</c> for <paramref name="toolName"/> — this runner
-    /// used to build its permission profile inline, so a per-tool <c>DeniedCapabilities</c> or
-    /// <c>MinimumIsolation</c> override never reached it (#405). Via
-    /// <see cref="ToolPermissionProfileResolver.ResolveForUngovernedDispatch"/>, which also refuses
-    /// outright when the override intersects <paramref name="requiredCapabilities"/>, matching the
-    /// governed-call semantics <c>CapabilityEnforcer</c> guarantees rather than silently narrowing
-    /// what gets provisioned.
-    /// </param>
     /// <param name="logger">
-    /// The caller's own logger, used to record a governance refusal before dispatch — the sibling
-    /// <c>IacSandboxRunner.MapDispatchFailure</c> logs this same event on the <c>iac_plan</c>/<c>iac_scan</c>
-    /// dispatch path; this runner's equivalent refusal used to return silently.
+    /// The caller's own logger — used both to record a governance refusal before dispatch and to log a
+    /// sandbox-level exception here directly rather than in each caller's own try/catch. The sibling
+    /// <c>IacSandboxRunner.RunAsync</c> logs the equivalent event on the <c>iac_plan</c>/<c>iac_scan</c>
+    /// dispatch path.
     /// </param>
     /// <param name="timeout">Optional wall-clock timeout for the command. Defaults to 5 minutes — tests can be slow.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
@@ -85,20 +81,18 @@ public static class WorkspaceCommandRunner
     public static async Task<ToolResult> RunAsync(
         string commandLine,
         WorkspaceContext workspace,
-        IServiceProvider scopedServices,
+        IServiceScopeFactory scopeFactory,
         SandboxIsolationLevel defaultIsolationLevel,
         string toolName,
         ToolCapability requiredCapabilities,
-        ToolPermissionProfileResolver permissionResolver,
         ILogger logger,
         TimeSpan? timeout = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(commandLine);
         ArgumentNullException.ThrowIfNull(workspace);
-        ArgumentNullException.ThrowIfNull(scopedServices);
+        ArgumentNullException.ThrowIfNull(scopeFactory);
         ArgumentException.ThrowIfNullOrWhiteSpace(toolName);
-        ArgumentNullException.ThrowIfNull(permissionResolver);
         ArgumentNullException.ThrowIfNull(logger);
 
         var tokens = commandLine.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
@@ -108,11 +102,49 @@ public static class WorkspaceCommandRunner
         var program = tokens[0];
         var arguments = tokens.Length > 1 ? tokens[1..] : Array.Empty<string>();
 
+        try
+        {
+            // Scope creation, ToolPermissionProfileResolver resolution, dispatch resolution, and
+            // execution all live inside this one try/catch (#426) — mirrors IacSandboxRunner.RunAsync's
+            // final shape after #421's three successive widenings.
+            await using var scope = scopeFactory.CreateAsyncScope();
+            var permissionResolver = scope.ServiceProvider.GetRequiredService<ToolPermissionProfileResolver>();
+
+            return await DispatchAsync(
+                program, arguments, workspace, scope.ServiceProvider, defaultIsolationLevel,
+                toolName, requiredCapabilities, permissionResolver, logger, timeout, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "{ToolName} sandbox run failed for {WorkingCopyPath}.", toolName, workspace.WorkingCopyPath);
+            return ToolResult.Fail($"Sandbox execution failed: {ex.GetType().Name}.");
+        }
+    }
+
+    private static async Task<ToolResult> DispatchAsync(
+        string program,
+        string[] arguments,
+        WorkspaceContext workspace,
+        IServiceProvider scopedServices,
+        SandboxIsolationLevel defaultIsolationLevel,
+        string toolName,
+        ToolCapability requiredCapabilities,
+        ToolPermissionProfileResolver permissionResolver,
+        ILogger logger,
+        TimeSpan? timeout,
+        CancellationToken cancellationToken)
+    {
         // Profile and executor resolved together — the ordering invariant (executor only after the
-        // profile, at its resolved tier) is now structural inside ResolveExecutorForUngovernedDispatch
+        // profile, at its resolved tier) is structural inside ResolveExecutorForUngovernedDispatch
         // rather than reproduced here, a /simplify finding: this runner and IacSandboxRunner had
-        // independently copy-pasted the same resolve-then-select sequence, with only a comment at each
-        // site — not a shared implementation — protecting the ordering the stale-tier bug depended on.
+        // independently copy-pasted the same resolve-then-select sequence, with only a comment at
+        // each site — not a shared implementation — protecting the ordering the stale-tier bug
+        // depended on.
         var dispatchResult = permissionResolver.ResolveExecutorForUngovernedDispatch(
             toolName, requiredCapabilities, [program], scopedServices, defaultIsolationLevel);
         if (!dispatchResult.IsSuccess)
@@ -137,19 +169,7 @@ public static class WorkspaceCommandRunner
             Timeout = timeout ?? TimeSpan.FromMinutes(5)
         };
 
-        SandboxExecutionResult sandboxResult;
-        try
-        {
-            sandboxResult = await executor.ExecuteAsync(request, cancellationToken);
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (Exception ex)
-        {
-            return ToolResult.Fail($"Sandbox execution failed: {ex.GetType().Name}.");
-        }
+        var sandboxResult = await executor.ExecuteAsync(request, cancellationToken).ConfigureAwait(false);
 
         var summary =
             $"exit={sandboxResult.ExitCode?.ToString() ?? "n/a"} success={sandboxResult.Success}\n" +
