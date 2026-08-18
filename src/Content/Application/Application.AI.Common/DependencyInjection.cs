@@ -272,28 +272,25 @@ public static class DependencyInjection
         // until AppConfig:AI:HarmonicMemory:Mode is raised above Off.
         services.AddHarmonicMemoryDependencies();
 
-        // OWASP Agentic Top-10 eval metrics — keyed by metric key for IEvalRunner resolution
-        services
-            .AddKeyedSingleton<IEvalMetric, OwaspAsi01GoalHijackMetric>("owasp.asi01.goal_hijack")
-            .AddKeyedSingleton<IEvalMetric, OwaspAsi02ToolMisuseMetric>("owasp.asi02.tool_misuse")
-            .AddKeyedSingleton<IEvalMetric, OwaspAsi03PrivilegeAbuseMetric>("owasp.asi03.privilege_abuse")
-            .AddKeyedSingleton<IEvalMetric, OwaspAsi04SupplyChainMetric>("owasp.asi04.supply_chain")
-            .AddKeyedSingleton<IEvalMetric, OwaspAsi05CodeExecMetric>("owasp.asi05.code_exec")
-            .AddKeyedSingleton<IEvalMetric, OwaspAsi06MemoryPoisonMetric>("owasp.asi06.memory_poison")
-            .AddKeyedSingleton<IEvalMetric, OwaspAsi07InterAgentMetric>("owasp.asi07.inter_agent")
-            .AddKeyedSingleton<IEvalMetric, OwaspAsi08CascadingMetric>("owasp.asi08.cascading")
-            .AddKeyedSingleton<IEvalMetric, OwaspAsi09HumanTrustMetric>("owasp.asi09.human_trust")
-            .AddKeyedSingleton<IEvalMetric, OwaspAsi10RogueAgentMetric>("owasp.asi10.rogue_agent");
+        // OWASP Agentic Top-10 eval metrics. AddEvalMetric registers each non-keyed (so
+        // EvalRunner's IEnumerable<IEvalMetric> lookup can actually find it) as well as keyed by
+        // its own IEvalMetric.Key (#436 — these were previously keyed-only, invisible to
+        // EvalRunner, and every case in eval-datasets/owasp-agentic-top-10.yaml silently scored
+        // 0.0/Warn instead of ever running).
+        services.AddEvalMetric<OwaspAsi01GoalHijackMetric>("owasp.asi01.goal_hijack");
+        services.AddEvalMetric<OwaspAsi02ToolMisuseMetric>("owasp.asi02.tool_misuse");
+        services.AddEvalMetric<OwaspAsi03PrivilegeAbuseMetric>("owasp.asi03.privilege_abuse");
+        services.AddEvalMetric<OwaspAsi04SupplyChainMetric>("owasp.asi04.supply_chain");
+        services.AddEvalMetric<OwaspAsi05CodeExecMetric>("owasp.asi05.code_exec");
+        services.AddEvalMetric<OwaspAsi06MemoryPoisonMetric>("owasp.asi06.memory_poison");
+        services.AddEvalMetric<OwaspAsi07InterAgentMetric>("owasp.asi07.inter_agent");
+        services.AddEvalMetric<OwaspAsi08CascadingMetric>("owasp.asi08.cascading");
+        services.AddEvalMetric<OwaspAsi09HumanTrustMetric>("owasp.asi09.human_trust");
+        services.AddEvalMetric<OwaspAsi10RogueAgentMetric>("owasp.asi10.rogue_agent");
 
         // Governance-behaviour eval metric — grades the real per-invocation GovernanceTrace
         // (approval-bypass / observe-only / missing-escalation), independently of task outcome.
-        // EvalRunner builds its metric map from the non-keyed IEnumerable<IEvalMetric> — and keyed
-        // registrations are invisible to IEnumerable<T> — so this MUST be registered non-keyed to be
-        // discoverable by MetricKey at run time. The keyed alias mirrors the canonical AddMetric pattern.
-        services.AddSingleton<GovernanceBehaviorMetric>();
-        services.AddSingleton<IEvalMetric>(sp => sp.GetRequiredService<GovernanceBehaviorMetric>());
-        services.AddKeyedSingleton<IEvalMetric>(
-            "governance.behavior", (sp, _) => sp.GetRequiredService<GovernanceBehaviorMetric>());
+        services.AddEvalMetric<GovernanceBehaviorMetric>("governance.behavior");
 
         return services;
     }

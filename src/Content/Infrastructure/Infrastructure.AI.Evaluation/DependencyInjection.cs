@@ -1,5 +1,6 @@
 using Application.AI.Common.Evaluation.Interfaces;
 using Application.AI.Common.Evaluation.Models;
+using Application.AI.Common.Extensions;
 using Infrastructure.AI.Evaluation.Invokers;
 using Infrastructure.AI.Evaluation.Judges;
 using Infrastructure.AI.Evaluation.Loaders;
@@ -44,26 +45,26 @@ public static class DependencyInjection
         // Metrics — register both as the concrete IEvalMetric set and as keyed services
         // so future EvalRunner / handler can resolve a specific metric by Key without
         // walking the whole enumeration.
-        AddMetric<ExactMatchMetric>(services, "exact_match");
-        AddMetric<RegexMatchMetric>(services, "regex_match");
-        AddMetric<ContainsAllMetric>(services, "contains_all");
-        AddMetric<DoesNotContainMetric>(services, "does_not_contain");
-        AddMetric<IsValidJsonMetric>(services, "is_valid_json");
-        AddMetric<LlmJudgeMetric>(services, "llm_judge");
+        services.AddEvalMetric<ExactMatchMetric>("exact_match");
+        services.AddEvalMetric<RegexMatchMetric>("regex_match");
+        services.AddEvalMetric<ContainsAllMetric>("contains_all");
+        services.AddEvalMetric<DoesNotContainMetric>("does_not_contain");
+        services.AddEvalMetric<IsValidJsonMetric>("is_valid_json");
+        services.AddEvalMetric<LlmJudgeMetric>("llm_judge");
 
         // Routing-accuracy: compares a router's predicted label to the case's gold label.
         // Paired with RouterEvalInvoker (below) and the router probes registered by the RAG
         // and routing infrastructure projects.
-        AddMetric<RoutingAccuracyMetric>(services, "routing_accuracy");
+        services.AddEvalMetric<RoutingAccuracyMetric>("routing_accuracy");
 
         // RAG metric pack: faithfulness, context precision/recall, answer relevance/correctness.
         // All share ILlmJudge + IPromptRegistry (registry registered separately via
         // AddPromptRegistry — the eval framework consumes it, does not own it).
-        AddMetric<FaithfulnessMetric>(services, "faithfulness");
-        AddMetric<ContextPrecisionMetric>(services, "context_precision");
-        AddMetric<ContextRecallMetric>(services, "context_recall");
-        AddMetric<AnswerRelevanceMetric>(services, "answer_relevance");
-        AddMetric<AnswerCorrectnessMetric>(services, "answer_correctness");
+        services.AddEvalMetric<FaithfulnessMetric>("faithfulness");
+        services.AddEvalMetric<ContextPrecisionMetric>("context_precision");
+        services.AddEvalMetric<ContextRecallMetric>("context_recall");
+        services.AddEvalMetric<AnswerRelevanceMetric>("answer_relevance");
+        services.AddEvalMetric<AnswerCorrectnessMetric>("answer_correctness");
 
         // Reporters
         services.AddSingleton<IEvalReporter, JsonEvalReporter>();
@@ -106,13 +107,5 @@ public static class DependencyInjection
         }
 
         return services;
-    }
-
-    private static void AddMetric<TMetric>(IServiceCollection services, string key)
-        where TMetric : class, IEvalMetric
-    {
-        services.AddSingleton<TMetric>();
-        services.AddSingleton<IEvalMetric>(sp => sp.GetRequiredService<TMetric>());
-        services.AddKeyedSingleton<IEvalMetric>(key, (sp, _) => sp.GetRequiredService<TMetric>());
     }
 }
