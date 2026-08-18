@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using Application.AI.Common.Evaluation.Models;
 using Domain.AI.Evaluation;
 
@@ -21,12 +22,6 @@ namespace Application.AI.Common.Evaluation.Interfaces;
 /// </remarks>
 public interface IEvalMetric
 {
-    /// <summary>
-    /// Empty set shared by every metric that reads no <see cref="MetricSpec.Parameters"/> —
-    /// avoids each such metric allocating its own empty <see cref="HashSet{T}"/> instance.
-    /// </summary>
-    private static readonly IReadOnlySet<string> NoRecognizedParameters = new HashSet<string>();
-
     /// <summary>The stable string key by which this metric is referenced from cases (e.g. "exact_match").</summary>
     string Key { get; }
 
@@ -45,7 +40,7 @@ public interface IEvalMetric
     /// resolved metric's own declared set and flag anything neither side recognizes, without
     /// needing to inspect <see cref="ScoreAsync"/>'s behavior to find out what it actually reads.
     /// </remarks>
-    IReadOnlySet<string> RecognizedParameterKeys => NoRecognizedParameters;
+    IReadOnlySet<string> RecognizedParameterKeys => ImmutableHashSet<string>.Empty;
 
     /// <summary>
     /// Scores the given case's output.

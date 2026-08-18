@@ -1,11 +1,8 @@
 using Application.AI.Common.Evaluation.Interfaces;
-using Domain.Common.Config;
 using FluentAssertions;
-using Infrastructure.AI.Evaluation;
 using Infrastructure.AI.Evaluation.Loaders;
-using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
-using Presentation.Common.Extensions;
+using Tests.Common;
 using Xunit;
 
 namespace Presentation.EvalRunner.Tests.Composition;
@@ -43,21 +40,11 @@ public sealed class MetricSpecParameterKeyValidationTests
 
     private static IReadOnlyDictionary<string, IEvalMetric> BuildMetricsByKey()
     {
-        // Mirrors EvalRunnerValidateOnBuildTests' composition exactly — the full shared root plus
-        // AddEvaluationDependencies is what actually constructs every metric (including the
+        // EvalRunnerTestComposition mirrors the real EvalRunner host exactly — the full shared root
+        // plus AddEvaluationDependencies is what actually constructs every metric (including the
         // LlmJudge/RAG ones with real constructor dependencies) against an empty in-memory config,
-        // proven to build cleanly under ValidateOnBuild by that sibling test.
-        var configuration = new ConfigurationBuilder()
-            .AddInMemoryCollection(new Dictionary<string, string?>())
-            .Build();
-
-        var services = new ServiceCollection();
-        services.AddLogging();
-        services.RegisterConfigSections(configuration);
-        var appConfig = configuration.GetSection("AppConfig").Get<AppConfig>() ?? new AppConfig();
-        services.BuildGlobalSolutionServices(appConfig, includeHealthChecksUI: false);
-        services.AddEvaluationDependencies();
-
+        // proven to build cleanly under ValidateOnBuild by the sibling EvalRunnerValidateOnBuildTests.
+        var services = EvalRunnerTestComposition.BuildServices();
         using var provider = services.BuildServiceProvider();
 
         var byKey = provider.GetServices<IEvalMetric>()
@@ -70,23 +57,20 @@ public sealed class MetricSpecParameterKeyValidationTests
 
     public static IEnumerable<object[]> DatasetFiles()
     {
-        var root = LocateEvalDatasetsDir();
-        if (root is null) yield break;
-
+        var root = RepoRoot.Combine("eval-datasets");
         foreach (var f in Directory.EnumerateFiles(root, "*.yaml", SearchOption.AllDirectories))
             yield return [f];
     }
 
     [Fact]
-    public void Eval_datasets_dir_is_locatable_and_has_expected_file_count()
+    public void Eval_datasets_dir_has_expected_file_count()
     {
         // Same hard-fail guard SeedDatasetSmokeTests uses: without this, the Theory below silently
-        // runs zero invocations on a host where path resolution breaks, hiding drift instead of
-        // catching it.
-        var root = LocateEvalDatasetsDir();
-        root.Should().NotBeNull("'eval-datasets' must be reachable by walking up from the test bin dir");
-
-        var count = Directory.EnumerateFiles(root!, "*.yaml", SearchOption.AllDirectories).Count();
+        // runs zero invocations if the datasets are ever deleted, hiding drift instead of catching
+        // it. RepoRoot.Combine itself throws (with a clear message) if the repo root can't be
+        // located at all, so there's no separate "is locatable" check needed here.
+        var count = Directory.EnumerateFiles(
+            RepoRoot.Combine("eval-datasets"), "*.yaml", SearchOption.AllDirectories).Count();
         count.Should().BeGreaterThanOrEqualTo(9, "at least the 8 seed datasets plus owasp-agentic-top-10.yaml");
     }
 
@@ -128,15 +112,4 @@ public sealed class MetricSpecParameterKeyValidationTests
             "instead of failing the build (#423)");
     }
 
-    private static string? LocateEvalDatasetsDir()
-    {
-        var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        while (dir is not null)
-        {
-            var candidate = Path.Combine(dir.FullName, "eval-datasets");
-            if (Directory.Exists(candidate)) return candidate;
-            dir = dir.Parent;
-        }
-        return null;
-    }
 }
