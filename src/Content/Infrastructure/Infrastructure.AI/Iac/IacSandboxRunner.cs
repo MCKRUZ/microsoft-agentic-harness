@@ -133,6 +133,43 @@ public static class IacSandboxRunner
         ArgumentNullException.ThrowIfNull(logger);
         ArgumentException.ThrowIfNullOrWhiteSpace(backendLabel);
 
+        try
+        {
+            return await DispatchAsync(
+                program, arguments, moduleDirectory, registryAllowlist, scopedServices, defaultIsolationLevel,
+                toolName, requiredCapabilities, permissionResolver, timeout, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            // Covers everything DispatchAsync can throw, including ResolveExecutorForUngovernedDispatch's
+            // own GetRequiredKeyedService&lt;ISandboxExecutor&gt; lookup (throws when an operator's
+            // MinimumIsolation override selects a tier a template consumer never registered an executor
+            // for) — not just executor.ExecuteAsync. A code-review finding on this method's first
+            // /simplify pass: narrowing the try/catch to only the ExecuteAsync call (rather than
+            // matching the generators' original wider scope) silently dropped exception coverage for
+            // this dispatch-resolution failure mode.
+            logger.LogError(ex, "{Backend} sandbox run failed for {Program} in {Module}.", backendLabel, program, moduleDirectory);
+            return Result<SandboxExecutionResult>.Fail($"Sandbox execution failed: {ex.GetType().Name}.");
+        }
+    }
+
+    private static async Task<Result<SandboxExecutionResult>> DispatchAsync(
+        string program,
+        IReadOnlyList<string> arguments,
+        string moduleDirectory,
+        IReadOnlyList<string> registryAllowlist,
+        IServiceProvider scopedServices,
+        SandboxIsolationLevel defaultIsolationLevel,
+        string toolName,
+        ToolCapability requiredCapabilities,
+        ToolPermissionProfileResolver permissionResolver,
+        TimeSpan? timeout,
+        CancellationToken cancellationToken)
+    {
         // Profile and executor resolved together — the ordering invariant (executor only after the
         // profile, at its resolved tier) is now structural inside ResolveExecutorForUngovernedDispatch
         // rather than reproduced here, a /simplify finding: this runner and WorkspaceCommandRunner had
@@ -162,20 +199,8 @@ public static class IacSandboxRunner
             EgressPrecheckTargets = BuildEgressPrecheckTargets(registryAllowlist)
         };
 
-        try
-        {
-            var executionResult = await executor.ExecuteAsync(request, cancellationToken).ConfigureAwait(false);
-            return Result<SandboxExecutionResult>.Success(executionResult);
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (Exception ex)
-        {
-            logger.LogError(ex, "{Backend} sandbox run failed for {Program} in {Module}.", backendLabel, program, moduleDirectory);
-            return Result<SandboxExecutionResult>.Fail($"Sandbox execution failed: {ex.GetType().Name}.");
-        }
+        var executionResult = await executor.ExecuteAsync(request, cancellationToken).ConfigureAwait(false);
+        return Result<SandboxExecutionResult>.Success(executionResult);
     }
 
     /// <summary>
@@ -244,7 +269,11 @@ public static class IacSandboxRunner
             logger.LogError(
                 "{Backend} {Operation} for {Module} was refused before dispatch: {Reason}",
                 backendLabel, operationLabel, moduleDirectory, string.Join("; ", dispatch.Errors));
-            return Result<T>.Fail(deniedCode);
+            // Forbidden, not Fail — preserves the same distinct FailureType RunAsync just set, rather
+            // than collapsing it back to General at the one boundary this issue exists to keep it
+            // distinct across (a code-review finding: no caller reads FailureType today, but silently
+            // discarding it here would defeat any future consumer that does).
+            return Result<T>.Forbidden(deniedCode);
         }
 
         return Result<T>.Fail(errorCode);

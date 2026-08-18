@@ -1,6 +1,7 @@
 using Application.AI.Common.Interfaces.Sandbox;
 using Application.AI.Common.Services.Sandbox;
 using Application.AI.Common.Services.Tools;
+using Domain.AI.Iac;
 using Domain.AI.Sandbox;
 using Domain.Common;
 using Domain.Common.Config.AI.Sandbox;
@@ -230,5 +231,52 @@ public sealed class IacSandboxRunnerSolutionReviewFixTests
         result.Value.ExitCode.Should().Be(1);
         sandbox.Requests.Should().ContainSingle(
             "the CLI must actually have been invoked for this to be a real (not refused) failure");
+    }
+
+    [Fact]
+    public async Task RunAsync_NoExecutorRegisteredForResolvedIsolationTier_ReturnsGeneralFailureInsteadOfThrowing()
+    {
+        // #421 follow-up (code-review finding): RunAsync's try/catch must cover
+        // ResolveExecutorForUngovernedDispatch's own executor lookup, not just executor.ExecuteAsync —
+        // an operator's MinimumIsolation override can select a tier a template consumer never
+        // registered a keyed ISandboxExecutor for at all. The first /simplify pass narrowed the
+        // try/catch to only ExecuteAsync, silently dropping coverage for this scenario.
+        var noExecutorsRegistered = new ServiceCollection().BuildServiceProvider();
+
+        var result = await IacSandboxRunner.RunAsync(
+            program: "terraform",
+            arguments: ["plan"],
+            moduleDirectory: ModuleDir,
+            registryAllowlist: [],
+            scopedServices: noExecutorsRegistered,
+            defaultIsolationLevel: SandboxIsolationLevel.Process,
+            toolName: "iac_plan",
+            requiredCapabilities: IacPlanTool.RequiredSandboxCapabilities,
+            permissionResolver: NoOverrideResolver(),
+            logger: NullLogger.Instance,
+            backendLabel: "Terraform");
+
+        result.IsSuccess.Should().BeFalse();
+        result.FailureType.Should().Be(ResultFailureType.General,
+            "an unconfigured executor is a sandbox-level error, not a governance refusal — it must not " +
+            "throw out of RunAsync uncaught");
+    }
+
+    [Fact]
+    public void MapDispatchFailure_ForbiddenDispatch_PreservesForbiddenFailureType()
+    {
+        // #421 follow-up (code-review finding): MapDispatchFailure used to collapse a Forbidden
+        // dispatch to Result<T>.Fail (FailureType.General) on the way out — discarding the very
+        // distinction RunAsync had just established, at the one boundary this issue exists to keep
+        // it distinct across.
+        var forbidden = Result<SandboxExecutionResult>.Forbidden("denied");
+
+        var mapped = IacSandboxRunner.MapDispatchFailure<IacPlanResult>(
+            forbidden, NullLogger.Instance, "Terraform", "iac_plan", ModuleDir,
+            deniedCode: "iac.plan.sandbox_denied", errorCode: "iac.plan.sandbox_error");
+
+        mapped.Should().NotBeNull();
+        mapped!.FailureType.Should().Be(ResultFailureType.Forbidden);
+        mapped.Errors.Should().Contain("iac.plan.sandbox_denied");
     }
 }
