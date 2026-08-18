@@ -184,14 +184,15 @@ public sealed class BicepGenerator : IIacGenerator
         try
         {
             // The executor is SCOPED — resolve it from a fresh scope per run
-            // so this singleton generator never captures scope-bound state.
+            // so this singleton generator never captures scope-bound state. Resolved inside
+            // RunAsync, after the profile, so an operator's MinimumIsolation override actually
+            // selects the executor.
             await using var scope = _scopeFactory.CreateAsyncScope();
-            var sandbox = scope.ServiceProvider.GetRequiredKeyedService<ISandboxExecutor>(_isolationLevel);
             var permissionResolver = scope.ServiceProvider.GetRequiredService<ToolPermissionProfileResolver>();
 
             return await IacSandboxRunner.RunAsync(
-                program, args, moduleDirectory, allowlist, sandbox, toolName, requiredCapabilities,
-                permissionResolver, cancellationToken: cancellationToken);
+                program, args, moduleDirectory, allowlist, scope.ServiceProvider, _isolationLevel,
+                toolName, requiredCapabilities, permissionResolver, cancellationToken: cancellationToken);
         }
         catch (OperationCanceledException)
         {

@@ -334,6 +334,26 @@
                         against it.)
                     </p>
 
+                    <div class="callout callout-warning">
+                        <span class="callout-icon">!</span>
+                        <div class="callout-body">
+                            <div class="callout-title">Capabilities are an enforced boundary only at the Container tier</div>
+                            <p style="margin: 0">
+                                <code>EffectiveCapabilities</code> is always signed into the run's attestation, but it
+                                is only a genuine confinement when <code>MinimumIsolation</code> resolves to
+                                <strong>Container</strong> — that's the tier <code>DockerContainerLaunchPreparer</code>
+                                reads it to set network mode and mount read/write-ness. At the
+                                <strong>Process</strong> tier, neither <code>ProcessSandboxExecutor</code> nor
+                                <code>ProcessSandboxLaunchPreparer</code> reads <code>Isolation</code> or any
+                                capability bit — the only real constraint on a Process-tier run is
+                                <code>AllowedPrograms</code>. The attestation records which case applied via a
+                                <code>capabilitiesEnforcedBy</code> field (<code>"container"</code> or
+                                <code>"declaration-only"</code>) so an auditor never mistakes a signed capability set
+                                for an enforced one on a run that never left the Process tier.
+                            </p>
+                        </div>
+                    </div>
+
                     <div class="callout callout-info">
                         <span class="callout-icon">i</span>
                         <div class="callout-body">

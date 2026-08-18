@@ -3,16 +3,16 @@ using Application.AI.Common.Services.Sandbox;
 using Domain.AI.Models;
 using Domain.AI.Sandbox;
 using Domain.AI.Workspace;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace Infrastructure.AI.Tools.Workspace;
 
 /// <summary>
 /// Shared dispatch helper for <see cref="WorkspaceRunTestsTool"/> and
-/// <see cref="WorkspaceRunLintTool"/>. Builds a
-/// <see cref="SandboxExecutionRequest"/> from the workspace's configured
-/// command string, runs it through the supplied
-/// <see cref="ISandboxExecutor"/>, and maps the result to a
-/// <see cref="ToolResult"/>.
+/// <see cref="WorkspaceRunLintTool"/>. Resolves the effective permission profile, resolves the
+/// keyed-scoped <see cref="ISandboxExecutor"/> for the profile's effective isolation tier, builds a
+/// <see cref="SandboxExecutionRequest"/> from the workspace's configured command string, runs it, and
+/// maps the result to a <see cref="ToolResult"/>.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -43,7 +43,20 @@ public static class WorkspaceCommandRunner
     /// (<c>WorkspaceRunTestsTool</c>/<c>WorkspaceRunLintTool</c>) reads the command to run from it
     /// before calling here.
     /// </param>
-    /// <param name="executor">The sandbox executor to dispatch through.</param>
+    /// <param name="scopedServices">
+    /// The per-execution DI scope's provider, used to resolve the keyed-scoped
+    /// <see cref="ISandboxExecutor"/> for the effective isolation tier — resolved here, after the
+    /// profile, rather than passed in already-resolved (#405 follow-up, a security-review finding on
+    /// the original fix): the executor must be selected for the tier the operator's
+    /// <c>MinimumIsolation</c> override actually resolves to, not a tier fixed before that override
+    /// was consulted. Selecting the executor from a caller-fixed tier while the profile silently
+    /// carries a different, elevated one is the same "one field, two meanings" defect class #405
+    /// exists to close, reproduced on the isolation axis instead of the capability axis.
+    /// </param>
+    /// <param name="defaultIsolationLevel">
+    /// The tool's own minimum isolation requirement, independent of any operator override — the floor
+    /// this run never drops below even absent a <c>MinimumIsolation</c> override.
+    /// </param>
     /// <param name="toolName">Tool name for diagnostic attribution in the sandbox request, and the
     /// keyed-DI name <paramref name="permissionResolver"/> looks up an operator's per-tool override
     /// under.</param>
@@ -67,7 +80,8 @@ public static class WorkspaceCommandRunner
     public static async Task<ToolResult> RunAsync(
         string commandLine,
         WorkspaceContext workspace,
-        ISandboxExecutor executor,
+        IServiceProvider scopedServices,
+        SandboxIsolationLevel defaultIsolationLevel,
         string toolName,
         ToolCapability requiredCapabilities,
         ToolPermissionProfileResolver permissionResolver,
@@ -76,7 +90,7 @@ public static class WorkspaceCommandRunner
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(commandLine);
         ArgumentNullException.ThrowIfNull(workspace);
-        ArgumentNullException.ThrowIfNull(executor);
+        ArgumentNullException.ThrowIfNull(scopedServices);
         ArgumentException.ThrowIfNullOrWhiteSpace(toolName);
         ArgumentNullException.ThrowIfNull(permissionResolver);
 
@@ -91,6 +105,12 @@ public static class WorkspaceCommandRunner
             toolName, requiredCapabilities, [program]);
         if (!profileResult.IsSuccess)
             return ToolResult.Fail(string.Join("; ", profileResult.Errors));
+
+        // The executor for the EFFECTIVE tier — never the caller's fixed default alone. See
+        // scopedServices' remarks above for why resolving this before the profile was wrong.
+        var tier = (SandboxIsolationLevel)Math.Max(
+            (int)defaultIsolationLevel, (int)profileResult.Value!.MinimumIsolation);
+        var executor = scopedServices.GetRequiredKeyedService<ISandboxExecutor>(tier);
 
         var request = new SandboxExecutionRequest
         {

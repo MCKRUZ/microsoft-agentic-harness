@@ -78,6 +78,33 @@ public class ProcessSandboxSessionFactoryTests
     }
 
     [SkippableFact]
+    public async Task StartSessionAsync_ProcessTier_AttestsCapabilitiesAsDeclarationOnly()
+    {
+        // A security-review finding on #405's follow-up: neither ProcessSandboxExecutor nor
+        // ProcessSandboxLaunchPreparer read Isolation or any capability bit, so a Process-tier
+        // attestation's signed capability set is not an enforced boundary — only Container-tier is.
+        Skip.IfNot(OperatingSystem.IsWindows(), "Windows-only: uses cmd.exe /c more.");
+
+        AttestationRequest? signed = null;
+        _attestation
+            .Setup(x => x.SignAsync(It.Is<AttestationRequest>(r => !r.IsFailure), It.IsAny<CancellationToken>()))
+            .Callback<AttestationRequest, CancellationToken>((r, _) => signed = r)
+            .ReturnsAsync((AttestationRequest r, CancellationToken _) => new ToolExecutionAttestation
+            {
+                ToolName = r.ToolName, InputHash = "test-hash", Timestamp = DateTimeOffset.UtcNow,
+                Signature = "test-sig", KeyVersion = "v1", IsFailureAttestation = false
+            });
+
+        var result = await _sut.StartSessionAsync(CreateRequest(), CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue(string.Join("; ", result.Errors));
+        await using var session = result.Value!;
+        signed.Should().NotBeNull();
+        System.Text.Json.JsonDocument.Parse(signed!.Input).RootElement
+            .GetProperty("capabilitiesEnforcedBy").GetString().Should().Be("declaration-only");
+    }
+
+    [SkippableFact]
     public async Task StartSessionAsync_InteractiveProcess_SupportsMultipleWriteReadRoundTrips()
     {
         Skip.IfNot(OperatingSystem.IsWindows(), "Windows-only: uses cmd.exe /c more as a line-streaming echo.");

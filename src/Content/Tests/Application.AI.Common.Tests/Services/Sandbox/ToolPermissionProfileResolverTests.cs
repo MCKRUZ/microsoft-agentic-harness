@@ -369,4 +369,67 @@ public sealed class ToolPermissionProfileResolverTests
         result.IsSuccess.Should().BeTrue();
         result.Value!.MinimumIsolation.Should().Be(SandboxIsolationLevel.Container);
     }
+
+    // --- Under-declaration cross-check (M6, a security-review finding on the #405 follow-up):
+    // requiredCapabilities is the CALLER's own, separately-maintained declaration on this ungoverned
+    // dispatch path — nothing previously stopped it from drifting under the tool's own registered
+    // ITool.RequiredCapabilities. ---
+
+    [Fact]
+    public void ResolveForUngovernedDispatch_CallerUnderDeclaresRelativeToRegisteredTool_RefusesOutright()
+    {
+        // full_tool is registered declaring FileRead|FileWrite|NetworkAccess; the caller passes only
+        // FileRead — missing FileWrite and NetworkAccess relative to the tool's own declaration.
+        var resolver = BuildResolver(tools: ("full_tool", FullTool()));
+
+        var result = resolver.ResolveForUngovernedDispatch(
+            "full_tool", ToolCapability.FileRead, ["program"]);
+
+        result.IsSuccess.Should().BeFalse(
+            "a caller-supplied capability set narrower than the tool's own registered declaration " +
+            "must refuse, not silently dispatch with less than the tool claims to need");
+        result.Errors.Should().ContainSingle(e =>
+            e.Contains("FileWrite") && e.Contains("NetworkAccess"));
+    }
+
+    [Fact]
+    public void ResolveForUngovernedDispatch_CallerDeclarationMatchesRegisteredTool_Succeeds()
+    {
+        var resolver = BuildResolver(tools: ("full_tool", FullTool()));
+
+        var result = resolver.ResolveForUngovernedDispatch(
+            "full_tool",
+            ToolCapability.FileRead | ToolCapability.FileWrite | ToolCapability.NetworkAccess,
+            ["program"]);
+
+        result.IsSuccess.Should().BeTrue();
+    }
+
+    [Fact]
+    public void ResolveForUngovernedDispatch_CallerDeclarationExceedsRegisteredTool_Succeeds()
+    {
+        // Declaring MORE than the tool's own registration is not under-declaration — this check only
+        // guards against declaring less.
+        var resolver = BuildResolver(tools: ("file_tool", FileTool()));
+
+        var result = resolver.ResolveForUngovernedDispatch(
+            "file_tool",
+            ToolCapability.FileRead | ToolCapability.FileWrite | ToolCapability.Subprocess,
+            ["program"]);
+
+        result.IsSuccess.Should().BeTrue();
+    }
+
+    [Fact]
+    public void ResolveForUngovernedDispatch_ToolNameOutsideBoundedKeySet_SkipsUnderDeclarationCheck()
+    {
+        // A name outside the bounded first-party key set (e.g. MCP or bundle-owned) has nothing
+        // registered to compare against — the under-declaration check must not fire for it.
+        var resolver = BuildResolver();
+
+        var result = resolver.ResolveForUngovernedDispatch(
+            "mcp_tool", ToolCapability.None, ["program"]);
+
+        result.IsSuccess.Should().BeTrue();
+    }
 }

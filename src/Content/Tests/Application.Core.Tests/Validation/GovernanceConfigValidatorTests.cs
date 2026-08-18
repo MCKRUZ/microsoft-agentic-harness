@@ -56,6 +56,19 @@ public class GovernanceConfigValidatorTests
         result.Errors.Should().BeEmpty();
     }
 
+    [Fact]
+    public async Task Validate_EmptyAuditStoragePath_HasError()
+    {
+        // JsonlGovernanceAuditWriter.Log catches every exception, so a blank path would otherwise
+        // fail silently on every write instead of failing loudly at startup (#407).
+        var config = new GovernanceConfig { AuditStoragePath = "" };
+
+        var result = await _validator.ValidateAsync(config);
+
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.PropertyName == nameof(GovernanceConfig.AuditStoragePath));
+    }
+
     /// <summary>
     /// An out-of-range threshold is the worst failure shape available to this setting: the scan
     /// still runs and still logs, but no finding is ever at or above an undefined level, so nothing

@@ -1,3 +1,4 @@
+using Application.AI.Common.Interfaces.Sandbox;
 using Application.AI.Common.Services.Sandbox;
 using Application.AI.Common.Services.Tools;
 using Domain.AI.Sandbox;
@@ -29,6 +30,19 @@ public sealed class IacSandboxRunnerSolutionReviewFixTests
     private static ToolPermissionProfileResolver NoOverrideResolver() => ResolverWithOverride(null, null);
 
     /// <summary>
+    /// A scoped-services provider resolving <paramref name="sandbox"/> as the keyed
+    /// <see cref="ISandboxExecutor"/> under both production-keyed isolation tiers (Process and
+    /// Container) — <see cref="IacSandboxRunner.RunAsync"/> now resolves the executor for
+    /// whichever tier the resolved profile's <c>MinimumIsolation</c> lands on, which for these
+    /// tests can be either the Process floor or an operator's Container override (#405 follow-up).
+    /// </summary>
+    private static IServiceProvider ScopedServices(ISandboxExecutor sandbox) =>
+        new ServiceCollection()
+            .AddKeyedSingleton(SandboxIsolationLevel.Process, sandbox)
+            .AddKeyedSingleton(SandboxIsolationLevel.Container, sandbox)
+            .BuildServiceProvider();
+
+    /// <summary>
     /// A resolver with a single <see cref="ToolOverrideConfig"/> entry, or no override at all when
     /// <paramref name="toolName"/> is <see langword="null"/>.
     /// </summary>
@@ -56,7 +70,8 @@ public sealed class IacSandboxRunnerSolutionReviewFixTests
             arguments: ["init"],
             moduleDirectory: ModuleDir,
             registryAllowlist: allowlist,
-            executor: sandbox,
+            scopedServices: ScopedServices(sandbox),
+            defaultIsolationLevel: SandboxIsolationLevel.Process,
             toolName: "terraform_plan",
             requiredCapabilities: IacPlanTool.RequiredSandboxCapabilities,
             permissionResolver: NoOverrideResolver());
@@ -80,7 +95,8 @@ public sealed class IacSandboxRunnerSolutionReviewFixTests
             arguments: ["init"],
             moduleDirectory: ModuleDir,
             registryAllowlist: [],
-            executor: sandbox,
+            scopedServices: ScopedServices(sandbox),
+            defaultIsolationLevel: SandboxIsolationLevel.Process,
             toolName: "terraform_plan",
             requiredCapabilities: IacPlanTool.RequiredSandboxCapabilities,
             permissionResolver: NoOverrideResolver());
@@ -100,7 +116,8 @@ public sealed class IacSandboxRunnerSolutionReviewFixTests
             arguments: ["init"],
             moduleDirectory: ModuleDir,
             registryAllowlist: ["registry.terraform.io", "  ", "registry.terraform.io"],
-            executor: sandbox,
+            scopedServices: ScopedServices(sandbox),
+            defaultIsolationLevel: SandboxIsolationLevel.Process,
             toolName: "terraform_plan",
             requiredCapabilities: IacPlanTool.RequiredSandboxCapabilities,
             permissionResolver: NoOverrideResolver());
@@ -130,7 +147,8 @@ public sealed class IacSandboxRunnerSolutionReviewFixTests
             arguments: ["plan"],
             moduleDirectory: ModuleDir,
             registryAllowlist: [],
-            executor: sandbox,
+            scopedServices: ScopedServices(sandbox),
+            defaultIsolationLevel: SandboxIsolationLevel.Process,
             toolName: "iac_plan",
             requiredCapabilities: IacPlanTool.RequiredSandboxCapabilities,
             permissionResolver: resolver);
@@ -160,7 +178,8 @@ public sealed class IacSandboxRunnerSolutionReviewFixTests
             arguments: ["plan"],
             moduleDirectory: ModuleDir,
             registryAllowlist: [],
-            executor: sandbox,
+            scopedServices: ScopedServices(sandbox),
+            defaultIsolationLevel: SandboxIsolationLevel.Process,
             toolName: "iac_plan",
             requiredCapabilities: IacPlanTool.RequiredSandboxCapabilities,
             permissionResolver: resolver);

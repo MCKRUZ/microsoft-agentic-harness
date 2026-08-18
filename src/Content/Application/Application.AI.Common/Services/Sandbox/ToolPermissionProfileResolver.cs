@@ -103,17 +103,46 @@ public sealed class ToolPermissionProfileResolver
     /// <returns>
     /// A forbidden <see cref="Result{T}"/> when the deny override intersects
     /// <paramref name="requiredCapabilities"/> — refusing outright, the same as a governed call, rather
-    /// than silently narrowing what gets provisioned. Otherwise the merged profile: the override's
-    /// <c>DeniedCapabilities</c> carried through (for <see cref="ToolPermissionProfile.EffectiveCapabilities"/>),
-    /// and isolation floored at <see cref="SandboxIsolationLevel.Process"/> — never downgraded even
-    /// when no override is configured (this dispatch path requires at least process isolation).
+    /// than silently narrowing what gets provisioned. Also forbidden when <paramref name="toolName"/>
+    /// is a registered first-party tool and <paramref name="requiredCapabilities"/> under-declares
+    /// relative to that tool's own <see cref="ITool.RequiredCapabilities"/> — see the under-declaration
+    /// remarks below. Otherwise the merged profile: the override's <c>DeniedCapabilities</c> carried
+    /// through (for <see cref="ToolPermissionProfile.EffectiveCapabilities"/>), and isolation floored
+    /// at <see cref="SandboxIsolationLevel.Process"/> — never downgraded even when no override is
+    /// configured (this dispatch path requires at least process isolation).
     /// </returns>
+    /// <remarks>
+    /// <strong>Under-declaration check (#405 follow-up, a security-review finding):</strong>
+    /// <paramref name="requiredCapabilities"/> is the caller's own, separately-maintained
+    /// declaration — <c>WorkspaceRunTestsTool.RequiredSandboxCapabilities</c> and its siblings — not
+    /// re-derived from <see cref="ResolveBase"/> the way <see cref="Resolve"/> does for a governed
+    /// call. Nothing previously stopped that declaration from silently drifting under the tool's own
+    /// registered <c>ITool.RequiredCapabilities</c> (a copy-paste error, or one constant updated and
+    /// the other forgotten) — this dispatch path bypasses <c>CapabilityEnforcer</c> entirely, so
+    /// under-declaring here means the sandbox is provisioned with less than the tool's own
+    /// registration says it needs, with no other check positioned to catch it. Refuses outright
+    /// rather than silently widening to the registered declaration, matching this method's existing
+    /// deny-intersection posture: a mismatch is a configuration defect to surface, not one to paper
+    /// over by picking a value for the caller.
+    /// </remarks>
     public Result<ToolPermissionProfile> ResolveForUngovernedDispatch(
         string toolName,
         ToolCapability requiredCapabilities,
         IReadOnlyList<string> allowedPrograms)
     {
         var overridden = Resolve(toolName);
+
+        var registered = _firstPartyLookup.Resolve(toolName)?.RequiredCapabilities;
+        if (registered is { } declared)
+        {
+            var underDeclared = declared & ~requiredCapabilities;
+            if (underDeclared != ToolCapability.None)
+            {
+                return Result<ToolPermissionProfile>.Forbidden(
+                    $"Tool '{toolName}' was dispatched with capabilities narrower than its own " +
+                    $"registered declaration: missing {underDeclared}.");
+            }
+        }
 
         var denied = requiredCapabilities & overridden.DeniedCapabilities;
         if (denied != ToolCapability.None)

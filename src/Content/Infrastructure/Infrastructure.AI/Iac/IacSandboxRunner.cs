@@ -1,6 +1,7 @@
 using Application.AI.Common.Interfaces.Sandbox;
 using Application.AI.Common.Services.Sandbox;
 using Domain.AI.Sandbox;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace Infrastructure.AI.Iac;
 
@@ -56,7 +57,18 @@ public static class IacSandboxRunner
     /// itself an enforced filesystem boundary on this dispatch path — see this class's remarks.
     /// </param>
     /// <param name="registryAllowlist">The provider/module-registry hosts the run may reach. Seeds the sandbox egress allowlist.</param>
-    /// <param name="executor">The sandbox executor to dispatch through.</param>
+    /// <param name="scopedServices">
+    /// The per-execution DI scope's provider, used to resolve the keyed-scoped
+    /// <see cref="ISandboxExecutor"/> for the effective isolation tier — resolved here, after the
+    /// profile, rather than passed in already-resolved (#405 follow-up, a security-review finding
+    /// mirroring the identical fix in <c>WorkspaceCommandRunner</c>): the executor must be selected
+    /// for the tier the operator's <c>MinimumIsolation</c> override actually resolves to, not a tier
+    /// fixed before that override was consulted.
+    /// </param>
+    /// <param name="defaultIsolationLevel">
+    /// The generator's own minimum isolation requirement, independent of any operator override — the
+    /// floor this run never drops below even absent a <c>MinimumIsolation</c> override.
+    /// </param>
     /// <param name="toolName">Tool name for diagnostic attribution in the sandbox request.</param>
     /// <param name="requiredCapabilities">
     /// The sandbox capabilities this run needs — supplied by the caller (e.g.
@@ -80,7 +92,8 @@ public static class IacSandboxRunner
         IReadOnlyList<string> arguments,
         string moduleDirectory,
         IReadOnlyList<string> registryAllowlist,
-        ISandboxExecutor executor,
+        IServiceProvider scopedServices,
+        SandboxIsolationLevel defaultIsolationLevel,
         string toolName,
         ToolCapability requiredCapabilities,
         ToolPermissionProfileResolver permissionResolver,
@@ -91,7 +104,7 @@ public static class IacSandboxRunner
         ArgumentNullException.ThrowIfNull(arguments);
         ArgumentException.ThrowIfNullOrWhiteSpace(moduleDirectory);
         ArgumentNullException.ThrowIfNull(registryAllowlist);
-        ArgumentNullException.ThrowIfNull(executor);
+        ArgumentNullException.ThrowIfNull(scopedServices);
         ArgumentException.ThrowIfNullOrWhiteSpace(toolName);
         ArgumentNullException.ThrowIfNull(permissionResolver);
 
@@ -105,6 +118,12 @@ public static class IacSandboxRunner
                 ErrorMessage = string.Join("; ", profileResult.Errors)
             };
         }
+
+        // The executor for the EFFECTIVE tier — never the caller's fixed default alone. See
+        // scopedServices' remarks above for why resolving this before the profile was wrong.
+        var tier = (SandboxIsolationLevel)Math.Max(
+            (int)defaultIsolationLevel, (int)profileResult.Value!.MinimumIsolation);
+        var executor = scopedServices.GetRequiredKeyedService<ISandboxExecutor>(tier);
 
         var request = new SandboxExecutionRequest
         {

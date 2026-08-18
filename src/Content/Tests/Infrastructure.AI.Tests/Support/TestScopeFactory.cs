@@ -44,13 +44,22 @@ internal static class TestScopeFactory
     /// (<c>DeniedCapabilities</c>/<c>MinimumIsolation</c>) actually reaches a caller that resolves
     /// through the returned scope (#405).
     /// </summary>
+    /// <remarks>
+    /// Registers <paramref name="sandbox"/> under both the <see cref="SandboxIsolationLevel.Process"/>
+    /// and <see cref="SandboxIsolationLevel.Container"/> keys (plus <paramref name="isolationLevel"/>
+    /// itself, if different) — not just <paramref name="isolationLevel"/> alone. The runner now
+    /// resolves the keyed executor for <c>Math.Max(defaultIsolationLevel, profile.MinimumIsolation)</c>
+    /// (#405 follow-up), so a test exercising an operator's <c>MinimumIsolation: Container</c> override
+    /// needs the Container key resolvable even though the tool's own floor is Process.
+    /// </remarks>
     public static IServiceScopeFactory ForSandbox(
         ISandboxExecutor sandbox,
         SandboxConfig sandboxConfig,
         SandboxIsolationLevel isolationLevel = SandboxIsolationLevel.Process)
     {
-        var services = new ServiceCollection()
-            .AddKeyedScoped(isolationLevel, (_, _) => sandbox);
+        var services = new ServiceCollection();
+        foreach (var level in new[] { isolationLevel, SandboxIsolationLevel.Process, SandboxIsolationLevel.Container }.Distinct())
+            services.AddKeyedScoped(level, (_, _) => sandbox);
         services.AddOptions<SandboxConfig>().Configure(c =>
         {
             foreach (var (name, overrideConfig) in sandboxConfig.ToolOverrides)
