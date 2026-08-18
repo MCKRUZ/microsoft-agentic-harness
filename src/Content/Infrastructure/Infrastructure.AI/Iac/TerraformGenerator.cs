@@ -112,6 +112,21 @@ public sealed class TerraformGenerator : IIacGenerator
 
         if (!validate.Success)
         {
+            if (validate.ExitCode is null)
+            {
+                // The sandbox never dispatched terraform at all — a governance refusal (e.g. an
+                // operator's DeniedCapabilities override on iac_plan), not a real validate failure.
+                // A code-review finding: this used to fall into the branch below and get reported as
+                // Result.Success(FailedPlan(..., "validate failed")) — a governance denial silently
+                // presenting as "terraform found a syntax error," with the real reason (validate.ErrorMessage)
+                // never logged or surfaced anywhere. Log it via structured logging (never the raw
+                // message in a Result error — see this class's remarks on why) and fail loudly instead.
+                _logger.LogError(
+                    "Terraform iac_plan for {Module} was refused before dispatch: {Reason}",
+                    moduleDirectory, validate.ErrorMessage);
+                return Result<IacPlanResult>.Fail("iac.plan.sandbox_denied");
+            }
+
             _logger.LogWarning("Terraform validate failed in {Module}: exit={Exit}", moduleDirectory, validate.ExitCode);
             return Result<IacPlanResult>.Success(FailedPlan(moduleDirectory, validate.Output ?? string.Empty, "validate failed"));
         }
@@ -150,6 +165,25 @@ public sealed class TerraformGenerator : IIacGenerator
         if (checkov is null || tfsec is null)
         {
             return Result<IacScanResult>.Fail("iac.scan.sandbox_error");
+        }
+
+        // A code-review finding: a scanner the sandbox refused to dispatch (ExitCode null — e.g. a
+        // governance denial on iac_scan) used to fall straight through to the parsers below, which
+        // parse empty output into zero findings — silently reporting a security scan that never ran
+        // as "passed, no findings." Refuse loudly instead of reporting a false clean result.
+        if (checkov.ExitCode is null)
+        {
+            _logger.LogError(
+                "Terraform iac_scan (checkov) for {Module} was refused before dispatch: {Reason}",
+                moduleDirectory, checkov.ErrorMessage);
+            return Result<IacScanResult>.Fail("iac.scan.sandbox_denied");
+        }
+        if (tfsec.ExitCode is null)
+        {
+            _logger.LogError(
+                "Terraform iac_scan (tfsec) for {Module} was refused before dispatch: {Reason}",
+                moduleDirectory, tfsec.ErrorMessage);
+            return Result<IacScanResult>.Fail("iac.scan.sandbox_denied");
         }
 
         var findings = new List<IacScanFinding>();

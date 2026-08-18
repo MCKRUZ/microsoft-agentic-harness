@@ -118,6 +118,21 @@ public sealed class BicepGenerator : IIacGenerator
 
         if (!build.Success)
         {
+            if (build.ExitCode is null)
+            {
+                // The sandbox never dispatched bicep at all — a governance refusal (e.g. an operator's
+                // DeniedCapabilities override on iac_plan), not a real build failure. A code-review
+                // finding: this used to fall straight through to the IacPlanResult below and report
+                // Succeeded=false/"bicep build failed" — a governance denial silently presenting as a
+                // template syntax error, with the real reason (build.ErrorMessage) never logged or
+                // surfaced anywhere. Log it via structured logging (never the raw message in a Result
+                // error — see this class's remarks on why) and fail loudly instead.
+                _logger.LogError(
+                    "Bicep iac_plan for {Module} was refused before dispatch: {Reason}",
+                    moduleDirectory, build.ErrorMessage);
+                return Result<IacPlanResult>.Fail("iac.plan.sandbox_denied");
+            }
+
             _logger.LogWarning("Bicep build failed in {Module}: exit={Exit}", moduleDirectory, build.ExitCode);
         }
 
@@ -156,6 +171,25 @@ public sealed class BicepGenerator : IIacGenerator
         if (armTtk is null || checkov is null)
         {
             return Result<IacScanResult>.Fail("iac.scan.sandbox_error");
+        }
+
+        // A code-review finding: a scanner the sandbox refused to dispatch (ExitCode null — e.g. a
+        // governance denial on iac_scan) used to fall straight through to the parsers below, which
+        // parse empty output into zero findings — silently reporting a security scan that never ran
+        // as "passed, no findings." Refuse loudly instead of reporting a false clean result.
+        if (armTtk.ExitCode is null)
+        {
+            _logger.LogError(
+                "Bicep iac_scan (arm-ttk) for {Module} was refused before dispatch: {Reason}",
+                moduleDirectory, armTtk.ErrorMessage);
+            return Result<IacScanResult>.Fail("iac.scan.sandbox_denied");
+        }
+        if (checkov.ExitCode is null)
+        {
+            _logger.LogError(
+                "Bicep iac_scan (checkov) for {Module} was refused before dispatch: {Reason}",
+                moduleDirectory, checkov.ErrorMessage);
+            return Result<IacScanResult>.Fail("iac.scan.sandbox_denied");
         }
 
         var findings = new List<IacScanFinding>();

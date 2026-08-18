@@ -1,6 +1,9 @@
 using Domain.AI.Iac;
+using Domain.AI.Sandbox;
+using Domain.Common.Config.AI.Sandbox;
 using FluentAssertions;
 using Infrastructure.AI.Iac;
+using Infrastructure.AI.Tools.Iac;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
@@ -20,6 +23,29 @@ public sealed class TerraformGeneratorTests
             Support.TestScopeFactory.ForSandbox(sandbox),
             NullLogger<TerraformGenerator>.Instance,
             TimeProvider.System);
+
+    /// <summary>
+    /// A generator whose iac_plan/iac_scan dispatch is refused outright by an operator
+    /// <c>DeniedCapabilities</c> override intersecting <see cref="IacPlanTool.RequiredSandboxCapabilities"/>/
+    /// <see cref="IacScanTool.RequiredSandboxCapabilities"/> — for the code-review regression tests below
+    /// proving a refusal is never mistaken for "ran and found nothing"/"ran and failed."
+    /// </summary>
+    private static TerraformGenerator CreateWithDeniedDispatch(Application.AI.Common.Interfaces.Sandbox.ISandboxExecutor sandbox)
+    {
+        var deniedConfig = new SandboxConfig
+        {
+            ToolOverrides = new()
+            {
+                ["iac_plan"] = new ToolOverrideConfig { DeniedCapabilities = ["NetworkAccess"] },
+                ["iac_scan"] = new ToolOverrideConfig { DeniedCapabilities = ["NetworkAccess"] }
+            }
+        };
+        return new TerraformGenerator(
+            IacTestConfig.ValidMonitor(),
+            Support.TestScopeFactory.ForSandbox(sandbox, deniedConfig),
+            NullLogger<TerraformGenerator>.Instance,
+            TimeProvider.System);
+    }
 
     private static IacGenerationRequest Request() => new()
     {
@@ -143,6 +169,22 @@ public sealed class TerraformGeneratorTests
         result.Errors.Should().Contain("iac.plan.invalid_module_directory");
     }
 
+    [Fact]
+    public async Task PlanAsync_DispatchRefused_FailsRatherThanReportingAFakeValidateFailure()
+    {
+        // A code-review finding: the sandbox refusing to dispatch (governance denial — never actually
+        // ran terraform) used to be indistinguishable from a real "terraform validate" syntax error,
+        // both reported as Result.Success(FailedPlan(..., "validate failed")). A refusal must fail
+        // loudly instead of presenting as if terraform ran and found a problem in the module.
+        var sut = CreateWithDeniedDispatch(new RecordingIacSandbox().WithDefault(true, 0, string.Empty));
+
+        var result = await sut.PlanAsync("modules/network", CancellationToken.None);
+
+        result.IsSuccess.Should().BeFalse(
+            "a governance refusal before dispatch must never present as a completed (if failed) plan");
+        result.Errors.Should().Contain("iac.plan.sandbox_denied");
+    }
+
     // ---------- ScanAsync ----------
 
     [Fact]
@@ -246,6 +288,22 @@ public sealed class TerraformGeneratorTests
 
         result.IsSuccess.Should().BeFalse();
         result.Errors.Should().Contain("iac.scan.invalid_blocking_severity");
+    }
+
+    [Fact]
+    public async Task ScanAsync_DispatchRefused_FailsRatherThanReportingAFalseCleanScan()
+    {
+        // A code-review finding: a scanner the sandbox refused to dispatch used to fall straight
+        // through to the parsers, which parse the (null) output into zero findings — silently
+        // reporting a security scan that never ran as "passed, no findings." A refusal must fail
+        // loudly instead of presenting as a clean scan.
+        var sut = CreateWithDeniedDispatch(new RecordingIacSandbox().WithDefault(true, 0, string.Empty));
+
+        var result = await sut.ScanAsync("modules/network", CancellationToken.None);
+
+        result.IsSuccess.Should().BeFalse(
+            "a governance refusal before dispatch must never present as a completed, passing scan");
+        result.Errors.Should().Contain("iac.scan.sandbox_denied");
     }
 
     private sealed class ThrowingSandbox : Application.AI.Common.Interfaces.Sandbox.ISandboxExecutor
