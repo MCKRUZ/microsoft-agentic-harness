@@ -33,17 +33,19 @@ public sealed class SandboxIsolationLevelExtensionsTests
         // than Container) would silently invert every floor merge at once. This pins that ordering
         // invariant directly.
         //
-        // Enum.GetValues() itself returns members already sorted by numeric value, so it cannot be
-        // used to detect a declaration-order/value-order mismatch — reflection over the fields in
-        // their declared source order is required to catch that.
-        var declaredValues = typeof(SandboxIsolationLevel)
-            .GetFields(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static)
-            .Select(f => (int)f.GetValue(null)!)
-            .ToList();
+        // Correctness-review follow-up on the first version of this test: reflection field order
+        // (Type.GetFields) is metadata order in practice on CoreCLR but not a contractual guarantee,
+        // so this asserts the intended sequence explicitly by name and value rather than relying on
+        // that ordering — the test fails loudly on a reordering regardless of reflection behavior.
+        Assert.Equal(0, (int)SandboxIsolationLevel.None);
+        Assert.Equal(1, (int)SandboxIsolationLevel.Process);
+        Assert.Equal(2, (int)SandboxIsolationLevel.Container);
 
-        var ascending = declaredValues.OrderBy(v => v).ToList();
-        Assert.Equal(ascending, declaredValues);
-        Assert.Equal(declaredValues.Distinct().Count(), declaredValues.Count);
+        var allMembers = new[]
+        {
+            SandboxIsolationLevel.None, SandboxIsolationLevel.Process, SandboxIsolationLevel.Container,
+        };
+        Assert.Equal(allMembers.Length, Enum.GetValues<SandboxIsolationLevel>().Length);
     }
 
     [Fact]

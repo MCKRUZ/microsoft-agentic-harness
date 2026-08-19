@@ -338,24 +338,18 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
     {
         var level = profile.MinimumIsolation;
 
-        if (config.IsolationLevelOverride.HasValue && config.IsolationLevelOverride.Value > level)
-            level = config.IsolationLevelOverride.Value;
+        if (config.IsolationLevelOverride.HasValue)
+            level = level.AtLeast(config.IsolationLevelOverride.Value);
 
         if (step.RequiredAutonomyLevel is AutonomyLevel.Supervised or AutonomyLevel.Restricted)
-        {
-            if (level < SandboxIsolationLevel.Container)
-                level = SandboxIsolationLevel.Container;
-        }
+            level = level.AtLeast(SandboxIsolationLevel.Container);
 
         // Floor None to Process: no ISandboxExecutor is keyed for None (only Process and
         // Container are registered). A tool that doesn't override ITool.MinimumIsolation resolves
         // to a profile with MinimumIsolation = None, which would otherwise throw
         // InvalidOperationException at keyed-service resolution. Process is the default
         // subprocess executor and the safe minimum for "direct-execution" tools.
-        if (level < SandboxIsolationLevel.Process)
-            level = SandboxIsolationLevel.Process;
-
-        return level;
+        return level.AtLeast(SandboxIsolationLevel.Process);
     }
 
     /// <summary>
