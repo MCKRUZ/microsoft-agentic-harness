@@ -351,9 +351,13 @@ paths:
         Frames are `data: {json}\n\n` with camelCase properties and a `type` discriminator matching
         the AG-UI wire vocabulary — a hand-written client that switches on `type` works unchanged.
         A strict `@ag-ui/client`-style consumer is not guaranteed to: tool-call frames can arrive
-        while a `TEXT_MESSAGE` is still open (see below), which some AG-UI client libraries reject,
-        and `TOOL_CALL_RESULT`'s fields (`toolCallId`, `result`) have no AG-UI precedent to match
-        against. Exactly one terminal frame is emitted: `RUN_FINISHED` or `RUN_ERROR`.
+        while a `TEXT_MESSAGE` is still open (see below), which some AG-UI client libraries reject.
+        `TOOL_CALL_START`'s `parentMessageId` and `TOOL_CALL_RESULT`'s `messageId`/`content`/`role`
+        match the AG-UI wire schema exactly; `parentMessageId` is omitted (not sent as `null`) when
+        the tool call precedes any assistant text — the parent message does not exist yet at that
+        point. `TOOL_CALL_RESULT`'s `content` is never truncated: above a size ceiling it is withheld
+        whole with `withheld: true` and empty `content`, the same treatment `TOOL_CALL_ARGS.delta`
+        already gets. Exactly one terminal frame is emitted: `RUN_FINISHED` or `RUN_ERROR`.
 
         A tool call interleaves as `TOOL_CALL_START` → `TOOL_CALL_ARGS` → `TOOL_CALL_END`, then
         `TOOL_CALL_RESULT` once the tool has run — freely interleaved with `TEXT_MESSAGE_*` frames,
@@ -388,7 +392,7 @@ paths:
 
                     data: {"type":"TOOL_CALL_END","toolCallId":"c-1a2b..."}
 
-                    data: {"type":"TOOL_CALL_RESULT","toolCallId":"c-1a2b...","result":"3 matching entries"}
+                    data: {"type":"TOOL_CALL_RESULT","toolCallId":"c-1a2b...","messageId":"9d4f...","content":"3 matching entries","role":"tool"}
 
                     data: {"type":"TEXT_MESSAGE_START","messageId":"7e2a...","role":"assistant"}
 
@@ -1311,6 +1315,13 @@ components:
           type: string
           description: The provider-assigned id for this call, shared by every event for it.
         toolCallName: { type: string }
+        parentMessageId:
+          type: string
+          description: >-
+            The id of the assistant message this tool call belongs to, per the AG-UI wire schema.
+            Absent (never sent as `null`) when the call is emitted before the assistant's
+            `TextMessageStartEvent` has streamed — the parent message does not exist yet from the
+            client's perspective at that point.
 
     ToolCallArgsEvent:
       type: object
@@ -1346,17 +1357,34 @@ components:
 
     ToolCallResultEvent:
       type: object
-      description: Emitted once a tool call has actually run and produced a result.
-      required: [type, toolCallId, result]
+      description: >-
+        Emitted once a tool call has actually run and produced a result. Field names match the AG-UI
+        wire schema's tool-call-result event exactly (`messageId`, `content`, `role`).
+      required: [type, toolCallId, messageId, content, role]
       properties:
         type: { type: string, const: TOOL_CALL_RESULT }
         toolCallId: { type: string }
-        result:
+        messageId:
           type: string
           description: >-
-            A redacted, truncated preview of the tool's output — never the raw payload. Secret-shaped
-            values are replaced with "[REDACTED]" before truncation. If the tool call failed, this is a
-            generic failure message, not the underlying exception text.
+            A fresh id for this result's own message, per the AG-UI wire schema — never a reuse of
+            the run's assistant message id. A tool result is its own message with role `tool`, not a
+            continuation of the assistant's text message.
+        content:
+          type: string
+          description: >-
+            The tool's redacted output — never the raw payload, and never truncated. Secret-shaped
+            values are replaced with "[REDACTED]". If the tool call failed, this is a generic failure
+            message, not the underlying exception text. Empty when `withheld` is `true`.
+        role:
+          type: string
+          const: tool
+          description: Message role for a tool result, per the AG-UI wire schema. Always `tool`.
+        withheld:
+          type: boolean
+          description: >-
+            Present and `true` only when the real result exceeded the streaming size ceiling and was
+            withheld whole rather than truncated. Absent on every normal frame.
 
     RunFinishedEvent:
       type: object

@@ -143,7 +143,7 @@ public class ExecuteAgentTurnCommandHandlerTests
             new Application.AI.Common.Services.AgentTurnStreamSink(
                 onDelta: (delta, _) => { events.Add($"delta:{delta}"); return Task.CompletedTask; },
                 onToolCall: (id, name, args, _) => { events.Add($"call:{id}:{name}:{args.Json}"); return Task.CompletedTask; },
-                onToolCallResult: (id, result, _) => { events.Add($"result:{id}:{result}"); return Task.CompletedTask; });
+                onToolCallResult: (id, result, _) => { events.Add($"result:{id}:{result.Text}"); return Task.CompletedTask; });
 
         try
         {
@@ -296,9 +296,9 @@ public class ExecuteAgentTurnCommandHandlerTests
     [Fact]
     public async Task Handle_ActiveStreamSink_OversizedToolCallArgs_StreamsWithheldPlaceholder_NotRawPayload()
     {
-        // Above ToolPayloadRedactor.MaxStreamedToolCallArgsLength (16 KB), the real arguments must
+        // Above ToolPayloadRedactor.MaxStreamedToolCallPayloadLength (16 KB), the real arguments must
         // never reach the client — withheld whole (Json="{}", Withheld=true), not truncated.
-        var oversizedValue = new string('x', ToolPayloadRedactor.MaxStreamedToolCallArgsLength + 1);
+        var oversizedValue = new string('x', ToolPayloadRedactor.MaxStreamedToolCallPayloadLength + 1);
         var agent = TestableAIAgent.StreamingContent(
             [new FunctionCallContent("call-1", "search", new Dictionary<string, object?> { ["q"] = oversizedValue })]);
         _agentCache
@@ -324,6 +324,86 @@ public class ExecuteAgentTurnCommandHandlerTests
             toolCallArgs.Withheld.Should().BeTrue();
             toolCallArgs.Json.Should().Be("{}");
             toolCallArgs.Json.Should().NotContain("x");
+        }
+        finally
+        {
+            Application.AI.Common.Services.AgentTurnStreamSink.Current = null;
+        }
+    }
+
+    [Fact]
+    public async Task Handle_ActiveStreamSink_LongToolCallResult_AreNotTruncated()
+    {
+        // #417: results used to be hard-sliced at 500 chars — a client parsing a streamed result as
+        // structured data could receive truncated, invalid data. 600 chars is well under the streaming
+        // size ceiling (16 KB), so this must stream whole and un-withheld, mirroring the arguments path.
+        var longValue = new string('x', 600);
+        var agent = TestableAIAgent.StreamingContent(
+            [new FunctionCallContent("call-1", "search", new Dictionary<string, object?> { ["q"] = "docs" })],
+            [new FunctionResultContent("call-1", longValue)]);
+        _agentCache
+            .Setup(c => c.GetOrCreateAsync(
+                It.IsAny<string>(),
+                It.IsAny<IReadOnlyList<string>>(),
+                It.IsAny<SkillAgentOptions>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(agent);
+
+        var toolResult = default(StreamedToolCallResult);
+        Application.AI.Common.Services.AgentTurnStreamSink.Current =
+            new Application.AI.Common.Services.AgentTurnStreamSink(
+                onDelta: (_, _) => Task.CompletedTask,
+                onToolCallResult: (_, r, _) => { toolResult = r; return Task.CompletedTask; });
+
+        try
+        {
+            // Act
+            await _handler.Handle(CreateCommand(), CancellationToken.None);
+
+            // Assert
+            toolResult.Withheld.Should().BeFalse();
+            toolResult.Text.Length.Should().BeGreaterThan(500);
+            toolResult.Text.Should().Be(longValue);
+        }
+        finally
+        {
+            Application.AI.Common.Services.AgentTurnStreamSink.Current = null;
+        }
+    }
+
+    [Fact]
+    public async Task Handle_ActiveStreamSink_OversizedToolCallResult_StreamsWithheldFlag_NotTruncatedPayload()
+    {
+        // #417: above ToolPayloadRedactor.MaxStreamedToolCallPayloadLength (16 KB), the real result
+        // must never reach the client — withheld whole (Text="", Withheld=true), not truncated. A
+        // truncated preview past MaxStructuralRedactionCeiling could still contain an unredacted
+        // secret, since PatternSecretRedactor falls back to a regex-only pass above that size.
+        var oversizedValue = new string('x', ToolPayloadRedactor.MaxStreamedToolCallPayloadLength + 1);
+        var agent = TestableAIAgent.StreamingContent(
+            [new FunctionCallContent("call-1", "search", new Dictionary<string, object?> { ["q"] = "docs" })],
+            [new FunctionResultContent("call-1", oversizedValue)]);
+        _agentCache
+            .Setup(c => c.GetOrCreateAsync(
+                It.IsAny<string>(),
+                It.IsAny<IReadOnlyList<string>>(),
+                It.IsAny<SkillAgentOptions>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(agent);
+
+        var toolResult = default(StreamedToolCallResult);
+        Application.AI.Common.Services.AgentTurnStreamSink.Current =
+            new Application.AI.Common.Services.AgentTurnStreamSink(
+                onDelta: (_, _) => Task.CompletedTask,
+                onToolCallResult: (_, r, _) => { toolResult = r; return Task.CompletedTask; });
+
+        try
+        {
+            // Act
+            await _handler.Handle(CreateCommand(), CancellationToken.None);
+
+            // Assert
+            toolResult.Withheld.Should().BeTrue();
+            toolResult.Text.Should().BeEmpty();
         }
         finally
         {
@@ -425,7 +505,7 @@ public class ExecuteAgentTurnCommandHandlerTests
             new Application.AI.Common.Services.AgentTurnStreamSink(
                 onDelta: (_, _) => Task.CompletedTask,
                 onToolCall: (id, name, args, _) => { events.Add($"call:{id}:{name}:{args.Json}"); return Task.CompletedTask; },
-                onToolCallResult: (id, result, _) => { events.Add($"result:{id}:{result}"); return Task.CompletedTask; });
+                onToolCallResult: (id, result, _) => { events.Add($"result:{id}:{result.Text}"); return Task.CompletedTask; });
 
         try
         {
@@ -478,7 +558,7 @@ public class ExecuteAgentTurnCommandHandlerTests
             redactor.Object);
 
         var args = string.Empty;
-        var toolResult = string.Empty;
+        var toolResult = default(Application.AI.Common.Interfaces.StreamedToolCallResult);
         Application.AI.Common.Services.AgentTurnStreamSink.Current =
             new Application.AI.Common.Services.AgentTurnStreamSink(
                 onDelta: (_, _) => Task.CompletedTask,
@@ -492,7 +572,7 @@ public class ExecuteAgentTurnCommandHandlerTests
 
             // Assert
             args.Should().NotContain("secret-value").And.Contain("[REDACTED]");
-            toolResult.Should().Be("[REDACTED]");
+            toolResult.Text.Should().Be("[REDACTED]");
             // TOOL_CALL_ARGS.delta is documented as always-complete, parseable JSON — a redactor that
             // corrupts the surrounding structure (e.g. a greedy value matcher, see
             // PatternSecretRedactorTests.Redact_SecretKeywordInsideJsonStringValue_DoesNotConsumeRestOfDocument
@@ -530,7 +610,7 @@ public class ExecuteAgentTurnCommandHandlerTests
                 It.IsAny<CancellationToken>()))
             .ReturnsAsync(agent);
 
-        var toolResult = string.Empty;
+        var toolResult = default(Application.AI.Common.Interfaces.StreamedToolCallResult);
         Application.AI.Common.Services.AgentTurnStreamSink.Current =
             new Application.AI.Common.Services.AgentTurnStreamSink(
                 onDelta: (_, _) => Task.CompletedTask,
@@ -543,8 +623,9 @@ public class ExecuteAgentTurnCommandHandlerTests
             await _handler.Handle(CreateCommand(), CancellationToken.None);
 
             // Assert
-            toolResult.Should().NotContain("/etc/shadow");
-            toolResult.Should().NotBeEmpty();
+            toolResult.Text.Should().NotContain("/etc/shadow");
+            toolResult.Text.Should().NotBeEmpty();
+            toolResult.Withheld.Should().BeFalse();
         }
         finally
         {

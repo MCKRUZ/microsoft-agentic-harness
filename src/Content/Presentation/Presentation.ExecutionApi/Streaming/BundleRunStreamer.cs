@@ -75,15 +75,30 @@ public sealed class BundleRunStreamer
                 // The AG-UI wire protocol wants three separate frames; the sink itself only ever
                 // reports one complete tool call, so this is where that single call fans out into
                 // start/args/end — see IAgentTurnStreamSink.EmitToolCallAsync's remarks for why the
-                // seam doesn't carry that split.
-                await writer.WriteAsync(new BundleToolCallStartEvent(toolCallId, toolCallName), ct).ConfigureAwait(false);
+                // seam doesn't carry that split. parentMessageId is only sent once the assistant text
+                // message has actually opened on the wire (textStarted) — a tool call can arrive before
+                // the first text delta, and pointing a client at a message it has never seen would
+                // violate the schema it's optional for.
+                await writer.WriteAsync(
+                    new BundleToolCallStartEvent(toolCallId, toolCallName, textStarted ? messageId : null),
+                    ct).ConfigureAwait(false);
                 await writer.WriteAsync(
                     new BundleToolCallArgsEvent(toolCallId, args.Json, args.Withheld ? true : null),
                     ct).ConfigureAwait(false);
                 await writer.WriteAsync(new BundleToolCallEndEvent(toolCallId), ct).ConfigureAwait(false);
             },
             onToolCallResult: (toolCallId, result, ct) =>
-                writer.WriteAsync(new BundleToolCallResultEvent(toolCallId, result), ct));
+            {
+                // A fresh id per result — never a reuse of the run's assistant messageId above. In
+                // AG-UI, a tool result is its own message (role "tool"), distinct from the assistant
+                // message that requested the call.
+                var resultMessageId = Guid.NewGuid().ToString("N");
+                return writer.WriteAsync(
+                    new BundleToolCallResultEvent(
+                        toolCallId, resultMessageId, result.Withheld ? string.Empty : result.Text, "tool",
+                        result.Withheld ? true : null),
+                    ct);
+            });
 
         BundleRunExecution execution;
         try

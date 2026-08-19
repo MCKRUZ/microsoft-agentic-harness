@@ -60,16 +60,24 @@ public sealed record BundleTextMessageEndEvent(
     [property: JsonPropertyName("messageId")] string MessageId) : BundleStreamEvent;
 
 /// <summary>
-/// Emitted when the agent decides to call a tool. Field names match the AgentHub's own AG-UI
-/// tool-call vocabulary (<c>Presentation.AgentHub/AgUi/AgUiToolCallEvents.cs</c>) for consistency,
-/// even though this file deliberately does not reference those types directly — see this file's
-/// top-level remarks.
+/// Emitted when the agent decides to call a tool. <see cref="ToolCallId"/>/<see cref="ToolCallName"/>
+/// match the AgentHub's own AG-UI tool-call vocabulary (<c>Presentation.AgentHub/AgUi/AgUiToolCallEvents.cs</c>)
+/// for consistency, even though this file deliberately does not reference those types directly — see
+/// this file's top-level remarks. <see cref="ParentMessageId"/> has no AgentHub counterpart — it is
+/// bundle-specific.
 /// </summary>
 public sealed record BundleToolCallStartEvent(
     /// <summary>The provider-assigned id for this call, shared by every event for it.</summary>
     [property: JsonPropertyName("toolCallId")] string ToolCallId,
     /// <summary>The name of the tool being called.</summary>
-    [property: JsonPropertyName("toolCallName")] string ToolCallName) : BundleStreamEvent;
+    [property: JsonPropertyName("toolCallName")] string ToolCallName,
+    /// <summary>
+    /// The id of the assistant message this tool call belongs to, per the AG-UI wire schema. Absent
+    /// (omitted from the wire) when the call is emitted before the assistant's
+    /// <see cref="BundleTextMessageStartEvent"/> has streamed — the parent message does not exist yet
+    /// from the client's perspective at that point, and the field is optional precisely for this case.
+    /// </summary>
+    [property: JsonPropertyName("parentMessageId")] string? ParentMessageId = null) : BundleStreamEvent;
 
 /// <summary>
 /// Carries a tool call's arguments. Unlike <see cref="BundleTextMessageContentEvent"/>, this is NOT an
@@ -101,18 +109,42 @@ public sealed record BundleToolCallEndEvent(
     [property: JsonPropertyName("toolCallId")] string ToolCallId) : BundleStreamEvent;
 
 /// <summary>
-/// Emitted once a tool call has actually run and produced a result. No precedent field-naming to
-/// match — <c>AgUiEventType.ToolCallResult</c> is a dead wire-vocabulary constant with no backing
-/// record anywhere in the repo.
+/// Emitted once a tool call has actually run and produced a result. Field names match the AG-UI wire
+/// schema's tool-call-result event (<c>messageId</c>, <c>content</c>, <c>role</c>) — confirmed against
+/// the AG-UI protocol repo's own <c>sdks/typescript/packages/core/src/events.ts</c> and this repo's
+/// pinned <c>@ag-ui/core</c> package, where <c>role</c> is optional but always <c>"tool"</c> in
+/// practice; sent unconditionally here rather than made nullable-and-omittable for a value that never
+/// varies. <c>AgUiEventType.ToolCallResult</c> in <c>Presentation.AgentHub</c> is a dead
+/// wire-vocabulary constant with no backing record, so there is no in-repo precedent to mirror for
+/// these field names beyond the shared <see cref="ToolCallId"/>.
 /// </summary>
 public sealed record BundleToolCallResultEvent(
     /// <summary>The call this result belongs to.</summary>
     [property: JsonPropertyName("toolCallId")] string ToolCallId,
     /// <summary>
-    /// A redacted, truncated preview of the tool's output — never the raw payload. On failure this is a
-    /// generic message, not the underlying exception text.
+    /// A fresh id for this result's own message, per the AG-UI wire schema — never a reuse of the run's
+    /// assistant message id, since a tool result is its own message with role <see cref="Role"/>, not a
+    /// continuation of the assistant's text message.
     /// </summary>
-    [property: JsonPropertyName("result")] string Result) : BundleStreamEvent;
+    [property: JsonPropertyName("messageId")] string MessageId,
+    /// <summary>
+    /// The tool's redacted output — never the raw payload, and never truncated. On failure this is a
+    /// generic message, not the underlying exception text. Empty when <see cref="Withheld"/> is
+    /// <see langword="true"/> — the real result exceeded the streaming size ceiling and was withheld
+    /// whole rather than truncated (truncating a redacted preview past that ceiling could still contain
+    /// an unredacted secret, and truncating data a client may parse as structured hands it invalid data
+    /// either way).
+    /// </summary>
+    [property: JsonPropertyName("content")] string Content,
+    /// <summary>Message role for a tool result, per the AG-UI wire schema. Always <c>tool</c>.</summary>
+    [property: JsonPropertyName("role")] string Role,
+    /// <summary>
+    /// <see langword="true"/> when the real result was withheld for exceeding the size ceiling. Nullable,
+    /// and only ever constructed as <see langword="true"/> or <see langword="null"/> — never
+    /// <see langword="false"/> — so the field is omitted from the wire on every normal frame, mirroring
+    /// <see cref="BundleToolCallArgsEvent.Withheld"/>.
+    /// </summary>
+    [property: JsonPropertyName("withheld")] bool? Withheld = null) : BundleStreamEvent;
 
 /// <summary>Emitted once on successful completion of a streamed run. Terminal; no further frames follow.</summary>
 public sealed record BundleRunFinishedEvent(

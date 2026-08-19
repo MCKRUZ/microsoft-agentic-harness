@@ -28,7 +28,7 @@ public class ToolCallOrderingSinkTests
             return Task.CompletedTask;
         }
 
-        public Task EmitToolCallResultAsync(string toolCallId, string result, CancellationToken cancellationToken)
+        public Task EmitToolCallResultAsync(string toolCallId, StreamedToolCallResult result, CancellationToken cancellationToken)
         {
             Calls.Add($"result:{toolCallId}");
             return Task.CompletedTask;
@@ -53,7 +53,7 @@ public class ToolCallOrderingSinkTests
         var inner = new RecordingSink();
         var sut = new ToolCallOrderingSink(inner);
 
-        await sut.EmitToolCallResultAsync("call-1", "42", CancellationToken.None);
+        await sut.EmitToolCallResultAsync("call-1", new StreamedToolCallResult("42", false), CancellationToken.None);
 
         inner.Calls.Should().BeEmpty();
     }
@@ -65,7 +65,7 @@ public class ToolCallOrderingSinkTests
         var sut = new ToolCallOrderingSink(inner);
 
         await sut.EmitToolCallAsync("call-1", "search", new StreamedToolCallArguments("{}", false), CancellationToken.None);
-        await sut.EmitToolCallResultAsync("call-1", "42", CancellationToken.None);
+        await sut.EmitToolCallResultAsync("call-1", new StreamedToolCallResult("42", false), CancellationToken.None);
 
         inner.Calls.Should().Equal("start:call-1", "result:call-1");
     }
@@ -78,8 +78,8 @@ public class ToolCallOrderingSinkTests
 
         await sut.EmitToolCallAsync("call-1", "search", new StreamedToolCallArguments("{}", false), CancellationToken.None);
         await sut.EmitToolCallAsync("call-2", "search", new StreamedToolCallArguments("{}", false), CancellationToken.None);
-        await sut.EmitToolCallResultAsync("call-1", "a", CancellationToken.None);
-        await sut.EmitToolCallResultAsync("call-2", "b", CancellationToken.None);
+        await sut.EmitToolCallResultAsync("call-1", new StreamedToolCallResult("a", false), CancellationToken.None);
+        await sut.EmitToolCallResultAsync("call-2", new StreamedToolCallResult("b", false), CancellationToken.None);
 
         inner.Calls.Should().Equal("start:call-1", "start:call-2", "result:call-1", "result:call-2");
     }
@@ -99,12 +99,12 @@ public class ToolCallOrderingSinkTests
         var sut = new ToolCallOrderingSink(inner);
 
         await sut.EmitToolCallAsync("call-1", "search", new StreamedToolCallArguments("{}", false), CancellationToken.None);
-        await sut.EmitToolCallResultAsync("call-1", "42", CancellationToken.None);
+        await sut.EmitToolCallResultAsync("call-1", new StreamedToolCallResult("42", false), CancellationToken.None);
 
-        CapturedResult.Should().Be(("call-1", "42"));
+        CapturedResult.Should().Be(("call-1", new StreamedToolCallResult("42", false)));
     }
 
-    private (string Id, string Result)? CapturedResult { get; set; }
+    private (string Id, StreamedToolCallResult Result)? CapturedResult { get; set; }
 
     /// <summary>
     /// Two separate instances (one per turn) must not share state — pins the per-turn scoping that

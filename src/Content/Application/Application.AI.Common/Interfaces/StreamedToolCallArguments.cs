@@ -11,7 +11,7 @@ namespace Application.AI.Common.Interfaces;
 /// </param>
 /// <param name="Withheld">
 /// <see langword="true"/> when the real arguments were not sent — either because their serialized
-/// length exceeded <c>ToolPayloadRedactor.MaxStreamedToolCallArgsLength</c> (arguments are withheld
+/// length exceeded <c>ToolPayloadRedactor.MaxStreamedToolCallPayloadLength</c> (arguments are withheld
 /// whole rather than truncated, since truncating mid-JSON would hand the client invalid data), or
 /// because serialization/redaction itself failed. <see langword="false"/> for a normal call, where
 /// <see cref="Json"/> carries the complete, redacted arguments.

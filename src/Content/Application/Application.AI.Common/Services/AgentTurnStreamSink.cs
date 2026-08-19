@@ -26,7 +26,7 @@ public sealed class AgentTurnStreamSink : IAgentTurnStreamSink
 
     private readonly Func<string, CancellationToken, Task> _onDelta;
     private readonly Func<string, string, StreamedToolCallArguments, CancellationToken, Task>? _onToolCall;
-    private readonly Func<string, string, CancellationToken, Task>? _onToolCallResult;
+    private readonly Func<string, StreamedToolCallResult, CancellationToken, Task>? _onToolCallResult;
 
     /// <summary>
     /// Creates a sink that forwards each assistant text delta to <paramref name="onDelta"/>, each
@@ -42,7 +42,7 @@ public sealed class AgentTurnStreamSink : IAgentTurnStreamSink
     public AgentTurnStreamSink(
         Func<string, CancellationToken, Task> onDelta,
         Func<string, string, StreamedToolCallArguments, CancellationToken, Task>? onToolCall = null,
-        Func<string, string, CancellationToken, Task>? onToolCallResult = null)
+        Func<string, StreamedToolCallResult, CancellationToken, Task>? onToolCallResult = null)
     {
         ArgumentNullException.ThrowIfNull(onDelta);
         _onDelta = onDelta;
@@ -59,6 +59,6 @@ public sealed class AgentTurnStreamSink : IAgentTurnStreamSink
         _onToolCall?.Invoke(toolCallId, toolCallName, args, cancellationToken) ?? Task.CompletedTask;
 
     /// <inheritdoc />
-    public Task EmitToolCallResultAsync(string toolCallId, string result, CancellationToken cancellationToken) =>
+    public Task EmitToolCallResultAsync(string toolCallId, StreamedToolCallResult result, CancellationToken cancellationToken) =>
         _onToolCallResult?.Invoke(toolCallId, result, cancellationToken) ?? Task.CompletedTask;
 }

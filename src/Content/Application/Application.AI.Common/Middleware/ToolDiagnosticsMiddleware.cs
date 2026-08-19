@@ -88,7 +88,7 @@ public sealed class ToolDiagnosticsMiddleware : DelegatingChatClient
         foreach (var result in functionResults)
         {
             // A failed call's Result already carries the raw exception message baked in by
-            // IncludeDetailedErrors (see ExecuteAgentTurnCommandHandler.RedactedResultPreview) — this
+            // IncludeDetailedErrors (see ExecuteAgentTurnCommandHandler.RedactedResultForStreaming) — this
             // trace record feeds the dashboard's per-invocation page via ToolInvocationDetailDto,
             // which is just as much an exposure point as the streamed SSE frame, so it gets the same
             // generic-message substitution, not just redaction of the raw text.
@@ -101,7 +101,7 @@ public sealed class ToolDiagnosticsMiddleware : DelegatingChatClient
                 // cannot see through the escaped-nested-JSON secret shape #391 closed for smaller
                 // payloads — a 500-char slice of an oversized, only-partially-redacted result could
                 // still contain an unredacted secret persisted to the trace store indefinitely. Same
-                // guard ExecuteAgentTurnCommandHandler.RedactedResultPreview applies to the identical
+                // guard ExecuteAgentTurnCommandHandler.RedactedResultForStreaming applies to the identical
                 // exposure on the streamed path.
                 trimmedPayload = "[result too large to preview safely]";
             }

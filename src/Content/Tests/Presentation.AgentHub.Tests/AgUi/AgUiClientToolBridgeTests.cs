@@ -162,7 +162,7 @@ public sealed class AgUiClientToolBridgeTests
         var accessor = new AgUiEventWriterAccessor { Writer = writer, ThreadId = "thread-o", CallerId = "user-o" };
         var registry = new PendingToolCallRegistry();
         var bridge = Bridge(accessor, registry);
-        var oversized = $$"""{"q":"{{new string('x', ToolPayloadRedactor.MaxStreamedToolCallArgsLength + 1)}}"}""";
+        var oversized = $$"""{"q":"{{new string('x', ToolPayloadRedactor.MaxStreamedToolCallPayloadLength + 1)}}"}""";
 
         var invokeTask = bridge.InvokeAsync("dashboard_control", oversized);
 

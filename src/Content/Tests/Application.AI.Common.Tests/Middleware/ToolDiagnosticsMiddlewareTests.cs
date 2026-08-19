@@ -100,7 +100,7 @@ public sealed class ToolDiagnosticsMiddlewareTests
         // FunctionInvokingChatClient's IncludeDetailedErrors option (set unconditionally by
         // AgentFactory) bakes Exception.Message verbatim into Result — this trace record feeds the
         // dashboard's per-invocation page via ToolInvocationDetailDto, an exposure point just as real
-        // as the streamed SSE frame ExecuteAgentTurnCommandHandler.RedactedResultPreview sanitizes.
+        // as the streamed SSE frame ExecuteAgentTurnCommandHandler.RedactedResultForStreaming sanitizes.
         var innerClient = MakeChatClient();
         var (writerMock, middleware) = MakeMiddlewareWithWriter(innerClient);
 
