@@ -349,9 +349,9 @@ public sealed class McpConnectionManagerSandboxedStdioTests
     {
         // #431: the host-wide session-cap refusal above (RefusesBeyondTheHostWideCap) previously left
         // no audit trail at all — an authenticated caller repeatedly hitting the cap was invisible to
-        // the governance audit chain. Same scenario as that test, plus a fake IGovernanceAuditService
+        // the governance audit chain. Same scenario as that test, plus a mocked IGovernanceAuditService
         // to prove the refusal is now recorded exactly once.
-        var auditService = new FakeGovernanceAuditService();
+        var auditService = new Mock<IGovernanceAuditService>();
         var blockingFactory = new BlockingSandboxSessionFactory();
         var bundleOwned = new BundleOwnedMcpServerRegistry();
         bundleOwned.TryAdd("b1:local-tool", new McpServerDefinition
@@ -380,7 +380,7 @@ public sealed class McpConnectionManagerSandboxedStdioTests
         {
             services.AddKeyedSingleton<ISandboxSessionFactory>(SandboxIsolationLevel.Container, blockingFactory);
             services.AddSingleton<IOptionsMonitor<AppConfig>>(new StaticAppConfigMonitor(appConfig));
-            services.AddSingleton<IGovernanceAuditService>(auditService);
+            services.AddSingleton(auditService.Object);
         });
         var sut = McpConnectionManagerBundleEgressSupport.CreateManager(
             Mock.Of<ILogger<McpConnectionManager>>(), new Mock<ILoggerFactory>().Object,
@@ -391,9 +391,9 @@ public sealed class McpConnectionManagerSandboxedStdioTests
 
         await Assert.ThrowsAsync<McpConnectionException>(() => sut.GetClientAsync("b2:local-tool"));
 
-        auditService.Entries.Should().ContainSingle(
-            e => e.Action == "b2:local-tool" && e.Decision == "session_cap_exceeded:1",
-            "the cap refusal must leave exactly one durable audit record naming the refused server");
+        auditService.Verify(a => a.Log(It.IsAny<string>(), "b2:local-tool",
+                $"host_session_cap_exceeded:{appConfig.AI.BundleExecution.StdioMcpServers.MaxConcurrentSessions}"),
+            Times.Once, "the cap refusal must leave exactly one durable audit record naming the refused server");
 
         blockingFactory.Release.SetResult();
         await Assert.ThrowsAsync<McpConnectionException>(() => firstCallTask);
@@ -403,8 +403,8 @@ public sealed class McpConnectionManagerSandboxedStdioTests
     public async Task GetClientAsync_BundleOwnedStdioServer_SeedDirectoryOutsideStagingRoot_WritesOneAuditRecord()
     {
         // #431: same containment scenario as SeedDirectoryOutsideStagingRoot_RefusesWithoutStartingASession
-        // above, plus a fake IGovernanceAuditService to prove the refusal is now recorded exactly once.
-        var auditService = new FakeGovernanceAuditService();
+        // above, plus a mocked IGovernanceAuditService to prove the refusal is now recorded exactly once.
+        var auditService = new Mock<IGovernanceAuditService>();
         var bundleOwned = new BundleOwnedMcpServerRegistry();
         bundleOwned.TryAdd("b1:local-tool", new McpServerDefinition
         {
@@ -430,7 +430,7 @@ public sealed class McpConnectionManagerSandboxedStdioTests
         {
             services.AddKeyedSingleton<ISandboxSessionFactory>(SandboxIsolationLevel.Container, _fakeSessionFactory);
             services.AddSingleton<IOptionsMonitor<AppConfig>>(new StaticAppConfigMonitor(appConfig));
-            services.AddSingleton<IGovernanceAuditService>(auditService);
+            services.AddSingleton(auditService.Object);
         });
         var sut = McpConnectionManagerBundleEgressSupport.CreateManager(
             Mock.Of<ILogger<McpConnectionManager>>(), new Mock<ILoggerFactory>().Object,
@@ -438,8 +438,7 @@ public sealed class McpConnectionManagerSandboxedStdioTests
 
         await Assert.ThrowsAsync<McpConnectionException>(() => sut.GetClientAsync("b1:local-tool"));
 
-        auditService.Entries.Should().ContainSingle(
-            e => e.Action == "b1:local-tool" && e.Decision == "refused:seed_outside_staging_root",
+        auditService.Verify(a => a.Log(It.IsAny<string>(), "b1:local-tool", "seed_outside_staging_root"), Times.Once,
             "the seed-containment refusal must leave exactly one durable audit record naming the refused server");
     }
 
@@ -450,7 +449,7 @@ public sealed class McpConnectionManagerSandboxedStdioTests
         // itself returning a failed Result — previously left no audit trail. FakeSandboxSessionFactory
         // always fails (see its own doc comment), so any successful connection attempt against it
         // exercises exactly this branch.
-        var auditService = new FakeGovernanceAuditService();
+        var auditService = new Mock<IGovernanceAuditService>();
         var bundleOwned = new BundleOwnedMcpServerRegistry();
         bundleOwned.TryAdd("b1:local-tool", new McpServerDefinition
         {
@@ -462,7 +461,7 @@ public sealed class McpConnectionManagerSandboxedStdioTests
         var rootServices = McpConnectionManagerBundleEgressSupport.BuildRootServices(services =>
         {
             services.AddKeyedSingleton<ISandboxSessionFactory>(SandboxIsolationLevel.Container, _fakeSessionFactory);
-            services.AddSingleton<IGovernanceAuditService>(auditService);
+            services.AddSingleton(auditService.Object);
         });
         var sut = McpConnectionManagerBundleEgressSupport.CreateManager(
             Mock.Of<ILogger<McpConnectionManager>>(), new Mock<ILoggerFactory>().Object,
@@ -470,9 +469,9 @@ public sealed class McpConnectionManagerSandboxedStdioTests
 
         await Assert.ThrowsAsync<McpConnectionException>(() => sut.GetClientAsync("b1:local-tool"));
 
-        auditService.Entries.Should().ContainSingle(
-            e => e.Action == "b1:local-tool" && e.Decision.StartsWith("session_factory_failed:", StringComparison.Ordinal),
-            "the session-factory failure must leave exactly one durable audit record naming the refused server");
+        auditService.Verify(a => a.Log(It.IsAny<string>(), "b1:local-tool",
+                It.Is<string>(d => d.StartsWith("session_factory_failed:", StringComparison.Ordinal))),
+            Times.Once, "the session-factory failure must leave exactly one durable audit record naming the refused server");
     }
 
     [Fact]
@@ -586,17 +585,5 @@ public sealed class McpConnectionManagerSandboxedStdioTests
             LastRequest = request;
             return Task.FromResult(Result<ISandboxSession>.Fail("fake factory: not starting a real session"));
         }
-    }
-
-    /// <summary>Records every <see cref="Log"/> call for a test to assert against, instead of writing a real tamper-evident chain.</summary>
-    private sealed class FakeGovernanceAuditService : IGovernanceAuditService
-    {
-        public List<(string AgentId, string Action, string Decision)> Entries { get; } = [];
-
-        public void Log(string agentId, string action, string decision) => Entries.Add((agentId, action, decision));
-
-        public bool VerifyChainIntegrity() => true;
-
-        public int EntryCount => Entries.Count;
     }
 }

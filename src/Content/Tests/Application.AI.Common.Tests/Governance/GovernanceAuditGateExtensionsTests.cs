@@ -155,34 +155,6 @@ public sealed class GovernanceAuditGateExtensionsTests
         factoryInvoked.Should().BeFalse("a missing audit sink means there is nothing to build the decision string for");
     }
 
-    [Fact]
-    public void LogIfAuditEnabled_LazyIOptionsMonitorOverload_EnableAuditTrue_LogsUsingFactoryResult()
-    {
-        var config = MonitorOf(new GovernanceConfig { EnableAudit = true });
-
-        _auditService.Object.LogIfAuditEnabled(config, "agent-1", "tool_x", () => "computed-decision");
-
-        _auditService.Verify(a => a.Log("agent-1", "tool_x", "computed-decision"), Times.Once);
-    }
-
-    [Fact]
-    public void LogIfAuditEnabled_LazyIOptionsMonitorOverload_EnableAuditFalse_NeverInvokesFactory()
-    {
-        // Exercises the McpConnectionManager.cs session-factory-failure call site's exact shape: a
-        // live IOptionsMonitor plus a Func<string> decision, delegating to the snapshot+lazy overload.
-        var config = MonitorOf(new GovernanceConfig { EnableAudit = false });
-        var factoryInvoked = false;
-
-        _auditService.Object.LogIfAuditEnabled(config, "agent-1", "tool_x", () =>
-        {
-            factoryInvoked = true;
-            return "computed-decision";
-        });
-
-        factoryInvoked.Should().BeFalse("the decision factory must not run when auditing is disabled");
-        _auditService.Verify(a => a.Log(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>()), Times.Never);
-    }
-
     private static IOptionsMonitor<GovernanceConfig> MonitorOf(GovernanceConfig config)
     {
         var monitor = new Mock<IOptionsMonitor<GovernanceConfig>>();

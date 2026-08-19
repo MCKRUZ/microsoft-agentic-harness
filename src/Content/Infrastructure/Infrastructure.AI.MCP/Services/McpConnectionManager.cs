@@ -544,7 +544,7 @@ public sealed class McpConnectionManager : IAsyncDisposable
         {
             Interlocked.Decrement(ref _liveSandboxedStdioSessions);
             var capReason = $"Host-wide bundle stdio sandbox session cap ({maxConcurrentSessions}) reached; refusing to start another.";
-            _governanceAuditService.LogIfAuditEnabled(_governanceConfig, "system", serverName, $"session_cap_exceeded:{maxConcurrentSessions}");
+            _governanceAuditService.LogIfAuditEnabled(_governanceConfig, "system", serverName, $"host_session_cap_exceeded:{maxConcurrentSessions}");
             return Result<ISandboxSession>.Fail(capReason);
         }
 
@@ -580,7 +580,7 @@ public sealed class McpConnectionManager : IAsyncDisposable
                 // directory into an untrusted, bundle-launched container" without this check also
                 // having to be deliberately bypassed, not merely never written in the first place.
                 var containmentReason = "Sandbox workspace seed directory is outside the configured bundle staging root — refusing to seed.";
-                _governanceAuditService.LogIfAuditEnabled(_governanceConfig, "system", serverName, "refused:seed_outside_staging_root");
+                _governanceAuditService.LogIfAuditEnabled(_governanceConfig, "system", serverName, "seed_outside_staging_root");
                 return Result<ISandboxSession>.Fail(containmentReason);
             }
 
@@ -601,7 +601,7 @@ public sealed class McpConnectionManager : IAsyncDisposable
             var result = await sessionFactory.StartSessionAsync(request, cancellationToken);
             if (!result.IsSuccess)
             {
-                _governanceAuditService.LogIfAuditEnabled(_governanceConfig, "system", serverName,
+                _governanceAuditService.LogIfAuditEnabled(_governanceConfig?.CurrentValue, "system", serverName,
                     () => $"session_factory_failed:{(result.Errors.Count > 0 ? string.Join("; ", result.Errors) : "unknown error")}");
                 return result;
             }
