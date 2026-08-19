@@ -1,6 +1,7 @@
 using Application.AI.Common.CQRS.Changes.SubmitChangeProposal;
 using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Interfaces.Workspace;
+using Domain.Common;
 using Domain.Common.Helpers;
 using Domain.AI.Changes;
 using Domain.Common.Config.AI.Governance;
@@ -132,11 +133,12 @@ public sealed class WorkspaceWriteFileTool : ITool
         if (!parameters.TryGetValue("summary", out var summaryValue) || summaryValue is not string summary || string.IsNullOrWhiteSpace(summary))
             return ToolResult.Fail("Required parameter 'summary' is missing or empty. Summaries surface in approval prompts and audit.");
 
-        var (relativePath, pathFailure) = ResolveRelativePath(workspace, path);
-        if (pathFailure is not null)
-            return pathFailure;
+        var pathResult = ResolveRelativePath(workspace, path);
+        if (!pathResult.IsSuccess)
+            return ToolResult.Fail(pathResult.Errors.Count > 0 ? pathResult.Errors[0] : "Invalid path.");
 
-        var command = BuildCommand(workspace, relativePath!, content, summary, parameters);
+        var relativePath = pathResult.Value!;
+        var command = BuildCommand(workspace, relativePath, content, summary, parameters);
 
         return await MediatorDispatchRunner.RunAsync(
             _scopeFactory,
@@ -166,21 +168,20 @@ public sealed class WorkspaceWriteFileTool : ITool
     /// records the *relative* form so the applier can re-resolve against whatever working copy it
     /// operates on — the sandbox-injected absolute path is not portable across machines/replays.
     /// </summary>
-    private static (string? RelativePath, ToolResult? Failure) ResolveRelativePath(
-        WorkspaceContext workspace, string path)
+    private static Result<string> ResolveRelativePath(WorkspaceContext workspace, string path)
     {
         try
         {
             var fullPath = WorkspacePathResolver.Resolve(workspace, path);
-            return (WorkspacePathResolver.ToRelative(workspace, fullPath), null);
+            return Result<string>.Success(WorkspacePathResolver.ToRelative(workspace, fullPath));
         }
         catch (UnauthorizedAccessException)
         {
-            return (null, ToolResult.Fail("Access denied: path is outside the workspace."));
+            return Result<string>.Fail("Access denied: path is outside the workspace.");
         }
         catch (ArgumentException)
         {
-            return (null, ToolResult.Fail("Invalid path."));
+            return Result<string>.Fail("Invalid path.");
         }
     }
 

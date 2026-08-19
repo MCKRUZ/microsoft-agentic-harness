@@ -169,7 +169,10 @@ public sealed class DocumentIngestTool : ITool
             },
             _logger,
             ToolName,
-            failureContext: uri.ToString(),
+            // GetLeftPart(UriPartial.Path) drops the query string — a document URI can legitimately be
+            // a SAS-signed blob URL (?sv=...&sig=...), and this failure path is reached on exactly the
+            // input this tool is expected to reject, so the credential must never land in an error log.
+            failureContext: uri.GetLeftPart(UriPartial.Path),
             cancellationToken);
     }
 
