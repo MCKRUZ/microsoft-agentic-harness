@@ -267,6 +267,24 @@ public class DependencyInjectionTests
     }
 
     [Fact]
+    public void AddApplicationAIDependencies_RegistersOwaspMetrics_InNonKeyedMetricSet()
+    {
+        // The 10 OWASP metrics were registered keyed-only until #436, invisible to the same
+        // IEnumerable<IEvalMetric> enumeration EvalRunner resolves from — every case in
+        // eval-datasets/owasp-agentic-top-10.yaml silently scored 0.0/Warn instead of running.
+        var provider = CreateServicesWithAIDependencies().BuildServiceProvider();
+
+        var keys = provider.GetServices<IEvalMetric>().Select(m => m.Key);
+
+        keys.Should().Contain([
+            "owasp.asi01.goal_hijack", "owasp.asi02.tool_misuse", "owasp.asi03.privilege_abuse",
+            "owasp.asi04.supply_chain", "owasp.asi05.code_exec", "owasp.asi06.memory_poison",
+            "owasp.asi07.inter_agent", "owasp.asi08.cascading", "owasp.asi09.human_trust",
+            "owasp.asi10.rogue_agent",
+        ]);
+    }
+
+    [Fact]
     public void AddApplicationAIDependencies_ReturnsServiceCollection_ForChaining()
     {
         var services = new ServiceCollection();

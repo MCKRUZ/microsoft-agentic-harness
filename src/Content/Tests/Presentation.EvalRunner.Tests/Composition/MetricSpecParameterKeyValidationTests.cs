@@ -23,19 +23,6 @@ namespace Presentation.EvalRunner.Tests.Composition;
 /// </remarks>
 public sealed class MetricSpecParameterKeyValidationTests
 {
-    // The 10 OWASP metrics are registered keyed-only in Application.AI.Common's own
-    // DependencyInjection.cs — see that file's remarks on EvalRunner building its metric map from
-    // the non-keyed IEnumerable<IEvalMetric>, which keyed-only registrations are invisible to (a
-    // separate, pre-existing gap, filed as #436 rather than folded into this fix). Resolved here by
-    // key explicitly so this test's own coverage doesn't silently exclude them.
-    private static readonly string[] KeyedOnlyMetricKeys =
-    [
-        "owasp.asi01.goal_hijack", "owasp.asi02.tool_misuse", "owasp.asi03.privilege_abuse",
-        "owasp.asi04.supply_chain", "owasp.asi05.code_exec", "owasp.asi06.memory_poison",
-        "owasp.asi07.inter_agent", "owasp.asi08.cascading", "owasp.asi09.human_trust",
-        "owasp.asi10.rogue_agent"
-    ];
-
     private static readonly Lazy<IReadOnlyDictionary<string, IEvalMetric>> MetricsByKey = new(BuildMetricsByKey);
 
     private static IReadOnlyDictionary<string, IEvalMetric> BuildMetricsByKey()
@@ -44,15 +31,14 @@ public sealed class MetricSpecParameterKeyValidationTests
         // plus AddEvaluationDependencies is what actually constructs every metric (including the
         // LlmJudge/RAG ones with real constructor dependencies) against an empty in-memory config,
         // proven to build cleanly under ValidateOnBuild by the sibling EvalRunnerValidateOnBuildTests.
+        // Every registered IEvalMetric — including the 10 OWASP metrics, previously keyed-only and
+        // invisible here until #436 — resolves through this single non-keyed enumeration; that is
+        // exactly the guarantee EvalRunnerMetricDiscoveryTests pins directly.
         var services = EvalRunnerTestComposition.BuildServices();
         using var provider = services.BuildServiceProvider();
 
-        var byKey = provider.GetServices<IEvalMetric>()
+        return provider.GetServices<IEvalMetric>()
             .ToDictionary(m => m.Key, StringComparer.OrdinalIgnoreCase);
-        foreach (var key in KeyedOnlyMetricKeys)
-            byKey[key] = provider.GetRequiredKeyedService<IEvalMetric>(key);
-
-        return byKey;
     }
 
     public static IEnumerable<object[]> DatasetFiles()
