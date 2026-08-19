@@ -52,15 +52,21 @@ internal static class MediatorDispatchRunner
         string failureContext,
         CancellationToken cancellationToken)
     {
-        // Scope creation lives outside the try/finally pair below so an already-obtained successful
+        // `scope` stays nullable and unassigned until CreateAsyncScope() itself succeeds, so a
+        // creation failure (e.g. an already-disposed root provider during shutdown) is caught by the
+        // same catch blocks below instead of escaping uncaught — closing the one gap #428 left open,
+        // per correctness-review on PR #442. The catch blocks each check for null before disposing, so
+        // a creation failure never attempts to dispose a scope that was never created. Disposal itself
+        // still happens outside the try, in DisposeScopeAsync, so an already-obtained successful
         // `result` is never discarded: disposing the scope AFTER the dispatch has committed its write
-        // can itself throw, and if that were inside the same try/catch that maps dispatch failures,
-        // a genuinely successful ChangeProposal submission or ingest would be reported to the model as
+        // can itself throw, and if that were inside the same try/catch that maps dispatch failures, a
+        // genuinely successful ChangeProposal submission or ingest would be reported to the model as
         // "dispatch failed" — inviting a retry of work that already landed.
-        var scope = scopeFactory.CreateAsyncScope();
+        AsyncServiceScope? scope = null;
         try
         {
-            var mediator = scope.ServiceProvider.GetRequiredService<IMediator>();
+            scope = scopeFactory.CreateAsyncScope();
+            var mediator = scope.Value.ServiceProvider.GetRequiredService<IMediator>();
             var result = await dispatch(mediator, cancellationToken).ConfigureAwait(false);
             await DisposeScopeAsync(scope, logger, toolName).ConfigureAwait(false);
             return result;
@@ -83,15 +89,20 @@ internal static class MediatorDispatchRunner
     }
 
     /// <summary>
-    /// Disposes <paramref name="scope"/>, logging (not throwing) if disposal itself fails. A disposal
-    /// failure is a resource-cleanup problem worth surfacing in logs, but must never overwrite a
-    /// dispatch outcome — success or failure — that was already determined before disposal ran.
+    /// Disposes <paramref name="scope"/> if it was ever created, logging (not throwing) if disposal
+    /// itself fails. A disposal failure is a resource-cleanup problem worth surfacing in logs, but
+    /// must never overwrite a dispatch outcome — success or failure — that was already determined
+    /// before disposal ran. A <see langword="null"/> scope (creation itself failed) is a no-op: there
+    /// is nothing to dispose.
     /// </summary>
-    private static async Task DisposeScopeAsync(AsyncServiceScope scope, ILogger logger, string toolName)
+    private static async Task DisposeScopeAsync(AsyncServiceScope? scope, ILogger logger, string toolName)
     {
+        if (scope is null)
+            return;
+
         try
         {
-            await scope.DisposeAsync().ConfigureAwait(false);
+            await scope.Value.DisposeAsync().ConfigureAwait(false);
         }
         catch (Exception ex)
         {

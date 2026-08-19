@@ -82,7 +82,35 @@ public sealed class MediatorDispatchRunnerTests
             "already-obtained successful result");
     }
 
+    [Fact]
+    public async Task RunAsync_ScopeCreationThrows_ReturnsFailureInsteadOfThrowing()
+    {
+        // correctness-review follow-up on PR #442: this method's own doc comment claims a
+        // "scope-creation ... failure" is logged and mapped, but scope creation originally sat
+        // outside the try/catch entirely -- an already-disposed root provider during host shutdown
+        // (or any other CreateAsyncScope() failure) escaped ExecuteAsync uncaught, reopening the
+        // exact gap #428 exists to close.
+        var scopeFactory = new ThrowingCreationScopeFactory();
+
+        var result = await MediatorDispatchRunner.RunAsync(
+            scopeFactory,
+            async (mediator, ct) => { await mediator.Send(new Ping(), ct); return ToolResult.Ok("unreachable"); },
+            NullLogger.Instance,
+            "test_tool",
+            failureContext: "n/a",
+            cancellationToken: CancellationToken.None);
+
+        result.Success.Should().BeFalse(
+            "a scope-creation failure is a sandbox-level error — it must not throw out of RunAsync uncaught");
+    }
+
     private sealed record Ping : IRequest<Unit>;
+
+    /// <summary>An <see cref="IServiceScopeFactory"/> whose <see cref="CreateScope"/> always throws.</summary>
+    private sealed class ThrowingCreationScopeFactory : IServiceScopeFactory
+    {
+        public IServiceScope CreateScope() => throw new InvalidOperationException("Simulated scope creation failure.");
+    }
 
     private sealed class SucceedingMediator : IMediator
     {
