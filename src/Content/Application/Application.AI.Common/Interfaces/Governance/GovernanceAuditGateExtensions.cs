@@ -90,4 +90,17 @@ public static class GovernanceAuditGateExtensions
 
         auditService.Log(agentId ?? "unknown", action, decision());
     }
+
+    /// <summary>
+    /// As <see cref="LogIfAuditEnabled(IGovernanceAuditService?, GovernanceConfig?, string?, string, Func{string})"/>,
+    /// but for a caller that holds the live <see cref="IOptionsMonitor{TOptions}"/> rather than a
+    /// snapshot — mirrors the eager overload's own monitor-to-snapshot delegation above.
+    /// </summary>
+    public static void LogIfAuditEnabled(
+        this IGovernanceAuditService? auditService,
+        IOptionsMonitor<GovernanceConfig>? governanceConfig,
+        string? agentId,
+        string action,
+        Func<string> decision) =>
+        auditService.LogIfAuditEnabled(governanceConfig?.CurrentValue, agentId, action, decision);
 }

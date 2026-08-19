@@ -392,7 +392,7 @@ public sealed class McpConnectionManagerSandboxedStdioTests
         await Assert.ThrowsAsync<McpConnectionException>(() => sut.GetClientAsync("b2:local-tool"));
 
         auditService.Entries.Should().ContainSingle(
-            e => e.Action == "b2:local-tool" && e.Decision.Contains("Host-wide bundle stdio sandbox session cap"),
+            e => e.Action == "b2:local-tool" && e.Decision == "session_cap_exceeded:1",
             "the cap refusal must leave exactly one durable audit record naming the refused server");
 
         blockingFactory.Release.SetResult();
@@ -439,7 +439,7 @@ public sealed class McpConnectionManagerSandboxedStdioTests
         await Assert.ThrowsAsync<McpConnectionException>(() => sut.GetClientAsync("b1:local-tool"));
 
         auditService.Entries.Should().ContainSingle(
-            e => e.Action == "b1:local-tool" && e.Decision.Contains("outside the configured bundle staging root"),
+            e => e.Action == "b1:local-tool" && e.Decision == "refused:seed_outside_staging_root",
             "the seed-containment refusal must leave exactly one durable audit record naming the refused server");
     }
 
