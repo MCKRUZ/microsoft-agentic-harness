@@ -1,3 +1,4 @@
+using Domain.AI.Models;
 using FluentAssertions;
 using Infrastructure.AI.Tools;
 using MediatR;
@@ -56,7 +57,78 @@ public sealed class MediatorDispatchRunnerTests
             "the caller's own cancellation must still propagate, not be swallowed into a ToolResult.Fail");
     }
 
+    [Fact]
+    public async Task RunAsync_DispatchSucceeds_ScopeDisposalThrows_StillReturnsTheSuccessfulResult()
+    {
+        // correctness-review follow-up on PR #442: disposing the scope AFTER a successful dispatch
+        // must not overwrite that success with a failure if disposal itself throws -- otherwise a
+        // committed write (e.g. a submitted ChangeProposal) gets reported to the model as a dispatch
+        // failure, inviting a pointless retry of work that already landed.
+        var innerProvider = new ServiceCollection()
+            .AddScoped(_ => (IMediator)new SucceedingMediator())
+            .BuildServiceProvider();
+        var scopeFactory = new ThrowingDisposalScopeFactory(innerProvider);
+
+        var result = await MediatorDispatchRunner.RunAsync(
+            scopeFactory,
+            async (mediator, ct) => { await mediator.Send(new Ping(), ct); return ToolResult.Ok("done"); },
+            NullLogger.Instance,
+            "test_tool",
+            failureContext: "n/a",
+            cancellationToken: CancellationToken.None);
+
+        result.Success.Should().BeTrue(
+            "a scope-disposal failure occurring after a successful dispatch must not overwrite the " +
+            "already-obtained successful result");
+    }
+
     private sealed record Ping : IRequest<Unit>;
+
+    private sealed class SucceedingMediator : IMediator
+    {
+        public Task<TResponse> Send<TResponse>(IRequest<TResponse> request, CancellationToken cancellationToken = default)
+            => Task.FromResult((TResponse)(object)Unit.Value);
+
+        public Task<object?> Send(object request, CancellationToken cancellationToken = default)
+            => throw new NotSupportedException();
+
+        public Task Send<TRequest>(TRequest request, CancellationToken cancellationToken = default)
+            where TRequest : IRequest
+            => throw new NotSupportedException();
+
+        public IAsyncEnumerable<TResponse> CreateStream<TResponse>(IStreamRequest<TResponse> request, CancellationToken cancellationToken = default)
+            => throw new NotSupportedException();
+
+        public IAsyncEnumerable<object?> CreateStream(object request, CancellationToken cancellationToken = default)
+            => throw new NotSupportedException();
+
+        public Task Publish(object notification, CancellationToken cancellationToken = default)
+            => Task.CompletedTask;
+
+        public Task Publish<TNotification>(TNotification notification, CancellationToken cancellationToken = default)
+            where TNotification : INotification
+            => Task.CompletedTask;
+    }
+
+    /// <summary>An <see cref="IServiceScopeFactory"/> whose every scope throws on disposal.</summary>
+    private sealed class ThrowingDisposalScopeFactory : IServiceScopeFactory
+    {
+        private readonly IServiceProvider _serviceProvider;
+
+        public ThrowingDisposalScopeFactory(IServiceProvider serviceProvider) => _serviceProvider = serviceProvider;
+
+        public IServiceScope CreateScope() => new ThrowingDisposalScope(_serviceProvider);
+
+        private sealed class ThrowingDisposalScope(IServiceProvider serviceProvider) : IServiceScope, IAsyncDisposable
+        {
+            public IServiceProvider ServiceProvider { get; } = serviceProvider;
+
+            public void Dispose() => throw new InvalidOperationException("Simulated scope disposal failure.");
+
+            public ValueTask DisposeAsync() =>
+                ValueTask.FromException(new InvalidOperationException("Simulated scope disposal failure."));
+        }
+    }
 
     private sealed class ThrowingOceMediator : IMediator
     {

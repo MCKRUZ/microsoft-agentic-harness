@@ -1,5 +1,6 @@
 using Application.Core.CQRS.RAG.IngestDocument;
 using FluentAssertions;
+using Infrastructure.AI.Tests.Resilience;
 using Infrastructure.AI.Tests.Support;
 using Infrastructure.AI.Tools;
 using MediatR;
@@ -45,6 +46,33 @@ public sealed class DocumentIngestToolTests
 
         result.Success.Should().BeFalse(
             "an exception from the MediatR pipeline must be caught and mapped to a failed ToolResult, not thrown out of ExecuteAsync");
+    }
+
+    [Theory]
+    [InlineData(
+        "https://acct.blob.core.windows.net/c/d.md?sv=2024&sig=SUPERSECRETSIG",
+        "SUPERSECRETSIG")]
+    [InlineData(
+        "https://svc:P4ssw0rd@internal.example/doc.md",
+        "P4ssw0rd")]
+    public async Task Ingest_DispatchFails_NeverLogsCredentialBearingUriComponents(
+        string credentialBearingUri, string credential)
+    {
+        // security-review MEDIUM on PR #442: GetLeftPart(UriPartial.Path) drops the query string
+        // (closing the SAS-token case) but keeps userinfo verbatim (https://user:pass@host/...) --
+        // both must be scrubbed before this failure path's URI reaches an error log.
+        var mediator = new ThrowingMediator();
+        var logger = new RecordingLogger<DocumentIngestTool>();
+        var sut = new DocumentIngestTool(TestScopeFactory.For(mediator), logger);
+
+        var result = await sut.ExecuteAsync(
+            "ingest",
+            new Dictionary<string, object?> { ["uri"] = credentialBearingUri });
+
+        result.Success.Should().BeFalse();
+        logger.Entries.Should().NotBeEmpty();
+        logger.Entries.Should().OnlyContain(e => !e.Message.Contains(credential),
+            $"the credential '{credential}' from '{credentialBearingUri}' must never reach a log entry");
     }
 
     [Fact]

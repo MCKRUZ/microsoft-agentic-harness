@@ -33,7 +33,11 @@ internal static class MediatorDispatchRunner
     /// <param name="dispatch">Builds the command and sends it via the scoped <see cref="IMediator"/>.</param>
     /// <param name="logger">Logs a scope-creation, resolution, or dispatch failure before it is mapped.</param>
     /// <param name="toolName">Tool name for the log template and the failure message prefix.</param>
-    /// <param name="failureContext">Free-form context (e.g. a path or URI) included in the log entry.</param>
+    /// <param name="failureContext">
+    /// Free-form context (e.g. a path or URI) included in the log entry <strong>verbatim</strong> —
+    /// callers own scrubbing anything credential-bearing (query strings, userinfo) out of this value
+    /// before passing it; this method does not inspect or redact it.
+    /// </param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>
     /// <paramref name="dispatch"/>'s result, or a failed <see cref="ToolResult"/> whose message is
@@ -48,11 +52,18 @@ internal static class MediatorDispatchRunner
         string failureContext,
         CancellationToken cancellationToken)
     {
+        // Scope creation lives outside the try/finally pair below so an already-obtained successful
+        // `result` is never discarded: disposing the scope AFTER the dispatch has committed its write
+        // can itself throw, and if that were inside the same try/catch that maps dispatch failures,
+        // a genuinely successful ChangeProposal submission or ingest would be reported to the model as
+        // "dispatch failed" — inviting a retry of work that already landed.
+        var scope = scopeFactory.CreateAsyncScope();
         try
         {
-            await using var scope = scopeFactory.CreateAsyncScope();
             var mediator = scope.ServiceProvider.GetRequiredService<IMediator>();
-            return await dispatch(mediator, cancellationToken).ConfigureAwait(false);
+            var result = await dispatch(mediator, cancellationToken).ConfigureAwait(false);
+            await DisposeScopeAsync(scope, logger, toolName).ConfigureAwait(false);
+            return result;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -60,12 +71,31 @@ internal static class MediatorDispatchRunner
             // to the caller (e.g. HttpClient's own timeout mid-fetch) also throws OperationCanceledException
             // but must be mapped to a failure below, not escape ExecuteAsync uncaught (#428's own gap,
             // mirroring the caller-token guard RestrictedSearchTool.cs already uses for the same reason).
+            await DisposeScopeAsync(scope, logger, toolName).ConfigureAwait(false);
             throw;
         }
         catch (Exception ex)
         {
             logger.LogError(ex, "{ToolName} dispatch failed for {FailureContext}.", toolName, failureContext);
+            await DisposeScopeAsync(scope, logger, toolName).ConfigureAwait(false);
             return ToolResult.Fail($"{toolName} dispatch failed: {ex.GetType().Name}.");
+        }
+    }
+
+    /// <summary>
+    /// Disposes <paramref name="scope"/>, logging (not throwing) if disposal itself fails. A disposal
+    /// failure is a resource-cleanup problem worth surfacing in logs, but must never overwrite a
+    /// dispatch outcome — success or failure — that was already determined before disposal ran.
+    /// </summary>
+    private static async Task DisposeScopeAsync(AsyncServiceScope scope, ILogger logger, string toolName)
+    {
+        try
+        {
+            await scope.DisposeAsync().ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "{ToolName} DI scope disposal failed after dispatch completed.", toolName);
         }
     }
 }
