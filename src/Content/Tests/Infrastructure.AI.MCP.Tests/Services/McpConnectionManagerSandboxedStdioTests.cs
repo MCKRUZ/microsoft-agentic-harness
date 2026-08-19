@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using Application.AI.Common.Exceptions;
+using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Sandbox;
 using Domain.AI.Sandbox;
 using Domain.Common;
@@ -341,6 +342,136 @@ public sealed class McpConnectionManagerSandboxedStdioTests
         exception.Which.Message.Should().Contain("outside the configured bundle staging root");
         _fakeSessionFactory.WasCalled.Should().BeFalse(
             "an out-of-bounds seed directory must be refused before the sandbox session factory is ever called");
+    }
+
+    [Fact]
+    public async Task GetClientAsync_ConcurrentSandboxedStdioSessions_RefusesBeyondTheHostWideCap_WritesOneAuditRecord()
+    {
+        // #431: the host-wide session-cap refusal above (RefusesBeyondTheHostWideCap) previously left
+        // no audit trail at all — an authenticated caller repeatedly hitting the cap was invisible to
+        // the governance audit chain. Same scenario as that test, plus a mocked IGovernanceAuditService
+        // to prove the refusal is now recorded exactly once.
+        var auditService = new Mock<IGovernanceAuditService>();
+        var blockingFactory = new BlockingSandboxSessionFactory();
+        var bundleOwned = new BundleOwnedMcpServerRegistry();
+        bundleOwned.TryAdd("b1:local-tool", new McpServerDefinition
+        {
+            Enabled = true, Type = McpServerType.Stdio, Command = "node", StartupTimeoutSeconds = 1,
+        });
+        bundleOwned.TryAdd("b2:local-tool", new McpServerDefinition
+        {
+            Enabled = true, Type = McpServerType.Stdio, Command = "node", StartupTimeoutSeconds = 1,
+        });
+        var appConfig = new AppConfig
+        {
+            AI = new AIConfig
+            {
+                BundleExecution = new BundleExecutionConfig
+                {
+                    StdioMcpServers = new BundleStdioMcpServersConfig
+                    {
+                        ContainerImage = "mcr.microsoft.com/node:20",
+                        MaxConcurrentSessions = 1,
+                    },
+                },
+            },
+        };
+        var rootServices = McpConnectionManagerBundleEgressSupport.BuildRootServices(services =>
+        {
+            services.AddKeyedSingleton<ISandboxSessionFactory>(SandboxIsolationLevel.Container, blockingFactory);
+            services.AddSingleton<IOptionsMonitor<AppConfig>>(new StaticAppConfigMonitor(appConfig));
+            services.AddSingleton(auditService.Object);
+        });
+        var sut = McpConnectionManagerBundleEgressSupport.CreateManager(
+            Mock.Of<ILogger<McpConnectionManager>>(), new Mock<ILoggerFactory>().Object,
+            TestSsrf.HandlerFactory(), new McpServersConfig(), bundleOwned, rootServices);
+
+        var firstCallTask = sut.GetClientAsync("b1:local-tool");
+        await blockingFactory.EntrySignaled.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        await Assert.ThrowsAsync<McpConnectionException>(() => sut.GetClientAsync("b2:local-tool"));
+
+        auditService.Verify(a => a.Log(It.IsAny<string>(), "b2:local-tool",
+                $"host_session_cap_exceeded:{appConfig.AI.BundleExecution.StdioMcpServers.MaxConcurrentSessions}"),
+            Times.Once, "the cap refusal must leave exactly one durable audit record naming the refused server");
+
+        blockingFactory.Release.SetResult();
+        await Assert.ThrowsAsync<McpConnectionException>(() => firstCallTask);
+    }
+
+    [Fact]
+    public async Task GetClientAsync_BundleOwnedStdioServer_SeedDirectoryOutsideStagingRoot_WritesOneAuditRecord()
+    {
+        // #431: same containment scenario as SeedDirectoryOutsideStagingRoot_RefusesWithoutStartingASession
+        // above, plus a mocked IGovernanceAuditService to prove the refusal is now recorded exactly once.
+        var auditService = new Mock<IGovernanceAuditService>();
+        var bundleOwned = new BundleOwnedMcpServerRegistry();
+        bundleOwned.TryAdd("b1:local-tool", new McpServerDefinition
+        {
+            Enabled = true,
+            Type = McpServerType.Stdio,
+            Command = "node",
+            StartupTimeoutSeconds = 1,
+            SandboxSeedDirectory = Path.Combine(Path.GetTempPath(), "definitely-not-the-staging-root", "evil"),
+        });
+
+        var appConfig = new AppConfig
+        {
+            AI = new AIConfig
+            {
+                BundleExecution = new BundleExecutionConfig
+                {
+                    TempRoot = Path.Combine(Path.GetTempPath(), "staged"),
+                    StdioMcpServers = new BundleStdioMcpServersConfig { ContainerImage = "mcr.microsoft.com/node:20" },
+                },
+            },
+        };
+        var rootServices = McpConnectionManagerBundleEgressSupport.BuildRootServices(services =>
+        {
+            services.AddKeyedSingleton<ISandboxSessionFactory>(SandboxIsolationLevel.Container, _fakeSessionFactory);
+            services.AddSingleton<IOptionsMonitor<AppConfig>>(new StaticAppConfigMonitor(appConfig));
+            services.AddSingleton(auditService.Object);
+        });
+        var sut = McpConnectionManagerBundleEgressSupport.CreateManager(
+            Mock.Of<ILogger<McpConnectionManager>>(), new Mock<ILoggerFactory>().Object,
+            TestSsrf.HandlerFactory(), new McpServersConfig(), bundleOwned, rootServices);
+
+        await Assert.ThrowsAsync<McpConnectionException>(() => sut.GetClientAsync("b1:local-tool"));
+
+        auditService.Verify(a => a.Log(It.IsAny<string>(), "b1:local-tool", "seed_outside_staging_root"), Times.Once,
+            "the seed-containment refusal must leave exactly one durable audit record naming the refused server");
+    }
+
+    [Fact]
+    public async Task GetClientAsync_BundleOwnedStdioServer_SessionFactoryFails_WritesOneAuditRecord()
+    {
+        // #431: StartSandboxedStdioSessionAsync's third refusal branch — the sandbox session factory
+        // itself returning a failed Result — previously left no audit trail. FakeSandboxSessionFactory
+        // always fails (see its own doc comment), so any successful connection attempt against it
+        // exercises exactly this branch.
+        var auditService = new Mock<IGovernanceAuditService>();
+        var bundleOwned = new BundleOwnedMcpServerRegistry();
+        bundleOwned.TryAdd("b1:local-tool", new McpServerDefinition
+        {
+            Enabled = true,
+            Type = McpServerType.Stdio,
+            Command = "node",
+            StartupTimeoutSeconds = 1,
+        });
+        var rootServices = McpConnectionManagerBundleEgressSupport.BuildRootServices(services =>
+        {
+            services.AddKeyedSingleton<ISandboxSessionFactory>(SandboxIsolationLevel.Container, _fakeSessionFactory);
+            services.AddSingleton(auditService.Object);
+        });
+        var sut = McpConnectionManagerBundleEgressSupport.CreateManager(
+            Mock.Of<ILogger<McpConnectionManager>>(), new Mock<ILoggerFactory>().Object,
+            TestSsrf.HandlerFactory(), new McpServersConfig(), bundleOwned, rootServices);
+
+        await Assert.ThrowsAsync<McpConnectionException>(() => sut.GetClientAsync("b1:local-tool"));
+
+        auditService.Verify(a => a.Log(It.IsAny<string>(), "b1:local-tool",
+                It.Is<string>(d => d.StartsWith("session_factory_failed:", StringComparison.Ordinal))),
+            Times.Once, "the session-factory failure must leave exactly one durable audit record naming the refused server");
     }
 
     [Fact]

@@ -100,8 +100,7 @@ public sealed class ToolCompositionReporter
                 "Tool composition finding for agent {AgentName}: {Path} (posture: {Posture})",
                 agentName, path, posture);
 
-            if (governance.EnableAudit)
-                _auditService.Log(agentName, $"tool_composition:{path}", posture.ToString());
+            _auditService.LogIfAuditEnabled(governance, agentName, $"tool_composition:{path}", posture.ToString());
         }
 
         if (assessment.UnclassifiedTools.Count > 0)

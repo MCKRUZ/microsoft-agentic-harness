@@ -97,13 +97,13 @@ public sealed class DefaultToolClassificationGate : IToolClassificationGate
                 "Classification lookup failed for tool {ToolName} (asset type {AssetType}); {Disposition}.",
                 toolName, asset.Type, enforcing ? "blocking (fail-closed)" : "allowing (audit mode)");
             RecordDecision(toolName, "error", asset.Type, LabelSource.None, config.Mode, enforcing);
-            Audit(governance, toolName, "classification:error");
+            _auditService.LogIfAuditEnabled(governance, _executionContext.AgentId, toolName, "classification:error");
             return enforcing ? ClassificationVerdict.Block(DeniedMessage(toolName)) : ClassificationVerdict.Allow();
         }
 
         var decision = _evaluator.Evaluate(label, config);
         RecordDecision(toolName, decision.Action.ToString(), asset.Type, label.Source, config.Mode, enforcing);
-        Audit(governance, toolName, $"classification:{decision.Action}");
+        _auditService.LogIfAuditEnabled(governance, _executionContext.AgentId, toolName, $"classification:{decision.Action}");
 
         // Audit mode records the would-be decision but never alters the call.
         if (!enforcing)
@@ -145,12 +145,6 @@ public sealed class DefaultToolClassificationGate : IToolClassificationGate
         // No resolver claims this tool — it targets nothing Purview can classify, so the unknown-asset
         // policy applies.
         return AssetReference.Unknown();
-    }
-
-    private void Audit(GovernanceConfig governance, string toolName, string decision)
-    {
-        if (governance.EnableAudit)
-            _auditService.Log(_executionContext.AgentId ?? "unknown", toolName, decision);
     }
 
     private static void RecordDecision(

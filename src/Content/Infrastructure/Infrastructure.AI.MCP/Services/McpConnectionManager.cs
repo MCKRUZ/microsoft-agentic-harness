@@ -3,11 +3,13 @@ using Application.AI.Common.Exceptions;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Bundles;
 using Application.AI.Common.Interfaces.Egress;
+using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Sandbox;
 using Application.AI.Common.Services.Sandbox;
 using Domain.AI.Sandbox;
 using Domain.Common;
 using Domain.Common.Config;
+using Domain.Common.Config.AI;
 using Domain.Common.Config.AI.BundleExecution;
 using Domain.Common.Config.AI.MCP;
 using Domain.Common.Helpers;
@@ -48,6 +50,8 @@ public sealed class McpConnectionManager : IAsyncDisposable
     private readonly ILogger<EgressPolicyDelegatingHandler> _egressHandlerLogger;
     private readonly TimeProvider _timeProvider;
     private readonly IOptionsMonitor<AppConfig> _appConfig;
+    private readonly IGovernanceAuditService? _governanceAuditService;
+    private readonly IOptionsMonitor<GovernanceConfig>? _governanceConfig;
 
     // A single flat cache keyed by bare serverName, shared across BOTH _config and _bundleOwnedServers —
     // safe today because the two namespacing schemes never collide (host names are plain or
@@ -138,6 +142,11 @@ public sealed class McpConnectionManager : IAsyncDisposable
         _egressHandlerLogger = rootServices.GetRequiredService<ILogger<EgressPolicyDelegatingHandler>>();
         _timeProvider = rootServices.GetService<TimeProvider>() ?? TimeProvider.System;
         _appConfig = rootServices.GetRequiredService<IOptionsMonitor<AppConfig>>();
+        // Optional, like ToolPermissionProfileResolver's identical convention (#419): a composition
+        // root that never calls AddGovernance still constructs this manager; the sandboxed-session
+        // refusal branches below (#431) just get no durable audit trail for this path.
+        _governanceAuditService = rootServices.GetService<IGovernanceAuditService>();
+        _governanceConfig = rootServices.GetService<IOptionsMonitor<GovernanceConfig>>();
     }
 
     /// <summary>
@@ -534,8 +543,9 @@ public sealed class McpConnectionManager : IAsyncDisposable
         if (Interlocked.Increment(ref _liveSandboxedStdioSessions) > maxConcurrentSessions)
         {
             Interlocked.Decrement(ref _liveSandboxedStdioSessions);
-            return Result<ISandboxSession>.Fail(
-                $"Host-wide bundle stdio sandbox session cap ({maxConcurrentSessions}) reached; refusing to start another.");
+            var capReason = $"Host-wide bundle stdio sandbox session cap ({maxConcurrentSessions}) reached; refusing to start another.";
+            _governanceAuditService.LogIfAuditEnabled(_governanceConfig, "system", serverName, $"host_session_cap_exceeded:{maxConcurrentSessions}");
+            return Result<ISandboxSession>.Fail(capReason);
         }
 
         // Nullable, and assigned only once CreateAsyncScope() itself succeeds — that call is not
@@ -565,8 +575,9 @@ public sealed class McpConnectionManager : IAsyncDisposable
                 // this field cannot turn "seed a sandbox workspace" into "copy an arbitrary host
                 // directory into an untrusted, bundle-launched container" without this check also
                 // having to be deliberately bypassed, not merely never written in the first place.
-                return Result<ISandboxSession>.Fail(
-                    "Sandbox workspace seed directory is outside the configured bundle staging root — refusing to seed.");
+                var containmentReason = "Sandbox workspace seed directory is outside the configured bundle staging root — refusing to seed.";
+                _governanceAuditService.LogIfAuditEnabled(_governanceConfig, "system", serverName, "seed_outside_staging_root");
+                return Result<ISandboxSession>.Fail(containmentReason);
             }
 
             var request = new SandboxSessionRequest
@@ -585,7 +596,11 @@ public sealed class McpConnectionManager : IAsyncDisposable
 
             var result = await sessionFactory.StartSessionAsync(request, cancellationToken);
             if (!result.IsSuccess)
+            {
+                _governanceAuditService.LogIfAuditEnabled(_governanceConfig?.CurrentValue, "system", serverName,
+                    () => $"session_factory_failed:{(result.Errors.Count > 0 ? string.Join("; ", result.Errors) : "unknown error")}");
                 return result;
+            }
 
             // From here on, ownership of both the scope AND this session's claimed concurrency slot
             // transfers to the returned session — two composed decorators, each responsible for

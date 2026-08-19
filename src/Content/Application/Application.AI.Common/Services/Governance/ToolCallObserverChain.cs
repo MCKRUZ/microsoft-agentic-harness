@@ -220,8 +220,8 @@ public sealed class ToolCallObserverChain : IToolCallObserverChain
             "Tool call observer '{Observer}' blocked {ToolName}: {Reason}",
             observerName, toolName, reason);
 
-        if (_governanceConfig.CurrentValue.EnableAudit)
-            _auditService.Log(_executionContext.AgentId ?? "unknown", toolName, $"observer:{observerName}:blocked");
+        _auditService.LogIfAuditEnabled(
+            _governanceConfig, _executionContext.AgentId, toolName, $"observer:{observerName}:blocked");
 
         // Correct the turn's governance trace — see IGovernanceTraceRecorder.RecordDownstreamBlock for
         // why this is routed through the recorder rather than skipped. It corrects the trace only; the

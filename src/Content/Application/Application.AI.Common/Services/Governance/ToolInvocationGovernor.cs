@@ -366,8 +366,7 @@ public sealed partial class ToolInvocationGovernor : IToolInvocationGovernor
             ApprovalGranted: approvedBy is not null,
             Enforced: true));
 
-        if (governance.EnableAudit)
-            _auditService.Log(agentId, toolName, ToolDecisionOutcome.Allowed.ToString());
+        _auditService.LogIfAuditEnabled(governance, agentId, toolName, ToolDecisionOutcome.Allowed.ToString());
 
         return approvedCall is { } call ? ToolInvocationDecision.Allow(call) : ToolInvocationDecision.Allow();
     }
@@ -382,8 +381,7 @@ public sealed partial class ToolInvocationGovernor : IToolInvocationGovernor
         _trace.Record(new ToolDecisionRecord(toolName, outcome, reason, radius,
             RequiredApproval: requiredApproval, ApprovalGranted: false, Enforced: true));
 
-        if (_governanceConfig.CurrentValue.EnableAudit)
-            _auditService.Log(agentId, toolName, outcome.ToString());
+        _auditService.LogIfAuditEnabled(_governanceConfig, agentId, toolName, outcome.ToString());
 
         _logger.LogWarning(
             "Tool governance blocked agent {AgentId} tool {ToolName}: {Outcome} — {Reason}",
