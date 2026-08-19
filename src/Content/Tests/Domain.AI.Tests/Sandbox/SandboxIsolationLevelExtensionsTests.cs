@@ -24,6 +24,29 @@ public sealed class SandboxIsolationLevelExtensionsTests
     }
 
     [Fact]
+    public void SandboxIsolationLevel_DeclaredValues_AreStrictlyAscendingInIsolationStrength()
+    {
+        // security-review follow-up on PR #443: AtLeast relies entirely on the enum's declared
+        // numeric values being strictly ascending in isolation strength (its own remarks say so).
+        // Every isolation-elevation call site in the sandbox subsystem now funnels through this one
+        // method, so a future member added out of order (e.g. a weaker tier given a higher value
+        // than Container) would silently invert every floor merge at once. This pins that ordering
+        // invariant directly.
+        //
+        // Enum.GetValues() itself returns members already sorted by numeric value, so it cannot be
+        // used to detect a declaration-order/value-order mismatch — reflection over the fields in
+        // their declared source order is required to catch that.
+        var declaredValues = typeof(SandboxIsolationLevel)
+            .GetFields(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static)
+            .Select(f => (int)f.GetValue(null)!)
+            .ToList();
+
+        var ascending = declaredValues.OrderBy(v => v).ToList();
+        Assert.Equal(ascending, declaredValues);
+        Assert.Equal(declaredValues.Distinct().Count(), declaredValues.Count);
+    }
+
+    [Fact]
     public void WithMinimumIsolationAtLeast_AlreadyAtFloor_ReturnsSameInstance()
     {
         var profile = new ToolPermissionProfile

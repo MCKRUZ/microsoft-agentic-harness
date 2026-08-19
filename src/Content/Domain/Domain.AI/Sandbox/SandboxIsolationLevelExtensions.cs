@@ -17,6 +17,15 @@ public static class SandboxIsolationLevelExtensions
     /// <summary>
     /// Returns the stricter of this level and <paramref name="floor"/> — never a downgrade.
     /// </summary>
+    /// <remarks>
+    /// Relies on <see cref="SandboxIsolationLevel"/>'s declared numeric values being strictly
+    /// ascending in isolation strength — see that enum's own remarks. Every isolation-elevation call
+    /// site in the sandbox subsystem now funnels through this one method, so a future member added
+    /// out of strictness order (e.g. a weaker tier given a higher numeric value than
+    /// <see cref="SandboxIsolationLevel.Container"/>) would silently invert every floor merge at once.
+    /// <c>SandboxIsolationLevelExtensionsTests</c> pins the current three-member ordering; a new
+    /// member must extend that ordering, not merely satisfy it.
+    /// </remarks>
     public static SandboxIsolationLevel AtLeast(this SandboxIsolationLevel level, SandboxIsolationLevel floor) =>
         (SandboxIsolationLevel)Math.Max((int)level, (int)floor);
 

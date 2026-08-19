@@ -178,7 +178,7 @@ public sealed class ToolPermissionProfileResolver
     /// regardless of what the caller actually required, so a consumer constructed with an elevated
     /// floor (the constructor parameter every first-party caller of this dispatch path exposes) got
     /// the right sandbox executor selected — the caller computes
-    /// <c>Math.Max(defaultIsolationLevel, profile.MinimumIsolation)</c> for that — but a profile whose
+    /// <c>defaultIsolationLevel.AtLeast(profile.MinimumIsolation)</c> for that — but a profile whose
     /// own <see cref="ToolPermissionProfile.MinimumIsolation"/> still read the un-elevated value.
     /// <c>SandboxSessionAttestationSigner</c>'s <c>capabilitiesEnforcedBy</c> field and
     /// <c>DockerSandboxExecutor</c>'s Docker-unavailable fallback gate both read that field, so a
@@ -186,8 +186,8 @@ public sealed class ToolPermissionProfileResolver
     /// decision both based on the wrong tier. Unreachable today — every shipped call site's floor
     /// defaults to <see cref="SandboxIsolationLevel.Process"/> — but latent for the first consumer
     /// that isn't. Now that this method receives the floor directly, the caller no longer needs its
-    /// own outer <c>Math.Max</c> against the returned profile — <see cref="ToolPermissionProfile.MinimumIsolation"/>
-    /// already reflects it.
+    /// own outer <see cref="SandboxIsolationLevelExtensions.AtLeast"/> call against the returned
+    /// profile — <see cref="ToolPermissionProfile.MinimumIsolation"/> already reflects it.
     /// </para>
     /// </remarks>
     /// <param name="agentId">
