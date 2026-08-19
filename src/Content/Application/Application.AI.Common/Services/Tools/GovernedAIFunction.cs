@@ -70,7 +70,7 @@ internal sealed class GovernedAIFunction : DelegatingAIFunction
     {
         var admissionPipeline = ToolAdmissionAccessor.Current;
         if (admissionPipeline is null)
-            return await base.InvokeCoreAsync(arguments, cancellationToken).ConfigureAwait(false);
+            return Unwrap(await base.InvokeCoreAsync(arguments, cancellationToken).ConfigureAwait(false));
 
         var admission = await admissionPipeline
             .AdmitAsync(
@@ -95,19 +95,47 @@ internal sealed class GovernedAIFunction : DelegatingAIFunction
             throw;
         }
 
-        // A no-throw return is reported Succeeded. This is an imprecise signal for an ITool-backed
-        // function specifically: the generic converter (AIToolConverter) flattens ToolResult.Fail
-        // into a returned "Error: ..." string rather than throwing, which this layer cannot tell
-        // apart from a genuinely successful string result — it has no structured ToolResult to
-        // inspect, only whatever object the wrapped AIFunction returns, and that wrapped function is
-        // just as often MCP- or skill-provided as ITool-backed. Fixing that precisely would mean
-        // changing what every tool converter returns on failure, which is out of scope for wiring an
-        // existing report call into this path. Documented as a known limitation rather than guessed at.
+        return await ReportOutcomeAndApplyPolicyAsync(admissionPipeline, admission, result).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Reports what a no-throw return actually was — Succeeded, or Failed with the tool's own error
+    /// text when <paramref name="result"/> unwraps to a <see cref="ConvertedToolFailure"/> — then
+    /// applies output policy to the unwrapped value.
+    /// </summary>
+    /// <remarks>
+    /// A <see cref="ConvertedToolFailure"/> came from <c>AIToolConverter</c>'s <c>ToolResult.Fail</c>
+    /// flattening — reported <see cref="EscalationExecutionStatus.Failed"/> with the tool's own error
+    /// text, the same status <c>DirectToolInvoker</c> already reports for the identical case. Every
+    /// other <see cref="AIFunction"/> source (MCP-provided, skill-provided) has no equivalent marker —
+    /// a non-throwing failure from one of those is still reported
+    /// <see cref="EscalationExecutionStatus.Succeeded"/>, since <see cref="ConvertedToolFailure"/> is
+    /// only ever produced by <c>AIToolConverter</c> (and only survives to here because it pairs the
+    /// marker with a <c>MarshalResult</c> delegate that bypasses the framework's default JSON
+    /// serialization — see the marker's own remarks). Fixing that would mean changing what every tool
+    /// source signals on failure, which is out of scope here — this closes the gap for ITool-backed
+    /// tools specifically, per the converter-wide framing the fix was scoped to. Tracked separately
+    /// as #451.
+    /// </remarks>
+    private async ValueTask<object?> ReportOutcomeAndApplyPolicyAsync(
+        IToolCallAdmissionPipeline admissionPipeline, ToolCallAdmission admission, object? result)
+    {
+        var failure = result as ConvertedToolFailure;
         await admissionPipeline.ReportExecutionAsync(
             admission,
-            new ToolExecutionReport(EscalationExecutionStatus.Succeeded, null, null),
+            failure is null
+                ? new ToolExecutionReport(EscalationExecutionStatus.Succeeded, null, null)
+                : new ToolExecutionReport(EscalationExecutionStatus.Failed, failure.ErrorText, null),
             ReportedBy, CancellationToken.None).ConfigureAwait(false);
 
-        return admissionPipeline.ApplyOutputPolicy(admission, Name, result);
+        return admissionPipeline.ApplyOutputPolicy(admission, Name, failure?.ErrorText ?? result);
     }
+
+    /// <summary>
+    /// Unwraps a <see cref="ConvertedToolFailure"/> back to its plain error text so the marker never
+    /// reaches the framework layer. Used only on the ungoverned bypass path above, which has no
+    /// admission pipeline to report against and so never computes a <c>failure</c> value of its own.
+    /// </summary>
+    private static object? Unwrap(object? result) =>
+        result is ConvertedToolFailure failure ? failure.ErrorText : result;
 }

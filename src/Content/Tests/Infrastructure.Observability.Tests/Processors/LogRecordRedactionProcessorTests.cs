@@ -29,10 +29,10 @@ public sealed class LogRecordRedactionProcessorTests
     /// (LogRecords are pooled and recycled, so fields are copied out immediately).</summary>
     private sealed class CapturingProcessor : BaseProcessor<LogRecord>
     {
-        public List<(string? Message, List<KeyValuePair<string, object?>> Attributes)> Records { get; } = [];
+        public List<(string? Message, List<KeyValuePair<string, object?>> Attributes, Exception? Exception)> Records { get; } = [];
 
         public override void OnEnd(LogRecord data) =>
-            Records.Add((data.FormattedMessage, data.Attributes?.ToList() ?? []));
+            Records.Add((data.FormattedMessage, data.Attributes?.ToList() ?? [], data.Exception));
     }
 
     private static Mock<IContentRedactionFilter> MockFilter()
@@ -126,6 +126,107 @@ public sealed class LogRecordRedactionProcessorTests
         capture.Records[0].Message.Should().Be($"token is {Marker}");
         capture.Records[0].Attributes.Should()
             .Contain(kvp => kvp.Key == "Value" && (string?)kvp.Value == Marker);
+    }
+
+    private const string RedactedDetailKey = "exception.redacted_details";
+
+    [Fact]
+    public void OnEnd_ExceptionMessageMatchesFilter_ReplacesExceptionWithShortSummary()
+    {
+        var original = new InvalidOperationException($"AccountKey={Marker}");
+
+        var capture = RunPipeline(
+            CreateProcessor(EnabledConfig()),
+            logger => logger.LogError(original, "dispatch failed"));
+
+        var exception = capture.Records[0].Exception;
+        exception.Should().NotBeNull();
+        exception.Should().NotBeSameAs(original);
+        // A distinct type, not a bare Exception — so the exported exception.type attribute
+        // self-announces that redaction happened instead of reporting a generic, ambiguous type.
+        exception.Should().BeOfType<RedactedLogException>();
+        // Message stays a short, fixed summary — not the redacted detail itself — so the
+        // standardized exception.message/exception.stacktrace fields a dashboard groups on don't
+        // balloon into a multi-line, effectively unique-per-call blob.
+        exception!.Message.Should().Contain(nameof(InvalidOperationException));
+        exception.Message.Should().NotContain(Marker);
+        exception.Message.Should().NotContain(Redacted);
+    }
+
+    [Fact]
+    public void OnEnd_ExceptionMessageMatchesFilter_AddsRedactedDetailAttribute()
+    {
+        var original = new InvalidOperationException($"AccountKey={Marker}");
+
+        var capture = RunPipeline(
+            CreateProcessor(EnabledConfig()),
+            logger => logger.LogError(original, "dispatch failed"));
+
+        capture.Records[0].Attributes.Should().Contain(kvp =>
+            kvp.Key == RedactedDetailKey
+            && ((string?)kvp.Value)!.Contains(Redacted)
+            && !((string?)kvp.Value)!.Contains(Marker));
+    }
+
+    [Fact]
+    public void OnEnd_SecretIsInInnerExceptionOnly_StillRedacts()
+    {
+        // A clean outer message wrapping a lower-level exception whose OWN message carries the
+        // secret — the exact shape MediatorDispatchRunner/WorkspaceCommandRunner/IacSandboxRunner
+        // produce today (log the real ex, return a generic "dispatch failed: {TypeName}" outward).
+        // Filtering only the outer Message would miss this: the redacted-detail attribute is built
+        // from ToString(), which recursively includes the inner exception's message.
+        var inner = new InvalidOperationException($"AccountKey={Marker}");
+        var outer = new InvalidOperationException("dispatch failed", inner);
+
+        var capture = RunPipeline(
+            CreateProcessor(EnabledConfig()),
+            logger => logger.LogError(outer, "dispatch failed"));
+
+        capture.Records[0].Exception.Should().BeOfType<RedactedLogException>();
+        capture.Records[0].Attributes.Should().Contain(kvp =>
+            kvp.Key == RedactedDetailKey
+            && ((string?)kvp.Value)!.Contains(Redacted)
+            && !((string?)kvp.Value)!.Contains(Marker));
+    }
+
+    [Fact]
+    public void OnEnd_ExceptionMessageHasNoMatch_LeavesTheSameInstance()
+    {
+        var original = new InvalidOperationException("nothing sensitive here");
+
+        var capture = RunPipeline(
+            CreateProcessor(EnabledConfig()),
+            logger => logger.LogError(original, "dispatch failed"));
+
+        // Same instance, not just equal content — locks in the "only replace when something
+        // changed" behavior the other three scrubbed fields already honor.
+        capture.Records[0].Exception.Should().BeSameAs(original);
+        capture.Records[0].Attributes.Should().NotContain(kvp => kvp.Key == RedactedDetailKey);
+    }
+
+    [Fact]
+    public void OnEnd_NoException_IsANoOp()
+    {
+        var capture = RunPipeline(
+            CreateProcessor(EnabledConfig()),
+            logger => logger.LogInformation("no exception here"));
+
+        capture.Records[0].Exception.Should().BeNull();
+    }
+
+    [Fact]
+    public void OnEnd_RedactionDisabled_LeavesExceptionUntouched()
+    {
+        var config = EnabledConfig();
+        config.RedactionEnabled = false;
+        var original = new InvalidOperationException($"AccountKey={Marker}");
+
+        var capture = RunPipeline(
+            CreateProcessor(config),
+            logger => logger.LogError(original, "dispatch failed"));
+
+        capture.Records[0].Exception.Should().BeSameAs(original);
     }
 
     [Fact]

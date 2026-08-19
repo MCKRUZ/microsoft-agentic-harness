@@ -10,9 +10,12 @@ namespace Infrastructure.Observability.Processors;
 
 /// <summary>
 /// Scrubs PII / secret content from OpenTelemetry <see cref="LogRecord"/>s before
-/// they reach any exporter. The log-signal counterpart to the span-side
-/// <see cref="PiiFilteringProcessor"/>: one PII processor per signal, both reusing
-/// the harness's content redactor.
+/// they reach any exporter. The log-signal sibling of the span-side
+/// <see cref="PiiFilteringProcessor"/> — both reuse the harness's content redactor,
+/// but the parity is partial: <see cref="PiiFilteringProcessor"/> only deletes/hashes
+/// span tags by exact key, it does not pattern-scan span exception events the way
+/// this processor's <see cref="RedactException"/> pattern-scans a log's exception —
+/// tracked as #450.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -26,13 +29,15 @@ namespace Infrastructure.Observability.Processors;
 /// collector — not the app — forwards the logs to Event Hub / a SIEM.
 /// </para>
 /// <para>
-/// Three surfaces are scrubbed: the rendered <see cref="LogRecord.FormattedMessage"/>
+/// Four surfaces are scrubbed: the rendered <see cref="LogRecord.FormattedMessage"/>
 /// (populated because the pipeline sets <c>IncludeFormattedMessage = true</c>),
-/// the <see cref="LogRecord.Body"/>, and every string-valued entry in
-/// <see cref="LogRecord.Attributes"/> (the promoted structured fields). The
-/// underlying <see cref="IContentRedactionFilter"/> is intentionally
-/// over-redactive: a false positive that masks a token is acceptable, a false
-/// negative that leaks a credit-card number is not.
+/// the <see cref="LogRecord.Body"/>, every string-valued entry in
+/// <see cref="LogRecord.Attributes"/> (the promoted structured fields), and
+/// <see cref="LogRecord.Exception"/> (see <see cref="RedactException"/> — the OTLP
+/// exporter serializes it independently of the other three, into its own
+/// standardized fields). The underlying <see cref="IContentRedactionFilter"/> is
+/// intentionally over-redactive: a false positive that masks a token is
+/// acceptable, a false negative that leaks a credit-card number is not.
 /// </para>
 /// </remarks>
 public sealed class LogRecordRedactionProcessor : BaseProcessor<LogRecord>
@@ -100,6 +105,78 @@ public sealed class LogRecordRedactionProcessor : BaseProcessor<LogRecord>
         }
 
         RedactAttributes(data);
+        RedactException(data);
+    }
+
+    /// <summary>
+    /// The attribute key the full redacted exception text is stored under — see
+    /// <see cref="RedactException"/> for why it isn't just <see cref="Exception.Message"/>.
+    /// </summary>
+    private const string RedactedExceptionDetailAttributeKey = "exception.redacted_details";
+
+    /// <summary>
+    /// Scrubs <see cref="LogRecord.Exception"/>, the one surface the three scrubs above never
+    /// touch — the OTLP exporter serializes it independently into <c>exception.message</c> /
+    /// <c>exception.stacktrace</c>, so an exception whose message embeds a secret (a connection
+    /// string, a credential-bearing URI) reaches the exporter unredacted even with the other three
+    /// scrubs in place.
+    /// </summary>
+    /// <remarks>
+    /// Checks the exception's full <c>ToString()</c> text (via the SDK's own culture-invariant
+    /// <c>ToInvariantString()</c>, confirmed against the OTLP exporter's serializer source as exactly
+    /// what it uses to populate <c>exception.stacktrace</c>), not just <see cref="Exception.Message"/>
+    /// — that representation recursively includes every <see cref="Exception.InnerException"/>'s own
+    /// message via its <c>" ---> "</c> chain, so a secret nested in a wrapped exception's inner
+    /// message is still caught even when the outer message itself is clean (e.g. a generic "dispatch
+    /// failed" wrapping a lower-level exception whose message carries a connection string).
+    /// <para>
+    /// <strong>Where the redacted text goes, and why not into <see cref="Exception.Message"/>.</strong>
+    /// Confirmed against the OTLP exporter's serializer: it sets <c>exception.message</c> directly
+    /// from <see cref="Exception.Message"/> and <c>exception.stacktrace</c> from
+    /// <c>ToInvariantString()</c> — both standardized, short-content fields dashboards group and
+    /// alert on. Putting the full redacted <c>ToString()</c> dump (original message, stack frames,
+    /// and the whole inner-exception chain, all flattened into one string) into
+    /// <see cref="Exception.Message"/> would blow both fields up into a multi-line, effectively
+    /// unique-per-call blob, breaking that grouping for every redacted log line — the opposite of
+    /// what a "short message" field is for. So the replacement's own <see cref="Exception.Message"/>
+    /// stays a short, fixed summary (type name plus a pointer to where the detail lives), and the
+    /// full redacted text goes into a new <see cref="LogRecord.Attributes"/> entry under
+    /// <see cref="RedactedExceptionDetailAttributeKey"/> instead — a normal structured field, not a
+    /// semantic-convention one anything expects to stay short.
+    /// </para>
+    /// <see cref="Exception.Message"/> has no public setter, so an in-place edit isn't possible
+    /// regardless; a replacement instance is built instead, with no
+    /// <see cref="Exception.InnerException"/> of its own, so nothing unredacted can still be reached
+    /// through it. The replacement is a <see cref="RedactedLogException"/>, not a bare
+    /// <see cref="Exception"/> — see its own remarks for why the exported <c>exception.type</c>
+    /// attribute needs to say "this was redacted" rather than silently reporting a generic type that
+    /// looks identical to an unrelated bare throw elsewhere. Only mutates the record when the filter
+    /// actually matched something, matching the no-op-when-nothing-matched contract every other
+    /// redaction call here honors.
+    /// </remarks>
+    private void RedactException(LogRecord data)
+    {
+        if (data.Exception is not { } exception)
+        {
+            return;
+        }
+
+        var original = exception.ToString();
+        var redacted = _filter.Redact(original, _categories);
+        if (redacted == original)
+        {
+            return;
+        }
+
+        var typeName = exception.GetType().Name;
+        data.Exception = new RedactedLogException(
+            $"{typeName} (redacted — see '{RedactedExceptionDetailAttributeKey}' attribute for detail)");
+
+        var attributes = data.Attributes is { } existing
+            ? new List<KeyValuePair<string, object?>>(existing)
+            : [];
+        attributes.Add(new KeyValuePair<string, object?>(RedactedExceptionDetailAttributeKey, redacted));
+        data.Attributes = attributes;
     }
 
     /// <summary>

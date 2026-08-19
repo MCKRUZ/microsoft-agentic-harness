@@ -24,6 +24,22 @@ public sealed class GovernedAIFunctionTests
         return (inner, () => invoked);
     }
 
+    /// <summary>
+    /// An inner function shaped like what <c>AIToolConverter</c> produces for a <c>ToolResult.Fail</c>:
+    /// a <see cref="ConvertedToolFailure"/> return, paired with the same <c>MarshalResult</c> override
+    /// that lets the marker reach this layer intact instead of being JSON-serialized away — see
+    /// <see cref="ConvertedToolFailure"/>'s remarks for why that pairing is required.
+    /// </summary>
+    private static AIFunction MakeFailingInner(string errorText) =>
+        AIFunctionFactory.Create(
+            () => new ConvertedToolFailure(errorText),
+            new AIFunctionFactoryOptions
+            {
+                Name = "file_system",
+                Description = "test tool",
+                MarshalResult = (result, _, _) => new ValueTask<object?>(result)
+            });
+
     private static async Task<object?> InvokeUnder(IToolCallAdmissionPipeline pipeline, AIFunction inner)
     {
         using var armed = ToolAdmissionAccessor.Begin(pipeline);
@@ -128,6 +144,44 @@ public sealed class GovernedAIFunctionTests
                 It.Is<ToolExecutionReport>(r => r.Status == EscalationExecutionStatus.Succeeded),
                 "agent-turn", CancellationToken.None),
             Times.Once);
+    }
+
+    [Fact]
+    public async Task InvokeAsync_ToolReturnsConvertedFailure_WithApproval_ReportsFailedWithReason()
+    {
+        // #441: a no-throw ToolResult.Fail, flattened by AIToolConverter into a plain string, used
+        // to be indistinguishable from a genuine success — this is the case that used to report
+        // Succeeded. The marker is how AIToolConverter tells this layer the call actually failed.
+        var inner = MakeFailingInner("Error: boom");
+        var call = ApprovedCall();
+        var pipeline = ApprovingPipeline(call);
+
+        var result = await InvokeUnder(pipeline.Object, inner);
+
+        pipeline.Verify(
+            p => p.ReportExecutionAsync(
+                It.IsAny<ToolCallAdmission>(),
+                It.Is<ToolExecutionReport>(r =>
+                    r.Status == EscalationExecutionStatus.Failed && r.FailureReason == "Error: boom"),
+                "agent-turn", CancellationToken.None),
+            Times.Once);
+        // The model-facing text is unaffected by the marker — unwrapped back to the tool's own plain
+        // error text before being returned, never the ConvertedToolFailure wrapper itself.
+        Assert.Equal("Error: boom", result);
+    }
+
+    [Fact]
+    public async Task InvokeAsync_NoAmbientChain_UnwrapsConvertedFailureToPlainText()
+    {
+        // The ungoverned bypass path never reports anything (no admission chain to report against),
+        // but it must still unwrap the marker before returning — otherwise an internal type leaks
+        // out to whatever called this AIFunction directly.
+        var inner = MakeFailingInner("Error: boom");
+
+        var result = await new GovernedAIFunction(inner)
+            .InvokeAsync(new AIFunctionArguments(), CancellationToken.None);
+
+        Assert.Equal("Error: boom", result);
     }
 
     [Fact]
