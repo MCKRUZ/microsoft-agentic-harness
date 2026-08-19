@@ -128,13 +128,14 @@ internal sealed class GovernedAIFunction : DelegatingAIFunction
                 : new ToolExecutionReport(EscalationExecutionStatus.Failed, failure.ErrorText, null),
             ReportedBy, CancellationToken.None).ConfigureAwait(false);
 
-        return admissionPipeline.ApplyOutputPolicy(admission, Name, failure?.ErrorText ?? result);
+        return admissionPipeline.ApplyOutputPolicy(admission, Name, Unwrap(result));
     }
 
     /// <summary>
     /// Unwraps a <see cref="ConvertedToolFailure"/> back to its plain error text so the marker never
-    /// reaches the framework layer. Used only on the ungoverned bypass path above, which has no
-    /// admission pipeline to report against and so never computes a <c>failure</c> value of its own.
+    /// reaches the framework layer. The single definition of that transformation — both the bypass
+    /// path above and the reporting path route through it rather than each re-deriving the same
+    /// pattern match, so a future change to what "unwrapped" means can't update one and miss the other.
     /// </summary>
     private static object? Unwrap(object? result) =>
         result is ConvertedToolFailure failure ? failure.ErrorText : result;
