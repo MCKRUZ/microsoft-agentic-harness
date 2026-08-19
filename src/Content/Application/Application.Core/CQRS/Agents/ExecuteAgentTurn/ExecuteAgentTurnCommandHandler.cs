@@ -463,13 +463,17 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 
 	/// <summary>
 	/// Builds a safe, streamable representation of a tool's result — the result-path counterpart to
-	/// <see cref="RedactedArgsJson"/>, sharing the same withhold-above-a-ceiling treatment instead of
-	/// the fixed-length truncation this method used before (#417): a truncated preview past
+	/// <see cref="RedactedArgsJson"/>, sharing the same withhold-above-a-ceiling treatment
+	/// <see cref="ToolPayloadRedactor.RedactResultForStreaming"/> applies instead of the fixed-length
+	/// truncation this method used before (#417): a truncated preview past
 	/// <see cref="ToolPayloadRedactor.MaxStructuralRedactionCeiling"/> could still contain an
 	/// unredacted secret (<c>PatternSecretRedactor</c> falls back to a regex-only pass above that
 	/// size, which cannot see through the escaped-nested-JSON secret shape #391 closed for smaller
 	/// payloads), and a client parsing a streamed result as structured data — not just a human-read
-	/// preview — could receive truncated, invalid data either way.
+	/// preview — could receive truncated, invalid data either way. No separate 64KB pre-check is
+	/// needed here: <see cref="ToolPayloadRedactor.MaxStreamedToolCallPayloadLength"/> (16KB) is
+	/// already below <see cref="ToolPayloadRedactor.MaxStructuralRedactionCeiling"/> (64KB), so
+	/// <c>RedactResultForStreaming</c>'s own ceiling always withholds first.
 	/// <see cref="ToolPayloadRedactor.SafeResultText"/> substitutes a generic message when the call
 	/// failed, since <c>FunctionInvokingChatClient</c>'s <c>IncludeDetailedErrors</c> option (set
 	/// unconditionally by <c>AgentFactory</c>) bakes the raw exception message into
@@ -477,15 +481,8 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 	/// applies before persisting to the trace store a dashboard later renders, since that is just as
 	/// much an exposure point as this client-facing SSE frame.
 	/// </summary>
-	private static StreamedToolCallResult RedactedResultForStreaming(FunctionResultContent result, ISecretRedactor? redactor, ILogger logger)
-	{
-		var resultText = ToolPayloadRedactor.SafeResultText(result);
-
-		if (resultText.Length > ToolPayloadRedactor.MaxStructuralRedactionCeiling)
-			return new StreamedToolCallResult(string.Empty, Withheld: true);
-
-		return ToolPayloadRedactor.RedactResultForStreaming(resultText, redactor, logger, result.CallId);
-	}
+	private static StreamedToolCallResult RedactedResultForStreaming(FunctionResultContent result, ISecretRedactor? redactor, ILogger logger) =>
+		ToolPayloadRedactor.RedactResultForStreaming(ToolPayloadRedactor.SafeResultText(result), redactor, logger, result.CallId);
 
 	private static void RecordTurnError(string agentName)
 	{

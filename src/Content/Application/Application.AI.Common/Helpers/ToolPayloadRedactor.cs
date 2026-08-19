@@ -108,30 +108,10 @@ public static class ToolPayloadRedactor
     public static StreamedToolCallArguments RedactForStreaming(
         string json, ISecretRedactor? redactor, ILogger logger, string toolName, string? callId)
     {
-        if (json.Length > MaxStreamedToolCallPayloadLength)
-            return new StreamedToolCallArguments("{}", Withheld: true);
-
-        StreamedToolCallArguments result;
-        try
-        {
-            result = new StreamedToolCallArguments(Redact(json, redactor), Withheld: false);
-        }
-        catch (Exception ex)
-        {
-            logger.LogWarning(ex,
-                "Failed to redact streamed tool-call arguments for {ToolName} CallId={CallId}",
-                toolName, callId);
-            return new StreamedToolCallArguments("{}", Withheld: true);
-        }
-
-        // The pre-check above bounds the INPUT, but PatternSecretRedactor's structural pass
-        // re-serializes via ToJsonString(), whose default encoder escapes every non-ASCII character
-        // (and HTML-sensitive ones) to \uXXXX — a redacted payload of mostly non-ASCII text can come
-        // back several times longer than it went in. Re-check the OUTPUT so the ceiling is actually a
-        // wire-size ceiling, not just an input-size one.
-        return result.Json.Length > MaxStreamedToolCallPayloadLength
-            ? new StreamedToolCallArguments("{}", Withheld: true)
-            : result;
+        var (value, withheld) = RedactWithCeiling(json, redactor,
+            ex => logger.LogWarning(ex,
+                "Failed to redact streamed tool-call arguments for {ToolName} CallId={CallId}", toolName, callId));
+        return new StreamedToolCallArguments(withheld ? "{}" : value, withheld);
     }
 
     /// <summary>
@@ -156,25 +136,48 @@ public static class ToolPayloadRedactor
     public static StreamedToolCallResult RedactResultForStreaming(
         string text, ISecretRedactor? redactor, ILogger logger, string? callId)
     {
-        if (text.Length > MaxStreamedToolCallPayloadLength)
-            return new StreamedToolCallResult(string.Empty, Withheld: true);
+        var (value, withheld) = RedactWithCeiling(text, redactor,
+            ex => logger.LogWarning(ex, "Failed to redact streamed tool-call result for CallId={CallId}", callId));
+        return new StreamedToolCallResult(withheld ? string.Empty : value, withheld);
+    }
 
-        StreamedToolCallResult result;
+    /// <summary>
+    /// Shared "check the ceiling, redact, re-check the ceiling" shape behind both
+    /// <see cref="RedactForStreaming"/> and <see cref="RedactResultForStreaming"/> — the two differ
+    /// only in their withheld-placeholder value (<c>"{}"</c> vs empty string) and log call site, both
+    /// of which the caller supplies. Returns the redacted value and whether it was withheld; on
+    /// withheld, the returned value is meaningless and the caller substitutes its own placeholder.
+    /// </summary>
+    /// <param name="payload">The pre-redaction text — serialized JSON for arguments, plain text for a result.</param>
+    /// <param name="redactor">Optional secret redactor; a no-op when <see langword="null"/>.</param>
+    /// <param name="logFailure">
+    /// Logs the caller's own structured warning (tool name and call id for arguments; call id only for
+    /// a result, which carries no tool name) when redaction throws — the exception the redaction call
+    /// actually threw, passed through rather than swallowed, so the log entry keeps its stack trace.
+    /// </param>
+    private static (string Value, bool Withheld) RedactWithCeiling(
+        string payload, ISecretRedactor? redactor, Action<Exception> logFailure)
+    {
+        if (payload.Length > MaxStreamedToolCallPayloadLength)
+            return (string.Empty, true);
+
+        string redacted;
         try
         {
-            result = new StreamedToolCallResult(Redact(text, redactor), Withheld: false);
+            redacted = Redact(payload, redactor);
         }
         catch (Exception ex)
         {
-            logger.LogWarning(ex, "Failed to redact streamed tool-call result for CallId={CallId}", callId);
-            return new StreamedToolCallResult(string.Empty, Withheld: true);
+            logFailure(ex);
+            return (string.Empty, true);
         }
 
-        // Same output-length re-check as RedactForStreaming, for the same reason: PatternSecretRedactor's
-        // structural pass can re-serialize non-ASCII text longer than it went in.
-        return result.Text.Length > MaxStreamedToolCallPayloadLength
-            ? new StreamedToolCallResult(string.Empty, Withheld: true)
-            : result;
+        // The pre-check above bounds the INPUT, but PatternSecretRedactor's structural pass
+        // re-serializes via ToJsonString(), whose default encoder escapes every non-ASCII character
+        // (and HTML-sensitive ones) to \uXXXX — a redacted payload of mostly non-ASCII text can come
+        // back several times longer than it went in. Re-check the OUTPUT so the ceiling is actually a
+        // wire-size ceiling, not just an input-size one.
+        return redacted.Length > MaxStreamedToolCallPayloadLength ? (string.Empty, true) : (redacted, false);
     }
 
     /// <summary>

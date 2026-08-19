@@ -1,7 +1,9 @@
 using Application.AI.Common.Helpers;
 using Application.AI.Common.Interfaces;
 using FluentAssertions;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using Moq;
 using Xunit;
 
 namespace Application.AI.Common.Tests.Helpers;
@@ -151,5 +153,94 @@ public sealed class ToolPayloadRedactorTests
 
         result.Withheld.Should().BeTrue();
         result.Json.Should().Be("{}");
+    }
+
+    /// <summary>
+    /// The warning must carry the actual exception the redactor threw, not just a message — the shared
+    /// RedactWithCeiling helper both call sites route through takes a caller-supplied logging callback
+    /// specifically so the exception (needed for its stack trace) isn't dropped along the way.
+    /// </summary>
+    [Fact]
+    public void RedactForStreaming_RedactorThrows_LogsTheActualException()
+    {
+        var redactor = new NullReturningRedactor();
+        var logger = new Mock<ILogger>();
+
+        ToolPayloadRedactor.RedactForStreaming("api_key=super-secret", redactor, logger.Object, "search", "call-1");
+
+        logger.Verify(l => l.Log(
+            LogLevel.Warning,
+            It.IsAny<EventId>(),
+            It.IsAny<It.IsAnyType>(),
+            It.Is<Exception>(ex => ex is InvalidOperationException),
+            It.IsAny<Func<It.IsAnyType, Exception?, string>>()),
+            Times.Once);
+    }
+
+    /// <summary>Result-path counterpart to <see cref="RedactForStreaming_RedactorThrows_LogsTheActualException"/>.</summary>
+    [Fact]
+    public void RedactResultForStreaming_RedactorThrows_LogsTheActualException()
+    {
+        var redactor = new NullReturningRedactor();
+        var logger = new Mock<ILogger>();
+
+        ToolPayloadRedactor.RedactResultForStreaming("some result text", redactor, logger.Object, "call-1");
+
+        logger.Verify(l => l.Log(
+            LogLevel.Warning,
+            It.IsAny<EventId>(),
+            It.IsAny<It.IsAnyType>(),
+            It.Is<Exception>(ex => ex is InvalidOperationException),
+            It.IsAny<Func<It.IsAnyType, Exception?, string>>()),
+            Times.Once);
+    }
+
+    /// <summary>
+    /// Result-path counterpart to <see cref="RedactForStreaming_RedactorThrows_WithholdsRatherThanReturningNormalEmptyObject"/>.
+    /// </summary>
+    [Fact]
+    public void RedactResultForStreaming_RedactorThrows_WithholdsRatherThanReturningNormalEmptyObject()
+    {
+        var redactor = new NullReturningRedactor();
+
+        var result = ToolPayloadRedactor.RedactResultForStreaming("some result text", redactor, NullLogger.Instance, "call-1");
+
+        result.Withheld.Should().BeTrue();
+        result.Text.Should().BeEmpty();
+    }
+
+    /// <summary>Result-path counterpart to the args ceiling/inflation tests above.</summary>
+    [Fact]
+    public void RedactResultForStreaming_AboveCeiling_WithholdsWithoutRedacting()
+    {
+        var oversized = new string('x', ToolPayloadRedactor.MaxStreamedToolCallPayloadLength + 1);
+
+        var result = ToolPayloadRedactor.RedactResultForStreaming(oversized, redactor: null, NullLogger.Instance, "call-1");
+
+        result.Withheld.Should().BeTrue();
+        result.Text.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void RedactResultForStreaming_RedactionInflatesOutputPastCeiling_Withholds()
+    {
+        var payload = new string('x', ToolPayloadRedactor.MaxStreamedToolCallPayloadLength - 10);
+        payload.Length.Should().BeLessThan(ToolPayloadRedactor.MaxStreamedToolCallPayloadLength,
+            "the test must exercise the OUTPUT check, not the input pre-check");
+
+        var result = ToolPayloadRedactor.RedactResultForStreaming(payload, new InflatingRedactor(), NullLogger.Instance, "call-1");
+
+        result.Withheld.Should().BeTrue();
+        result.Text.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void RedactResultForStreaming_UnderCeiling_ReturnsRedactedTextUnwithheld()
+    {
+        var result = ToolPayloadRedactor.RedactResultForStreaming(
+            $"contains {MarkerRedactor.Secret}", new MarkerRedactor(), NullLogger.Instance, "call-1");
+
+        result.Withheld.Should().BeFalse();
+        result.Text.Should().Be($"contains {MarkerRedactor.Replacement}");
     }
 }
