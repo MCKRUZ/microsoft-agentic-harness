@@ -7,6 +7,7 @@ using Domain.AI.Models;
 using Domain.AI.Sandbox;
 using MediatR;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 
 namespace Infrastructure.AI.Tools;
 
@@ -20,7 +21,9 @@ namespace Infrastructure.AI.Tools;
 /// Register via keyed DI:
 /// <code>
 /// services.AddKeyedSingleton&lt;ITool&gt;("document_ingest", (sp, _) =&gt;
-///     new DocumentIngestTool(sp.GetRequiredService&lt;IServiceScopeFactory&gt;()));
+///     new DocumentIngestTool(
+///         sp.GetRequiredService&lt;IServiceScopeFactory&gt;(),
+///         sp.GetRequiredService&lt;ILogger&lt;DocumentIngestTool&gt;&gt;()));
 /// </code>
 /// </para>
 /// <para>
@@ -44,15 +47,23 @@ public sealed class DocumentIngestTool : ITool
     private static readonly IReadOnlyList<string> Operations = ["ingest"];
 
     private readonly IServiceScopeFactory _scopeFactory;
+    private readonly ILogger<DocumentIngestTool> _logger;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="DocumentIngestTool"/> class.
     /// </summary>
     /// <param name="scopeFactory">Scope factory used to resolve <see cref="IMediator"/> per ingestion dispatch.</param>
-    public DocumentIngestTool(IServiceScopeFactory scopeFactory)
+    /// <param name="logger">
+    /// Logs a scope-creation or dispatch failure before it is mapped to a failed
+    /// <see cref="ToolResult"/> (#428) — the same shape <c>WorkspaceCommandRunner.RunAsync</c> and
+    /// <c>IacSandboxRunner.RunAsync</c> already log on their own dispatch paths.
+    /// </param>
+    public DocumentIngestTool(IServiceScopeFactory scopeFactory, ILogger<DocumentIngestTool> logger)
     {
         ArgumentNullException.ThrowIfNull(scopeFactory);
+        ArgumentNullException.ThrowIfNull(logger);
         _scopeFactory = scopeFactory;
+        _logger = logger;
     }
 
     /// <inheritdoc />
@@ -137,25 +148,36 @@ public sealed class DocumentIngestTool : ITool
             CollectionName = collection
         };
 
-        // Dispatch inside a fresh scope: the MediatR pipeline resolves scoped services
-        // (IAgentExecutionContext et al.), which a singleton must never pull from the root.
-        await using var scope = _scopeFactory.CreateAsyncScope();
-        var mediator = scope.ServiceProvider.GetRequiredService<IMediator>();
+        // Scoped separately from the caller's UriFormatException/ArgumentException handling above —
+        // those guard parameter validation, not dispatch, and must keep their own messages.
+        return await MediatorDispatchRunner.RunAsync(
+            _scopeFactory,
+            async (mediator, ct) =>
+            {
+                var result = await mediator.Send(command, ct);
+                if (!result.Success)
+                    return ToolResult.Fail($"Ingestion failed: {result.Error}");
 
-        var result = await mediator.Send(command, cancellationToken);
-
-        if (!result.Success)
-            return ToolResult.Fail($"Ingestion failed: {result.Error}");
-
-        var response = new
-        {
-            jobId = result.JobId,
-            chunksProduced = result.ChunksProduced,
-            tokensEmbedded = result.TokensEmbedded,
-            durationMs = result.Duration.TotalMilliseconds
-        };
-
-        return ToolResult.Ok(JsonSerializer.Serialize(response, JsonOptions));
+                var response = new
+                {
+                    jobId = result.JobId,
+                    chunksProduced = result.ChunksProduced,
+                    tokensEmbedded = result.TokensEmbedded,
+                    durationMs = result.Duration.TotalMilliseconds
+                };
+                return ToolResult.Ok(JsonSerializer.Serialize(response, JsonOptions));
+            },
+            _logger,
+            ToolName,
+            // Scheme+Host+Port+Path only — a document URI can legitimately be a SAS-signed blob URL
+            // (?sv=...&sig=...) or carry basic-auth userinfo (https://user:pass@host/...), and this
+            // failure path is reached on exactly the input this tool is expected to reject, so no
+            // credential-bearing component may land in an error log. GetLeftPart(UriPartial.Path)
+            // alone is NOT sufficient: it drops the query but keeps userinfo verbatim.
+            failureContext: uri.GetComponents(
+                UriComponents.Scheme | UriComponents.Host | UriComponents.Port | UriComponents.Path,
+                UriFormat.UriEscaped),
+            cancellationToken);
     }
 
     private static string GetRequiredString(IReadOnlyDictionary<string, object?> parameters, string key)

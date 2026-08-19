@@ -7,6 +7,8 @@ using Infrastructure.AI.Tests.Support;
 using Infrastructure.AI.Tests.Tools.Workspace.Support;
 using Infrastructure.AI.Tools.Workspace;
 using MediatR;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 using EditOp = Domain.AI.SkillTraining.EditOp;
 
@@ -26,7 +28,8 @@ public sealed class WorkspaceWriteFileToolTests
         using var fx = new WorkspaceTestFixture();
         var existingPath = fx.WriteFile("foo.txt", "original-content");
         var mediator = new RecordingMediator(SuccessProposal());
-        var sut = new WorkspaceWriteFileTool(fx.Accessor, TestScopeFactory.For(mediator));
+        var sut = new WorkspaceWriteFileTool(
+            fx.Accessor, TestScopeFactory.For(mediator), NullLogger<WorkspaceWriteFileTool>.Instance);
 
         var result = await sut.ExecuteAsync(
             "submit",
@@ -60,7 +63,8 @@ public sealed class WorkspaceWriteFileToolTests
     {
         using var fx = new WorkspaceTestFixture();
         var mediator = new RecordingMediator(SuccessProposal());
-        var sut = new WorkspaceWriteFileTool(fx.Accessor, TestScopeFactory.For(mediator));
+        var sut = new WorkspaceWriteFileTool(
+            fx.Accessor, TestScopeFactory.For(mediator), NullLogger<WorkspaceWriteFileTool>.Instance);
 
         var result = await sut.ExecuteAsync(
             "submit",
@@ -82,7 +86,8 @@ public sealed class WorkspaceWriteFileToolTests
     {
         var bareAccessor = new WorkspaceContextAccessor();
         var mediator = new RecordingMediator(SuccessProposal());
-        var sut = new WorkspaceWriteFileTool(bareAccessor, TestScopeFactory.For(mediator));
+        var sut = new WorkspaceWriteFileTool(
+            bareAccessor, TestScopeFactory.For(mediator), NullLogger<WorkspaceWriteFileTool>.Instance);
 
         var result = await sut.ExecuteAsync(
             "submit",
@@ -102,7 +107,8 @@ public sealed class WorkspaceWriteFileToolTests
     {
         using var fx = new WorkspaceTestFixture();
         var mediator = new RecordingMediator(SuccessProposal());
-        var sut = new WorkspaceWriteFileTool(fx.Accessor, TestScopeFactory.For(mediator));
+        var sut = new WorkspaceWriteFileTool(
+            fx.Accessor, TestScopeFactory.For(mediator), NullLogger<WorkspaceWriteFileTool>.Instance);
 
         var result = await sut.ExecuteAsync(
             "submit",
@@ -124,7 +130,8 @@ public sealed class WorkspaceWriteFileToolTests
         using var fx = new WorkspaceTestFixture();
         var failureResult = Result<ChangeProposal>.Fail(["validation failed: target unsupported"]);
         var mediator = new RecordingMediator(failureResult);
-        var sut = new WorkspaceWriteFileTool(fx.Accessor, TestScopeFactory.For(mediator));
+        var sut = new WorkspaceWriteFileTool(
+            fx.Accessor, TestScopeFactory.For(mediator), NullLogger<WorkspaceWriteFileTool>.Instance);
 
         var result = await sut.ExecuteAsync(
             "submit",
@@ -144,7 +151,8 @@ public sealed class WorkspaceWriteFileToolTests
     {
         using var fx = new WorkspaceTestFixture();
         var mediator = new RecordingMediator(SuccessProposal());
-        var sut = new WorkspaceWriteFileTool(fx.Accessor, TestScopeFactory.For(mediator));
+        var sut = new WorkspaceWriteFileTool(
+            fx.Accessor, TestScopeFactory.For(mediator), NullLogger<WorkspaceWriteFileTool>.Instance);
 
         await sut.ExecuteAsync(
             "submit",
@@ -175,7 +183,8 @@ public sealed class WorkspaceWriteFileToolTests
         // can reject.
         using var fx = new WorkspaceTestFixture();
         var mediator = new RecordingMediator(SuccessProposal());
-        var sut = new WorkspaceWriteFileTool(fx.Accessor, TestScopeFactory.For(mediator));
+        var sut = new WorkspaceWriteFileTool(
+            fx.Accessor, TestScopeFactory.For(mediator), NullLogger<WorkspaceWriteFileTool>.Instance);
 
         await sut.ExecuteAsync(
             "submit",
@@ -189,6 +198,57 @@ public sealed class WorkspaceWriteFileToolTests
 
         mediator.DispatchedSubmits.Should().ContainSingle()
             .Which.BlastRadius.Should().Be(BlastRadius.Low);
+    }
+
+    [Fact]
+    public async Task Write_ScopeFactoryHasNoMediatorRegistered_ReturnsFailureInsteadOfThrowing()
+    {
+        // #428 (mirrors #421/#426's IacSandboxRunner/WorkspaceCommandRunner fix): scope creation and
+        // IMediator resolution used to happen outside ExecuteAsync's try/catch entirely, so a
+        // DI-resolution failure threw uncaught out of ITool.ExecuteAsync. ExecuteAsync now creates the
+        // scope and resolves IMediator itself, inside the same try/catch as dispatch.
+        using var fx = new WorkspaceTestFixture();
+        var servicesWithNoMediator = new ServiceCollection().BuildServiceProvider();
+        var sut = new WorkspaceWriteFileTool(
+            fx.Accessor,
+            servicesWithNoMediator.GetRequiredService<IServiceScopeFactory>(),
+            NullLogger<WorkspaceWriteFileTool>.Instance);
+
+        var result = await sut.ExecuteAsync(
+            "submit",
+            new Dictionary<string, object?>
+            {
+                ["path"] = "ok.txt",
+                ["content"] = "data",
+                ["summary"] = "summary"
+            });
+
+        result.Success.Should().BeFalse(
+            "a DI-resolution failure for IMediator is a sandbox-level error — it must not throw out of ExecuteAsync uncaught");
+    }
+
+    [Fact]
+    public async Task Write_MediatorThrows_ReturnsFailureInsteadOfThrowing()
+    {
+        // #428: an exception from the MediatR pipeline itself (e.g. a downstream dependency failure
+        // inside the SubmitChangeProposalCommand handler chain) must be caught and mapped to a failed
+        // ToolResult, not propagate out of ExecuteAsync uncaught.
+        using var fx = new WorkspaceTestFixture();
+        var mediator = new ThrowingMediator();
+        var sut = new WorkspaceWriteFileTool(
+            fx.Accessor, TestScopeFactory.For(mediator), NullLogger<WorkspaceWriteFileTool>.Instance);
+
+        var result = await sut.ExecuteAsync(
+            "submit",
+            new Dictionary<string, object?>
+            {
+                ["path"] = "ok.txt",
+                ["content"] = "data",
+                ["summary"] = "summary"
+            });
+
+        result.Success.Should().BeFalse(
+            "an exception from the MediatR pipeline must be caught and mapped to a failed ToolResult, not thrown out of ExecuteAsync");
     }
 
     private static Result<ChangeProposal> SuccessProposal()

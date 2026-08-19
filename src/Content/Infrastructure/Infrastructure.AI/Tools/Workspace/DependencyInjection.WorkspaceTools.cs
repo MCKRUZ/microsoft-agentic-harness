@@ -67,7 +67,8 @@ public static class WorkspaceDependencyInjection
         services.AddKeyedSingleton<ITool>(WorkspaceWriteFileTool.ToolName, (sp, _) =>
             new WorkspaceWriteFileTool(
                 sp.GetRequiredService<IWorkspaceContextAccessor>(),
-                sp.GetRequiredService<IServiceScopeFactory>()));
+                sp.GetRequiredService<IServiceScopeFactory>(),
+                sp.GetRequiredService<ILogger<WorkspaceWriteFileTool>>()));
 
         services.AddKeyedSingleton<ITool>(WorkspaceRunTestsTool.ToolName, (sp, _) =>
             new WorkspaceRunTestsTool(

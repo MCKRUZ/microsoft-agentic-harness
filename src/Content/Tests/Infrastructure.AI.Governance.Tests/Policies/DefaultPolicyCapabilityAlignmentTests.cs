@@ -6,6 +6,7 @@ using Infrastructure.AI.Tools.Iac;
 using Infrastructure.AI.Tools.Workspace;
 using Infrastructure.AI.Tools;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Moq;
 using Tests.Common;
@@ -50,7 +51,8 @@ public sealed class DefaultPolicyCapabilityAlignmentTests
             Mock.Of<IOptionsMonitor<Domain.Common.Config.AppConfig>>())).RequiredCapabilities,
         [WorkspaceWriteFileTool.ToolName] = new WorkspaceWriteFileTool(
             Mock.Of<Application.AI.Common.Interfaces.Workspace.IWorkspaceContextAccessor>(),
-            Mock.Of<IServiceScopeFactory>()).RequiredCapabilities,
+            Mock.Of<IServiceScopeFactory>(),
+            Mock.Of<ILogger<WorkspaceWriteFileTool>>()).RequiredCapabilities,
         [FileSystemTool.ToolName] = new FileSystemTool(
             Mock.Of<IFileSystemService>()).RequiredCapabilities,
         [WorkspaceReadFileTool.ToolName] = new WorkspaceReadFileTool(

@@ -1,14 +1,17 @@
 using Application.AI.Common.CQRS.Changes.SubmitChangeProposal;
 using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Interfaces.Workspace;
+using Domain.Common;
 using Domain.Common.Helpers;
 using Domain.AI.Changes;
 using Domain.Common.Config.AI.Governance;
 using Domain.AI.Models;
 using Domain.AI.Sandbox;
 using Domain.AI.SkillTraining;
+using Domain.AI.Workspace;
 using MediatR;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 
 namespace Infrastructure.AI.Tools.Workspace;
 
@@ -43,6 +46,7 @@ public sealed class WorkspaceWriteFileTool : ITool
 
     private readonly IWorkspaceContextAccessor _workspace;
     private readonly IServiceScopeFactory _scopeFactory;
+    private readonly ILogger<WorkspaceWriteFileTool> _logger;
 
     /// <summary>
     /// Initialises a new instance of the <see cref="WorkspaceWriteFileTool"/> class.
@@ -52,12 +56,21 @@ public sealed class WorkspaceWriteFileTool : ITool
     /// The tool is a keyed SINGLETON, but a mediator dispatch constructs pipeline behaviors that
     /// ctor-inject the SCOPED <c>IAgentExecutionContext</c>, so the dispatch must run inside a
     /// created scope rather than against a root-bound mediator.</param>
-    public WorkspaceWriteFileTool(IWorkspaceContextAccessor workspace, IServiceScopeFactory scopeFactory)
+    /// <param name="logger">
+    /// Passed to <see cref="MediatorDispatchRunner"/>, which logs a scope-creation or dispatch
+    /// failure before mapping it to a failed <see cref="ToolResult"/> (#428).
+    /// </param>
+    public WorkspaceWriteFileTool(
+        IWorkspaceContextAccessor workspace,
+        IServiceScopeFactory scopeFactory,
+        ILogger<WorkspaceWriteFileTool> logger)
     {
         ArgumentNullException.ThrowIfNull(workspace);
         ArgumentNullException.ThrowIfNull(scopeFactory);
+        ArgumentNullException.ThrowIfNull(logger);
         _workspace = workspace;
         _scopeFactory = scopeFactory;
+        _logger = logger;
     }
 
     /// <inheritdoc />
@@ -120,24 +133,65 @@ public sealed class WorkspaceWriteFileTool : ITool
         if (!parameters.TryGetValue("summary", out var summaryValue) || summaryValue is not string summary || string.IsNullOrWhiteSpace(summary))
             return ToolResult.Fail("Required parameter 'summary' is missing or empty. Summaries surface in approval prompts and audit.");
 
-        // Resolve+validate the path. The proposal records the *relative* form so the
-        // applier can re-resolve against whatever working copy it operates on — the
-        // sandbox-injected absolute path is not portable across machines/replays.
-        string relativePath;
+        var pathResult = ResolveRelativePath(workspace, path);
+        if (!pathResult.IsSuccess)
+            return ToolResult.Fail(pathResult.Errors.Count > 0 ? pathResult.Errors[0] : "Invalid path.");
+
+        var relativePath = pathResult.Value!;
+        var command = BuildCommand(workspace, relativePath, content, summary, parameters);
+
+        return await MediatorDispatchRunner.RunAsync(
+            _scopeFactory,
+            async (mediator, ct) =>
+            {
+                var result = await mediator.Send(command, ct);
+                if (!result.IsSuccess)
+                {
+                    var reason = result.Errors.Count > 0
+                        ? string.Join("; ", result.Errors)
+                        : "unknown error";
+                    return ToolResult.Fail($"ChangeProposal submission failed: {reason}");
+                }
+
+                var proposal = result.Value!;
+                return ToolResult.Ok(
+                    $"ChangeProposal submitted: id={proposal.Id} status={proposal.Status} target={proposal.Target.DisplayName} path={relativePath}");
+            },
+            _logger,
+            ToolName,
+            failureContext: relativePath,
+            cancellationToken);
+    }
+
+    /// <summary>
+    /// Resolves+validates <paramref name="path"/> against <paramref name="workspace"/>. The proposal
+    /// records the *relative* form so the applier can re-resolve against whatever working copy it
+    /// operates on — the sandbox-injected absolute path is not portable across machines/replays.
+    /// </summary>
+    private static Result<string> ResolveRelativePath(WorkspaceContext workspace, string path)
+    {
         try
         {
             var fullPath = WorkspacePathResolver.Resolve(workspace, path);
-            relativePath = WorkspacePathResolver.ToRelative(workspace, fullPath);
+            return Result<string>.Success(WorkspacePathResolver.ToRelative(workspace, fullPath));
         }
         catch (UnauthorizedAccessException)
         {
-            return ToolResult.Fail("Access denied: path is outside the workspace.");
+            return Result<string>.Fail("Access denied: path is outside the workspace.");
         }
         catch (ArgumentException)
         {
-            return ToolResult.Fail("Invalid path.");
+            return Result<string>.Fail("Invalid path.");
         }
+    }
 
+    private static SubmitChangeProposalCommand BuildCommand(
+        WorkspaceContext workspace,
+        string relativePath,
+        string content,
+        string summary,
+        IReadOnlyDictionary<string, object?> parameters)
+    {
         var target = new GitRepoTarget(
             workspace.RepoUrl,
             workspace.Branch,
@@ -156,7 +210,7 @@ public sealed class WorkspaceWriteFileTool : ITool
             ? sks
             : null;
 
-        var command = new SubmitChangeProposalCommand
+        return new SubmitChangeProposalCommand
         {
             Target = target,
             Diff = [edit],
@@ -165,24 +219,6 @@ public sealed class WorkspaceWriteFileTool : ITool
             SkillKey = skillKey,
             IsStateChange = true
         };
-
-        // Dispatch inside a fresh scope: the MediatR pipeline resolves scoped services
-        // (IAgentExecutionContext et al.), which a singleton must never pull from the root.
-        await using var scope = _scopeFactory.CreateAsyncScope();
-        var mediator = scope.ServiceProvider.GetRequiredService<IMediator>();
-
-        var result = await mediator.Send(command, cancellationToken);
-        if (!result.IsSuccess)
-        {
-            var reason = result.Errors.Count > 0
-                ? string.Join("; ", result.Errors)
-                : "unknown error";
-            return ToolResult.Fail($"ChangeProposal submission failed: {reason}");
-        }
-
-        var proposal = result.Value!;
-        return ToolResult.Ok(
-            $"ChangeProposal submitted: id={proposal.Id} status={proposal.Status} target={proposal.Target.DisplayName} path={relativePath}");
     }
 
     private static BlastRadius ParseBlastRadius(IReadOnlyDictionary<string, object?> parameters)
