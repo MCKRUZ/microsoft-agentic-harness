@@ -54,8 +54,12 @@ internal static class MediatorDispatchRunner
             var mediator = scope.ServiceProvider.GetRequiredService<IMediator>();
             return await dispatch(mediator, cancellationToken).ConfigureAwait(false);
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
+            // Only rethrow when it's genuinely the caller's own token — an internal timeout unrelated
+            // to the caller (e.g. HttpClient's own timeout mid-fetch) also throws OperationCanceledException
+            // but must be mapped to a failure below, not escape ExecuteAsync uncaught (#428's own gap,
+            // mirroring the caller-token guard RestrictedSearchTool.cs already uses for the same reason).
             throw;
         }
         catch (Exception ex)
