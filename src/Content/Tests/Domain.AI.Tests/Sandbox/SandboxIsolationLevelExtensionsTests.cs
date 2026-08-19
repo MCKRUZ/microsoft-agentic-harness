@@ -49,15 +49,19 @@ public sealed class SandboxIsolationLevelExtensionsTests
     }
 
     [Fact]
-    public void WithMinimumIsolationAtLeast_AlreadyAtFloor_ReturnsSameInstance()
+    public void WithMinimumIsolationAtLeast_ExactlyAtFloor_ReturnsSameInstance()
     {
+        // correctness-review follow-up on PR #443: the two existing "same instance" cases were both
+        // strictly above the floor (Container vs Process, Container vs None) — neither exercised the
+        // exact-equality short-circuit (raised == profile.MinimumIsolation) the implementation is
+        // actually written around. This is that case.
         var profile = new ToolPermissionProfile
         {
             RequiredCapabilities = ToolCapability.None,
             MinimumIsolation = SandboxIsolationLevel.Container
         };
 
-        var result = profile.WithMinimumIsolationAtLeast(SandboxIsolationLevel.Process);
+        var result = profile.WithMinimumIsolationAtLeast(SandboxIsolationLevel.Container);
 
         Assert.Same(profile, result);
     }
