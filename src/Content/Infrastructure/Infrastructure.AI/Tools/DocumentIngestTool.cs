@@ -7,6 +7,7 @@ using Domain.AI.Models;
 using Domain.AI.Sandbox;
 using MediatR;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 
 namespace Infrastructure.AI.Tools;
 
@@ -20,7 +21,9 @@ namespace Infrastructure.AI.Tools;
 /// Register via keyed DI:
 /// <code>
 /// services.AddKeyedSingleton&lt;ITool&gt;("document_ingest", (sp, _) =&gt;
-///     new DocumentIngestTool(sp.GetRequiredService&lt;IServiceScopeFactory&gt;()));
+///     new DocumentIngestTool(
+///         sp.GetRequiredService&lt;IServiceScopeFactory&gt;(),
+///         sp.GetRequiredService&lt;ILogger&lt;DocumentIngestTool&gt;&gt;()));
 /// </code>
 /// </para>
 /// <para>
@@ -44,15 +47,23 @@ public sealed class DocumentIngestTool : ITool
     private static readonly IReadOnlyList<string> Operations = ["ingest"];
 
     private readonly IServiceScopeFactory _scopeFactory;
+    private readonly ILogger<DocumentIngestTool> _logger;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="DocumentIngestTool"/> class.
     /// </summary>
     /// <param name="scopeFactory">Scope factory used to resolve <see cref="IMediator"/> per ingestion dispatch.</param>
-    public DocumentIngestTool(IServiceScopeFactory scopeFactory)
+    /// <param name="logger">
+    /// Logs a scope-creation or dispatch failure before it is mapped to a failed
+    /// <see cref="ToolResult"/> (#428) — the same shape <c>WorkspaceCommandRunner.RunAsync</c> and
+    /// <c>IacSandboxRunner.RunAsync</c> already log on their own dispatch paths.
+    /// </param>
+    public DocumentIngestTool(IServiceScopeFactory scopeFactory, ILogger<DocumentIngestTool> logger)
     {
         ArgumentNullException.ThrowIfNull(scopeFactory);
+        ArgumentNullException.ThrowIfNull(logger);
         _scopeFactory = scopeFactory;
+        _logger = logger;
     }
 
     /// <inheritdoc />
@@ -137,25 +148,41 @@ public sealed class DocumentIngestTool : ITool
             CollectionName = collection
         };
 
-        // Dispatch inside a fresh scope: the MediatR pipeline resolves scoped services
-        // (IAgentExecutionContext et al.), which a singleton must never pull from the root.
-        await using var scope = _scopeFactory.CreateAsyncScope();
-        var mediator = scope.ServiceProvider.GetRequiredService<IMediator>();
-
-        var result = await mediator.Send(command, cancellationToken);
-
-        if (!result.Success)
-            return ToolResult.Fail($"Ingestion failed: {result.Error}");
-
-        var response = new
+        try
         {
-            jobId = result.JobId,
-            chunksProduced = result.ChunksProduced,
-            tokensEmbedded = result.TokensEmbedded,
-            durationMs = result.Duration.TotalMilliseconds
-        };
+            // Scope creation, IMediator resolution, and dispatch all live inside this one try/catch
+            // (#428) — mirrors WorkspaceCommandRunner.RunAsync/IacSandboxRunner.RunAsync's shape.
+            // The MediatR pipeline resolves scoped services (IAgentExecutionContext et al.), which a
+            // singleton must never pull from the root, so the dispatch still runs inside a fresh scope.
+            // Scoped separately from the caller's UriFormatException/ArgumentException handling above
+            // — those guard parameter validation, not dispatch, and must keep their own messages.
+            await using var scope = _scopeFactory.CreateAsyncScope();
+            var mediator = scope.ServiceProvider.GetRequiredService<IMediator>();
 
-        return ToolResult.Ok(JsonSerializer.Serialize(response, JsonOptions));
+            var result = await mediator.Send(command, cancellationToken);
+
+            if (!result.Success)
+                return ToolResult.Fail($"Ingestion failed: {result.Error}");
+
+            var response = new
+            {
+                jobId = result.JobId,
+                chunksProduced = result.ChunksProduced,
+                tokensEmbedded = result.TokensEmbedded,
+                durationMs = result.Duration.TotalMilliseconds
+            };
+
+            return ToolResult.Ok(JsonSerializer.Serialize(response, JsonOptions));
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "document_ingest dispatch failed for {DocumentUri}.", uri);
+            return ToolResult.Fail($"Ingestion failed: {ex.GetType().Name}.");
+        }
     }
 
     private static string GetRequiredString(IReadOnlyDictionary<string, object?> parameters, string key)

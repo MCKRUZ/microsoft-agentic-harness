@@ -87,7 +87,9 @@ public static partial class DependencyInjection
         // Takes the scope factory (not IMediator): the mediator pipeline resolves
         // scoped services, so the singleton tool dispatches inside a fresh scope.
         services.AddKeyedSingleton<ITool>(DocumentIngestTool.ToolName, (sp, _) =>
-            new DocumentIngestTool(sp.GetRequiredService<IServiceScopeFactory>()));
+            new DocumentIngestTool(
+                sp.GetRequiredService<IServiceScopeFactory>(),
+                sp.GetRequiredService<ILogger<DocumentIngestTool>>()));
 
         // Echo tools — deterministic tools for E2E testing pipeline verification
         services.AddKeyedSingleton<ITool>(EchoLookupTool.ToolName, (_, _) => new EchoLookupTool());

@@ -9,6 +9,7 @@ using Domain.AI.Sandbox;
 using Domain.AI.SkillTraining;
 using MediatR;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 
 namespace Infrastructure.AI.Tools.Workspace;
 
@@ -43,6 +44,7 @@ public sealed class WorkspaceWriteFileTool : ITool
 
     private readonly IWorkspaceContextAccessor _workspace;
     private readonly IServiceScopeFactory _scopeFactory;
+    private readonly ILogger<WorkspaceWriteFileTool> _logger;
 
     /// <summary>
     /// Initialises a new instance of the <see cref="WorkspaceWriteFileTool"/> class.
@@ -52,12 +54,22 @@ public sealed class WorkspaceWriteFileTool : ITool
     /// The tool is a keyed SINGLETON, but a mediator dispatch constructs pipeline behaviors that
     /// ctor-inject the SCOPED <c>IAgentExecutionContext</c>, so the dispatch must run inside a
     /// created scope rather than against a root-bound mediator.</param>
-    public WorkspaceWriteFileTool(IWorkspaceContextAccessor workspace, IServiceScopeFactory scopeFactory)
+    /// <param name="logger">
+    /// Logs a scope-creation or dispatch failure before it is mapped to a failed
+    /// <see cref="ToolResult"/> (#428) — the same shape <see cref="WorkspaceCommandRunner.RunAsync"/>
+    /// and <c>IacSandboxRunner.RunAsync</c> already log on their own dispatch paths.
+    /// </param>
+    public WorkspaceWriteFileTool(
+        IWorkspaceContextAccessor workspace,
+        IServiceScopeFactory scopeFactory,
+        ILogger<WorkspaceWriteFileTool> logger)
     {
         ArgumentNullException.ThrowIfNull(workspace);
         ArgumentNullException.ThrowIfNull(scopeFactory);
+        ArgumentNullException.ThrowIfNull(logger);
         _workspace = workspace;
         _scopeFactory = scopeFactory;
+        _logger = logger;
     }
 
     /// <inheritdoc />
@@ -166,23 +178,37 @@ public sealed class WorkspaceWriteFileTool : ITool
             IsStateChange = true
         };
 
-        // Dispatch inside a fresh scope: the MediatR pipeline resolves scoped services
-        // (IAgentExecutionContext et al.), which a singleton must never pull from the root.
-        await using var scope = _scopeFactory.CreateAsyncScope();
-        var mediator = scope.ServiceProvider.GetRequiredService<IMediator>();
-
-        var result = await mediator.Send(command, cancellationToken);
-        if (!result.IsSuccess)
+        try
         {
-            var reason = result.Errors.Count > 0
-                ? string.Join("; ", result.Errors)
-                : "unknown error";
-            return ToolResult.Fail($"ChangeProposal submission failed: {reason}");
-        }
+            // Scope creation, IMediator resolution, and dispatch all live inside this one try/catch
+            // (#428) — mirrors WorkspaceCommandRunner.RunAsync/IacSandboxRunner.RunAsync's shape.
+            // The MediatR pipeline resolves scoped services (IAgentExecutionContext et al.), which a
+            // singleton must never pull from the root, so the dispatch still runs inside a fresh scope.
+            await using var scope = _scopeFactory.CreateAsyncScope();
+            var mediator = scope.ServiceProvider.GetRequiredService<IMediator>();
 
-        var proposal = result.Value!;
-        return ToolResult.Ok(
-            $"ChangeProposal submitted: id={proposal.Id} status={proposal.Status} target={proposal.Target.DisplayName} path={relativePath}");
+            var result = await mediator.Send(command, cancellationToken);
+            if (!result.IsSuccess)
+            {
+                var reason = result.Errors.Count > 0
+                    ? string.Join("; ", result.Errors)
+                    : "unknown error";
+                return ToolResult.Fail($"ChangeProposal submission failed: {reason}");
+            }
+
+            var proposal = result.Value!;
+            return ToolResult.Ok(
+                $"ChangeProposal submitted: id={proposal.Id} status={proposal.Status} target={proposal.Target.DisplayName} path={relativePath}");
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "write_file dispatch failed for {RelativePath}.", relativePath);
+            return ToolResult.Fail($"ChangeProposal submission failed: {ex.GetType().Name}.");
+        }
     }
 
     private static BlastRadius ParseBlastRadius(IReadOnlyDictionary<string, object?> parameters)
