@@ -122,13 +122,19 @@ public sealed class LogRecordRedactionProcessor : BaseProcessor<LogRecord>
     /// scrubs in place.
     /// </summary>
     /// <remarks>
-    /// Checks the exception's full <c>ToString()</c> text (via the SDK's own culture-invariant
-    /// <c>ToInvariantString()</c>, confirmed against the OTLP exporter's serializer source as exactly
-    /// what it uses to populate <c>exception.stacktrace</c>), not just <see cref="Exception.Message"/>
-    /// — that representation recursively includes every <see cref="Exception.InnerException"/>'s own
+    /// Checks the exception's full <c>ToString()</c> text, not just <see cref="Exception.Message"/> —
+    /// that representation recursively includes every <see cref="Exception.InnerException"/>'s own
     /// message via its <c>" ---> "</c> chain, so a secret nested in a wrapped exception's inner
     /// message is still caught even when the outer message itself is clean (e.g. a generic "dispatch
-    /// failed" wrapping a lower-level exception whose message carries a connection string).
+    /// failed" wrapping a lower-level exception whose message carries a connection string). This is
+    /// the same text the OTLP exporter itself exports as <c>exception.stacktrace</c> — confirmed
+    /// against its serializer source, which calls the SDK's own internal, culture-invariant
+    /// <c>ToInvariantString()</c> on whatever <see cref="LogRecord.Exception"/> ends up being (that
+    /// internal helper isn't visible to this assembly, so this method calls the ordinary,
+    /// culture-sensitive <c>ToString()</c> instead — a difference confined to stack-frame boilerplate
+    /// like the localized "at"/"bei" prefix, never to a secret: an exception's own
+    /// <see cref="Exception.Message"/> text is a literal .NET string, not culture-translated, so what
+    /// the redaction filter scans for a match is identical either way).
     /// <para>
     /// <strong>Where the redacted text goes, and why not into <see cref="Exception.Message"/>.</strong>
     /// Confirmed against the OTLP exporter's serializer: it sets <c>exception.message</c> directly
