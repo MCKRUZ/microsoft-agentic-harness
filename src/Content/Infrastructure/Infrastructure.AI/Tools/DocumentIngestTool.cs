@@ -148,41 +148,29 @@ public sealed class DocumentIngestTool : ITool
             CollectionName = collection
         };
 
-        try
-        {
-            // Scope creation, IMediator resolution, and dispatch all live inside this one try/catch
-            // (#428) — mirrors WorkspaceCommandRunner.RunAsync/IacSandboxRunner.RunAsync's shape.
-            // The MediatR pipeline resolves scoped services (IAgentExecutionContext et al.), which a
-            // singleton must never pull from the root, so the dispatch still runs inside a fresh scope.
-            // Scoped separately from the caller's UriFormatException/ArgumentException handling above
-            // — those guard parameter validation, not dispatch, and must keep their own messages.
-            await using var scope = _scopeFactory.CreateAsyncScope();
-            var mediator = scope.ServiceProvider.GetRequiredService<IMediator>();
-
-            var result = await mediator.Send(command, cancellationToken);
-
-            if (!result.Success)
-                return ToolResult.Fail($"Ingestion failed: {result.Error}");
-
-            var response = new
+        // Scoped separately from the caller's UriFormatException/ArgumentException handling above —
+        // those guard parameter validation, not dispatch, and must keep their own messages.
+        return await MediatorDispatchRunner.RunAsync(
+            _scopeFactory,
+            async (mediator, ct) =>
             {
-                jobId = result.JobId,
-                chunksProduced = result.ChunksProduced,
-                tokensEmbedded = result.TokensEmbedded,
-                durationMs = result.Duration.TotalMilliseconds
-            };
+                var result = await mediator.Send(command, ct);
+                if (!result.Success)
+                    return ToolResult.Fail($"Ingestion failed: {result.Error}");
 
-            return ToolResult.Ok(JsonSerializer.Serialize(response, JsonOptions));
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "document_ingest dispatch failed for {DocumentUri}.", uri);
-            return ToolResult.Fail($"Ingestion failed: {ex.GetType().Name}.");
-        }
+                var response = new
+                {
+                    jobId = result.JobId,
+                    chunksProduced = result.ChunksProduced,
+                    tokensEmbedded = result.TokensEmbedded,
+                    durationMs = result.Duration.TotalMilliseconds
+                };
+                return ToolResult.Ok(JsonSerializer.Serialize(response, JsonOptions));
+            },
+            _logger,
+            ToolName,
+            failureContext: uri.ToString(),
+            cancellationToken);
     }
 
     private static string GetRequiredString(IReadOnlyDictionary<string, object?> parameters, string key)

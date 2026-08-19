@@ -310,35 +310,4 @@ public sealed class WorkspaceWriteFileToolTests
             where TNotification : INotification
             => Task.CompletedTask;
     }
-
-    /// <summary>
-    /// Minimal <see cref="IMediator"/> whose <c>Send</c> always throws — models a downstream
-    /// pipeline failure (e.g. a handler-level dependency outage) for
-    /// <see cref="Write_MediatorThrows_ReturnsFailureInsteadOfThrowing"/> (#428).
-    /// </summary>
-    private sealed class ThrowingMediator : IMediator
-    {
-        public Task<TResponse> Send<TResponse>(IRequest<TResponse> request, CancellationToken cancellationToken = default)
-            => throw new InvalidOperationException("Simulated MediatR pipeline failure.");
-
-        public Task<object?> Send(object request, CancellationToken cancellationToken = default)
-            => throw new NotSupportedException();
-
-        public Task Send<TRequest>(TRequest request, CancellationToken cancellationToken = default)
-            where TRequest : IRequest
-            => throw new NotSupportedException();
-
-        public IAsyncEnumerable<TResponse> CreateStream<TResponse>(IStreamRequest<TResponse> request, CancellationToken cancellationToken = default)
-            => throw new NotSupportedException();
-
-        public IAsyncEnumerable<object?> CreateStream(object request, CancellationToken cancellationToken = default)
-            => throw new NotSupportedException();
-
-        public Task Publish(object notification, CancellationToken cancellationToken = default)
-            => Task.CompletedTask;
-
-        public Task Publish<TNotification>(TNotification notification, CancellationToken cancellationToken = default)
-            where TNotification : INotification
-            => Task.CompletedTask;
-    }
 }
