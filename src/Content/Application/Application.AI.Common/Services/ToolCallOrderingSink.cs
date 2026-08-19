@@ -60,7 +60,7 @@ public sealed class ToolCallOrderingSink : IAgentTurnStreamSink
     }
 
     /// <inheritdoc />
-    public Task EmitToolCallResultAsync(string toolCallId, string result, CancellationToken cancellationToken)
+    public Task EmitToolCallResultAsync(string toolCallId, StreamedToolCallResult result, CancellationToken cancellationToken)
     {
         if (!_startedCallIds.Contains(toolCallId))
             return Task.CompletedTask;

@@ -139,7 +139,7 @@ public sealed class BundleRunStreamerTests
         {
             await sink.EmitAsync("Looking that up", ct);
             await sink.EmitToolCallAsync("call-1", "search", new StreamedToolCallArguments("{\"q\":\"docs\"}", false), ct);
-            await sink.EmitToolCallResultAsync("call-1", "42 results", ct);
+            await sink.EmitToolCallResultAsync("call-1", new StreamedToolCallResult("42 results", false), ct);
             await sink.EmitAsync(" — found it.", ct);
         });
 
@@ -153,13 +153,24 @@ public sealed class BundleRunStreamerTests
         var start = frames.Single(f => Type(f) == "TOOL_CALL_START");
         start.GetProperty("toolCallId").GetString().Should().Be("call-1");
         start.GetProperty("toolCallName").GetString().Should().Be("search");
+        // The assistant text message had already opened (TEXT_MESSAGE_START above the tool call in
+        // this sequence), so the tool call must be linked to it.
+        var textMessageId = frames.Single(f => Type(f) == "TEXT_MESSAGE_START").GetProperty("messageId").GetString();
+        start.GetProperty("parentMessageId").GetString().Should().Be(textMessageId);
 
         frames.Single(f => Type(f) == "TOOL_CALL_ARGS").GetProperty("delta").GetString()
             .Should().Be("{\"q\":\"docs\"}");
         frames.Single(f => Type(f) == "TOOL_CALL_END").GetProperty("toolCallId").GetString()
             .Should().Be("call-1");
-        frames.Single(f => Type(f) == "TOOL_CALL_RESULT").GetProperty("result").GetString()
-            .Should().Be("42 results");
+
+        var resultFrame = frames.Single(f => Type(f) == "TOOL_CALL_RESULT");
+        resultFrame.GetProperty("toolCallId").GetString().Should().Be("call-1");
+        resultFrame.GetProperty("content").GetString().Should().Be("42 results");
+        resultFrame.GetProperty("role").GetString().Should().Be("tool");
+        resultFrame.TryGetProperty("withheld", out _).Should().BeFalse("withheld must be omitted, not false, on a normal result");
+        // A fresh message id, distinct from both the assistant's text message and the tool-call-start's
+        // parentMessageId reference to it — per AG-UI, a tool result is its own message.
+        resultFrame.GetProperty("messageId").GetString().Should().NotBe(textMessageId);
     }
 
     [Fact]
@@ -174,6 +185,11 @@ public sealed class BundleRunStreamerTests
 
         frames.Select(Type).Should().Equal(
             "RUN_STARTED", "TOOL_CALL_START", "TOOL_CALL_ARGS", "TOOL_CALL_END", "RUN_FINISHED");
+
+        // No assistant text message ever opened, so the tool call has no parent to point at yet — the
+        // field must be omitted from the wire, not sent as null (it's optional for exactly this case).
+        frames.Single(f => Type(f) == "TOOL_CALL_START").TryGetProperty("parentMessageId", out _)
+            .Should().BeFalse();
     }
 
     /// <summary>
@@ -194,6 +210,25 @@ public sealed class BundleRunStreamerTests
         var argsFrame = frames.Single(f => Type(f) == "TOOL_CALL_ARGS");
         argsFrame.GetProperty("delta").GetString().Should().Be("{}");
         argsFrame.GetProperty("withheld").GetBoolean().Should().BeTrue();
+    }
+
+    /// <summary>
+    /// A withheld tool-call result (the real result exceeded the streaming size ceiling) sets the wire
+    /// frame's <c>withheld</c> flag and streams empty content, never a truncated preview — #417.
+    /// </summary>
+    [Fact]
+    public async Task StreamAsync_OversizedToolCallResult_EmitsWithheldFrame_NotTruncatedPayload()
+    {
+        var executor = new FakeExecutor(BundleRunExecution.Ran(Record(BundleRunStatus.Succeeded)), async (sink, ct) =>
+        {
+            await sink.EmitToolCallResultAsync("call-1", new StreamedToolCallResult(string.Empty, true), ct);
+        });
+
+        var frames = await RunAndParseAsync(executor, Record());
+
+        var resultFrame = frames.Single(f => Type(f) == "TOOL_CALL_RESULT");
+        resultFrame.GetProperty("content").GetString().Should().BeEmpty();
+        resultFrame.GetProperty("withheld").GetBoolean().Should().BeTrue();
     }
 
     [Fact]

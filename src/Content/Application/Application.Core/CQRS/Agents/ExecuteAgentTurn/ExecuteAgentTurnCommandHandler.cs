@@ -348,15 +348,15 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 	/// <c>update.Contents</c> stream. Both are redacted via <see cref="ToolPayloadRedactor"/> before
 	/// reaching the sink — the same treatment <c>ToolDiagnosticsMiddleware</c> applies before the
 	/// identical data is persisted, since a live SSE stream is just as much an exposure point for
-	/// secrets as the observability store is. Arguments are redacted, never truncated — truncating
-	/// mid-JSON would silently hand a client invalid, unparseable data — but above
-	/// <see cref="ToolPayloadRedactor.MaxStreamedToolCallArgsLength"/> they are withheld whole instead
-	/// (<see cref="StreamedToolCallArguments.Withheld"/>), since a size cap and a truncation cap are
-	/// not the same thing; the result text has no such contract and gets the same redact-and-truncate
-	/// preview treatment the middleware uses — except when the tool failed, where a generic message is
-	/// streamed instead of
+	/// secrets as the observability store is. Neither is ever truncated — truncating mid-JSON would
+	/// silently hand a client invalid, unparseable data for arguments, and a truncated result past
+	/// <see cref="ToolPayloadRedactor.MaxStructuralRedactionCeiling"/> could still contain an
+	/// unredacted secret — so above <see cref="ToolPayloadRedactor.MaxStreamedToolCallPayloadLength"/>
+	/// both are withheld whole instead (<see cref="StreamedToolCallArguments.Withheld"/>,
+	/// <see cref="StreamedToolCallResult.Withheld"/>), since a size cap and a truncation cap are not
+	/// the same thing. When the tool failed, a generic message is streamed instead of
 	/// <see cref="FunctionResultContent.Result"/>'s raw text, since <c>IncludeDetailedErrors</c> bakes
-	/// the exception message into that string (see <see cref="RedactedResultPreview"/>). Usage and
+	/// the exception message into that string (see <see cref="RedactedResultForStreaming"/>). Usage and
 	/// tool-call capture still flow through the chat-client middleware, so the caller's post-turn
 	/// accounting is unchanged. The same <paramref name="cancellationToken"/> flows to
 	/// <c>RunStreamingAsync</c>, so a disconnected consumer aborts the model call.
@@ -423,7 +423,7 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 			// no matching preceding TOOL_CALL_START (e.g. a call skipped above for an empty Name).
 			case FunctionResultContent { CallId.Length: > 0 } result:
 				await sink.EmitToolCallResultAsync(
-					result.CallId, RedactedResultPreview(result, redactor, logger), cancellationToken);
+					result.CallId, RedactedResultForStreaming(result, redactor, logger), cancellationToken);
 				break;
 		}
 	}
@@ -462,33 +462,29 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 	}
 
 	/// <summary>
-	/// Builds a safe, streamable preview of a tool's result. <see cref="ToolPayloadRedactor.SafeResultText"/>
-	/// substitutes a generic message when the call failed, since <c>FunctionInvokingChatClient</c>'s
-	/// <c>IncludeDetailedErrors</c> option (set unconditionally by <c>AgentFactory</c>) bakes the raw
-	/// exception message into <see cref="FunctionResultContent.Result"/> — the same substitution
-	/// <c>ToolDiagnosticsMiddleware</c> applies before persisting to the trace store a dashboard later
-	/// renders, since that is just as much an exposure point as this client-facing SSE frame. A
-	/// redaction-contract violation from <paramref name="redactor"/> degrades the same way, via
-	/// <see cref="ToolPayloadRedactor.TryOrFallback"/>. Above
-	/// <see cref="ToolPayloadRedactor.MaxStructuralRedactionCeiling"/>, <c>PatternSecretRedactor</c>
-	/// falls back to its regex-only pass, which cannot see through the escaped-nested-JSON secret
-	/// shape #391 closed for smaller payloads — so a 500-char preview sliced from a redact-and-truncate
-	/// call on an oversized result could still contain an unredacted secret. A generic message is
-	/// streamed instead of attempting a preview at all, rather than silently degrading the redaction
-	/// guarantee this method otherwise provides.
+	/// Builds a safe, streamable representation of a tool's result — the result-path counterpart to
+	/// <see cref="RedactedArgsJson"/>, sharing the same withhold-above-a-ceiling treatment instead of
+	/// the fixed-length truncation this method used before (#417): a truncated preview past
+	/// <see cref="ToolPayloadRedactor.MaxStructuralRedactionCeiling"/> could still contain an
+	/// unredacted secret (<c>PatternSecretRedactor</c> falls back to a regex-only pass above that
+	/// size, which cannot see through the escaped-nested-JSON secret shape #391 closed for smaller
+	/// payloads), and a client parsing a streamed result as structured data — not just a human-read
+	/// preview — could receive truncated, invalid data either way.
+	/// <see cref="ToolPayloadRedactor.SafeResultText"/> substitutes a generic message when the call
+	/// failed, since <c>FunctionInvokingChatClient</c>'s <c>IncludeDetailedErrors</c> option (set
+	/// unconditionally by <c>AgentFactory</c>) bakes the raw exception message into
+	/// <see cref="FunctionResultContent.Result"/> — the same substitution <c>ToolDiagnosticsMiddleware</c>
+	/// applies before persisting to the trace store a dashboard later renders, since that is just as
+	/// much an exposure point as this client-facing SSE frame.
 	/// </summary>
-	private static string RedactedResultPreview(FunctionResultContent result, ISecretRedactor? redactor, ILogger logger)
+	private static StreamedToolCallResult RedactedResultForStreaming(FunctionResultContent result, ISecretRedactor? redactor, ILogger logger)
 	{
 		var resultText = ToolPayloadRedactor.SafeResultText(result);
 
 		if (resultText.Length > ToolPayloadRedactor.MaxStructuralRedactionCeiling)
-			return "[result too large to preview safely]";
+			return new StreamedToolCallResult(string.Empty, Withheld: true);
 
-		return ToolPayloadRedactor.TryOrFallback(
-			() => ToolPayloadRedactor.RedactAndTruncate(resultText, redactor),
-			logger,
-			$"Failed to redact streamed tool-call result for CallId={result.CallId}",
-			fallback: "[unavailable]");
+		return ToolPayloadRedactor.RedactResultForStreaming(resultText, redactor, logger, result.CallId);
 	}
 
 	private static void RecordTurnError(string agentName)

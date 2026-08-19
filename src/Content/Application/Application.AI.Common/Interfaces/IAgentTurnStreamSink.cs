@@ -66,8 +66,12 @@ public interface IAgentTurnStreamSink
     /// Emits a tool call's result once the tool has actually run. Default no-op.
     /// </summary>
     /// <param name="toolCallId">The call this result belongs to.</param>
-    /// <param name="result">The tool's output.</param>
+    /// <param name="result">
+    /// The tool's output. <see cref="StreamedToolCallResult.Text"/> is empty when
+    /// <see cref="StreamedToolCallResult.Withheld"/> is <see langword="true"/> (the real result
+    /// exceeded the streaming size ceiling, or redaction failed) — see that type's remarks.
+    /// </param>
     /// <param name="cancellationToken">Cancels emission when the consumer goes away.</param>
-    Task EmitToolCallResultAsync(string toolCallId, string result, CancellationToken cancellationToken) =>
+    Task EmitToolCallResultAsync(string toolCallId, StreamedToolCallResult result, CancellationToken cancellationToken) =>
         Task.CompletedTask;
 }

@@ -38,7 +38,7 @@ public sealed class ToolPayloadRedactorTests
     /// </summary>
     private sealed class InflatingRedactor : ISecretRedactor
     {
-        public string? Redact(string? input) => input + new string('x', ToolPayloadRedactor.MaxStreamedToolCallArgsLength);
+        public string? Redact(string? input) => input + new string('x', ToolPayloadRedactor.MaxStreamedToolCallPayloadLength);
         public bool IsSecretKey(string configKey) => false;
     }
 
@@ -107,7 +107,7 @@ public sealed class ToolPayloadRedactorTests
     [Fact]
     public void RedactForStreaming_AboveCeiling_WithholdsWithoutRedacting()
     {
-        var payload = new string('x', ToolPayloadRedactor.MaxStreamedToolCallArgsLength + 1);
+        var payload = new string('x', ToolPayloadRedactor.MaxStreamedToolCallPayloadLength + 1);
 
         var result = ToolPayloadRedactor.RedactForStreaming(payload, redactor: null, NullLogger.Instance, "search", "call-1");
 
@@ -126,7 +126,7 @@ public sealed class ToolPayloadRedactorTests
     public void RedactForStreaming_RedactionInflatesOutputPastCeiling_Withholds()
     {
         var payload = "small input, well under the ceiling";
-        payload.Length.Should().BeLessThan(ToolPayloadRedactor.MaxStreamedToolCallArgsLength,
+        payload.Length.Should().BeLessThan(ToolPayloadRedactor.MaxStreamedToolCallPayloadLength,
             "the test must exercise the OUTPUT check, not the input pre-check");
 
         var result = ToolPayloadRedactor.RedactForStreaming(payload, new InflatingRedactor(), NullLogger.Instance, "search", "call-1");

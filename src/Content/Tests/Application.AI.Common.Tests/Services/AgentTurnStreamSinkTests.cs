@@ -101,14 +101,14 @@ public class AgentTurnStreamSinkTests
     [Fact]
     public async Task EmitToolCallResultAsync_ForwardsToTheCallback()
     {
-        (string Id, string Result)? received = null;
+        (string Id, StreamedToolCallResult Result)? received = null;
         var sink = new AgentTurnStreamSink(
             (_, _) => Task.CompletedTask,
             onToolCallResult: (id, result, _) => { received = (id, result); return Task.CompletedTask; });
 
-        await sink.EmitToolCallResultAsync("call-1", "42", CancellationToken.None);
+        await sink.EmitToolCallResultAsync("call-1", new StreamedToolCallResult("42", false), CancellationToken.None);
 
-        received.Should().Be(("call-1", "42"));
+        received.Should().Be(("call-1", new StreamedToolCallResult("42", false)));
     }
 
     [Fact]
@@ -116,7 +116,7 @@ public class AgentTurnStreamSinkTests
     {
         var sink = new AgentTurnStreamSink((_, _) => Task.CompletedTask);
 
-        var act = () => sink.EmitToolCallResultAsync("call-1", "42", CancellationToken.None);
+        var act = () => sink.EmitToolCallResultAsync("call-1", new StreamedToolCallResult("42", false), CancellationToken.None);
 
         await act.Should().NotThrowAsync();
     }

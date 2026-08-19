@@ -17,18 +17,19 @@ public static class ToolPayloadRedactor
     public const int MaxPayloadSummaryLength = 500;
 
     /// <summary>
-    /// The length, in UTF-16 characters of the serialized (pre-redaction) JSON, above which a
-    /// streamed tool call's arguments are withheld rather than sent. Unlike
-    /// <see cref="MaxPayloadSummaryLength"/>, arguments are never truncated — truncating mid-JSON
-    /// would hand a client invalid, unparseable data (see <see cref="Redact"/>'s remarks) — so
-    /// oversized arguments are withheld whole instead of cut. Checked against the pre-redaction
-    /// length deliberately: it is a resource ceiling, not a secrecy decision, so there is no reason
-    /// to pay for redaction on a payload that is about to be discarded. Sits comfortably below
-    /// <c>PatternSecretRedactor</c>'s own structural-redaction size ceiling (64KB), so any payload
-    /// that actually reaches a client has had the full structural JSON-aware redaction pass applied
-    /// to it — never just the regex-only fallback.
+    /// The length, in UTF-16 characters of the pre-redaction payload (serialized JSON for arguments,
+    /// plain text for a result), above which a streamed tool call's arguments or result are withheld
+    /// rather than sent. Unlike <see cref="MaxPayloadSummaryLength"/>, neither is ever truncated —
+    /// truncating mid-JSON would hand a client invalid, unparseable data, and truncating a result past
+    /// <see cref="MaxStructuralRedactionCeiling"/> could still contain an unredacted secret (see
+    /// <see cref="Redact"/>'s remarks) — so an oversized payload is withheld whole instead of cut.
+    /// Checked against the pre-redaction length deliberately: it is a resource ceiling, not a secrecy
+    /// decision, so there is no reason to pay for redaction on a payload that is about to be discarded.
+    /// Sits comfortably below <c>PatternSecretRedactor</c>'s own structural-redaction size ceiling
+    /// (64KB), so any payload that actually reaches a client has had the full structural JSON-aware
+    /// redaction pass applied to it — never just the regex-only fallback.
     /// </summary>
-    public const int MaxStreamedToolCallArgsLength = 16 * 1024;
+    public const int MaxStreamedToolCallPayloadLength = 16 * 1024;
 
     /// <summary>
     /// Mirrors <c>PatternSecretRedactor.MaxStructuralRedactionLength</c> (Infrastructure layer,
@@ -39,7 +40,7 @@ public static class ToolPayloadRedactor
     /// </summary>
     /// <remarks>
     /// The persistence path (<c>ToolDiagnosticsMiddleware</c>) has no size ceiling of its own, unlike
-    /// the streaming path (<see cref="MaxStreamedToolCallArgsLength"/>, 16KB). Above this size,
+    /// the streaming path (<see cref="MaxStreamedToolCallPayloadLength"/>, 16KB). Above this size,
     /// <see cref="Redact"/> silently falls back to regex-only redaction, which cannot see through
     /// escaped-nested JSON (the #391 shape) — so a payload larger than this must be withheld rather
     /// than previewed, or the persisted record's 500-char prefix could contain an unredacted secret.
@@ -88,7 +89,7 @@ public static class ToolPayloadRedactor
     /// consolidates the identical "check the ceiling, redact, wrap the result" shape that shipped
     /// independently (and inconsistently) in both <c>ExecuteAgentTurnCommandHandler</c> (bundle SSE)
     /// and <c>AgUiClientToolBridge</c> (AG-UI client round-trip). Above
-    /// <see cref="MaxStreamedToolCallArgsLength"/>, or if redaction itself throws (a redactor-contract
+    /// <see cref="MaxStreamedToolCallPayloadLength"/>, or if redaction itself throws (a redactor-contract
     /// violation), the result is withheld: <c>Json</c> is <c>"{}"</c> and <c>Withheld</c> is
     /// <see langword="true"/> — both failure modes collapse to the same client-visible signal, since
     /// either way the real arguments never reach the consumer and must not be mistaken for the tool's
@@ -107,7 +108,7 @@ public static class ToolPayloadRedactor
     public static StreamedToolCallArguments RedactForStreaming(
         string json, ISecretRedactor? redactor, ILogger logger, string toolName, string? callId)
     {
-        if (json.Length > MaxStreamedToolCallArgsLength)
+        if (json.Length > MaxStreamedToolCallPayloadLength)
             return new StreamedToolCallArguments("{}", Withheld: true);
 
         StreamedToolCallArguments result;
@@ -128,8 +129,51 @@ public static class ToolPayloadRedactor
         // (and HTML-sensitive ones) to \uXXXX — a redacted payload of mostly non-ASCII text can come
         // back several times longer than it went in. Re-check the OUTPUT so the ceiling is actually a
         // wire-size ceiling, not just an input-size one.
-        return result.Json.Length > MaxStreamedToolCallArgsLength
+        return result.Json.Length > MaxStreamedToolCallPayloadLength
             ? new StreamedToolCallArguments("{}", Withheld: true)
+            : result;
+    }
+
+    /// <summary>
+    /// Redacts and size-caps <paramref name="text"/> for a live tool-call-result stream — the
+    /// result-path counterpart to <see cref="RedactForStreaming"/>. Above
+    /// <see cref="MaxStreamedToolCallPayloadLength"/>, or if redaction itself throws, the result is
+    /// withheld: <see cref="StreamedToolCallResult.Text"/> is empty and
+    /// <see cref="StreamedToolCallResult.Withheld"/> is <see langword="true"/>. Unlike arguments,
+    /// result text has no fixed-placeholder convention to fall back to — it is free text, not JSON a
+    /// client parses structurally — so an empty string is enough: <see cref="StreamedToolCallResult.Withheld"/>
+    /// is what tells the client nothing meaningful was sent, not the shape of the empty value.
+    /// </summary>
+    /// <param name="text">The tool result's text, already substituted for a failure via <see cref="SafeResultText"/>.</param>
+    /// <param name="redactor">Optional secret redactor; a no-op when <see langword="null"/>.</param>
+    /// <param name="logger">Logs a warning if redaction throws.</param>
+    /// <param name="callId">
+    /// The provider-assigned call id, logged as a structured field (<c>{CallId}</c>). Unlike
+    /// <see cref="RedactForStreaming"/>, there is no tool-name field to log alongside it —
+    /// <see cref="Microsoft.Extensions.AI.FunctionResultContent"/> carries no name, only the call id
+    /// it resolves against.
+    /// </param>
+    public static StreamedToolCallResult RedactResultForStreaming(
+        string text, ISecretRedactor? redactor, ILogger logger, string? callId)
+    {
+        if (text.Length > MaxStreamedToolCallPayloadLength)
+            return new StreamedToolCallResult(string.Empty, Withheld: true);
+
+        StreamedToolCallResult result;
+        try
+        {
+            result = new StreamedToolCallResult(Redact(text, redactor), Withheld: false);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Failed to redact streamed tool-call result for CallId={CallId}", callId);
+            return new StreamedToolCallResult(string.Empty, Withheld: true);
+        }
+
+        // Same output-length re-check as RedactForStreaming, for the same reason: PatternSecretRedactor's
+        // structural pass can re-serialize non-ASCII text longer than it went in.
+        return result.Text.Length > MaxStreamedToolCallPayloadLength
+            ? new StreamedToolCallResult(string.Empty, Withheld: true)
             : result;
     }
 
