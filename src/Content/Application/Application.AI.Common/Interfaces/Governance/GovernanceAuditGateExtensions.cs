@@ -45,15 +45,8 @@ public static class GovernanceAuditGateExtensions
         IOptionsMonitor<GovernanceConfig>? governanceConfig,
         string? agentId,
         string action,
-        string decision)
-    {
-        if (auditService is null)
-            return;
-        if (governanceConfig is not null && !governanceConfig.CurrentValue.EnableAudit)
-            return;
-
-        auditService.Log(agentId ?? "unknown", action, decision);
-    }
+        string decision) =>
+        auditService.LogIfAuditEnabled(governanceConfig?.CurrentValue, agentId, action, decision);
 
     /// <summary>
     /// As <see cref="LogIfAuditEnabled(IGovernanceAuditService?, IOptionsMonitor{GovernanceConfig}?, string?, string, string)"/>,
@@ -75,5 +68,26 @@ public static class GovernanceAuditGateExtensions
             return;
 
         auditService.Log(agentId ?? "unknown", action, decision);
+    }
+
+    /// <summary>
+    /// As <see cref="LogIfAuditEnabled(IGovernanceAuditService?, GovernanceConfig?, string?, string, string)"/>,
+    /// but for a caller whose <paramref name="decision"/> string is non-trivial to build (e.g. a LINQ
+    /// projection over a findings collection) — deferred so the cost is paid only when the gate actually
+    /// passes, not on every call regardless of the operator's audit setting.
+    /// </summary>
+    public static void LogIfAuditEnabled(
+        this IGovernanceAuditService? auditService,
+        GovernanceConfig? governanceConfig,
+        string? agentId,
+        string action,
+        Func<string> decision)
+    {
+        if (auditService is null)
+            return;
+        if (governanceConfig is not null && !governanceConfig.EnableAudit)
+            return;
+
+        auditService.Log(agentId ?? "unknown", action, decision());
     }
 }

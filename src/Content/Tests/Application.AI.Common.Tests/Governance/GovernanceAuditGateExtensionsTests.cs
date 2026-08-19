@@ -107,6 +107,54 @@ public sealed class GovernanceAuditGateExtensionsTests
         _auditService.Verify(a => a.Log("agent-1", "tool_x", "allowed"), Times.Once);
     }
 
+    [Fact]
+    public void LogIfAuditEnabled_LazySnapshotOverload_EnableAuditTrue_LogsUsingFactoryResult()
+    {
+        var config = new GovernanceConfig { EnableAudit = true };
+
+        _auditService.Object.LogIfAuditEnabled(config, "agent-1", "tool_x", () => "computed-decision");
+
+        _auditService.Verify(a => a.Log("agent-1", "tool_x", "computed-decision"), Times.Once);
+    }
+
+    [Fact]
+    public void LogIfAuditEnabled_LazySnapshotOverload_EnableAuditFalse_NeverInvokesFactory()
+    {
+        // The whole reason this overload exists (#444 code-review/simplify finding): a caller with an
+        // expensive decision string (a LINQ projection) must not pay that cost when audit is off. If the
+        // gate check moved after the factory call, this would still pass on Times.Never for Log but the
+        // factory itself would already have run — so the assertion is on the factory invocation, not on
+        // the audit write.
+        var config = new GovernanceConfig { EnableAudit = false };
+        var factoryInvoked = false;
+
+        _auditService.Object.LogIfAuditEnabled(config, "agent-1", "tool_x", () =>
+        {
+            factoryInvoked = true;
+            return "computed-decision";
+        });
+
+        factoryInvoked.Should().BeFalse("the decision factory must not run when auditing is disabled");
+        _auditService.Verify(a => a.Log(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>()), Times.Never);
+    }
+
+    [Fact]
+    public void LogIfAuditEnabled_LazySnapshotOverload_NullAuditService_DoesNotInvokeFactory()
+    {
+        IGovernanceAuditService? nullService = null;
+        var config = new GovernanceConfig { EnableAudit = true };
+        var factoryInvoked = false;
+
+        var act = () => nullService.LogIfAuditEnabled(config, "agent-1", "tool_x", () =>
+        {
+            factoryInvoked = true;
+            return "computed-decision";
+        });
+
+        act.Should().NotThrow();
+        factoryInvoked.Should().BeFalse("a missing audit sink means there is nothing to build the decision string for");
+    }
+
     private static IOptionsMonitor<GovernanceConfig> MonitorOf(GovernanceConfig config)
     {
         var monitor = new Mock<IOptionsMonitor<GovernanceConfig>>();

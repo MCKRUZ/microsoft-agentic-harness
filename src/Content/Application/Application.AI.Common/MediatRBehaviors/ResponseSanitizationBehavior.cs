@@ -96,8 +96,11 @@ public sealed class ResponseSanitizationBehavior<TRequest, TResponse>
             "Response sanitized for tool {ToolName}: {Count} finding(s), highest threat {ThreatLevel}",
             toolRequest.ToolName, result.Findings.Count, result.HighestThreatLevel);
 
-        var categories = string.Join(",", result.Findings.Select(f => f.Category).Distinct());
-        _auditService.LogIfAuditEnabled(cfg, "system", "response_sanitized", $"{categories}:{toolRequest.ToolName}");
+        _auditService.LogIfAuditEnabled(cfg, "system", "response_sanitized", () =>
+        {
+            var categories = string.Join(",", result.Findings.Select(f => f.Category).Distinct());
+            return $"{categories}:{toolRequest.ToolName}";
+        });
 
         return ReplaceSanitizedOutput(response, result.SanitizedContent);
     }

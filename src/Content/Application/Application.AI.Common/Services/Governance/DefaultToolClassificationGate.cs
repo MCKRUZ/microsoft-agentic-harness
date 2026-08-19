@@ -147,7 +147,6 @@ public sealed class DefaultToolClassificationGate : IToolClassificationGate
         return AssetReference.Unknown();
     }
 
-
     private static void RecordDecision(
         string toolName, string action, AssetType assetType, LabelSource source,
         ClassificationEnforcementMode mode, bool enforced)
