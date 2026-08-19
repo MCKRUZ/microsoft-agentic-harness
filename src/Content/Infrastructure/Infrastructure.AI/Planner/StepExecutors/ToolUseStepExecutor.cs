@@ -93,7 +93,7 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
 
         var profile = await _capabilityEnforcer.ResolveProfileAsync(config.ToolName, ct);
         var isolationLevel = DetermineIsolation(config, profile, step);
-        profile = SyncProfileIsolation(profile, isolationLevel);
+        profile = profile.WithMinimumIsolationAtLeast(isolationLevel);
 
         var (sandboxResult, sandboxFailure) = await RunSandboxAsync(
             config, step, profile, isolationLevel, arguments, admission, sw, ct);
@@ -331,31 +331,6 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
     }
 
 
-    /// <summary>
-    /// Rebuilds <paramref name="profile"/> so its own <see cref="ToolPermissionProfile.MinimumIsolation"/>
-    /// matches <paramref name="isolationLevel"/> — the tier <see cref="DetermineIsolation"/> actually
-    /// selected, which can be elevated above the profile's declared floor by
-    /// <c>config.IsolationLevelOverride</c> or a <c>Supervised</c>/<c>Restricted</c> step (#420).
-    /// </summary>
-    /// <remarks>
-    /// <see cref="DetermineIsolation"/> only ever raises the level, never lowers it, so
-    /// <paramref name="isolationLevel"/> is always ≥ <paramref name="profile"/>'s own
-    /// <see cref="ToolPermissionProfile.MinimumIsolation"/> — the equality check below only guards
-    /// against an unnecessary record rebuild, not against ever lowering the floor.
-    /// <see cref="Infrastructure.AI.Sandbox.DockerSandboxExecutor.HandleDockerUnavailableAsync"/> reads
-    /// this embedded field to decide whether a Docker outage is a hard, attested refusal or a soft,
-    /// unattested fallback hint — an un-elevated profile can misroute an autonomy-elevated step into
-    /// the unattested branch. <c>McpConnectionManager</c>'s own sandbox-session dispatch
-    /// (<c>resolvedProfile with { MinimumIsolation = Math.Max(...) }</c>) and
-    /// <c>ToolPermissionProfileResolver.ResolveForUngovernedDispatch</c> already follow this same
-    /// sync-before-embed pattern independently — see #433 for consolidating all three into one helper.
-    /// </remarks>
-    private static ToolPermissionProfile SyncProfileIsolation(
-        ToolPermissionProfile profile, SandboxIsolationLevel isolationLevel) =>
-        isolationLevel == profile.MinimumIsolation
-            ? profile
-            : profile with { MinimumIsolation = isolationLevel };
-
     private static SandboxIsolationLevel DetermineIsolation(
         ToolUseConfig config,
         ToolPermissionProfile profile,
@@ -363,24 +338,18 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
     {
         var level = profile.MinimumIsolation;
 
-        if (config.IsolationLevelOverride.HasValue && config.IsolationLevelOverride.Value > level)
-            level = config.IsolationLevelOverride.Value;
+        if (config.IsolationLevelOverride.HasValue)
+            level = level.AtLeast(config.IsolationLevelOverride.Value);
 
         if (step.RequiredAutonomyLevel is AutonomyLevel.Supervised or AutonomyLevel.Restricted)
-        {
-            if (level < SandboxIsolationLevel.Container)
-                level = SandboxIsolationLevel.Container;
-        }
+            level = level.AtLeast(SandboxIsolationLevel.Container);
 
         // Floor None to Process: no ISandboxExecutor is keyed for None (only Process and
         // Container are registered). A tool that doesn't override ITool.MinimumIsolation resolves
         // to a profile with MinimumIsolation = None, which would otherwise throw
         // InvalidOperationException at keyed-service resolution. Process is the default
         // subprocess executor and the safe minimum for "direct-execution" tools.
-        if (level < SandboxIsolationLevel.Process)
-            level = SandboxIsolationLevel.Process;
-
-        return level;
+        return level.AtLeast(SandboxIsolationLevel.Process);
     }
 
     /// <summary>

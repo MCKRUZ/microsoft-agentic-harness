@@ -120,8 +120,7 @@ public sealed class ToolPermissionProfileResolver
             overrideConfig.MinimumIsolation, out var parsed)
             ? parsed
             : SandboxIsolationLevel.None;
-        var effectiveIsolation = (SandboxIsolationLevel)Math.Max(
-            (int)baseIsolation, (int)overrideIsolation);
+        var effectiveIsolation = baseIsolation.AtLeast(overrideIsolation);
 
         return (deniedCaps, effectiveIsolation);
     }
@@ -155,8 +154,8 @@ public sealed class ToolPermissionProfileResolver
     /// relative to that tool's own <see cref="ITool.RequiredCapabilities"/> — see the under-declaration
     /// remarks below. Otherwise the merged profile: the override's <c>DeniedCapabilities</c> carried
     /// through (for <see cref="ToolPermissionProfile.EffectiveCapabilities"/>), and isolation set to
-    /// <c>Math.Max(</c><paramref name="defaultIsolationLevel"/><c>, operatorOverride)</c> — never
-    /// downgraded below the caller's own floor even when no override is configured.
+    /// <paramref name="defaultIsolationLevel"/><c>.AtLeast(operatorOverride)</c> — never downgraded
+    /// below the caller's own floor even when no override is configured.
     /// </returns>
     /// <remarks>
     /// <para>
@@ -179,7 +178,7 @@ public sealed class ToolPermissionProfileResolver
     /// regardless of what the caller actually required, so a consumer constructed with an elevated
     /// floor (the constructor parameter every first-party caller of this dispatch path exposes) got
     /// the right sandbox executor selected — the caller computes
-    /// <c>Math.Max(defaultIsolationLevel, profile.MinimumIsolation)</c> for that — but a profile whose
+    /// <c>defaultIsolationLevel.AtLeast(profile.MinimumIsolation)</c> for that — but a profile whose
     /// own <see cref="ToolPermissionProfile.MinimumIsolation"/> still read the un-elevated value.
     /// <c>SandboxSessionAttestationSigner</c>'s <c>capabilitiesEnforcedBy</c> field and
     /// <c>DockerSandboxExecutor</c>'s Docker-unavailable fallback gate both read that field, so a
@@ -187,8 +186,8 @@ public sealed class ToolPermissionProfileResolver
     /// decision both based on the wrong tier. Unreachable today — every shipped call site's floor
     /// defaults to <see cref="SandboxIsolationLevel.Process"/> — but latent for the first consumer
     /// that isn't. Now that this method receives the floor directly, the caller no longer needs its
-    /// own outer <c>Math.Max</c> against the returned profile — <see cref="ToolPermissionProfile.MinimumIsolation"/>
-    /// already reflects it.
+    /// own outer <see cref="SandboxIsolationLevelExtensions.AtLeast"/> call against the returned
+    /// profile — <see cref="ToolPermissionProfile.MinimumIsolation"/> already reflects it.
     /// </para>
     /// </remarks>
     /// <param name="agentId">
@@ -237,8 +236,7 @@ public sealed class ToolPermissionProfileResolver
             RequiredCapabilities = requiredCapabilities,
             DeniedCapabilities = deniedCaps,
             AllowedPrograms = allowedPrograms,
-            MinimumIsolation = (SandboxIsolationLevel)Math.Max(
-                (int)defaultIsolationLevel, (int)overrideIsolation)
+            MinimumIsolation = defaultIsolationLevel.AtLeast(overrideIsolation)
         });
     }
 
