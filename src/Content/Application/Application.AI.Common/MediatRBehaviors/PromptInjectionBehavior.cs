@@ -63,8 +63,7 @@ public sealed class PromptInjectionBehavior<TRequest, TResponse>
             "Prompt injection detected: {InjectionType} (threat: {ThreatLevel}, confidence: {Confidence:F2})",
             result.InjectionType, result.ThreatLevel, result.Confidence);
 
-        if (cfg.EnableAudit)
-            _auditService.Log("system", "prompt_injection_scan", $"blocked:{result.InjectionType}");
+        _auditService.LogIfAuditEnabled(cfg, "system", "prompt_injection_scan", $"blocked:{result.InjectionType}");
 
         var reason = $"Prompt injection detected ({result.InjectionType}). Request blocked.";
         if (ResultHelper.TryCreateFailure<TResponse>(nameof(Result.GovernanceBlocked), reason, out var blocked))

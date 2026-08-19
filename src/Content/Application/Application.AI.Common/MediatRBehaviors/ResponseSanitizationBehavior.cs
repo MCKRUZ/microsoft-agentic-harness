@@ -82,8 +82,8 @@ public sealed class ResponseSanitizationBehavior<TRequest, TResponse>
             GovernanceMetrics.ResponseBlocks.Add(1,
                 new KeyValuePair<string, object?>(GovernanceConventions.ToolName, toolRequest.ToolName));
 
-            if (cfg.EnableAudit)
-                _auditService.Log("system", "response_blocked", $"{result.HighestThreatLevel}:{toolRequest.ToolName}:{result.Findings.Count} findings");
+            _auditService.LogIfAuditEnabled(cfg, "system", "response_blocked",
+                $"{result.HighestThreatLevel}:{toolRequest.ToolName}:{result.Findings.Count} findings");
 
             var reason = $"Tool response blocked: {result.HighestThreatLevel} threat detected ({result.Findings.Count} finding(s))";
             if (ResultHelper.TryCreateFailure<TResponse>(nameof(Result.GovernanceBlocked), reason, out var blocked))
@@ -96,11 +96,8 @@ public sealed class ResponseSanitizationBehavior<TRequest, TResponse>
             "Response sanitized for tool {ToolName}: {Count} finding(s), highest threat {ThreatLevel}",
             toolRequest.ToolName, result.Findings.Count, result.HighestThreatLevel);
 
-        if (cfg.EnableAudit)
-        {
-            var categories = string.Join(",", result.Findings.Select(f => f.Category).Distinct());
-            _auditService.Log("system", "response_sanitized", $"{categories}:{toolRequest.ToolName}");
-        }
+        var categories = string.Join(",", result.Findings.Select(f => f.Category).Distinct());
+        _auditService.LogIfAuditEnabled(cfg, "system", "response_sanitized", $"{categories}:{toolRequest.ToolName}");
 
         return ReplaceSanitizedOutput(response, result.SanitizedContent);
     }

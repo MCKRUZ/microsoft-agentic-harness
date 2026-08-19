@@ -245,20 +245,13 @@ public sealed class ToolPermissionProfileResolver
     /// <summary>
     /// Writes a refusal to the durable audit trail — gated on <see cref="GovernanceConfig.EnableAudit"/>
     /// (#419 code-review finding), matching every other <see cref="IGovernanceAuditService"/> call site
-    /// in the codebase (<c>ToolInvocationGovernor</c>, <c>PromptInjectionBehavior</c>). An operator who
-    /// sets that flag <see langword="false"/> expects every tamper-evident write to stop, not just the
-    /// governed ones — a single unconditional call site here would silently break that contract.
+    /// in the codebase via the shared <see cref="GovernanceAuditGateExtensions.LogIfAuditEnabled(IGovernanceAuditService?, IOptionsMonitor{GovernanceConfig}?, string?, string, string)"/>
+    /// gate (#430). An operator who sets that flag <see langword="false"/> expects every tamper-evident
+    /// write to stop, not just the governed ones — a single unconditional call site here would silently
+    /// break that contract.
     /// </summary>
-    private void LogRefusal(string? agentId, string toolName)
-    {
-        if (_auditService is null)
-            return;
-
-        if (_governanceConfig is not null && !_governanceConfig.CurrentValue.EnableAudit)
-            return;
-
-        _auditService.Log(agentId ?? "unknown", toolName, ToolDecisionOutcome.Denied.ToString());
-    }
+    private void LogRefusal(string? agentId, string toolName) =>
+        _auditService.LogIfAuditEnabled(_governanceConfig, agentId, toolName, ToolDecisionOutcome.Denied.ToString());
 
     /// <summary>
     /// As <see cref="ResolveForUngovernedDispatch"/>, but also resolves the keyed-scoped
