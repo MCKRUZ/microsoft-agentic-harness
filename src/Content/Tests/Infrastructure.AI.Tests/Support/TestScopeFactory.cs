@@ -48,8 +48,9 @@ internal static class TestScopeFactory
     /// Registers <paramref name="sandbox"/> under both the <see cref="SandboxIsolationLevel.Process"/>
     /// and <see cref="SandboxIsolationLevel.Container"/> keys (plus <paramref name="isolationLevel"/>
     /// itself, if different) — not just <paramref name="isolationLevel"/> alone. The runner now
-    /// resolves the keyed executor for <c>Math.Max(defaultIsolationLevel, profile.MinimumIsolation)</c>
-    /// (#405 follow-up), so a test exercising an operator's <c>MinimumIsolation: Container</c> override
+    /// resolves the keyed executor for <c>defaultIsolationLevel.AtLeast(profile.MinimumIsolation)</c>
+    /// (#405 follow-up, consolidated onto the shared helper in #433), so a test exercising an
+    /// operator's <c>MinimumIsolation: Container</c> override
     /// needs the Container key resolvable even though the tool's own floor is Process.
     /// </remarks>
     public static IServiceScopeFactory ForSandbox(

@@ -120,8 +120,7 @@ public sealed class ToolPermissionProfileResolver
             overrideConfig.MinimumIsolation, out var parsed)
             ? parsed
             : SandboxIsolationLevel.None;
-        var effectiveIsolation = (SandboxIsolationLevel)Math.Max(
-            (int)baseIsolation, (int)overrideIsolation);
+        var effectiveIsolation = baseIsolation.AtLeast(overrideIsolation);
 
         return (deniedCaps, effectiveIsolation);
     }
@@ -155,8 +154,8 @@ public sealed class ToolPermissionProfileResolver
     /// relative to that tool's own <see cref="ITool.RequiredCapabilities"/> — see the under-declaration
     /// remarks below. Otherwise the merged profile: the override's <c>DeniedCapabilities</c> carried
     /// through (for <see cref="ToolPermissionProfile.EffectiveCapabilities"/>), and isolation set to
-    /// <c>Math.Max(</c><paramref name="defaultIsolationLevel"/><c>, operatorOverride)</c> — never
-    /// downgraded below the caller's own floor even when no override is configured.
+    /// <paramref name="defaultIsolationLevel"/><c>.AtLeast(operatorOverride)</c> — never downgraded
+    /// below the caller's own floor even when no override is configured.
     /// </returns>
     /// <remarks>
     /// <para>
@@ -237,8 +236,7 @@ public sealed class ToolPermissionProfileResolver
             RequiredCapabilities = requiredCapabilities,
             DeniedCapabilities = deniedCaps,
             AllowedPrograms = allowedPrograms,
-            MinimumIsolation = (SandboxIsolationLevel)Math.Max(
-                (int)defaultIsolationLevel, (int)overrideIsolation)
+            MinimumIsolation = defaultIsolationLevel.AtLeast(overrideIsolation)
         });
     }
 

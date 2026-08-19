@@ -507,8 +507,8 @@ public sealed class McpConnectionManager : IAsyncDisposable
     /// ANDing anything against a <c>None</c> requirement is still <c>None</c>, so a
     /// <c>DeniedCapabilities</c> override has no observable effect here regardless of what an
     /// operator writes. The isolation floor is then raised to
-    /// <see cref="SandboxIsolationLevel.Container"/> unconditionally via <c>Math.Max</c>, so a
-    /// <c>MinimumIsolation</c> override can never lower it either.</description></item>
+    /// <see cref="SandboxIsolationLevel.Container"/> unconditionally via <c>WithMinimumIsolationAtLeast</c>
+    /// (#433), so a <c>MinimumIsolation</c> override can never lower it either.</description></item>
     /// <item><description>A bundle-owned server name is <c>{bundleId}:{serverName}</c> —
     /// <c>bundleId</c> is a fresh GUID per staging (<c>BundleStagingService</c>) — so no operator
     /// can currently author a <c>ToolOverrides</c> key that matches one at all. The resolver call
@@ -555,11 +555,7 @@ public sealed class McpConnectionManager : IAsyncDisposable
             var profileResolver = scope.Value.ServiceProvider.GetRequiredService<ToolPermissionProfileResolver>();
 
             var resolvedProfile = profileResolver.Resolve(serverName);
-            var permissionProfile = resolvedProfile with
-            {
-                MinimumIsolation = (SandboxIsolationLevel)Math.Max(
-                    (int)resolvedProfile.MinimumIsolation, (int)SandboxIsolationLevel.Container)
-            };
+            var permissionProfile = resolvedProfile.WithMinimumIsolationAtLeast(SandboxIsolationLevel.Container);
 
             if (definition.SandboxSeedDirectory is { } seedDirectory && !IsWithinConfiguredStagingRoot(seedDirectory))
             {
