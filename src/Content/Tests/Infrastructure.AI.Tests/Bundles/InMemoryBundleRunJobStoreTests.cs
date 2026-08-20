@@ -331,6 +331,27 @@ public sealed class InMemoryBundleRunJobStoreTests
     }
 
     [Fact]
+    public void TryCreate_AbandonedStreamingReservation_DoesNotCountTowardConversationOrCapacity()
+    {
+        // /code-review finding: SurveyActiveRuns originally excluded only terminal records, so a
+        // streaming reservation nobody ever connected to (Queued, Streaming, past its short connect
+        // window) stayed "live" from admission's point of view until the next sweep pass — permanently
+        // occupying a capacity slot and blocking every retry against its conversation for a run that
+        // never actually did anything. Get/TryBeginRun already treated it as gone the moment it expired;
+        // admission must too.
+        var sut = BuildSut();
+        sut.TryCreate(NewRecord("j1", conversationId: "conv-1", streaming: true), maxActiveRunsPerOwner: 1)
+            .Should().Be(BundleRunAdmission.Accepted);
+
+        _time.Advance(Ttl + TimeSpan.FromSeconds(1)); // past the reservation window, never claimed
+
+        var admission = sut.TryCreate(NewRecord("j2", conversationId: "conv-1"), maxActiveRunsPerOwner: 1);
+
+        admission.Should().Be(BundleRunAdmission.Accepted,
+            "an abandoned streaming reservation is reclaimable the moment it expires, not only once swept");
+    }
+
+    [Fact]
     public void TryCreate_TwoRunsNoConversationId_NeverConflict()
     {
         // A one-shot run has nothing to conflict on — only a shared ConversationId can collide.

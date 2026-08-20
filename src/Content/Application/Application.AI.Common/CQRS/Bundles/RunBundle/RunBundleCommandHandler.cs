@@ -127,11 +127,7 @@ public sealed class RunBundleCommandHandler
 
         var admission = _jobStore.TryCreate(record, _config.CurrentValue.AI.BundleExecution.MaxActiveBundleRunsPerOwner);
         if (admission != BundleRunAdmission.Accepted)
-        {
-            return Result<RunBundleResult>.Conflict(
-                "This conversation already has a live bundle run, or the caller holds the maximum "
-                + "concurrent bundle runs allowed per owner.");
-        }
+            return Result<RunBundleResult>.Conflict(AdmissionRefusalMessage(admission));
 
         // A streaming run is NOT enqueued: its sole driver is the caller opening the stream endpoint, which
         // claims and drives it on the connection thread. Enqueuing it too would let the background dispatcher
@@ -146,6 +142,24 @@ public sealed class RunBundleCommandHandler
 
         return Result<RunBundleResult>.Success(new RunBundleResult { JobId = record.JobId });
     }
+
+    /// <summary>
+    /// Reports which admission limit refused the run, distinctly. <see cref="BundleRunAdmission"/>'s own
+    /// remarks are explicit about why: the two refusals mean opposite things to a caller — capacity clears
+    /// on its own as the caller's own work finishes, a conversation conflict clears only when that
+    /// conversation's run ends — and collapsing them into one message would defeat the reason the outcome
+    /// is a named enum rather than a boolean.
+    /// </summary>
+    private static string AdmissionRefusalMessage(BundleRunAdmission admission) => admission switch
+    {
+        BundleRunAdmission.ConversationAlreadyRunning =>
+            "This conversation already has a live bundle run. Wait for it to finish before starting another.",
+        BundleRunAdmission.OwnerAtCapacity =>
+            "The caller already holds the maximum concurrent bundle runs allowed per owner. "
+            + "Wait for one to finish, or poll and let it complete, before starting another.",
+        _ => throw new ArgumentOutOfRangeException(
+            nameof(admission), admission, $"{nameof(BundleRunAdmission.Accepted)} is not a refusal.")
+    };
 
     /// <summary>
     /// Additively unions the bundle's own registered MCP server names (<see cref="StagedBundle.McpServerNames"/>)

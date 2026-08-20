@@ -352,6 +352,7 @@ public sealed class RunBundleCommandHandlerTests
             .Handle(Command() with { ConversationId = "conv-1" }, CancellationToken.None);
 
         result.FailureType.Should().Be(ResultFailureType.Conflict);
+        result.Errors.Should().ContainSingle(e => e.Contains("conversation", StringComparison.OrdinalIgnoreCase));
         _queue.Verify(q => q.EnqueueAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
@@ -366,6 +367,7 @@ public sealed class RunBundleCommandHandlerTests
         var result = await BuildSut(enabled: true).Handle(Command(), CancellationToken.None);
 
         result.FailureType.Should().Be(ResultFailureType.Conflict);
+        result.Errors.Should().ContainSingle(e => e.Contains("maximum concurrent", StringComparison.OrdinalIgnoreCase));
         _queue.Verify(q => q.EnqueueAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 }

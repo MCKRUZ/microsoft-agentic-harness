@@ -263,8 +263,10 @@ paths:
           $ref: "#/components/responses/NotFoundProblem"
         "409":
           description: >-
-            This conversation already has a live bundle run, or the caller holds the maximum
-            concurrent bundle runs allowed per owner.
+            Refused by admission. Two distinct causes, distinguishable by the response's `detail` text:
+            this conversation already has a live bundle run (wait for it to finish before starting
+            another), or the caller already holds the maximum concurrent bundle runs allowed per owner
+            (`MaxActiveBundleRunsPerOwner`).
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
