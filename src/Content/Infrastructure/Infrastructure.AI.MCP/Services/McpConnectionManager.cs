@@ -422,6 +422,14 @@ public sealed class McpConnectionManager : IAsyncDisposable
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
+        // /code-review finding (#455): a bundle-owned stdio server's session can go stale mid-run just
+        // like any other (#385) — McpToolProvider.RetryAfterReconnectAsync reaches this path for it too
+        // — and reconnecting into the SHARED cache here would recreate the exact cross-run sharing bug
+        // this file exists to close, while leaving the run's own _runScopedClients entry stuck on the
+        // broken client it never actually recovers from. Must branch the same way GetClientAsync does.
+        if (TryGetRunScopeRequirement(serverName, out var runId))
+            return await ReconnectRunScopedAsync(serverName, runId, failedClient, cancellationToken);
+
         using var _ = await AcquireConnectionLockAsync(serverName, cancellationToken);
 
         if (_clients.TryGetValue(serverName, out var current) && !ReferenceEquals(current, failedClient))
@@ -440,6 +448,31 @@ public sealed class McpConnectionManager : IAsyncDisposable
         await Task.WhenAll(disposeStale, connect);
 
         return await connect;
+    }
+
+    /// <summary>
+    /// The run-scoped counterpart to <see cref="ReconnectAsync"/>'s shared-cache reconnect, mirroring
+    /// its shape exactly over <see cref="_runScopedClients"/> and a run-qualified lock key instead of
+    /// <see cref="_clients"/>. Never touches the shared cache, and never resolves another run's entry
+    /// for the same server name — only this run's own (server, run) key.
+    /// </summary>
+    private async Task<McpClient> ReconnectRunScopedAsync(
+        string serverName, string runId, McpClient failedClient, CancellationToken cancellationToken)
+    {
+        var key = (serverName, runId);
+        using var _ = await AcquireConnectionLockAsync(RunScopedLockKey(serverName, runId), cancellationToken);
+
+        if (_runScopedClients.TryGetValue(key, out var current) && !ReferenceEquals(current, failedClient))
+            return current;
+
+        _runScopedClients.TryRemove(key, out var stale);
+        var disposeStale = stale is not null ? DisposeStaleClientAsync(stale, serverName) : Task.CompletedTask;
+        var connect = CreateClientAsync(serverName, cancellationToken);
+        await Task.WhenAll(disposeStale, connect);
+
+        var fresh = await connect;
+        _runScopedClients[key] = fresh;
+        return fresh;
     }
 
     /// <summary>

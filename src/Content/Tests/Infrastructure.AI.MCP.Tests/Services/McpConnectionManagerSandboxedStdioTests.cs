@@ -538,6 +538,31 @@ public sealed class McpConnectionManagerSandboxedStdioTests
     }
 
     [Fact]
+    public async Task ReconnectAsync_BundleOwnedStdioServer_NoAmbientRunId_RefusesTheSameWayGetClientAsyncDoes()
+    {
+        // /code-review finding: ReconnectAsync (the #385 stale-client recovery path) was not updated
+        // alongside GetClientAsync's run-scoping — it still went straight for the shared cache, which
+        // would have silently reintroduced this exact bug on every mid-run reconnect. Must route through
+        // the identical fail-closed check. The guard fires before failedClient is ever touched, so null
+        // is safe to pass here.
+        var bundleOwned = new BundleOwnedMcpServerRegistry();
+        bundleOwned.TryAdd("b1:local-tool", new McpServerDefinition
+        {
+            Enabled = true,
+            Type = McpServerType.Stdio,
+            Command = "node",
+            StartupTimeoutSeconds = 1,
+        });
+        var sut = CreateManager(new McpServersConfig(), bundleOwned);
+
+        var act = () => sut.ReconnectAsync("b1:local-tool", null!, CancellationToken.None);
+
+        var exception = await act.Should().ThrowAsync<McpConnectionException>();
+        exception.Which.Message.Should().Contain("no ambient bundle run id");
+        _fakeSessionFactory.WasCalled.Should().BeFalse();
+    }
+
+    [Fact]
     public async Task GetClientAsync_TwoRunsResolvingTheSameServerName_DoNotSerializeOnOneSharedLock()
     {
         // Distinguishes the run-scoped lock key from the old bare-server-name one. Before #455, every
