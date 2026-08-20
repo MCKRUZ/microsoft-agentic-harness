@@ -257,7 +257,11 @@ public sealed class BundleRunExecutorTests : IDisposable
         mcpToolProvider.Setup(p => p.GetToolsAsync("b1:echo", It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<AITool> { AIFunctionFactory.Create(() => "r", "echo_tool") });
 
-        var (executor, jobStore, handleStore) = BuildSut(mediator.Object, mcpToolProvider.Object);
+        // A bare, unverified registrar mock — the constructor now requires one whenever an
+        // IMcpToolProvider is present (see the leak-prevention test above); these tests are about
+        // discovery, not teardown, so nothing here asserts against it.
+        var (executor, jobStore, handleStore) = BuildSut(
+            mediator.Object, mcpToolProvider.Object, new Mock<IBundleMcpServerRegistrar>().Object);
         var staged = StageOnDisk("b1", mcpServerNames: ["b1:echo"]);
         var handle = handleStore.Register(staged, "owner-1");
         Store(jobStore, QueuedRecord("j1", handle, staged.Agent.Id)
@@ -284,7 +288,11 @@ public sealed class BundleRunExecutorTests : IDisposable
         mcpToolProvider.Setup(p => p.GetToolsAsync("b1:echo", It.IsAny<CancellationToken>()))
             .ThrowsAsync(new InvalidOperationException("server unreachable"));
 
-        var (executor, jobStore, handleStore) = BuildSut(mediator.Object, mcpToolProvider.Object);
+        // A bare, unverified registrar mock — the constructor now requires one whenever an
+        // IMcpToolProvider is present (see the leak-prevention test above); these tests are about
+        // discovery, not teardown, so nothing here asserts against it.
+        var (executor, jobStore, handleStore) = BuildSut(
+            mediator.Object, mcpToolProvider.Object, new Mock<IBundleMcpServerRegistrar>().Object);
         var staged = StageOnDisk("b1", mcpServerNames: ["b1:echo"]);
         var handle = handleStore.Register(staged, "owner-1");
         Store(jobStore, QueuedRecord("j1", handle, staged.Agent.Id));
@@ -304,7 +312,11 @@ public sealed class BundleRunExecutorTests : IDisposable
         mcpToolProvider.Setup(p => p.GetToolsAsync("b1:echo", It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<AITool> { AIFunctionFactory.Create(() => "r", "echo_tool") });
 
-        var (executor, jobStore, handleStore) = BuildSut(mediator.Object, mcpToolProvider.Object);
+        // A bare, unverified registrar mock — the constructor now requires one whenever an
+        // IMcpToolProvider is present (see the leak-prevention test above); these tests are about
+        // discovery, not teardown, so nothing here asserts against it.
+        var (executor, jobStore, handleStore) = BuildSut(
+            mediator.Object, mcpToolProvider.Object, new Mock<IBundleMcpServerRegistrar>().Object);
         var staged = StageOnDisk("b1", mcpServerNames: ["b1:echo"]);
         var handle = handleStore.Register(staged, "owner-1");
         Store(jobStore, QueuedRecord("j1", handle, staged.Agent.Id)
@@ -318,6 +330,24 @@ public sealed class BundleRunExecutorTests : IDisposable
     }
 
     // -- Per-run MCP session teardown (#455) --
+
+    [Fact]
+    public void Constructor_McpToolProviderRegisteredWithoutRegistrar_ThrowsRatherThanRiskingASilentContainerLeak()
+    {
+        // /code-review finding: tool discovery only needs IMcpToolProvider, so a composition root that
+        // wires it without IBundleMcpServerRegistrar would still create run-scoped bundle-owned stdio
+        // sandbox sessions every run with nothing to tear them down — a silent per-run container leak
+        // that eventually exhausts McpConnectionManager's host-wide session cap with no diagnostic
+        // trail. This template's own AddMcpClientDependencies always registers both together, so this
+        // never fires for the shipped default — it guards a consumer who re-wires DI by hand.
+        var mediator = new Mock<IMediator>();
+        var mcpToolProvider = new Mock<IMcpToolProvider>();
+
+        var act = () => BuildSut(mediator.Object, mcpToolProvider.Object, mcpRegistrar: null);
+
+        act.Should().Throw<InvalidOperationException>()
+            .WithMessage("*IMcpToolProvider*IBundleMcpServerRegistrar*");
+    }
 
     [Fact]
     public async Task ExecuteAsync_BundleOwnsMcpServer_TearsDownRunScopedSessionAfterTheRunCompletes()
@@ -400,7 +430,11 @@ public sealed class BundleRunExecutorTests : IDisposable
                 return new List<AITool>();
             });
 
-        var (executor, jobStore, handleStore) = BuildSut(mediator.Object, mcpToolProvider.Object);
+        // A bare, unverified registrar mock — the constructor now requires one whenever an
+        // IMcpToolProvider is present (see the leak-prevention test above); these tests are about
+        // discovery, not teardown, so nothing here asserts against it.
+        var (executor, jobStore, handleStore) = BuildSut(
+            mediator.Object, mcpToolProvider.Object, new Mock<IBundleMcpServerRegistrar>().Object);
         var staged = StageOnDisk("b1", mcpServerNames: ["b1:echo"]);
         var handle = handleStore.Register(staged, "owner-1");
         Store(jobStore, QueuedRecord("j1", handle, staged.Agent.Id));

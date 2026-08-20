@@ -65,7 +65,7 @@ public sealed class McpConnectionManager : IAsyncDisposable
     /// by server name alone. The MCP stdio transport is single-session by design — its own SDK
     /// documents it as unsuitable for sharing across concurrent callers — so unlike every other server
     /// this manager resolves, one of these must never be shared between two runs of the same staged
-    /// bundle. See <see cref="BundleRunIdAccessor"/> and <see cref="TryGetRunScopeRequirement"/>.
+    /// bundle. See <see cref="BundleRunIdAccessor"/> and <see cref="RequiresRunScope"/>.
     /// </summary>
     private readonly ConcurrentDictionary<(string ServerName, string RunId), McpClient> _runScopedClients = new();
 
@@ -171,7 +171,7 @@ public sealed class McpConnectionManager : IAsyncDisposable
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
-        if (TryGetRunScopeRequirement(serverName, out var runId))
+        if (RequiresRunScope(serverName, out var runId))
             return await GetRunScopedClientAsync(serverName, runId, cancellationToken);
 
         if (_clients.TryGetValue(serverName, out var existing))
@@ -197,7 +197,7 @@ public sealed class McpConnectionManager : IAsyncDisposable
     /// shared, unscoped session — the exact bug this check exists to close (see
     /// <see cref="BundleRunIdAccessor"/>'s remarks on why absence is not a safe default here).
     /// </exception>
-    private bool TryGetRunScopeRequirement(string serverName, out string runId)
+    private bool RequiresRunScope(string serverName, out string runId)
     {
         runId = string.Empty;
 
@@ -253,11 +253,15 @@ public sealed class McpConnectionManager : IAsyncDisposable
     private static string RunScopedLockKey(string serverName, string runId) => $"{serverName}#{runId}";
 
     /// <summary>
-    /// Checks if a server connection is active and healthy.
+    /// Checks if a server connection is active and healthy. True if either the shared cache holds a
+    /// client for <paramref name="serverName"/>, or at least one run currently has its own run-scoped
+    /// session for it — checking only <see cref="_clients"/> would report a bundle-owned stdio server as
+    /// disconnected while runs are actively using it.
     /// </summary>
     public bool IsConnected(string serverName)
     {
-        return _clients.ContainsKey(serverName);
+        return _clients.ContainsKey(serverName)
+            || _runScopedClients.Keys.Any(key => key.ServerName == serverName);
     }
 
     /// <summary>
@@ -271,6 +275,31 @@ public sealed class McpConnectionManager : IAsyncDisposable
     /// handshake) cannot block teardown for more than this.
     /// </summary>
     private static readonly TimeSpan DisconnectLockTimeout = TimeSpan.FromSeconds(5);
+
+    /// <summary>
+    /// Shared lock-acquisition ceremony for <see cref="DisconnectAsync"/> and
+    /// <see cref="DisconnectRunScopedAsync"/>: acquires <paramref name="lockKey"/> bounded by
+    /// <see cref="DisconnectLockTimeout"/>, logging and proceeding lock-free (returning
+    /// <see langword="null"/>) rather than throwing if a connect attempt is still in flight past that
+    /// bound. <paramref name="logContext"/> is used only for the warning log's identification of what
+    /// was being disconnected.
+    /// </summary>
+    private async Task<IDisposable?> AcquireDisconnectLockAsync(string lockKey, string logContext)
+    {
+        using var timeoutCts = new CancellationTokenSource(DisconnectLockTimeout);
+        try
+        {
+            return await AcquireConnectionLockAsync(lockKey, timeoutCts.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            _logger.LogWarning(
+                "Disconnect from {Context} proceeded without the connection lock after waiting {Timeout} " +
+                "— a connect attempt was still in flight.",
+                logContext, DisconnectLockTimeout);
+            return null;
+        }
+    }
 
     /// <summary>
     /// Disconnects from a specific server and removes the cached connection.
@@ -303,20 +332,7 @@ public sealed class McpConnectionManager : IAsyncDisposable
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
-        using var timeoutCts = new CancellationTokenSource(DisconnectLockTimeout);
-        IDisposable? lockScope = null;
-        try
-        {
-            lockScope = await AcquireConnectionLockAsync(serverName, timeoutCts.Token);
-        }
-        catch (OperationCanceledException)
-        {
-            _logger.LogWarning(
-                "Disconnect from MCP server '{ServerName}' proceeded without the connection lock after " +
-                "waiting {Timeout} — a connect attempt for this server was still in flight.",
-                serverName, DisconnectLockTimeout);
-        }
-
+        var lockScope = await AcquireDisconnectLockAsync(serverName, $"MCP server '{serverName}'");
         try
         {
             await EvictAsync(serverName);
@@ -341,20 +357,7 @@ public sealed class McpConnectionManager : IAsyncDisposable
         ObjectDisposedException.ThrowIf(_disposed, this);
 
         var lockKey = RunScopedLockKey(serverName, runId);
-        using var timeoutCts = new CancellationTokenSource(DisconnectLockTimeout);
-        IDisposable? lockScope = null;
-        try
-        {
-            lockScope = await AcquireConnectionLockAsync(lockKey, timeoutCts.Token);
-        }
-        catch (OperationCanceledException)
-        {
-            _logger.LogWarning(
-                "Disconnect from run-scoped MCP server '{ServerName}' (run {RunId}) proceeded without the " +
-                "connection lock after waiting {Timeout} — a connect attempt for this run was still in flight.",
-                serverName, runId, DisconnectLockTimeout);
-        }
-
+        var lockScope = await AcquireDisconnectLockAsync(lockKey, $"run-scoped MCP server '{serverName}' (run {runId})");
         try
         {
             if (_runScopedClients.TryRemove((serverName, runId), out var client))
@@ -384,11 +387,19 @@ public sealed class McpConnectionManager : IAsyncDisposable
     /// </summary>
     private async Task EvictAllRunScopedAsync(string serverName)
     {
-        var keys = _runScopedClients.Keys.Where(k => k.ServerName == serverName).ToList();
-        if (keys.Count == 0)
+        // Lock-free enumeration over the live dictionary rather than a Keys.Where(...).ToList() snapshot
+        // — Keys copies every entry under a full-dictionary lock before the filter even runs.
+        var matching = new List<(string ServerName, string RunId)>();
+        foreach (var kvp in _runScopedClients)
+        {
+            if (kvp.Key.ServerName == serverName)
+                matching.Add(kvp.Key);
+        }
+
+        if (matching.Count == 0)
             return;
 
-        await Task.WhenAll(keys.Select(async key =>
+        await Task.WhenAll(matching.Select(async key =>
         {
             if (_runScopedClients.TryRemove(key, out var client))
                 await client.DisposeAsync();
@@ -397,7 +408,7 @@ public sealed class McpConnectionManager : IAsyncDisposable
 
         _logger.LogInformation(
             "Disconnected {Count} run-scoped session(s) for MCP server '{ServerName}' during handle teardown",
-            keys.Count, serverName);
+            matching.Count, serverName);
     }
 
     /// <summary>
@@ -422,12 +433,11 @@ public sealed class McpConnectionManager : IAsyncDisposable
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
-        // /code-review finding (#455): a bundle-owned stdio server's session can go stale mid-run just
-        // like any other (#385) — McpToolProvider.RetryAfterReconnectAsync reaches this path for it too
-        // — and reconnecting into the SHARED cache here would recreate the exact cross-run sharing bug
-        // this file exists to close, while leaving the run's own _runScopedClients entry stuck on the
-        // broken client it never actually recovers from. Must branch the same way GetClientAsync does.
-        if (TryGetRunScopeRequirement(serverName, out var runId))
+        // A bundle-owned stdio server's session can go stale mid-run just like any other (#385) —
+        // McpToolProvider.RetryAfterReconnectAsync reaches this path for it too — so this must branch
+        // the same way GetClientAsync does, or a reconnect would recreate the shared-session bug this
+        // file exists to close.
+        if (RequiresRunScope(serverName, out var runId))
             return await ReconnectRunScopedAsync(serverName, runId, failedClient, cancellationToken);
 
         using var _ = await AcquireConnectionLockAsync(serverName, cancellationToken);
@@ -994,18 +1004,14 @@ public sealed class McpConnectionManager : IAsyncDisposable
         if (_disposed) return;
         _disposed = true;
 
-        foreach (var kvp in _clients)
-        {
-            await kvp.Value.DisposeAsync();
-        }
+        // Parallel, not sequential: each entry is a live connection (a sandboxed stdio session's
+        // container stop can take up to Docker's default 10s stop timeout), so disposing N of them one
+        // at a time serializes shutdown for no benefit — nothing here depends on disposal order.
+        await Task.WhenAll(
+            _clients.Values.Select(client => client.DisposeAsync().AsTask())
+                .Concat(_runScopedClients.Values.Select(client => client.DisposeAsync().AsTask())));
 
         _clients.Clear();
-
-        foreach (var kvp in _runScopedClients)
-        {
-            await kvp.Value.DisposeAsync();
-        }
-
         _runScopedClients.Clear();
 
         // Both per-server client caches were built with disposeHandler:false, so disposing each client

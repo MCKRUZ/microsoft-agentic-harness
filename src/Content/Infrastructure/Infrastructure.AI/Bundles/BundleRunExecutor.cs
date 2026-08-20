@@ -57,6 +57,15 @@ public sealed class BundleRunExecutor : IBundleRunExecutor
     /// <paramref name="mcpToolProvider"/>. Used only to tear down this run's own bundle-owned stdio MCP
     /// sessions once the run ends; see <see cref="RunConversationAsync"/>.
     /// </param>
+    /// <exception cref="InvalidOperationException">
+    /// <paramref name="mcpToolProvider"/> is registered but <paramref name="mcpRegistrar"/> is not. Tool
+    /// discovery (<see cref="WithBundleOwnedToolGrantsAsync"/>) only needs the former, so a composition
+    /// root that wires one without the other would still create run-scoped bundle-owned stdio sandbox
+    /// sessions with nothing to tear them down — the every-run container leak this fails loudly against
+    /// rather than letting it silently exhaust <c>McpConnectionManager</c>'s host-wide session cap. The
+    /// two are always registered together in this template's own <c>AddMcpClientDependencies</c>, so
+    /// this never fires for the shipped default; it exists for a consumer who re-wires DI by hand.
+    /// </exception>
     public BundleRunExecutor(
         IBundleRunJobStore jobStore,
         IBundleHandleStore handleStore,
@@ -71,6 +80,14 @@ public sealed class BundleRunExecutor : IBundleRunExecutor
         ArgumentNullException.ThrowIfNull(scopeFactory);
         ArgumentNullException.ThrowIfNull(time);
         ArgumentNullException.ThrowIfNull(logger);
+        if (mcpToolProvider is not null && mcpRegistrar is null)
+        {
+            throw new InvalidOperationException(
+                $"{nameof(BundleRunExecutor)} was constructed with an {nameof(IMcpToolProvider)} but no " +
+                $"{nameof(IBundleMcpServerRegistrar)}. Bundle-owned tool discovery can create run-scoped " +
+                "stdio MCP sandbox sessions that only IBundleMcpServerRegistrar.DisconnectRunScopedAsync " +
+                "tears down — register both or neither, never one without the other.");
+        }
 
         _jobStore = jobStore;
         _handleStore = handleStore;
@@ -176,7 +193,7 @@ public sealed class BundleRunExecutor : IBundleRunExecutor
         StagedBundle staged,
         CancellationToken cancellationToken)
     {
-        // Armed around the WHOLE run, not just the conversation below: WithBundleOwnedToolGrantsAsync
+        // Armed around the WHOLE run, not just the conversation core below: WithBundleOwnedToolGrantsAsync
         // contacts the bundle's own MCP servers for tool discovery before either of the other two
         // ambients is armed, and that first contact is exactly where a bundle-owned stdio server's
         // session gets created and cached — it must see the same run id every later resolution inside
@@ -185,39 +202,7 @@ public sealed class BundleRunExecutor : IBundleRunExecutor
         {
             try
             {
-                var overlay = new EphemeralAgentOverlay
-                {
-                    Agent = staged.Agent,
-                    OwnedSkills = staged.OwnedSkills
-                };
-
-                var envelope = await WithBundleOwnedToolGrantsAsync(record.Envelope, staged, cancellationToken)
-                    .ConfigureAwait(false);
-
-                await using var scope = _scopeFactory.CreateAsyncScope();
-                var mediator = scope.ServiceProvider.GetRequiredService<IMediator>();
-
-                // Arm BOTH ambients for the whole conversation: the overlay so the ephemeral agent + its owned skills
-                // resolve, and the envelope so the governor enforces the per-caller grant. Disposed in reverse when the
-                // (materialised) conversation returns.
-                using (EphemeralAgentOverlayAccessor.Begin(overlay))
-                using (CapabilityEnvelopeAccessor.Begin(envelope))
-                {
-                    // A run that names a conversation continues it; one that does not gets an id of its own so
-                    // its budget and telemetry still have somewhere to accumulate. The owner rides along only in
-                    // the first case — it is what switches the shared loop into durable mode, so passing it for
-                    // a self-contained run would make every one-shot run write a transcript nobody asked for.
-                    var command = new RunConversationCommand
-                    {
-                        AgentName = record.AgentName,
-                        UserMessages = record.UserMessages,
-                        MaxTurns = record.MaxTurns,
-                        ConversationId = record.ConversationId ?? record.JobId,
-                        ConversationOwnerId = record.ConversationId is null ? null : record.OwnerId
-                    };
-
-                    return await mediator.Send(command, cancellationToken).ConfigureAwait(false);
-                }
+                return await RunConversationCoreAsync(record, staged, cancellationToken).ConfigureAwait(false);
             }
             finally
             {
@@ -232,6 +217,49 @@ public sealed class BundleRunExecutor : IBundleRunExecutor
                         .ConfigureAwait(false);
                 }
             }
+        }
+    }
+
+    /// <summary>
+    /// Discovers the bundle's own tool grants, drives the conversation, and returns its result. Split
+    /// out from <see cref="RunConversationAsync"/> so that method's ambient-arming and teardown ceremony
+    /// isn't nested four levels deep around the actual conversation logic.
+    /// </summary>
+    private async Task<ConversationResult> RunConversationCoreAsync(
+        BundleRunRecord record, StagedBundle staged, CancellationToken cancellationToken)
+    {
+        var overlay = new EphemeralAgentOverlay
+        {
+            Agent = staged.Agent,
+            OwnedSkills = staged.OwnedSkills
+        };
+
+        var envelope = await WithBundleOwnedToolGrantsAsync(record.Envelope, staged, cancellationToken)
+            .ConfigureAwait(false);
+
+        await using var scope = _scopeFactory.CreateAsyncScope();
+        var mediator = scope.ServiceProvider.GetRequiredService<IMediator>();
+
+        // Arm BOTH ambients for the whole conversation: the overlay so the ephemeral agent + its owned skills
+        // resolve, and the envelope so the governor enforces the per-caller grant. Disposed in reverse when the
+        // (materialised) conversation returns.
+        using (EphemeralAgentOverlayAccessor.Begin(overlay))
+        using (CapabilityEnvelopeAccessor.Begin(envelope))
+        {
+            // A run that names a conversation continues it; one that does not gets an id of its own so
+            // its budget and telemetry still have somewhere to accumulate. The owner rides along only in
+            // the first case — it is what switches the shared loop into durable mode, so passing it for
+            // a self-contained run would make every one-shot run write a transcript nobody asked for.
+            var command = new RunConversationCommand
+            {
+                AgentName = record.AgentName,
+                UserMessages = record.UserMessages,
+                MaxTurns = record.MaxTurns,
+                ConversationId = record.ConversationId ?? record.JobId,
+                ConversationOwnerId = record.ConversationId is null ? null : record.OwnerId
+            };
+
+            return await mediator.Send(command, cancellationToken).ConfigureAwait(false);
         }
     }
 

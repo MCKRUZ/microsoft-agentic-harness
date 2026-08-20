@@ -1,5 +1,6 @@
 using System.Linq;
 using Application.AI.Common.Interfaces.Bundles;
+using Domain.Common.Config.AI.MCP;
 using Microsoft.Extensions.Logging;
 
 namespace Infrastructure.AI.MCP.Services;
@@ -74,6 +75,12 @@ public sealed class BundleMcpServerRegistrar : IBundleMcpServerRegistrar
 
     private async Task DisconnectRunScopedOneAsync(string serverName, string runId)
     {
+        // Only a stdio server can ever have a run-scoped session (McpConnectionManager scopes stdio
+        // only — see RequiresRunScope) — a remote (http/sse) bundle-owned server never reaches
+        // _runScopedClients, so calling DisconnectRunScopedAsync for one would be provably-empty work.
+        if (!_bundleOwnedMcpServers.TryGetValue(serverName, out var definition) || definition.Type != McpServerType.Stdio)
+            return;
+
         // Deliberately does NOT call _bundleOwnedMcpServers.TryRemove — a run ending is not the bundle's
         // handle being evicted, and the next run against the same staged handle must still find this
         // server's definition registered so it can start its own fresh session.
