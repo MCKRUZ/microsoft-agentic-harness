@@ -62,4 +62,31 @@ public sealed class BundleMcpServerRegistrar : IBundleMcpServerRegistrar
                 serverName);
         }
     }
+
+    /// <inheritdoc />
+    public async Task DisconnectRunScopedAsync(IReadOnlyList<string> serverNames, string runId)
+    {
+        // Same fan-out reasoning as DeregisterAsync: independent per-server teardown, so one server's
+        // failure can never stop or delay another's.
+        await Task.WhenAll(serverNames.Select(serverName => DisconnectRunScopedOneAsync(serverName, runId)))
+            .ConfigureAwait(false);
+    }
+
+    private async Task DisconnectRunScopedOneAsync(string serverName, string runId)
+    {
+        // Deliberately does NOT call _bundleOwnedMcpServers.TryRemove — a run ending is not the bundle's
+        // handle being evicted, and the next run against the same staged handle must still find this
+        // server's definition registered so it can start its own fresh session.
+        try
+        {
+            await _connectionManager.DisconnectRunScopedAsync(serverName, runId).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex,
+                "Failed to disconnect run-scoped MCP client for bundle server '{Server}' (run {RunId}); " +
+                "it will be cleaned up when the bundle's handle is evicted",
+                serverName, runId);
+        }
+    }
 }

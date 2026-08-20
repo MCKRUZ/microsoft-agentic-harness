@@ -63,4 +63,43 @@ public sealed class BundleMcpServerRegistrarTests
 
         bundleOwned.TryGetValue("b1:echo", out _).Should().BeTrue();
     }
+
+    // -- Run-scoped teardown (#455) --
+
+    [Fact]
+    public async Task DisconnectRunScopedAsync_LeavesServerRegistrationIntact()
+    {
+        // The behavior that distinguishes this from DeregisterAsync: a run ending must not evict the
+        // bundle's own server definition — the next run against the same staged handle still needs to
+        // find it to start its own fresh session.
+        var bundleOwned = new BundleOwnedMcpServerRegistry();
+        bundleOwned.TryAdd("b1:echo", new() { Command = "npx" });
+        var sut = CreateSut(bundleOwned);
+
+        await sut.DisconnectRunScopedAsync(["b1:echo"], "run-1");
+
+        bundleOwned.TryGetValue("b1:echo", out _).Should().BeTrue(
+            "a run ending must not deregister the bundle's server definition — only DeregisterAsync " +
+            "(handle eviction) does that");
+    }
+
+    [Fact]
+    public async Task DisconnectRunScopedAsync_UnconnectedServer_IsANoOpAndDoesNotThrow()
+    {
+        var sut = CreateSut(new BundleOwnedMcpServerRegistry());
+
+        var act = async () => await sut.DisconnectRunScopedAsync(["never-connected"], "run-1");
+
+        await act.Should().NotThrowAsync();
+    }
+
+    [Fact]
+    public async Task DisconnectRunScopedAsync_EmptyList_IsANoOp()
+    {
+        var sut = CreateSut(new BundleOwnedMcpServerRegistry());
+
+        var act = async () => await sut.DisconnectRunScopedAsync([], "run-1");
+
+        await act.Should().NotThrowAsync();
+    }
 }

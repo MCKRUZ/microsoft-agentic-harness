@@ -1,5 +1,6 @@
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Bundles;
+using Application.AI.Common.Services.Bundles;
 using Application.Core.CQRS.Agents.RunConversation;
 using Domain.AI.Agents;
 using Domain.AI.Bundles;
@@ -45,7 +46,7 @@ public sealed class BundleRunExecutorTests : IDisposable
     }
 
     private (BundleRunExecutor Executor, InMemoryBundleRunJobStore JobStore, InMemoryBundleHandleStore HandleStore)
-        BuildSut(IMediator mediator, IMcpToolProvider? mcpToolProvider = null)
+        BuildSut(IMediator mediator, IMcpToolProvider? mcpToolProvider = null, IBundleMcpServerRegistrar? mcpRegistrar = null)
     {
         var monitor = new StaticOptionsMonitor<AppConfig>(Config());
         var jobStore = new InMemoryBundleRunJobStore(monitor, _time);
@@ -56,7 +57,8 @@ public sealed class BundleRunExecutorTests : IDisposable
         var scopeFactory = services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
 
         var executor = new BundleRunExecutor(
-            jobStore, handleStore, scopeFactory, _time, NullLogger<BundleRunExecutor>.Instance, mcpToolProvider);
+            jobStore, handleStore, scopeFactory, _time, NullLogger<BundleRunExecutor>.Instance,
+            mcpToolProvider, mcpRegistrar);
         return (executor, jobStore, handleStore);
     }
 
@@ -313,6 +315,100 @@ public sealed class BundleRunExecutorTests : IDisposable
 
         jobStore.Get("j1")!.Envelope.AllowedTools.Should().BeEmpty(
             "the stored record's envelope must not be mutated by run-scoped tool discovery");
+    }
+
+    // -- Per-run MCP session teardown (#455) --
+
+    [Fact]
+    public async Task ExecuteAsync_BundleOwnsMcpServer_TearsDownRunScopedSessionAfterTheRunCompletes()
+    {
+        var mediator = MediatorReturning(Ok());
+        var mcpToolProvider = new Mock<IMcpToolProvider>();
+        mcpToolProvider.Setup(p => p.GetToolsAsync("b1:echo", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<AITool>());
+        var mcpRegistrar = new Mock<IBundleMcpServerRegistrar>();
+
+        var (executor, jobStore, handleStore) = BuildSut(mediator.Object, mcpToolProvider.Object, mcpRegistrar.Object);
+        var staged = StageOnDisk("b1", mcpServerNames: ["b1:echo"]);
+        var handle = handleStore.Register(staged, "owner-1");
+        Store(jobStore, QueuedRecord("j1", handle, staged.Agent.Id));
+
+        await executor.ExecuteAsync("j1", CancellationToken.None);
+
+        mcpRegistrar.Verify(
+            r => r.DisconnectRunScopedAsync(
+                It.Is<IReadOnlyList<string>>(names => names.SequenceEqual(new[] { "b1:echo" })), "j1"),
+            Times.Once,
+            "the run's own stdio session(s) must be torn down by job id once the run ends, without " +
+            "touching the bundle's registration (that's DeregisterAsync's job, at handle eviction)");
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_ConversationThrows_StillTearsDownRunScopedSession()
+    {
+        // A failed run must not leak a container for the life of the handle's TTL.
+        var mediator = new Mock<IMediator>();
+        mediator.Setup(m => m.Send(It.IsAny<RunConversationCommand>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("boom"));
+        var mcpToolProvider = new Mock<IMcpToolProvider>();
+        mcpToolProvider.Setup(p => p.GetToolsAsync("b1:echo", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<AITool>());
+        var mcpRegistrar = new Mock<IBundleMcpServerRegistrar>();
+
+        var (executor, jobStore, handleStore) = BuildSut(mediator.Object, mcpToolProvider.Object, mcpRegistrar.Object);
+        var staged = StageOnDisk("b1", mcpServerNames: ["b1:echo"]);
+        var handle = handleStore.Register(staged, "owner-1");
+        Store(jobStore, QueuedRecord("j1", handle, staged.Agent.Id));
+
+        await executor.ExecuteAsync("j1", CancellationToken.None);
+
+        mcpRegistrar.Verify(
+            r => r.DisconnectRunScopedAsync(It.IsAny<IReadOnlyList<string>>(), "j1"), Times.Once);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_BundleDeclaresNoMcpServers_NeverCallsTeardown()
+    {
+        var mediator = MediatorReturning(Ok());
+        var mcpRegistrar = new Mock<IBundleMcpServerRegistrar>();
+
+        var (executor, jobStore, handleStore) = BuildSut(mediator.Object, mcpRegistrar: mcpRegistrar.Object);
+        var staged = StageOnDisk("b1"); // no mcpServerNames
+        var handle = handleStore.Register(staged, "owner-1");
+        Store(jobStore, QueuedRecord("j1", handle, staged.Agent.Id));
+
+        await executor.ExecuteAsync("j1", CancellationToken.None);
+
+        mcpRegistrar.Verify(
+            r => r.DisconnectRunScopedAsync(It.IsAny<IReadOnlyList<string>>(), It.IsAny<string>()), Times.Never,
+            "a run whose bundle declares no MCP servers has nothing to tear down");
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_BundleOwnsMcpServer_ArmsAmbientRunIdDuringToolDiscovery()
+    {
+        // The ambient must be armed BEFORE WithBundleOwnedToolGrantsAsync's discovery call, not only
+        // around the conversation that follows it — discovery is the FIRST point a bundle-owned stdio
+        // server would be contacted, and McpConnectionManager needs to see the run id there too.
+        string? seenRunId = null;
+        var mediator = MediatorReturning(Ok());
+        var mcpToolProvider = new Mock<IMcpToolProvider>();
+        mcpToolProvider.Setup(p => p.GetToolsAsync("b1:echo", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(() =>
+            {
+                seenRunId = BundleRunIdAccessor.Current;
+                return new List<AITool>();
+            });
+
+        var (executor, jobStore, handleStore) = BuildSut(mediator.Object, mcpToolProvider.Object);
+        var staged = StageOnDisk("b1", mcpServerNames: ["b1:echo"]);
+        var handle = handleStore.Register(staged, "owner-1");
+        Store(jobStore, QueuedRecord("j1", handle, staged.Agent.Id));
+
+        await executor.ExecuteAsync("j1", CancellationToken.None);
+
+        seenRunId.Should().Be("j1");
+        BundleRunIdAccessor.Current.Should().BeNull("the ambient must not leak past the run");
     }
 
     public void Dispose()

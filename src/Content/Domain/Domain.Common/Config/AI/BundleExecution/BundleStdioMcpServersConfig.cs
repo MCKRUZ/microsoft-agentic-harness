@@ -44,20 +44,25 @@ public sealed class BundleStdioMcpServersConfig
     public string ContainerImage { get; set; } = string.Empty;
 
     /// <summary>
-    /// Maximum number of stdio MCP servers a single bundle may register. Each registered server becomes a
-    /// long-lived sandbox container for the life of the bundle's staged handle, so this bounds how many
-    /// concurrent containers one uploaded bundle can pin on the host. Must be positive.
+    /// Maximum number of distinct stdio MCP servers a single bundle may declare. Each is a separate
+    /// container image/command a bundle registers — not a count of live sessions: since each concurrent
+    /// <em>run</em> against the bundle's staged handle gets its own sandbox container per declared
+    /// server (a stdio session cannot safely be shared across callers — see
+    /// <c>Application.AI.Common.Services.Bundles.BundleRunIdAccessor</c>), the number of containers one
+    /// bundle can pin at once is this value times however many of its runs are concurrent, further
+    /// bounded by <see cref="MaxConcurrentSessions"/> host-wide. Must be positive.
     /// </summary>
     /// <value>Default: 2</value>
     public int MaxServersPerBundle { get; set; } = 2;
 
     /// <summary>
     /// Maximum number of bundle-owned stdio sandbox sessions live across the WHOLE host at once —
-    /// distinct from <see cref="MaxServersPerBundle"/>, which bounds one bundle's own container count
-    /// but has nothing to say about how many bundles are concurrently staged. Enforced in
-    /// <c>McpConnectionManager.StartSandboxedStdioSessionAsync</c> as a caller admitted with upload +
-    /// run permission could otherwise pin <see cref="MaxServersPerBundle"/> containers per bundle
-    /// times an unbounded number of concurrently-staged bundles. Must be positive.
+    /// distinct from <see cref="MaxServersPerBundle"/>, which bounds one bundle's distinct server
+    /// declarations, not concurrently-live containers. Since each concurrent run of a staged bundle now
+    /// gets its own session per declared server, this is the cap that actually bounds host-wide
+    /// container count: it is what a caller admitted with upload + run permission is refused against
+    /// once exceeded, regardless of how many bundles or runs are in play. Enforced in
+    /// <c>McpConnectionManager.StartSandboxedStdioSessionAsync</c>. Must be positive.
     /// </summary>
     /// <value>Default: 8</value>
     public int MaxConcurrentSessions { get; set; } = 8;

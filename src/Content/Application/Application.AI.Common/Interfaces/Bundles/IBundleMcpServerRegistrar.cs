@@ -18,4 +18,21 @@ public interface IBundleMcpServerRegistrar
     /// </summary>
     /// <param name="serverNames">The bundle-scoped, namespaced server names to deregister.</param>
     Task DeregisterAsync(IReadOnlyList<string> serverNames);
+
+    /// <summary>
+    /// Tears down one run's own stdio MCP sessions for <paramref name="serverNames"/>, called when that
+    /// run completes — the run-scoped counterpart to <see cref="DeregisterAsync"/>'s handle-scoped
+    /// teardown.
+    /// </summary>
+    /// <remarks>
+    /// <strong>Deliberately does not touch <c>IBundleOwnedMcpServerRegistry</c>.</strong> A run ending
+    /// does not mean the bundle's handle is gone — the server's definition must stay registered so the
+    /// next run against the same staged handle can still find it and start its own fresh session.
+    /// Disconnecting only the client is what makes this safe to call unconditionally at the end of every
+    /// run, whether or not that run actually contacted the server (idempotent, same as
+    /// <see cref="DeregisterAsync"/>).
+    /// </remarks>
+    /// <param name="serverNames">The bundle-scoped, namespaced server names this run's staged bundle declares.</param>
+    /// <param name="runId">The completed run's job id — the same value that scoped its sessions.</param>
+    Task DisconnectRunScopedAsync(IReadOnlyList<string> serverNames, string runId);
 }
