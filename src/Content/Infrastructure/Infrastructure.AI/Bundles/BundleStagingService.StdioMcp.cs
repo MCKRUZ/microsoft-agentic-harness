@@ -40,7 +40,10 @@ public sealed partial class BundleStagingService
     /// a URL for remote servers.</description></item>
     /// <item><description>The bundle has not already reached
     /// <see cref="BundleStdioMcpServersConfig.MaxServersPerBundle"/> — each registered stdio server
-    /// becomes a long-lived sandbox container for the life of the bundle's staged handle.</description></item>
+    /// gets its own sandbox container per concurrent run against the bundle's staged handle (#455;
+    /// before that, one shared container for the life of the handle), so this caps how many distinct
+    /// server <em>names</em> a bundle can declare, not how many containers can be live for it at
+    /// once.</description></item>
     /// </list>
     /// On success, tags <see cref="McpServerDefinition.SandboxSeedDirectory"/> with the bundle's staged
     /// root directory <strong>before</strong> <see cref="IBundleOwnedMcpServerRegistry.TryAdd"/> — tagged

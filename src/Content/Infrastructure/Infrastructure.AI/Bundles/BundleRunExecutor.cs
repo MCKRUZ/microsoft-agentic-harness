@@ -43,6 +43,7 @@ public sealed class BundleRunExecutor : IBundleRunExecutor
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly TimeProvider _time;
     private readonly IMcpToolProvider? _mcpToolProvider;
+    private readonly IBundleMcpServerRegistrar? _mcpRegistrar;
     private readonly ILogger<BundleRunExecutor> _logger;
 
     /// <summary>Initializes a new <see cref="BundleRunExecutor"/>.</summary>
@@ -51,19 +52,42 @@ public sealed class BundleRunExecutor : IBundleRunExecutor
     /// tool names a bundle's own registered MCP servers publish, so they can be additively granted for
     /// invocation; see <see cref="WithBundleOwnedToolGrantsAsync"/>.
     /// </param>
+    /// <param name="mcpRegistrar">
+    /// Optional — null on a host with no MCP client dependencies registered, matching
+    /// <paramref name="mcpToolProvider"/>. Used only to tear down this run's own bundle-owned stdio MCP
+    /// sessions once the run ends; see <see cref="RunConversationAsync"/>.
+    /// </param>
+    /// <exception cref="InvalidOperationException">
+    /// <paramref name="mcpToolProvider"/> is registered but <paramref name="mcpRegistrar"/> is not. Tool
+    /// discovery (<see cref="WithBundleOwnedToolGrantsAsync"/>) only needs the former, so a composition
+    /// root that wires one without the other would still create run-scoped bundle-owned stdio sandbox
+    /// sessions with nothing to tear them down — the every-run container leak this fails loudly against
+    /// rather than letting it silently exhaust <c>McpConnectionManager</c>'s host-wide session cap. The
+    /// two are always registered together in this template's own <c>AddMcpClientDependencies</c>, so
+    /// this never fires for the shipped default; it exists for a consumer who re-wires DI by hand.
+    /// </exception>
     public BundleRunExecutor(
         IBundleRunJobStore jobStore,
         IBundleHandleStore handleStore,
         IServiceScopeFactory scopeFactory,
         TimeProvider time,
         ILogger<BundleRunExecutor> logger,
-        IMcpToolProvider? mcpToolProvider = null)
+        IMcpToolProvider? mcpToolProvider = null,
+        IBundleMcpServerRegistrar? mcpRegistrar = null)
     {
         ArgumentNullException.ThrowIfNull(jobStore);
         ArgumentNullException.ThrowIfNull(handleStore);
         ArgumentNullException.ThrowIfNull(scopeFactory);
         ArgumentNullException.ThrowIfNull(time);
         ArgumentNullException.ThrowIfNull(logger);
+        if (mcpToolProvider is not null && mcpRegistrar is null)
+        {
+            throw new InvalidOperationException(
+                $"{nameof(BundleRunExecutor)} was constructed with an {nameof(IMcpToolProvider)} but no " +
+                $"{nameof(IBundleMcpServerRegistrar)}. Bundle-owned tool discovery can create run-scoped " +
+                "stdio MCP sandbox sessions that only IBundleMcpServerRegistrar.DisconnectRunScopedAsync " +
+                "tears down — register both or neither, never one without the other.");
+        }
 
         _jobStore = jobStore;
         _handleStore = handleStore;
@@ -71,6 +95,7 @@ public sealed class BundleRunExecutor : IBundleRunExecutor
         _time = time;
         _logger = logger;
         _mcpToolProvider = mcpToolProvider;
+        _mcpRegistrar = mcpRegistrar;
     }
 
     /// <inheritdoc />
@@ -167,6 +192,41 @@ public sealed class BundleRunExecutor : IBundleRunExecutor
         BundleRunRecord record,
         StagedBundle staged,
         CancellationToken cancellationToken)
+    {
+        // Armed around the WHOLE run, not just the conversation core below: WithBundleOwnedToolGrantsAsync
+        // contacts the bundle's own MCP servers for tool discovery before either of the other two
+        // ambients is armed, and that first contact is exactly where a bundle-owned stdio server's
+        // session gets created and cached — it must see the same run id every later resolution inside
+        // the conversation does, or McpConnectionManager has nothing to scope the session to.
+        using (BundleRunIdAccessor.Begin(record.JobId))
+        {
+            try
+            {
+                return await RunConversationCoreAsync(record, staged, cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                // Tears down this run's OWN stdio sessions — never the bundle's registration, which must
+                // survive for the next run against the same staged handle. Idempotent and safe to call
+                // unconditionally: a run that never contacted any of the bundle's servers, or one with
+                // none declared, is a no-op. Runs even when the conversation threw, so a failed run never
+                // leaks a container for the life of the handle's TTL.
+                if (_mcpRegistrar is not null && staged.McpServerNames.Count > 0)
+                {
+                    await _mcpRegistrar.DisconnectRunScopedAsync(staged.McpServerNames, record.JobId)
+                        .ConfigureAwait(false);
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Discovers the bundle's own tool grants, drives the conversation, and returns its result. Split
+    /// out from <see cref="RunConversationAsync"/> so that method's ambient-arming and teardown ceremony
+    /// isn't nested four levels deep around the actual conversation logic.
+    /// </summary>
+    private async Task<ConversationResult> RunConversationCoreAsync(
+        BundleRunRecord record, StagedBundle staged, CancellationToken cancellationToken)
     {
         var overlay = new EphemeralAgentOverlay
         {

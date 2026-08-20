@@ -456,8 +456,11 @@
                             <tr>
                                 <td><code>StdioMcpServers.MaxServersPerBundle</code></td>
                                 <td>2</td>
-                                <td>How many stdio servers one bundle may declare — each one is a long-lived container
-                                    for the life of the bundle's staged handle.</td>
+                                <td>How many distinct stdio servers one bundle may declare. Not a container count on
+                                    its own: each concurrent run against the bundle's staged handle gets its own
+                                    container per declared server (a stdio session cannot safely be shared across
+                                    callers), so this multiplies by however many runs are concurrent — see
+                                    <code>MaxConcurrentSessions</code> below for the actual host-wide cap.</td>
                             </tr>
                             <tr>
                                 <td><code>StdioMcpServers.MaxConcurrentSessions</code></td>

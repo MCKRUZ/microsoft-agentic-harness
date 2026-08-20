@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using Application.AI.Common.Exceptions;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Sandbox;
+using Application.AI.Common.Services.Bundles;
 using Domain.AI.Sandbox;
 using Domain.Common;
 using Domain.Common.Config;
@@ -15,6 +16,7 @@ using Infrastructure.AI.MCP.Services;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using ModelContextProtocol.Client;
 using Moq;
 using Xunit;
 
@@ -60,6 +62,7 @@ public sealed class McpConnectionManagerSandboxedStdioTests
             StartupTimeoutSeconds = 1
         });
         var sut = CreateManager(new McpServersConfig(), bundleOwned);
+        using var runScope = BundleRunIdAccessor.Begin("run-1");
 
         var act = () => sut.GetClientAsync("b1:local-tool");
 
@@ -85,6 +88,7 @@ public sealed class McpConnectionManagerSandboxedStdioTests
             StartupTimeoutSeconds = 1
         });
         var sut = CreateManager(new McpServersConfig(), bundleOwned);
+        using var runScope = BundleRunIdAccessor.Begin("run-1");
 
         await Assert.ThrowsAsync<McpConnectionException>(() => sut.GetClientAsync("b1:local-tool"));
 
@@ -129,6 +133,7 @@ public sealed class McpConnectionManagerSandboxedStdioTests
         var sut = McpConnectionManagerBundleEgressSupport.CreateManager(
             Mock.Of<ILogger<McpConnectionManager>>(), new Mock<ILoggerFactory>().Object,
             TestSsrf.HandlerFactory(), new McpServersConfig(), bundleOwned, rootServices);
+        using var runScope = BundleRunIdAccessor.Begin("run-1");
 
         await Assert.ThrowsAsync<McpConnectionException>(() => sut.GetClientAsync("b1:local-tool"));
 
@@ -189,6 +194,7 @@ public sealed class McpConnectionManagerSandboxedStdioTests
         var sut = McpConnectionManagerBundleEgressSupport.CreateManager(
             Mock.Of<ILogger<McpConnectionManager>>(), new Mock<ILoggerFactory>().Object,
             TestSsrf.HandlerFactory(), new McpServersConfig(), bundleOwned, rootServices);
+        using var runScope = BundleRunIdAccessor.Begin("run-1");
 
         await Assert.ThrowsAsync<McpConnectionException>(() => sut.GetClientAsync("b1:local-tool"));
 
@@ -238,6 +244,7 @@ public sealed class McpConnectionManagerSandboxedStdioTests
         var sut = McpConnectionManagerBundleEgressSupport.CreateManager(
             Mock.Of<ILogger<McpConnectionManager>>(), new Mock<ILoggerFactory>().Object,
             TestSsrf.HandlerFactory(), new McpServersConfig(), bundleOwned, rootServices);
+        using var runScope = BundleRunIdAccessor.Begin("run-1");
 
         var firstCallTask = sut.GetClientAsync("b1:local-tool");
         await blockingFactory.EntrySignaled.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -289,6 +296,7 @@ public sealed class McpConnectionManagerSandboxedStdioTests
             Mock.Of<ILogger<McpConnectionManager>>(), new Mock<ILoggerFactory>().Object,
             TestSsrf.HandlerFactory(), new McpServersConfig(), bundleOwned,
             throwingScopeFactory, McpConnectionManagerBundleEgressSupport.Args.AmbientScope, rootServices);
+        using var runScope = BundleRunIdAccessor.Begin("run-1");
 
         await Assert.ThrowsAsync<McpConnectionException>(() => sut.GetClientAsync("b1:local-tool"));
         var secondException = await Assert.ThrowsAsync<McpConnectionException>(() => sut.GetClientAsync("b1:local-tool"));
@@ -335,6 +343,7 @@ public sealed class McpConnectionManagerSandboxedStdioTests
         var sut = McpConnectionManagerBundleEgressSupport.CreateManager(
             Mock.Of<ILogger<McpConnectionManager>>(), new Mock<ILoggerFactory>().Object,
             TestSsrf.HandlerFactory(), new McpServersConfig(), bundleOwned, rootServices);
+        using var runScope = BundleRunIdAccessor.Begin("run-1");
 
         var act = () => sut.GetClientAsync("b1:local-tool");
 
@@ -385,6 +394,7 @@ public sealed class McpConnectionManagerSandboxedStdioTests
         var sut = McpConnectionManagerBundleEgressSupport.CreateManager(
             Mock.Of<ILogger<McpConnectionManager>>(), new Mock<ILoggerFactory>().Object,
             TestSsrf.HandlerFactory(), new McpServersConfig(), bundleOwned, rootServices);
+        using var runScope = BundleRunIdAccessor.Begin("run-1");
 
         var firstCallTask = sut.GetClientAsync("b1:local-tool");
         await blockingFactory.EntrySignaled.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -435,6 +445,7 @@ public sealed class McpConnectionManagerSandboxedStdioTests
         var sut = McpConnectionManagerBundleEgressSupport.CreateManager(
             Mock.Of<ILogger<McpConnectionManager>>(), new Mock<ILoggerFactory>().Object,
             TestSsrf.HandlerFactory(), new McpServersConfig(), bundleOwned, rootServices);
+        using var runScope = BundleRunIdAccessor.Begin("run-1");
 
         await Assert.ThrowsAsync<McpConnectionException>(() => sut.GetClientAsync("b1:local-tool"));
 
@@ -466,6 +477,7 @@ public sealed class McpConnectionManagerSandboxedStdioTests
         var sut = McpConnectionManagerBundleEgressSupport.CreateManager(
             Mock.Of<ILogger<McpConnectionManager>>(), new Mock<ILoggerFactory>().Object,
             TestSsrf.HandlerFactory(), new McpServersConfig(), bundleOwned, rootServices);
+        using var runScope = BundleRunIdAccessor.Begin("run-1");
 
         await Assert.ThrowsAsync<McpConnectionException>(() => sut.GetClientAsync("b1:local-tool"));
 
@@ -487,6 +499,7 @@ public sealed class McpConnectionManagerSandboxedStdioTests
         });
         // BuildRootServices' default AppConfig has an empty (unconfigured) StdioMcpServers.ContainerImage.
         var sut = CreateManager(new McpServersConfig(), bundleOwned);
+        using var runScope = BundleRunIdAccessor.Begin("run-1");
 
         await Assert.ThrowsAsync<McpConnectionException>(() => sut.GetClientAsync("b1:local-tool"));
 
@@ -494,6 +507,130 @@ public sealed class McpConnectionManagerSandboxedStdioTests
         _fakeSessionFactory.LastRequest!.ContainerImage.Should().BeNull(
             "an unconfigured image must fall through to the session factory's own default resolution, " +
             "not an empty string that would fail Docker's image reference parsing");
+    }
+
+    // -- Per-run session isolation (#455) --
+
+    [Fact]
+    public async Task GetClientAsync_BundleOwnedStdioServer_NoAmbientRunId_RefusesWithoutStartingASession()
+    {
+        // The MCP SDK's own docs: a stdio session is unsuitable for sharing across concurrent callers.
+        // Resolving one with no ambient run id armed (BundleRunIdAccessor.Current is null) must fail
+        // closed rather than silently falling back to the old shared-by-server-name cache — the exact
+        // bug #455 exists to close. No BundleRunIdAccessor.Begin scope is opened anywhere in this test.
+        var bundleOwned = new BundleOwnedMcpServerRegistry();
+        bundleOwned.TryAdd("b1:local-tool", new McpServerDefinition
+        {
+            Enabled = true,
+            Type = McpServerType.Stdio,
+            Command = "node",
+            StartupTimeoutSeconds = 1,
+        });
+        var sut = CreateManager(new McpServersConfig(), bundleOwned);
+
+        var act = () => sut.GetClientAsync("b1:local-tool");
+
+        var exception = await act.Should().ThrowAsync<McpConnectionException>();
+        exception.Which.Message.Should().Contain("no ambient bundle run id");
+        _fakeSessionFactory.WasCalled.Should().BeFalse(
+            "a missing run id must be refused before the sandbox session factory is ever called — " +
+            "falling back to a shared session is the bug this check exists to close");
+    }
+
+    [Fact]
+    public async Task ReconnectAsync_BundleOwnedStdioServer_NoAmbientRunId_RefusesTheSameWayGetClientAsyncDoes()
+    {
+        // /code-review finding: ReconnectAsync (the #385 stale-client recovery path) was not updated
+        // alongside GetClientAsync's run-scoping — it still went straight for the shared cache, which
+        // would have silently reintroduced this exact bug on every mid-run reconnect. Must route through
+        // the identical fail-closed check. The guard fires before failedClient is ever touched, so null
+        // is safe to pass here.
+        var bundleOwned = new BundleOwnedMcpServerRegistry();
+        bundleOwned.TryAdd("b1:local-tool", new McpServerDefinition
+        {
+            Enabled = true,
+            Type = McpServerType.Stdio,
+            Command = "node",
+            StartupTimeoutSeconds = 1,
+        });
+        var sut = CreateManager(new McpServersConfig(), bundleOwned);
+
+        var act = () => sut.ReconnectAsync("b1:local-tool", null!, CancellationToken.None);
+
+        var exception = await act.Should().ThrowAsync<McpConnectionException>();
+        exception.Which.Message.Should().Contain("no ambient bundle run id");
+        _fakeSessionFactory.WasCalled.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task GetClientAsync_TwoRunsResolvingTheSameServerName_DoNotSerializeOnOneSharedLock()
+    {
+        // Distinguishes the run-scoped lock key from the old bare-server-name one. Before #455, every
+        // caller resolving one server name funneled through a single SemaphoreSlim(1,1), so a second
+        // run's attempt would have blocked behind the first's in-flight (never-completing, here)
+        // session start. With the run id folded into the lock key, two DIFFERENT runs resolving the
+        // SAME server name must proceed independently — reaching (and each failing against) the
+        // factory on its own, not queuing behind the other.
+        var blockingFactory = new BlockingSandboxSessionFactory();
+        var bundleOwned = new BundleOwnedMcpServerRegistry();
+        bundleOwned.TryAdd("b1:local-tool", new McpServerDefinition
+        {
+            Enabled = true, Type = McpServerType.Stdio, Command = "node", StartupTimeoutSeconds = 1,
+        });
+        var rootServices = McpConnectionManagerBundleEgressSupport.BuildRootServices(services =>
+        {
+            services.AddKeyedSingleton<ISandboxSessionFactory>(SandboxIsolationLevel.Container, blockingFactory);
+        });
+        var sut = McpConnectionManagerBundleEgressSupport.CreateManager(
+            Mock.Of<ILogger<McpConnectionManager>>(), new Mock<ILoggerFactory>().Object,
+            TestSsrf.HandlerFactory(), new McpServersConfig(), bundleOwned, rootServices);
+
+        Task<McpClient> firstCallTask;
+        using (BundleRunIdAccessor.Begin("run-1"))
+            firstCallTask = sut.GetClientAsync("b1:local-tool");
+        await blockingFactory.EntrySignaled.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        // If run-2 were still funneled through run-1's lock (the pre-#455 behavior), this call would
+        // block waiting for that lock rather than ever reaching the factory at all — so
+        // PeakConcurrentEntries would never rise above 1, however long this test waited. Polling
+        // rather than a single fixed delay avoids a flaky race against exactly how fast run-2's
+        // attempt reaches the factory.
+        Task<McpClient> secondCallTask;
+        using (BundleRunIdAccessor.Begin("run-2"))
+            secondCallTask = sut.GetClientAsync("b1:local-tool");
+
+        for (var attempt = 0; attempt < 200 && blockingFactory.PeakConcurrentEntries < 2; attempt++)
+            await Task.Delay(10);
+
+        blockingFactory.PeakConcurrentEntries.Should().Be(2,
+            "both runs must be inside the sandbox session factory at once — a run-scoped lock key " +
+            "must not serialize two different runs resolving the same server name");
+
+        blockingFactory.Release.SetResult();
+        await Assert.ThrowsAsync<McpConnectionException>(() => firstCallTask);
+        await Assert.ThrowsAsync<McpConnectionException>(() => secondCallTask);
+    }
+
+    [Fact]
+    public async Task GetClientAsync_BundleOwnedRemoteServer_NeverRequiresAnAmbientRunId()
+    {
+        // The run-scoping requirement is deliberately stdio-only: an http/sse transport has no
+        // single-session constraint (multiple independent requests to a remote endpoint are fine), so
+        // a bundle-owned REMOTE server must never hit the "no ambient run id" refusal a stdio one does.
+        var bundleOwned = new BundleOwnedMcpServerRegistry();
+        bundleOwned.TryAdd("b1:remote-tool", new McpServerDefinition
+        {
+            Enabled = true,
+            Type = McpServerType.Http,
+            Url = "http://localhost:19999/mcp", // no listener — fast connection-refused, not the run-id check
+            StartupTimeoutSeconds = 1,
+        });
+        var sut = CreateManager(new McpServersConfig(), bundleOwned);
+
+        var act = () => sut.GetClientAsync("b1:remote-tool");
+
+        var exception = await act.Should().ThrowAsync<McpConnectionException>();
+        exception.Which.Message.Should().NotContain("no ambient bundle run id");
     }
 
     [Fact]
@@ -552,18 +689,44 @@ public sealed class McpConnectionManagerSandboxedStdioTests
     /// <summary>
     /// A session factory whose <see cref="StartSessionAsync"/> does not complete until the test
     /// explicitly releases it — lets a test hold a "slot" open to prove the host-wide concurrency cap
-    /// rejects a second concurrent attempt while it's exhausted, without needing a real session.
+    /// rejects a second concurrent attempt while it's exhausted, without needing a real session. Also
+    /// tracks how many calls are inside <see cref="StartSessionAsync"/> at once (<see cref="PeakConcurrentEntries"/>),
+    /// which #455's non-serialization test uses to prove two callers actually overlapped rather than
+    /// queued one after the other.
     /// </summary>
     private sealed class BlockingSandboxSessionFactory : ISandboxSessionFactory
     {
         public TaskCompletionSource EntrySignaled { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
+        private int _concurrentEntries;
+        private int _peakConcurrentEntries;
+        public int PeakConcurrentEntries => Volatile.Read(ref _peakConcurrentEntries);
+
         public async Task<Result<ISandboxSession>> StartSessionAsync(SandboxSessionRequest request, CancellationToken ct)
         {
+            var now = Interlocked.Increment(ref _concurrentEntries);
+            InterlockedMax(ref _peakConcurrentEntries, now);
             EntrySignaled.TrySetResult();
-            await Release.Task;
-            return Result<ISandboxSession>.Fail("fake factory: not starting a real session");
+            try
+            {
+                await Release.Task;
+                return Result<ISandboxSession>.Fail("fake factory: not starting a real session");
+            }
+            finally
+            {
+                Interlocked.Decrement(ref _concurrentEntries);
+            }
+        }
+
+        private static void InterlockedMax(ref int target, int candidate)
+        {
+            int seen;
+            while ((seen = Volatile.Read(ref target)) < candidate
+                   && Interlocked.CompareExchange(ref target, candidate, seen) != seen)
+            {
+                // Another thread moved the peak while we were deciding; re-read and try again.
+            }
         }
     }
 
