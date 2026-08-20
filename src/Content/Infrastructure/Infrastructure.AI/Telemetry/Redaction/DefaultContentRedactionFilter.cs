@@ -113,6 +113,17 @@ public sealed class DefaultContentRedactionFilter : IContentRedactionFilter
             @"(?i)(AccountKey|Password|pwd|SharedAccessKey)\s*=\s*(?!\[REDACTED\])[^;""'\s]+",
             "$1=[REDACTED]"));
 
+        // Azure SAS query signatures — sv=...&sp=...&se=...&sig=<value>. The other query
+        // parameters that make up a SAS URL (sv, sp, se, spr, sr) are non-secret grants and
+        // expiry metadata; sig is the actual signing token and the only one worth redacting.
+        // A distinct rule from the AccountKey/SharedAccessKey one above: those cover connection
+        // strings, this covers a URL query string, a different shape a SAS-signed blob/queue URL
+        // is just as likely to appear as (e.g. a document ingest URI, per CLAUDE.md's own
+        // recorded history of SAS tokens leaking through exception messages).
+        b.Add(Compile(RedactionCategory.Generic,
+            @"(?i)([?&]sig=)(?!\[REDACTED\])[^&\s""']+",
+            "$1[REDACTED]"));
+
         b.Add(Compile(RedactionCategory.Generic,
             @"(?i)(api[_-]?key|access[_-]?token|secret[_-]?key)\s*[=:]\s*(?!\[REDACTED\])\S+",
             "$1=[REDACTED]"));

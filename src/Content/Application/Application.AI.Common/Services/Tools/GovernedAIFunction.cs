@@ -3,6 +3,7 @@ using Application.AI.Common.Services.Governance;
 using Domain.AI.Escalation;
 using Domain.AI.Governance;
 using Microsoft.Extensions.AI;
+using System.Text.Json;
 
 namespace Application.AI.Common.Services.Tools;
 
@@ -28,7 +29,11 @@ namespace Application.AI.Common.Services.Tools;
 /// </para>
 /// <para>
 /// This is the invocation-time chokepoint for the agent's autonomous tool calls, applied to every
-/// converted tool regardless of source (keyed-DI, MCP, or skill-provided).
+/// converted tool regardless of source (keyed-DI, MCP, or skill-provided) — the admission check
+/// itself runs unconditionally for all three. <strong>Failure detection on a no-throw return does
+/// not share that uniformity</strong>: it can only recognize a <see cref="ConvertedToolFailure"/>,
+/// which only a keyed-DI tool converted via <c>AIToolConverter</c> can produce (see
+/// <see cref="ReportOutcomeAndApplyPolicyAsync"/>'s remarks) — tracked as #451.
 /// </para>
 /// <para>
 /// <strong>Also the carrier for tool-composition findings.</strong> <c>ToolChainBuilder</c> stamps a
@@ -70,7 +75,7 @@ internal sealed class GovernedAIFunction : DelegatingAIFunction
     {
         var admissionPipeline = ToolAdmissionAccessor.Current;
         if (admissionPipeline is null)
-            return await base.InvokeCoreAsync(arguments, cancellationToken).ConfigureAwait(false);
+            return Unwrap(await base.InvokeCoreAsync(arguments, cancellationToken).ConfigureAwait(false));
 
         var admission = await admissionPipeline
             .AdmitAsync(
@@ -95,19 +100,65 @@ internal sealed class GovernedAIFunction : DelegatingAIFunction
             throw;
         }
 
-        // A no-throw return is reported Succeeded. This is an imprecise signal for an ITool-backed
-        // function specifically: the generic converter (AIToolConverter) flattens ToolResult.Fail
-        // into a returned "Error: ..." string rather than throwing, which this layer cannot tell
-        // apart from a genuinely successful string result — it has no structured ToolResult to
-        // inspect, only whatever object the wrapped AIFunction returns, and that wrapped function is
-        // just as often MCP- or skill-provided as ITool-backed. Fixing that precisely would mean
-        // changing what every tool converter returns on failure, which is out of scope for wiring an
-        // existing report call into this path. Documented as a known limitation rather than guessed at.
+        return await ReportOutcomeAndApplyPolicyAsync(admissionPipeline, admission, result).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Reports what a no-throw return actually was — Succeeded, or Failed with the tool's own error
+    /// text when <paramref name="result"/> unwraps to a <see cref="ConvertedToolFailure"/> — then
+    /// applies output policy to the unwrapped value.
+    /// </summary>
+    /// <remarks>
+    /// A <see cref="ConvertedToolFailure"/> came from <c>AIToolConverter</c>'s <c>ToolResult.Fail</c>
+    /// flattening — reported <see cref="EscalationExecutionStatus.Failed"/> with the tool's own error
+    /// text, the same status <c>DirectToolInvoker</c> already reports for the identical case. Every
+    /// other <see cref="AIFunction"/> source (MCP-provided, skill-provided) has no equivalent marker —
+    /// a non-throwing failure from one of those is still reported
+    /// <see cref="EscalationExecutionStatus.Succeeded"/>, since <see cref="ConvertedToolFailure"/> is
+    /// only ever produced by <c>AIToolConverter</c> (and only survives to here because it pairs the
+    /// marker with a <c>MarshalResult</c> delegate that bypasses the framework's default JSON
+    /// serialization — see the marker's own remarks). Fixing that would mean changing what every tool
+    /// source signals on failure, which is out of scope here — this closes the gap for ITool-backed
+    /// tools specifically, per the converter-wide framing the fix was scoped to. Tracked separately
+    /// as #451.
+    /// </remarks>
+    private async ValueTask<object?> ReportOutcomeAndApplyPolicyAsync(
+        IToolCallAdmissionPipeline admissionPipeline, ToolCallAdmission admission, object? result)
+    {
+        // failure.ErrorText is reported to ReportExecutionAsync before ApplyOutputPolicy runs below,
+        // so the classification gate's redaction verdict reaches the model-facing copy but not this
+        // one — matching DirectToolInvoker's identical reporting shape (result.Error, same ordering)
+        // rather than a gap this method introduces. Tracked as #452.
+        var failure = result as ConvertedToolFailure;
         await admissionPipeline.ReportExecutionAsync(
             admission,
-            new ToolExecutionReport(EscalationExecutionStatus.Succeeded, null, null),
+            failure is null
+                ? new ToolExecutionReport(EscalationExecutionStatus.Succeeded, null, null)
+                : new ToolExecutionReport(EscalationExecutionStatus.Failed, failure.ErrorText, null),
             ReportedBy, CancellationToken.None).ConfigureAwait(false);
 
-        return admissionPipeline.ApplyOutputPolicy(admission, Name, result);
+        return admissionPipeline.ApplyOutputPolicy(admission, Name, Unwrap(result));
     }
+
+    /// <summary>
+    /// Unwraps a <see cref="ConvertedToolFailure"/> back to a value shaped exactly like a genuine
+    /// success, so the marker never reaches the framework layer. The single definition of that
+    /// transformation — both the bypass path above and the reporting path route through it rather
+    /// than each re-deriving the same pattern match, so a future change to what "unwrapped" means
+    /// can't update one and miss the other.
+    /// </summary>
+    /// <remarks>
+    /// Re-wraps <see cref="ConvertedToolFailure.ErrorText"/> as a <see cref="JsonElement"/> rather
+    /// than returning the raw <see langword="string"/> — confirmed against the OpenAI chat client's
+    /// actual conversion source: it sends <see cref="FunctionResultContent.Result"/> to the model
+    /// verbatim when it's a raw <see langword="string"/>, but JSON-serializes (and so re-quotes) any
+    /// other shape, including a <c>JsonElement</c>. A genuine success already reaches here as a
+    /// <c>JsonElement</c> (the framework's own default marshaling — see <c>AIToolConverter</c>'s
+    /// <c>MarshalResult</c> override, which re-implements exactly that shape for the success case).
+    /// Returning the marker's text as a bare string instead would have sent the model differently
+    /// quoted text for a failure than for a success, silently contradicting this type's own contract
+    /// that unwrapping leaves the model-facing text unchanged.
+    /// </remarks>
+    private static object? Unwrap(object? result) =>
+        result is ConvertedToolFailure failure ? JsonSerializer.SerializeToElement(failure.ErrorText) : result;
 }

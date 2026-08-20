@@ -218,6 +218,62 @@ public class AIToolConverterTests
             It.IsAny<CancellationToken>()), Times.Never);
     }
 
+    [Fact]
+    public async Task InvokeAsync_UnknownOperation_ReturnsConvertedToolFailure()
+    {
+        // #441: an unknown operation never reaches ToolResult at all, but it still didn't succeed —
+        // GovernedAIFunction must be able to tell, via the same marker ToolResult.Fail uses below.
+        // This survives intact (not JSON-serialized like an ordinary return) because Convert pairs it
+        // with a MarshalResult delegate — see ConvertedToolFailure's remarks for why that's required.
+        var mock = new Mock<ITool>();
+        mock.Setup(t => t.Name).Returns("file_system");
+        mock.Setup(t => t.Description).Returns("desc");
+        mock.Setup(t => t.SupportedOperations).Returns(["read"]);
+
+        var aiFunction = (AIFunction)_converter.Convert(mock.Object)!;
+        var args = new AIFunctionArguments { ["operation"] = "delete", ["parametersJson"] = null };
+
+        var result = await aiFunction.InvokeAsync(args);
+
+        var failure = result.Should().BeOfType<ConvertedToolFailure>().Subject;
+        failure.ErrorText.Should().Contain("not available");
+    }
+
+    [Fact]
+    public async Task InvokeAsync_ToolResultFails_ReturnsConvertedToolFailure()
+    {
+        // #441: GovernedAIFunction.InvokeCoreAsync unconditionally reported Succeeded for any
+        // no-throw return, because a plain "Error: ..." string is indistinguishable from a genuine
+        // successful string result. This marker is what makes them distinguishable.
+        var tool = CreateCapturingTool("file_system", ["read"], (op, p, ct) =>
+            Task.FromResult(ToolResult.Fail("boom")));
+
+        var aiFunction = (AIFunction)_converter.Convert(tool)!;
+        var args = new AIFunctionArguments { ["operation"] = "read", ["parametersJson"] = null };
+
+        var result = await aiFunction.InvokeAsync(args);
+
+        var failure = result.Should().BeOfType<ConvertedToolFailure>().Subject;
+        failure.ErrorText.Should().Be("Error: boom");
+    }
+
+    [Fact]
+    public async Task InvokeAsync_ToolResultSucceeds_ReturnsPlainJsonElementNotConvertedToolFailure()
+    {
+        // The success path is untouched by the #441 fix — still a JsonElement-wrapped string, the
+        // same shape MarshalResult explicitly re-implements for every non-failure return.
+        var tool = CreateCapturingTool("file_system", ["read"], (op, p, ct) =>
+            Task.FromResult(ToolResult.Ok("all good")));
+
+        var aiFunction = (AIFunction)_converter.Convert(tool)!;
+        var args = new AIFunctionArguments { ["operation"] = "read", ["parametersJson"] = null };
+
+        var result = await aiFunction.InvokeAsync(args);
+
+        result.Should().BeOfType<System.Text.Json.JsonElement>();
+        ((System.Text.Json.JsonElement)result!).GetString().Should().Be("all good");
+    }
+
     private static ITool CreateMockTool(string name, IReadOnlyList<string> operations)
     {
         var mock = new Mock<ITool>();

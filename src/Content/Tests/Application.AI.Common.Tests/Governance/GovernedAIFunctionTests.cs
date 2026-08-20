@@ -24,6 +24,22 @@ public sealed class GovernedAIFunctionTests
         return (inner, () => invoked);
     }
 
+    /// <summary>
+    /// An inner function shaped like what <c>AIToolConverter</c> produces for a <c>ToolResult.Fail</c>:
+    /// a <see cref="ConvertedToolFailure"/> return, paired with the same <c>MarshalResult</c> override
+    /// that lets the marker reach this layer intact instead of being JSON-serialized away — see
+    /// <see cref="ConvertedToolFailure"/>'s remarks for why that pairing is required.
+    /// </summary>
+    private static AIFunction MakeFailingInner(string errorText) =>
+        AIFunctionFactory.Create(
+            () => new ConvertedToolFailure(errorText),
+            new AIFunctionFactoryOptions
+            {
+                Name = "file_system",
+                Description = "test tool",
+                MarshalResult = (result, _, _) => new ValueTask<object?>(result)
+            });
+
     private static async Task<object?> InvokeUnder(IToolCallAdmissionPipeline pipeline, AIFunction inner)
     {
         using var armed = ToolAdmissionAccessor.Begin(pipeline);
@@ -128,6 +144,68 @@ public sealed class GovernedAIFunctionTests
                 It.Is<ToolExecutionReport>(r => r.Status == EscalationExecutionStatus.Succeeded),
                 "agent-turn", CancellationToken.None),
             Times.Once);
+    }
+
+    [Fact]
+    public async Task InvokeAsync_ToolReturnsConvertedFailure_WithApproval_ReportsFailedWithReason()
+    {
+        // #441: a no-throw ToolResult.Fail, flattened by AIToolConverter into a plain string, used
+        // to be indistinguishable from a genuine success — this is the case that used to report
+        // Succeeded. The marker is how AIToolConverter tells this layer the call actually failed.
+        var inner = MakeFailingInner("Error: boom");
+        var call = ApprovedCall();
+        var pipeline = ApprovingPipeline(call);
+
+        var result = await InvokeUnder(pipeline.Object, inner);
+
+        pipeline.Verify(
+            p => p.ReportExecutionAsync(
+                It.IsAny<ToolCallAdmission>(),
+                It.Is<ToolExecutionReport>(r =>
+                    r.Status == EscalationExecutionStatus.Failed && r.FailureReason == "Error: boom"),
+                "agent-turn", CancellationToken.None),
+            Times.Once);
+        // The model-facing text is unaffected by the marker — unwrapped back to the tool's own plain
+        // error text before being returned, never the ConvertedToolFailure wrapper itself. Re-wrapped
+        // as a JsonElement, the same shape a genuine success already has: the OpenAI chat client
+        // sends a raw string verbatim but re-quotes anything else, so a bare string here would have
+        // sent the model differently-formatted text for a failure than for a success.
+        var resultStr = result is System.Text.Json.JsonElement je ? je.GetString() : result?.ToString();
+        Assert.Equal("Error: boom", resultStr);
+    }
+
+    [Fact]
+    public async Task InvokeAsync_ToolReturnsConvertedFailure_ReturnsSameRuntimeShapeAsSuccess()
+    {
+        // The OpenAI chat client (Microsoft.Extensions.AI.OpenAI's OpenAIChatClient) sends
+        // FunctionResultContent.Result to the model verbatim when it's a raw CLR string, but
+        // JSON-serializes (re-quoting) anything else, including a JsonElement. A genuine success
+        // already reaches the model as a JsonElement (AIToolConverter's default marshaling) — if a
+        // failure unwrapped to a bare string instead, the model would see differently-quoted text
+        // for a failure than for a success, contradicting Unwrap's own documented contract.
+        var (successInner, _) = MakeInner();
+        var failureInner = MakeFailingInner("Error: boom");
+
+        var successResult = await InvokeUnder(ApprovingPipeline(ApprovedCall()).Object, successInner);
+        var failureResult = await InvokeUnder(ApprovingPipeline(ApprovedCall()).Object, failureInner);
+
+        Assert.IsType<System.Text.Json.JsonElement>(successResult);
+        Assert.IsType<System.Text.Json.JsonElement>(failureResult);
+    }
+
+    [Fact]
+    public async Task InvokeAsync_NoAmbientChain_UnwrapsConvertedFailureToPlainText()
+    {
+        // The ungoverned bypass path never reports anything (no admission chain to report against),
+        // but it must still unwrap the marker before returning — otherwise an internal type leaks
+        // out to whatever called this AIFunction directly.
+        var inner = MakeFailingInner("Error: boom");
+
+        var result = await new GovernedAIFunction(inner)
+            .InvokeAsync(new AIFunctionArguments(), CancellationToken.None);
+
+        var resultStr = result is System.Text.Json.JsonElement je ? je.GetString() : result?.ToString();
+        Assert.Equal("Error: boom", resultStr);
     }
 
     [Fact]

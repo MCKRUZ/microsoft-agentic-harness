@@ -75,19 +75,37 @@ public sealed class AIToolConverter : IToolConverter
             {
                 if (!activeOperations.Contains(operation, StringComparer.OrdinalIgnoreCase))
                 {
-                    return $"Error: Operation '{operation}' is not available. Valid operations: {string.Join(", ", activeOperations)}";
+                    return new ConvertedToolFailure(
+                        $"Error: Operation '{operation}' is not available. Valid operations: {string.Join(", ", activeOperations)}");
                 }
 
                 var parameters = ToolParameters.FromJson(parametersJson);
                 var result = await tool.ExecuteAsync(operation, parameters, cancellationToken);
                 return result.Success
-                    ? result.Output ?? "OK"
-                    : $"Error: {result.Error}";
+                    ? (object)(result.Output ?? "OK")
+                    : new ConvertedToolFailure($"Error: {result.Error}");
             },
             new AIFunctionFactoryOptions
             {
                 Name = tool.Name,
-                Description = description
+                Description = description,
+                // A ConvertedToolFailure must reach GovernedAIFunction as the CLR type it is — the
+                // framework's default marshaling JSON-serializes the delegate's return value before
+                // any decorator sees it, which would erase that identity. Only the marker bypasses
+                // it; the success string is re-serialized exactly as the default path would, so the
+                // model-facing shape for a genuine success is unchanged.
+                MarshalResult = (result, _, _) => new ValueTask<object?>(
+                    result is ConvertedToolFailure
+                        ? result
+                        : JsonSerializer.SerializeToElement((string)result!)),
+                // The delegate's two branches return different CLR types (a plain string on
+                // success, ConvertedToolFailure on failure) by design, so the compiler infers a
+                // common Task<object> rather than Task<string> — which would otherwise make this
+                // function advertise a generic/permissive return schema instead of the plain-text
+                // one a genuine success actually has. Nothing reads AIFunction.ReturnJsonSchema
+                // today, but excluding it is honest about that rather than leaving a misleading
+                // schema as an accidental side effect of the marker mechanism above.
+                ExcludeResultSchema = true
             });
 
         _logger.LogDebug(
