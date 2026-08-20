@@ -166,8 +166,31 @@ public sealed class GovernedAIFunctionTests
                 "agent-turn", CancellationToken.None),
             Times.Once);
         // The model-facing text is unaffected by the marker — unwrapped back to the tool's own plain
-        // error text before being returned, never the ConvertedToolFailure wrapper itself.
-        Assert.Equal("Error: boom", result);
+        // error text before being returned, never the ConvertedToolFailure wrapper itself. Re-wrapped
+        // as a JsonElement, the same shape a genuine success already has: the OpenAI chat client
+        // sends a raw string verbatim but re-quotes anything else, so a bare string here would have
+        // sent the model differently-formatted text for a failure than for a success.
+        var resultStr = result is System.Text.Json.JsonElement je ? je.GetString() : result?.ToString();
+        Assert.Equal("Error: boom", resultStr);
+    }
+
+    [Fact]
+    public async Task InvokeAsync_ToolReturnsConvertedFailure_ReturnsSameRuntimeShapeAsSuccess()
+    {
+        // The OpenAI chat client (Microsoft.Extensions.AI.OpenAI's OpenAIChatClient) sends
+        // FunctionResultContent.Result to the model verbatim when it's a raw CLR string, but
+        // JSON-serializes (re-quoting) anything else, including a JsonElement. A genuine success
+        // already reaches the model as a JsonElement (AIToolConverter's default marshaling) — if a
+        // failure unwrapped to a bare string instead, the model would see differently-quoted text
+        // for a failure than for a success, contradicting Unwrap's own documented contract.
+        var (successInner, _) = MakeInner();
+        var failureInner = MakeFailingInner("Error: boom");
+
+        var successResult = await InvokeUnder(ApprovingPipeline(ApprovedCall()).Object, successInner);
+        var failureResult = await InvokeUnder(ApprovingPipeline(ApprovedCall()).Object, failureInner);
+
+        Assert.IsType<System.Text.Json.JsonElement>(successResult);
+        Assert.IsType<System.Text.Json.JsonElement>(failureResult);
     }
 
     [Fact]
@@ -181,7 +204,8 @@ public sealed class GovernedAIFunctionTests
         var result = await new GovernedAIFunction(inner)
             .InvokeAsync(new AIFunctionArguments(), CancellationToken.None);
 
-        Assert.Equal("Error: boom", result);
+        var resultStr = result is System.Text.Json.JsonElement je ? je.GetString() : result?.ToString();
+        Assert.Equal("Error: boom", resultStr);
     }
 
     [Fact]

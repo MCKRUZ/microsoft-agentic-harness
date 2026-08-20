@@ -109,8 +109,12 @@ public sealed class DefaultContentRedactionFilterTests
 
         result.Should().NotContain("aBcD%2FeF9xyz");
         result.Should().Contain("[REDACTED]");
-        // The non-secret grant/expiry parameters are left alone — only sig is a credential.
-        result.Should().Contain("sv=2021-08-06");
+        // The non-secret grant parameter is left alone under this rule specifically — only sig is a
+        // credential to the Generic category. This does NOT guarantee sv=/se='s date-shaped values
+        // survive redaction in general: with RedactionCategory.Phone also enabled (LogRecordRedactionProcessor
+        // falls back to every category when none are configured), the pre-existing Phone rule matches
+        // "2021-08-06"/"2026-01-01" too and redacts them — over-redaction, not a security gap, but
+        // this test's own claim is scoped to Generic alone, not a blanket "left alone" guarantee.
         result.Should().Contain("sp=rwdlac");
     }
 

@@ -3,6 +3,7 @@ using Application.AI.Common.Services.Governance;
 using Domain.AI.Escalation;
 using Domain.AI.Governance;
 using Microsoft.Extensions.AI;
+using System.Text.Json;
 
 namespace Application.AI.Common.Services.Tools;
 
@@ -28,7 +29,11 @@ namespace Application.AI.Common.Services.Tools;
 /// </para>
 /// <para>
 /// This is the invocation-time chokepoint for the agent's autonomous tool calls, applied to every
-/// converted tool regardless of source (keyed-DI, MCP, or skill-provided).
+/// converted tool regardless of source (keyed-DI, MCP, or skill-provided) — the admission check
+/// itself runs unconditionally for all three. <strong>Failure detection on a no-throw return does
+/// not share that uniformity</strong>: it can only recognize a <see cref="ConvertedToolFailure"/>,
+/// which only a keyed-DI tool converted via <c>AIToolConverter</c> can produce (see
+/// <see cref="ReportOutcomeAndApplyPolicyAsync"/>'s remarks) — tracked as #451.
 /// </para>
 /// <para>
 /// <strong>Also the carrier for tool-composition findings.</strong> <c>ToolChainBuilder</c> stamps a
@@ -136,11 +141,24 @@ internal sealed class GovernedAIFunction : DelegatingAIFunction
     }
 
     /// <summary>
-    /// Unwraps a <see cref="ConvertedToolFailure"/> back to its plain error text so the marker never
-    /// reaches the framework layer. The single definition of that transformation — both the bypass
-    /// path above and the reporting path route through it rather than each re-deriving the same
-    /// pattern match, so a future change to what "unwrapped" means can't update one and miss the other.
+    /// Unwraps a <see cref="ConvertedToolFailure"/> back to a value shaped exactly like a genuine
+    /// success, so the marker never reaches the framework layer. The single definition of that
+    /// transformation — both the bypass path above and the reporting path route through it rather
+    /// than each re-deriving the same pattern match, so a future change to what "unwrapped" means
+    /// can't update one and miss the other.
     /// </summary>
+    /// <remarks>
+    /// Re-wraps <see cref="ConvertedToolFailure.ErrorText"/> as a <see cref="JsonElement"/> rather
+    /// than returning the raw <see langword="string"/> — confirmed against the OpenAI chat client's
+    /// actual conversion source: it sends <see cref="FunctionResultContent.Result"/> to the model
+    /// verbatim when it's a raw <see langword="string"/>, but JSON-serializes (and so re-quotes) any
+    /// other shape, including a <c>JsonElement</c>. A genuine success already reaches here as a
+    /// <c>JsonElement</c> (the framework's own default marshaling — see <c>AIToolConverter</c>'s
+    /// <c>MarshalResult</c> override, which re-implements exactly that shape for the success case).
+    /// Returning the marker's text as a bare string instead would have sent the model differently
+    /// quoted text for a failure than for a success, silently contradicting this type's own contract
+    /// that unwrapping leaves the model-facing text unchanged.
+    /// </remarks>
     private static object? Unwrap(object? result) =>
-        result is ConvertedToolFailure failure ? failure.ErrorText : result;
+        result is ConvertedToolFailure failure ? JsonSerializer.SerializeToElement(failure.ErrorText) : result;
 }
