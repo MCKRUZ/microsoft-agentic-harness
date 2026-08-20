@@ -98,6 +98,23 @@ public sealed class DefaultContentRedactionFilterTests
     }
 
     [Fact]
+    public void Redact_Generic_MasksSasQuerySignature()
+    {
+        // Security review on #444: SAS-signed blob/queue URLs (a document-ingest source URI is
+        // exactly the shape this can appear as) were leaking their sig= token unredacted — the
+        // AccountKey/SharedAccessKey rule covers connection strings, not this URL query shape.
+        var result = _filter.Redact(
+            "https://acct.blob.core.windows.net/c/b?sv=2021-08-06&sp=rwdlac&se=2026-01-01&sig=aBcD%2FeF9xyz",
+            [RedactionCategory.Generic]);
+
+        result.Should().NotContain("aBcD%2FeF9xyz");
+        result.Should().Contain("[REDACTED]");
+        // The non-secret grant/expiry parameters are left alone — only sig is a credential.
+        result.Should().Contain("sv=2021-08-06");
+        result.Should().Contain("sp=rwdlac");
+    }
+
+    [Fact]
     public void Redact_CategoryNotRequested_LeavesContentUnchanged()
     {
         // Only Email requested; the email stays intact because Email is excluded.

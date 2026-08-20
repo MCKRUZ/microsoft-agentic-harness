@@ -120,6 +120,10 @@ internal sealed class GovernedAIFunction : DelegatingAIFunction
     private async ValueTask<object?> ReportOutcomeAndApplyPolicyAsync(
         IToolCallAdmissionPipeline admissionPipeline, ToolCallAdmission admission, object? result)
     {
+        // failure.ErrorText is reported to ReportExecutionAsync before ApplyOutputPolicy runs below,
+        // so the classification gate's redaction verdict reaches the model-facing copy but not this
+        // one — matching DirectToolInvoker's identical reporting shape (result.Error, same ordering)
+        // rather than a gap this method introduces. Tracked as #452.
         var failure = result as ConvertedToolFailure;
         await admissionPipeline.ReportExecutionAsync(
             admission,

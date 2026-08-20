@@ -24,9 +24,17 @@ namespace Infrastructure.Observability.Processors;
 /// serialized or copied for batching. Processor <see cref="BaseProcessor{T}.OnEnd"/>
 /// callbacks run in registration order on the emitting thread, and the batch
 /// exporter snapshots the pooled <see cref="LogRecord"/>; a redactor registered
-/// after the exporter would therefore export the raw record. Because the scrub
-/// happens before export, PII never transits the wire even when a downstream
-/// collector — not the app — forwards the logs to Event Hub / a SIEM.
+/// after the exporter would therefore export the raw record.
+/// <strong>Scope: the OTel logging bridge only.</strong> This processor governs
+/// what an OTLP (or other OTel) exporter sends off-box — nothing more. A
+/// standard <see cref="Microsoft.Extensions.Logging.ILoggerProvider"/> registered
+/// alongside the OTel bridge (e.g. the console provider, wired unconditionally
+/// wherever this host also adds one) receives the same <c>ILogger</c> calls
+/// through its own, entirely separate path and is never touched by this
+/// processor — it still writes the raw, unredacted exception. Because the
+/// scrub happens before the OTLP export specifically, PII never reaches that
+/// wire even when a downstream collector — not the app — forwards the logs to
+/// Event Hub / a SIEM; it says nothing about any other sink this host emits to.
 /// </para>
 /// <para>
 /// Four surfaces are scrubbed: the rendered <see cref="LogRecord.FormattedMessage"/>
