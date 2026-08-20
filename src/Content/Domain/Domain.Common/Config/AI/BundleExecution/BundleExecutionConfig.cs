@@ -27,7 +27,9 @@ namespace Domain.Common.Config.AI.BundleExecution;
 /// ├── MaxTotalUncompressedBytes     — Reject when the sum of entry sizes exceeds this (bomb guard)
 /// ├── MaxCompressionRatio           — Reject when uncompressed/compressed exceeds this (bomb guard)
 /// ├── AllowBundleDeclaredMcpServers — Allow a bundle's own REMOTE (http/sse) MCP server declarations
-/// └── StdioMcpServers               — Allow + configure a bundle's own LOCAL (stdio) MCP servers, sandboxed
+/// ├── StdioMcpServers               — Allow + configure a bundle's own LOCAL (stdio) MCP servers, sandboxed
+/// ├── MaxConcurrentDispatchedBundleRuns — How many background bundle runs the host executes at once, across all callers
+/// └── MaxActiveBundleRunsPerOwner   — Cap on how many bundle runs one caller may have queued or executing at once
 /// </code>
 /// </remarks>
 public class BundleExecutionConfig
@@ -166,4 +168,41 @@ public class BundleExecutionConfig
     /// full contract. Defaults to a disabled configuration.
     /// </summary>
     public BundleStdioMcpServersConfig StdioMcpServers { get; set; } = new();
+
+    /// <summary>
+    /// How many background bundle runs the host executes at once, across all callers.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Distinct from <see cref="MaxActiveBundleRunsPerOwner"/>, which bounds what one caller may have
+    /// <em>accepted</em>. This bounds what the host actually executes. At 1 the dispatcher is strictly
+    /// serial and a single long-running conversation delays every other caller's — which makes the
+    /// per-owner cap read as a concurrency guarantee the host does not provide.
+    /// </para>
+    /// <para>
+    /// <strong>This is not a fairness mechanism.</strong> Runs are dispatched in the order they were
+    /// accepted, so a caller that queues many runs at once still occupies the slots ahead of a caller
+    /// that queues one. Per-caller fair scheduling is a separate piece of work; raising this reduces
+    /// how long anyone waits but does not decide who waits.
+    /// </para>
+    /// <para>
+    /// Only governs background (non-streaming) dispatch. A streaming run is never enqueued — it executes
+    /// on the caller's own connection and is bounded separately by <see cref="MaxConcurrentStreamsPerCaller"/>.
+    /// </para>
+    /// </remarks>
+    /// <value>Default: 4</value>
+    public int MaxConcurrentDispatchedBundleRuns { get; set; } = 4;
+
+    /// <summary>
+    /// Maximum number of bundle runs one caller may have queued or executing at once, across both
+    /// dispatch modes (background and streaming).
+    /// </summary>
+    /// <remarks>
+    /// Every other cap here bounds a <em>single</em> run or archive; the rate limiter bounds the
+    /// <em>rate</em> of run requests. Neither bounds the total in flight. Without this, a caller staying
+    /// politely within both could still occupy every parallel dispatch slot by volume alone — the
+    /// aggregate is the one quantity an otherwise carefully-capped surface would leave open.
+    /// </remarks>
+    /// <value>Default: 10</value>
+    public int MaxActiveBundleRunsPerOwner { get; set; } = 10;
 }

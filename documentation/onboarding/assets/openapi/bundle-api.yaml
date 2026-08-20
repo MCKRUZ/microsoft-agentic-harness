@@ -209,13 +209,17 @@ paths:
         Two dispatch modes, chosen by `stream`:
 
         * `stream: false` (default) — the run is enqueued and executed by the host's background
-          dispatcher. Poll `statusUrl` for the result. The dispatcher drains its queue **one run at a
-          time**, so a queued run waits behind other queued runs on the same host.
+          dispatcher. Poll `statusUrl` for the result. The dispatcher drains its queue with **bounded
+          parallelism** — up to `MaxConcurrentDispatchedBundleRuns` runs at once (default 4), host-wide,
+          across every caller — so an unrelated caller's run does not wait behind yours. A host that
+          sets the degree to `1` restores strictly serial dispatch.
         * `stream: true` — the run is **reserved but not enqueued**. Nothing executes until you open
           `streamUrl`; opening it is what drives the run. If you never open it, the reservation is
           reclaimed after `StreamReservationTtl` (default 5 minutes).
 
-        A run against an unknown, expired, or foreign handle returns `404`.
+        A run against an unknown, expired, or foreign handle returns `404`. A run naming a
+        `conversationId` that already has a live run, or a caller already at `MaxActiveBundleRunsPerOwner`
+        concurrent runs, returns `409`.
       requestBody:
         required: true
         content:
@@ -257,6 +261,10 @@ paths:
           $ref: "#/components/responses/DisabledProblem"
         "404":
           $ref: "#/components/responses/NotFoundProblem"
+        "409":
+          description: >-
+            This conversation already has a live bundle run, or the caller holds the maximum
+            concurrent bundle runs allowed per owner.
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":

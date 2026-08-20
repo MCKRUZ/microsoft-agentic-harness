@@ -32,8 +32,9 @@ public static class ExecutionApiServiceCollectionExtensions
 
     /// <summary>
     /// Per-caller <em>concurrency</em> policy for the live-stream endpoint. A streamed run executes inline on
-    /// its connection for the whole conversation and bypasses the single-threaded background dispatcher, so the
-    /// fixed-window request-rate limiter (which counts starts, not simultaneous connections) cannot bound it.
+    /// its connection for the whole conversation and bypasses the background dispatcher's queue entirely (it
+    /// is never enqueued), so the fixed-window request-rate limiter (which counts starts, not simultaneous
+    /// connections) cannot bound it.
     /// A concurrency limiter holds each permit for the connection's lifetime, capping how many agent
     /// conversations one caller can drive at once.
     /// </summary>

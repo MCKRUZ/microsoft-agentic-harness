@@ -95,7 +95,7 @@ The disjointness check exists because the global registries scan discovery roots
 
 | Mode | `Stream` | Driver | Notes |
 |------|----------|--------|-------|
-| Background | `false` | `BundleRunBackgroundService` drains `IBundleRunDispatchQueue` | Serial -- one run at a time per host |
+| Background | `false` | `BundleRunBackgroundService` drains `IBundleRunDispatchQueue` | Bounded parallel -- up to `MaxConcurrentDispatchedBundleRuns` at once (default 4); `1` restores serial |
 | Live SSE | `true` | The caller opening `GET .../stream`, via `BundleRunStreamer` | **Not enqueued.** Reclaimed on `StreamReservationTtl` if never claimed |
 
 `BundleRunExecutor.ExecuteAsync` acquires the handle lease *before* claiming the run `Running` (so a run whose handle expired never carries a bogus start time), then claims via the atomic `IBundleRunJobStore.TryBeginRun` compare-and-set, so a stream racing the dispatcher for the same job yields exactly one winner. It arms `EphemeralAgentOverlayAccessor` (agent + owned skills resolve) and `CapabilityEnvelopeAccessor` (the governor enforces) around a materialised `RunConversationCommand`.
@@ -173,6 +173,8 @@ Everything lives under `AppConfig:AI:BundleExecution` (`Domain.Common/Config/AI/
 | `RunRecordTtl` | 30 min | Terminal records only |
 | `StreamReservationTtl` | 5 min | Unclaimed streaming reservations; deliberately independent of `RunRecordTtl` |
 | `MaxConcurrentStreamsPerCaller` | 4 | A concurrency limiter with `QueueLimit = 0` -- excess connections are rejected, not parked |
+| `MaxConcurrentDispatchedBundleRuns` | 4 | Background (non-streaming) runs the host dispatches at once, across all callers -- `1` is strictly serial |
+| `MaxActiveBundleRunsPerOwner` | 10 | Runs one caller may hold queued or executing at once, across both dispatch modes -- refused with `409` past this |
 | `CleanupInterval` | 60 s | `BundleWorkspaceCleanupService` period; a lease held by a running job blocks its directory's deletion |
 | `Envelopes` | fail-closed | `Default` / `BySubject` / `ByRole` |
 | `Auth:TenantId`, `Auth:ClientId` | unset | This host's **own** audience -- never shared with AgentHub or the MCP server |

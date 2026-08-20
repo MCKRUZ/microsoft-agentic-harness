@@ -12,15 +12,18 @@ namespace Application.AI.Common.CQRS.Bundles.RunBundle;
 
 /// <summary>
 /// Handles <see cref="RunBundleCommand"/>: refuses when bundle execution is disabled or the handle is
-/// unknown/expired, creates a <see cref="BundleRunStatus.Queued"/> run record carrying the resolved
+/// unknown/expired, admits a <see cref="BundleRunStatus.Queued"/> run record carrying the resolved
 /// capability envelope, and enqueues its job id for background dispatch. Returns the job id immediately —
 /// the multi-turn conversation runs out-of-band on the <c>BundleRunBackgroundService</c>.
 /// </summary>
 /// <remarks>
 /// The agent name is captured from the staged bundle here so the dispatcher never has to re-read the bundle
-/// to know what to run. Create-then-Enqueue: a host crash between the two leaves a queued record with no
+/// to know what to run. Admit-then-Enqueue: a host crash between the two leaves a queued record with no
 /// worker to pick it up — the same non-durable loss profile as the in-memory job store and dispatch queue,
-/// which is consistent with bundle runs not being persisted.
+/// which is consistent with bundle runs not being persisted. Admission (<see cref="IBundleRunJobStore.TryCreate"/>)
+/// refuses a second run against a conversation that already has one live, and refuses a caller already at
+/// its concurrent-run cap — both decided and inserted as one atomic step, mirroring
+/// <c>IRunJobStore.TryCreate</c>'s reasoning for workflow runs.
 /// </remarks>
 public sealed class RunBundleCommandHandler
     : IRequestHandler<RunBundleCommand, Result<RunBundleResult>>
@@ -122,7 +125,13 @@ public sealed class RunBundleCommandHandler
             CreatedAt = _time.GetUtcNow()
         };
 
-        _jobStore.Create(record);
+        var admission = _jobStore.TryCreate(record, _config.CurrentValue.AI.BundleExecution.MaxActiveBundleRunsPerOwner);
+        if (admission != BundleRunAdmission.Accepted)
+        {
+            return Result<RunBundleResult>.Conflict(
+                "This conversation already has a live bundle run, or the caller holds the maximum "
+                + "concurrent bundle runs allowed per owner.");
+        }
 
         // A streaming run is NOT enqueued: its sole driver is the caller opening the stream endpoint, which
         // claims and drives it on the connection thread. Enqueuing it too would let the background dispatcher

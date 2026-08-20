@@ -79,7 +79,7 @@ public sealed class RunBundleCommandHandlerTests
         var result = await BuildSut(enabled: true).Handle(Command(), CancellationToken.None);
 
         result.FailureType.Should().Be(ResultFailureType.NotFound);
-        _jobStore.Verify(j => j.Create(It.IsAny<BundleRunRecord>()), Times.Never);
+        _jobStore.Verify(j => j.TryCreate(It.IsAny<BundleRunRecord>(), It.IsAny<int>()), Times.Never);
         _queue.Verify(q => q.EnqueueAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
@@ -89,7 +89,9 @@ public sealed class RunBundleCommandHandlerTests
         _handleStore.Setup(h => h.GetOwner("handle-1")).Returns("owner-1");
         _handleStore.Setup(h => h.TryGet("handle-1")).Returns(Staged());
         BundleRunRecord? created = null;
-        _jobStore.Setup(j => j.Create(It.IsAny<BundleRunRecord>())).Callback<BundleRunRecord>(r => created = r);
+        _jobStore.Setup(j => j.TryCreate(It.IsAny<BundleRunRecord>(), It.IsAny<int>()))
+            .Callback<BundleRunRecord, int>((r, _) => created = r)
+            .Returns(BundleRunAdmission.Accepted);
 
         var result = await BuildSut(enabled: true).Handle(Command(), CancellationToken.None);
 
@@ -119,7 +121,9 @@ public sealed class RunBundleCommandHandlerTests
         _handleStore.Setup(h => h.GetOwner("handle-1")).Returns("owner-1");
         _handleStore.Setup(h => h.TryGet("handle-1")).Returns(Staged(mcpServerNames: ["b1:echo", "b1:search"]));
         BundleRunRecord? created = null;
-        _jobStore.Setup(j => j.Create(It.IsAny<BundleRunRecord>())).Callback<BundleRunRecord>(r => created = r);
+        _jobStore.Setup(j => j.TryCreate(It.IsAny<BundleRunRecord>(), It.IsAny<int>()))
+            .Callback<BundleRunRecord, int>((r, _) => created = r)
+            .Returns(BundleRunAdmission.Accepted);
 
         var result = await BuildSut(enabled: true).Handle(Command(), CancellationToken.None);
 
@@ -138,7 +142,9 @@ public sealed class RunBundleCommandHandlerTests
         _handleStore.Setup(h => h.GetOwner("handle-1")).Returns("owner-1");
         _handleStore.Setup(h => h.TryGet("handle-1")).Returns(Staged());
         BundleRunRecord? created = null;
-        _jobStore.Setup(j => j.Create(It.IsAny<BundleRunRecord>())).Callback<BundleRunRecord>(r => created = r);
+        _jobStore.Setup(j => j.TryCreate(It.IsAny<BundleRunRecord>(), It.IsAny<int>()))
+            .Callback<BundleRunRecord, int>((r, _) => created = r)
+            .Returns(BundleRunAdmission.Accepted);
 
         var result = await BuildSut(enabled: true).Handle(Command(), CancellationToken.None);
 
@@ -157,7 +163,9 @@ public sealed class RunBundleCommandHandlerTests
         _handleStore.Setup(h => h.GetOwner("handle-1")).Returns("owner-1");
         _handleStore.Setup(h => h.TryGet("handle-1")).Returns(Staged());
         BundleRunRecord? created = null;
-        _jobStore.Setup(j => j.Create(It.IsAny<BundleRunRecord>())).Callback<BundleRunRecord>(r => created = r);
+        _jobStore.Setup(j => j.TryCreate(It.IsAny<BundleRunRecord>(), It.IsAny<int>()))
+            .Callback<BundleRunRecord, int>((r, _) => created = r)
+            .Returns(BundleRunAdmission.Accepted);
 
         var result = await BuildSut(enabled: true)
             .Handle(Command() with { ConversationId = "conv-1" }, CancellationToken.None);
@@ -174,7 +182,9 @@ public sealed class RunBundleCommandHandlerTests
         _handleStore.Setup(h => h.GetOwner("handle-1")).Returns("owner-1");
         _handleStore.Setup(h => h.TryGet("handle-1")).Returns(Staged());
         BundleRunRecord? created = null;
-        _jobStore.Setup(j => j.Create(It.IsAny<BundleRunRecord>())).Callback<BundleRunRecord>(r => created = r);
+        _jobStore.Setup(j => j.TryCreate(It.IsAny<BundleRunRecord>(), It.IsAny<int>()))
+            .Callback<BundleRunRecord, int>((r, _) => created = r)
+            .Returns(BundleRunAdmission.Accepted);
 
         await BuildSut(enabled: true).Handle(Command(), CancellationToken.None);
 
@@ -203,7 +213,7 @@ public sealed class RunBundleCommandHandlerTests
             .Handle(Command() with { ConversationId = "conv-theirs" }, CancellationToken.None);
 
         result.FailureType.Should().Be(ResultFailureType.NotFound);
-        _jobStore.Verify(j => j.Create(It.IsAny<BundleRunRecord>()), Times.Never);
+        _jobStore.Verify(j => j.TryCreate(It.IsAny<BundleRunRecord>(), It.IsAny<int>()), Times.Never);
         _queue.Verify(q => q.EnqueueAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
@@ -215,7 +225,9 @@ public sealed class RunBundleCommandHandlerTests
         _handleStore.Setup(h => h.GetOwner("handle-1")).Returns("owner-1");
         _handleStore.Setup(h => h.TryGet("handle-1")).Returns(Staged());
         BundleRunRecord? created = null;
-        _jobStore.Setup(j => j.Create(It.IsAny<BundleRunRecord>())).Callback<BundleRunRecord>(r => created = r);
+        _jobStore.Setup(j => j.TryCreate(It.IsAny<BundleRunRecord>(), It.IsAny<int>()))
+            .Callback<BundleRunRecord, int>((r, _) => created = r)
+            .Returns(BundleRunAdmission.Accepted);
 
         var result = await BuildSut(enabled: true)
             .Handle(Command() with { ConversationId = "conv-new" }, CancellationToken.None);
@@ -257,7 +269,9 @@ public sealed class RunBundleCommandHandlerTests
         _handleStore.Setup(h => h.GetOwner("handle-1")).Returns("owner-1");
         _handleStore.Setup(h => h.TryGet("handle-1")).Returns(Staged());
         BundleRunRecord? created = null;
-        _jobStore.Setup(j => j.Create(It.IsAny<BundleRunRecord>())).Callback<BundleRunRecord>(r => created = r);
+        _jobStore.Setup(j => j.TryCreate(It.IsAny<BundleRunRecord>(), It.IsAny<int>()))
+            .Callback<BundleRunRecord, int>((r, _) => created = r)
+            .Returns(BundleRunAdmission.Accepted);
 
         var result = await BuildSut(enabled: true)
             .Handle(Command() with { Stream = true }, CancellationToken.None);
@@ -276,7 +290,9 @@ public sealed class RunBundleCommandHandlerTests
         _handleStore.Setup(h => h.GetOwner("handle-1")).Returns("owner-1");
         _handleStore.Setup(h => h.TryGet("handle-1")).Returns(Staged(mcpServerNames: ["b1:echo"]));
         BundleRunRecord? created = null;
-        _jobStore.Setup(j => j.Create(It.IsAny<BundleRunRecord>())).Callback<BundleRunRecord>(r => created = r);
+        _jobStore.Setup(j => j.TryCreate(It.IsAny<BundleRunRecord>(), It.IsAny<int>()))
+            .Callback<BundleRunRecord, int>((r, _) => created = r)
+            .Returns(BundleRunAdmission.Accepted);
 
         var callerEnvelope = new CapabilityEnvelope { AllowedMcpServers = ["host-server"] };
         var result = await BuildSut(enabled: true)
@@ -296,7 +312,9 @@ public sealed class RunBundleCommandHandlerTests
         _handleStore.Setup(h => h.GetOwner("handle-1")).Returns("owner-1");
         _handleStore.Setup(h => h.TryGet("handle-1")).Returns(Staged());
         BundleRunRecord? created = null;
-        _jobStore.Setup(j => j.Create(It.IsAny<BundleRunRecord>())).Callback<BundleRunRecord>(r => created = r);
+        _jobStore.Setup(j => j.TryCreate(It.IsAny<BundleRunRecord>(), It.IsAny<int>()))
+            .Callback<BundleRunRecord, int>((r, _) => created = r)
+            .Returns(BundleRunAdmission.Accepted);
 
         var callerEnvelope = new CapabilityEnvelope { AllowedMcpServers = ["host-server"] };
         var result = await BuildSut(enabled: true)
@@ -316,7 +334,38 @@ public sealed class RunBundleCommandHandlerTests
         var result = await BuildSut(enabled: true).Handle(Command(), CancellationToken.None);
 
         result.FailureType.Should().Be(ResultFailureType.NotFound);
-        _jobStore.Verify(j => j.Create(It.IsAny<BundleRunRecord>()), Times.Never);
+        _jobStore.Verify(j => j.TryCreate(It.IsAny<BundleRunRecord>(), It.IsAny<int>()), Times.Never);
+        _queue.Verify(q => q.EnqueueAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    // -- Admission (#449) --
+
+    [Fact]
+    public async Task Handle_ConversationAlreadyRunning_ReturnsConflict_AndDoesNotEnqueue()
+    {
+        _handleStore.Setup(h => h.GetOwner("handle-1")).Returns("owner-1");
+        _handleStore.Setup(h => h.TryGet("handle-1")).Returns(Staged());
+        _jobStore.Setup(j => j.TryCreate(It.IsAny<BundleRunRecord>(), It.IsAny<int>()))
+            .Returns(BundleRunAdmission.ConversationAlreadyRunning);
+
+        var result = await BuildSut(enabled: true)
+            .Handle(Command() with { ConversationId = "conv-1" }, CancellationToken.None);
+
+        result.FailureType.Should().Be(ResultFailureType.Conflict);
+        _queue.Verify(q => q.EnqueueAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Handle_OwnerAtCapacity_ReturnsConflict_AndDoesNotEnqueue()
+    {
+        _handleStore.Setup(h => h.GetOwner("handle-1")).Returns("owner-1");
+        _handleStore.Setup(h => h.TryGet("handle-1")).Returns(Staged());
+        _jobStore.Setup(j => j.TryCreate(It.IsAny<BundleRunRecord>(), It.IsAny<int>()))
+            .Returns(BundleRunAdmission.OwnerAtCapacity);
+
+        var result = await BuildSut(enabled: true).Handle(Command(), CancellationToken.None);
+
+        result.FailureType.Should().Be(ResultFailureType.Conflict);
         _queue.Verify(q => q.EnqueueAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 }

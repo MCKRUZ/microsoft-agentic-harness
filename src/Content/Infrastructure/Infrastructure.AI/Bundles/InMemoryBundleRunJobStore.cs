@@ -38,6 +38,7 @@ public sealed class InMemoryBundleRunJobStore : IBundleRunJobStore
     }
 
     private readonly ConcurrentDictionary<string, JobEntry> _entries = new(StringComparer.Ordinal);
+    private readonly Lock _admission = new();
     private readonly IOptionsMonitor<AppConfig> _config;
     private readonly TimeProvider _time;
 
@@ -55,19 +56,71 @@ public sealed class InMemoryBundleRunJobStore : IBundleRunJobStore
     private TimeSpan StreamReservationTtl => _config.CurrentValue.AI.BundleExecution.StreamReservationTtl;
 
     /// <inheritdoc />
-    public void Create(BundleRunRecord record)
+    public BundleRunAdmission TryCreate(BundleRunRecord record, int maxActiveRunsPerOwner)
     {
         ArgumentNullException.ThrowIfNull(record);
 
-        // A streaming reservation's initial expiry is the (separate, short) connect window — its own knob, so
-        // tightening the completed-result retention window never shrinks how long a caller has to connect. It
-        // is only consulted while the reservation is unclaimed; once claimed the run is in-flight and the
-        // expiry is irrelevant. Every other record's initial expiry is the run-record window (which only
-        // starts governing anything once the record is terminal).
-        var initialExpiry = _time.GetUtcNow() + (record.Streaming ? StreamReservationTtl : Ttl);
-        var entry = new JobEntry(record, initialExpiry);
-        if (!_entries.TryAdd(record.JobId, entry))
-            throw new InvalidOperationException($"A bundle run record with job id '{record.JobId}' already exists.");
+        lock (_admission)
+        {
+            var (conversationIsRunning, ownerActiveRuns) = SurveyActiveRuns(record);
+
+            if (conversationIsRunning)
+                return BundleRunAdmission.ConversationAlreadyRunning;
+
+            if (ownerActiveRuns >= maxActiveRunsPerOwner)
+                return BundleRunAdmission.OwnerAtCapacity;
+
+            // A streaming reservation's initial expiry is the (separate, short) connect window — its own knob,
+            // so tightening the completed-result retention window never shrinks how long a caller has to
+            // connect. It is only consulted while the reservation is unclaimed; once claimed the run is
+            // in-flight and the expiry is irrelevant. Every other record's initial expiry is the run-record
+            // window (which only starts governing anything once the record is terminal).
+            var initialExpiry = _time.GetUtcNow() + (record.Streaming ? StreamReservationTtl : Ttl);
+            var entry = new JobEntry(record, initialExpiry);
+            if (!_entries.TryAdd(record.JobId, entry))
+                throw new InvalidOperationException($"A bundle run record with job id '{record.JobId}' already exists.");
+
+            return BundleRunAdmission.Accepted;
+        }
+    }
+
+    /// <summary>
+    /// Answers both admission questions in one pass: whether <paramref name="candidate"/>'s conversation
+    /// (if any) already has a live run, and how many live runs its owner holds.
+    /// </summary>
+    /// <remarks>
+    /// The two questions are scoped differently on purpose. A conversation conflict is about that
+    /// conversation's turn lease, so it ignores who is asking — a second caller sharing access to the
+    /// same conversation would queue behind the lease just as surely. The capacity count is about the
+    /// caller, so it is scoped to that owner alone (bundle runs carry no tenant).
+    /// </remarks>
+    private (bool ConversationIsRunning, int OwnerActiveRuns) SurveyActiveRuns(BundleRunRecord candidate)
+    {
+        var conversationIsRunning = false;
+        var ownerActiveRuns = 0;
+
+        foreach (var entry in _entries.Values)
+        {
+            BundleRunRecord record;
+            lock (entry)
+            {
+                if (entry.Record.IsTerminal)
+                    continue;
+
+                record = entry.Record;
+            }
+
+            if (candidate.ConversationId is not null
+                && string.Equals(record.ConversationId, candidate.ConversationId, StringComparison.Ordinal))
+            {
+                conversationIsRunning = true;
+            }
+
+            if (string.Equals(record.OwnerId, candidate.OwnerId, StringComparison.Ordinal))
+                ownerActiveRuns++;
+        }
+
+        return (conversationIsRunning, ownerActiveRuns);
     }
 
     /// <inheritdoc />
