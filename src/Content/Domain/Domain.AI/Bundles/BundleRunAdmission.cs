@@ -4,10 +4,23 @@ namespace Domain.AI.Bundles;
 /// Outcome of offering a bundle run to the store: admitted, or refused by a named limit.
 /// </summary>
 /// <remarks>
+/// <para>
 /// Named rather than boolean because the two refusals mean opposite things to a caller. Being at
 /// capacity is about the caller and clears on its own as its own work finishes; a conversation already
 /// running is about that one conversation and clears only when that run ends. A caller told merely "no"
 /// cannot tell whether to back off or to stop asking.
+/// </para>
+/// <para>
+/// <strong>A separate type from <see cref="Domain.AI.Runs.RunAdmission"/>, not a reuse of it — the two
+/// conflict axes are not interchangeable.</strong> That enum's <c>TargetAlreadyRunning</c> asserts a
+/// second run would corrupt shared state ("a stored workflow's execution state is singular... a second
+/// concurrent run would share one state machine with the first"), which is false for bundles: a second
+/// run against a live conversation merely queues behind that conversation's turn lease, wasting a
+/// dispatch slot rather than corrupting anything (see <see cref="ConversationAlreadyRunning"/>).
+/// Attaching that doc comment, or that member name, to the bundle path would misdescribe the actual
+/// risk. <c>StartEvalRunCommandHandler</c> reuses <c>RunAdmission</c> across run kinds precisely because
+/// its target-conflict meaning transfers there unchanged; it does not transfer here.
+/// </para>
 /// </remarks>
 public enum BundleRunAdmission
 {

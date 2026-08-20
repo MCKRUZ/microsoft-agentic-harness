@@ -27,6 +27,13 @@ namespace Infrastructure.AI.Bundles;
 /// conversation or a caller past its concurrent-run cap — the two conditions that would otherwise make
 /// parallel dispatch unsafe.
 /// </para>
+/// <para>
+/// <strong><c>Parallel.ForEachAsync</c>'s one sharp edge is that a body which throws tears down the whole
+/// loop.</strong> <see cref="DispatchGuardedAsync"/> is written never to — every exception it can observe
+/// is caught and logged rather than rethrown — so this ends only when the queue completes or the host
+/// stops. Removing a catch arm there silently kills every future dispatch on this host, not just the one
+/// run in flight.
+/// </para>
 /// </remarks>
 public sealed class BundleRunBackgroundService : BackgroundService
 {

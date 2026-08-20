@@ -60,6 +60,10 @@ public sealed class BundleRunExecutorTests : IDisposable
         return (executor, jobStore, handleStore);
     }
 
+    /// <summary>Admits a record with no capacity cap — these tests exercise the executor, not admission.</summary>
+    private static void Store(InMemoryBundleRunJobStore store, BundleRunRecord record) =>
+        store.TryCreate(record, int.MaxValue);
+
     private StagedBundle StageOnDisk(string bundleId, IReadOnlyList<string>? mcpServerNames = null)
     {
         var dir = Path.Combine(Path.GetTempPath(), "bundle-executor-tests", bundleId);
@@ -122,7 +126,7 @@ public sealed class BundleRunExecutorTests : IDisposable
 
         var (executor, jobStore, handleStore) = BuildSut(mediator.Object);
         var handle = handleStore.Register(StageOnDisk("b1"), "owner-1");
-        jobStore.TryCreate(QueuedRecord("j1", handle, "agent-b1") with { ConversationId = "conv-1" }, int.MaxValue);
+        Store(jobStore, QueuedRecord("j1", handle, "agent-b1") with { ConversationId = "conv-1" });
 
         await executor.ExecuteAsync("j1", CancellationToken.None);
 
@@ -144,7 +148,7 @@ public sealed class BundleRunExecutorTests : IDisposable
 
         var (executor, jobStore, handleStore) = BuildSut(mediator.Object);
         var handle = handleStore.Register(StageOnDisk("b2"), "owner-1");
-        jobStore.TryCreate(QueuedRecord("j1", handle, "agent-b2"), int.MaxValue);
+        Store(jobStore, QueuedRecord("j1", handle, "agent-b2"));
 
         await executor.ExecuteAsync("j1", CancellationToken.None);
 
@@ -170,7 +174,7 @@ public sealed class BundleRunExecutorTests : IDisposable
         var (executor, jobStore, handleStore) = BuildSut(mediator.Object);
         var staged = StageOnDisk("b1");
         var handle = handleStore.Register(staged, "owner-1");
-        jobStore.TryCreate(QueuedRecord("j1", handle, staged.Agent.Id) with { Status = BundleRunStatus.Running }, int.MaxValue);
+        Store(jobStore, QueuedRecord("j1", handle, staged.Agent.Id) with { Status = BundleRunStatus.Running });
 
         var result = await executor.ExecuteAsync("j1", CancellationToken.None);
 
@@ -185,7 +189,7 @@ public sealed class BundleRunExecutorTests : IDisposable
         var (executor, jobStore, handleStore) = BuildSut(mediator.Object);
         var staged = StageOnDisk("b1");
         var handle = handleStore.Register(staged, "owner-1");
-        jobStore.TryCreate(QueuedRecord("j1", handle, staged.Agent.Id, streaming: true), int.MaxValue);
+        Store(jobStore, QueuedRecord("j1", handle, staged.Agent.Id, streaming: true));
 
         // Another driver claims the run first (CAS win); this call must stand down and drive nothing.
         jobStore.TryBeginRun("j1", _time.GetUtcNow());
@@ -203,7 +207,7 @@ public sealed class BundleRunExecutorTests : IDisposable
         var (executor, jobStore, handleStore) = BuildSut(mediator.Object);
         var staged = StageOnDisk("b1");
         var handle = handleStore.Register(staged, "owner-1");
-        jobStore.TryCreate(QueuedRecord("j1", handle, staged.Agent.Id, streaming: true), int.MaxValue);
+        Store(jobStore, QueuedRecord("j1", handle, staged.Agent.Id, streaming: true));
 
         var result = await executor.ExecuteAsync("j1", CancellationToken.None);
 
@@ -223,7 +227,7 @@ public sealed class BundleRunExecutorTests : IDisposable
         var (executor, jobStore, handleStore) = BuildSut(mediator.Object);
         var staged = StageOnDisk("b1");
         var handle = handleStore.Register(staged, "owner-1");
-        jobStore.TryCreate(QueuedRecord("j1", handle, staged.Agent.Id, streaming: true), int.MaxValue);
+        Store(jobStore, QueuedRecord("j1", handle, staged.Agent.Id, streaming: true));
         handleStore.Remove(handle); // handle gone before the stream connected
 
         var result = await executor.ExecuteAsync("j1", CancellationToken.None);
@@ -254,9 +258,9 @@ public sealed class BundleRunExecutorTests : IDisposable
         var (executor, jobStore, handleStore) = BuildSut(mediator.Object, mcpToolProvider.Object);
         var staged = StageOnDisk("b1", mcpServerNames: ["b1:echo"]);
         var handle = handleStore.Register(staged, "owner-1");
-        jobStore.TryCreate(QueuedRecord("j1", handle, staged.Agent.Id)
+        Store(jobStore, QueuedRecord("j1", handle, staged.Agent.Id)
             with
-        { Envelope = new CapabilityEnvelope { AllowedMcpServers = ["b1:echo"] } }, int.MaxValue);
+        { Envelope = new CapabilityEnvelope { AllowedMcpServers = ["b1:echo"] } });
 
         await executor.ExecuteAsync("j1", CancellationToken.None);
 
@@ -281,7 +285,7 @@ public sealed class BundleRunExecutorTests : IDisposable
         var (executor, jobStore, handleStore) = BuildSut(mediator.Object, mcpToolProvider.Object);
         var staged = StageOnDisk("b1", mcpServerNames: ["b1:echo"]);
         var handle = handleStore.Register(staged, "owner-1");
-        jobStore.TryCreate(QueuedRecord("j1", handle, staged.Agent.Id), int.MaxValue);
+        Store(jobStore, QueuedRecord("j1", handle, staged.Agent.Id));
 
         var result = await executor.ExecuteAsync("j1", CancellationToken.None);
 
@@ -301,9 +305,9 @@ public sealed class BundleRunExecutorTests : IDisposable
         var (executor, jobStore, handleStore) = BuildSut(mediator.Object, mcpToolProvider.Object);
         var staged = StageOnDisk("b1", mcpServerNames: ["b1:echo"]);
         var handle = handleStore.Register(staged, "owner-1");
-        jobStore.TryCreate(QueuedRecord("j1", handle, staged.Agent.Id)
+        Store(jobStore, QueuedRecord("j1", handle, staged.Agent.Id)
             with
-        { Envelope = new CapabilityEnvelope { AllowedMcpServers = ["b1:echo"] } }, int.MaxValue);
+        { Envelope = new CapabilityEnvelope { AllowedMcpServers = ["b1:echo"] } });
 
         await executor.ExecuteAsync("j1", CancellationToken.None);
 

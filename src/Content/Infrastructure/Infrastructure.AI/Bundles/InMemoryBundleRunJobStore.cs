@@ -28,6 +28,13 @@ namespace Infrastructure.AI.Bundles;
 /// background dispatcher updates a given run, so contention is nil, but the lock keeps a concurrent sweep and
 /// update consistent.
 /// </para>
+/// <para>
+/// <strong>Admission is the one exception, and takes a store-wide lock.</strong> Deciding it means
+/// reading across entries — is this conversation already running, is this owner at capacity — so no
+/// per-entry lock can make it atomic. <c>_admission</c> is held while the per-entry locks are taken
+/// during the survey, never the reverse, so the two cannot deadlock. Mirrors
+/// <c>InMemoryRunJobStore</c>'s identical trade-off for workflow/plan runs.
+/// </para>
 /// </remarks>
 public sealed class InMemoryBundleRunJobStore : IBundleRunJobStore
 {
@@ -171,35 +178,37 @@ public sealed class InMemoryBundleRunJobStore : IBundleRunJobStore
     }
 
     /// <summary>
-    /// Whether <paramref name="entry"/> counts as a live run for admission purposes: not terminal, and not
-    /// an abandoned streaming reservation past its (short) connect window. Distinct from
-    /// <see cref="IsExpired"/>, which answers a different question — see <see cref="SurveyActiveRuns"/>'s
-    /// remarks for why conflating the two undercounts how quickly a completed run frees its slot. Callers
-    /// must hold the entry lock.
+    /// Whether <paramref name="entry"/> is a <see cref="BundleRunStatus.Queued"/> streaming reservation
+    /// nobody ever connected to. The one fact both <see cref="IsExpired"/> and <see cref="IsLive"/> need
+    /// and must agree on; named once so a future reclaimable shape is added to only one of them by
+    /// construction, not by remembering to touch both.
     /// </summary>
-    private static bool IsLive(JobEntry entry, DateTimeOffset now)
-    {
-        if (entry.Record.IsTerminal)
-            return false;
-
-        var isAbandonedStreamingReservation = entry.Record.Streaming
-            && entry.Record.Status == BundleRunStatus.Queued
-            && now >= entry.ExpiresAt;
-
-        return !isAbandonedStreamingReservation;
-    }
+    private static bool IsUnclaimedStreamReservation(JobEntry entry)
+        => entry.Record.Streaming && entry.Record.Status == BundleRunStatus.Queued;
 
     /// <summary>
     /// A record is reclaimable when it is terminal (past its pollable window) or an unclaimed streaming
-    /// reservation (a <see cref="BundleRunStatus.Queued"/> streaming run that was never picked up) past its
-    /// window. Every other non-terminal record is retained. Callers must hold the entry lock.
+    /// reservation (see <see cref="IsUnclaimedStreamReservation"/>) past its window. Every other
+    /// non-terminal record is retained. Callers must hold the entry lock.
     /// </summary>
     private static bool IsExpired(JobEntry entry, DateTimeOffset now)
     {
-        var reclaimable = entry.Record.IsTerminal
-            || (entry.Record.Streaming && entry.Record.Status == BundleRunStatus.Queued);
+        var reclaimable = entry.Record.IsTerminal || IsUnclaimedStreamReservation(entry);
         return reclaimable && now >= entry.ExpiresAt;
     }
+
+    /// <summary>
+    /// Whether <paramref name="entry"/> counts as a live run for admission purposes: not terminal, and not
+    /// an abandoned streaming reservation past its (short) connect window. Distinct from
+    /// <see cref="IsExpired"/>, which answers a different question — see <see cref="SurveyActiveRuns"/>'s
+    /// remarks for why conflating the two undercounts how quickly a completed run frees its slot.
+    /// Unlike <see cref="IsExpired"/>, a terminal record is never live regardless of <c>now</c> — its TTL
+    /// governs only how long it stays <em>pollable</em>, not whether it still occupies a capacity slot.
+    /// Callers must hold the entry lock.
+    /// </summary>
+    private static bool IsLive(JobEntry entry, DateTimeOffset now)
+        => !entry.Record.IsTerminal
+            && !(IsUnclaimedStreamReservation(entry) && now >= entry.ExpiresAt);
 
     /// <inheritdoc />
     public bool Update(BundleRunRecord record)

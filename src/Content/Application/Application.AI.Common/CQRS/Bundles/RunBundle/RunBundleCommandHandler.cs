@@ -125,9 +125,10 @@ public sealed class RunBundleCommandHandler
             CreatedAt = _time.GetUtcNow()
         };
 
-        var admission = _jobStore.TryCreate(record, _config.CurrentValue.AI.BundleExecution.MaxActiveBundleRunsPerOwner);
+        var maxActiveRuns = _config.CurrentValue.AI.BundleExecution.MaxActiveBundleRunsPerOwner;
+        var admission = _jobStore.TryCreate(record, maxActiveRuns);
         if (admission != BundleRunAdmission.Accepted)
-            return Result<RunBundleResult>.Conflict(AdmissionRefusalMessage(admission));
+            return Refuse(admission, request.ConversationId, maxActiveRuns);
 
         // A streaming run is NOT enqueued: its sole driver is the caller opening the stream endpoint, which
         // claims and drives it on the connection thread. Enqueuing it too would let the background dispatcher
@@ -144,21 +145,27 @@ public sealed class RunBundleCommandHandler
     }
 
     /// <summary>
-    /// Reports which admission limit refused the run, distinctly. <see cref="BundleRunAdmission"/>'s own
-    /// remarks are explicit about why: the two refusals mean opposite things to a caller — capacity clears
-    /// on its own as the caller's own work finishes, a conversation conflict clears only when that
-    /// conversation's run ends — and collapsing them into one message would defeat the reason the outcome
-    /// is a named enum rather than a boolean.
+    /// Explains a refused admission in terms the caller can act on, mirroring
+    /// <c>StartWorkflowRunCommandHandler.Refuse</c>'s shape and status-code split for the identical
+    /// problem: a conversation conflict is about a specific run elsewhere and is reported <c>409</c>,
+    /// while being at capacity is about the caller's own accepted volume and is reported <c>400</c> —
+    /// the caller fixes it by finishing its own work, not by waiting on someone else's. Collapsing both
+    /// into one status or one message would defeat the reason the outcome is a named enum rather than a
+    /// boolean: <see cref="BundleRunAdmission"/>'s own remarks note the two refusals mean opposite things
+    /// to a caller, and clear under different conditions.
     /// </summary>
-    private static string AdmissionRefusalMessage(BundleRunAdmission admission) => admission switch
+    private static Result<RunBundleResult> Refuse(
+        BundleRunAdmission admission, string? conversationId, int maxActiveRuns) => admission switch
     {
-        BundleRunAdmission.ConversationAlreadyRunning =>
-            "This conversation already has a live bundle run. Wait for it to finish before starting another.",
-        BundleRunAdmission.OwnerAtCapacity =>
-            "The caller already holds the maximum concurrent bundle runs allowed per owner. "
-            + "Wait for one to finish, or poll and let it complete, before starting another.",
-        _ => throw new ArgumentOutOfRangeException(
-            nameof(admission), admission, $"{nameof(BundleRunAdmission.Accepted)} is not a refusal.")
+        BundleRunAdmission.ConversationAlreadyRunning => Result<RunBundleResult>.Conflict(
+            $"Conversation {conversationId} already has a live bundle run. Wait for it to finish "
+            + "before starting another."),
+
+        BundleRunAdmission.OwnerAtCapacity => Result<RunBundleResult>.ValidationFailure(
+            [$"This caller already has {maxActiveRuns} bundle run(s) in flight, the maximum this host "
+             + "permits. Wait for one to finish before starting another."]),
+
+        _ => Result<RunBundleResult>.Fail("The run could not be accepted.")
     };
 
     /// <summary>

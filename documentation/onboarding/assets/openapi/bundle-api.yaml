@@ -218,8 +218,10 @@ paths:
           reclaimed after `StreamReservationTtl` (default 5 minutes).
 
         A run against an unknown, expired, or foreign handle returns `404`. A run naming a
-        `conversationId` that already has a live run, or a caller already at `MaxActiveBundleRunsPerOwner`
-        concurrent runs, returns `409`.
+        `conversationId` that already has a live run returns `409` (wait for that run to finish — the
+        conflict is with a specific run, not with you). A caller already at `MaxActiveBundleRunsPerOwner`
+        concurrent runs returns `400` (the caller fixes this by finishing its own work, not by waiting
+        on anyone else's).
       requestBody:
         required: true
         content:
@@ -263,10 +265,9 @@ paths:
           $ref: "#/components/responses/NotFoundProblem"
         "409":
           description: >-
-            Refused by admission. Two distinct causes, distinguishable by the response's `detail` text:
-            this conversation already has a live bundle run (wait for it to finish before starting
-            another), or the caller already holds the maximum concurrent bundle runs allowed per owner
-            (`MaxActiveBundleRunsPerOwner`).
+            This conversation already has a live bundle run. Wait for it to finish before starting
+            another. (A caller past `MaxActiveBundleRunsPerOwner` gets `400` instead — see above — since
+            that refusal is about the caller's own volume, not a conflict with another run.)
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
