@@ -71,6 +71,14 @@ public sealed class BundleExecutionConfigValidator : AbstractValidator<BundleExe
             .GreaterThanOrEqualTo(1)
             .WithMessage("MaxConcurrentStreamsPerCaller must be >= 1 — a non-positive cap would deny every stream.");
 
+        RuleFor(x => x.MaxConcurrentDispatchedBundleRuns)
+            .GreaterThan(0)
+            .WithMessage("MaxConcurrentDispatchedBundleRuns must be > 0 — a non-positive degree would leave every accepted background run queued and never executed.");
+
+        RuleFor(x => x.MaxActiveBundleRunsPerOwner)
+            .GreaterThan(0)
+            .WithMessage("MaxActiveBundleRunsPerOwner must be > 0 — a non-positive cap would refuse every caller's first run.");
+
         RuleFor(x => x.StdioMcpServers.MaxServersPerBundle)
             .GreaterThan(0)
             .WithMessage("StdioMcpServers:MaxServersPerBundle must be > 0 — a non-positive cap would let no bundle register a stdio server even when the capability is enabled.");

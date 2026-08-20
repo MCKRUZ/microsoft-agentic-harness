@@ -213,6 +213,28 @@ public class BundleExecutionConfigValidatorTests
     }
 
     [Fact]
+    public async Task Validate_ZeroMaxConcurrentDispatchedBundleRuns_HasError()
+    {
+        var config = new BundleExecutionConfig { MaxConcurrentDispatchedBundleRuns = 0 };
+
+        var result = await _validator.ValidateAsync(config);
+
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.PropertyName == nameof(BundleExecutionConfig.MaxConcurrentDispatchedBundleRuns));
+    }
+
+    [Fact]
+    public async Task Validate_ZeroMaxActiveBundleRunsPerOwner_HasError()
+    {
+        var config = new BundleExecutionConfig { MaxActiveBundleRunsPerOwner = 0 };
+
+        var result = await _validator.ValidateAsync(config);
+
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.PropertyName == nameof(BundleExecutionConfig.MaxActiveBundleRunsPerOwner));
+    }
+
+    [Fact]
     public async Task Validate_DisabledConfigWithBadValue_StillFails()
     {
         // Rules are unconditional: switching the subsystem off does not license a non-positive TTL.

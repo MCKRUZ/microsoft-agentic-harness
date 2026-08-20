@@ -12,15 +12,18 @@ namespace Application.AI.Common.CQRS.Bundles.RunBundle;
 
 /// <summary>
 /// Handles <see cref="RunBundleCommand"/>: refuses when bundle execution is disabled or the handle is
-/// unknown/expired, creates a <see cref="BundleRunStatus.Queued"/> run record carrying the resolved
+/// unknown/expired, admits a <see cref="BundleRunStatus.Queued"/> run record carrying the resolved
 /// capability envelope, and enqueues its job id for background dispatch. Returns the job id immediately —
 /// the multi-turn conversation runs out-of-band on the <c>BundleRunBackgroundService</c>.
 /// </summary>
 /// <remarks>
 /// The agent name is captured from the staged bundle here so the dispatcher never has to re-read the bundle
-/// to know what to run. Create-then-Enqueue: a host crash between the two leaves a queued record with no
+/// to know what to run. Admit-then-Enqueue: a host crash between the two leaves a queued record with no
 /// worker to pick it up — the same non-durable loss profile as the in-memory job store and dispatch queue,
-/// which is consistent with bundle runs not being persisted.
+/// which is consistent with bundle runs not being persisted. Admission (<see cref="IBundleRunJobStore.TryCreate"/>)
+/// refuses a second run against a conversation that already has one live, and refuses a caller already at
+/// its concurrent-run cap — both decided and inserted as one atomic step, mirroring
+/// <c>IRunJobStore.TryCreate</c>'s reasoning for workflow runs.
 /// </remarks>
 public sealed class RunBundleCommandHandler
     : IRequestHandler<RunBundleCommand, Result<RunBundleResult>>
@@ -122,7 +125,10 @@ public sealed class RunBundleCommandHandler
             CreatedAt = _time.GetUtcNow()
         };
 
-        _jobStore.Create(record);
+        var maxActiveRuns = _config.CurrentValue.AI.BundleExecution.MaxActiveBundleRunsPerOwner;
+        var admission = _jobStore.TryCreate(record, maxActiveRuns);
+        if (admission != BundleRunAdmission.Accepted)
+            return Refuse(admission, request.ConversationId, maxActiveRuns);
 
         // A streaming run is NOT enqueued: its sole driver is the caller opening the stream endpoint, which
         // claims and drives it on the connection thread. Enqueuing it too would let the background dispatcher
@@ -137,6 +143,30 @@ public sealed class RunBundleCommandHandler
 
         return Result<RunBundleResult>.Success(new RunBundleResult { JobId = record.JobId });
     }
+
+    /// <summary>
+    /// Explains a refused admission in terms the caller can act on, mirroring
+    /// <c>StartWorkflowRunCommandHandler.Refuse</c>'s shape and status-code split for the identical
+    /// problem: a conversation conflict is about a specific run elsewhere and is reported <c>409</c>,
+    /// while being at capacity is about the caller's own accepted volume and is reported <c>400</c> —
+    /// the caller fixes it by finishing its own work, not by waiting on someone else's. Collapsing both
+    /// into one status or one message would defeat the reason the outcome is a named enum rather than a
+    /// boolean: <see cref="BundleRunAdmission"/>'s own remarks note the two refusals mean opposite things
+    /// to a caller, and clear under different conditions.
+    /// </summary>
+    private static Result<RunBundleResult> Refuse(
+        BundleRunAdmission admission, string? conversationId, int maxActiveRuns) => admission switch
+    {
+        BundleRunAdmission.ConversationAlreadyRunning => Result<RunBundleResult>.Conflict(
+            $"Conversation {conversationId} already has a live bundle run. Wait for it to finish "
+            + "before starting another."),
+
+        BundleRunAdmission.OwnerAtCapacity => Result<RunBundleResult>.ValidationFailure(
+            [$"This caller already has {maxActiveRuns} bundle run(s) in flight, the maximum this host "
+             + "permits. Wait for one to finish before starting another."]),
+
+        _ => Result<RunBundleResult>.Fail("The run could not be accepted.")
+    };
 
     /// <summary>
     /// Additively unions the bundle's own registered MCP server names (<see cref="StagedBundle.McpServerNames"/>)

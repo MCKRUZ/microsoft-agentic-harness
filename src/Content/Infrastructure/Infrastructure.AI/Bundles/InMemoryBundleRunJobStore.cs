@@ -28,6 +28,13 @@ namespace Infrastructure.AI.Bundles;
 /// background dispatcher updates a given run, so contention is nil, but the lock keeps a concurrent sweep and
 /// update consistent.
 /// </para>
+/// <para>
+/// <strong>Admission is the one exception, and takes a store-wide lock.</strong> Deciding it means
+/// reading across entries — is this conversation already running, is this owner at capacity — so no
+/// per-entry lock can make it atomic. <c>_admission</c> is held while the per-entry locks are taken
+/// during the survey, never the reverse, so the two cannot deadlock. Mirrors
+/// <c>InMemoryRunJobStore</c>'s identical trade-off for workflow/plan runs.
+/// </para>
 /// </remarks>
 public sealed class InMemoryBundleRunJobStore : IBundleRunJobStore
 {
@@ -38,6 +45,7 @@ public sealed class InMemoryBundleRunJobStore : IBundleRunJobStore
     }
 
     private readonly ConcurrentDictionary<string, JobEntry> _entries = new(StringComparer.Ordinal);
+    private readonly Lock _admission = new();
     private readonly IOptionsMonitor<AppConfig> _config;
     private readonly TimeProvider _time;
 
@@ -55,19 +63,86 @@ public sealed class InMemoryBundleRunJobStore : IBundleRunJobStore
     private TimeSpan StreamReservationTtl => _config.CurrentValue.AI.BundleExecution.StreamReservationTtl;
 
     /// <inheritdoc />
-    public void Create(BundleRunRecord record)
+    public BundleRunAdmission TryCreate(BundleRunRecord record, int maxActiveRunsPerOwner)
     {
         ArgumentNullException.ThrowIfNull(record);
 
-        // A streaming reservation's initial expiry is the (separate, short) connect window — its own knob, so
-        // tightening the completed-result retention window never shrinks how long a caller has to connect. It
-        // is only consulted while the reservation is unclaimed; once claimed the run is in-flight and the
-        // expiry is irrelevant. Every other record's initial expiry is the run-record window (which only
-        // starts governing anything once the record is terminal).
-        var initialExpiry = _time.GetUtcNow() + (record.Streaming ? StreamReservationTtl : Ttl);
-        var entry = new JobEntry(record, initialExpiry);
-        if (!_entries.TryAdd(record.JobId, entry))
-            throw new InvalidOperationException($"A bundle run record with job id '{record.JobId}' already exists.");
+        lock (_admission)
+        {
+            var (conversationIsRunning, ownerActiveRuns) = SurveyActiveRuns(record);
+
+            if (conversationIsRunning)
+                return BundleRunAdmission.ConversationAlreadyRunning;
+
+            if (ownerActiveRuns >= maxActiveRunsPerOwner)
+                return BundleRunAdmission.OwnerAtCapacity;
+
+            // A streaming reservation's initial expiry is the (separate, short) connect window — its own knob,
+            // so tightening the completed-result retention window never shrinks how long a caller has to
+            // connect. It is only consulted while the reservation is unclaimed; once claimed the run is
+            // in-flight and the expiry is irrelevant. Every other record's initial expiry is the run-record
+            // window (which only starts governing anything once the record is terminal).
+            var initialExpiry = _time.GetUtcNow() + (record.Streaming ? StreamReservationTtl : Ttl);
+            var entry = new JobEntry(record, initialExpiry);
+            if (!_entries.TryAdd(record.JobId, entry))
+                throw new InvalidOperationException($"A bundle run record with job id '{record.JobId}' already exists.");
+
+            return BundleRunAdmission.Accepted;
+        }
+    }
+
+    /// <summary>
+    /// Answers both admission questions in one pass: whether <paramref name="candidate"/>'s conversation
+    /// (if any) already has a live run, and how many live runs its owner holds.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The two questions are scoped differently on purpose. A conversation conflict is about that
+    /// conversation's turn lease, so it ignores who is asking — a second caller sharing access to the
+    /// same conversation would queue behind the lease just as surely. The capacity count is about the
+    /// caller, so it is scoped to that owner alone (bundle runs carry no tenant).
+    /// </para>
+    /// <para>
+    /// <strong>Uses <see cref="IsLive"/>, not <see cref="IsExpired"/> or bare
+    /// <see cref="BundleRunRecord.IsTerminal"/>.</strong> The two are different questions.
+    /// <see cref="IsExpired"/> answers "has this record's TTL window elapsed" — for a terminal record
+    /// that window is the full poll-retention period, so reusing it here would count a run as live for
+    /// as long as it stays pollable, not merely for as long as it is doing work. <see cref="IsLive"/>
+    /// instead excludes a terminal record immediately, and additionally excludes an abandoned streaming
+    /// reservation — non-terminal but reclaimable once its short connect window elapses (see the class
+    /// remarks) — the moment it expires, not only once <see cref="SweepExpired"/> next runs. Without that
+    /// second case, a caller who never opened a stream would permanently occupy a capacity slot and block
+    /// every retry against its conversation until the next sweep, for a run that was never really live.
+    /// </para>
+    /// </remarks>
+    private (bool ConversationIsRunning, int OwnerActiveRuns) SurveyActiveRuns(BundleRunRecord candidate)
+    {
+        var conversationIsRunning = false;
+        var ownerActiveRuns = 0;
+        var now = _time.GetUtcNow();
+
+        foreach (var entry in _entries.Values)
+        {
+            BundleRunRecord record;
+            lock (entry)
+            {
+                if (!IsLive(entry, now))
+                    continue;
+
+                record = entry.Record;
+            }
+
+            if (candidate.ConversationId is not null
+                && string.Equals(record.ConversationId, candidate.ConversationId, StringComparison.Ordinal))
+            {
+                conversationIsRunning = true;
+            }
+
+            if (string.Equals(record.OwnerId, candidate.OwnerId, StringComparison.Ordinal))
+                ownerActiveRuns++;
+        }
+
+        return (conversationIsRunning, ownerActiveRuns);
     }
 
     /// <inheritdoc />
@@ -103,16 +178,37 @@ public sealed class InMemoryBundleRunJobStore : IBundleRunJobStore
     }
 
     /// <summary>
+    /// Whether <paramref name="entry"/> is a <see cref="BundleRunStatus.Queued"/> streaming reservation
+    /// nobody ever connected to. The one fact both <see cref="IsExpired"/> and <see cref="IsLive"/> need
+    /// and must agree on; named once so a future reclaimable shape is added to only one of them by
+    /// construction, not by remembering to touch both.
+    /// </summary>
+    private static bool IsUnclaimedStreamReservation(JobEntry entry)
+        => entry.Record.Streaming && entry.Record.Status == BundleRunStatus.Queued;
+
+    /// <summary>
     /// A record is reclaimable when it is terminal (past its pollable window) or an unclaimed streaming
-    /// reservation (a <see cref="BundleRunStatus.Queued"/> streaming run that was never picked up) past its
-    /// window. Every other non-terminal record is retained. Callers must hold the entry lock.
+    /// reservation (see <see cref="IsUnclaimedStreamReservation"/>) past its window. Every other
+    /// non-terminal record is retained. Callers must hold the entry lock.
     /// </summary>
     private static bool IsExpired(JobEntry entry, DateTimeOffset now)
     {
-        var reclaimable = entry.Record.IsTerminal
-            || (entry.Record.Streaming && entry.Record.Status == BundleRunStatus.Queued);
+        var reclaimable = entry.Record.IsTerminal || IsUnclaimedStreamReservation(entry);
         return reclaimable && now >= entry.ExpiresAt;
     }
+
+    /// <summary>
+    /// Whether <paramref name="entry"/> counts as a live run for admission purposes: not terminal, and not
+    /// an abandoned streaming reservation past its (short) connect window. Distinct from
+    /// <see cref="IsExpired"/>, which answers a different question — see <see cref="SurveyActiveRuns"/>'s
+    /// remarks for why conflating the two undercounts how quickly a completed run frees its slot.
+    /// Unlike <see cref="IsExpired"/>, a terminal record is never live regardless of <c>now</c> — its TTL
+    /// governs only how long it stays <em>pollable</em>, not whether it still occupies a capacity slot.
+    /// Callers must hold the entry lock.
+    /// </summary>
+    private static bool IsLive(JobEntry entry, DateTimeOffset now)
+        => !entry.Record.IsTerminal
+            && !(IsUnclaimedStreamReservation(entry) && now >= entry.ExpiresAt);
 
     /// <inheritdoc />
     public bool Update(BundleRunRecord record)

@@ -62,6 +62,14 @@ public sealed class RunBundleCommandHandlerTests
         MaxTurns = 4
     };
 
+    private BundleRunRecord? _created;
+
+    /// <summary>Stubs admission to accept, capturing the record the handler built into <see cref="_created"/>.</summary>
+    private void AcceptCreate() =>
+        _jobStore.Setup(j => j.TryCreate(It.IsAny<BundleRunRecord>(), It.IsAny<int>()))
+            .Callback<BundleRunRecord, int>((r, _) => _created = r)
+            .Returns(BundleRunAdmission.Accepted);
+
     [Fact]
     public async Task Handle_WhenDisabled_ReturnsForbidden_AndDoesNotEnqueue()
     {
@@ -79,7 +87,7 @@ public sealed class RunBundleCommandHandlerTests
         var result = await BuildSut(enabled: true).Handle(Command(), CancellationToken.None);
 
         result.FailureType.Should().Be(ResultFailureType.NotFound);
-        _jobStore.Verify(j => j.Create(It.IsAny<BundleRunRecord>()), Times.Never);
+        _jobStore.Verify(j => j.TryCreate(It.IsAny<BundleRunRecord>(), It.IsAny<int>()), Times.Never);
         _queue.Verify(q => q.EnqueueAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
@@ -88,20 +96,19 @@ public sealed class RunBundleCommandHandlerTests
     {
         _handleStore.Setup(h => h.GetOwner("handle-1")).Returns("owner-1");
         _handleStore.Setup(h => h.TryGet("handle-1")).Returns(Staged());
-        BundleRunRecord? created = null;
-        _jobStore.Setup(j => j.Create(It.IsAny<BundleRunRecord>())).Callback<BundleRunRecord>(r => created = r);
+        AcceptCreate();
 
         var result = await BuildSut(enabled: true).Handle(Command(), CancellationToken.None);
 
         result.IsSuccess.Should().BeTrue();
-        created.Should().NotBeNull();
-        created!.Status.Should().Be(BundleRunStatus.Queued);
-        created.AgentName.Should().Be("the-agent");
-        created.Handle.Should().Be("handle-1");
-        created.OwnerId.Should().Be("owner-1");
-        created.MaxTurns.Should().Be(4);
-        result.Value!.JobId.Should().Be(created.JobId);
-        _queue.Verify(q => q.EnqueueAsync(created.JobId, It.IsAny<CancellationToken>()), Times.Once);
+        _created.Should().NotBeNull();
+        _created!.Status.Should().Be(BundleRunStatus.Queued);
+        _created.AgentName.Should().Be("the-agent");
+        _created.Handle.Should().Be("handle-1");
+        _created.OwnerId.Should().Be("owner-1");
+        _created.MaxTurns.Should().Be(4);
+        result.Value!.JobId.Should().Be(_created.JobId);
+        _queue.Verify(q => q.EnqueueAsync(_created.JobId, It.IsAny<CancellationToken>()), Times.Once);
     }
 
     // -- Bundle-owned MCP server envelope invariant (#376) --
@@ -118,16 +125,15 @@ public sealed class RunBundleCommandHandlerTests
         // host-trusted instead of bundle-owned.
         _handleStore.Setup(h => h.GetOwner("handle-1")).Returns("owner-1");
         _handleStore.Setup(h => h.TryGet("handle-1")).Returns(Staged(mcpServerNames: ["b1:echo", "b1:search"]));
-        BundleRunRecord? created = null;
-        _jobStore.Setup(j => j.Create(It.IsAny<BundleRunRecord>())).Callback<BundleRunRecord>(r => created = r);
+        AcceptCreate();
 
         var result = await BuildSut(enabled: true).Handle(Command(), CancellationToken.None);
 
         result.IsSuccess.Should().BeTrue();
-        created!.Envelope.AllowedMcpServers.Should().Contain(["b1:echo", "b1:search"]);
-        created.Envelope.BundleOwnedMcpServers.Should().Contain(["b1:echo", "b1:search"]);
-        created.Envelope.IsBundleOwnedMcpServer("b1:echo").Should().BeTrue();
-        created.Envelope.IsBundleOwnedMcpServer("b1:search").Should().BeTrue();
+        _created!.Envelope.AllowedMcpServers.Should().Contain(["b1:echo", "b1:search"]);
+        _created.Envelope.BundleOwnedMcpServers.Should().Contain(["b1:echo", "b1:search"]);
+        _created.Envelope.IsBundleOwnedMcpServer("b1:echo").Should().BeTrue();
+        _created.Envelope.IsBundleOwnedMcpServer("b1:search").Should().BeTrue();
     }
 
     [Fact]
@@ -137,13 +143,12 @@ public sealed class RunBundleCommandHandlerTests
         // fabricate entries in either list from the caller's own pre-existing grants.
         _handleStore.Setup(h => h.GetOwner("handle-1")).Returns("owner-1");
         _handleStore.Setup(h => h.TryGet("handle-1")).Returns(Staged());
-        BundleRunRecord? created = null;
-        _jobStore.Setup(j => j.Create(It.IsAny<BundleRunRecord>())).Callback<BundleRunRecord>(r => created = r);
+        AcceptCreate();
 
         var result = await BuildSut(enabled: true).Handle(Command(), CancellationToken.None);
 
         result.IsSuccess.Should().BeTrue();
-        created!.Envelope.BundleOwnedMcpServers.Should().BeEmpty();
+        _created!.Envelope.BundleOwnedMcpServers.Should().BeEmpty();
     }
 
     // -- Conversation continuity (#235) --
@@ -156,14 +161,13 @@ public sealed class RunBundleCommandHandlerTests
         // this whole issue is about.
         _handleStore.Setup(h => h.GetOwner("handle-1")).Returns("owner-1");
         _handleStore.Setup(h => h.TryGet("handle-1")).Returns(Staged());
-        BundleRunRecord? created = null;
-        _jobStore.Setup(j => j.Create(It.IsAny<BundleRunRecord>())).Callback<BundleRunRecord>(r => created = r);
+        AcceptCreate();
 
         var result = await BuildSut(enabled: true)
             .Handle(Command() with { ConversationId = "conv-1" }, CancellationToken.None);
 
         result.IsSuccess.Should().BeTrue();
-        created!.ConversationId.Should().Be("conv-1");
+        _created!.ConversationId.Should().Be("conv-1");
     }
 
     [Fact]
@@ -173,12 +177,11 @@ public sealed class RunBundleCommandHandlerTests
         // bundle run pay for a lookup it has no use for.
         _handleStore.Setup(h => h.GetOwner("handle-1")).Returns("owner-1");
         _handleStore.Setup(h => h.TryGet("handle-1")).Returns(Staged());
-        BundleRunRecord? created = null;
-        _jobStore.Setup(j => j.Create(It.IsAny<BundleRunRecord>())).Callback<BundleRunRecord>(r => created = r);
+        AcceptCreate();
 
         await BuildSut(enabled: true).Handle(Command(), CancellationToken.None);
 
-        created!.ConversationId.Should().BeNull();
+        _created!.ConversationId.Should().BeNull();
         _conversations.Verify(
             c => c.GetHistoryForDispatch(
                 It.IsAny<string>(), It.IsAny<string>(), It.IsAny<int>(), It.IsAny<CancellationToken>()),
@@ -203,7 +206,7 @@ public sealed class RunBundleCommandHandlerTests
             .Handle(Command() with { ConversationId = "conv-theirs" }, CancellationToken.None);
 
         result.FailureType.Should().Be(ResultFailureType.NotFound);
-        _jobStore.Verify(j => j.Create(It.IsAny<BundleRunRecord>()), Times.Never);
+        _jobStore.Verify(j => j.TryCreate(It.IsAny<BundleRunRecord>(), It.IsAny<int>()), Times.Never);
         _queue.Verify(q => q.EnqueueAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
@@ -214,14 +217,13 @@ public sealed class RunBundleCommandHandlerTests
         // store returns null by default, which is exactly that case.
         _handleStore.Setup(h => h.GetOwner("handle-1")).Returns("owner-1");
         _handleStore.Setup(h => h.TryGet("handle-1")).Returns(Staged());
-        BundleRunRecord? created = null;
-        _jobStore.Setup(j => j.Create(It.IsAny<BundleRunRecord>())).Callback<BundleRunRecord>(r => created = r);
+        AcceptCreate();
 
         var result = await BuildSut(enabled: true)
             .Handle(Command() with { ConversationId = "conv-new" }, CancellationToken.None);
 
         result.IsSuccess.Should().BeTrue();
-        created!.ConversationId.Should().Be("conv-new");
+        _created!.ConversationId.Should().Be("conv-new");
 
         // Asserting the probe HAPPENED, not just that the result was a success — success is the default
         // outcome, so without this the test stays green with the whole pre-check deleted.
@@ -256,15 +258,14 @@ public sealed class RunBundleCommandHandlerTests
         // the background dispatcher race the stream for the same job.
         _handleStore.Setup(h => h.GetOwner("handle-1")).Returns("owner-1");
         _handleStore.Setup(h => h.TryGet("handle-1")).Returns(Staged());
-        BundleRunRecord? created = null;
-        _jobStore.Setup(j => j.Create(It.IsAny<BundleRunRecord>())).Callback<BundleRunRecord>(r => created = r);
+        AcceptCreate();
 
         var result = await BuildSut(enabled: true)
             .Handle(Command() with { Stream = true }, CancellationToken.None);
 
         result.IsSuccess.Should().BeTrue();
-        created!.Streaming.Should().BeTrue();
-        created.Status.Should().Be(BundleRunStatus.Queued);
+        _created!.Streaming.Should().BeTrue();
+        _created.Status.Should().Be(BundleRunStatus.Queued);
         _queue.Verify(q => q.EnqueueAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
@@ -275,17 +276,16 @@ public sealed class RunBundleCommandHandlerTests
     {
         _handleStore.Setup(h => h.GetOwner("handle-1")).Returns("owner-1");
         _handleStore.Setup(h => h.TryGet("handle-1")).Returns(Staged(mcpServerNames: ["b1:echo"]));
-        BundleRunRecord? created = null;
-        _jobStore.Setup(j => j.Create(It.IsAny<BundleRunRecord>())).Callback<BundleRunRecord>(r => created = r);
+        AcceptCreate();
 
         var callerEnvelope = new CapabilityEnvelope { AllowedMcpServers = ["host-server"] };
         var result = await BuildSut(enabled: true)
             .Handle(Command() with { Envelope = callerEnvelope }, CancellationToken.None);
 
         result.IsSuccess.Should().BeTrue();
-        created!.Envelope.AllowedMcpServers.Should().BeEquivalentTo(["host-server", "b1:echo"],
+        _created!.Envelope.AllowedMcpServers.Should().BeEquivalentTo(["host-server", "b1:echo"],
             "the bundle's own server must be additively granted, never replacing the caller's own grant");
-        created.Envelope.BundleOwnedMcpServers.Should().BeEquivalentTo(["b1:echo"],
+        _created.Envelope.BundleOwnedMcpServers.Should().BeEquivalentTo(["b1:echo"],
             "the authoritative bundle-ownership record must be stamped at the same point the grant is made, " +
             "not left for a downstream caller to re-derive from the server name's shape");
     }
@@ -295,15 +295,14 @@ public sealed class RunBundleCommandHandlerTests
     {
         _handleStore.Setup(h => h.GetOwner("handle-1")).Returns("owner-1");
         _handleStore.Setup(h => h.TryGet("handle-1")).Returns(Staged());
-        BundleRunRecord? created = null;
-        _jobStore.Setup(j => j.Create(It.IsAny<BundleRunRecord>())).Callback<BundleRunRecord>(r => created = r);
+        AcceptCreate();
 
         var callerEnvelope = new CapabilityEnvelope { AllowedMcpServers = ["host-server"] };
         var result = await BuildSut(enabled: true)
             .Handle(Command() with { Envelope = callerEnvelope }, CancellationToken.None);
 
         result.IsSuccess.Should().BeTrue();
-        created!.Envelope.Should().BeSameAs(callerEnvelope, "a bundle with no MCP servers must not allocate a new envelope");
+        _created!.Envelope.Should().BeSameAs(callerEnvelope, "a bundle with no MCP servers must not allocate a new envelope");
     }
 
     [Fact]
@@ -316,7 +315,44 @@ public sealed class RunBundleCommandHandlerTests
         var result = await BuildSut(enabled: true).Handle(Command(), CancellationToken.None);
 
         result.FailureType.Should().Be(ResultFailureType.NotFound);
-        _jobStore.Verify(j => j.Create(It.IsAny<BundleRunRecord>()), Times.Never);
+        _jobStore.Verify(j => j.TryCreate(It.IsAny<BundleRunRecord>(), It.IsAny<int>()), Times.Never);
+        _queue.Verify(q => q.EnqueueAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    // -- Admission (#449) --
+
+    [Fact]
+    public async Task Handle_ConversationAlreadyRunning_ReturnsConflict_AndDoesNotEnqueue()
+    {
+        _handleStore.Setup(h => h.GetOwner("handle-1")).Returns("owner-1");
+        _handleStore.Setup(h => h.TryGet("handle-1")).Returns(Staged());
+        _jobStore.Setup(j => j.TryCreate(It.IsAny<BundleRunRecord>(), It.IsAny<int>()))
+            .Returns(BundleRunAdmission.ConversationAlreadyRunning);
+
+        var result = await BuildSut(enabled: true)
+            .Handle(Command() with { ConversationId = "conv-1" }, CancellationToken.None);
+
+        result.FailureType.Should().Be(ResultFailureType.Conflict);
+        result.Errors.Should().ContainSingle(e => e.Contains("conversation", StringComparison.OrdinalIgnoreCase));
+        _queue.Verify(q => q.EnqueueAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Handle_OwnerAtCapacity_ReturnsValidationFailure_AndDoesNotEnqueue()
+    {
+        // Distinct status from ConversationAlreadyRunning (409) on purpose, mirroring
+        // StartWorkflowRunCommandHandler.Refuse's split for the identical admission shape: capacity is
+        // about the caller's own accepted volume, which the caller fixes by finishing its own work —
+        // that is a 400, not a 409 naming a conflict with someone else's run.
+        _handleStore.Setup(h => h.GetOwner("handle-1")).Returns("owner-1");
+        _handleStore.Setup(h => h.TryGet("handle-1")).Returns(Staged());
+        _jobStore.Setup(j => j.TryCreate(It.IsAny<BundleRunRecord>(), It.IsAny<int>()))
+            .Returns(BundleRunAdmission.OwnerAtCapacity);
+
+        var result = await BuildSut(enabled: true).Handle(Command(), CancellationToken.None);
+
+        result.FailureType.Should().Be(ResultFailureType.Validation);
+        result.Errors.Should().ContainSingle(e => e.Contains("maximum", StringComparison.OrdinalIgnoreCase));
         _queue.Verify(q => q.EnqueueAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 }

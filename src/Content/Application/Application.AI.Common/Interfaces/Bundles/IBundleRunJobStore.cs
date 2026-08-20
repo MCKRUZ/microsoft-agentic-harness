@@ -33,11 +33,30 @@ namespace Application.AI.Common.Interfaces.Bundles;
 public interface IBundleRunJobStore
 {
     /// <summary>
-    /// Stores a newly created run record and starts its TTL. The record is expected to be
-    /// <see cref="BundleRunStatus.Queued"/>. Throws if a record with the same job id already exists.
+    /// Admits a newly created run, or refuses it, deciding and inserting as one atomic step. The record
+    /// is expected to be <see cref="BundleRunStatus.Queued"/>.
     /// </summary>
-    /// <param name="record">The run record to store.</param>
-    void Create(BundleRunRecord record);
+    /// <remarks>
+    /// <para>
+    /// Both refusals are read-then-write decisions over the same live-run survey, so they are answered
+    /// together under one lock: deciding them separately, or inserting afterwards, leaves a window in
+    /// which concurrent requests all observe a limit as unmet and all proceed.
+    /// </para>
+    /// <para>
+    /// A run with no <see cref="BundleRunRecord.ConversationId"/> can never be refused as
+    /// <see cref="BundleRunAdmission.ConversationAlreadyRunning"/> — there is no conversation for a
+    /// second run to conflict with.
+    /// </para>
+    /// </remarks>
+    /// <param name="record">The run to store, already stamped with its owner.</param>
+    /// <param name="maxActiveRunsPerOwner">
+    /// How many runs one owner may have queued or executing at once, across every dispatch mode.
+    /// Supplied by the caller rather than read here, because it is host policy rather than a property of
+    /// storage.
+    /// </param>
+    /// <returns>Whether the run was admitted, and if not, which limit refused it.</returns>
+    /// <exception cref="InvalidOperationException">The job id is already held.</exception>
+    BundleRunAdmission TryCreate(BundleRunRecord record, int maxActiveRunsPerOwner);
 
     /// <summary>
     /// Returns the current snapshot of the run with <paramref name="jobId"/>, or null when the job id is

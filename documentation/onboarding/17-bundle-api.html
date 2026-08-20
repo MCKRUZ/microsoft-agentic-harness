@@ -1123,9 +1123,12 @@ curl -sS -H "Authorization: Bearer $TOKEN" \
                     </p>
                     <p>
                         One property of the dispatcher matters a great deal when you set your poll interval: it drains
-                        the queue <strong>one run at a time</strong>. Your run waits behind every other queued run on
-                        that host. So the time to a result is not just how long the model takes to think — it is that
-                        plus however long the queue ahead of you takes. Budget for both.
+                        the queue with <strong>bounded parallelism</strong> — up to <code>MaxConcurrentDispatchedBundleRuns</code>
+                        runs at once (default 4), host-wide, across every caller. An unrelated caller's run does not
+                        wait behind yours, but the degree is still finite: once every slot is busy, the next queued
+                        run waits for one to free up. So the time to a result is not just how long the model takes to
+                        think — it is that plus however long you wait for a slot. Budget for both. A host that sets
+                        the degree to <code>1</code> is back to strictly serial dispatch.
                     </p>
                     <p>
                         Poll until <code>status</code> is <code>Succeeded</code> or <code>Failed</code>, then read
@@ -1359,6 +1362,8 @@ curl -sS -H "Authorization: Bearer $TOKEN" \
                             <tr><td><code>RunRecordTtl</code></td><td><code>00:30:00</code></td><td>How long a terminal run stays pollable.</td></tr>
                             <tr><td><code>StreamReservationTtl</code></td><td><code>00:05:00</code></td><td>How long an unclaimed stream reservation survives.</td></tr>
                             <tr><td><code>MaxConcurrentStreamsPerCaller</code></td><td><code>4</code></td><td>Open streams one caller may hold.</td></tr>
+                            <tr><td><code>MaxConcurrentDispatchedBundleRuns</code></td><td><code>4</code></td><td>Background runs the host executes at once, across all callers.</td></tr>
+                            <tr><td><code>MaxActiveBundleRunsPerOwner</code></td><td><code>10</code></td><td>Runs one caller may hold queued or executing at once, any dispatch mode.</td></tr>
                             <tr><td><code>CleanupInterval</code></td><td><code>00:01:00</code></td><td>Sweeper period.</td></tr>
                             <tr><td><code>Envelopes</code></td><td>fail-closed</td><td>The per-caller grant table (see above).</td></tr>
                             <tr><td><code>Auth:TenantId</code> / <code>Auth:ClientId</code></td><td>unset</td><td>This API's own Entra audience. Supply both or neither.</td></tr>

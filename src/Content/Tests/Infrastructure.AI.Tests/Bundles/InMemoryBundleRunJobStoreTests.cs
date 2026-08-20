@@ -42,25 +42,31 @@ public sealed class InMemoryBundleRunJobStoreTests
     }
 
     private BundleRunRecord NewRecord(
-        string jobId = "j1", BundleRunStatus status = BundleRunStatus.Queued, bool streaming = false) => new()
+        string jobId = "j1", BundleRunStatus status = BundleRunStatus.Queued, bool streaming = false,
+        string ownerId = "owner-1", string? conversationId = null) => new()
     {
         JobId = jobId,
         Handle = "h1",
-        OwnerId = "owner-1",
+        OwnerId = ownerId,
         AgentName = "agent-1",
         UserMessages = ["hello"],
         MaxTurns = 5,
         Envelope = new CapabilityEnvelope(),
         Status = status,
         Streaming = streaming,
+        ConversationId = conversationId,
         CreatedAt = _time.GetUtcNow()
     };
+
+    /// <summary>Admits a record with no capacity cap, for tests that don't exercise admission itself.</summary>
+    private static void Store(InMemoryBundleRunJobStore sut, BundleRunRecord record) =>
+        sut.TryCreate(record, int.MaxValue);
 
     [Fact]
     public void Create_ThenGet_ReturnsRecord()
     {
         var sut = BuildSut();
-        sut.Create(NewRecord());
+        Store(sut, NewRecord());
 
         sut.Get("j1").Should().NotBeNull();
         sut.Get("j1")!.Status.Should().Be(BundleRunStatus.Queued);
@@ -70,9 +76,9 @@ public sealed class InMemoryBundleRunJobStoreTests
     public void Create_DuplicateJobId_Throws()
     {
         var sut = BuildSut();
-        sut.Create(NewRecord());
+        Store(sut, NewRecord());
 
-        var act = () => sut.Create(NewRecord());
+        var act = () => Store(sut, NewRecord());
 
         act.Should().Throw<InvalidOperationException>();
     }
@@ -87,7 +93,7 @@ public sealed class InMemoryBundleRunJobStoreTests
     public void Get_NonTerminalRecord_NeverExpires()
     {
         var sut = BuildSut();
-        sut.Create(NewRecord()); // Queued
+        Store(sut, NewRecord()); // Queued
 
         _time.Advance(Ttl + TimeSpan.FromHours(1));
 
@@ -99,7 +105,7 @@ public sealed class InMemoryBundleRunJobStoreTests
     public void Get_TerminalRecord_AfterTtlElapses_ReturnsNull()
     {
         var sut = BuildSut();
-        sut.Create(NewRecord());
+        Store(sut, NewRecord());
         sut.Update(sut.Get("j1")! with { Status = BundleRunStatus.Succeeded });
 
         _time.Advance(Ttl + TimeSpan.FromSeconds(1));
@@ -111,7 +117,7 @@ public sealed class InMemoryBundleRunJobStoreTests
     public void Update_ReplacesSnapshot()
     {
         var sut = BuildSut();
-        sut.Create(NewRecord());
+        Store(sut, NewRecord());
 
         var updated = sut.Get("j1")! with { Status = BundleRunStatus.Running };
         sut.Update(updated).Should().BeTrue();
@@ -123,7 +129,7 @@ public sealed class InMemoryBundleRunJobStoreTests
     public void Update_TerminalStatus_ExtendsTtl()
     {
         var sut = BuildSut();
-        sut.Create(NewRecord());
+        Store(sut, NewRecord());
 
         // Advance almost to the original expiry, then complete the run — which resets the TTL window.
         _time.Advance(Ttl - TimeSpan.FromMinutes(1));
@@ -146,8 +152,8 @@ public sealed class InMemoryBundleRunJobStoreTests
     public void SweepExpired_RemovesExpiredTerminalRecords_ReturnsCount()
     {
         var sut = BuildSut();
-        sut.Create(NewRecord("j1"));
-        sut.Create(NewRecord("j2"));
+        Store(sut, NewRecord("j1"));
+        Store(sut, NewRecord("j2"));
         sut.Update(sut.Get("j1")! with { Status = BundleRunStatus.Succeeded });
         sut.Update(sut.Get("j2")! with { Status = BundleRunStatus.Failed });
 
@@ -162,7 +168,7 @@ public sealed class InMemoryBundleRunJobStoreTests
     public void SweepExpired_LeavesNonTerminalRecords()
     {
         var sut = BuildSut();
-        sut.Create(NewRecord("j1")); // Queued, in-flight
+        Store(sut, NewRecord("j1")); // Queued, in-flight
 
         _time.Advance(Ttl + TimeSpan.FromHours(1));
 
@@ -176,7 +182,7 @@ public sealed class InMemoryBundleRunJobStoreTests
     public void TryBeginRun_QueuedRecord_TransitionsToRunning_StampsStartedAt()
     {
         var sut = BuildSut();
-        sut.Create(NewRecord());
+        Store(sut, NewRecord());
         var startedAt = _time.GetUtcNow();
 
         var claimed = sut.TryBeginRun("j1", startedAt);
@@ -197,7 +203,7 @@ public sealed class InMemoryBundleRunJobStoreTests
     public void TryBeginRun_NonQueuedRecord_ReturnsNull()
     {
         var sut = BuildSut();
-        sut.Create(NewRecord(status: BundleRunStatus.Running));
+        Store(sut, NewRecord(status: BundleRunStatus.Running));
 
         sut.TryBeginRun("j1", _time.GetUtcNow()).Should().BeNull();
     }
@@ -208,7 +214,7 @@ public sealed class InMemoryBundleRunJobStoreTests
         // The single guarantee that a run is driven once: whoever wins the CAS gets the record; the loser
         // gets null. This is what stops two stream connections, or a stream and the dispatcher, double-running.
         var sut = BuildSut();
-        sut.Create(NewRecord());
+        Store(sut, NewRecord());
 
         var first = sut.TryBeginRun("j1", _time.GetUtcNow());
         var second = sut.TryBeginRun("j1", _time.GetUtcNow());
@@ -221,7 +227,7 @@ public sealed class InMemoryBundleRunJobStoreTests
     public void TryBeginRun_ExpiredStreamingReservation_ReturnsNull()
     {
         var sut = BuildSut();
-        sut.Create(NewRecord(streaming: true)); // unclaimed streaming reservation
+        Store(sut, NewRecord(streaming: true)); // unclaimed streaming reservation
 
         _time.Advance(Ttl + TimeSpan.FromSeconds(1)); // reservation window elapsed
 
@@ -234,7 +240,7 @@ public sealed class InMemoryBundleRunJobStoreTests
     public void Get_UnclaimedStreamingReservation_ExpiresAfterTtl()
     {
         var sut = BuildSut();
-        sut.Create(NewRecord(streaming: true)); // Queued streaming, never claimed
+        Store(sut, NewRecord(streaming: true)); // Queued streaming, never claimed
 
         _time.Advance(Ttl + TimeSpan.FromSeconds(1));
 
@@ -246,7 +252,7 @@ public sealed class InMemoryBundleRunJobStoreTests
     public void Get_ClaimedStreamingRun_NeverExpires()
     {
         var sut = BuildSut();
-        sut.Create(NewRecord(streaming: true));
+        Store(sut, NewRecord(streaming: true));
         sut.TryBeginRun("j1", _time.GetUtcNow()); // now Running
 
         _time.Advance(Ttl + TimeSpan.FromHours(1));
@@ -260,8 +266,8 @@ public sealed class InMemoryBundleRunJobStoreTests
     public void SweepExpired_RemovesUnclaimedStreamingReservation_ButNotBackgroundQueued()
     {
         var sut = BuildSut();
-        sut.Create(NewRecord("stream", streaming: true)); // reclaimable once its window lapses
-        sut.Create(NewRecord("bg")); // background-queued: never reclaimable until terminal
+        Store(sut, NewRecord("stream", streaming: true)); // reclaimable once its window lapses
+        Store(sut, NewRecord("bg")); // background-queued: never reclaimable until terminal
 
         _time.Advance(Ttl + TimeSpan.FromSeconds(1));
 
@@ -277,7 +283,7 @@ public sealed class InMemoryBundleRunJobStoreTests
         // NOT the (longer) result-retention TTL — so tightening result retention never shrinks the window a
         // caller has to connect.
         var sut = BuildSut(runRecordTtl: TimeSpan.FromMinutes(30), streamReservationTtl: TimeSpan.FromMinutes(2));
-        sut.Create(NewRecord(streaming: true));
+        Store(sut, NewRecord(streaming: true));
 
         _time.Advance(TimeSpan.FromMinutes(3)); // past the 2-min reservation window, far within RunRecordTtl
 
@@ -290,7 +296,7 @@ public sealed class InMemoryBundleRunJobStoreTests
         // Once a streaming run is claimed and completes, its pollable window is the result-retention TTL like
         // any other terminal run — the short reservation window governs only the unclaimed phase.
         var sut = BuildSut(runRecordTtl: TimeSpan.FromMinutes(30), streamReservationTtl: TimeSpan.FromMinutes(2));
-        sut.Create(NewRecord(streaming: true));
+        Store(sut, NewRecord(streaming: true));
         sut.TryBeginRun("j1", _time.GetUtcNow());
         sut.Update(sut.Get("j1")! with { Status = BundleRunStatus.Succeeded });
 
@@ -299,5 +305,117 @@ public sealed class InMemoryBundleRunJobStoreTests
 
         _time.Advance(TimeSpan.FromMinutes(30)); // ...and reclaimed only once the result window elapses
         sut.Get("j1").Should().BeNull();
+    }
+
+    // -- Admission (#449) --
+
+    [Fact]
+    public void TryCreate_SecondRunSameConversation_RefusesConflict()
+    {
+        var sut = BuildSut();
+        sut.TryCreate(NewRecord("j1", conversationId: "conv-1"), int.MaxValue)
+            .Should().Be(BundleRunAdmission.Accepted);
+
+        var admission = sut.TryCreate(NewRecord("j2", conversationId: "conv-1"), int.MaxValue);
+
+        admission.Should().Be(BundleRunAdmission.ConversationAlreadyRunning);
+        sut.Get("j2").Should().BeNull("a refused run must not be stored");
+    }
+
+    [Fact]
+    public void TryCreate_SecondRunSameConversation_ButFirstIsTerminal_IsAccepted()
+    {
+        var sut = BuildSut();
+        Store(sut, NewRecord("j1", conversationId: "conv-1"));
+        sut.Update(sut.Get("j1")! with { Status = BundleRunStatus.Succeeded });
+
+        var admission = sut.TryCreate(NewRecord("j2", conversationId: "conv-1"), int.MaxValue);
+
+        admission.Should().Be(BundleRunAdmission.Accepted, "a finished run's conversation is no longer live");
+    }
+
+    [Fact]
+    public void TryCreate_AbandonedStreamingReservation_DoesNotCountTowardConversationOrCapacity()
+    {
+        // /code-review finding: SurveyActiveRuns originally excluded only terminal records, so a
+        // streaming reservation nobody ever connected to (Queued, Streaming, past its short connect
+        // window) stayed "live" from admission's point of view until the next sweep pass — permanently
+        // occupying a capacity slot and blocking every retry against its conversation for a run that
+        // never actually did anything. Get/TryBeginRun already treated it as gone the moment it expired;
+        // admission must too.
+        var sut = BuildSut();
+        sut.TryCreate(NewRecord("j1", conversationId: "conv-1", streaming: true), maxActiveRunsPerOwner: 1)
+            .Should().Be(BundleRunAdmission.Accepted);
+
+        _time.Advance(Ttl + TimeSpan.FromSeconds(1)); // past the reservation window, never claimed
+
+        var admission = sut.TryCreate(NewRecord("j2", conversationId: "conv-1"), maxActiveRunsPerOwner: 1);
+
+        admission.Should().Be(BundleRunAdmission.Accepted,
+            "an abandoned streaming reservation is reclaimable the moment it expires, not only once swept");
+    }
+
+    [Fact]
+    public void TryCreate_TwoRunsNoConversationId_NeverConflict()
+    {
+        // A one-shot run has nothing to conflict on — only a shared ConversationId can collide.
+        var sut = BuildSut();
+        sut.TryCreate(NewRecord("j1"), int.MaxValue).Should().Be(BundleRunAdmission.Accepted);
+
+        sut.TryCreate(NewRecord("j2"), int.MaxValue).Should().Be(BundleRunAdmission.Accepted);
+    }
+
+    [Fact]
+    public void TryCreate_OwnerAtCapacity_RefusesConflict()
+    {
+        var sut = BuildSut();
+        sut.TryCreate(NewRecord("j1", ownerId: "owner-1"), maxActiveRunsPerOwner: 1)
+            .Should().Be(BundleRunAdmission.Accepted);
+
+        var admission = sut.TryCreate(NewRecord("j2", ownerId: "owner-1"), maxActiveRunsPerOwner: 1);
+
+        admission.Should().Be(BundleRunAdmission.OwnerAtCapacity);
+        sut.Get("j2").Should().BeNull("a refused run must not be stored");
+    }
+
+    [Fact]
+    public void TryCreate_TerminalRunsDoNotCountTowardCapacity()
+    {
+        var sut = BuildSut();
+        sut.TryCreate(NewRecord("j1", ownerId: "owner-1"), maxActiveRunsPerOwner: 1);
+        sut.Update(sut.Get("j1")! with { Status = BundleRunStatus.Succeeded });
+
+        var admission = sut.TryCreate(NewRecord("j2", ownerId: "owner-1"), maxActiveRunsPerOwner: 1);
+
+        admission.Should().Be(BundleRunAdmission.Accepted, "a finished run must not hold its owner's capacity slot");
+    }
+
+    [Fact]
+    public void TryCreate_DifferentOwners_DoNotShareCapacity()
+    {
+        var sut = BuildSut();
+        sut.TryCreate(NewRecord("j1", ownerId: "owner-1"), maxActiveRunsPerOwner: 1)
+            .Should().Be(BundleRunAdmission.Accepted);
+
+        var admission = sut.TryCreate(NewRecord("j2", ownerId: "owner-2"), maxActiveRunsPerOwner: 1);
+
+        admission.Should().Be(BundleRunAdmission.Accepted, "the cap is per owner, not host-wide");
+    }
+
+    [Fact]
+    public async Task TryCreate_ConcurrentCallsSameOwner_AdmitsExactlyUpToTheCap()
+    {
+        // Hammers TryCreate from many threads at once so the admission lock's atomicity is actually
+        // exercised, not just its single-threaded happy path — TryBeginRun's twin sequential-only test
+        // (TryBeginRun_CalledTwice_ClaimsExactlyOnce) does not catch a race here either.
+        var sut = BuildSut();
+        const int attempts = 50;
+        const int cap = 10;
+
+        var results = await Task.WhenAll(Enumerable.Range(0, attempts).Select(i => Task.Run(
+            () => sut.TryCreate(NewRecord($"job-{i}", ownerId: "owner-1"), cap))));
+
+        results.Count(a => a == BundleRunAdmission.Accepted).Should().Be(cap);
+        results.Count(a => a == BundleRunAdmission.OwnerAtCapacity).Should().Be(attempts - cap);
     }
 }

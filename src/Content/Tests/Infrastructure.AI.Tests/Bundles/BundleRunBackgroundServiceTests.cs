@@ -36,11 +36,13 @@ public sealed class BundleRunBackgroundServiceTests : IDisposable
         public IDisposable? OnChange(Action<T, string?> listener) => null;
     }
 
-    private AppConfig Config()
+    private AppConfig Config(int? maxConcurrentDispatchedBundleRuns = null)
     {
         var cfg = new AppConfig();
         cfg.AI.BundleExecution.HandleTtl = Ttl;
         cfg.AI.BundleExecution.RunRecordTtl = Ttl;
+        if (maxConcurrentDispatchedBundleRuns is { } degree)
+            cfg.AI.BundleExecution.MaxConcurrentDispatchedBundleRuns = degree;
         return cfg;
     }
 
@@ -75,9 +77,9 @@ public sealed class BundleRunBackgroundServiceTests : IDisposable
              InMemoryBundleRunDispatchQueue Queue,
              InMemoryBundleRunJobStore JobStore,
              InMemoryBundleHandleStore HandleStore)
-        BuildSut(IMediator mediator)
+        BuildSut(IMediator mediator, int? maxConcurrentDispatchedBundleRuns = null)
     {
-        var monitor = new StaticOptionsMonitor<AppConfig>(Config());
+        var monitor = new StaticOptionsMonitor<AppConfig>(Config(maxConcurrentDispatchedBundleRuns));
         var queue = new InMemoryBundleRunDispatchQueue();
         var jobStore = new InMemoryBundleRunJobStore(monitor, _time);
         var handleStore = new InMemoryBundleHandleStore(monitor, _time, NullLogger<InMemoryBundleHandleStore>.Instance);
@@ -89,7 +91,7 @@ public sealed class BundleRunBackgroundServiceTests : IDisposable
         var executor = new BundleRunExecutor(
             jobStore, handleStore, scopeFactory, _time, NullLogger<BundleRunExecutor>.Instance);
         var service = new BundleRunBackgroundService(
-            queue, executor, NullLogger<BundleRunBackgroundService>.Instance);
+            queue, executor, monitor, NullLogger<BundleRunBackgroundService>.Instance);
 
         return (service, queue, jobStore, handleStore);
     }
@@ -138,7 +140,7 @@ public sealed class BundleRunBackgroundServiceTests : IDisposable
         var staged = StageOnDisk("b1", out _);
         var handle = handleStore.Register(staged, "owner-1");
         var envelope = new CapabilityEnvelope { AllowedTools = ["read_file"], AutonomyCeiling = AutonomyLevel.Autonomous };
-        jobStore.Create(QueuedRecord("j1", handle, staged.Agent.Id, envelope));
+        jobStore.TryCreate(QueuedRecord("j1", handle, staged.Agent.Id, envelope), int.MaxValue);
         await queue.EnqueueAsync("j1", CancellationToken.None);
 
         _ = service.StartAsync(CancellationToken.None);
@@ -188,7 +190,7 @@ public sealed class BundleRunBackgroundServiceTests : IDisposable
         var staged = StageOnDisk("b1", out var dir);
         dirRef = dir;
         var handle = handleStore.Register(staged, "owner-1");
-        jobStore.Create(QueuedRecord("j1", handle, staged.Agent.Id, new CapabilityEnvelope()));
+        jobStore.TryCreate(QueuedRecord("j1", handle, staged.Agent.Id, new CapabilityEnvelope()), int.MaxValue);
         await queue.EnqueueAsync("j1", CancellationToken.None);
 
         _ = service.StartAsync(CancellationToken.None);
@@ -217,7 +219,7 @@ public sealed class BundleRunBackgroundServiceTests : IDisposable
         var (service, queue, jobStore, handleStore) = BuildSut(mediator.Object);
         var staged = StageOnDisk("b1", out _);
         var handle = handleStore.Register(staged, "owner-1");
-        jobStore.Create(QueuedRecord("j1", handle, staged.Agent.Id, new CapabilityEnvelope()));
+        jobStore.TryCreate(QueuedRecord("j1", handle, staged.Agent.Id, new CapabilityEnvelope()), int.MaxValue);
         // Remove the handle before the run is dispatched.
         handleStore.Remove(handle);
         await queue.EnqueueAsync("j1", CancellationToken.None);
@@ -243,7 +245,7 @@ public sealed class BundleRunBackgroundServiceTests : IDisposable
         var (service, queue, jobStore, handleStore) = BuildSut(mediator.Object);
         var staged = StageOnDisk("b1", out _);
         var handle = handleStore.Register(staged, "owner-1");
-        jobStore.Create(QueuedRecord("j1", handle, staged.Agent.Id, new CapabilityEnvelope()));
+        jobStore.TryCreate(QueuedRecord("j1", handle, staged.Agent.Id, new CapabilityEnvelope()), int.MaxValue);
         await queue.EnqueueAsync("j1", CancellationToken.None);
 
         _ = service.StartAsync(CancellationToken.None);
@@ -254,6 +256,109 @@ public sealed class BundleRunBackgroundServiceTests : IDisposable
         record.Status.Should().Be(BundleRunStatus.Failed);
         record.Error.Should().Be("bundle_run.unhandled_exception");
         record.Error.Should().NotContain("secret internal detail");
+    }
+
+    // -- Bounded parallelism (#449) --
+
+    [Fact]
+    public async Task Dispatch_RunsExecuteConcurrentlyUpToTheConfiguredDegree()
+    {
+        // Awaiting each run before dequeuing the next would make host-wide throughput exactly one, so
+        // any caller's long-running conversation would head-of-line every other caller's.
+        var running = 0;
+        var peak = 0;
+        using var release = new SemaphoreSlim(0, 3);
+
+        var mediator = new Mock<IMediator>();
+        mediator.Setup(m => m.Send(It.IsAny<RunConversationCommand>(), It.IsAny<CancellationToken>()))
+            .Returns(async (RunConversationCommand _, CancellationToken _) =>
+            {
+                var now = Interlocked.Increment(ref running);
+                InterlockedMax(ref peak, now);
+                await release.WaitAsync();
+                Interlocked.Decrement(ref running);
+                return SampleResult();
+            });
+
+        var (service, queue, jobStore, handleStore) = BuildSut(mediator.Object, maxConcurrentDispatchedBundleRuns: 3);
+        var staged = StageOnDisk("b1", out _);
+        var handle = handleStore.Register(staged, "owner-1");
+        for (var i = 0; i < 3; i++)
+        {
+            jobStore.TryCreate(QueuedRecord($"job-{i}", handle, staged.Agent.Id, new CapabilityEnvelope()), int.MaxValue);
+            await queue.EnqueueAsync($"job-{i}", CancellationToken.None);
+        }
+
+        using var cts = new CancellationTokenSource();
+        await service.StartAsync(cts.Token);
+
+        for (var attempt = 0; attempt < 200 && Volatile.Read(ref peak) < 3; attempt++)
+            await Task.Delay(10);
+
+        release.Release(3);
+        await cts.CancelAsync();
+        await service.StopAsync(CancellationToken.None);
+
+        peak.Should().Be(3, "the dispatcher must run up to its configured degree at once");
+    }
+
+    [Fact]
+    public async Task Dispatch_NoMoreRunsExecuteAtOnceThanTheConfiguredDegree()
+    {
+        // The other half of the same property. Unbounded dispatch would let one burst of queued runs
+        // start every job simultaneously, which is what the degree exists to prevent.
+        var running = 0;
+        var peak = 0;
+        using var release = new SemaphoreSlim(0, 6);
+
+        var mediator = new Mock<IMediator>();
+        mediator.Setup(m => m.Send(It.IsAny<RunConversationCommand>(), It.IsAny<CancellationToken>()))
+            .Returns(async (RunConversationCommand _, CancellationToken _) =>
+            {
+                var now = Interlocked.Increment(ref running);
+                InterlockedMax(ref peak, now);
+                await release.WaitAsync();
+                Interlocked.Decrement(ref running);
+                return SampleResult();
+            });
+
+        var (service, queue, jobStore, handleStore) = BuildSut(mediator.Object, maxConcurrentDispatchedBundleRuns: 2);
+        var staged = StageOnDisk("b1", out _);
+        var handle = handleStore.Register(staged, "owner-1");
+        for (var i = 0; i < 6; i++)
+        {
+            jobStore.TryCreate(QueuedRecord($"job-{i}", handle, staged.Agent.Id, new CapabilityEnvelope()), int.MaxValue);
+            await queue.EnqueueAsync($"job-{i}", CancellationToken.None);
+        }
+
+        using var cts = new CancellationTokenSource();
+        await service.StartAsync(cts.Token);
+
+        // Waits for dispatch to saturate rather than sleeping a fixed interval, then gives the loop a
+        // brief window to overshoot if it is going to. All six jobs are already queued before the
+        // service starts, so an unbounded loop would have all six running by the end of that window —
+        // the recorded peak is what catches it.
+        for (var attempt = 0; attempt < 200 && Volatile.Read(ref peak) < 2; attempt++)
+            await Task.Delay(10);
+
+        await Task.Delay(50);
+
+        peak.Should().Be(2, "dispatch must reach the configured degree and must never exceed it");
+        Volatile.Read(ref running).Should().BeLessThanOrEqualTo(2);
+
+        release.Release(6);
+        await cts.CancelAsync();
+        await service.StopAsync(CancellationToken.None);
+    }
+
+    private static void InterlockedMax(ref int target, int candidate)
+    {
+        int seen;
+        while ((seen = Volatile.Read(ref target)) < candidate
+               && Interlocked.CompareExchange(ref target, candidate, seen) != seen)
+        {
+            // Another thread moved the peak while we were deciding; re-read and try again.
+        }
     }
 
     public void Dispose()
