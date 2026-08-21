@@ -1,4 +1,5 @@
 using Application.Core.Validation;
+using Domain.AI.Telemetry.Redaction;
 using Domain.Common.Config.Observability;
 using FluentAssertions;
 using Xunit;
@@ -25,7 +26,18 @@ public class LogsConfigValidatorTests
         config.MinExportLevel.Should().Be("Information");
         config.RedactionEnabled.Should().BeTrue();
         config.RedactionCategories.Should()
-            .BeEquivalentTo("Email", "Phone", "Ssn", "CreditCard", "IpAddress", "AwsKey", "JwtToken", "Generic");
+            .BeEquivalentTo("Email", "Phone", "Ssn", "CreditCard", "IpAddress", "AwsKey", "VendorApiKey", "JwtToken", "Generic");
+    }
+
+    [Fact]
+    public void DefaultValues_MatchEveryRedactionCategoryEnumMember()
+    {
+        // Same regression guard as ContentCaptureConfigValidatorTests.DefaultValues_MatchEveryRedactionCategoryEnumMember —
+        // this list is documented as mirroring ContentCaptureConfig.RedactionCategories and independently
+        // went stale for VendorApiKey in the same PR (#473's correctness review).
+        var config = new LogsConfig();
+
+        config.RedactionCategories.Should().BeEquivalentTo(Enum.GetNames<RedactionCategory>());
     }
 
     [Fact]

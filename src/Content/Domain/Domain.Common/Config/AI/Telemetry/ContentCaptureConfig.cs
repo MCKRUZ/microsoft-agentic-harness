@@ -104,6 +104,7 @@ public sealed class ContentCaptureConfig
         "CreditCard",
         "IpAddress",
         "AwsKey",
+        "VendorApiKey",
         "JwtToken",
         "Generic",
     ];

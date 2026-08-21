@@ -1,4 +1,5 @@
 using Application.Core.Validation;
+using Domain.AI.Telemetry.Redaction;
 using Domain.Common.Config.AI.Telemetry;
 using FluentAssertions;
 using Xunit;
@@ -23,7 +24,20 @@ public class ContentCaptureConfigValidatorTests
 
         config.Enabled.Should().BeFalse();
         config.RedactionCategories.Should()
-            .BeEquivalentTo("Email", "Phone", "Ssn", "CreditCard", "IpAddress", "AwsKey", "JwtToken", "Generic");
+            .BeEquivalentTo("Email", "Phone", "Ssn", "CreditCard", "IpAddress", "AwsKey", "VendorApiKey", "JwtToken", "Generic");
+    }
+
+    [Fact]
+    public void DefaultValues_MatchEveryRedactionCategoryEnumMember()
+    {
+        // Regression guard: the doc comment on RedactionCategories promises "all categories from
+        // the enum" as the default. That promise silently went false for VendorApiKey (PR #473's
+        // correctness review) because this hand-maintained list isn't derived from the enum. This
+        // test fails the next time a category is added here without a matching enum member, or
+        // vice versa, instead of only failing on the specific category someone happens to test for.
+        var config = new ContentCaptureConfig();
+
+        config.RedactionCategories.Should().BeEquivalentTo(Enum.GetNames<RedactionCategory>());
     }
 
     [Fact]

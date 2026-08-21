@@ -74,6 +74,7 @@ public sealed class LogsConfig
         "CreditCard",
         "IpAddress",
         "AwsKey",
+        "VendorApiKey",
         "JwtToken",
         "Generic",
     ];
