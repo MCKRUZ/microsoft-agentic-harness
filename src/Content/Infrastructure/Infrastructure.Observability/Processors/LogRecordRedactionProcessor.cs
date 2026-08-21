@@ -11,11 +11,13 @@ namespace Infrastructure.Observability.Processors;
 /// <summary>
 /// Scrubs PII / secret content from OpenTelemetry <see cref="LogRecord"/>s before
 /// they reach any exporter. The log-signal sibling of the span-side
-/// <see cref="PiiFilteringProcessor"/> — both reuse the harness's content redactor,
-/// but the parity is partial: <see cref="PiiFilteringProcessor"/> only deletes/hashes
-/// span tags by exact key, it does not pattern-scan span exception events the way
-/// this processor's <see cref="RedactException"/> pattern-scans a log's exception —
-/// tracked as #450.
+/// <see cref="PiiFilteringProcessor"/> — both reuse the harness's content redactor, though the two
+/// scrub at different points for the same reason: <see cref="PiiFilteringProcessor"/> only
+/// deletes/hashes span tags by exact key and cannot pattern-scan a span's exception event after the
+/// fact — <c>ActivityEvent</c> is immutable once added — so the equivalent free-text scrub for
+/// exception content on spans happens earlier, in
+/// <c>Presentation.Common.Extensions.OpenTelemetryServiceCollectionExtensions.BuildRedactingExceptionEnricher</c>,
+/// rather than in a processor here.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -51,7 +53,7 @@ namespace Infrastructure.Observability.Processors;
 public sealed class LogRecordRedactionProcessor : BaseProcessor<LogRecord>
 {
     private readonly IContentRedactionFilter _filter;
-    private readonly RedactionCategory[] _categories;
+    private readonly IReadOnlyList<RedactionCategory> _categories;
     private readonly bool _enabled;
 
     /// <summary>
@@ -79,25 +81,25 @@ public sealed class LogRecordRedactionProcessor : BaseProcessor<LogRecord>
         // redaction is requested but no category resolves, over-redact with the full set rather
         // than silently emitting unredacted PII. Matches the redactor's conservative-by-default
         // posture (a false positive that masks text is acceptable; a leaked PAN is not).
-        if (_enabled && _categories.Length == 0)
+        if (_enabled && _categories.Count == 0)
         {
-            _categories = Enum.GetValues<RedactionCategory>();
+            _categories = RedactionCategories.All;
             logger.LogWarning(
                 "Log redaction is enabled but no valid categories were configured; falling back " +
                 "to the full redaction set ({CategoryCount} categories) to avoid emitting unredacted PII.",
-                _categories.Length);
+                _categories.Count);
         }
 
         logger.LogInformation(
             "Log-record redaction initialized: enabled={Enabled}, {CategoryCount} categories active.",
             _enabled,
-            _categories.Length);
+            _categories.Count);
     }
 
     /// <inheritdoc />
     public override void OnEnd(LogRecord data)
     {
-        if (!_enabled || _categories.Length == 0 || data is null)
+        if (!_enabled || _categories.Count == 0 || data is null)
         {
             return;
         }

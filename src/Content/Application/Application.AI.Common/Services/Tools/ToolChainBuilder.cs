@@ -1,6 +1,7 @@
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Plugins;
+using Application.AI.Common.Interfaces.Telemetry;
 using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Services.Governance;
 using Domain.AI.Governance;
@@ -24,6 +25,7 @@ public partial class ToolChainBuilder : IToolChainBuilder
 {
     private readonly ILogger<ToolChainBuilder> _logger;
     private readonly IServiceProvider _serviceProvider;
+    private readonly IContentRedactionFilter _redactionFilter;
     private readonly IToolConverter? _toolConverter;
     private readonly IMcpToolProvider? _mcpToolProvider;
     private readonly IMcpToolSurfaceScanner? _surfaceScanner;
@@ -34,6 +36,7 @@ public partial class ToolChainBuilder : IToolChainBuilder
     public ToolChainBuilder(
         ILogger<ToolChainBuilder> logger,
         IServiceProvider serviceProvider,
+        IContentRedactionFilter redactionFilter,
         IToolConverter? toolConverter = null,
         IMcpToolProvider? mcpToolProvider = null,
         IMcpToolSurfaceScanner? surfaceScanner = null,
@@ -41,8 +44,11 @@ public partial class ToolChainBuilder : IToolChainBuilder
         IToolCompositionAnalyzer? compositionAnalyzer = null,
         ToolCompositionReporter? compositionReporter = null)
     {
+        ArgumentNullException.ThrowIfNull(redactionFilter);
+
         _logger = logger;
         _serviceProvider = serviceProvider;
+        _redactionFilter = redactionFilter;
         _toolConverter = toolConverter;
         _mcpToolProvider = mcpToolProvider;
         _surfaceScanner = surfaceScanner;
@@ -257,7 +263,7 @@ public partial class ToolChainBuilder : IToolChainBuilder
         var survivors = ReservedPlanCapabilityFilter.Exclude(provisioned.Select(p => p.Tool), source, _logger);
         var afterReservedFilter = KeepSurviving(provisioned, survivors);
 
-        var wrapped = WrapGoverned(afterReservedFilter.Select(p => p.Tool));
+        var wrapped = WrapGoverned(afterReservedFilter);
         return afterReservedFilter.Zip(wrapped, (p, w) => p with { Tool = w }).ToList();
     }
 
@@ -278,9 +284,17 @@ public partial class ToolChainBuilder : IToolChainBuilder
     /// Applied at this single shared builder so every agent-callable tool — keyed-DI, MCP, or
     /// skill-provided — is governed exactly once.
     /// </summary>
-    private static List<AITool> WrapGoverned(IEnumerable<AITool> tools)
-        => tools
-            .Select(t => t is AIFunction fn and not GovernedAIFunction ? new GovernedAIFunction(fn) : t)
+    /// <remarks>
+    /// Passes each tool's own <see cref="ProvisionedTool.McpServerName"/> through as
+    /// <c>isMcpSourced</c> so <see cref="GovernedAIFunction"/>'s MCP-failure-shape detection only runs
+    /// for tools that actually came from an MCP server — this is the provenance this builder already
+    /// tracks positionally (see <see cref="ProvisionedTool"/>'s remarks), not re-derived.
+    /// </remarks>
+    private List<AITool> WrapGoverned(IEnumerable<ProvisionedTool> provisioned)
+        => provisioned
+            .Select(p => p.Tool is AIFunction fn and not GovernedAIFunction
+                ? new GovernedAIFunction(fn, _redactionFilter, isMcpSourced: p.McpServerName is not null)
+                : p.Tool)
             .ToList();
 
     /// <inheritdoc />
@@ -414,7 +428,8 @@ public partial class ToolChainBuilder : IToolChainBuilder
             // Re-wrap rather than mutate: the taint is set once, in the constructor, so carrying a
             // finding discovered by THIS analysis means unwrapping to the same inner function and
             // rewrapping — never double-governing, since InnerFunction always points at the real tool.
-            return (AITool)new GovernedAIFunction(governed.Inner, new ToolCompositionTaint(findings));
+            return (AITool)new GovernedAIFunction(
+                governed.Inner, _redactionFilter, new ToolCompositionTaint(findings), governed.IsMcpSourced);
         }).ToList();
     }
 

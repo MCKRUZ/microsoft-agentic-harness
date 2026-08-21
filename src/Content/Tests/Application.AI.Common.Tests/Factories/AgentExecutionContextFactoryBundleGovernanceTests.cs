@@ -1,5 +1,6 @@
 using Application.AI.Common.Factories;
 using Application.AI.Common.Interfaces;
+using Application.AI.Common.Interfaces.Telemetry;
 using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Services.Agent;
 using Application.AI.Common.Services.Context;
@@ -16,6 +17,7 @@ using Domain.AI.Tools;
 using Domain.Common.Config;
 using Domain.Common.Config.AI;
 using FluentAssertions;
+using Infrastructure.AI.Telemetry.Redaction;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
@@ -128,6 +130,7 @@ public sealed class AgentExecutionContextFactoryBundleGovernanceTests : IDisposa
 
         var services = new ServiceCollection();
         services.AddKeyedSingleton<ITool>(AllowedTool, (_, _) => new StubTool(AllowedTool));
+        services.AddSingleton<IContentRedactionFilter>(TestRedactionFilter.Instance);
         var sp = services.BuildServiceProvider();
 
         return new AgentExecutionContextFactory(
@@ -135,7 +138,9 @@ public sealed class AgentExecutionContextFactoryBundleGovernanceTests : IDisposa
             Mock.Of<IOptionsMonitor<AppConfig>>(m => m.CurrentValue == appConfig),
             sp,
             NullLoggerFactory.Instance,
-            new ToolChainBuilder(NullLogger<ToolChainBuilder>.Instance, sp, new PassThroughToolConverter()),
+            new ToolChainBuilder(
+                NullLogger<ToolChainBuilder>.Instance, sp, TestRedactionFilter.Instance,
+                new PassThroughToolConverter()),
             new SkillPrerequisiteResolver(),
             new UnsandboxedSkillFileReader());
     }

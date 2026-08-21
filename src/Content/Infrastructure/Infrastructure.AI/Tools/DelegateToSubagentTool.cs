@@ -159,7 +159,7 @@ public sealed class DelegateToSubagentTool : ITool
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogWarning(ex, "Delegation threw; surfacing as a tool failure");
-            return ToolResult.Fail($"Delegation failed: {ex.Message}");
+            return ToolResult.Fail($"Delegation failed: {ex.GetType().Name}.");
         }
         finally
         {

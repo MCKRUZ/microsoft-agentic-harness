@@ -2,6 +2,7 @@ using Application.AI.Common.Factories;
 using Application.AI.Common.Helpers;
 using Application.AI.Common.Interfaces.Context;
 using Application.AI.Common.Interfaces.Skills;
+using Application.AI.Common.Interfaces.Telemetry;
 using Application.AI.Common.Services.Agent;
 using Application.AI.Common.Services.Context;
 using Application.AI.Common.Services.Skills;
@@ -12,6 +13,7 @@ using Domain.AI.Telemetry.Conventions;
 using Domain.Common.Config;
 using Domain.Common.Config.AI;
 using FluentAssertions;
+using Infrastructure.AI.Telemetry.Redaction;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
@@ -110,14 +112,17 @@ public sealed class AgentExecutionContextFactoryProgressiveDisclosureTests : IDi
             }
         };
         var monitor = Mock.Of<IOptionsMonitor<AppConfig>>(m => m.CurrentValue == appConfig);
-        var sp = new ServiceCollection().BuildServiceProvider();
+        var services = new ServiceCollection();
+        services.AddSingleton<IContentRedactionFilter>(TestRedactionFilter.Instance);
+        var sp = services.BuildServiceProvider();
 
         return new AgentExecutionContextFactory(
             NullLogger<AgentExecutionContextFactory>.Instance,
             monitor,
             sp,
             NullLoggerFactory.Instance,
-            new ToolChainBuilder(NullLogger<ToolChainBuilder>.Instance, sp),
+            new ToolChainBuilder(
+                NullLogger<ToolChainBuilder>.Instance, sp, sp.GetRequiredService<IContentRedactionFilter>()),
             new SkillPrerequisiteResolver(),
             new UnsandboxedSkillFileReader(),
             budgetTracker);

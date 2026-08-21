@@ -7,6 +7,10 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="Presentation.Common.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <!-- Application layer -->
     <ProjectReference Include="..\..\Application\Application.Common\Application.Common.csproj" />
     <ProjectReference Include="..\..\Application\Application.AI.Common\Application.AI.Common.csproj" />

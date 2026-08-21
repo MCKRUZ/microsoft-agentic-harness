@@ -1,7 +1,9 @@
 using Application.AI.Common.Interfaces.Governance;
+using Application.AI.Common.Interfaces.Telemetry;
 using Application.AI.Common.Services.Governance;
 using Domain.AI.Escalation;
 using Domain.AI.Governance;
+using Domain.AI.Telemetry.Redaction;
 using Microsoft.Extensions.AI;
 using System.Text.Json;
 
@@ -30,10 +32,11 @@ namespace Application.AI.Common.Services.Tools;
 /// <para>
 /// This is the invocation-time chokepoint for the agent's autonomous tool calls, applied to every
 /// converted tool regardless of source (keyed-DI, MCP, or skill-provided) — the admission check
-/// itself runs unconditionally for all three. <strong>Failure detection on a no-throw return does
-/// not share that uniformity</strong>: it can only recognize a <see cref="ConvertedToolFailure"/>,
-/// which only a keyed-DI tool converted via <c>AIToolConverter</c> can produce (see
-/// <see cref="ReportOutcomeAndApplyPolicyAsync"/>'s remarks) — tracked as #451.
+/// itself runs unconditionally for all three. Failure detection on a no-throw return recognizes two
+/// shapes: a <see cref="ConvertedToolFailure"/> (produced only by <c>AIToolConverter</c>, which every
+/// <c>ITool</c>-backed tool — keyed-DI or skill-provided — is converted through), and an MCP
+/// <c>CallToolResult</c> with <c>isError: true</c> (see <see cref="ReportOutcomeAndApplyPolicyAsync"/>'s
+/// remarks for why an MCP failure takes a different shape and how it's recognized).
 /// </para>
 /// <para>
 /// <strong>Also the carrier for tool-composition findings.</strong> <c>ToolChainBuilder</c> stamps a
@@ -52,11 +55,31 @@ internal sealed class GovernedAIFunction : DelegatingAIFunction
     private const string ReportedBy = "agent-turn";
 
     private readonly ToolCompositionTaint? _compositionTaint;
+    private readonly IContentRedactionFilter _redactionFilter;
+    private readonly bool _isMcpSourced;
 
-    public GovernedAIFunction(AIFunction innerFunction, ToolCompositionTaint? compositionTaint = null)
+    /// <param name="innerFunction">The tool function this wrapper governs.</param>
+    /// <param name="redactionFilter">Scrubs a failed call's error text before it's reported.</param>
+    /// <param name="isMcpSourced">
+    /// Whether <paramref name="innerFunction"/> came from an MCP server — <see langword="false"/> by
+    /// default, which is the safe default for any caller that does not track provenance (e.g.
+    /// <c>GoverningToolContextProvider</c>, whose <c>AIContext.Tools</c> channel has no equivalent to
+    /// <c>ToolChainBuilder</c>'s <c>ProvisionedTool.McpServerName</c>). Gates
+    /// <see cref="TryGetMcpFailureText"/> — see that method's remarks for why an ungated check is
+    /// unsafe.
+    /// </param>
+    public GovernedAIFunction(
+        AIFunction innerFunction,
+        IContentRedactionFilter redactionFilter,
+        ToolCompositionTaint? compositionTaint = null,
+        bool isMcpSourced = false)
         : base(innerFunction)
     {
+        ArgumentNullException.ThrowIfNull(redactionFilter);
+
+        _redactionFilter = redactionFilter;
         _compositionTaint = compositionTaint;
+        _isMcpSourced = isMcpSourced;
     }
 
     /// <summary>
@@ -68,6 +91,13 @@ internal sealed class GovernedAIFunction : DelegatingAIFunction
     /// the base member itself.
     /// </summary>
     internal AIFunction Inner => InnerFunction;
+
+    /// <summary>
+    /// Carries <see cref="_isMcpSourced"/> across a composition-taint rewrap, for the same reason
+    /// <see cref="Inner"/> exists — <c>ToolChainBuilder.ApplyCompositionTaint</c> constructs a new
+    /// instance around the same inner function and must not silently reset this to its default.
+    /// </summary>
+    internal bool IsMcpSourced => _isMcpSourced;
 
     protected override async ValueTask<object?> InvokeCoreAsync(
         AIFunctionArguments arguments,
@@ -105,39 +135,84 @@ internal sealed class GovernedAIFunction : DelegatingAIFunction
 
     /// <summary>
     /// Reports what a no-throw return actually was — Succeeded, or Failed with the tool's own error
-    /// text when <paramref name="result"/> unwraps to a <see cref="ConvertedToolFailure"/> — then
-    /// applies output policy to the unwrapped value.
+    /// text (redacted before it leaves this method) — then applies output policy to the unwrapped
+    /// value.
     /// </summary>
     /// <remarks>
-    /// A <see cref="ConvertedToolFailure"/> came from <c>AIToolConverter</c>'s <c>ToolResult.Fail</c>
-    /// flattening — reported <see cref="EscalationExecutionStatus.Failed"/> with the tool's own error
-    /// text, the same status <c>DirectToolInvoker</c> already reports for the identical case. Every
-    /// other <see cref="AIFunction"/> source (MCP-provided, skill-provided) has no equivalent marker —
-    /// a non-throwing failure from one of those is still reported
-    /// <see cref="EscalationExecutionStatus.Succeeded"/>, since <see cref="ConvertedToolFailure"/> is
-    /// only ever produced by <c>AIToolConverter</c> (and only survives to here because it pairs the
-    /// marker with a <c>MarshalResult</c> delegate that bypasses the framework's default JSON
-    /// serialization — see the marker's own remarks). Fixing that would mean changing what every tool
-    /// source signals on failure, which is out of scope here — this closes the gap for ITool-backed
-    /// tools specifically, per the converter-wide framing the fix was scoped to. Tracked separately
-    /// as #451.
+    /// Two failure shapes are recognized. A <see cref="ConvertedToolFailure"/> came from
+    /// <c>AIToolConverter</c>'s <c>ToolResult.Fail</c> flattening — every <c>ITool</c>-backed tool,
+    /// keyed-DI or skill-provided, is converted through <c>AIToolConverter</c>, so this covers both.
+    /// An MCP-provided tool has no such marker: confirmed against the MCP C# SDK's
+    /// <c>McpClientTool.InvokeCoreAsync</c> source, a tool call whose <c>CallToolResult.IsError</c> is
+    /// <see langword="true"/> returns normally — <c>JsonSerializer.SerializeToElement(result, ...)</c>
+    /// — it never throws. <see cref="TryGetMcpFailureText"/> recognizes that shape by structure
+    /// (<c>isError</c> + <c>content</c>, the MCP wire shape) rather than by depending on the MCP
+    /// client SDK's own types, keeping this generic invocation chokepoint free of a dependency on one
+    /// specific tool source's protocol library — but only runs when <see cref="_isMcpSourced"/> says
+    /// this instance actually wraps an MCP tool: a keyed-DI or skill-provided tool whose own genuine
+    /// success payload happens to be a JSON object shaped <c>{"isError":true,"content":[...]}</c> for
+    /// unrelated business reasons must not be misreported as a failed call — the same "shared field,
+    /// two meanings depending on the producer" trap this repo's own CLAUDE.md already tracks. Both
+    /// failure shapes report <see cref="EscalationExecutionStatus.Failed"/> with the tool's own error
+    /// text — the same status <c>DirectToolInvoker</c> already reports for the identical case — through
+    /// the redaction filter first: this text is about to reach the audit trail, the failure memory
+    /// replayed to a human approver, and the AG-UI event stream, none of which have seen the
+    /// classification gate's redaction verdict the way
+    /// <see cref="IToolCallAdmissionPipeline.ApplyOutputPolicy"/>'s model-facing copy does below.
     /// </remarks>
     private async ValueTask<object?> ReportOutcomeAndApplyPolicyAsync(
         IToolCallAdmissionPipeline admissionPipeline, ToolCallAdmission admission, object? result)
     {
-        // failure.ErrorText is reported to ReportExecutionAsync before ApplyOutputPolicy runs below,
-        // so the classification gate's redaction verdict reaches the model-facing copy but not this
-        // one — matching DirectToolInvoker's identical reporting shape (result.Error, same ordering)
-        // rather than a gap this method introduces. Tracked as #452.
         var failure = result as ConvertedToolFailure;
+        var failureText = failure?.ErrorText ?? (_isMcpSourced ? TryGetMcpFailureText(result) : null);
+
         await admissionPipeline.ReportExecutionAsync(
             admission,
-            failure is null
+            failureText is null
                 ? new ToolExecutionReport(EscalationExecutionStatus.Succeeded, null, null)
-                : new ToolExecutionReport(EscalationExecutionStatus.Failed, failure.ErrorText, null),
+                : new ToolExecutionReport(
+                    EscalationExecutionStatus.Failed,
+                    _redactionFilter.Redact(ReportedFailureText.Cap(failureText), RedactionCategories.All),
+                    null),
             ReportedBy, CancellationToken.None).ConfigureAwait(false);
 
         return admissionPipeline.ApplyOutputPolicy(admission, Name, Unwrap(result));
+    }
+
+    /// <summary>
+    /// Recognizes an MCP tool failure by the shape the protocol actually puts on the wire — a JSON
+    /// object with <c>isError: true</c> and a <c>content</c> array of text blocks — without taking a
+    /// dependency on the MCP client SDK's <c>CallToolResult</c> type in this generic, source-agnostic
+    /// invocation chokepoint. Returns <see langword="null"/> for anything that isn't that shape,
+    /// including a genuine success (which reaches here as a <see cref="JsonElement"/> too, just
+    /// without <c>isError: true</c>).
+    /// </summary>
+    /// <remarks>
+    /// This is a structural, not a provenance, check — it recognizes the MCP wire shape wherever it
+    /// appears, and cannot on its own tell an MCP tool's genuine failure from some other tool's genuine
+    /// success that happens to be a JSON object using the same field names for unrelated reasons.
+    /// Callers must gate this on actually knowing the result came from an MCP tool (see
+    /// <see cref="_isMcpSourced"/>) rather than calling it unconditionally on every result.
+    /// </remarks>
+    private static string? TryGetMcpFailureText(object? result)
+    {
+        if (result is not JsonElement { ValueKind: JsonValueKind.Object } element)
+            return null;
+
+        if (!element.TryGetProperty("isError", out var isError) || isError.ValueKind != JsonValueKind.True)
+            return null;
+
+        if (element.TryGetProperty("content", out var content) && content.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var block in content.EnumerateArray())
+            {
+                if (block.ValueKind == JsonValueKind.Object
+                    && block.TryGetProperty("text", out var text) && text.ValueKind == JsonValueKind.String)
+                    return text.GetString();
+            }
+        }
+
+        return "MCP tool reported failure with no message.";
     }
 
     /// <summary>

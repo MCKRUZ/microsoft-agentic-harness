@@ -95,7 +95,7 @@ public sealed class PolicyGate : IChangeProposalGate
                     "Policy '{PolicyKey}' threw evaluating proposal {ProposalId}.",
                     policy.Key,
                     proposal.Id);
-                return GateResult.Fail($"Policy '{policy.Key}' threw: {ex.GetType().Name}: {ex.Message}");
+                return GateResult.Fail($"Policy '{policy.Key}' threw: {ex.GetType().Name}.");
             }
 
             allFindings.AddRange(findings);

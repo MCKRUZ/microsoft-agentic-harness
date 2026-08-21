@@ -85,7 +85,7 @@ public sealed class SelfValidationGate : IChangeProposalGate
                     "Validator '{ValidatorKey}' threw evaluating proposal {ProposalId}.",
                     validator.Key,
                     proposal.Id);
-                return GateResult.Fail($"Validator '{validator.Key}' threw: {ex.GetType().Name}: {ex.Message}");
+                return GateResult.Fail($"Validator '{validator.Key}' threw: {ex.GetType().Name}.");
             }
 
             switch (result.Action)

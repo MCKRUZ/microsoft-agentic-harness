@@ -163,7 +163,12 @@ public class DelegateToSubagentToolTests
         var result = await BuildTool().ExecuteAsync("delegate", Params(("task", "x")));
 
         result.Success.Should().BeFalse();
-        result.Error.Should().Contain("boom");
+        // The exception's own message is never surfaced — only its type name, matching the
+        // convention MediatorDispatchRunner/WorkspaceCommandRunner already use, because the raw
+        // message can carry a secret (connection string, SAS token) this test's own "boom" stands
+        // in for. "boom" must NOT reach the caller.
+        result.Error.Should().Contain(nameof(InvalidOperationException));
+        result.Error.Should().NotContain("boom");
     }
 
     [Fact]

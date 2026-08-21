@@ -1,11 +1,13 @@
 using System.Diagnostics;
 using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Governance;
+using Application.AI.Common.Interfaces.Telemetry;
 using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Services.Governance;
 using Domain.AI.Escalation;
 using Domain.AI.Governance;
 using Domain.AI.Models;
+using Domain.AI.Telemetry.Redaction;
 using Domain.Common.Config.AI.DirectToolInvocation;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -61,6 +63,7 @@ public sealed partial class DirectToolInvoker : IDirectToolInvoker
     private readonly IToolCatalog _catalog;
     private readonly ICompositeResponseSanitizer _sanitizer;
     private readonly IOptionsMonitor<DirectToolInvocationConfig> _config;
+    private readonly IContentRedactionFilter _redactionFilter;
     private readonly ILogger<DirectToolInvoker> _logger;
 
     /// <summary>Initializes the invoker.</summary>
@@ -68,24 +71,28 @@ public sealed partial class DirectToolInvoker : IDirectToolInvoker
     /// <param name="catalog">Resolves the tool, filtered to the caller's grant.</param>
     /// <param name="sanitizer">Scrubs everything leaving the trust boundary.</param>
     /// <param name="config">The host's direct-invocation settings, read per request.</param>
+    /// <param name="redactionFilter">Scrubs a failed call's error text before it reaches the audit trail.</param>
     /// <param name="logger">Records denials, faults, and the governance trace.</param>
     public DirectToolInvoker(
         IServiceScopeFactory scopeFactory,
         IToolCatalog catalog,
         ICompositeResponseSanitizer sanitizer,
         IOptionsMonitor<DirectToolInvocationConfig> config,
+        IContentRedactionFilter redactionFilter,
         ILogger<DirectToolInvoker> logger)
     {
         ArgumentNullException.ThrowIfNull(scopeFactory);
         ArgumentNullException.ThrowIfNull(catalog);
         ArgumentNullException.ThrowIfNull(sanitizer);
         ArgumentNullException.ThrowIfNull(config);
+        ArgumentNullException.ThrowIfNull(redactionFilter);
         ArgumentNullException.ThrowIfNull(logger);
 
         _scopeFactory = scopeFactory;
         _catalog = catalog;
         _sanitizer = sanitizer;
         _config = config;
+        _redactionFilter = redactionFilter;
         _logger = logger;
     }
 
@@ -271,7 +278,10 @@ public sealed partial class DirectToolInvoker : IDirectToolInvoker
                 ? new ToolExecutionReport(EscalationExecutionStatus.Succeeded, null, null)
                 : new ToolExecutionReport(
                     EscalationExecutionStatus.Failed,
-                    result.Error ?? "the tool reported failure with no message", null))
+                    _redactionFilter.Redact(
+                        ReportedFailureText.Cap(result.Error ?? "the tool reported failure with no message"),
+                        RedactionCategories.All),
+                    null))
             .ConfigureAwait(false);
 
         sw.Stop();

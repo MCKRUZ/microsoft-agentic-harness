@@ -99,7 +99,7 @@ public abstract class BlockingProxyTool : ITool
         }
         catch (InvalidOperationException ex)
         {
-            return ToolResult.Fail(ex.Message);
+            return ToolResult.Fail($"{Name} invocation failed: {ex.GetType().Name}.");
         }
     }
 

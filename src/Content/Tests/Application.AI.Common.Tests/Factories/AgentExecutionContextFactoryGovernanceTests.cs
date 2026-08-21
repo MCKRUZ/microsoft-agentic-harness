@@ -2,6 +2,7 @@ using Application.AI.Common.Factories;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Plugins;
 using Application.AI.Common.Interfaces.Skills;
+using Application.AI.Common.Interfaces.Telemetry;
 using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Services.Skills;
 using Application.AI.Common.Services.Tools;
@@ -10,6 +11,7 @@ using Domain.Common.Config;
 using Domain.Common.Config.AI;
 using Domain.Common.Config.AI.Plugins;
 using FluentAssertions;
+using Infrastructure.AI.Telemetry.Redaction;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -46,11 +48,13 @@ public sealed class AgentExecutionContextFactoryGovernanceTests
 
         var services = new ServiceCollection();
         services.AddSingleton(_pluginRegistry.Object);
+        services.AddSingleton<IContentRedactionFilter>(TestRedactionFilter.Instance);
         var sp = services.BuildServiceProvider();
 
         var toolChainBuilder = new ToolChainBuilder(
             NullLogger<ToolChainBuilder>.Instance,
             sp,
+            sp.GetRequiredService<IContentRedactionFilter>(),
             mcpToolProvider: _mcpToolProvider.Object);
 
         return new AgentExecutionContextFactory(

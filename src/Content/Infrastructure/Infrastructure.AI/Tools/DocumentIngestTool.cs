@@ -129,7 +129,8 @@ public sealed class DocumentIngestTool : ITool
         }
         catch (ArgumentException ex)
         {
-            return ToolResult.Fail(ex.Message);
+            _logger.LogWarning(ex, "Ingest arguments rejected");
+            return ToolResult.Fail($"Invalid ingest arguments: {ex.GetType().Name}.");
         }
     }
 

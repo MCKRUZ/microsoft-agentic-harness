@@ -9,6 +9,7 @@ using Domain.Common.Config.AI.Plugins;
 using FluentAssertions;
 using Infrastructure.AI.Plugins;
 using Infrastructure.AI.Skills;
+using Infrastructure.AI.Telemetry.Redaction;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -146,6 +147,7 @@ public sealed class PluginGovernanceWiringTests : IDisposable
         var builder = new ToolChainBuilder(
             NullLogger<ToolChainBuilder>.Instance,
             services.BuildServiceProvider(),
+            new DefaultContentRedactionFilter(),
             toolConverter: null,
             mcpToolProvider: mcpProvider.Object);
 

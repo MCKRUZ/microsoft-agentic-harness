@@ -45,11 +45,20 @@ public sealed class RequestTracingBehavior<TRequest, TResponse>
         }
         catch (Exception ex)
         {
-            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+            // Type name only, never ex.Message — this behavior wraps every command/query in the
+            // app, so a request handler that throws with a secret in its message (connection
+            // string, SAS token) must not have that message land in the exported span. Matches
+            // the convention MediatorDispatchRunner/WorkspaceCommandRunner already use; this file
+            // (Application.Common) has no reachable IContentRedactionFilter — that interface lives
+            // in Application.AI.Common, a layer above this one — so pattern-based redaction isn't
+            // an option here without moving the interface, which is a bigger architectural change
+            // than this fix.
+            var typeName = ex.GetType().Name;
+            activity?.SetStatus(ActivityStatusCode.Error, typeName);
             activity?.AddEvent(new ActivityEvent("exception", tags: new ActivityTagsCollection
             {
                 { "exception.type", ex.GetType().FullName },
-                { "exception.message", ex.Message }
+                { "exception.message", typeName }
             }));
             throw;
         }

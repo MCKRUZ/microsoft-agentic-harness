@@ -166,7 +166,8 @@ public sealed class RestrictedSearchTool : ITool
         }
         catch (Exception ex)
         {
-            return ToolResult.Fail($"Invalid path: {ex.Message}");
+            _logger.LogWarning(ex, "Path resolution rejected for working directory or trace root");
+            return ToolResult.Fail($"Invalid path: {ex.GetType().Name}.");
         }
 
         if (!IsPathSafe(resolvedWorkingDir, resolvedRoot))
@@ -215,7 +216,8 @@ public sealed class RestrictedSearchTool : ITool
         }
         catch (Exception ex)
         {
-            return ToolResult.Fail($"Failed to start process '{binary}': {ex.Message}");
+            _logger.LogWarning(ex, "Failed to start restricted process {Binary}", binary);
+            return ToolResult.Fail($"Failed to start process '{binary}': {ex.GetType().Name}.");
         }
 
         // Step 5: Output cap + timeout (both stdout and stderr capped to prevent OOM)

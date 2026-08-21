@@ -120,7 +120,7 @@ public sealed class DocumentSearchTool : ITool
         }
         catch (ArgumentException ex)
         {
-            return ToolResult.Fail(ex.Message);
+            return ToolResult.Fail($"Invalid search arguments: {ex.GetType().Name}.");
         }
     }
 

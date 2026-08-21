@@ -1,6 +1,8 @@
 using Application.AI.Common.Interfaces.Governance;
+using Application.AI.Common.Interfaces.Telemetry;
 using Application.AI.Common.Services.Governance;
 using Application.AI.Common.Services.Tools;
+using Infrastructure.AI.Telemetry.Redaction;
 using Microsoft.Extensions.AI;
 using Moq;
 using Xunit;
@@ -21,6 +23,8 @@ namespace Application.AI.Common.Tests.Governance;
 /// </remarks>
 public sealed class GovernedAIFunctionClassificationTests
 {
+    private static readonly IContentRedactionFilter RedactionFilter = TestRedactionFilter.Instance;
+
     private static (AIFunction inner, Func<bool> wasInvoked) MakeInner()
     {
         var invoked = false;
@@ -43,7 +47,7 @@ public sealed class GovernedAIFunctionClassificationTests
     private static async Task<object?> InvokeUnder(IToolCallAdmissionPipeline pipeline, AIFunction inner)
     {
         using var armed = ToolAdmissionAccessor.Begin(pipeline);
-        return await new GovernedAIFunction(inner).InvokeAsync(new AIFunctionArguments(), CancellationToken.None);
+        return await new GovernedAIFunction(inner, RedactionFilter).InvokeAsync(new AIFunctionArguments(), CancellationToken.None);
     }
 
     [Fact]
@@ -109,7 +113,7 @@ public sealed class GovernedAIFunctionClassificationTests
     {
         var (inner, wasInvoked) = MakeInner();
 
-        var result = await new GovernedAIFunction(inner)
+        var result = await new GovernedAIFunction(inner, RedactionFilter)
             .InvokeAsync(new AIFunctionArguments(), CancellationToken.None);
 
         Assert.True(wasInvoked());

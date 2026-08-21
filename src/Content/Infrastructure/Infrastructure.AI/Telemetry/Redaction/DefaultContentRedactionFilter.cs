@@ -131,9 +131,15 @@ public sealed class DefaultContentRedactionFilter : IContentRedactionFilter
         return b.ToImmutable();
     }
 
+    // A caller-supplied match timeout, not just RegexOptions.Compiled: none of the built-in patterns
+    // are catastrophically backtracking (bounded repetition throughout), but content reaching this
+    // filter can originate from an external MCP server the caller does not control, so a timeout is
+    // defense in depth against a future rule — or a consumer's own added rule — that isn't as careful.
+    private static readonly TimeSpan MatchTimeout = TimeSpan.FromMilliseconds(200);
+
     private static CompiledRule Compile(RedactionCategory category, string pattern, string replacement)
         => new(category,
-            new Regex(pattern, RegexOptions.Compiled | RegexOptions.CultureInvariant),
+            new Regex(pattern, RegexOptions.Compiled | RegexOptions.CultureInvariant, MatchTimeout),
             replacement);
 
     private sealed record CompiledRule(RedactionCategory Category, Regex Pattern, string Replacement);
