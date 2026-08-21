@@ -38,6 +38,16 @@ internal static class ReportedFailureText
         "[tool failure text withheld: sanitization removed all content]";
 
     /// <summary>
+    /// Substituted instead of running the full sanitize/redact pass over an implausibly large failure
+    /// message. Bounds worst-case regex-scan cost on a remotely-triggered, attacker-controlled string
+    /// before any of the several dozen patterns in the sanitizer/redaction chain run.
+    /// </summary>
+    private const int MaxScanLength = 64 * 1024;
+
+    private static readonly string OversizedInputPlaceholder =
+        $"[tool failure text withheld: exceeded {MaxScanLength} characters]";
+
+    /// <summary>
     /// Runs <paramref name="text"/> through sanitize → redact → cap, in that order, and returns the
     /// result — safe to persist to the audit trail, replay to a human approver, or hand back to the
     /// model on a retry.
@@ -52,12 +62,14 @@ internal static class ReportedFailureText
     /// <param name="toolName">The tool that produced <paramref name="text"/>, passed to the sanitizer as context.</param>
     /// <remarks>
     /// <para>
-    /// <strong>Sanitize before redact.</strong> The sanitizer's injection scrubber strips invisible and
-    /// zero-width characters as part of canonicalizing the text. Running it first means the redaction
-    /// filter's anchored patterns see the canonical form — an attacker cannot defeat an AWS-key pattern
-    /// by interleaving zero-width characters into it and having the pattern miss. Redacting first would
-    /// hand the sanitizer already-inert <c>[REDACTED:...]</c> placeholders to match against, which helps
-    /// nothing.
+    /// <strong>Sanitize before redact.</strong> Sanitizing first means an injection payload is stripped
+    /// before the text is ever persisted or redacted, and it means redaction runs against the sanitizer's
+    /// output rather than the other way round — redacting first would hand the sanitizer already-inert
+    /// <c>[REDACTED:...]</c> placeholders to scan, which helps nothing. This is <em>not</em> a defense
+    /// against a secret split by invisible/zero-width characters: the sanitizer's injection scrubber
+    /// substitutes a visible marker for those characters rather than removing them, so a split secret
+    /// currently survives (unchanged from before this method existed) — tracked separately, this ordering
+    /// does not close that gap on its own.
     /// </para>
     /// <para>
     /// <strong>Cap last.</strong> Capping first can slice a real secret in half at the length boundary,
@@ -69,6 +81,14 @@ internal static class ReportedFailureText
     public static string PrepareForReporting(
         string text, ICompositeResponseSanitizer sanitizer, IContentRedactionFilter redactionFilter, string? toolName)
     {
+        // Bounds the cost of every pattern in the sanitizer/redaction chain before any of them run,
+        // rather than only after — the 4096-char Cap() below still applies to the result, but that cap
+        // does nothing to bound how much text the dozens of regex passes upstream of it must scan.
+        if (text.Length > MaxScanLength)
+        {
+            return OversizedInputPlaceholder;
+        }
+
         var sanitized = sanitizer.Sanitize(text, toolName).SanitizedContent;
         if (string.IsNullOrWhiteSpace(sanitized))
         {

@@ -14,6 +14,20 @@ namespace Application.AI.Common.Services.Agent;
 /// </summary>
 /// <remarks>
 /// <para>
+/// <strong>Known limitation: admission is governed here, MCP failure detection is not.</strong> This
+/// channel carries no equivalent of <c>ToolChainBuilder.ProvisionedTool.McpServerName</c> — a
+/// tool's provenance is not tracked once it reaches <c>AIContext.Tools</c> — so <see cref="Govern"/>
+/// never wraps a tool in <see cref="McpFailureNormalizingAIFunction"/> the way
+/// <see cref="ToolChainBuilder.WrapGoverned"/> does. A consumer whose own <see cref="AIContextProvider"/>
+/// contributes an MCP-backed <see cref="AIFunction"/> onto this channel gets admission enforcement, but
+/// that tool's non-throwing MCP failure is never normalized to <c>ConvertedToolFailure</c> and is
+/// reported <c>Succeeded</c> — the consumer must wrap such a tool in
+/// <see cref="McpFailureNormalizingAIFunction"/> themselves before contributing it here. No production
+/// path in this harness does this today (confirmed: <c>IMcpToolProvider</c> is only consumed from
+/// <see cref="ToolChainBuilder"/>), so this is a documented gap rather than a live one — but it is a
+/// template other consumers extend, so it is written down rather than left implicit.
+/// </para>
+/// <para>
 /// Register this provider <em>last</em> in the <c>AIContextProviders</c> list (after the skills
 /// provider and <see cref="ToolPermissionFilter"/>) so it sees the final, filtered tool set.
 /// Already-wrapped functions and non-function tools pass through unchanged, so it composes safely

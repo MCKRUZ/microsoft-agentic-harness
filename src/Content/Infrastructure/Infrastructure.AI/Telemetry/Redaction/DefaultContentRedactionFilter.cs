@@ -87,9 +87,14 @@ public sealed class DefaultContentRedactionFilter : IContentRedactionFilter
             @"\bgithub_pat_[A-Za-z0-9_]{22,}\b",
             "[REDACTED:VendorApiKey]"));
 
-        // Slack bot/user/app/refresh tokens.
+        // Slack bot/user/app/refresh/legacy tokens (xoxb-, xoxp-, xoxa-, xoxr-, xoxs-, xoxe-).
         b.Add(Compile(RedactionCategory.VendorApiKey,
-            @"\bxox[baprs]-[A-Za-z0-9-]+\b",
+            @"\bxox[baprse]-[A-Za-z0-9-]+\b",
+            "[REDACTED:VendorApiKey]"));
+
+        // Slack app-level tokens — a distinct prefix shape from the xox* family above.
+        b.Add(Compile(RedactionCategory.VendorApiKey,
+            @"\bxapp-[A-Za-z0-9-]+\b",
             "[REDACTED:VendorApiKey]"));
 
         // Emails — RFC 5322 simplified.

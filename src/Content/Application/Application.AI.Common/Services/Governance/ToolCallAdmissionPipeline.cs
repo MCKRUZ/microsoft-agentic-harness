@@ -284,11 +284,16 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
             // #460: the tool's raw failure text is sanitized, redacted, and bounded exactly once, here
             // — the chokepoint every reporting path already funnels through — rather than by each
             // caller. See ReportedFailureText.PrepareForReporting for the ordering rationale.
+            //
+            // Prepared through SafePrepareFailureText, not called inline: an argument expression runs
+            // before ReportFailedAsync's own body, so a throw here — a regex match timeout, or any
+            // exception a consumer-supplied ICompositeResponseSanitizer/IContentRedactionFilter could
+            // raise — would otherwise escape this method entirely, breaking the must-not-throw contract
+            // both GovernedAIFunction and DirectToolInvoker rely on (see their own remarks) and losing
+            // the audit write and approver notification with no compensating log.
             { Status: EscalationExecutionStatus.Failed, FailureReason: { } reason } =>
                 _executionReporter.ReportFailedAsync(
-                    call,
-                    ReportedFailureText.PrepareForReporting(reason, _sanitizer, _redactionFilter, report.ToolName),
-                    reportedBy, cancellationToken),
+                    call, SafePrepareFailureText(reason, report.ToolName), reportedBy, cancellationToken),
             { Status: EscalationExecutionStatus.NeverExecuted, NotExecutedReason: { } notExecuted } =>
                 _executionReporter.ReportNotExecutedAsync(call, notExecuted, reportedBy, cancellationToken),
             // An incoherent report (Failed with no reason, NeverExecuted with no reason) is a
@@ -296,6 +301,28 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
             // execution-reporting path with no must-not-throw contract protecting it yet.
             _ => ValueTask.CompletedTask
         };
+    }
+
+    /// <summary>
+    /// Wraps <see cref="ReportedFailureText.PrepareForReporting"/> so a failure in sanitizing or
+    /// redacting a tool's failure text degrades to a withheld-text placeholder instead of throwing —
+    /// restoring this method's own must-not-throw contract, which an argument-position call would
+    /// otherwise bypass entirely (the exception would propagate before <see cref="ReportExecutionAsync"/>
+    /// ever reaches its own body). Fails closed: never returns the raw, untreated text on this path.
+    /// </summary>
+    private string SafePrepareFailureText(string reason, string? toolName)
+    {
+        try
+        {
+            return ReportedFailureText.PrepareForReporting(reason, _sanitizer, _redactionFilter, toolName);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex,
+                "Failed to sanitize/redact failure text for {ToolName}; withholding raw text from the report",
+                toolName);
+            return "[tool failure text withheld: sanitization or redaction failed]";
+        }
     }
 
     /// <inheritdoc />
