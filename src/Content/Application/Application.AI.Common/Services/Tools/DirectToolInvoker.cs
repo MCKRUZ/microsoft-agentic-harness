@@ -278,9 +278,10 @@ public sealed partial class DirectToolInvoker : IDirectToolInvoker
                 ? new ToolExecutionReport(EscalationExecutionStatus.Succeeded, null, null)
                 : new ToolExecutionReport(
                     EscalationExecutionStatus.Failed,
-                    _redactionFilter.Redact(
-                        ReportedFailureText.Cap(result.Error ?? "the tool reported failure with no message"),
-                        RedactionCategories.All),
+                    ReportedFailureText.Cap(
+                        _redactionFilter.Redact(
+                            result.Error ?? "the tool reported failure with no message",
+                            RedactionCategories.All)),
                     null))
             .ConfigureAwait(false);
 

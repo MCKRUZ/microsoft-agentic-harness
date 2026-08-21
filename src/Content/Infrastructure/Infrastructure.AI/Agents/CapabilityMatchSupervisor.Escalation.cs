@@ -2,6 +2,7 @@ using System.Diagnostics;
 using Application.AI.Common.Interfaces.Escalation;
 using Application.AI.Common.OpenTelemetry.Metrics;
 using Application.AI.Common.Services;
+using Application.AI.Common.Services.Tools;
 using Domain.Common.Helpers;
 using Domain.AI.Agents;
 using Domain.AI.Escalation;
@@ -275,7 +276,7 @@ public sealed partial class CapabilityMatchSupervisor
             // convention MediatorDispatchRunner/WorkspaceCommandRunner already use.
             _logger.LogError(ex, "Delegation {DelegationId} to {AgentId} failed",
                 delegationId, selection.SelectedAgent.AgentId);
-            var reason = $"Delegation failed: {ex.GetType().Name}.";
+            var reason = SafeFailureText.For("Delegation failed", ex);
             await RecordFailure(pendingRecord, reason, ct);
             return DelegationResult.Fail(reason);
         }

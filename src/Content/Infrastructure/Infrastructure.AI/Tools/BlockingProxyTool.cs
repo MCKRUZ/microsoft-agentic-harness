@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Application.AI.Common.Interfaces.Tools;
+using Application.AI.Common.Services.Tools;
 using Domain.AI.Changes;
 using Domain.AI.Models;
 
@@ -99,7 +100,7 @@ public abstract class BlockingProxyTool : ITool
         }
         catch (InvalidOperationException ex)
         {
-            return ToolResult.Fail($"{Name} invocation failed: {ex.GetType().Name}.");
+            return ToolResult.Fail(SafeFailureText.For($"{Name} invocation failed", ex));
         }
     }
 

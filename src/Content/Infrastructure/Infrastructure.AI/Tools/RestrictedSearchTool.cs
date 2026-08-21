@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text;
 using Application.AI.Common.Interfaces.Tools;
+using Application.AI.Common.Services.Tools;
 using Domain.AI.Changes;
 using Domain.AI.Models;
 using Domain.AI.Sandbox;
@@ -167,7 +168,7 @@ public sealed class RestrictedSearchTool : ITool
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Path resolution rejected for working directory or trace root");
-            return ToolResult.Fail($"Invalid path: {ex.GetType().Name}.");
+            return ToolResult.Fail(SafeFailureText.For("Invalid path", ex));
         }
 
         if (!IsPathSafe(resolvedWorkingDir, resolvedRoot))
@@ -217,7 +218,7 @@ public sealed class RestrictedSearchTool : ITool
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Failed to start restricted process {Binary}", binary);
-            return ToolResult.Fail($"Failed to start process '{binary}': {ex.GetType().Name}.");
+            return ToolResult.Fail(SafeFailureText.For($"Failed to start process '{binary}'", ex));
         }
 
         // Step 5: Output cap + timeout (both stdout and stderr capped to prevent OOM)

@@ -1,4 +1,5 @@
 using Application.AI.Common.Interfaces.Changes;
+using Application.AI.Common.Services.Tools;
 using Domain.Common.Helpers;
 using Domain.AI.Changes;
 using Domain.Common.Config;
@@ -95,7 +96,7 @@ public sealed class PolicyGate : IChangeProposalGate
                     "Policy '{PolicyKey}' threw evaluating proposal {ProposalId}.",
                     policy.Key,
                     proposal.Id);
-                return GateResult.Fail($"Policy '{policy.Key}' threw: {ex.GetType().Name}.");
+                return GateResult.Fail(SafeFailureText.For($"Policy '{policy.Key}' threw", ex));
             }
 
             allFindings.AddRange(findings);

@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Application.AI.Common.Interfaces.Tools;
+using Application.AI.Common.Services.Tools;
 using Application.Core.CQRS.RAG.IngestDocument;
 using Domain.AI.Changes;
 using Domain.Common.Config.AI.Governance;
@@ -130,7 +131,7 @@ public sealed class DocumentIngestTool : ITool
         catch (ArgumentException ex)
         {
             _logger.LogWarning(ex, "Ingest arguments rejected");
-            return ToolResult.Fail($"Invalid ingest arguments: {ex.GetType().Name}.");
+            return ToolResult.Fail(SafeFailureText.For("Invalid ingest arguments", ex));
         }
     }
 

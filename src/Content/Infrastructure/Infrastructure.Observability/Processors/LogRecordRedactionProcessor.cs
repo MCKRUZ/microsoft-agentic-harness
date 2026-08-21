@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using Application.AI.Common.Interfaces.Telemetry;
 using Domain.Common.Helpers;
 using Domain.AI.Telemetry.Redaction;
@@ -53,7 +54,7 @@ namespace Infrastructure.Observability.Processors;
 public sealed class LogRecordRedactionProcessor : BaseProcessor<LogRecord>
 {
     private readonly IContentRedactionFilter _filter;
-    private readonly IReadOnlyList<RedactionCategory> _categories;
+    private readonly ImmutableArray<RedactionCategory> _categories;
     private readonly bool _enabled;
 
     /// <summary>
@@ -81,25 +82,25 @@ public sealed class LogRecordRedactionProcessor : BaseProcessor<LogRecord>
         // redaction is requested but no category resolves, over-redact with the full set rather
         // than silently emitting unredacted PII. Matches the redactor's conservative-by-default
         // posture (a false positive that masks text is acceptable; a leaked PAN is not).
-        if (_enabled && _categories.Count == 0)
+        if (_enabled && _categories.Length == 0)
         {
             _categories = RedactionCategories.All;
             logger.LogWarning(
                 "Log redaction is enabled but no valid categories were configured; falling back " +
                 "to the full redaction set ({CategoryCount} categories) to avoid emitting unredacted PII.",
-                _categories.Count);
+                _categories.Length);
         }
 
         logger.LogInformation(
             "Log-record redaction initialized: enabled={Enabled}, {CategoryCount} categories active.",
             _enabled,
-            _categories.Count);
+            _categories.Length);
     }
 
     /// <inheritdoc />
     public override void OnEnd(LogRecord data)
     {
-        if (!_enabled || _categories.Count == 0 || data is null)
+        if (!_enabled || _categories.Length == 0 || data is null)
         {
             return;
         }
@@ -234,7 +235,7 @@ public sealed class LogRecordRedactionProcessor : BaseProcessor<LogRecord>
     /// (<c>LogsConfigValidator</c>) already rejects unknown names, so this is defence in
     /// depth for hosts that bypass the validated-options pipeline.
     /// </summary>
-    private static RedactionCategory[] ParseCategories(
+    private static ImmutableArray<RedactionCategory> ParseCategories(
         IReadOnlyList<string>? names,
         ILogger logger)
     {

@@ -172,7 +172,7 @@ internal sealed class GovernedAIFunction : DelegatingAIFunction
                 ? new ToolExecutionReport(EscalationExecutionStatus.Succeeded, null, null)
                 : new ToolExecutionReport(
                     EscalationExecutionStatus.Failed,
-                    _redactionFilter.Redact(ReportedFailureText.Cap(failureText), RedactionCategories.All),
+                    ReportedFailureText.Cap(_redactionFilter.Redact(failureText, RedactionCategories.All)),
                     null),
             ReportedBy, CancellationToken.None).ConfigureAwait(false);
 

@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using Application.AI.Common.Interfaces.RAG;
 using Application.AI.Common.Interfaces.Tools;
+using Application.AI.Common.Services.Tools;
 using Domain.AI.Changes;
 using Domain.Common.Config.AI.Governance;
 using Domain.AI.Models;
@@ -120,7 +121,7 @@ public sealed class DocumentSearchTool : ITool
         }
         catch (ArgumentException ex)
         {
-            return ToolResult.Fail($"Invalid search arguments: {ex.GetType().Name}.");
+            return ToolResult.Fail(SafeFailureText.For("Invalid search arguments", ex));
         }
     }
 
