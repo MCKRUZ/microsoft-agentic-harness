@@ -22,7 +22,7 @@
       "Bash(gh pr checks:*)",
       "Bash(gh issue list:*)",
       "Bash(gh issue view:*)",
-      "Bash(gh api repos/:*)",
+      "Bash(gh api:*)",
       "Bash(git rev-parse:*)",
       "Bash(git ls-files:*)",
       "Bash(git merge-base:*)",
@@ -42,7 +42,6 @@
     ],
     "ask": [
       "Bash(git push:*)",
-      "Bash(gh api:*)",
       "Bash(scripts/rails/apply-branch-protection.sh:*)",
       "Edit(./.github/**)",
       "Edit(./.claude/settings.json)",

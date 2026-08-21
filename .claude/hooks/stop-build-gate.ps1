@@ -51,9 +51,28 @@ Set-Location $projectDir
 $solution = Join-Path $projectDir 'src/AgenticHarness.slnx'
 if (-not (Test-Path $solution)) { Allow }   # nothing to build here
 
+# --- Resolve git even when PATH is missing it. A long-running Claude Code process (or
+#     the hook subprocess it spawns) can inherit a stale PATH snapshot from before Git
+#     was installed/added to PATH, even though `git` resolves fine in a fresh shell. Fall
+#     back to Git for Windows' well-known install locations rather than wedging the gate.
+$gitCmd = Get-Command git -ErrorAction SilentlyContinue
+if ($gitCmd) {
+  $gitExe = $gitCmd.Source
+} else {
+  $gitExe = @(
+    (Join-Path $env:ProgramFiles 'Git\cmd\git.exe'),
+    (Join-Path $env:ProgramFiles 'Git\bin\git.exe'),
+    (Join-Path ${env:ProgramFiles(x86)} 'Git\cmd\git.exe')
+  ) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+}
+if (-not $gitExe) {
+  [Console]::Error.WriteLine('stop-build-gate: git not found (checked PATH and well-known install locations); skipping build gate.')
+  Allow
+}
+
 # --- Only gate when COMPILABLE source changed this session. Doc/json/asset edits
 #     under src/ shouldn't trigger a full solution build every turn.
-$dirtySrc = & git status --porcelain -- '*.cs' '*.csproj' '*.slnx' '*.props' '*.targets' '*.razor' '*.cshtml' 2>$null
+$dirtySrc = & $gitExe status --porcelain -- '*.cs' '*.csproj' '*.slnx' '*.props' '*.targets' '*.razor' '*.cshtml' 2>$null
 if (-not $dirtySrc) { Allow }
 
 # --- Tooling guard: don't trap the agent if dotnet isn't installed.
