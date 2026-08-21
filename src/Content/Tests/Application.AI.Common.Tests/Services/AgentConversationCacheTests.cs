@@ -1,6 +1,7 @@
 using Application.AI.Common.Factories;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Skills;
+using Application.AI.Common.Interfaces.Telemetry;
 using Application.AI.Common.Services;
 using Application.AI.Common.Services.Context;
 using Application.AI.Common.Services.Skills;
@@ -10,6 +11,7 @@ using Domain.AI.Skills;
 using Domain.Common.Config;
 using Domain.Common.Config.AI;
 using FluentAssertions;
+using Infrastructure.AI.Telemetry.Redaction;
 using Microsoft.Extensions.Caching.Distributed;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.DependencyInjection;
@@ -57,14 +59,17 @@ public sealed class AgentConversationCacheTests
             }
         };
         var monitor = Mock.Of<IOptionsMonitor<AppConfig>>(m => m.CurrentValue == appConfig);
-        var services = new ServiceCollection().BuildServiceProvider();
+        var redactionFilter = TestRedactionFilter.Instance;
+        var services = new ServiceCollection()
+            .AddSingleton<IContentRedactionFilter>(redactionFilter)
+            .BuildServiceProvider();
 
         var contextFactory = new AgentExecutionContextFactory(
             NullLogger<AgentExecutionContextFactory>.Instance,
             monitor,
             services,
             NullLoggerFactory.Instance,
-            new ToolChainBuilder(NullLogger<ToolChainBuilder>.Instance, services, null, null),
+            new ToolChainBuilder(NullLogger<ToolChainBuilder>.Instance, services, redactionFilter, null),
             new SkillPrerequisiteResolver(),
             new UnsandboxedSkillFileReader());
 

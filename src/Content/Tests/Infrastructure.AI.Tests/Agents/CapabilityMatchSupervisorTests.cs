@@ -298,11 +298,18 @@ public sealed class CapabilityMatchSupervisorTests : IDisposable
             "test task", ["tool_a"], AutonomyLevel.Supervised);
 
         result.IsSuccess.Should().BeFalse();
-        result.FailureReason.Should().Contain("Agent creation failed");
+        // The exception's own message is never surfaced — only its type name (matching
+        // MediatorDispatchRunner/WorkspaceCommandRunner's convention) — because it can carry a secret
+        // this test's own "Agent creation failed" stands in for. It must NOT reach the failure record.
+        result.FailureReason.Should().Contain(nameof(InvalidOperationException));
+        result.FailureReason.Should().NotContain("Agent creation failed");
 
         _storeMock.Verify(
             s => s.AppendAsync(
-                It.Is<DelegationRecord>(r => r.State == DelegationState.Failed),
+                It.Is<DelegationRecord>(r =>
+                    r.State == DelegationState.Failed
+                    && r.FailureReason != null
+                    && !r.FailureReason.Contains("Agent creation failed")),
                 It.IsAny<CancellationToken>()),
             Times.Once());
     }

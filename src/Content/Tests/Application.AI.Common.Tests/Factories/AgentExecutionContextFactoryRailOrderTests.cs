@@ -1,5 +1,6 @@
 using Application.AI.Common.Factories;
 using Application.AI.Common.Interfaces;
+using Application.AI.Common.Interfaces.Telemetry;
 using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Services.Agent;
 using Application.AI.Common.Services.Context;
@@ -12,6 +13,7 @@ using Domain.AI.Tools;
 using Domain.Common.Config;
 using Domain.Common.Config.AI;
 using FluentAssertions;
+using Infrastructure.AI.Telemetry.Redaction;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
@@ -129,6 +131,8 @@ public sealed class AgentExecutionContextFactoryRailOrderTests : IDisposable
 
         // A real tool behind the name the skill grants, so the agent is actually built holding it.
         services.AddKeyedSingleton<ITool>(AllowedTool, (_, _) => new StubTool(AllowedTool));
+        var redactionFilter = TestRedactionFilter.Instance;
+        services.AddSingleton<IContentRedactionFilter>(redactionFilter);
         var sp = services.BuildServiceProvider();
 
         return new AgentExecutionContextFactory(
@@ -136,7 +140,8 @@ public sealed class AgentExecutionContextFactoryRailOrderTests : IDisposable
             Mock.Of<IOptionsMonitor<AppConfig>>(m => m.CurrentValue == appConfig),
             sp,
             NullLoggerFactory.Instance,
-            new ToolChainBuilder(NullLogger<ToolChainBuilder>.Instance, sp, new PassThroughToolConverter()),
+            new ToolChainBuilder(
+                NullLogger<ToolChainBuilder>.Instance, sp, redactionFilter, new PassThroughToolConverter()),
             new SkillPrerequisiteResolver(),
             new UnsandboxedSkillFileReader(),
             budgetTracker

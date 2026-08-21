@@ -131,9 +131,24 @@ public sealed class DefaultContentRedactionFilter : IContentRedactionFilter
         return b.ToImmutable();
     }
 
+    // A caller-supplied match timeout, not just RegexOptions.Compiled: none of the built-in patterns
+    // are catastrophically backtracking (bounded repetition throughout), but content reaching this
+    // filter can originate from an external MCP server the caller does not control, so a timeout is
+    // defense in depth against a future rule — or a consumer's own added rule — that isn't as careful.
+    //
+    // 2 seconds, not the 200ms this started at: this repo's sibling regex-based redactor
+    // (Infrastructure.AI/Security/PatternSecretRedactor.cs) measured 100ms as too tight in
+    // practice — it reproduced RegexMatchTimeoutException on a 20-character input under nothing
+    // more exotic than a full-solution parallel test run, CPU scheduling contention alone, not
+    // backtracking, pushed a trivial match past the deadline. This filter runs the same shape of
+    // single flat scan (Redact() loops over a handful of independent patterns, same as that
+    // sibling's regex-only path), so it carries the identical exposure and gets the identical,
+    // already-proven fix rather than a tighter, untested value.
+    private static readonly TimeSpan MatchTimeout = TimeSpan.FromSeconds(2);
+
     private static CompiledRule Compile(RedactionCategory category, string pattern, string replacement)
         => new(category,
-            new Regex(pattern, RegexOptions.Compiled | RegexOptions.CultureInvariant),
+            new Regex(pattern, RegexOptions.Compiled | RegexOptions.CultureInvariant, MatchTimeout),
             replacement);
 
     private sealed record CompiledRule(RedactionCategory Category, Regex Pattern, string Replacement);

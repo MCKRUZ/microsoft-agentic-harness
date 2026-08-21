@@ -2,6 +2,7 @@ using Application.AI.Common.Factories;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Resilience;
 using Application.AI.Common.Interfaces.Skills;
+using Application.AI.Common.Interfaces.Telemetry;
 using Application.AI.Common.Services.Skills;
 using Application.AI.Common.Services.Tools;
 using Application.AI.Common.Tests.Fakes;
@@ -11,6 +12,7 @@ using Domain.Common.Config;
 using Domain.Common.Config.AI;
 using Domain.Common.Config.AI.Resilience;
 using FluentAssertions;
+using Infrastructure.AI.Telemetry.Redaction;
 using Microsoft.Extensions.Caching.Distributed;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.DependencyInjection;
@@ -237,14 +239,18 @@ public sealed class AgentFactoryResilienceWiringTests
             }
         };
         var monitor = Mock.Of<IOptionsMonitor<AppConfig>>(m => m.CurrentValue == appConfig);
-        var services = new ServiceCollection().BuildServiceProvider();
+        var collection = new ServiceCollection();
+        collection.AddSingleton<IContentRedactionFilter>(TestRedactionFilter.Instance);
+        var services = collection.BuildServiceProvider();
 
         return new AgentExecutionContextFactory(
             NullLogger<AgentExecutionContextFactory>.Instance,
             monitor,
             services,
             NullLoggerFactory.Instance,
-            new ToolChainBuilder(NullLogger<ToolChainBuilder>.Instance, services),
+            new ToolChainBuilder(
+                NullLogger<ToolChainBuilder>.Instance, services,
+                services.GetRequiredService<IContentRedactionFilter>()),
             new SkillPrerequisiteResolver(),
             new UnsandboxedSkillFileReader(),
             resilientChatClientProvider: resilientProvider);

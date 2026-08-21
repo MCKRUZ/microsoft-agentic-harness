@@ -65,7 +65,12 @@ public class RequestTracingBehaviorTests : IDisposable
         _activities.Should().ContainSingle();
         var activity = _activities[0];
         activity.Status.Should().Be(ActivityStatusCode.Error);
-        activity.StatusDescription.Should().Be("boom");
+        // Type name only, never the raw exception message — this behavior wraps every command/query
+        // in the app, so a handler that throws with a secret in its message must not have that text
+        // land in the exported span (matches MediatorDispatchRunner/WorkspaceCommandRunner's
+        // convention; see RequestTracingBehavior's remarks for why redaction isn't reachable here).
+        activity.StatusDescription.Should().Be(nameof(InvalidOperationException));
+        activity.StatusDescription.Should().NotContain("boom");
         activity.Events.Should().Contain(e => e.Name == "exception");
     }
 

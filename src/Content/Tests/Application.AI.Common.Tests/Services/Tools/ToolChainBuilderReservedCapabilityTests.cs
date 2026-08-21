@@ -1,4 +1,5 @@
 using Application.AI.Common.Interfaces;
+using Application.AI.Common.Interfaces.Telemetry;
 using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Services.Tools;
 using Domain.AI.Models;
@@ -6,6 +7,7 @@ using Domain.AI.Planner;
 using Domain.AI.Skills;
 using Domain.AI.Tools;
 using FluentAssertions;
+using Infrastructure.AI.Telemetry.Redaction;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -31,9 +33,12 @@ namespace Application.AI.Common.Tests.Services.Tools;
 /// </remarks>
 public sealed class ToolChainBuilderReservedCapabilityTests
 {
+    private static readonly IContentRedactionFilter RedactionFilter = TestRedactionFilter.Instance;
+
     private static ToolChainBuilder Builder(IMcpToolProvider mcp) => new(
         NullLogger<ToolChainBuilder>.Instance,
         new ServiceCollection().BuildServiceProvider(),
+        RedactionFilter,
         toolConverter: null,
         mcpToolProvider: mcp);
 
@@ -146,6 +151,7 @@ public sealed class ToolChainBuilderReservedCapabilityTests
         var builder = new ToolChainBuilder(
             NullLogger<ToolChainBuilder>.Instance,
             services.BuildServiceProvider(),
+            RedactionFilter,
             new PassThroughToolConverter(),
             new Mock<IMcpToolProvider>().Object);
 

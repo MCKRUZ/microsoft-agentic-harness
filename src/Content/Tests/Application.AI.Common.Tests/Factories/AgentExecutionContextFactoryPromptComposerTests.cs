@@ -3,6 +3,7 @@ using Application.AI.Common.Helpers;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Context;
+using Application.AI.Common.Interfaces.Telemetry;
 using Application.AI.Common.Services;
 using Application.AI.Common.Services.Agent;
 using Application.AI.Common.Services.Skills;
@@ -13,6 +14,7 @@ using Domain.Common.Config.AI;
 using Domain.Common.Config.AI.ContextManagement;
 using FluentAssertions;
 using Infrastructure.AI.Prompts;
+using Infrastructure.AI.Telemetry.Redaction;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -64,7 +66,8 @@ public sealed class AgentExecutionContextFactoryPromptComposerTests
             config,
             serviceProvider,
             NullLoggerFactory.Instance,
-            new ToolChainBuilder(NullLogger<ToolChainBuilder>.Instance, serviceProvider),
+            new ToolChainBuilder(
+                NullLogger<ToolChainBuilder>.Instance, serviceProvider, TestRedactionFilter.Instance),
             new SkillPrerequisiteResolver(),
             new UnsandboxedSkillFileReader());
 
@@ -79,6 +82,7 @@ public sealed class AgentExecutionContextFactoryPromptComposerTests
         services.AddScoped<IAgentExecutionContext, AgentExecutionContext>();
         services.AddSingleton(Mock.Of<IContextBudgetTracker>());
         services.AddSingleton<IAmbientRequestScope, AmbientRequestScope>();
+        services.AddSingleton<IContentRedactionFilter>(TestRedactionFilter.Instance);
         services.AddSystemPromptComposition();
         return services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
     }
@@ -203,8 +207,12 @@ public sealed class AgentExecutionContextFactoryPromptComposerTests
     public async Task MapToAgentContext_EnabledButNoAmbientScope_FailsOpenToLegacyInstruction()
     {
         // A service provider WITHOUT IAmbientRequestScope registered — the factory cannot reach a
-        // request scope, so it must fall back to the legacy instruction rather than throw.
-        await using var barren = new ServiceCollection().BuildServiceProvider();
+        // request scope, so it must fall back to the legacy instruction rather than throw. Still
+        // registers IContentRedactionFilter, which every host does unconditionally in production
+        // (TryAddSingleton) — its absence is not the fail-open condition this test is pinning.
+        var barrenServices = new ServiceCollection();
+        barrenServices.AddSingleton<IContentRedactionFilter>(TestRedactionFilter.Instance);
+        await using var barren = barrenServices.BuildServiceProvider();
         var factory = CreateFactory(Config(promptCompositionEnabled: true), barren);
         var skill = Skill("research", "Search sources.");
 

@@ -2,6 +2,7 @@ using Application.AI.Common;
 using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Escalation;
 using Application.AI.Common.Interfaces.Governance;
+using Application.AI.Common.Interfaces.Telemetry;
 using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Services.Agent;
 using Application.AI.Common.Services.Governance;
@@ -14,6 +15,7 @@ using Domain.AI.Models;
 using Domain.Common.Config.AI;
 using Domain.Common.Config.AI.DirectToolInvocation;
 using FluentAssertions;
+using Infrastructure.AI.Telemetry.Redaction;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -684,6 +686,30 @@ public sealed class DirectToolInvokerTests
     }
 
     [Fact]
+    public async Task ToolReturnsFailure_WithASecretInTheErrorText_ReportedCopyIsRedacted()
+    {
+        // #452's DirectToolInvoker-side case: GovernedAIFunctionTests pins the identical fix on the
+        // agent-turn path. The reported text — what reaches the audit trail and a human approver
+        // replaying failure memory — must never carry the tool's raw secret-bearing message, even
+        // though the caller-facing outcome.Error is separately scrubbed by ICompositeResponseSanitizer
+        // (see Sanitizes_a_failing_tools_error_message) and is not this test's concern.
+        var call = ApprovedCall();
+        _governor.Decision = ToolInvocationDecision.Allow(call);
+
+        await Invoke(
+            Request("alpha"),
+            Tool("alpha", result: ToolResult.Fail("contact admin@example.com for access")));
+
+        _executionReporter.Verify(
+            r => r.ReportFailedAsync(
+                call,
+                It.Is<string>(reason =>
+                    !reason.Contains("admin@example.com") && reason.Contains("[REDACTED:Email]")),
+                "direct-invocation", CancellationToken.None),
+            Times.Once);
+    }
+
+    [Fact]
     public async Task ToolThrows_WithApproval_ReportsFailedAndStillRethrows()
     {
         var call = ApprovedCall();
@@ -780,6 +806,7 @@ public sealed class DirectToolInvokerTests
             new ToolCatalog(provider, [tool.Name], NullLogger<ToolCatalog>.Instance),
             _sanitizer,
             new StaticOptionsMonitor<DirectToolInvocationConfig>(_config),
+            TestRedactionFilter.Instance,
             NullLogger<DirectToolInvoker>.Instance);
 
         return await sut.InvokeAsync(request, cancellationToken);

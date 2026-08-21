@@ -1,5 +1,6 @@
 using Application.AI.Common.Interfaces.Agents;
 using Application.AI.Common.Interfaces.Tools;
+using Application.AI.Common.Services.Tools;
 using Domain.Common.Helpers;
 using Domain.AI.Changes;
 using Domain.AI.Governance;
@@ -159,7 +160,7 @@ public sealed class DelegateToSubagentTool : ITool
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogWarning(ex, "Delegation threw; surfacing as a tool failure");
-            return ToolResult.Fail($"Delegation failed: {ex.Message}");
+            return ToolResult.Fail(SafeFailureText.For("Delegation failed", ex));
         }
         finally
         {

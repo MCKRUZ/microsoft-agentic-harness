@@ -1,4 +1,5 @@
 using Application.AI.Common.Interfaces;
+using Application.AI.Common.Interfaces.Telemetry;
 using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Services.Governance;
 using Application.AI.Common.Services.Tools;
@@ -6,6 +7,7 @@ using Domain.AI.Bundles;
 using Domain.AI.Skills;
 using Domain.AI.Tools;
 using FluentAssertions;
+using Infrastructure.AI.Telemetry.Redaction;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -23,9 +25,12 @@ namespace Application.AI.Common.Tests.Services.Tools;
 /// </summary>
 public sealed class ToolChainBuilderMcpEnvelopeTests
 {
+    private static readonly IContentRedactionFilter RedactionFilter = TestRedactionFilter.Instance;
+
     private static ToolChainBuilder Builder(IMcpToolProvider mcp, IServiceProvider? sp = null) => new(
         NullLogger<ToolChainBuilder>.Instance,
         sp ?? new ServiceCollection().BuildServiceProvider(),
+        RedactionFilter,
         toolConverter: null,
         mcpToolProvider: mcp);
 

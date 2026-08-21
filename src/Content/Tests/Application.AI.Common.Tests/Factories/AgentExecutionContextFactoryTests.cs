@@ -1,6 +1,7 @@
 using Application.AI.Common.Factories;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Context;
+using Application.AI.Common.Interfaces.Telemetry;
 using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Interfaces.Traces;
 using Application.AI.Common.Models;
@@ -13,6 +14,7 @@ using Domain.Common.Config;
 using Domain.Common.Config.AI;
 using Domain.Common.MetaHarness;
 using FluentAssertions;
+using Infrastructure.AI.Telemetry.Redaction;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -30,6 +32,8 @@ namespace Application.AI.Common.Tests.Factories;
 /// </summary>
 public class AgentExecutionContextFactoryTests
 {
+    private static readonly IContentRedactionFilter RedactionFilter = TestRedactionFilter.Instance;
+
     private static AgentExecutionContextFactory CreateFactory(
         AIAgentFrameworkClientType configuredClientType = AIAgentFrameworkClientType.AzureOpenAI,
         string deployment = "default-model",
@@ -53,11 +57,13 @@ public class AgentExecutionContextFactoryTests
             }
         };
         var monitor = Mock.Of<IOptionsMonitor<AppConfig>>(m => m.CurrentValue == appConfig);
-        var services = serviceProvider ?? new ServiceCollection().BuildServiceProvider();
+        var services = serviceProvider
+            ?? new ServiceCollection().AddSingleton(RedactionFilter).BuildServiceProvider();
 
         var toolChainBuilder = new ToolChainBuilder(
             NullLogger<ToolChainBuilder>.Instance,
             services,
+            RedactionFilter,
             toolConverter,
             mcpToolProvider);
 
@@ -184,13 +190,13 @@ public class AgentExecutionContextFactoryTests
     {
         var appConfig = new AppConfig { AI = new AIConfig { AgentFramework = new AgentFrameworkConfig() } };
         var monitor = Mock.Of<IOptionsMonitor<AppConfig>>(m => m.CurrentValue == appConfig);
-        var sp = new ServiceCollection().BuildServiceProvider();
+        var sp = new ServiceCollection().AddSingleton(RedactionFilter).BuildServiceProvider();
         var factory = new AgentExecutionContextFactory(
             NullLogger<AgentExecutionContextFactory>.Instance,
             monitor,
             sp,
             NullLoggerFactory.Instance,
-            new ToolChainBuilder(NullLogger<ToolChainBuilder>.Instance, sp),
+            new ToolChainBuilder(NullLogger<ToolChainBuilder>.Instance, sp, RedactionFilter),
             new SkillPrerequisiteResolver(),
             new UnsandboxedSkillFileReader());
 
@@ -537,6 +543,7 @@ public class AgentExecutionContextFactoryTests
 
         var services = new ServiceCollection();
         services.AddKeyedSingleton<ITool>("calc", toolMock.Object);
+        services.AddSingleton(RedactionFilter);
         var sp = services.BuildServiceProvider();
 
         var factory = CreateFactory(

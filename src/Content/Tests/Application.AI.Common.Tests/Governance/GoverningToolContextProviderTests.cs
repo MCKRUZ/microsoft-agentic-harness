@@ -1,6 +1,8 @@
+using Application.AI.Common.Interfaces.Telemetry;
 using Application.AI.Common.Services.Agent;
 using Application.AI.Common.Services.Tools;
 using Domain.AI.Planner;
+using Infrastructure.AI.Telemetry.Redaction;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
@@ -15,6 +17,8 @@ namespace Application.AI.Common.Tests.Governance;
 /// </summary>
 public sealed class GoverningToolContextProviderTests
 {
+    private static readonly IContentRedactionFilter RedactionFilter = TestRedactionFilter.Instance;
+
     private static AIFunction MakeFunction(string name = "file_system") => AIFunctionFactory.Create(
         () => "ok", new AIFunctionFactoryOptions { Name = name, Description = "t" });
 
@@ -23,7 +27,7 @@ public sealed class GoverningToolContextProviderTests
     {
         var inner = MakeFunction();
 
-        var result = GoverningToolContextProvider.Govern(inner);
+        var result = GoverningToolContextProvider.Govern(inner, RedactionFilter);
 
         Assert.IsType<GovernedAIFunction>(result);
         Assert.NotSame(inner, result);
@@ -33,9 +37,9 @@ public sealed class GoverningToolContextProviderTests
     [Fact]
     public void Govern_AlreadyGoverned_ReturnsSameInstance_NoDoubleWrap()
     {
-        var alreadyGoverned = new GovernedAIFunction(MakeFunction());
+        var alreadyGoverned = new GovernedAIFunction(MakeFunction(), RedactionFilter);
 
-        var result = GoverningToolContextProvider.Govern(alreadyGoverned);
+        var result = GoverningToolContextProvider.Govern(alreadyGoverned, RedactionFilter);
 
         Assert.Same(alreadyGoverned, result);
     }
@@ -53,7 +57,7 @@ public sealed class GoverningToolContextProviderTests
         var tools = new List<AITool> { MakeFunction(reservedName), MakeFunction("file_system") };
 
         var result = GoverningToolContextProvider.FilterAndGovern(
-            tools, NullLogger<GoverningToolContextProviderTests>.Instance);
+            tools, NullLogger<GoverningToolContextProviderTests>.Instance, RedactionFilter);
 
         Assert.NotNull(result);
         Assert.Single(result);
@@ -66,7 +70,7 @@ public sealed class GoverningToolContextProviderTests
         var tools = new List<AITool> { MakeFunction() };
 
         var result = GoverningToolContextProvider.FilterAndGovern(
-            tools, NullLogger<GoverningToolContextProviderTests>.Instance);
+            tools, NullLogger<GoverningToolContextProviderTests>.Instance, RedactionFilter);
 
         Assert.NotNull(result);
         Assert.IsType<GovernedAIFunction>(Assert.Single(result));
@@ -76,10 +80,10 @@ public sealed class GoverningToolContextProviderTests
     public void FilterAndGovern_AlreadyGovernedAndNoCollisions_ReportsNoChange()
     {
         // Null means "keep the existing AIContext" — nothing was dropped and nothing needed wrapping.
-        var tools = new List<AITool> { new GovernedAIFunction(MakeFunction()) };
+        var tools = new List<AITool> { new GovernedAIFunction(MakeFunction(), RedactionFilter) };
 
         var result = GoverningToolContextProvider.FilterAndGovern(
-            tools, NullLogger<GoverningToolContextProviderTests>.Instance);
+            tools, NullLogger<GoverningToolContextProviderTests>.Instance, RedactionFilter);
 
         Assert.Null(result);
     }
@@ -88,8 +92,8 @@ public sealed class GoverningToolContextProviderTests
     public void FilterAndGovern_NoTools_ReportsNoChange()
     {
         Assert.Null(GoverningToolContextProvider.FilterAndGovern(
-            null, NullLogger<GoverningToolContextProviderTests>.Instance));
+            null, NullLogger<GoverningToolContextProviderTests>.Instance, RedactionFilter));
         Assert.Null(GoverningToolContextProvider.FilterAndGovern(
-            [], NullLogger<GoverningToolContextProviderTests>.Instance));
+            [], NullLogger<GoverningToolContextProviderTests>.Instance, RedactionFilter));
     }
 }

@@ -1,3 +1,5 @@
+using System.Collections.Immutable;
+
 namespace Domain.AI.Telemetry.Redaction;
 
 /// <summary>
@@ -37,4 +39,26 @@ public enum RedactionCategory
 
     /// <summary>Catch-all bucket for harness-vendored generic secret patterns.</summary>
     Generic = 7,
+}
+
+/// <summary>
+/// The canonical "every category" source for a caller that redacts unconditionally rather than
+/// against a configured subset.
+/// </summary>
+/// <remarks>
+/// Before this existed, every unconditional-redaction call site declared its own private
+/// <c>Enum.GetValues&lt;RedactionCategory&gt;()</c> array with a near-identical justification
+/// comment — four independent copies across the log, span, and tool-reporting redaction paths.
+/// A category added to the enum only needs this one array updated implicitly (it's computed, not
+/// enumerated by hand) for every caller that references it to pick it up.
+/// </remarks>
+public static class RedactionCategories
+{
+    /// <summary>
+    /// Every <see cref="RedactionCategory"/> value. Use where redaction must always run in full —
+    /// the audit trail, escalation memory, and AG-UI stream a failed tool call's error text reaches,
+    /// and the OTLP trace exporter a recorded exception reaches — none of which are optional
+    /// telemetry a consumer can choose to leave unredacted.
+    /// </summary>
+    public static readonly ImmutableArray<RedactionCategory> All = [.. Enum.GetValues<RedactionCategory>()];
 }

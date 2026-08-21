@@ -2,6 +2,7 @@ using System.Diagnostics;
 using Application.AI.Common.Interfaces.Escalation;
 using Application.AI.Common.OpenTelemetry.Metrics;
 using Application.AI.Common.Services;
+using Application.AI.Common.Services.Tools;
 using Domain.Common.Helpers;
 using Domain.AI.Agents;
 using Domain.AI.Escalation;
@@ -268,10 +269,16 @@ public sealed partial class CapabilityMatchSupervisor
         }
         catch (Exception ex)
         {
+            // Full detail stays in the structured log only — ex.Message can carry a secret (connection
+            // string, SAS token), and RecordFailure/DelegationResult.Fail both write into surfaces that
+            // reach the audit trail and, via DelegateToSubagentTool.cs's ToolResult.Fail(result.FailureReason
+            // ?? ...), a governed tool's reported failure text. Matches the ex.GetType().Name-only
+            // convention MediatorDispatchRunner/WorkspaceCommandRunner already use.
             _logger.LogError(ex, "Delegation {DelegationId} to {AgentId} failed",
                 delegationId, selection.SelectedAgent.AgentId);
-            await RecordFailure(pendingRecord, ex.Message, ct);
-            return DelegationResult.Fail(ex.Message);
+            var reason = SafeFailureText.For("Delegation failed", ex);
+            await RecordFailure(pendingRecord, reason, ct);
+            return DelegationResult.Fail(reason);
         }
         finally
         {

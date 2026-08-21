@@ -1,8 +1,10 @@
 using Application.AI.Common.Interfaces.Escalation;
 using Application.AI.Common.Interfaces.Governance;
+using Application.AI.Common.Interfaces.Telemetry;
 using Application.AI.Common.Services.Governance;
 using Application.AI.Common.Services.Tools;
 using Domain.AI.Escalation;
+using Infrastructure.AI.Telemetry.Redaction;
 using Microsoft.Extensions.AI;
 using Moq;
 using Xunit;
@@ -15,6 +17,8 @@ namespace Application.AI.Common.Tests.Governance;
 /// </summary>
 public sealed class GovernedAIFunctionTests
 {
+    private static readonly IContentRedactionFilter RedactionFilter = TestRedactionFilter.Instance;
+
     private static (AIFunction inner, Func<bool> wasInvoked) MakeInner()
     {
         var invoked = false;
@@ -40,10 +44,12 @@ public sealed class GovernedAIFunctionTests
                 MarshalResult = (result, _, _) => new ValueTask<object?>(result)
             });
 
-    private static async Task<object?> InvokeUnder(IToolCallAdmissionPipeline pipeline, AIFunction inner)
+    private static async Task<object?> InvokeUnder(
+        IToolCallAdmissionPipeline pipeline, AIFunction inner, bool isMcpSourced = false)
     {
         using var armed = ToolAdmissionAccessor.Begin(pipeline);
-        return await new GovernedAIFunction(inner).InvokeAsync(new AIFunctionArguments(), CancellationToken.None);
+        return await new GovernedAIFunction(inner, RedactionFilter, isMcpSourced: isMcpSourced)
+            .InvokeAsync(new AIFunctionArguments(), CancellationToken.None);
     }
 
     [Fact]
@@ -76,7 +82,7 @@ public sealed class GovernedAIFunctionTests
     {
         var (inner, wasInvoked) = MakeInner();
 
-        await new GovernedAIFunction(inner).InvokeAsync(new AIFunctionArguments(), CancellationToken.None);
+        await new GovernedAIFunction(inner, RedactionFilter).InvokeAsync(new AIFunctionArguments(), CancellationToken.None);
 
         Assert.True(wasInvoked(), "inner tool must run when no admission chain is ambient");
     }
@@ -174,6 +180,148 @@ public sealed class GovernedAIFunctionTests
         Assert.Equal("Error: boom", resultStr);
     }
 
+    /// <summary>
+    /// An inner function shaped like what an MCP-provided tool actually returns on failure —
+    /// confirmed against the MCP C# SDK's <c>McpClientTool.InvokeCoreAsync</c> source: on
+    /// <c>CallToolResult.IsError == true</c> it returns normally with
+    /// <c>JsonSerializer.SerializeToElement(result, ...)</c>, never throws, and never produces a
+    /// <see cref="ConvertedToolFailure"/> (that marker is <c>AIToolConverter</c>-only). The default
+    /// marshaling every other test here relies on already serializes this anonymous object into the
+    /// same <see cref="System.Text.Json.JsonElement"/> shape the real SDK call produces.
+    /// </summary>
+    private static AIFunction MakeMcpFailingInner(string errorText) =>
+        AIFunctionFactory.Create(
+            () => new { isError = true, content = new[] { new { type = "text", text = errorText } } },
+            new AIFunctionFactoryOptions { Name = "mcp_tool", Description = "test mcp tool" });
+
+    [Fact]
+    public async Task InvokeAsync_McpToolReportsIsError_WithApproval_ReportsFailedWithReason()
+    {
+        // #451: before this fix, an MCP tool's non-throwing failure had no marker GovernedAIFunction
+        // could recognize (ConvertedToolFailure is AIToolConverter-only), so it was reported
+        // Succeeded — this is the case that closes that gap.
+        var inner = MakeMcpFailingInner("Error: mcp boom");
+        var call = ApprovedCall();
+        var pipeline = ApprovingPipeline(call);
+
+        var result = await InvokeUnder(pipeline.Object, inner, isMcpSourced: true);
+
+        pipeline.Verify(
+            p => p.ReportExecutionAsync(
+                It.IsAny<ToolCallAdmission>(),
+                It.Is<ToolExecutionReport>(r =>
+                    r.Status == EscalationExecutionStatus.Failed && r.FailureReason == "Error: mcp boom"),
+                "agent-turn", CancellationToken.None),
+            Times.Once);
+        // Unlike ConvertedToolFailure, the MCP shape is never unwrapped — it already reaches the
+        // model correctly today (that part was never broken); only the reporting decision changes.
+        Assert.IsType<System.Text.Json.JsonElement>(result);
+        var element = (System.Text.Json.JsonElement)result!;
+        Assert.True(element.GetProperty("isError").GetBoolean());
+    }
+
+    [Fact]
+    public async Task InvokeAsync_McpFailureWithNonObjectContentBlock_DoesNotThrow()
+    {
+        // Regression: JsonElement.TryGetProperty throws InvalidOperationException when the element's
+        // ValueKind isn't Object (confirmed against the .NET docs) — a content array holding a bare
+        // string, e.g. {"isError":true,"content":["oops"]}, used to crash this chokepoint instead of
+        // falling through to the generic "no message" text every other malformed shape gets.
+        var inner = AIFunctionFactory.Create(
+            () => new { isError = true, content = new object[] { "a bare string, not a content block" } },
+            new AIFunctionFactoryOptions { Name = "mcp_tool", Description = "test mcp tool" });
+        var call = ApprovedCall();
+        var pipeline = ApprovingPipeline(call);
+
+        await InvokeUnder(pipeline.Object, inner, isMcpSourced: true);
+
+        pipeline.Verify(
+            p => p.ReportExecutionAsync(
+                It.IsAny<ToolCallAdmission>(),
+                It.Is<ToolExecutionReport>(r =>
+                    r.Status == EscalationExecutionStatus.Failed
+                    && r.FailureReason == "MCP tool reported failure with no message."),
+                "agent-turn", CancellationToken.None),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task InvokeAsync_JsonObjectSuccessWithoutIsError_StillReportsSucceeded()
+    {
+        // Regression guard for the MCP-shape detection: a genuine structured success (not a plain
+        // string, not MCP-shaped) must never be misread as a failure just because it is a JsonElement.
+        var inner = AIFunctionFactory.Create(
+            () => new { status = "ok", value = 42 },
+            new AIFunctionFactoryOptions { Name = "file_system", Description = "test tool" });
+        var call = ApprovedCall();
+        var pipeline = ApprovingPipeline(call);
+
+        await InvokeUnder(pipeline.Object, inner, isMcpSourced: true);
+
+        pipeline.Verify(
+            p => p.ReportExecutionAsync(
+                It.IsAny<ToolCallAdmission>(),
+                It.Is<ToolExecutionReport>(r => r.Status == EscalationExecutionStatus.Succeeded),
+                "agent-turn", CancellationToken.None),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task InvokeAsync_NonMcpToolSuccessCoincidentallyShapedLikeMcpFailure_StillReportsSucceeded()
+    {
+        // The security-review finding this closes: TryGetMcpFailureText's isError+content check is
+        // structural, not provenance-based, so a keyed-DI or skill-provided tool whose genuine SUCCESS
+        // payload happens to use those same field names for unrelated business reasons (e.g. a
+        // connector tool passing through an upstream API body verbatim) must not be misreported as a
+        // failed call — the same "shared field, two meanings depending on the producer" trap this
+        // repo's CLAUDE.md already tracks. isMcpSourced defaults to false, so the MCP-shape check must
+        // never run for this tool at all, regardless of what its payload looks like.
+        var inner = AIFunctionFactory.Create(
+            () => new { isError = true, content = new[] { new { type = "text", text = "3 lint errors found" } } },
+            new AIFunctionFactoryOptions { Name = "lint_proxy_tool", Description = "test non-mcp tool" });
+        var call = ApprovedCall();
+        var pipeline = ApprovingPipeline(call);
+
+        await InvokeUnder(pipeline.Object, inner); // isMcpSourced defaults to false
+
+        pipeline.Verify(
+            p => p.ReportExecutionAsync(
+                It.IsAny<ToolCallAdmission>(),
+                It.Is<ToolExecutionReport>(r => r.Status == EscalationExecutionStatus.Succeeded),
+                "agent-turn", CancellationToken.None),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task InvokeAsync_FailureTextCarriesASecret_ReportedCopyIsRedacted_ModelFacingCopyIsNot()
+    {
+        // #452: the reported FailureReason is what reaches the audit trail, the failure memory
+        // replayed to a human approver, and the AG-UI stream — none of which had seen redaction
+        // before this fix. The model-facing text is a separate concern already governed by the
+        // classification gate's RedactsOutput verdict (mocked here as a pass-through), so it is
+        // deliberately NOT asserted to be redacted — only the reported copy is this method's job.
+        const string secret = "contact admin@example.com for access";
+        var inner = MakeFailingInner(secret);
+        var call = ApprovedCall();
+        var pipeline = ApprovingPipeline(call);
+
+        var result = await InvokeUnder(pipeline.Object, inner);
+
+        pipeline.Verify(
+            p => p.ReportExecutionAsync(
+                It.IsAny<ToolCallAdmission>(),
+                It.Is<ToolExecutionReport>(r =>
+                    r.Status == EscalationExecutionStatus.Failed
+                    && r.FailureReason != null
+                    && !r.FailureReason.Contains("admin@example.com")
+                    && r.FailureReason.Contains("[REDACTED:Email]")),
+                "agent-turn", CancellationToken.None),
+            Times.Once);
+
+        var resultStr = result is System.Text.Json.JsonElement je ? je.GetString() : result?.ToString();
+        Assert.Equal(secret, resultStr);
+    }
+
     [Fact]
     public async Task InvokeAsync_ToolReturnsConvertedFailure_ReturnsSameRuntimeShapeAsSuccess()
     {
@@ -201,7 +349,7 @@ public sealed class GovernedAIFunctionTests
         // out to whatever called this AIFunction directly.
         var inner = MakeFailingInner("Error: boom");
 
-        var result = await new GovernedAIFunction(inner)
+        var result = await new GovernedAIFunction(inner, RedactionFilter)
             .InvokeAsync(new AIFunctionArguments(), CancellationToken.None);
 
         var resultStr = result is System.Text.Json.JsonElement je ? je.GetString() : result?.ToString();
@@ -234,7 +382,7 @@ public sealed class GovernedAIFunctionTests
     public void Decorator_PreservesInnerNameAndSchema()
     {
         var (inner, _) = MakeInner();
-        var governed = new GovernedAIFunction(inner);
+        var governed = new GovernedAIFunction(inner, RedactionFilter);
 
         Assert.Equal(inner.Name, governed.Name);
         Assert.Equal(inner.JsonSchema.ToString(), governed.JsonSchema.ToString());

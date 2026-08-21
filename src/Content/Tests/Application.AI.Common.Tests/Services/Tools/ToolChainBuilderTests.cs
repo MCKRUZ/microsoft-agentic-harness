@@ -1,6 +1,7 @@
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Plugins;
+using Application.AI.Common.Interfaces.Telemetry;
 using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Services.Tools;
 using Domain.AI.Skills;
@@ -10,6 +11,7 @@ using Domain.Common.Config.AI.Governance;
 using Domain.Common.Config.AI.Plugins;
 using FluentAssertions;
 using Infrastructure.AI.Governance.Adapters;
+using Infrastructure.AI.Telemetry.Redaction;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -26,6 +28,8 @@ namespace Application.AI.Common.Tests.Services.Tools;
 /// </summary>
 public class ToolChainBuilderTests
 {
+    private static readonly IContentRedactionFilter RedactionFilter = TestRedactionFilter.Instance;
+
     private static ToolChainBuilder CreateBuilder(
         IMcpToolProvider? mcpToolProvider = null,
         IToolConverter? toolConverter = null,
@@ -36,6 +40,7 @@ public class ToolChainBuilderTests
         return new ToolChainBuilder(
             NullLogger<ToolChainBuilder>.Instance,
             serviceProvider ?? new ServiceCollection().BuildServiceProvider(),
+            RedactionFilter,
             toolConverter,
             mcpToolProvider,
             surfaceScanner,

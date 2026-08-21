@@ -1,5 +1,6 @@
 using Application.AI.Common.Interfaces.Telemetry;
 using Application.Common.Interfaces.Telemetry;
+using Domain.AI.Telemetry.Redaction;
 using Domain.Common.Config;
 using Domain.Common.Config.Observability;
 using Domain.Common.Telemetry;
@@ -14,6 +15,7 @@ using OpenTelemetry.Logs;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
+using System.Diagnostics;
 using System.Reflection;
 
 namespace Presentation.Common.Extensions;
@@ -95,27 +97,36 @@ public static class OpenTelemetryServiceCollectionExtensions
     /// to defer configurator resolution until the real <see cref="IServiceProvider"/> is built,
     /// avoiding the <c>BuildServiceProvider()</c> anti-pattern that creates duplicate singletons.
     /// </remarks>
-    private static IServiceCollection AddWebTelemetry(this IServiceCollection services, AppConfig appConfig)
+    /// <remarks>
+    /// <c>internal</c> rather than <c>private</c> so
+    /// <c>OpenTelemetryTracingExceptionRedactionTests</c> can call it directly to verify the redaction
+    /// wiring against real DI-resolved options — <see cref="AddOpenTelemetry"/>'s own web/desktop
+    /// branch keys off <see cref="System.Reflection.Assembly.GetEntryAssembly"/>, which is the test
+    /// host in a test process, not a project named in <c>Observability:WebTelemetryProjects</c>, so
+    /// that entry point never reaches this method from a test.
+    /// </remarks>
+    internal static IServiceCollection AddWebTelemetry(this IServiceCollection services, AppConfig appConfig)
     {
-        services.Configure<AspNetCoreTraceInstrumentationOptions>(options =>
-        {
-            options.RecordException = true;
-            options.EnrichWithException = (activity, exception) =>
+        // PostConfigure, not Configure: this template is meant to be cloned and extended, and a
+        // consumer's own AddAspNetCoreInstrumentation(o => ...)/AddHttpClientInstrumentation(o => ...)
+        // call elsewhere in their composition root would otherwise be free to run after this Configure
+        // and silently flip RecordException back on or replace EnrichWithException, undoing the
+        // redaction with no signal that it happened. PostConfigure always runs after every Configure
+        // delegate for these options, regardless of registration order, closing that gap structurally
+        // instead of relying on this method running last.
+        services.AddOptions<AspNetCoreTraceInstrumentationOptions>()
+            .PostConfigure<IContentRedactionFilter>((options, filter) =>
             {
-                activity.SetTag("exception.type", exception.GetType().FullName);
-                activity.SetTag("exception.message", exception.Message);
-            };
-        });
+                options.RecordException = false;
+                options.EnrichWithException = BuildRedactingExceptionEnricher(filter);
+            });
 
-        services.Configure<HttpClientTraceInstrumentationOptions>(options =>
-        {
-            options.RecordException = true;
-            options.EnrichWithException = (activity, exception) =>
+        services.AddOptions<HttpClientTraceInstrumentationOptions>()
+            .PostConfigure<IContentRedactionFilter>((options, filter) =>
             {
-                activity.SetTag("exception.type", exception.GetType().FullName);
-                activity.SetTag("exception.message", exception.Message);
-            };
-        });
+                options.RecordException = false;
+                options.EnrichWithException = BuildRedactingExceptionEnricher(filter);
+            });
 
         services.AddOpenTelemetry()
             .WithTracing(builder =>
@@ -151,6 +162,58 @@ public static class OpenTelemetryServiceCollectionExtensions
 
         return services;
     }
+
+    /// <summary>
+    /// Builds the exception-enrichment callback shared by ASP.NET Core and HttpClient trace
+    /// instrumentation. Redacts the exception's message and full <see cref="Exception.ToString"/>
+    /// text through <paramref name="filter"/> before either reaches the span — as the
+    /// <c>exception.type</c> / <c>exception.message</c> tags this callback sets directly on the
+    /// activity, and as the "exception" span event this callback constructs itself.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>Why this callback creates the span event itself instead of scrubbing the one the
+    /// instrumentation library creates.</strong> Confirmed against the .NET runtime source:
+    /// <see cref="ActivityEvent"/> is an immutable <see langword="readonly struct"/> — its tags are
+    /// copied into a private linked list at construction, with no public API to mutate an event
+    /// already added to <see cref="Activity.Events"/>, and <see cref="Activity.Events"/> itself has
+    /// no setter. A processor running after the span ends (the span-side sibling of
+    /// <see cref="LogRecordRedactionProcessor"/>) cannot scrub that event's tags after the fact — so
+    /// both instrumentation options this callback is registered on have <c>RecordException</c> set to
+    /// <see langword="false"/> (see <see cref="AddWebTelemetry"/>), suppressing the library's own
+    /// unredacted <c>Activity.AddException</c> call, and this callback calls it instead with content
+    /// that is already safe.
+    /// </para>
+    /// <para>
+    /// Passes an explicit <see cref="TagList"/> to <see cref="Activity.AddException"/> carrying both
+    /// the short redacted message and the full redacted detail — confirmed against the runtime's
+    /// <c>Activity.AddException</c> source: it only fills a tag from the exception's own (raw)
+    /// <see cref="Exception.Message"/> / <see cref="Exception.ToString"/> when that tag is not already
+    /// present in the list it's given, so pre-populating both here means none of the framework's own
+    /// unredacted population ever runs. The full <see cref="Exception.ToString"/> text (not just
+    /// <see cref="Exception.Message"/>) is what gets redacted for <c>exception.stacktrace</c> — it
+    /// recursively includes every <see cref="Exception.InnerException"/>'s own message, so a secret
+    /// nested in a wrapped exception's inner message is still caught even when the outer message is
+    /// clean, matching <see cref="LogRecordRedactionProcessor"/>'s <c>RedactException</c> — identical
+    /// reasoning on the log side.
+    /// </para>
+    /// </remarks>
+    internal static Action<Activity, Exception> BuildRedactingExceptionEnricher(IContentRedactionFilter filter) =>
+        (activity, exception) =>
+        {
+            var redactedMessage = filter.Redact(exception.Message, RedactionCategories.All);
+            var redactedDetail = filter.Redact(exception.ToString(), RedactionCategories.All);
+
+            activity.SetTag("exception.type", exception.GetType().FullName);
+            activity.SetTag("exception.message", redactedMessage);
+
+            var eventTags = new TagList
+            {
+                { "exception.message", redactedMessage },
+                { "exception.stacktrace", redactedDetail }
+            };
+            activity.AddException(new RedactedSpanException(redactedMessage), in eventTags);
+        };
 
     /// <summary>
     /// Configures OpenTelemetry for desktop/console applications by creating

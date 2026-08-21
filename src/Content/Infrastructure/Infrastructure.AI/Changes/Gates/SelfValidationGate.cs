@@ -1,4 +1,5 @@
 using Application.AI.Common.Interfaces.Changes;
+using Application.AI.Common.Services.Tools;
 using Domain.AI.Changes;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -85,7 +86,7 @@ public sealed class SelfValidationGate : IChangeProposalGate
                     "Validator '{ValidatorKey}' threw evaluating proposal {ProposalId}.",
                     validator.Key,
                     proposal.Id);
-                return GateResult.Fail($"Validator '{validator.Key}' threw: {ex.GetType().Name}: {ex.Message}");
+                return GateResult.Fail(SafeFailureText.For($"Validator '{validator.Key}' threw", ex));
             }
 
             switch (result.Action)
