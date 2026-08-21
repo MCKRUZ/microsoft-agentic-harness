@@ -1,6 +1,8 @@
 using System.Diagnostics;
+using Application.AI.Common.Interfaces.Telemetry;
 using Application.AI.Common.OpenTelemetry.Instruments;
 using Domain.AI.Telemetry.Conventions;
+using Domain.AI.Telemetry.Redaction;
 using Domain.Common.Telemetry;
 using OpenTelemetry;
 
@@ -22,6 +24,18 @@ public sealed class AgentFrameworkSpanProcessor : BaseProcessor<Activity>
     // Centralized in AiSourceNames — single place to update at SDK GA
     private static readonly string AgentFrameworkSource = AiSourceNames.AgentFrameworkExact;
 
+    private readonly IContentRedactionFilter _filter;
+
+    /// <summary>
+    /// Initializes a new instance of the <see cref="AgentFrameworkSpanProcessor"/> class.
+    /// </summary>
+    /// <param name="filter">Redacts the tool result before it is copied onto the span.</param>
+    public AgentFrameworkSpanProcessor(IContentRedactionFilter filter)
+    {
+        ArgumentNullException.ThrowIfNull(filter);
+        _filter = filter;
+    }
+
     /// <inheritdoc />
     public override void OnEnd(Activity data)
     {
@@ -35,9 +49,12 @@ public sealed class AgentFrameworkSpanProcessor : BaseProcessor<Activity>
         var toolResult = data.GetTagItem(ToolConventions.ToolCallResult) as string;
         if (toolResult is not null)
         {
-            var truncated = toolResult.Length > ToolConventions.MaxResultLength
-                ? string.Concat(toolResult.AsSpan(0, ToolConventions.MaxResultLength), "...[truncated]")
-                : toolResult;
+            // Redact before truncating: truncating first could split a secret in half and
+            // leave the surviving fragment unredacted.
+            var redacted = _filter.Redact(toolResult, RedactionCategories.All);
+            var truncated = redacted.Length > ToolConventions.MaxResultLength
+                ? string.Concat(redacted.AsSpan(0, ToolConventions.MaxResultLength), "...[truncated]")
+                : redacted;
             data.SetTag(EventContentTag, truncated);
         }
     }

@@ -1,5 +1,6 @@
 using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Models.Tools;
+using Application.AI.Common.Services.Tools;
 using Domain.AI.Models;
 using Domain.AI.Tools;
 using Domain.Common.Config;
@@ -172,7 +173,7 @@ public sealed class BatchedToolExecutionStrategy : IToolExecutionStrategy
             return new ToolExecutionResult
             {
                 CallId = request.CallId,
-                Result = ToolResult.Fail($"Tool execution failed: {ex.Message}"),
+                Result = ToolResult.Fail(SafeFailureText.For("Tool execution failed", ex)),
                 Completed = false,
                 ErrorCategory = errorCategory
             };

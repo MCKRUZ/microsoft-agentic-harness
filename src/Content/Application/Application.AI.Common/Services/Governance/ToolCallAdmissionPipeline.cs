@@ -2,6 +2,8 @@ using System.Collections.ObjectModel;
 using System.Text.Json;
 using Application.AI.Common.Interfaces.Escalation;
 using Application.AI.Common.Interfaces.Governance;
+using Application.AI.Common.Interfaces.Telemetry;
+using Application.AI.Common.Services.Tools;
 using Domain.AI.Escalation;
 using Domain.AI.Governance;
 using Microsoft.Extensions.Logging;
@@ -52,6 +54,8 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
     private readonly IProgressEvaluator _progressEvaluator;
     private readonly IGovernanceTraceRecorder _trace;
     private readonly IApprovalExecutionReporter _executionReporter;
+    private readonly ICompositeResponseSanitizer _sanitizer;
+    private readonly IContentRedactionFilter _redactionFilter;
     private readonly ILogger<ToolCallAdmissionPipeline> _logger;
 
     /// <summary>Initializes a new instance of the <see cref="ToolCallAdmissionPipeline"/> class.</summary>
@@ -75,6 +79,11 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
     /// <param name="executionReporter">
     /// Closes the approval loop for a call this pipeline approved — see <see cref="ReportExecutionAsync"/>.
     /// </param>
+    /// <param name="sanitizer">
+    /// Prepares a failed call's raw failure text for reporting, along with <paramref name="redactionFilter"/>
+    /// — see <see cref="ReportExecutionAsync"/> and <see cref="ReportedFailureText.PrepareForReporting"/>.
+    /// </param>
+    /// <param name="redactionFilter">Scrubs known secret patterns from a failed call's reported text.</param>
     /// <param name="logger">Records a redaction that could not be applied.</param>
     public ToolCallAdmissionPipeline(
         IAgentToolAuthorizationGate authorizationGate,
@@ -84,6 +93,8 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
         IProgressEvaluator progressEvaluator,
         IGovernanceTraceRecorder trace,
         IApprovalExecutionReporter executionReporter,
+        ICompositeResponseSanitizer sanitizer,
+        IContentRedactionFilter redactionFilter,
         ILogger<ToolCallAdmissionPipeline> logger)
     {
         ArgumentNullException.ThrowIfNull(authorizationGate);
@@ -93,6 +104,8 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
         ArgumentNullException.ThrowIfNull(progressEvaluator);
         ArgumentNullException.ThrowIfNull(trace);
         ArgumentNullException.ThrowIfNull(executionReporter);
+        ArgumentNullException.ThrowIfNull(sanitizer);
+        ArgumentNullException.ThrowIfNull(redactionFilter);
         ArgumentNullException.ThrowIfNull(logger);
 
         _authorizationGate = authorizationGate;
@@ -102,6 +115,8 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
         _progressEvaluator = progressEvaluator;
         _trace = trace;
         _executionReporter = executionReporter;
+        _sanitizer = sanitizer;
+        _redactionFilter = redactionFilter;
         _logger = logger;
     }
 
@@ -266,8 +281,14 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
         {
             { Status: EscalationExecutionStatus.Succeeded } =>
                 _executionReporter.ReportSucceededAsync(call, reportedBy, cancellationToken),
+            // #460: the tool's raw failure text is sanitized, redacted, and bounded exactly once, here
+            // — the chokepoint every reporting path already funnels through — rather than by each
+            // caller. See ReportedFailureText.PrepareForReporting for the ordering rationale.
             { Status: EscalationExecutionStatus.Failed, FailureReason: { } reason } =>
-                _executionReporter.ReportFailedAsync(call, reason, reportedBy, cancellationToken),
+                _executionReporter.ReportFailedAsync(
+                    call,
+                    ReportedFailureText.PrepareForReporting(reason, _sanitizer, _redactionFilter, report.ToolName),
+                    reportedBy, cancellationToken),
             { Status: EscalationExecutionStatus.NeverExecuted, NotExecutedReason: { } notExecuted } =>
                 _executionReporter.ReportNotExecutedAsync(call, notExecuted, reportedBy, cancellationToken),
             // An incoherent report (Failed with no reason, NeverExecuted with no reason) is a

@@ -1,6 +1,7 @@
 using Application.AI.Common.Interfaces.Tools;
 using FluentAssertions;
 using Infrastructure.AI.Tools;
+using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
 namespace Infrastructure.AI.Tests.Tools;
@@ -12,6 +13,8 @@ namespace Infrastructure.AI.Tests.Tools;
 /// </summary>
 public sealed class RenderChartToolTests
 {
+    private static readonly NullLogger<RenderChartTool> Logger = NullLogger<RenderChartTool>.Instance;
+
     private static Dictionary<string, object?> Args(params (string Key, object? Value)[] pairs)
     {
         var d = new Dictionary<string, object?>();
@@ -22,7 +25,7 @@ public sealed class RenderChartToolTests
     [Fact]
     public void Metadata_IsCorrect()
     {
-        var sut = new RenderChartTool(new FakeBridge());
+        var sut = new RenderChartTool(new FakeBridge(), Logger);
         sut.Name.Should().Be("render_chart");
         sut.SupportedOperations.Should().BeEquivalentTo(["render"]);
         sut.Description.Should().Contain("metricId");
@@ -32,7 +35,7 @@ public sealed class RenderChartToolTests
     public async Task ExecuteAsync_UnknownOperation_Fails()
     {
         var bridge = new FakeBridge();
-        var result = await new RenderChartTool(bridge).ExecuteAsync("explode", Args(("metricId", "x")));
+        var result = await new RenderChartTool(bridge, Logger).ExecuteAsync("explode", Args(("metricId", "x")));
         result.Success.Should().BeFalse();
         bridge.InvokeCount.Should().Be(0);
     }
@@ -40,7 +43,7 @@ public sealed class RenderChartToolTests
     [Fact]
     public async Task ExecuteAsync_NoClientAttached_Fails()
     {
-        var sut = new RenderChartTool(new FakeBridge { ClientAttached = false });
+        var sut = new RenderChartTool(new FakeBridge { ClientAttached = false }, Logger);
         var result = await sut.ExecuteAsync("render", Args(("metricId", "tokens_by_model")));
         result.Success.Should().BeFalse();
         result.Error.Should().Contain("client");
@@ -50,7 +53,7 @@ public sealed class RenderChartToolTests
     public async Task ExecuteAsync_NoMetricOrQuery_Fails()
     {
         var bridge = new FakeBridge();
-        var result = await new RenderChartTool(bridge).ExecuteAsync("render", Args(("chartType", "bar")));
+        var result = await new RenderChartTool(bridge, Logger).ExecuteAsync("render", Args(("chartType", "bar")));
         result.Success.Should().BeFalse();
         bridge.InvokeCount.Should().Be(0);
     }
@@ -59,7 +62,7 @@ public sealed class RenderChartToolTests
     public async Task ExecuteAsync_HappyPath_PassesSerializedArgs_AndReturnsSummary()
     {
         var bridge = new FakeBridge { Result = "Rendered pie chart of tokens by model." };
-        var result = await new RenderChartTool(bridge).ExecuteAsync(
+        var result = await new RenderChartTool(bridge, Logger).ExecuteAsync(
             "render", Args(("metricId", "tokens_by_model"), ("chartType", "pie")));
 
         result.Success.Should().BeTrue();
@@ -71,7 +74,7 @@ public sealed class RenderChartToolTests
     [Fact]
     public async Task ExecuteAsync_BridgeTimeout_FailsGracefully()
     {
-        var sut = new RenderChartTool(new FakeBridge { Throw = new TimeoutException() });
+        var sut = new RenderChartTool(new FakeBridge { Throw = new TimeoutException() }, Logger);
         var result = await sut.ExecuteAsync("render", Args(("promQL", "up")));
         result.Success.Should().BeFalse();
     }
@@ -79,7 +82,7 @@ public sealed class RenderChartToolTests
     [Fact]
     public async Task ExecuteAsync_Cancellation_Propagates()
     {
-        var sut = new RenderChartTool(new FakeBridge { Throw = new OperationCanceledException() });
+        var sut = new RenderChartTool(new FakeBridge { Throw = new OperationCanceledException() }, Logger);
         var act = async () => await sut.ExecuteAsync("render", Args(("promQL", "up")));
         await act.Should().ThrowAsync<OperationCanceledException>();
     }

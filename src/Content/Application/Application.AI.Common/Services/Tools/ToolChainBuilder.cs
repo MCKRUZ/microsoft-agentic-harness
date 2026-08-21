@@ -1,7 +1,6 @@
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Plugins;
-using Application.AI.Common.Interfaces.Telemetry;
 using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Services.Governance;
 using Domain.AI.Governance;
@@ -25,7 +24,6 @@ public partial class ToolChainBuilder : IToolChainBuilder
 {
     private readonly ILogger<ToolChainBuilder> _logger;
     private readonly IServiceProvider _serviceProvider;
-    private readonly IContentRedactionFilter _redactionFilter;
     private readonly IToolConverter? _toolConverter;
     private readonly IMcpToolProvider? _mcpToolProvider;
     private readonly IMcpToolSurfaceScanner? _surfaceScanner;
@@ -36,7 +34,6 @@ public partial class ToolChainBuilder : IToolChainBuilder
     public ToolChainBuilder(
         ILogger<ToolChainBuilder> logger,
         IServiceProvider serviceProvider,
-        IContentRedactionFilter redactionFilter,
         IToolConverter? toolConverter = null,
         IMcpToolProvider? mcpToolProvider = null,
         IMcpToolSurfaceScanner? surfaceScanner = null,
@@ -44,11 +41,8 @@ public partial class ToolChainBuilder : IToolChainBuilder
         IToolCompositionAnalyzer? compositionAnalyzer = null,
         ToolCompositionReporter? compositionReporter = null)
     {
-        ArgumentNullException.ThrowIfNull(redactionFilter);
-
         _logger = logger;
         _serviceProvider = serviceProvider;
-        _redactionFilter = redactionFilter;
         _toolConverter = toolConverter;
         _mcpToolProvider = mcpToolProvider;
         _surfaceScanner = surfaceScanner;
@@ -285,15 +279,18 @@ public partial class ToolChainBuilder : IToolChainBuilder
     /// skill-provided — is governed exactly once.
     /// </summary>
     /// <remarks>
-    /// Passes each tool's own <see cref="ProvisionedTool.McpServerName"/> through as
-    /// <c>isMcpSourced</c> so <see cref="GovernedAIFunction"/>'s MCP-failure-shape detection only runs
-    /// for tools that actually came from an MCP server — this is the provenance this builder already
-    /// tracks positionally (see <see cref="ProvisionedTool"/>'s remarks), not re-derived.
+    /// A tool whose <see cref="ProvisionedTool.McpServerName"/> is non-null — the provenance this
+    /// builder already tracks positionally (see <see cref="ProvisionedTool"/>'s remarks) — is wrapped in
+    /// <see cref="McpFailureNormalizingAIFunction"/> before <see cref="GovernedAIFunction"/>, so an MCP
+    /// tool's non-throwing failure is normalized to the same <see cref="ConvertedToolFailure"/> marker
+    /// every other tool source produces (see #468). <see cref="GovernedAIFunction"/> itself no longer
+    /// needs to know or be told which source produced the tool it is wrapping.
     /// </remarks>
     private List<AITool> WrapGoverned(IEnumerable<ProvisionedTool> provisioned)
         => provisioned
             .Select(p => p.Tool is AIFunction fn and not GovernedAIFunction
-                ? new GovernedAIFunction(fn, _redactionFilter, isMcpSourced: p.McpServerName is not null)
+                ? new GovernedAIFunction(
+                    p.McpServerName is not null ? new McpFailureNormalizingAIFunction(fn) : fn)
                 : p.Tool)
             .ToList();
 
@@ -428,8 +425,10 @@ public partial class ToolChainBuilder : IToolChainBuilder
             // Re-wrap rather than mutate: the taint is set once, in the constructor, so carrying a
             // finding discovered by THIS analysis means unwrapping to the same inner function and
             // rewrapping — never double-governing, since InnerFunction always points at the real tool.
+            // governed.Inner already carries any McpFailureNormalizingAIFunction wrapping intact —
+            // there is no separate provenance flag left to forward.
             return (AITool)new GovernedAIFunction(
-                governed.Inner, _redactionFilter, new ToolCompositionTaint(findings), governed.IsMcpSourced);
+                governed.Inner, new ToolCompositionTaint(findings));
         }).ToList();
     }
 

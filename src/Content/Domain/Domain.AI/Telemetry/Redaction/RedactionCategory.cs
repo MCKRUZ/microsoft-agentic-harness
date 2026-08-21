@@ -39,6 +39,15 @@ public enum RedactionCategory
 
     /// <summary>Catch-all bucket for harness-vendored generic secret patterns.</summary>
     Generic = 7,
+
+    /// <summary>
+    /// Vendor API keys/tokens with a fixed literal prefix and structured body — OpenAI
+    /// (<c>sk-…</c>), GitHub (<c>ghp_…</c>, <c>gho_…</c>, <c>ghs_…</c>, <c>ghr_…</c>,
+    /// <c>ghu_…</c>, <c>github_pat_…</c>), and Slack (<c>xoxb-…</c>, <c>xoxp-…</c>, etc.).
+    /// Same shape as <see cref="AwsKey"/> — a distinguishing prefix plus a fixed-format
+    /// body — so it gets its own category rather than folding into <see cref="Generic"/>.
+    /// </summary>
+    VendorApiKey = 8,
 }
 
 /// <summary>

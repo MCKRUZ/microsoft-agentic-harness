@@ -8,6 +8,7 @@ using Domain.Common.Config.AI.Governance;
 using Domain.AI.Models;
 using Domain.AI.RAG.Enums;
 using Domain.AI.Sandbox;
+using Microsoft.Extensions.Logging;
 
 namespace Infrastructure.AI.Tools;
 
@@ -21,7 +22,9 @@ namespace Infrastructure.AI.Tools;
 /// Register via keyed DI:
 /// <code>
 /// services.AddKeyedSingleton&lt;ITool&gt;("document_search", (sp, _) =&gt;
-///     new DocumentSearchTool(sp.GetRequiredService&lt;IRagOrchestrator&gt;()));
+///     new DocumentSearchTool(
+///         sp.GetRequiredService&lt;IRagOrchestrator&gt;(),
+///         sp.GetRequiredService&lt;ILogger&lt;DocumentSearchTool&gt;&gt;()));
 /// </code>
 /// </para>
 /// <para>
@@ -49,15 +52,19 @@ public sealed class DocumentSearchTool : ITool
         ["search", "search_global", "search_with_citations"];
 
     private readonly IRagOrchestrator _orchestrator;
+    private readonly ILogger<DocumentSearchTool> _logger;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="DocumentSearchTool"/> class.
     /// </summary>
     /// <param name="orchestrator">The RAG pipeline orchestrator.</param>
-    public DocumentSearchTool(IRagOrchestrator orchestrator)
+    /// <param name="logger">Logs a rejected search argument before it is mapped to a failed <see cref="ToolResult"/>.</param>
+    public DocumentSearchTool(IRagOrchestrator orchestrator, ILogger<DocumentSearchTool> logger)
     {
         ArgumentNullException.ThrowIfNull(orchestrator);
+        ArgumentNullException.ThrowIfNull(logger);
         _orchestrator = orchestrator;
+        _logger = logger;
     }
 
     /// <inheritdoc />
@@ -121,6 +128,7 @@ public sealed class DocumentSearchTool : ITool
         }
         catch (ArgumentException ex)
         {
+            _logger.LogWarning(ex, "Search arguments rejected");
             return ToolResult.Fail(SafeFailureText.For("Invalid search arguments", ex));
         }
     }

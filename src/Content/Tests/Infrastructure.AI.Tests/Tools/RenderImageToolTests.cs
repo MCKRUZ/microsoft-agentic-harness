@@ -1,6 +1,7 @@
 using Application.AI.Common.Interfaces.Tools;
 using FluentAssertions;
 using Infrastructure.AI.Tools;
+using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
 namespace Infrastructure.AI.Tests.Tools;
@@ -12,6 +13,7 @@ namespace Infrastructure.AI.Tests.Tools;
 /// </summary>
 public sealed class RenderImageToolTests
 {
+    private static readonly NullLogger<RenderImageTool> Logger = NullLogger<RenderImageTool>.Instance;
     private const string ValidUrl = "https://example.com/cat.png";
 
     private static Dictionary<string, object?> Args(params (string Key, object? Value)[] pairs)
@@ -24,7 +26,7 @@ public sealed class RenderImageToolTests
     [Fact]
     public void Metadata_IsCorrect()
     {
-        var sut = new RenderImageTool(new FakeBridge());
+        var sut = new RenderImageTool(new FakeBridge(), Logger);
         sut.Name.Should().Be("render_image");
         sut.SupportedOperations.Should().BeEquivalentTo(["render"]);
         sut.Description.Should().Contain("url");
@@ -34,7 +36,7 @@ public sealed class RenderImageToolTests
     public async Task ExecuteAsync_UnknownOperation_Fails()
     {
         var bridge = new FakeBridge();
-        var result = await new RenderImageTool(bridge).ExecuteAsync("explode", Args(("url", ValidUrl)));
+        var result = await new RenderImageTool(bridge, Logger).ExecuteAsync("explode", Args(("url", ValidUrl)));
         result.Success.Should().BeFalse();
         bridge.InvokeCount.Should().Be(0);
     }
@@ -42,7 +44,7 @@ public sealed class RenderImageToolTests
     [Fact]
     public async Task ExecuteAsync_NoClientAttached_Fails()
     {
-        var sut = new RenderImageTool(new FakeBridge { ClientAttached = false });
+        var sut = new RenderImageTool(new FakeBridge { ClientAttached = false }, Logger);
         var result = await sut.ExecuteAsync("render", Args(("url", ValidUrl)));
         result.Success.Should().BeFalse();
         result.Error.Should().Contain("client");
@@ -52,7 +54,7 @@ public sealed class RenderImageToolTests
     public async Task ExecuteAsync_MissingUrl_Fails()
     {
         var bridge = new FakeBridge();
-        var result = await new RenderImageTool(bridge).ExecuteAsync("render", Args(("alt", "a cat")));
+        var result = await new RenderImageTool(bridge, Logger).ExecuteAsync("render", Args(("alt", "a cat")));
         result.Success.Should().BeFalse();
         bridge.InvokeCount.Should().Be(0);
     }
@@ -65,7 +67,7 @@ public sealed class RenderImageToolTests
     public async Task ExecuteAsync_NonHttpsUrl_Fails(string url)
     {
         var bridge = new FakeBridge();
-        var result = await new RenderImageTool(bridge).ExecuteAsync("render", Args(("url", url)));
+        var result = await new RenderImageTool(bridge, Logger).ExecuteAsync("render", Args(("url", url)));
         result.Success.Should().BeFalse();
         result.Error.Should().Contain("https");
         bridge.InvokeCount.Should().Be(0);
@@ -75,7 +77,7 @@ public sealed class RenderImageToolTests
     public async Task ExecuteAsync_HappyPath_PassesSerializedArgs_AndReturnsAck()
     {
         var bridge = new FakeBridge { Result = "Displayed the image to the user." };
-        var result = await new RenderImageTool(bridge).ExecuteAsync(
+        var result = await new RenderImageTool(bridge, Logger).ExecuteAsync(
             "render", Args(("url", ValidUrl), ("caption", "A cat")));
 
         result.Success.Should().BeTrue();
@@ -87,7 +89,7 @@ public sealed class RenderImageToolTests
     [Fact]
     public async Task ExecuteAsync_BridgeTimeout_FailsGracefully()
     {
-        var sut = new RenderImageTool(new FakeBridge { Throw = new TimeoutException() });
+        var sut = new RenderImageTool(new FakeBridge { Throw = new TimeoutException() }, Logger);
         var result = await sut.ExecuteAsync("render", Args(("url", ValidUrl)));
         result.Success.Should().BeFalse();
     }
@@ -95,7 +97,7 @@ public sealed class RenderImageToolTests
     [Fact]
     public async Task ExecuteAsync_Cancellation_Propagates()
     {
-        var sut = new RenderImageTool(new FakeBridge { Throw = new OperationCanceledException() });
+        var sut = new RenderImageTool(new FakeBridge { Throw = new OperationCanceledException() }, Logger);
         var act = async () => await sut.ExecuteAsync("render", Args(("url", ValidUrl)));
         await act.Should().ThrowAsync<OperationCanceledException>();
     }

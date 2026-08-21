@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Application.AI.Common.Interfaces.Tools;
 using Domain.AI.Models;
+using Microsoft.Extensions.Logging;
 
 namespace Infrastructure.AI.Tools;
 
@@ -28,7 +29,8 @@ public abstract class SingleRenderProxyTool : BlockingProxyTool
 
     /// <summary>Initializes the base with the client round-trip bridge.</summary>
     /// <param name="bridge">The bridge used to delegate rendering to the browser.</param>
-    protected SingleRenderProxyTool(IClientToolBridge bridge) : base(bridge)
+    /// <param name="logger">Logs a no-client race before it is mapped to a failed <see cref="ToolResult"/>.</param>
+    protected SingleRenderProxyTool(IClientToolBridge bridge, ILogger logger) : base(bridge, logger)
     {
     }
 

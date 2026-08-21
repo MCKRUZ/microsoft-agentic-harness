@@ -1,6 +1,9 @@
 using Application.AI.Common.Interfaces.Tools;
 using FluentAssertions;
 using Infrastructure.AI.Tools;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
+using Moq;
 using Xunit;
 
 namespace Infrastructure.AI.Tests.Tools;
@@ -15,7 +18,7 @@ public sealed class DashboardControlToolTests
     [Fact]
     public void Metadata_IsCorrect()
     {
-        var sut = new DashboardControlTool(new FakeBridge());
+        var sut = new DashboardControlTool(new FakeBridge(), NullLogger<DashboardControlTool>.Instance);
         sut.Name.Should().Be("dashboard_control");
         sut.Description.Should().NotBeNullOrWhiteSpace();
         sut.SupportedOperations.Should().BeEquivalentTo(["get_state", "set_time_range", "navigate", "refresh_data"]);
@@ -25,7 +28,7 @@ public sealed class DashboardControlToolTests
     public async Task ExecuteAsync_UnknownOperation_Fails_WithoutCallingBridge()
     {
         var bridge = new FakeBridge();
-        var sut = new DashboardControlTool(bridge);
+        var sut = new DashboardControlTool(bridge, NullLogger<DashboardControlTool>.Instance);
 
         var result = await sut.ExecuteAsync("explode", new Dictionary<string, object?>());
 
@@ -36,7 +39,7 @@ public sealed class DashboardControlToolTests
     [Fact]
     public async Task ExecuteAsync_NoClientAttached_Fails()
     {
-        var sut = new DashboardControlTool(new FakeBridge { ClientAttached = false });
+        var sut = new DashboardControlTool(new FakeBridge { ClientAttached = false }, NullLogger<DashboardControlTool>.Instance);
 
         var result = await sut.ExecuteAsync("get_state", new Dictionary<string, object?>());
 
@@ -48,7 +51,7 @@ public sealed class DashboardControlToolTests
     public async Task ExecuteAsync_HappyPath_PassesSerializedPayload_AndReturnsBridgeResult()
     {
         var bridge = new FakeBridge { Result = "navigated to /spend" };
-        var sut = new DashboardControlTool(bridge);
+        var sut = new DashboardControlTool(bridge, NullLogger<DashboardControlTool>.Instance);
 
         var result = await sut.ExecuteAsync("navigate",
             new Dictionary<string, object?> { ["path"] = "/spend" });
@@ -62,7 +65,7 @@ public sealed class DashboardControlToolTests
     [Fact]
     public async Task ExecuteAsync_BridgeTimeout_FailsGracefully()
     {
-        var sut = new DashboardControlTool(new FakeBridge { Throw = new TimeoutException() });
+        var sut = new DashboardControlTool(new FakeBridge { Throw = new TimeoutException() }, NullLogger<DashboardControlTool>.Instance);
 
         var result = await sut.ExecuteAsync("refresh_data", new Dictionary<string, object?>());
 
@@ -72,12 +75,38 @@ public sealed class DashboardControlToolTests
     [Fact]
     public async Task ExecuteAsync_Cancellation_Propagates()
     {
-        var sut = new DashboardControlTool(new FakeBridge { Throw = new OperationCanceledException() });
+        var sut = new DashboardControlTool(new FakeBridge { Throw = new OperationCanceledException() }, NullLogger<DashboardControlTool>.Instance);
 
         var act = async () => await sut.ExecuteAsync("get_state", new Dictionary<string, object?>());
 
         await act.Should().ThrowAsync<OperationCanceledException>(
             "a cancelled run must unwind rather than being swallowed as a tool failure");
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_BridgeInvalidOperation_LogsWarning_AndReturnsSafeFailureText()
+    {
+        // #466: BlockingProxyTool had no logger at all, so a no-client race (the bridge throwing
+        // InvalidOperationException) left no compensating detail once the exception message was
+        // replaced with the type-name-only SafeFailureText. This proves both halves of the fix: the
+        // real exception detail is still recoverable from structured logs, and the model-facing text
+        // never carries the raw exception message.
+        var logger = new Mock<ILogger<DashboardControlTool>>();
+        var sut = new DashboardControlTool(
+            new FakeBridge { Throw = new InvalidOperationException("no client attached to run xyz") }, logger.Object);
+
+        var result = await sut.ExecuteAsync("get_state", new Dictionary<string, object?>());
+
+        result.Success.Should().BeFalse();
+        result.Error.Should().NotContain("no client attached to run xyz");
+        logger.Verify(
+            l => l.Log(
+                LogLevel.Warning,
+                It.IsAny<EventId>(),
+                It.IsAny<It.IsAnyType>(),
+                It.Is<Exception>(ex => ex is InvalidOperationException),
+                It.IsAny<Func<It.IsAnyType, Exception?, string>>()),
+            Times.Once);
     }
 
     private sealed class FakeBridge : IClientToolBridge

@@ -73,6 +73,25 @@ public sealed class DefaultContentRedactionFilter : IContentRedactionFilter
             @"\b(?:AKIA|ASIA|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|ASCA)[A-Z0-9]{16}\b",
             "[REDACTED:AwsKey]"));
 
+        // OpenAI-style secret keys — classic sk-… and the newer sk-proj-…/sk-{scope}-… shapes.
+        b.Add(Compile(RedactionCategory.VendorApiKey,
+            @"\bsk-[A-Za-z0-9_-]{20,}\b",
+            "[REDACTED:VendorApiKey]"));
+
+        // GitHub personal-access and installation tokens.
+        b.Add(Compile(RedactionCategory.VendorApiKey,
+            @"\b(?:ghp|gho|ghs|ghr|ghu)_[A-Za-z0-9]{36,}\b",
+            "[REDACTED:VendorApiKey]"));
+
+        b.Add(Compile(RedactionCategory.VendorApiKey,
+            @"\bgithub_pat_[A-Za-z0-9_]{22,}\b",
+            "[REDACTED:VendorApiKey]"));
+
+        // Slack bot/user/app/refresh tokens.
+        b.Add(Compile(RedactionCategory.VendorApiKey,
+            @"\bxox[baprs]-[A-Za-z0-9-]+\b",
+            "[REDACTED:VendorApiKey]"));
+
         // Emails — RFC 5322 simplified.
         b.Add(Compile(RedactionCategory.Email,
             @"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b",

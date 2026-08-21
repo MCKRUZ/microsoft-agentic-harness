@@ -54,7 +54,6 @@ public class AgentExecutionContextFactoryDualModeTests
         var toolChainBuilder = new ToolChainBuilder(
             NullLogger<ToolChainBuilder>.Instance,
             sp,
-            sp.GetRequiredService<IContentRedactionFilter>(),
             mcpToolProvider: _mcpToolProvider.Object);
 
         _factory = new AgentExecutionContextFactory(

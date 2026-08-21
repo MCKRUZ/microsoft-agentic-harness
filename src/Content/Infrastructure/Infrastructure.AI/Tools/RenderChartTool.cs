@@ -1,5 +1,6 @@
 using Application.AI.Common.Interfaces.Tools;
 using Domain.AI.Models;
+using Microsoft.Extensions.Logging;
 
 namespace Infrastructure.AI.Tools;
 
@@ -20,7 +21,9 @@ namespace Infrastructure.AI.Tools;
 /// Register via keyed DI:
 /// <code>
 /// services.AddKeyedSingleton&lt;ITool&gt;(RenderChartTool.ToolName, (sp, _) =&gt;
-///     new RenderChartTool(sp.GetRequiredService&lt;IClientToolBridge&gt;()));
+///     new RenderChartTool(
+///         sp.GetRequiredService&lt;IClientToolBridge&gt;(),
+///         sp.GetRequiredService&lt;ILogger&lt;RenderChartTool&gt;&gt;()));
 /// </code>
 /// </para>
 /// </remarks>
@@ -31,7 +34,8 @@ public sealed class RenderChartTool : SingleRenderProxyTool
 
     /// <summary>Initializes a new instance of the <see cref="RenderChartTool"/> class.</summary>
     /// <param name="bridge">The client round-trip bridge used to delegate rendering to the browser.</param>
-    public RenderChartTool(IClientToolBridge bridge) : base(bridge)
+    /// <param name="logger">Logs a no-client race before it is mapped to a failed <see cref="ToolResult"/>.</param>
+    public RenderChartTool(IClientToolBridge bridge, ILogger<RenderChartTool> logger) : base(bridge, logger)
     {
     }
 

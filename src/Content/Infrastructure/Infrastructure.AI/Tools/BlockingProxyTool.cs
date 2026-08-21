@@ -4,6 +4,7 @@ using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Services.Tools;
 using Domain.AI.Changes;
 using Domain.AI.Models;
+using Microsoft.Extensions.Logging;
 
 namespace Infrastructure.AI.Tools;
 
@@ -29,13 +30,17 @@ public abstract class BlockingProxyTool : ITool
     };
 
     private readonly IClientToolBridge _bridge;
+    private readonly ILogger _logger;
 
     /// <summary>Initializes the base with the client round-trip bridge.</summary>
     /// <param name="bridge">The bridge used to delegate the operation to the browser.</param>
-    protected BlockingProxyTool(IClientToolBridge bridge)
+    /// <param name="logger">Logs a no-client race before it is mapped to a failed <see cref="ToolResult"/>.</param>
+    protected BlockingProxyTool(IClientToolBridge bridge, ILogger logger)
     {
         ArgumentNullException.ThrowIfNull(bridge);
+        ArgumentNullException.ThrowIfNull(logger);
         _bridge = bridge;
+        _logger = logger;
     }
 
     /// <inheritdoc />
@@ -100,6 +105,7 @@ public abstract class BlockingProxyTool : ITool
         }
         catch (InvalidOperationException ex)
         {
+            _logger.LogWarning(ex, "{ToolName} invocation failed", Name);
             return ToolResult.Fail(SafeFailureText.For($"{Name} invocation failed", ex));
         }
     }

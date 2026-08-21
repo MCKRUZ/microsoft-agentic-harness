@@ -60,7 +60,8 @@ public sealed class DefaultPolicyCapabilityAlignmentTests
         [WorkspaceListFilesTool.ToolName] = new WorkspaceListFilesTool(
             Mock.Of<Application.AI.Common.Interfaces.Workspace.IWorkspaceContextAccessor>()).RequiredCapabilities,
         [DocumentSearchTool.ToolName] = new DocumentSearchTool(
-            Mock.Of<Application.AI.Common.Interfaces.RAG.IRagOrchestrator>()).RequiredCapabilities,
+            Mock.Of<Application.AI.Common.Interfaces.RAG.IRagOrchestrator>(),
+            Mock.Of<ILogger<DocumentSearchTool>>()).RequiredCapabilities,
     };
 
     private static readonly Regex ToolNamePattern = new(@"tool\s*==\s*'([a-zA-Z0-9_]+)'", RegexOptions.Compiled);

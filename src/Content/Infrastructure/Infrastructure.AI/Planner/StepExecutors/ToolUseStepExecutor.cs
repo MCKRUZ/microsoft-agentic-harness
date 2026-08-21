@@ -153,7 +153,7 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
             // approver it failed would be a false report the resume then contradicts. Reported before
             // rethrowing so ExecuteStepAsync's own Cancelled/Failed step-status decision is untouched.
             await ReportExecutionAsync(
-                admission, EscalationExecutionStatus.NeverExecuted, failureReason: null,
+                admission, EscalationExecutionStatus.NeverExecuted, failureReason: null, config.ToolName,
                 notExecutedReason: EscalationNotExecutedReason.RunCancelled);
             throw;
         }
@@ -165,7 +165,7 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
             // container ids, and mount configuration.
             _logger.LogError(ex, "Sandbox execution threw for tool {Tool} in step {Step}", config.ToolName, step.Name);
             await ReportExecutionAsync(
-                admission, EscalationExecutionStatus.Failed, PlanStepErrors.SandboxFailed);
+                admission, EscalationExecutionStatus.Failed, PlanStepErrors.SandboxFailed, config.ToolName);
             return (null, new StepExecutionResult
             {
                 Status = StepExecutionStatus.Failed,
@@ -206,7 +206,7 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
             config.ToolName, step.Name);
         await ReportExecutionAsync(
             admission, EscalationExecutionStatus.Failed,
-            "attestation verification failed: possible tampering detected");
+            "attestation verification failed: possible tampering detected", config.ToolName);
         return new StepExecutionResult
         {
             Status = StepExecutionStatus.Failed,
@@ -229,7 +229,8 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
                 admission, config.ToolName, sandboxResult.Output, out var content))
         {
             await ReportExecutionAsync(
-                admission, EscalationExecutionStatus.Failed, GovernanceDenials.NotPermitted(config.ToolName));
+                admission, EscalationExecutionStatus.Failed, GovernanceDenials.NotPermitted(config.ToolName),
+                config.ToolName);
             return new StepExecutionResult
             {
                 Status = StepExecutionStatus.Failed,
@@ -243,7 +244,7 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
         if (!string.IsNullOrEmpty(content))
             content = _responseSanitizer.Sanitize(content, config.ToolName).SanitizedContent;
 
-        await ReportExecutionAsync(admission, EscalationExecutionStatus.Succeeded, failureReason: null);
+        await ReportExecutionAsync(admission, EscalationExecutionStatus.Succeeded, failureReason: null, config.ToolName);
 
         return new StepExecutionResult
         {
@@ -265,7 +266,7 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
             "Tool {Tool} in step {Step} failed in the sandbox: {SandboxError}",
             config.ToolName, step.Name, sandboxResult.ErrorMessage ?? "(no detail reported)");
 
-        await ReportExecutionAsync(admission, EscalationExecutionStatus.Failed, PlanStepErrors.ToolFailed);
+        await ReportExecutionAsync(admission, EscalationExecutionStatus.Failed, PlanStepErrors.ToolFailed, config.ToolName);
 
         return new StepExecutionResult
         {
@@ -289,9 +290,10 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
         ToolCallAdmission admission,
         EscalationExecutionStatus status,
         string? failureReason,
+        string toolName,
         EscalationNotExecutedReason? notExecutedReason = null) =>
         _admissionPipeline.ReportExecutionAsync(
-            admission, new ToolExecutionReport(status, failureReason, notExecutedReason),
+            admission, new ToolExecutionReport(status, failureReason, notExecutedReason, ToolName: toolName),
             ReportedBy, CancellationToken.None);
 
     /// <summary>

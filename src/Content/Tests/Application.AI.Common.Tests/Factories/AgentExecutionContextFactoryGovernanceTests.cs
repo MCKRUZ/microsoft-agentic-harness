@@ -54,7 +54,6 @@ public sealed class AgentExecutionContextFactoryGovernanceTests
         var toolChainBuilder = new ToolChainBuilder(
             NullLogger<ToolChainBuilder>.Instance,
             sp,
-            sp.GetRequiredService<IContentRedactionFilter>(),
             mcpToolProvider: _mcpToolProvider.Object);
 
         return new AgentExecutionContextFactory(

@@ -1,6 +1,7 @@
 using Application.AI.Common.Interfaces.Tools;
 using FluentAssertions;
 using Infrastructure.AI.Tools;
+using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
 namespace Infrastructure.AI.Tests.Tools;
@@ -12,6 +13,8 @@ namespace Infrastructure.AI.Tests.Tools;
 /// </summary>
 public sealed class RenderTableToolTests
 {
+    private static readonly NullLogger<RenderTableTool> Logger = NullLogger<RenderTableTool>.Instance;
+
     private static Dictionary<string, object?> Args(params (string Key, object? Value)[] pairs)
     {
         var d = new Dictionary<string, object?>();
@@ -26,7 +29,7 @@ public sealed class RenderTableToolTests
     [Fact]
     public void Metadata_IsCorrect()
     {
-        var sut = new RenderTableTool(new FakeBridge());
+        var sut = new RenderTableTool(new FakeBridge(), Logger);
         sut.Name.Should().Be("render_table");
         sut.SupportedOperations.Should().BeEquivalentTo(["render"]);
         sut.Description.Should().Contain("columns");
@@ -36,7 +39,7 @@ public sealed class RenderTableToolTests
     public async Task ExecuteAsync_UnknownOperation_Fails()
     {
         var bridge = new FakeBridge();
-        var result = await new RenderTableTool(bridge).ExecuteAsync("explode", Args(("columns", Columns("A"))));
+        var result = await new RenderTableTool(bridge, Logger).ExecuteAsync("explode", Args(("columns", Columns("A"))));
         result.Success.Should().BeFalse();
         bridge.InvokeCount.Should().Be(0);
     }
@@ -44,7 +47,7 @@ public sealed class RenderTableToolTests
     [Fact]
     public async Task ExecuteAsync_NoClientAttached_Fails()
     {
-        var sut = new RenderTableTool(new FakeBridge { ClientAttached = false });
+        var sut = new RenderTableTool(new FakeBridge { ClientAttached = false }, Logger);
         var result = await sut.ExecuteAsync("render", Args(("columns", Columns("A"))));
         result.Success.Should().BeFalse();
         result.Error.Should().Contain("client");
@@ -54,7 +57,7 @@ public sealed class RenderTableToolTests
     public async Task ExecuteAsync_MissingColumns_Fails()
     {
         var bridge = new FakeBridge();
-        var result = await new RenderTableTool(bridge).ExecuteAsync("render", Args(("title", "Results")));
+        var result = await new RenderTableTool(bridge, Logger).ExecuteAsync("render", Args(("title", "Results")));
         result.Success.Should().BeFalse();
         result.Error.Should().Contain("columns");
         bridge.InvokeCount.Should().Be(0);
@@ -64,7 +67,7 @@ public sealed class RenderTableToolTests
     public async Task ExecuteAsync_EmptyColumns_Fails()
     {
         var bridge = new FakeBridge();
-        var result = await new RenderTableTool(bridge).ExecuteAsync("render", Args(("columns", Array.Empty<object>())));
+        var result = await new RenderTableTool(bridge, Logger).ExecuteAsync("render", Args(("columns", Array.Empty<object>())));
         result.Success.Should().BeFalse();
         bridge.InvokeCount.Should().Be(0);
     }
@@ -75,7 +78,7 @@ public sealed class RenderTableToolTests
         // An explicit null for the optional 'rows' (LLMs routinely emit these) must not fail the table:
         // the client normalizes null to an empty table. The server validates columns only.
         var bridge = new FakeBridge { Result = "Displayed the table to the user." };
-        var result = await new RenderTableTool(bridge).ExecuteAsync("render", Args(("columns", Columns("A")), ("rows", null)));
+        var result = await new RenderTableTool(bridge, Logger).ExecuteAsync("render", Args(("columns", Columns("A")), ("rows", null)));
         result.Success.Should().BeTrue();
         bridge.InvokeCount.Should().Be(1);
     }
@@ -86,7 +89,7 @@ public sealed class RenderTableToolTests
         // A malformed 'rows' is not rejected server-side; the client's parseTableArgs treats a non-array
         // as no rows. Server strictness must not exceed the client's leniency (they'd disagree otherwise).
         var bridge = new FakeBridge { Result = "Displayed the table to the user." };
-        var result = await new RenderTableTool(bridge).ExecuteAsync("render", Args(("columns", Columns("A")), ("rows", "not-an-array")));
+        var result = await new RenderTableTool(bridge, Logger).ExecuteAsync("render", Args(("columns", Columns("A")), ("rows", "not-an-array")));
         result.Success.Should().BeTrue();
         bridge.InvokeCount.Should().Be(1);
     }
@@ -97,7 +100,7 @@ public sealed class RenderTableToolTests
         // One scalar amid valid rows must not fail the whole table — the client drops the bad row and
         // renders the rest. The server relays the ragged payload unchanged.
         var bridge = new FakeBridge { Result = "Displayed the table to the user." };
-        var result = await new RenderTableTool(bridge).ExecuteAsync("render", Args(("columns", Columns("A")), ("rows", new object[] { "flat", new[] { "ok" } })));
+        var result = await new RenderTableTool(bridge, Logger).ExecuteAsync("render", Args(("columns", Columns("A")), ("rows", new object[] { "flat", new[] { "ok" } })));
         result.Success.Should().BeTrue();
         bridge.InvokeCount.Should().Be(1);
     }
@@ -106,7 +109,7 @@ public sealed class RenderTableToolTests
     public async Task ExecuteAsync_ColumnsOnly_NoRows_Succeeds()
     {
         var bridge = new FakeBridge { Result = "Displayed the table to the user." };
-        var result = await new RenderTableTool(bridge).ExecuteAsync("render", Args(("columns", Columns("Name", "Score"))));
+        var result = await new RenderTableTool(bridge, Logger).ExecuteAsync("render", Args(("columns", Columns("Name", "Score"))));
         result.Success.Should().BeTrue();
         bridge.LastToolName.Should().Be("render_table");
     }
@@ -115,7 +118,7 @@ public sealed class RenderTableToolTests
     public async Task ExecuteAsync_HappyPath_PassesSerializedArgs_AndReturnsAck()
     {
         var bridge = new FakeBridge { Result = "Displayed the table to the user." };
-        var result = await new RenderTableTool(bridge).ExecuteAsync("render", Args(
+        var result = await new RenderTableTool(bridge, Logger).ExecuteAsync("render", Args(
             ("title", "Scores"),
             ("columns", Columns("Name", "Score")),
             ("rows", Rows(["Ada", "97"], ["Alan", "91"]))));
@@ -129,7 +132,7 @@ public sealed class RenderTableToolTests
     [Fact]
     public async Task ExecuteAsync_BridgeTimeout_FailsGracefully()
     {
-        var sut = new RenderTableTool(new FakeBridge { Throw = new TimeoutException() });
+        var sut = new RenderTableTool(new FakeBridge { Throw = new TimeoutException() }, Logger);
         var result = await sut.ExecuteAsync("render", Args(("columns", Columns("A"))));
         result.Success.Should().BeFalse();
     }

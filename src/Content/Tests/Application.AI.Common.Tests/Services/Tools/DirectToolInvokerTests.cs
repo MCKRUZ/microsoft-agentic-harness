@@ -688,11 +688,12 @@ public sealed class DirectToolInvokerTests
     [Fact]
     public async Task ToolReturnsFailure_WithASecretInTheErrorText_ReportedCopyIsRedacted()
     {
-        // #452's DirectToolInvoker-side case: GovernedAIFunctionTests pins the identical fix on the
-        // agent-turn path. The reported text — what reaches the audit trail and a human approver
-        // replaying failure memory — must never carry the tool's raw secret-bearing message, even
-        // though the caller-facing outcome.Error is separately scrubbed by ICompositeResponseSanitizer
-        // (see Sanitizes_a_failing_tools_error_message) and is not this test's concern.
+        // #452/#460: the reported text — what reaches the audit trail and a human approver replaying
+        // failure memory — must never carry the tool's raw secret-bearing message. Redaction (and, since
+        // #460, sanitization) of this copy now happens inside ToolCallAdmissionPipeline.ReportExecutionAsync,
+        // not in this class — DirectToolInvoker passes the raw text through untreated. The caller-facing
+        // outcome.Error is a separate concern, scrubbed by this fixture's own _sanitizer (see
+        // Sanitizes_a_failing_tools_error_message) and not this test's concern.
         var call = ApprovedCall();
         _governor.Decision = ToolInvocationDecision.Allow(call);
 
@@ -792,6 +793,17 @@ public sealed class DirectToolInvokerTests
         // no-op one must never be confusable at runtime.
         services.AddSingleton(_executionReporter.Object);
 
+        // #460: ToolCallAdmissionPipeline.ReportExecutionAsync now sanitizes and redacts the reported
+        // copy itself — this fixture's own _sanitizer (RecordingSanitizer) is deliberately NOT reused
+        // here. It defaults to replacing content with the fixed "[scrubbed]" marker unless a test opts
+        // into PassThrough, which exists to observe DirectToolInvoker's OWN caller-facing scrub — reusing
+        // it for the reporting path would blank the reported copy in every test that doesn't set
+        // PassThrough, breaking the redaction assertion below for reasons unrelated to what it tests. A
+        // real IContentRedactionFilter is used, not a pass-through, because
+        // ToolReturnsFailure_WithASecretInTheErrorText_ReportedCopyIsRedacted asserts real redaction.
+        services.AddSingleton(AdmissionHarness.PermissiveSanitizer());
+        services.AddSingleton<IContentRedactionFilter>(TestRedactionFilter.Instance);
+
         // The real chain, not a mock of it, built the same way the production root builds it. This
         // suite's whole subject is what the Execution API does before, during and after a tool call,
         // and that is now the chain's behaviour plus this type's response shaping — mocking the chain
@@ -806,7 +818,6 @@ public sealed class DirectToolInvokerTests
             new ToolCatalog(provider, [tool.Name], NullLogger<ToolCatalog>.Instance),
             _sanitizer,
             new StaticOptionsMonitor<DirectToolInvocationConfig>(_config),
-            TestRedactionFilter.Instance,
             NullLogger<DirectToolInvoker>.Instance);
 
         return await sut.InvokeAsync(request, cancellationToken);

@@ -52,7 +52,7 @@ public class AgentExecutionContextFactoryToolEnforcementTests
             sp,
             NullLoggerFactory.Instance,
             new ToolChainBuilder(
-                NullLogger<ToolChainBuilder>.Instance, sp, sp.GetRequiredService<IContentRedactionFilter>()),
+                NullLogger<ToolChainBuilder>.Instance, sp),
             new SkillPrerequisiteResolver(),
             new UnsandboxedSkillFileReader());
     }

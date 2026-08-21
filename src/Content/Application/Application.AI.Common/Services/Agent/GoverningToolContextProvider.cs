@@ -1,4 +1,3 @@
-using Application.AI.Common.Interfaces.Telemetry;
 using Application.AI.Common.Services.Tools;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
@@ -63,24 +62,16 @@ public sealed class GoverningToolContextProvider : AIContextProvider
     private const string ChannelDescription = "AIContext.Tools contributed by an AIContextProvider";
 
     private readonly ILogger<GoverningToolContextProvider> _logger;
-    private readonly IContentRedactionFilter _redactionFilter;
 
     /// <summary>Initializes a new <see cref="GoverningToolContextProvider"/>.</summary>
     /// <param name="logger">Logger that receives reserved plan-capability collision reports.</param>
-    /// <param name="redactionFilter">
-    /// Passed through to every <see cref="GovernedAIFunction"/> this provider wraps a tool in.
-    /// </param>
-    public GoverningToolContextProvider(
-        ILogger<GoverningToolContextProvider> logger, IContentRedactionFilter redactionFilter)
+    public GoverningToolContextProvider(ILogger<GoverningToolContextProvider> logger)
         : base(
             provideInputMessageFilter: messages => messages,
             storeInputRequestMessageFilter: messages => messages,
             storeInputResponseMessageFilter: messages => messages)
     {
-        ArgumentNullException.ThrowIfNull(redactionFilter);
-
         _logger = logger;
-        _redactionFilter = redactionFilter;
     }
 
     /// <inheritdoc />
@@ -98,7 +89,7 @@ public sealed class GoverningToolContextProvider : AIContextProvider
         // every provider ahead of this one — then filter and wrap what it produced.
         var merged = await base.InvokingCoreAsync(context, cancellationToken).ConfigureAwait(false);
 
-        var tools = FilterAndGovern(merged.Tools, _logger, _redactionFilter);
+        var tools = FilterAndGovern(merged.Tools, _logger);
 
         // Nothing was dropped or needed wrapping — avoid allocating a new AIContext.
         if (tools is null)
@@ -120,9 +111,7 @@ public sealed class GoverningToolContextProvider : AIContextProvider
     /// </summary>
     /// <param name="tools">The tools accumulated on the context, possibly null or empty.</param>
     /// <param name="logger">Logger that receives reserved plan-capability collision reports.</param>
-    /// <param name="redactionFilter">Passed through to every tool this call wraps for governance.</param>
-    internal static List<AITool>? FilterAndGovern(
-        IEnumerable<AITool>? tools, ILogger logger, IContentRedactionFilter redactionFilter)
+    internal static List<AITool>? FilterAndGovern(IEnumerable<AITool>? tools, ILogger logger)
     {
         var original = tools?.ToList();
         if (original is null or { Count: 0 })
@@ -134,7 +123,7 @@ public sealed class GoverningToolContextProvider : AIContextProvider
 
         for (var i = 0; i < permitted.Count; i++)
         {
-            var governed = Govern(permitted[i], redactionFilter);
+            var governed = Govern(permitted[i]);
             if (!ReferenceEquals(governed, permitted[i]))
             {
                 permitted[i] = governed;
@@ -171,10 +160,10 @@ public sealed class GoverningToolContextProvider : AIContextProvider
     /// skill's script is a capability, and on a bundle run it is one the caller's envelope must grant.
     /// </para>
     /// </remarks>
-    internal static AITool Govern(AITool tool, IContentRedactionFilter redactionFilter)
+    internal static AITool Govern(AITool tool)
         => tool is AIFunction fn
            && tool is not GovernedAIFunction
            && !ToolPermissionFilter.SkillDisclosureToolNames.Contains(fn.Name)
-            ? new GovernedAIFunction(fn, redactionFilter)
+            ? new GovernedAIFunction(fn)
             : tool;
 }

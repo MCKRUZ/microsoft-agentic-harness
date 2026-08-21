@@ -63,7 +63,6 @@ public class AgentExecutionContextFactoryTests
         var toolChainBuilder = new ToolChainBuilder(
             NullLogger<ToolChainBuilder>.Instance,
             services,
-            RedactionFilter,
             toolConverter,
             mcpToolProvider);
 
@@ -196,7 +195,7 @@ public class AgentExecutionContextFactoryTests
             monitor,
             sp,
             NullLoggerFactory.Instance,
-            new ToolChainBuilder(NullLogger<ToolChainBuilder>.Instance, sp, RedactionFilter),
+            new ToolChainBuilder(NullLogger<ToolChainBuilder>.Instance, sp),
             new SkillPrerequisiteResolver(),
             new UnsandboxedSkillFileReader());
 

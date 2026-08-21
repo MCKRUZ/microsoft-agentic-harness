@@ -1,4 +1,5 @@
 using Application.AI.Common.Interfaces.Agent;
+using Application.AI.Common.Services.Tools;
 using Application.Common.Exceptions.ExceptionTypes;
 using Application.Common.Interfaces.MediatR;
 using Domain.Common;
@@ -90,8 +91,13 @@ public sealed class AuditTrailBehavior<TRequest, TResponse>
         }
         catch (ForbiddenAccessException ex)
         {
+            // The real denial reason (which role/policy was violated) stays in the structured log only
+            // — SafeFailureText.For never echoes ex.Message into the persisted audit record, so without
+            // this call an auditor investigating a specific denial would have no way to recover why.
+            _logger.LogWarning(ex, "Access denied for {RequestType}/{Action}",
+                entry.RequestType, entry.Action);
             await RecordSafelyAsync(
-                entry with { Outcome = AuditOutcome.Denied, FailureReason = ex.Message },
+                entry with { Outcome = AuditOutcome.Denied, FailureReason = SafeFailureText.For("Access denied", ex) },
                 cancellationToken);
             throw;
         }

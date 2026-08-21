@@ -81,7 +81,9 @@ public static partial class DependencyInjection
 
         // Document search tool — RAG pipeline search for LLM consumption
         services.AddKeyedSingleton<ITool>(DocumentSearchTool.ToolName, (sp, _) =>
-            new DocumentSearchTool(sp.GetRequiredService<IRagOrchestrator>()));
+            new DocumentSearchTool(
+                sp.GetRequiredService<IRagOrchestrator>(),
+                sp.GetRequiredService<ILogger<DocumentSearchTool>>()));
 
         // Document ingest tool — RAG pipeline ingestion for LLM consumption.
         // Takes the scope factory (not IMediator): the mediator pipeline resolves
@@ -108,7 +110,9 @@ public static partial class DependencyInjection
         // implementation is supplied by the Presentation host (AG-UI); absent it, the tool fails
         // gracefully ("no client attached"). Opt-in per skill via SKILL.md allowed-tools.
         services.AddKeyedSingleton<ITool>(DashboardControlTool.ToolName, (sp, _) =>
-            new DashboardControlTool(sp.GetRequiredService<IClientToolBridge>()));
+            new DashboardControlTool(
+                sp.GetRequiredService<IClientToolBridge>(),
+                sp.GetRequiredService<ILogger<DashboardControlTool>>()));
 
         // List-metrics tool — enumerates the curated dashboard metric catalog (shared source) so the
         // agent can pick a valid metric. Read-only, non-blocking. Opt-in per skill via allowed-tools.
@@ -119,25 +123,33 @@ public static partial class DependencyInjection
         // same client round-trip bridge as dashboard_control. The browser draws an existing chart
         // component from a metric and returns a short summary. Opt-in per skill via allowed-tools.
         services.AddKeyedSingleton<ITool>(RenderChartTool.ToolName, (sp, _) =>
-            new RenderChartTool(sp.GetRequiredService<IClientToolBridge>()));
+            new RenderChartTool(
+                sp.GetRequiredService<IClientToolBridge>(),
+                sp.GetRequiredService<ILogger<RenderChartTool>>()));
 
         // Render-image tool — generative UI: the agent displays an image inline in its answer via the
         // same client round-trip bridge. The browser renders an <img> from a validated https URL and
         // returns a short acknowledgement. General-purpose (not dashboard-specific); opt-in per skill.
         services.AddKeyedSingleton<ITool>(RenderImageTool.ToolName, (sp, _) =>
-            new RenderImageTool(sp.GetRequiredService<IClientToolBridge>()));
+            new RenderImageTool(
+                sp.GetRequiredService<IClientToolBridge>(),
+                sp.GetRequiredService<ILogger<RenderImageTool>>()));
 
         // Render-form tool — generative UI: the agent displays an interactive form inline. The browser
         // acknowledges display synchronously; the user's answers arrive later as an ordinary next
         // message (not through this tool). General-purpose; opt-in per skill.
         services.AddKeyedSingleton<ITool>(RenderFormTool.ToolName, (sp, _) =>
-            new RenderFormTool(sp.GetRequiredService<IClientToolBridge>()));
+            new RenderFormTool(
+                sp.GetRequiredService<IClientToolBridge>(),
+                sp.GetRequiredService<ILogger<RenderFormTool>>()));
 
         // Render-table tool — generative UI: the agent displays a data table inline via the same client
         // round-trip bridge. The browser draws a table from validated columns/rows and returns a short
         // acknowledgement synchronously (non-interactive). General-purpose; opt-in per skill.
         services.AddKeyedSingleton<ITool>(RenderTableTool.ToolName, (sp, _) =>
-            new RenderTableTool(sp.GetRequiredService<IClientToolBridge>()));
+            new RenderTableTool(
+                sp.GetRequiredService<IClientToolBridge>(),
+                sp.GetRequiredService<ILogger<RenderTableTool>>()));
     }
 
     /// <summary>
