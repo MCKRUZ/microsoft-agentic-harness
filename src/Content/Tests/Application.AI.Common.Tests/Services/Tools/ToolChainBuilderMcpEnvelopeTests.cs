@@ -25,12 +25,9 @@ namespace Application.AI.Common.Tests.Services.Tools;
 /// </summary>
 public sealed class ToolChainBuilderMcpEnvelopeTests
 {
-    private static readonly IContentRedactionFilter RedactionFilter = TestRedactionFilter.Instance;
-
     private static ToolChainBuilder Builder(IMcpToolProvider mcp, IServiceProvider? sp = null) => new(
         NullLogger<ToolChainBuilder>.Instance,
         sp ?? new ServiceCollection().BuildServiceProvider(),
-        RedactionFilter,
         toolConverter: null,
         mcpToolProvider: mcp);
 

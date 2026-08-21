@@ -67,7 +67,7 @@ public sealed class AgentExecutionContextFactoryPromptComposerTests
             serviceProvider,
             NullLoggerFactory.Instance,
             new ToolChainBuilder(
-                NullLogger<ToolChainBuilder>.Instance, serviceProvider, TestRedactionFilter.Instance),
+                NullLogger<ToolChainBuilder>.Instance, serviceProvider),
             new SkillPrerequisiteResolver(),
             new UnsandboxedSkillFileReader());
 

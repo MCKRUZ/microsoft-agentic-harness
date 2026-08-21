@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Application.AI.Common.Interfaces.Tools;
 using Domain.AI.Models;
+using Microsoft.Extensions.Logging;
 
 namespace Infrastructure.AI.Tools;
 
@@ -29,7 +30,9 @@ namespace Infrastructure.AI.Tools;
 /// Register via keyed DI:
 /// <code>
 /// services.AddKeyedSingleton&lt;ITool&gt;(RenderTableTool.ToolName, (sp, _) =&gt;
-///     new RenderTableTool(sp.GetRequiredService&lt;IClientToolBridge&gt;()));
+///     new RenderTableTool(
+///         sp.GetRequiredService&lt;IClientToolBridge&gt;(),
+///         sp.GetRequiredService&lt;ILogger&lt;RenderTableTool&gt;&gt;()));
 /// </code>
 /// </para>
 /// </remarks>
@@ -40,7 +43,8 @@ public sealed class RenderTableTool : SingleRenderProxyTool
 
     /// <summary>Initializes a new instance of the <see cref="RenderTableTool"/> class.</summary>
     /// <param name="bridge">The client round-trip bridge used to delegate rendering to the browser.</param>
-    public RenderTableTool(IClientToolBridge bridge) : base(bridge)
+    /// <param name="logger">Logs a no-client race before it is mapped to a failed <see cref="ToolResult"/>.</param>
+    public RenderTableTool(IClientToolBridge bridge, ILogger<RenderTableTool> logger) : base(bridge, logger)
     {
     }
 

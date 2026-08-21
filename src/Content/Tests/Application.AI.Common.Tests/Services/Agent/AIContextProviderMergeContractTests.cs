@@ -2,7 +2,6 @@ using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Context;
 using Application.AI.Common.Interfaces.KnowledgeGraph;
 using Application.AI.Common.Interfaces.Learnings;
-using Application.AI.Common.Interfaces.Telemetry;
 using Application.AI.Common.Services.Agent;
 using Application.AI.Common.Services.Tools;
 using Domain.AI.KnowledgeGraph.Models;
@@ -11,7 +10,6 @@ using Domain.AI.Planner;
 using Domain.Common.Config;
 using Domain.Common.Config.AI;
 using FluentAssertions;
-using Infrastructure.AI.Telemetry.Redaction;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
@@ -50,7 +48,6 @@ public sealed class AIContextProviderMergeContractTests
 {
     private const string SystemSentinel = "SYSTEM-PROMPT-SENTINEL";
     private const string UserQuery = "what did we learn?";
-    private static readonly IContentRedactionFilter RedactionFilter = TestRedactionFilter.Instance;
 
     /// <summary>
     /// Real functions, not mocks: <see cref="GoverningToolContextProvider"/> only wraps
@@ -82,7 +79,7 @@ public sealed class AIContextProviderMergeContractTests
     {
         [nameof(ToolPermissionFilter)] = () => new ToolPermissionFilter(["alpha", "beta"]),
         [nameof(GoverningToolContextProvider)] = () =>
-            new GoverningToolContextProvider(NullLogger<GoverningToolContextProvider>.Instance, RedactionFilter),
+            new GoverningToolContextProvider(NullLogger<GoverningToolContextProvider>.Instance),
         [nameof(KnowledgeMemoryContextProvider)] = BuildKnowledgeMemory,
         [nameof(LearningsRecallContextProvider)] = BuildLearningsRecall,
         [nameof(PerTurnBudgetContextProvider)] = () => new PerTurnBudgetContextProvider(
@@ -272,7 +269,7 @@ public sealed class AIContextProviderMergeContractTests
         };
 
         var result = await new GoverningToolContextProvider(
-            NullLogger<GoverningToolContextProvider>.Instance, RedactionFilter).InvokingAsync(MakeContext(input));
+            NullLogger<GoverningToolContextProvider>.Instance).InvokingAsync(MakeContext(input));
 
         var names = result.Tools?.Select(t => t.Name).ToList() ?? [];
         names.Should().NotContain(reservedName,
@@ -284,7 +281,7 @@ public sealed class AIContextProviderMergeContractTests
     public async Task GoverningProvider_PublishesOnlyTheGovernedCopyOfEachTool()
     {
         var result = await new GoverningToolContextProvider(
-            NullLogger<GoverningToolContextProvider>.Instance, RedactionFilter).InvokingAsync(MakeContext(ActiveInput()));
+            NullLogger<GoverningToolContextProvider>.Instance).InvokingAsync(MakeContext(ActiveInput()));
 
         var tools = result.Tools?.ToList() ?? [];
         tools.Should().HaveCount(2, "wrapping must replace each tool, not add a second copy alongside it");

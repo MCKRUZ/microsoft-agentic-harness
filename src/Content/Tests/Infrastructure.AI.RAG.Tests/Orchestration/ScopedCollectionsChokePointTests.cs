@@ -219,7 +219,7 @@ public sealed class ScopedCollectionsChokePointTests
     [Fact]
     public async Task DocumentSearchTool_ScopingOnWithCollectionParameter_CannotEscapeDerivedCollection()
     {
-        var tool = new DocumentSearchTool(CreateOrchestrator(ScopedConfig()));
+        var tool = new DocumentSearchTool(CreateOrchestrator(ScopedConfig()), Mock.Of<ILogger<DocumentSearchTool>>());
 
         var result = await tool.ExecuteAsync("search", new Dictionary<string, object?>
         {

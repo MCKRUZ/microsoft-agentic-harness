@@ -1,7 +1,9 @@
 using Application.AI.Common.Interfaces.Escalation;
 using Application.AI.Common.Interfaces.Governance;
+using Application.AI.Common.Interfaces.Telemetry;
 using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Services.Governance;
+using Domain.AI.Governance;
 using Domain.Common.Config.AI;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -58,6 +60,16 @@ internal static class PermissiveAdmission
             Mock.Of<IOptionsMonitor<GovernanceConfig>>(m => m.CurrentValue == new GovernanceConfig()),
             Mock.Of<IToolRiskClassifier>(c => c.Classify(It.IsAny<string>()) == ToolRiskProfile.Default));
 
+        var sanitizer = new Mock<ICompositeResponseSanitizer>();
+        sanitizer
+            .Setup(s => s.Sanitize(It.IsAny<string>(), It.IsAny<string?>()))
+            .Returns((string content, string? _) => SanitizationResult.Clean(content));
+
+        var redactionFilter = new Mock<IContentRedactionFilter>();
+        redactionFilter
+            .Setup(f => f.Redact(It.IsAny<string>(), It.IsAny<IReadOnlyList<Domain.AI.Telemetry.Redaction.RedactionCategory>>()))
+            .Returns((string content, IReadOnlyList<Domain.AI.Telemetry.Redaction.RedactionCategory> _) => content);
+
         return new ToolCallAdmissionPipeline(
             authorizationGate.Object,
             governor.Object,
@@ -66,6 +78,8 @@ internal static class PermissiveAdmission
             progress.Object,
             trace,
             Mock.Of<IApprovalExecutionReporter>(),
+            sanitizer.Object,
+            redactionFilter.Object,
             NullLogger<ToolCallAdmissionPipeline>.Instance);
     }
 }

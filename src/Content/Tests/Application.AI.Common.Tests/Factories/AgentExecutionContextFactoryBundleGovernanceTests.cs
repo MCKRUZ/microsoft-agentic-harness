@@ -139,7 +139,7 @@ public sealed class AgentExecutionContextFactoryBundleGovernanceTests : IDisposa
             sp,
             NullLoggerFactory.Instance,
             new ToolChainBuilder(
-                NullLogger<ToolChainBuilder>.Instance, sp, TestRedactionFilter.Instance,
+                NullLogger<ToolChainBuilder>.Instance, sp,
                 new PassThroughToolConverter()),
             new SkillPrerequisiteResolver(),
             new UnsandboxedSkillFileReader());

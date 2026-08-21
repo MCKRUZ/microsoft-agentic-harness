@@ -1,7 +1,6 @@
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Plugins;
-using Application.AI.Common.Interfaces.Telemetry;
 using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Services.Tools;
 using Domain.AI.Skills;
@@ -11,7 +10,6 @@ using Domain.Common.Config.AI.Governance;
 using Domain.Common.Config.AI.Plugins;
 using FluentAssertions;
 using Infrastructure.AI.Governance.Adapters;
-using Infrastructure.AI.Telemetry.Redaction;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -28,8 +26,6 @@ namespace Application.AI.Common.Tests.Services.Tools;
 /// </summary>
 public class ToolChainBuilderTests
 {
-    private static readonly IContentRedactionFilter RedactionFilter = TestRedactionFilter.Instance;
-
     private static ToolChainBuilder CreateBuilder(
         IMcpToolProvider? mcpToolProvider = null,
         IToolConverter? toolConverter = null,
@@ -40,7 +36,6 @@ public class ToolChainBuilderTests
         return new ToolChainBuilder(
             NullLogger<ToolChainBuilder>.Instance,
             serviceProvider ?? new ServiceCollection().BuildServiceProvider(),
-            RedactionFilter,
             toolConverter,
             mcpToolProvider,
             surfaceScanner,
@@ -123,6 +118,34 @@ public class ToolChainBuilderTests
         var tools = await builder.BuildToolsAsync(skill, new SkillAgentOptions());
 
         tools.Should().ContainSingle(t => t.Name == "dup_tool");
+    }
+
+    [Fact]
+    public async Task BuildToolsAsync_InjectedMode_WrapsMcpToolInFailureNormalizerBeforeGoverning()
+    {
+        // #468: the builder is the one place MCP provenance (ProvisionedTool.McpServerName) is known,
+        // so it — not GovernedAIFunction — is responsible for inserting McpFailureNormalizingAIFunction
+        // between the raw MCP tool and the governance wrapper.
+        var mcpProvider = new Mock<IMcpToolProvider>();
+        mcpProvider
+            .Setup(p => p.GetAllToolsAsync(It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new Dictionary<string, IList<AITool>>
+            {
+                ["server-a"] = [AIFunctionFactory.Create(() => "r", "mcp_tool")]
+            });
+
+        var builder = CreateBuilder(mcpToolProvider: mcpProvider.Object);
+        var skill = new SkillDefinition
+        {
+            Id = "plugin-skill", Name = "plugin-skill",
+            Instructions = "Test", PluginSource = "plugin"
+        };
+
+        var tools = await builder.BuildToolsAsync(skill, new SkillAgentOptions());
+
+        var governed = tools.Should().ContainSingle(t => t.Name == "mcp_tool")
+            .Which.Should().BeOfType<GovernedAIFunction>().Subject;
+        governed.Inner.Should().BeOfType<McpFailureNormalizingAIFunction>();
     }
 
     // --- Plugin governance ---

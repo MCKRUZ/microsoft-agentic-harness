@@ -1,7 +1,9 @@
 using Application.AI.Common.Interfaces.Escalation;
 using Application.AI.Common.Interfaces.Governance;
+using Application.AI.Common.Interfaces.Telemetry;
 using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Services.Governance;
+using Domain.AI.Governance;
 using Domain.Common.Config.AI;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -54,7 +56,29 @@ internal static class PermissiveAdmission
             ProgressGuard(),
             TraceRecorder(),
             Mock.Of<IApprovalExecutionReporter>(),
+            PermissiveSanitizer(),
+            PermissiveRedactionFilter(),
             NullLogger<ToolCallAdmissionPipeline>.Instance);
+
+    /// <summary>A sanitizer that returns content unchanged — the answer a real one gives to clean text.</summary>
+    public static ICompositeResponseSanitizer PermissiveSanitizer()
+    {
+        var sanitizer = new Mock<ICompositeResponseSanitizer>();
+        sanitizer
+            .Setup(s => s.Sanitize(It.IsAny<string>(), It.IsAny<string?>()))
+            .Returns((string content, string? _) => SanitizationResult.Clean(content));
+        return sanitizer.Object;
+    }
+
+    /// <summary>A redaction filter that returns content unchanged — nothing to scrub.</summary>
+    public static IContentRedactionFilter PermissiveRedactionFilter()
+    {
+        var filter = new Mock<IContentRedactionFilter>();
+        filter
+            .Setup(f => f.Redact(It.IsAny<string>(), It.IsAny<IReadOnlyList<Domain.AI.Telemetry.Redaction.RedactionCategory>>()))
+            .Returns((string content, IReadOnlyList<Domain.AI.Telemetry.Redaction.RedactionCategory> _) => content);
+        return filter.Object;
+    }
 
     /// <summary>A loop guard that never halts — what the real one answers while switched off.</summary>
     /// <remarks>

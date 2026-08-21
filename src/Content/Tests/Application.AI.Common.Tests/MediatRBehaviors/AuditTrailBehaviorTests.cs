@@ -193,8 +193,36 @@ public class AuditTrailBehaviorTests
             s => s.RecordAsync(
                 It.Is<AuditEntry>(e =>
                     e.Outcome == AuditOutcome.Denied &&
-                    e.FailureReason == "Admin only"),
+                    e.FailureReason == "Access denied: ForbiddenAccessException." &&
+                    !e.FailureReason.Contains("Admin only")),
                 It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task Handle_ForbiddenAccessException_LogsRealReasonForAuditors()
+    {
+        // #460 code-review finding: SafeFailureText.For collapses every denial's persisted
+        // FailureReason to the same generic string, so the real reason (which role/policy was
+        // violated) must survive somewhere for an auditor to investigate a specific denial — the
+        // structured log, verified here.
+        var logger = new Mock<ILogger<AuditTrailBehavior<AuditableRequest, string>>>();
+        var behavior = CreateBehavior<AuditableRequest, string>(logger.Object);
+
+        var act = async () => await behavior.Handle(
+            new AuditableRequest("AdminAction"),
+            () => throw new ForbiddenAccessException("User does not have any of the required roles: Admin,Owner"),
+            CancellationToken.None);
+
+        await act.Should().ThrowAsync<ForbiddenAccessException>();
+        logger.Verify(
+            l => l.Log(
+                LogLevel.Warning,
+                It.IsAny<EventId>(),
+                It.IsAny<It.IsAnyType>(),
+                It.Is<Exception>(ex => ex is ForbiddenAccessException
+                    && ex.Message == "User does not have any of the required roles: Admin,Owner"),
+                It.IsAny<Func<It.IsAnyType, Exception?, string>>()),
             Times.Once);
     }
 
@@ -269,14 +297,15 @@ public class AuditTrailBehaviorTests
         await act.Should().ThrowAsync<ForbiddenAccessException>();
     }
 
-    private AuditTrailBehavior<TRequest, TResponse> CreateBehavior<TRequest, TResponse>()
+    private AuditTrailBehavior<TRequest, TResponse> CreateBehavior<TRequest, TResponse>(
+        ILogger<AuditTrailBehavior<TRequest, TResponse>>? logger = null)
         where TRequest : notnull
     {
         return new AuditTrailBehavior<TRequest, TResponse>(
             _executionContext.Object,
             _auditSink.Object,
             _timeProvider,
-            NullLogger<AuditTrailBehavior<TRequest, TResponse>>.Instance);
+            logger ?? NullLogger<AuditTrailBehavior<TRequest, TResponse>>.Instance);
     }
 
     // Test request types

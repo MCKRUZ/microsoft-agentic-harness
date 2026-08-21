@@ -282,7 +282,21 @@ public sealed record ToolCallAdmission
 }
 
 /// <summary>The execution outcome to report for a call the admission chain approved.</summary>
+/// <param name="Status">What happened.</param>
+/// <param name="FailureReason">
+/// The tool's own raw, untreated failure text when <paramref name="Status"/> is
+/// <see cref="EscalationExecutionStatus.Failed"/>. Sanitized, redacted, and bounded by
+/// <see cref="Services.Governance.ToolCallAdmissionPipeline.ReportExecutionAsync"/> before it reaches
+/// the audit trail, the approver, or the failure memory — callers must pass the raw text, not a
+/// pre-treated copy, or that treatment runs twice on an already-safe string for no benefit.
+/// </param>
+/// <param name="NotExecutedReason">Why the call never ran, when <paramref name="Status"/> is <see cref="EscalationExecutionStatus.NeverExecuted"/>.</param>
+/// <param name="ToolName">
+/// The tool that produced <paramref name="FailureReason"/>, passed to the sanitizer as context. Null
+/// is safe — the sanitizer's tool-name parameter is optional context, not a required key.
+/// </param>
 public readonly record struct ToolExecutionReport(
     EscalationExecutionStatus Status,
     string? FailureReason,
-    EscalationNotExecutedReason? NotExecutedReason);
+    EscalationNotExecutedReason? NotExecutedReason,
+    string? ToolName = null);

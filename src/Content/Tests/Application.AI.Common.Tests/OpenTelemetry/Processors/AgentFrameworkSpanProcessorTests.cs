@@ -16,7 +16,7 @@ public class AgentFrameworkSpanProcessorTests : IDisposable
     private readonly ActivitySource _agentSource = new(AiSourceNames.AgentFrameworkExact);
     private readonly ActivitySource _otherSource = new("SomeOther.Source");
     private readonly ActivityListener _listener;
-    private readonly AgentFrameworkSpanProcessor _processor = new();
+    private readonly AgentFrameworkSpanProcessor _processor = new(TestRedactionFilter.Instance);
 
     public AgentFrameworkSpanProcessorTests()
     {
@@ -111,5 +111,30 @@ public class AgentFrameworkSpanProcessorTests : IDisposable
 
         var eventContent = activity.GetTagItem("gen_ai.event.content");
         eventContent.Should().BeNull();
+    }
+
+    [Fact]
+    public void OnEnd_AgentFrameworkExecuteTool_ResultContainsSecret_RedactsBeforeCopying()
+    {
+        using var activity = _agentSource.StartActivity("test");
+        activity.Should().NotBeNull();
+
+        activity!.SetTag(ToolConventions.GenAiOperationName, ToolConventions.ExecuteToolOperation);
+        activity.SetTag(ToolConventions.ToolCallResult, "result: ghp_abcdefghijklmnopqrstuvwxyz0123456789");
+
+        _processor.OnEnd(activity);
+
+        var eventContent = activity.GetTagItem("gen_ai.event.content") as string;
+        eventContent.Should().NotBeNull();
+        eventContent.Should().NotContain("ghp_abcdefghijklmnopqrstuvwxyz0123456789");
+        eventContent.Should().Contain("[REDACTED:VendorApiKey]");
+    }
+
+    [Fact]
+    public void Constructor_NullFilter_Throws()
+    {
+        var act = () => new AgentFrameworkSpanProcessor(null!);
+
+        act.Should().Throw<ArgumentNullException>();
     }
 }

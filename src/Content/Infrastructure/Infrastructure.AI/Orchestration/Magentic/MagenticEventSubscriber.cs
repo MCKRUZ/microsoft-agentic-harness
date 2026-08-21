@@ -317,7 +317,8 @@ public sealed class MagenticEventSubscriber : IDisposable
             _roundCount,
             _resetCount,
             completionReason,
-            _errorMessage);
+            _errorMessage,
+            _contentRedactionFilter);
         _workflowSpan = null;
     }
 

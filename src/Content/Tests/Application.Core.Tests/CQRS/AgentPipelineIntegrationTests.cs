@@ -102,6 +102,21 @@ public class AgentPipelineIntegrationTests
         // permissive mock so the handler resolves.
         services.AddScoped(_ => Mock.Of<Application.AI.Common.Interfaces.Escalation.IApprovalExecutionReporter>());
 
+        // #460: ToolCallAdmissionPipeline.ReportExecutionAsync now sanitizes and redacts a failure's
+        // reported text itself — not under test here, so permissive pass-through mocks, matching the
+        // pattern above, so DI resolution of the chain succeeds.
+        var sanitizerMock = new Mock<Application.AI.Common.Interfaces.Governance.ICompositeResponseSanitizer>();
+        sanitizerMock
+            .Setup(s => s.Sanitize(It.IsAny<string>(), It.IsAny<string?>()))
+            .Returns((string content, string? _) => Domain.AI.Governance.SanitizationResult.Clean(content));
+        services.AddScoped(_ => sanitizerMock.Object);
+
+        var redactionFilterMock = new Mock<Application.AI.Common.Interfaces.Telemetry.IContentRedactionFilter>();
+        redactionFilterMock
+            .Setup(f => f.Redact(It.IsAny<string>(), It.IsAny<IReadOnlyList<Domain.AI.Telemetry.Redaction.RedactionCategory>>()))
+            .Returns((string content, IReadOnlyList<Domain.AI.Telemetry.Redaction.RedactionCategory> _) => content);
+        services.AddScoped(_ => redactionFilterMock.Object);
+
         // The REAL admission chain over the five permissive gates above, not a mock of it, built the
         // same way the production root builds it. The handler depends only on the chain now, and
         // registering the real one keeps this an end-to-end proof that the five gates are reachable

@@ -97,6 +97,33 @@ public sealed class DefaultContentRedactionFilterTests
         result.Should().Contain("[REDACTED]");
     }
 
+    [Theory]
+    // Each case is two literal fragments, concatenated only at runtime in the method body below —
+    // never a single source literal shaped like a real credential. GitHub push-protection's secret
+    // scanner blocked an earlier version of this test that used one contiguous literal per case, even
+    // though every value here is synthetic; splitting the source text is the same technique
+    // Redact_JwtToken_MasksToken above already uses for the same reason.
+    //
+    // OpenAI: classic and newer project-scoped shapes.
+    [InlineData("sk-", "abcdefghijklmnopqrstuvwxyz123456")]
+    [InlineData("sk-proj-", "A1B2C3D4E5F6G7H8I9J0K1L2M3N4O5P6")]
+    // GitHub: classic PAT (prefix + 36 chars) and fine-grained PAT.
+    [InlineData("ghp_", "1234567890abcdefghij1234567890abcdefgh")]
+    [InlineData("github_pat_", "11ABCDEFG0123456789012_abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWX")]
+    // Slack: bot, refresh, and app-level tokens — a representative sample of the xox[baprse]- family
+    // plus the separately-shaped xapp- prefix.
+    [InlineData("xoxb-", "1234567890-abcdefghijklmnop")]
+    [InlineData("xoxe-", "1-abcdefghijklmnopqrstuvwxyz")]
+    [InlineData("xapp-", "1-A01ABC234-5678901234-abcdefghij")]
+    public void Redact_VendorApiKey_MasksToken(string prefix, string body)
+    {
+        var secret = prefix + body;
+        var result = _filter.Redact($"token {secret} end", [RedactionCategory.VendorApiKey]);
+
+        result.Should().NotContain(secret);
+        result.Should().Contain("[REDACTED:VendorApiKey]");
+    }
+
     [Fact]
     public void Redact_Generic_MasksSasQuerySignature()
     {

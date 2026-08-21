@@ -134,8 +134,7 @@ public partial class AgentExecutionContextFactory
         // the three framework disclosure tools once per turn — orders of magnitude under the LLM call it
         // rides along with.
         providers.Add(new Services.Agent.GoverningToolContextProvider(
-            _loggerFactory.CreateLogger<Services.Agent.GoverningToolContextProvider>(),
-            _serviceProvider.GetRequiredService<Interfaces.Telemetry.IContentRedactionFilter>()));
+            _loggerFactory.CreateLogger<Services.Agent.GoverningToolContextProvider>()));
 
         AppendPerTurnBudgetProvider(providers, baseline);
 

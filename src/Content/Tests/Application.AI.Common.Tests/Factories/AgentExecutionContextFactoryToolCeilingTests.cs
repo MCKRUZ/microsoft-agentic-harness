@@ -50,7 +50,7 @@ public sealed class AgentExecutionContextFactoryToolCeilingTests
             sp,
             NullLoggerFactory.Instance,
             new ToolChainBuilder(
-                NullLogger<ToolChainBuilder>.Instance, sp, sp.GetRequiredService<IContentRedactionFilter>()),
+                NullLogger<ToolChainBuilder>.Instance, sp),
             new SkillPrerequisiteResolver(),
             new UnsandboxedSkillFileReader());
     }

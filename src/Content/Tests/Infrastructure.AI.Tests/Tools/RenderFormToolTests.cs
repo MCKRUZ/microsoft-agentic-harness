@@ -1,6 +1,7 @@
 using Application.AI.Common.Interfaces.Tools;
 using FluentAssertions;
 using Infrastructure.AI.Tools;
+using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
 namespace Infrastructure.AI.Tests.Tools;
@@ -12,6 +13,8 @@ namespace Infrastructure.AI.Tests.Tools;
 /// </summary>
 public sealed class RenderFormToolTests
 {
+    private static readonly NullLogger<RenderFormTool> Logger = NullLogger<RenderFormTool>.Instance;
+
     private static Dictionary<string, object?> Args(params (string Key, object? Value)[] pairs)
     {
         var d = new Dictionary<string, object?>();
@@ -31,7 +34,7 @@ public sealed class RenderFormToolTests
     [Fact]
     public void Metadata_IsCorrect()
     {
-        var sut = new RenderFormTool(new FakeBridge());
+        var sut = new RenderFormTool(new FakeBridge(), Logger);
         sut.Name.Should().Be("render_form");
         sut.SupportedOperations.Should().BeEquivalentTo(["render"]);
         sut.Description.Should().Contain("fields");
@@ -41,7 +44,7 @@ public sealed class RenderFormToolTests
     public async Task ExecuteAsync_UnknownOperation_Fails()
     {
         var bridge = new FakeBridge();
-        var result = await new RenderFormTool(bridge).ExecuteAsync("explode", Args(("fields", Fields(FieldOf("email", "text")))));
+        var result = await new RenderFormTool(bridge, Logger).ExecuteAsync("explode", Args(("fields", Fields(FieldOf("email", "text")))));
         result.Success.Should().BeFalse();
         bridge.InvokeCount.Should().Be(0);
     }
@@ -49,7 +52,7 @@ public sealed class RenderFormToolTests
     [Fact]
     public async Task ExecuteAsync_NoClientAttached_Fails()
     {
-        var sut = new RenderFormTool(new FakeBridge { ClientAttached = false });
+        var sut = new RenderFormTool(new FakeBridge { ClientAttached = false }, Logger);
         var result = await sut.ExecuteAsync("render", Args(("fields", Fields(FieldOf("email", "text")))));
         result.Success.Should().BeFalse();
         result.Error.Should().Contain("client");
@@ -59,7 +62,7 @@ public sealed class RenderFormToolTests
     public async Task ExecuteAsync_MissingFields_Fails()
     {
         var bridge = new FakeBridge();
-        var result = await new RenderFormTool(bridge).ExecuteAsync("render", Args(("title", "Sign up")));
+        var result = await new RenderFormTool(bridge, Logger).ExecuteAsync("render", Args(("title", "Sign up")));
         result.Success.Should().BeFalse();
         bridge.InvokeCount.Should().Be(0);
     }
@@ -68,7 +71,7 @@ public sealed class RenderFormToolTests
     public async Task ExecuteAsync_EmptyFields_Fails()
     {
         var bridge = new FakeBridge();
-        var result = await new RenderFormTool(bridge).ExecuteAsync("render", Args(("fields", Array.Empty<object>())));
+        var result = await new RenderFormTool(bridge, Logger).ExecuteAsync("render", Args(("fields", Array.Empty<object>())));
         result.Success.Should().BeFalse();
         bridge.InvokeCount.Should().Be(0);
     }
@@ -78,7 +81,7 @@ public sealed class RenderFormToolTests
     {
         var bridge = new FakeBridge();
         var badField = new Dictionary<string, object?> { ["type"] = "text" }; // no name
-        var result = await new RenderFormTool(bridge).ExecuteAsync("render", Args(("fields", Fields(badField))));
+        var result = await new RenderFormTool(bridge, Logger).ExecuteAsync("render", Args(("fields", Fields(badField))));
         result.Success.Should().BeFalse();
         result.Error.Should().Contain("name");
         bridge.InvokeCount.Should().Be(0);
@@ -88,7 +91,7 @@ public sealed class RenderFormToolTests
     public async Task ExecuteAsync_UnknownFieldType_Fails()
     {
         var bridge = new FakeBridge();
-        var result = await new RenderFormTool(bridge).ExecuteAsync("render", Args(("fields", Fields(FieldOf("x", "hologram")))));
+        var result = await new RenderFormTool(bridge, Logger).ExecuteAsync("render", Args(("fields", Fields(FieldOf("x", "hologram")))));
         result.Success.Should().BeFalse();
         result.Error.Should().Contain("type");
         bridge.InvokeCount.Should().Be(0);
@@ -98,7 +101,7 @@ public sealed class RenderFormToolTests
     public async Task ExecuteAsync_SelectWithoutOptions_Fails()
     {
         var bridge = new FakeBridge();
-        var result = await new RenderFormTool(bridge).ExecuteAsync("render", Args(("fields", Fields(FieldOf("color", "select")))));
+        var result = await new RenderFormTool(bridge, Logger).ExecuteAsync("render", Args(("fields", Fields(FieldOf("color", "select")))));
         result.Success.Should().BeFalse();
         result.Error.Should().Contain("options");
         bridge.InvokeCount.Should().Be(0);
@@ -108,7 +111,7 @@ public sealed class RenderFormToolTests
     public async Task ExecuteAsync_HappyPath_PassesSerializedArgs_AndReturnsAck()
     {
         var bridge = new FakeBridge { Result = "Displayed the form to the user; their answers will arrive as their next message." };
-        var result = await new RenderFormTool(bridge).ExecuteAsync("render", Args(
+        var result = await new RenderFormTool(bridge, Logger).ExecuteAsync("render", Args(
             ("title", "Preferences"),
             ("fields", Fields(FieldOf("email", "text"), FieldOf("color", "select", new[] { "red", "blue" })))));
 
@@ -121,7 +124,7 @@ public sealed class RenderFormToolTests
     [Fact]
     public async Task ExecuteAsync_BridgeTimeout_FailsGracefully()
     {
-        var sut = new RenderFormTool(new FakeBridge { Throw = new TimeoutException() });
+        var sut = new RenderFormTool(new FakeBridge { Throw = new TimeoutException() }, Logger);
         var result = await sut.ExecuteAsync("render", Args(("fields", Fields(FieldOf("email", "text")))));
         result.Success.Should().BeFalse();
     }

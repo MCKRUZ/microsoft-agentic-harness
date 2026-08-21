@@ -486,6 +486,8 @@ public sealed class ToolUseStepExecutorTests
             PermissiveAdmission.ProgressGuard(),
             PermissiveAdmission.TraceRecorder(),
             _executionReporter.Object,
+            _responseSanitizer.Object,
+            PermissiveAdmission.PermissiveRedactionFilter(),
             NullLogger<ToolCallAdmissionPipeline>.Instance);
 
     /// <summary>

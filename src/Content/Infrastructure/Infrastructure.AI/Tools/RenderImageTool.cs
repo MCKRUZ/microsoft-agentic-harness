@@ -1,5 +1,6 @@
 using Application.AI.Common.Interfaces.Tools;
 using Domain.AI.Models;
+using Microsoft.Extensions.Logging;
 
 namespace Infrastructure.AI.Tools;
 
@@ -21,7 +22,9 @@ namespace Infrastructure.AI.Tools;
 /// Register via keyed DI:
 /// <code>
 /// services.AddKeyedSingleton&lt;ITool&gt;(RenderImageTool.ToolName, (sp, _) =&gt;
-///     new RenderImageTool(sp.GetRequiredService&lt;IClientToolBridge&gt;()));
+///     new RenderImageTool(
+///         sp.GetRequiredService&lt;IClientToolBridge&gt;(),
+///         sp.GetRequiredService&lt;ILogger&lt;RenderImageTool&gt;&gt;()));
 /// </code>
 /// </para>
 /// </remarks>
@@ -34,7 +37,8 @@ public sealed class RenderImageTool : SingleRenderProxyTool
 
     /// <summary>Initializes a new instance of the <see cref="RenderImageTool"/> class.</summary>
     /// <param name="bridge">The client round-trip bridge used to delegate rendering to the browser.</param>
-    public RenderImageTool(IClientToolBridge bridge) : base(bridge)
+    /// <param name="logger">Logs a no-client race before it is mapped to a failed <see cref="ToolResult"/>.</param>
+    public RenderImageTool(IClientToolBridge bridge, ILogger<RenderImageTool> logger) : base(bridge, logger)
     {
     }
 

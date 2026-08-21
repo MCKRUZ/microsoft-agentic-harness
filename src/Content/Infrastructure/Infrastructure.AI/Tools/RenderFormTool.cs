@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Application.AI.Common.Interfaces.Tools;
 using Domain.AI.Models;
+using Microsoft.Extensions.Logging;
 
 namespace Infrastructure.AI.Tools;
 
@@ -26,7 +27,9 @@ namespace Infrastructure.AI.Tools;
 /// Register via keyed DI:
 /// <code>
 /// services.AddKeyedSingleton&lt;ITool&gt;(RenderFormTool.ToolName, (sp, _) =&gt;
-///     new RenderFormTool(sp.GetRequiredService&lt;IClientToolBridge&gt;()));
+///     new RenderFormTool(
+///         sp.GetRequiredService&lt;IClientToolBridge&gt;(),
+///         sp.GetRequiredService&lt;ILogger&lt;RenderFormTool&gt;&gt;()));
 /// </code>
 /// </para>
 /// </remarks>
@@ -41,7 +44,8 @@ public sealed class RenderFormTool : SingleRenderProxyTool
 
     /// <summary>Initializes a new instance of the <see cref="RenderFormTool"/> class.</summary>
     /// <param name="bridge">The client round-trip bridge used to delegate rendering to the browser.</param>
-    public RenderFormTool(IClientToolBridge bridge) : base(bridge)
+    /// <param name="logger">Logs a no-client race before it is mapped to a failed <see cref="ToolResult"/>.</param>
+    public RenderFormTool(IClientToolBridge bridge, ILogger<RenderFormTool> logger) : base(bridge, logger)
     {
     }
 

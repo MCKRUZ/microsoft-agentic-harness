@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Application.AI.Common.Interfaces.Tools;
 using Domain.AI.Models;
+using Microsoft.Extensions.Logging;
 
 namespace Infrastructure.AI.Tools;
 
@@ -20,7 +21,9 @@ namespace Infrastructure.AI.Tools;
 /// Register via keyed DI:
 /// <code>
 /// services.AddKeyedSingleton&lt;ITool&gt;(DashboardControlTool.ToolName, (sp, _) =&gt;
-///     new DashboardControlTool(sp.GetRequiredService&lt;IClientToolBridge&gt;()));
+///     new DashboardControlTool(
+///         sp.GetRequiredService&lt;IClientToolBridge&gt;(),
+///         sp.GetRequiredService&lt;ILogger&lt;DashboardControlTool&gt;&gt;()));
 /// </code>
 /// </para>
 /// </remarks>
@@ -39,7 +42,8 @@ public sealed class DashboardControlTool : BlockingProxyTool
 
     /// <summary>Initializes a new instance of the <see cref="DashboardControlTool"/> class.</summary>
     /// <param name="bridge">The client round-trip bridge used to delegate operations to the browser.</param>
-    public DashboardControlTool(IClientToolBridge bridge) : base(bridge)
+    /// <param name="logger">Logs a no-client race before it is mapped to a failed <see cref="ToolResult"/>.</param>
+    public DashboardControlTool(IClientToolBridge bridge, ILogger<DashboardControlTool> logger) : base(bridge, logger)
     {
     }
 

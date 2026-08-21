@@ -158,6 +158,8 @@ public sealed class PlanRunLlmCallScopeTests
         services.AddSingleton(StepExecutors.PermissiveAdmission.ProgressGuard());
         services.AddSingleton(StepExecutors.PermissiveAdmission.TraceRecorder());
         services.AddSingleton(Mock.Of<IApprovalExecutionReporter>());
+        services.AddSingleton(StepExecutors.PermissiveAdmission.PermissiveSanitizer());
+        services.AddSingleton(StepExecutors.PermissiveAdmission.PermissiveRedactionFilter());
         // Step executors require the admission chain rather than defaulting it to null, so that a
         // composition which forgets it fails at resolution instead of running unguarded. The real
         // chain over the gates above, built the same way the production root builds it — a mock of

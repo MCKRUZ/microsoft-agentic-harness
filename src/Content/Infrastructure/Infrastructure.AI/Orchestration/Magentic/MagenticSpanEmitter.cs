@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using Application.AI.Common.Interfaces.Telemetry;
 using Domain.AI.Telemetry.Conventions;
+using Domain.AI.Telemetry.Redaction;
 
 namespace Infrastructure.AI.Orchestration.Magentic;
 
@@ -204,23 +205,29 @@ public sealed class MagenticSpanEmitter : IDisposable
 
     /// <summary>
     /// Stamps the derived counters and completion reason on the root workflow
-    /// span at workflow close.
+    /// span at workflow close. <paramref name="errorMessage"/> is redacted against
+    /// <see cref="RedactionCategories.All"/> before being attached — unlike the
+    /// content-capture-gated Record* methods below, error diagnostics on this span are
+    /// not optional telemetry a consumer can choose to leave unredacted.
     /// </summary>
     public static void EndWorkflowSpan(
         Activity? workflowSpan,
         int roundsExecuted,
         int resetsExecuted,
         string completionReason,
-        string? errorMessage)
+        string? errorMessage,
+        IContentRedactionFilter filter)
     {
+        ArgumentNullException.ThrowIfNull(filter);
         if (workflowSpan is null) return;
         workflowSpan.SetTag(MagenticConventions.RoundsExecuted, roundsExecuted);
         workflowSpan.SetTag(MagenticConventions.ResetsExecuted, resetsExecuted);
         workflowSpan.SetTag(MagenticConventions.CompletionReason, completionReason);
         if (!string.IsNullOrEmpty(errorMessage))
         {
-            workflowSpan.SetTag(GenAiSemconvRegistry.ErrorType, errorMessage);
-            workflowSpan.SetStatus(ActivityStatusCode.Error, errorMessage);
+            var redacted = filter.Redact(errorMessage, RedactionCategories.All);
+            workflowSpan.SetTag(GenAiSemconvRegistry.ErrorType, redacted);
+            workflowSpan.SetStatus(ActivityStatusCode.Error, redacted);
         }
         workflowSpan.Dispose();
     }
