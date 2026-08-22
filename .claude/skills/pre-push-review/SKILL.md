@@ -34,7 +34,8 @@ to remember.
    nothing reviewable changed, say so and stop.
 
 2. **Run `scripts/rails/run-gates.sh` with no flags** (equivalent to `--all`, against
-   `main`) from the repo root. Fix anything it reports as `FAIL`, then re-run it — do not
+   `origin/main` — falling back to `main` only if `origin/main` doesn't resolve) from the
+   repo root. Fix anything it reports as `FAIL`, then re-run it — do not
    move on to step 3 until it prints "All selected gates passed." A clean run writes its
    own `run-gates` receipt automatically; you never write this one by hand. If `pwsh` or
    the `claude` CLI isn't on this machine, say so and fall back to steps 3–6 plus a manual

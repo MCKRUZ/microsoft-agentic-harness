@@ -30,7 +30,9 @@
 #   * Skill-agnostic: it checks for review RECEIPTS, not for a specific tool. Receipts
 #     are written by save-review-receipt.ps1 when /code-review and /simplify complete,
 #     and by scripts/rails/run-gates.sh itself on a full passing run.
-#   * Honors RAILS_SKIP_REVIEW_GATE=1 as a documented, auditable escape hatch.
+#   * Honors RAILS_SKIP_REVIEW_GATE=1 (skips all three receipts) and
+#     RAILS_SKIP_RUN_GATES_RECEIPT=1 (skips only run-gates, for a machine missing
+#     `claude`/`pwsh`) as documented, auditable escape hatches.
 #   * Never wedges the session on missing tooling or an unresolvable base: it fails OPEN
 #     (allows) only when it genuinely cannot compute the diff, and fails CLOSED (blocks)
 #     whenever it can prove review evidence is missing.
@@ -141,7 +143,21 @@ $receiptDir = Join-Path $projectDir '.claude/.review-receipts'
 $missing = @()
 if (-not (Test-Path (Join-Path $receiptDir "$fingerprint.code-review"))) { $missing += '/code-review' }
 if (-not (Test-Path (Join-Path $receiptDir "$fingerprint.simplify")))    { $missing += '/simplify' }
-if (-not (Test-Path (Join-Path $receiptDir "$fingerprint.run-gates")))   { $missing += 'run-gates' }
+
+# --- Narrow escape hatch for run-gates ONLY. run-gates.sh hard-requires the `claude` CLI
+#     (exits before running anything without it) and cannot write its receipt without
+#     `pwsh` on PATH — on a machine missing either, the run-gates receipt is otherwise
+#     unsatisfiable, and the only documented remedy would be RAILS_SKIP_REVIEW_GATE=1,
+#     which also discards the /code-review and /simplify requirements. That trains people
+#     to reach for the global switch out of habit. This variable degrades to two receipts
+#     instead of zero. Still auditable (printed to stderr), still opt-in, still narrower
+#     than the global bypass.
+$skipRunGatesReceipt = $env:RAILS_SKIP_RUN_GATES_RECEIPT -eq '1'
+if ($skipRunGatesReceipt) {
+  [Console]::Error.WriteLine('review-gate: RAILS_SKIP_RUN_GATES_RECEIPT=1 set; not requiring the run-gates receipt (code-review and simplify are still required).')
+} elseif (-not (Test-Path (Join-Path $receiptDir "$fingerprint.run-gates"))) {
+  $missing += 'run-gates'
+}
 
 if ($missing.Count -gt 0) {
   $skillSteps = @($missing | Where-Object { $_ -ne 'run-gates' })
@@ -152,14 +168,17 @@ if ($missing.Count -gt 0) {
       "-NoProfile -File .claude/hooks/save-review-receipt.ps1 -Kind code-review``)"
   }
   if ($missing -contains 'run-gates') {
-    $parts += "run ``scripts/rails/run-gates.sh`` with no flags (default: all gates, base main) " +
-      "— a clean pass records the run-gates receipt automatically, you do not write it by hand"
+    $parts += "run ``scripts/rails/run-gates.sh`` with no flags (default: all gates, base " +
+      "origin/main, falling back to main) — a clean pass records the run-gates receipt " +
+      "automatically, you do not write it by hand; if this machine lacks the `claude` CLI or " +
+      "`pwsh`, set RAILS_SKIP_RUN_GATES_RECEIPT=1 instead of the global bypass below"
   }
   Deny("Review gate: src/ changed but [$($missing -join ', ')] " +
        "$(if ($missing.Count -eq 1) {'is'} else {'are'}) missing for the current code " +
        "(fingerprint $fingerprint, $($change.Paths.Count) reviewable file(s)). " +
        "$($parts -join '; '). Commits that change no reviewable source (docs, workflows) do NOT " +
-       "invalidate an existing receipt. Emergency bypass: set RAILS_SKIP_REVIEW_GATE=1.")
+       "invalidate an existing receipt. Emergency bypass (skips all three): set " +
+       "RAILS_SKIP_REVIEW_GATE=1.")
 }
 
 Allow

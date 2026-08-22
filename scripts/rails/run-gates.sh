@@ -458,7 +458,11 @@ fi
 
 if [ -z "$NO_RECEIPT_REASON" ]; then
   RECEIPT_OUT="${TMPDIR_GATES}/run-gates-receipt-output.txt"
-  RECEIPT_SUMMARY="run-gates.sh (all gates) passed at $(git rev-parse --short HEAD) against base ${BASE_REF}: $(IFS=,; echo "${PASSED[*]:-none}")"
+  # "(all gates)" would overstate this: a gate applies() ruled inapplicable (e.g.
+  # security when security-gate-scope.sh returns required=false) is neither PASSED nor
+  # FAILED, so it's real and correct for it to be absent from PASSED — but the label
+  # should say so plainly rather than implying every gate ran.
+  RECEIPT_SUMMARY="run-gates.sh (full applicable gate set for this diff) passed at $(git rev-parse --short HEAD) against base ${BASE_REF}. Passed: $(IFS=,; echo "${PASSED[*]:-none}"). Skipped (not applicable to this diff): $(IFS=,; echo "${SKIPPED[*]:-none}")."
   if command -v pwsh >/dev/null 2>&1; then
     if printf '%s\n' "$RECEIPT_SUMMARY" | pwsh -NoProfile -File .claude/hooks/save-review-receipt.ps1 -Kind run-gates >"$RECEIPT_OUT" 2>&1; then
       cat "$RECEIPT_OUT"

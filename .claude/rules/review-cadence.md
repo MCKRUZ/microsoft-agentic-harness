@@ -21,7 +21,8 @@ The `pre-push-review` skill runs all three in one pass — prefer it over doing 
   `"<review summary>" | pwsh -NoProfile -File .claude/hooks/save-review-receipt.ps1 -Kind code-review`
   (and again with `-Kind simplify`). Receipts live in the gitignored `.claude/.review-receipts/`.
 - **Recording the run-gates receipt:** you don't — `scripts/rails/run-gates.sh` (no flags, default
-  base `main`) writes its own `-Kind run-gates` receipt automatically on a clean pass. This one
+  base `origin/main`, falling back to `main` only if that doesn't resolve) writes its own
+  `-Kind run-gates` receipt automatically on a clean pass. This one
   exists specifically to stop a fix-then-push rhythm: every push re-triggers the remote
   correctness-review and grader gates, so pushing after each small fix pays for a fresh Opus
   review cycle instead of clearing checks locally once. `run-gates.sh` being the intended writer is
