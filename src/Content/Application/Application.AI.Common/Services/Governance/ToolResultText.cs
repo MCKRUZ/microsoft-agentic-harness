@@ -22,14 +22,32 @@ namespace Application.AI.Common.Services.Governance;
 /// success reaches this boundary differently — <c>McpClientTool.InvokeCoreAsync</c> returns a bare
 /// <see cref="TextContent"/> for a single-content-block result and an <see cref="AIContent"/> array for
 /// a multi-block one, falling back to a serialized <c>CallToolResult</c> (a structured
-/// <see cref="JsonElement"/>) only when the result carries structured content or protocol metadata. The
-/// first two shapes are handled here; a result that falls back to the serialized-<c>CallToolResult</c>
-/// shape is not yet — tracked separately, since sanitizing embedded text inside an arbitrary nested JSON
-/// structure needs its own design rather than a fourth case bolted onto this switch.
+/// <see cref="JsonElement"/>) only when the result carries structured content or protocol metadata.
+/// </para>
+/// <para>
+/// <strong>The serialized-<c>CallToolResult</c> shape is not sanitized — a known, tracked gap, not an
+/// oversight.</strong> Handling it means walking the embedded <c>content</c> array inside an arbitrary
+/// nested JSON structure, and this type deliberately has no dependency on the MCP protocol's own CLR
+/// types (<c>Application.AI.Common</c> doesn't reference <c>ModelContextProtocol.Core</c> — that
+/// knowledge belongs to <c>Infrastructure.AI.MCP</c>, not here), so closing it needs its own design
+/// rather than a generic-JSON special case bolted onto this switch. See the tracking issue for the
+/// current thinking on where that logic should actually live.
 /// </para>
 /// </remarks>
 internal static class ToolResultText
 {
+    /// <summary>
+    /// Substituted when a sanitizer reports it changed something but returns no text to show for it — a
+    /// runtime contract break <see cref="ICompositeResponseSanitizer"/> doesn't enforce against a
+    /// consumer-supplied implementation. Every caller of <see cref="Sanitize"/> relies on a must-not-throw
+    /// contract (see <c>GovernedAIFunction</c>'s and <c>DirectToolInvoker</c>'s own remarks); degrading to
+    /// a visible placeholder here, the same way <c>ReportedFailureText</c> does for its own sanitizer
+    /// dependency, keeps that contract rather than propagating an exception out of nearly every tool call
+    /// this fix now touches.
+    /// </summary>
+    private const string CorruptedSanitizerOutputPlaceholder =
+        "[tool result withheld: the response sanitizer returned no content]";
+
     /// <summary>
     /// Runs <paramref name="result"/>'s text through <paramref name="sanitizer"/> and returns it in the
     /// same shape it arrived — unless sanitizing found nothing to change, in which case
@@ -45,13 +63,13 @@ internal static class ToolResultText
             case string content:
             {
                 var scrubbed = sanitizer.Sanitize(content, toolName);
-                return scrubbed.WasSanitized ? RequireText(scrubbed, toolName) : result;
+                return scrubbed.WasSanitized ? SanitizedText(scrubbed) : result;
             }
             case JsonElement { ValueKind: JsonValueKind.String } element:
             {
                 var scrubbed = sanitizer.Sanitize(element.GetString() ?? string.Empty, toolName);
                 return scrubbed.WasSanitized
-                    ? JsonSerializer.SerializeToElement(RequireText(scrubbed, toolName))
+                    ? JsonSerializer.SerializeToElement(SanitizedText(scrubbed))
                     : result;
             }
             // A single-content-block MCP tool success reaches this boundary as a bare TextContent, not a
@@ -60,7 +78,7 @@ internal static class ToolResultText
             case TextContent text:
             {
                 var scrubbed = sanitizer.Sanitize(text.Text, toolName);
-                return scrubbed.WasSanitized ? WithText(text, RequireText(scrubbed, toolName)) : result;
+                return scrubbed.WasSanitized ? WithText(text, SanitizedText(scrubbed)) : result;
             }
             // A multi-content-block MCP tool success reaches this boundary as AIContent[]. Only
             // TextContent elements carry free text to sanitize; anything else (DataContent — images,
@@ -78,7 +96,7 @@ internal static class ToolResultText
                         continue;
 
                     sanitizedBlocks ??= (AIContent[])blocks.Clone();
-                    sanitizedBlocks[i] = WithText(block, RequireText(scrubbed, toolName));
+                    sanitizedBlocks[i] = WithText(block, SanitizedText(scrubbed));
                 }
                 return sanitizedBlocks ?? result;
             }
@@ -87,16 +105,8 @@ internal static class ToolResultText
         }
     }
 
-    /// <summary>
-    /// Fails loudly rather than silently emptying a tool result: <see cref="SanitizationResult.SanitizedContent"/>
-    /// is non-nullable by contract, but that contract isn't enforced at runtime against a
-    /// consumer-supplied <see cref="ICompositeResponseSanitizer"/>, and a null here would otherwise reach
-    /// the model as a bare JSON <see langword="null"/> or an empty result with no signal of why.
-    /// </summary>
-    private static string RequireText(SanitizationResult result, string toolName) =>
-        result.SanitizedContent
-        ?? throw new InvalidOperationException(
-            $"The response sanitizer returned null sanitized content for tool '{toolName}'.");
+    private static string SanitizedText(SanitizationResult result) =>
+        result.SanitizedContent ?? CorruptedSanitizerOutputPlaceholder;
 
     private static TextContent WithText(TextContent original, string text) => new(text)
     {

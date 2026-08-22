@@ -96,7 +96,10 @@ public interface IToolCallAdmissionPipeline
     /// the admission carried a redact verdict; a redact verdict routes through
     /// <see cref="IToolClassificationGate.RedactResult"/>, which applies that same sanitizer rather than
     /// a distinct sensitivity-aware scrub. A structured (non-text) result is returned unchanged either
-    /// way — the sanitizer operates on free text.
+    /// way — the sanitizer operates on free text. One MCP-specific shape currently falls into that
+    /// unchanged bucket even though it does carry embedded text — a serialized <c>CallToolResult</c>
+    /// (structured content or protocol metadata present) — tracked separately as a known gap in
+    /// <c>ToolResultText</c>, the type this method delegates the shape-preserving sanitize to.
     /// </returns>
     /// <remarks>
     /// <para>
