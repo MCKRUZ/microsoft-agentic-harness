@@ -251,22 +251,11 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
     {
         ArgumentNullException.ThrowIfNull(admission);
 
-        // #469: a plain allow still runs the tool's own text through the general-purpose sanitizer —
-        // the injection scrubber, unconditionally, regardless of what the classification gate decided.
-        // A redact verdict already gets this via RedactResult (the same ICompositeResponseSanitizer,
-        // one call below), so this only changes the previously-uncovered case: an MCP or skill-provided
-        // tool whose call was never flagged for redaction could otherwise put an injection payload
-        // straight into the agent's own context on this, the primary autonomous tool-calling path — the
-        // one guarantee DirectToolInvoker's and ToolUseStepExecutor's sibling paths already gave every
-        // result unconditionally.
-        // ToolResultText.TransformText is what keeps this in shape-preserving lockstep with
-        // DefaultToolClassificationGate.RedactResult (the RedactsOutput branch above): both route a
-        // tool result's text through the same shape-preserving primitive rather than each hand-rolling
-        // the string/JsonElement switch, which is what let them diverge the first time this was
-        // written — this branch preserved shape, RedactResult silently didn't.
+        // #469: the sanitize pass below is unconditional — see the interface remarks for why. It stays
+        // in shape-preserving lockstep with RedactResult below via the shared ToolResultText.Sanitize.
         return admission.RedactsOutput
             ? _classificationGate.RedactResult(toolName, result)
-            : ToolResultText.TransformText(result, text => _sanitizer.Sanitize(text, toolName).SanitizedContent);
+            : ToolResultText.Sanitize(result, _sanitizer, toolName);
     }
 
     /// <inheritdoc />

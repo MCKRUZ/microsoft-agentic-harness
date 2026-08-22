@@ -55,6 +55,26 @@ internal static class AdmissionHarness
         return sanitizer.Object;
     }
 
+    /// <summary>
+    /// A sanitizer that replaces every occurrence of <paramref name="find"/> with
+    /// <paramref name="replacement"/> and leaves everything else unchanged — a real sanitizer's answer
+    /// when it recognizes something to scrub, without a test having to carry the injection-scrubbing
+    /// logic itself. Centralized so a change to <c>Sanitize</c>'s signature only breaks one setup.
+    /// </summary>
+    public static ICompositeResponseSanitizer SubstitutingSanitizer(string find, string replacement)
+    {
+        var sanitizer = new Mock<ICompositeResponseSanitizer>();
+        sanitizer
+            .Setup(s => s.Sanitize(It.IsAny<string>(), It.IsAny<string?>()))
+            .Returns((string content, string? _) =>
+                SanitizationResult.Clean(content.Replace(find, replacement)));
+        return sanitizer.Object;
+    }
+
+    /// <summary>A sanitizer that fails the test if invoked — proves a code path never reaches it.</summary>
+    public static ICompositeResponseSanitizer NeverCalledSanitizer() =>
+        new Mock<ICompositeResponseSanitizer>(MockBehavior.Strict).Object;
+
     /// <summary>A redaction filter that returns content unchanged — nothing to scrub.</summary>
     public static IContentRedactionFilter PermissiveRedactionFilter()
     {

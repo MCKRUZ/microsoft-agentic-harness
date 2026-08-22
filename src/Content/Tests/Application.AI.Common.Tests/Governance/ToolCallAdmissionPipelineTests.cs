@@ -267,17 +267,13 @@ public sealed class ToolCallAdmissionPipelineTests
     [Fact]
     public void ApplyOutputPolicy_PlainAllow_SanitizesTheResultWithoutCallingTheClassificationGate()
     {
-        // #469: a plain allow never consults the classification gate at all — the sanitizer is the
-        // only guarantee a plain-allow result gets. A permissive (no-op) sanitizer mock would let this
-        // test pass whether or not the sanitizer actually ran; asserting a real transformation is what
-        // proves it does.
+        // #469: a plain allow never consults the classification gate — the sanitizer is the only
+        // guarantee a plain-allow result gets. A transforming sanitizer (not the permissive no-op) is
+        // what proves it actually ran.
         var gate = new Mock<IToolClassificationGate>(MockBehavior.Strict);
-        var sanitizer = new Mock<ICompositeResponseSanitizer>();
-        sanitizer
-            .Setup(s => s.Sanitize(It.IsAny<string>(), It.IsAny<string?>()))
-            .Returns((string content, string? _) =>
-                SanitizationResult.Clean(content.Replace("secret", "[SCRUBBED]")));
-        var pipeline = AdmissionHarness.Pipeline(classificationGate: gate.Object, sanitizer: sanitizer.Object);
+        var pipeline = AdmissionHarness.Pipeline(
+            classificationGate: gate.Object,
+            sanitizer: AdmissionHarness.SubstitutingSanitizer("secret", "[SCRUBBED]"));
 
         pipeline.ApplyOutputPolicy(ToolCallAdmission.Allow(), Tool, "a secret value")
             .Should().Be("a [SCRUBBED] value");
@@ -288,18 +284,12 @@ public sealed class ToolCallAdmissionPipelineTests
     [Fact]
     public void ApplyOutputPolicy_PlainAllow_JsonElementResult_SanitizesWithoutUnwrappingTheShape()
     {
-        // A genuine tool success reaches this method as a JsonElement, not a raw string — the
-        // function-invocation pipeline's own default marshaling (see GovernedAIFunction's remarks on
-        // Unwrap). Returning a bare string here instead would silently change how the model-facing
-        // chat client quotes the result for every successful, unredacted tool call — the bug an
-        // earlier cut of the #469 fix shipped, caught by code review rather than by a test.
-        var gate = new Mock<IToolClassificationGate>(MockBehavior.Strict);
-        var sanitizer = new Mock<ICompositeResponseSanitizer>();
-        sanitizer
-            .Setup(s => s.Sanitize(It.IsAny<string>(), It.IsAny<string?>()))
-            .Returns((string content, string? _) =>
-                SanitizationResult.Clean(content.Replace("secret", "[SCRUBBED]")));
-        var pipeline = AdmissionHarness.Pipeline(classificationGate: gate.Object, sanitizer: sanitizer.Object);
+        // A genuine tool success reaches this method as a JsonElement, not a raw string (the
+        // function-invocation pipeline's own default marshaling — see ToolResultText). Returning a bare
+        // string instead would change how the model-facing chat client quotes the result.
+        var pipeline = AdmissionHarness.Pipeline(
+            classificationGate: new Mock<IToolClassificationGate>(MockBehavior.Strict).Object,
+            sanitizer: AdmissionHarness.SubstitutingSanitizer("secret", "[SCRUBBED]"));
         var element = JsonSerializer.SerializeToElement("a secret value");
 
         var result = pipeline.ApplyOutputPolicy(ToolCallAdmission.Allow(), Tool, element);
@@ -307,23 +297,6 @@ public sealed class ToolCallAdmissionPipelineTests
         var resultElement = result.Should().BeOfType<JsonElement>().Subject;
         resultElement.ValueKind.Should().Be(JsonValueKind.String);
         resultElement.GetString().Should().Be("a [SCRUBBED] value");
-    }
-
-    [Fact]
-    public void ApplyOutputPolicy_PlainAllow_StructuredResult_ReturnsUnchanged()
-    {
-        // The sanitizer operates on free text: a structured JSON object/array (or any other type) is
-        // not text to sanitize, and rewriting its raw form risks a malformed result the model then
-        // mis-parses. Mirrors DefaultToolClassificationGate.RedactResult's own documented behavior for
-        // the same shape.
-        var gate = new Mock<IToolClassificationGate>(MockBehavior.Strict);
-        var sanitizer = new Mock<ICompositeResponseSanitizer>(MockBehavior.Strict);
-        var pipeline = AdmissionHarness.Pipeline(classificationGate: gate.Object, sanitizer: sanitizer.Object);
-        var structured = JsonSerializer.SerializeToElement(new { name = "file.txt" });
-
-        pipeline.ApplyOutputPolicy(ToolCallAdmission.Allow(), Tool, structured)
-            .Should().BeOfType<JsonElement>()
-            .Which.GetProperty("name").GetString().Should().Be("file.txt");
     }
 
     [Fact]

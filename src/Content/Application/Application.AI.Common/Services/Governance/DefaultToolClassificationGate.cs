@@ -118,12 +118,10 @@ public sealed class DefaultToolClassificationGate : IToolClassificationGate
 
     /// <inheritdoc />
     public object? RedactResult(string toolName, object? result) =>
-        // A tool result reaches the gate either as a raw string or, once the function pipeline has
-        // serialized it, as a JSON string element — see ToolResultText for why that shape must survive
-        // the round trip. A structured result (JSON object/array, or any other type) is returned
-        // unchanged: the sanitizers operate on free text. Such cases are better handled by a Block
-        // policy.
-        ToolResultText.TransformText(result, text => _sanitizer.Sanitize(text, toolName).SanitizedContent);
+        // See ToolResultText.Sanitize for why the result's shape (raw string vs. serialized JSON string
+        // element) must survive the round trip, and why a structured result is left unchanged — such
+        // cases are better handled by a Block policy.
+        ToolResultText.Sanitize(result, _sanitizer, toolName);
 
     private AssetReference Resolve(string toolName, IReadOnlyDictionary<string, object?> arguments)
     {
