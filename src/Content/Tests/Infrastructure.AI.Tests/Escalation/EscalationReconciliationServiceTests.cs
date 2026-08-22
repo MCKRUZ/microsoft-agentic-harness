@@ -41,12 +41,14 @@ public sealed class EscalationReconciliationServiceTests
     private AppConfig _config = new();
 
     private EscalationReconciliationService CreateService(
-        bool escalationsEnabled, int retentionDays = 90, int intervalSeconds = 300)
+        bool escalationsEnabled, int retentionDays = 90, int intervalSeconds = 300,
+        bool callOnceEnforcementEnabled = false)
     {
         var config = new AppConfig();
         config.AI.Governance.DurableState.EscalationsEnabled = escalationsEnabled;
         config.AI.Governance.DurableState.RetentionDays = retentionDays;
         config.AI.Governance.DurableState.ReconcileIntervalSeconds = intervalSeconds;
+        config.AI.Governance.DurableState.CallOnceEnforcementEnabled = callOnceEnforcementEnabled;
         _config = config;
 
         var monitor = new Mock<IOptionsMonitor<AppConfig>>();
@@ -135,6 +137,23 @@ public sealed class EscalationReconciliationServiceTests
         await WaitForReconcileCountAsync(2);
 
         await service.StopAsync(CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task StartAsync_OnlyCallOnceEnforcementEnabled_NeverResolvesThePruner()
+    {
+        // PruneAsync never touches tool_call_ledger at all (see GovernanceStatePruner's remarks —
+        // a ledger row is the enforcement token itself, not an audit record, so age-based pruning
+        // would re-arm a call-once tool for a still-live conversation). A host with only this
+        // toggle on therefore has nothing for the pruner to do, and must not resolve it — doing so
+        // would create the governance-state database file on a host that never needed one.
+        var service = CreateService(escalationsEnabled: false, callOnceEnforcementEnabled: true);
+
+        await service.StartAsync(CancellationToken.None);
+        await WaitForReconcileCountAsync(1);
+        await service.StopAsync(CancellationToken.None);
+
+        _prunerResolved.Should().BeFalse();
     }
 
     [Fact]

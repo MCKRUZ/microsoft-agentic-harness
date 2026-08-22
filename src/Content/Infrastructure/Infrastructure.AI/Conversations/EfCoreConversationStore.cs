@@ -270,11 +270,8 @@ public sealed class EfCoreConversationStore : IConversationStore
     private static bool IsDuplicateConversationId(DbUpdateException ex) =>
         ex.InnerException is SqliteException
         {
-            SqliteExtendedErrorCode: SqliteConstraintPrimaryKey or SqliteConstraintUnique
+            SqliteExtendedErrorCode: SqliteErrorCodes.ConstraintPrimaryKey or SqliteErrorCodes.ConstraintUnique
         };
-
-    /// <summary>SQLite's <c>SQLITE_CONSTRAINT_PRIMARYKEY</c> extended result code.</summary>
-    private const int SqliteConstraintPrimaryKey = 1555;
 
     /// <inheritdoc/>
     public Task AppendMessageAsync(
@@ -372,10 +369,7 @@ public sealed class EfCoreConversationStore : IConversationStore
     /// failure that has nothing to do with one.
     /// </remarks>
     private static bool IsDuplicateMessageId(DbUpdateException ex) =>
-        ex.InnerException is SqliteException { SqliteExtendedErrorCode: SqliteConstraintUnique };
-
-    /// <summary>SQLite's <c>SQLITE_CONSTRAINT_UNIQUE</c> extended result code.</summary>
-    private const int SqliteConstraintUnique = 2067;
+        ex.InnerException is SqliteException { SqliteExtendedErrorCode: SqliteErrorCodes.ConstraintUnique };
 
     /// <inheritdoc/>
     public async Task<bool> DeleteAsync(string conversationId, string callerId, CancellationToken ct = default)

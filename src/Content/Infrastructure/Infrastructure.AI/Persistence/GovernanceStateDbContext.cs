@@ -4,20 +4,22 @@ using Microsoft.EntityFrameworkCore;
 namespace Infrastructure.AI.Persistence;
 
 /// <summary>
-/// EF Core DbContext for the durable governance-state store: pending escalations and change
-/// proposals that must survive host restarts. Targets SQLite; timestamps are stored as raw
-/// UTC-tick <see cref="long"/> columns (so range scans and ordering work, and a corrupt value
-/// surfaces in the store's guarded per-row mapping rather than throwing during
-/// materialization), and enums are stored as strings for resilience to reordering.
+/// EF Core DbContext for the durable governance-state store: pending escalations, change
+/// proposals, and the call-once tool ledger, all of which must survive host restarts. Targets
+/// SQLite; timestamps are stored as raw UTC-tick <see cref="long"/> columns (so range scans and
+/// ordering work, and a corrupt value surfaces in the store's guarded per-row mapping rather
+/// than throwing during materialization), and enums are stored as strings for resilience to
+/// reordering.
 /// </summary>
 /// <remarks>
 /// <para>
-/// One context for both governance subsystems by design: escalations and change proposals are
-/// the two approval-workflow states the harness tracks, they ship behind the same
-/// <c>AppConfig:AI:Governance:DurableState</c> section, and a single database file keeps the
-/// operator surface (one file to back up, inspect, or wipe) simple. Kept separate from
-/// <see cref="PlannerDbContext"/> (plan execution state) and <c>PromptUsageDbContext</c>
-/// (telemetry history), matching the repo's one-context-per-subsystem convention.
+/// One context for all three governance subsystems by design: escalations, change proposals,
+/// and the call-once ledger are all approval/enforcement-workflow state the harness tracks,
+/// they ship behind the same <c>AppConfig:AI:Governance:DurableState</c> section, and a single
+/// database file keeps the operator surface (one file to back up, inspect, or wipe) simple.
+/// Kept separate from <see cref="PlannerDbContext"/> (plan execution state) and
+/// <c>PromptUsageDbContext</c> (telemetry history), matching the repo's
+/// one-context-per-subsystem convention.
 /// </para>
 /// <para>
 /// Entities are configured inline rather than via <c>IEntityTypeConfiguration</c> classes
@@ -38,6 +40,9 @@ public sealed class GovernanceStateDbContext : DbContext
 
     /// <summary>Durably persisted change proposals.</summary>
     public DbSet<ChangeProposalEntity> ChangeProposals => Set<ChangeProposalEntity>();
+
+    /// <summary>The call-once tool ledger: which call-once tools have already run in which conversations.</summary>
+    public DbSet<ToolCallLedgerEntity> ToolCallLedger => Set<ToolCallLedgerEntity>();
 
     /// <summary>Initializes a new instance.</summary>
     /// <param name="options">The context options (connection string, provider).</param>
@@ -74,5 +79,11 @@ public sealed class GovernanceStateDbContext : DbContext
             .HasDatabaseName("ix_change_proposal_submitted_by");
         proposal.HasIndex(p => p.BlastRadius)
             .HasDatabaseName("ix_change_proposal_blast_radius");
+
+        var ledger = modelBuilder.Entity<ToolCallLedgerEntity>();
+        ledger.ToTable("tool_call_ledger");
+        ledger.HasKey(l => new { l.ConversationId, l.ToolName });
+        ledger.Property(l => l.ConversationId).HasMaxLength(256);
+        ledger.Property(l => l.ToolName).HasMaxLength(256);
     }
 }

@@ -120,4 +120,24 @@ public sealed record PlanRunRequest
     /// Null is accepted and means "derive the scope from the plan id"; empty or whitespace is not.
     /// </remarks>
     public string? ConversationId { get; init; }
+
+    /// <summary>
+    /// The unique identifier of this specific run, used only to scope call-once tool enforcement
+    /// (<c>IAgentExecutionContext.CallOnceScopeId</c>).
+    /// </summary>
+    /// <remarks>
+    /// <strong>Deliberately independent of <see cref="ConversationId"/>.</strong> When a caller
+    /// supplies no <see cref="ConversationId"/>, that field intentionally falls back to the plan id
+    /// so every run of one workflow shares a single token-budget key — a design choice for a
+    /// different feature, not something call-once enforcement can reuse. A call-once claim keyed on
+    /// the plan id would mean the first successful call to a call-once tool, by any caller, in any
+    /// run, permanently refuses every subsequent run of that workflow — a cross-tenant denial of
+    /// service with no release path short of the retention window. <see cref="RunId"/> exists so a
+    /// call-once claim is scoped to <em>this run</em>, which is what "at most once" should mean for
+    /// a workflow. Null (the default for a caller that does not supply one, e.g. a direct
+    /// <see cref="IPlanExecutor"/> caller with no run concept) means the same as an absent
+    /// <see cref="ConversationId"/> for an agent turn: no call-once scope, so the call-once gate
+    /// fails open — see its remarks for why this is undefined rather than unenforced.
+    /// </remarks>
+    public string? RunId { get; init; }
 }

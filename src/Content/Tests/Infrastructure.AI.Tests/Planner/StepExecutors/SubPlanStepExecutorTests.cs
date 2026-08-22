@@ -157,7 +157,31 @@ public sealed class SubPlanStepExecutorTests
             new Dictionary<PlanStepId, string>(), CancellationToken.None);
 
         Assert.Equal(StepExecutionStatus.Completed, result.Status);
-        childAgentContext.Verify(c => c.Initialize("caller-agent", "conv-1", 3), Times.Once);
+        childAgentContext.Verify(c => c.Initialize("caller-agent", "conv-1", 3, null), Times.Once);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_ParentCallOnceScope_PropagatedIntoChildScope()
+    {
+        // The regression this test exists to catch: a sub-plan step that derived its own
+        // call-once scope (or silently defaulted to null) instead of inheriting the parent's would
+        // let a call-once tool run again inside the nested plan even though the parent already
+        // claimed it — defeating the "at most once" guarantee for every plan that delegates to a
+        // child plan. Distinct values for ConversationId and CallOnceScopeId prove the child
+        // received the SCOPE, not a coincidentally-equal conversation id.
+        _parentAgentContext.SetupGet(c => c.AgentId).Returns("caller-agent");
+        _parentAgentContext.SetupGet(c => c.ConversationId).Returns("conv-1");
+        _parentAgentContext.SetupGet(c => c.TurnNumber).Returns(3);
+        _parentAgentContext.SetupGet(c => c.CallOnceScopeId).Returns("run-42");
+
+        var (sut, childAgentContext, childPlanId) = BuildExecutorWithChildScope();
+
+        var result = await sut.ExecuteAsync(
+            CreateStep(new SubPlanConfig { ChildPlanId = childPlanId }),
+            new Dictionary<PlanStepId, string>(), CancellationToken.None);
+
+        Assert.Equal(StepExecutionStatus.Completed, result.Status);
+        childAgentContext.Verify(c => c.Initialize("caller-agent", "conv-1", 3, "run-42"), Times.Once);
     }
 
     [Fact]
@@ -171,8 +195,14 @@ public sealed class SubPlanStepExecutorTests
             CreateStep(new SubPlanConfig { ChildPlanId = childPlanId }),
             new Dictionary<PlanStepId, string>(), CancellationToken.None);
 
+        // The 4th parameter is matched explicitly (not omitted) so this negative assertion covers
+        // every possible call-once scope argument, not just the literal null the compiler would
+        // otherwise bake in for an omitted optional parameter — an omitted 4th arg here would make
+        // this assertion blind to a real call made with a non-null scope.
         childAgentContext.Verify(
-            c => c.Initialize(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<int>()), Times.Never);
+            c => c.Initialize(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<int>(), It.IsAny<string?>()),
+            Times.Never);
     }
 
     /// <summary>

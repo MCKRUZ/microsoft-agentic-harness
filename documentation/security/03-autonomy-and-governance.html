@@ -283,14 +283,30 @@
                             <strong><code>IProgressEvaluator</code></strong> — the spin / no-progress guard. It halts a
                             tool call when the agent is repeating identical calls without making progress.
                         </li>
+                        <li>
+                            <strong><code>ICallOnceGate</code></strong> — durable call-once enforcement
+                            (<code>Services/Governance/CallOnceGate.cs</code>). A tool declared
+                            <code>call-once-per-conversation: true</code> in its SKILL.md <code>tools:</code> block is
+                            refused on a second call within the same conversation — durably, keyed by conversation id,
+                            surviving across turns, across separate runs continuing the same conversation, and across
+                            hosts sharing the governance-state database. Opt-in via
+                            <code>GovernanceDurableStateConfig.CallOnceEnforcementEnabled</code>; with it off, a tool
+                            may still be declared call-once but nothing enforces it. Unlike the other gates here, this
+                            is not an access-control decision — a tool is either declared call-once or it is not — so
+                            there is no equivalent of a policy-driven <code>Block</code>/<code>Audit</code>/<code>Enforce</code>
+                            posture to configure per call.
+                        </li>
                     </ol>
                     <p>
-                        All three gates are <strong>inert unless enabled</strong> — the classification gate defaults to
-                        <code>Off</code>, and the governor and progress guard are gated on their config flags. Two
-                        earlier MediatR behaviors named <code>GovernancePolicyBehavior</code> and
+                        Every gate here is <strong>inert unless enabled</strong> — the classification gate defaults to
+                        <code>Off</code>, and the governor, progress guard, and call-once gate are each gated on their
+                        own config flag. Two earlier MediatR behaviors named <code>GovernancePolicyBehavior</code> and
                         <code>ToolPermissionBehavior</code> were <strong>removed as dead code</strong>: they keyed on a
                         request marker that nothing in production implemented, so they never actually fired. Governance
-                        now lives on the tool path described above.
+                        now lives on the tool path described above. The complete, authoritative ordering — and why the
+                        order itself is a safety property, not an implementation detail — lives in
+                        <code>Interfaces/Governance/IToolCallAdmissionPipeline.cs</code>'s own remarks; this page
+                        summarizes it rather than duplicating it, since a hand-copied list is exactly what drifts.
                     </p>
 
                     <div class="callout callout-tip">

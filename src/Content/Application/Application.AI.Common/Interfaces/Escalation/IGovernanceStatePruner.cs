@@ -18,6 +18,12 @@ namespace Application.AI.Common.Interfaces.Escalation;
 /// the durable store exists to prevent. Compliance history is unaffected: the JSONL audit
 /// stores are the retained record, and this prunes only the recoverable working state.
 /// </para>
+/// <para>
+/// <strong>The call-once ledger (<c>tool_call_ledger</c>) is not covered by this contract at
+/// all.</strong> A ledger row is not an audit record of a completed workflow — it IS the
+/// enforcement token for a still-possibly-live call-once tool, so age alone is not eligibility
+/// the way it is for the two tables above. See <c>GovernanceStatePruner</c>'s remarks.
+/// </para>
 /// </remarks>
 public interface IGovernanceStatePruner
 {

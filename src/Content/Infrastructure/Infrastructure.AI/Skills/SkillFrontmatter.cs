@@ -207,6 +207,7 @@ internal sealed class SkillFrontmatter
                 Fallback = ChildScalar(item, "fallback"),
                 Condition = ChildScalar(item, "condition"),
                 Optional = Boolean(ChildScalar(item, "optional")),
+                CallOncePerConversation = Boolean(ChildScalar(item, "call-once-per-conversation")),
                 Operations = Child(item, "operations") is YamlSequenceNode ops ? [.. Scalars(ops)] : []
             });
         }

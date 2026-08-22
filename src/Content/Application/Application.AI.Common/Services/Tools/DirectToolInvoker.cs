@@ -144,6 +144,13 @@ public sealed partial class DirectToolInvoker : IDirectToolInvoker
             // on, so each one mints its own one-shot id — TryRecall can then never find a match for
             // it, which is the correct behaviour (retry attribution genuinely does not apply here),
             // achieved without a special case rather than through an accidental permanent one.
+            //
+            // callOnceScopeId is deliberately omitted (null), for the identical reason the
+            // conversation id above is a fresh GUID rather than something stable: a direct invocation
+            // has no request-level session to key a repeat-call check on either. A call-once tool
+            // reached through this surface is therefore not enforceable here — the call-once gate
+            // fails open on a null scope, which is the documented, correct answer, not a gap. See
+            // IAgentExecutionContext.CallOnceScopeId's remarks.
             var executionContext = scope.ServiceProvider.GetRequiredService<IAgentExecutionContext>();
             executionContext.Initialize(agentId, conversationId: Guid.NewGuid().ToString(), turnNumber: 1);
 

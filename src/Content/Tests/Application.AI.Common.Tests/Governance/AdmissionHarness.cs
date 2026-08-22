@@ -30,12 +30,14 @@ internal static class AdmissionHarness
         IToolCallObserverChain? observers = null,
         IProgressEvaluator? progressEvaluator = null,
         IAgentToolAuthorizationGate? authorizationGate = null,
+        ICallOnceGate? callOnceGate = null,
         IGovernanceTraceRecorder? trace = null) =>
         new(authorizationGate ?? PermissiveAuthorizationGate(),
             governor ?? PermissiveGovernor(),
             classificationGate ?? PermissiveClassificationGate(),
             observers ?? Mock.Of<IToolCallObserverChain>(),
             progressEvaluator ?? PermissiveProgressEvaluator(),
+            callOnceGate ?? PermissiveCallOnceGate(),
             trace ?? TraceRecorder(),
             Mock.Of<IApprovalExecutionReporter>(),
             PermissiveSanitizer(),
@@ -160,6 +162,30 @@ internal static class AdmissionHarness
             .Setup(p => p.Evaluate(It.IsAny<string>(), It.IsAny<Func<string?>>()))
             .Returns(ProgressVerdict.Continue());
         return progress.Object;
+    }
+
+    /// <summary>
+    /// A call-once gate that permits everything — what the real one answers when the tool being
+    /// called was never declared call-once, which is every tool none of these tests declare one.
+    /// </summary>
+    public static ICallOnceGate PermissiveCallOnceGate()
+    {
+        var gate = new Mock<ICallOnceGate>();
+        gate
+            .Setup(g => g.EvaluateAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(ToolInvocationDecision.Allow());
+        return gate.Object;
+    }
+
+    /// <summary>A call-once gate that refuses every call, as the real one does for a tool already claimed.</summary>
+    /// <param name="deniedMessage">The refusal text the gate returns.</param>
+    public static Mock<ICallOnceGate> DenyingCallOnceGate(string deniedMessage)
+    {
+        var gate = new Mock<ICallOnceGate>();
+        gate
+            .Setup(g => g.EvaluateAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(ToolInvocationDecision.Deny(deniedMessage));
+        return gate;
     }
 
     /// <summary>An observer chain that reports the rules the host registered and blocks on the verdict.</summary>

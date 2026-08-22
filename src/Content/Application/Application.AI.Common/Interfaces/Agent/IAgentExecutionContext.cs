@@ -24,6 +24,34 @@ public interface IAgentExecutionContext
     int? TurnNumber { get; }
 
     /// <summary>
+    /// Gets the scope <c>ICallOnceGate</c> claims a call-once tool against, or <c>null</c> when
+    /// this execution has no scope meaningful for that purpose.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>Deliberately not <see cref="ConversationId"/>.</strong> That property already means
+    /// three different things to three different callers — the durable conversation an agent turn
+    /// belongs to, a fresh-per-call value <c>DirectToolInvoker</c> mints so its retry memory never
+    /// carries over between one-shot invocations, and (via a plan run's own conversation-id
+    /// fallback) the key a plan run's token budget is reserved and released under, which is
+    /// deliberately SHARED across every run of one workflow when the caller supplies none. A
+    /// call-once gate reading <see cref="ConversationId"/> directly would inherit whichever of
+    /// those three meanings happened to be in scope — unenforceable on the direct-invoke path (a
+    /// fresh scope every call defeats "at most once"), and a cross-tenant denial-of-service on the
+    /// workflow path (one claim under the shared budget key would permanently block every future
+    /// run of that workflow, for every caller). This property exists so each caller states its
+    /// call-once scope on its own terms instead of one value being reinterpreted for a purpose it
+    /// was never designed for.
+    /// </para>
+    /// <para>
+    /// Null is a legitimate answer, not a gap to fill: a direct tool invocation has no logical
+    /// conversation for a repeat call to happen within, so the call-once gate failing open there is
+    /// correct — see its remarks on why an absent scope is undefined rather than merely unknown.
+    /// </para>
+    /// </remarks>
+    string? CallOnceScopeId { get; }
+
+    /// <summary>
     /// Gets the workload identity of the executing agent, or <c>null</c> when identity
     /// is disabled (<c>AppConfig.AI.Identity.Enabled</c> is false), the call is outside
     /// any agent execution, or the identity has not yet been resolved by
@@ -40,10 +68,18 @@ public interface IAgentExecutionContext
     /// <summary>
     /// Initializes or updates the execution context with agent identity.
     /// Re-initialization is allowed for subsequent turns within the same agent/conversation
-    /// (updates turn number). Throws if called with a different agent or conversation,
-    /// which indicates a scope leak.
+    /// (updates turn number). Throws if called with a different agent, conversation, or
+    /// call-once scope, which indicates a scope leak.
     /// </summary>
-    void Initialize(string agentId, string conversationId, int turnNumber);
+    /// <param name="agentId">The executing agent's identifier.</param>
+    /// <param name="conversationId">The conversation or session identifier.</param>
+    /// <param name="turnNumber">The current turn number.</param>
+    /// <param name="callOnceScopeId">
+    /// The scope to publish as <see cref="CallOnceScopeId"/>. Defaults to <see langword="null"/> —
+    /// callers with no call-once-meaningful scope (a direct tool invocation) pass nothing rather
+    /// than reusing <paramref name="conversationId"/>; see that property's remarks for why.
+    /// </param>
+    void Initialize(string agentId, string conversationId, int turnNumber, string? callOnceScopeId = null);
 
     /// <summary>
     /// Stamps the agent's workload identity onto the execution context. Called once

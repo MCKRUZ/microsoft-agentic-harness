@@ -31,9 +31,10 @@ internal sealed class FakeAmbientRequestScope : IAmbientRequestScope
         public string? AgentId => AgentIdentity?.Id;
         public string? ConversationId => null;
         public int? TurnNumber => null;
+        public string? CallOnceScopeId => null;
         public AgentIdentity? AgentIdentity { get; private set; }
 
-        public void Initialize(string agentId, string conversationId, int turnNumber)
+        public void Initialize(string agentId, string conversationId, int turnNumber, string? callOnceScopeId = null)
             => throw new NotSupportedException();
 
         public void SetIdentity(AgentIdentity identity) => AgentIdentity = identity;

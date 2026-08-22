@@ -484,6 +484,7 @@ public sealed class ToolUseStepExecutorTests
             _classificationGate.Object,
             observers,
             PermissiveAdmission.ProgressGuard(),
+            PermissiveAdmission.CallOnceGate(),
             PermissiveAdmission.TraceRecorder(),
             _executionReporter.Object,
             _responseSanitizer.Object,

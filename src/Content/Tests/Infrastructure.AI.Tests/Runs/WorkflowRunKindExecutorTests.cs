@@ -112,6 +112,37 @@ public sealed class WorkflowRunKindExecutorTests
     }
 
     [Fact]
+    public async Task ThePlanRunRequest_CarriesTheRunsOwnJobIdAsItsRunId_NotTheSharedWorkflowId()
+    {
+        // The exact scoping bug this guards against: PlanRunRequest.ConversationId is left null so
+        // every run of one workflow shares a single token-budget key by design — but a call-once
+        // claim keyed on that SAME shared value would mean the first call to a call-once tool, in
+        // any run, by any caller, permanently refuses every future run of this workflow. RunId must
+        // be this run's own JobId, independent of the shared PlanId/ConversationId scope.
+        PlanEndsWith(StepExecutionStatus.Completed);
+        PlanRunRequest? sent = null;
+        _planRunExecutor
+            .Setup(e => e.ExecuteAsync(It.IsAny<PlanRunRequest>(), It.IsAny<CancellationToken>()))
+            .Callback<PlanRunRequest, CancellationToken>((request, _) => sent = request)
+            .ReturnsAsync(Result<PlanExecutionSummary>.Success(new PlanExecutionSummary
+            {
+                PlanId = new PlanId(Guid.NewGuid()),
+                FinalStatus = StepExecutionStatus.Completed,
+                TotalDuration = TimeSpan.Zero,
+                StepStates = []
+            }));
+
+        var record = Record();
+
+        await BuildSut().ExecuteAsync(record, CancellationToken.None);
+
+        sent.Should().NotBeNull();
+        sent!.RunId.Should().Be(record.JobId);
+        sent.ConversationId.Should().BeNull("the run scope still derives from the plan id for budget purposes");
+        sent.RunId.Should().NotBe(sent.PlanId.Value.ToString());
+    }
+
+    [Fact]
     public async Task ATargetThatIsNotAWorkflowId_FailsThatRunRatherThanThrowing()
     {
         // Unreachable through the HTTP surface, which parses the id before accepting the run. It is

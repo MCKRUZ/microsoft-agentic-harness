@@ -31,8 +31,13 @@ public class AgentContextPropagationBehaviorTests
             CancellationToken.None);
 
         result.Should().Be(expected);
+        // The 4th parameter is matched explicitly (not omitted) so this negative assertion covers
+        // every possible call-once scope argument — an omitted 4th arg would compile to matching
+        // only a literal null there, making this assertion blind to a real call made with a
+        // non-null scope.
         _executionContext.Verify(
-            c => c.Initialize(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<int>()),
+            c => c.Initialize(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<int>(), It.IsAny<string?>()),
             Times.Never);
     }
 
@@ -46,8 +51,11 @@ public class AgentContextPropagationBehaviorTests
             () => Task.FromResult("ok"),
             CancellationToken.None);
 
+        // The durable conversation id is also the call-once scope for an agent turn — see
+        // AgentContextPropagationBehavior's own comment for why that's the one caller where
+        // ConversationId already means exactly what CallOnceScopeId needs.
         _executionContext.Verify(
-            c => c.Initialize("planner", "conv-42", 3),
+            c => c.Initialize("planner", "conv-42", 3, "conv-42"),
             Times.Once);
     }
 
@@ -77,7 +85,7 @@ public class AgentContextPropagationBehaviorTests
 
         await act.Should().ThrowAsync<InvalidOperationException>();
         _executionContext.Verify(
-            c => c.Initialize("agent-1", "conv-1", 1),
+            c => c.Initialize("agent-1", "conv-1", 1, "conv-1"),
             Times.Once);
     }
 

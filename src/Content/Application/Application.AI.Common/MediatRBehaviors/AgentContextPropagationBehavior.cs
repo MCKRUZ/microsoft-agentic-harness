@@ -45,7 +45,10 @@ public sealed class AgentContextPropagationBehavior<TRequest, TResponse>
         _executionContext.Initialize(
             agentRequest.AgentId,
             agentRequest.ConversationId,
-            agentRequest.TurnNumber);
+            agentRequest.TurnNumber,
+            // The durable conversation IS the right call-once scope for an agent turn — this is
+            // the one caller where ConversationId already means exactly what CallOnceScopeId needs.
+            callOnceScopeId: agentRequest.ConversationId);
 
         using (_logger.BeginScope(new ExecutionScope(
             ExecutorId: agentRequest.AgentId,

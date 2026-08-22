@@ -113,7 +113,8 @@ public sealed class PlanRunExecutor : IPlanRunExecutor
             // tool calls, so the scoped execution context must carry the caller's identity before any
             // step can observe the envelope.
             var executionContext = scope.ServiceProvider.GetRequiredService<IAgentExecutionContext>();
-            executionContext.Initialize(request.AgentId, runScope, turnNumber: 1);
+            executionContext.Initialize(
+                request.AgentId, runScope, turnNumber: 1, callOnceScopeId: request.RunId);
 
             var planExecutor = scope.ServiceProvider.GetRequiredService<IPlanExecutor>();
 

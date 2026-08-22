@@ -7,7 +7,7 @@ namespace Presentation.Common.Tests.Composition;
 
 /// <summary>
 /// Asserts that the composed admission chain is the <strong>only</strong> production caller of the
-/// four tool-call gates.
+/// six tool-call gates.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -42,7 +42,8 @@ public sealed class ToolCallAdmissionChokepointTests
         "IToolInvocationGovernor",
         "IToolClassificationGate",
         "IToolCallObserverChain",
-        "IProgressEvaluator"
+        "IProgressEvaluator",
+        "ICallOnceGate"
     ];
 
     /// <summary>
@@ -58,6 +59,7 @@ public sealed class ToolCallAdmissionChokepointTests
         "IToolCallObserverChain.cs",
         "IToolCallObserver.cs",
         "IProgressEvaluator.cs",
+        "ICallOnceGate.cs",
 
         // The chain, and the accessor that publishes it.
         "IToolCallAdmissionPipeline.cs",
@@ -71,6 +73,7 @@ public sealed class ToolCallAdmissionChokepointTests
         "DefaultToolClassificationGate.cs",
         "ToolCallObserverChain.cs",
         "ProgressEvaluator.cs",
+        "CallOnceGate.cs",
 
         // Registration.
         "DependencyInjection.cs"

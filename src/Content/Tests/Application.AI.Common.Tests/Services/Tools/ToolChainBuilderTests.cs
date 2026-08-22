@@ -2,6 +2,7 @@ using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Plugins;
 using Application.AI.Common.Interfaces.Tools;
+using Application.AI.Common.Services.Governance;
 using Application.AI.Common.Services.Tools;
 using Domain.AI.Skills;
 using Domain.AI.Tools;
@@ -31,7 +32,8 @@ public class ToolChainBuilderTests
         IToolConverter? toolConverter = null,
         IServiceProvider? serviceProvider = null,
         IMcpToolSurfaceScanner? surfaceScanner = null,
-        IOptionsMonitor<AIConfig>? aiConfig = null)
+        IOptionsMonitor<AIConfig>? aiConfig = null,
+        IToolCallOncePolicy? callOncePolicy = null)
     {
         return new ToolChainBuilder(
             NullLogger<ToolChainBuilder>.Instance,
@@ -39,7 +41,8 @@ public class ToolChainBuilderTests
             toolConverter,
             mcpToolProvider,
             surfaceScanner,
-            aiConfig);
+            aiConfig,
+            callOncePolicy: callOncePolicy);
     }
 
     /// <summary>
@@ -333,6 +336,234 @@ public class ToolChainBuilderTests
         var tools = await builder.BuildToolsAsync(skill, new SkillAgentOptions());
 
         tools.Should().Contain(t => t.Name == "calc");
+    }
+
+    // --- Call-once registration ---
+
+    [Fact]
+    public async Task BuildToolsAsync_ToolDeclaredCallOnce_RegistersItsResolvedNameWithThePolicy()
+    {
+        var toolMock = new Mock<ITool>();
+        toolMock.Setup(t => t.Name).Returns("start_diagnostic_session");
+
+        var converter = new Mock<IToolConverter>();
+        converter.Setup(c => c.Convert(toolMock.Object, null))
+            .Returns(AIFunctionFactory.Create(() => "converted", "start_diagnostic_session"));
+
+        var services = new ServiceCollection();
+        services.AddKeyedSingleton<ITool>("start_diagnostic_session", toolMock.Object);
+
+        var policy = new ToolCallOncePolicy(NullLogger<ToolCallOncePolicy>.Instance);
+        var builder = CreateBuilder(
+            toolConverter: converter.Object,
+            serviceProvider: services.BuildServiceProvider(),
+            callOncePolicy: policy);
+
+        var skill = new SkillDefinition
+        {
+            Id = "diagnostics", Name = "diagnostics", Instructions = "Test",
+            ToolDeclarations = [new ToolDeclaration
+            {
+                Name = "start_diagnostic_session",
+                CallOncePerConversation = true
+            }]
+        };
+
+        await builder.BuildToolsAsync(skill, new SkillAgentOptions());
+
+        policy.IsCallOnce("start_diagnostic_session").Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task BuildToolsAsync_ToolNotDeclaredCallOnce_PolicyNeverConsulted()
+    {
+        var toolMock = new Mock<ITool>();
+        toolMock.Setup(t => t.Name).Returns("calc");
+
+        var converter = new Mock<IToolConverter>();
+        converter.Setup(c => c.Convert(toolMock.Object, null))
+            .Returns(AIFunctionFactory.Create(() => "converted", "calc"));
+
+        var services = new ServiceCollection();
+        services.AddKeyedSingleton<ITool>("calc", toolMock.Object);
+
+        var policy = new Mock<IToolCallOncePolicy>(MockBehavior.Strict);
+        var builder = CreateBuilder(
+            toolConverter: converter.Object,
+            serviceProvider: services.BuildServiceProvider(),
+            callOncePolicy: policy.Object);
+
+        var skill = new SkillDefinition
+        {
+            Id = "s", Name = "s", Instructions = "Test",
+            ToolDeclarations = [new ToolDeclaration { Name = "calc" }]
+        };
+
+        await builder.BuildToolsAsync(skill, new SkillAgentOptions());
+
+        policy.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task BuildToolsAsync_TwoSkillsResolveSameNameOneCallOnce_NameStaysCallOnceForBoth()
+    {
+        // Documents the known scoping limitation on RegisterSurvivingCallOnceTools: enforcement is process-global
+        // by tool name, so a second skill resolving the same name inherits the first skill's
+        // call-once declaration even though it never made one itself.
+        var toolMock = new Mock<ITool>();
+        toolMock.Setup(t => t.Name).Returns("shared_tool");
+
+        var converter = new Mock<IToolConverter>();
+        converter.Setup(c => c.Convert(toolMock.Object, null))
+            .Returns(AIFunctionFactory.Create(() => "converted", "shared_tool"));
+
+        var services = new ServiceCollection();
+        services.AddKeyedSingleton<ITool>("shared_tool", toolMock.Object);
+
+        var policy = new ToolCallOncePolicy(NullLogger<ToolCallOncePolicy>.Instance);
+        var builder = CreateBuilder(
+            toolConverter: converter.Object,
+            serviceProvider: services.BuildServiceProvider(),
+            callOncePolicy: policy);
+
+        var declaringSkill = new SkillDefinition
+        {
+            Id = "declaring-skill", Name = "declaring-skill", Instructions = "Test",
+            ToolDeclarations = [new ToolDeclaration { Name = "shared_tool", CallOncePerConversation = true }]
+        };
+        var unrelatedSkill = new SkillDefinition
+        {
+            Id = "unrelated-skill", Name = "unrelated-skill", Instructions = "Test",
+            ToolDeclarations = [new ToolDeclaration { Name = "shared_tool" }]
+        };
+
+        await builder.BuildToolsAsync(declaringSkill, new SkillAgentOptions());
+        await builder.BuildToolsAsync(unrelatedSkill, new SkillAgentOptions());
+
+        policy.IsCallOnce("shared_tool").Should().BeTrue(
+            "registration is process-global by name — see RegisterSurvivingCallOnceTools's remarks");
+    }
+
+    [Fact]
+    public async Task BuildToolsAsync_PluginSkillDeclaresCallOnceOnADeniedTool_NeverRegistersItGlobally()
+    {
+        // The security-review finding this test locks in: a plugin-sourced skill declaring
+        // call-once-per-conversation on a tool its OWN plugin denies must not be able to poison the
+        // process-global, durably-unreleasable call-once ledger for that tool name. Before the fix,
+        // ProvisionToolAsync registered the tool call-once as soon as it resolved — before
+        // ApplyPluginBoundaryIfPluginSkill had run at all — so the boundary stripped "dangerous" from
+        // THIS skill's own chain a moment later while the global registration survived, durably
+        // refusing every other conversation's legitimate, granted second call to "dangerous" forever.
+        var toolMock = new Mock<ITool>();
+        toolMock.Setup(t => t.Name).Returns("dangerous");
+
+        var converter = new Mock<IToolConverter>();
+        converter.Setup(c => c.Convert(toolMock.Object, null))
+            .Returns(AIFunctionFactory.Create(() => "converted", "dangerous"));
+
+        var pluginRegistry = new Mock<IPluginRegistry>();
+        pluginRegistry.Setup(r => r.GetPlugin("p")).Returns(
+            new LoadedPlugin("p", "1.0", "/plugins/p", new PluginManifest(),
+                PluginLoadStatus.Loaded, [], ["p:server"],
+                new PluginDeclaration { Name = "p", DeniedTools = ["dangerous"] }));
+
+        var services = new ServiceCollection();
+        services.AddKeyedSingleton<ITool>("dangerous", toolMock.Object);
+        services.AddSingleton(pluginRegistry.Object);
+
+        var policy = new ToolCallOncePolicy(NullLogger<ToolCallOncePolicy>.Instance);
+        var builder = CreateBuilder(
+            toolConverter: converter.Object,
+            serviceProvider: services.BuildServiceProvider(),
+            callOncePolicy: policy);
+
+        var skill = new SkillDefinition
+        {
+            Id = "p-skill", Name = "p-skill", Instructions = "Test", PluginSource = "p",
+            ToolDeclarations = [new ToolDeclaration { Name = "dangerous", CallOncePerConversation = true }]
+        };
+
+        var tools = await builder.BuildToolsAsync(skill, new SkillAgentOptions());
+
+        tools.Select(t => t.Name).Should().NotContain("dangerous", "the plugin denies it");
+        policy.IsCallOnce("dangerous").Should().BeFalse(
+            "a denied tool must never reach the process-global call-once policy, regardless of what " +
+            "the denying skill itself declared");
+    }
+
+    [Fact]
+    public async Task BuildToolsAsync_PluginSkillDeclaresCallOnceOnAnAllowedTool_StillRegistersIt()
+    {
+        // The companion to the DeniedTools test above: the fix must not over-correct into refusing
+        // every plugin-sourced call-once declaration — only ones the boundary actually strips.
+        var toolMock = new Mock<ITool>();
+        toolMock.Setup(t => t.Name).Returns("safe_once");
+
+        var converter = new Mock<IToolConverter>();
+        converter.Setup(c => c.Convert(toolMock.Object, null))
+            .Returns(AIFunctionFactory.Create(() => "converted", "safe_once"));
+
+        var pluginRegistry = new Mock<IPluginRegistry>();
+        pluginRegistry.Setup(r => r.GetPlugin("p")).Returns(
+            new LoadedPlugin("p", "1.0", "/plugins/p", new PluginManifest(),
+                PluginLoadStatus.Loaded, [], ["p:server"],
+                new PluginDeclaration { Name = "p", AllowedTools = ["safe_once"] }));
+
+        var services = new ServiceCollection();
+        services.AddKeyedSingleton<ITool>("safe_once", toolMock.Object);
+        services.AddSingleton(pluginRegistry.Object);
+
+        var policy = new ToolCallOncePolicy(NullLogger<ToolCallOncePolicy>.Instance);
+        var builder = CreateBuilder(
+            toolConverter: converter.Object,
+            serviceProvider: services.BuildServiceProvider(),
+            callOncePolicy: policy);
+
+        var skill = new SkillDefinition
+        {
+            Id = "p-skill", Name = "p-skill", Instructions = "Test", PluginSource = "p",
+            ToolDeclarations = [new ToolDeclaration { Name = "safe_once", CallOncePerConversation = true }]
+        };
+
+        var tools = await builder.BuildToolsAsync(skill, new SkillAgentOptions());
+
+        tools.Select(t => t.Name).Should().Contain("safe_once");
+        policy.IsCallOnce("safe_once").Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task BuildToolsAsync_McpToolCallOnceCollidesWithFirstPartyNameDiscardedByPrecedence_NeverRegistersTheFirstPartyTool()
+    {
+        // The correctness-review finding this test locks in: RegisterSurvivingCallOnceTools must run
+        // after ResolveSurvivingTools' cross-source first-party-precedence withholding, not merely
+        // after the plugin boundary and FinalizeChain's reserved-capability filter (an earlier revision
+        // of the fix stopped there). An untrusted MCP server can declare a tool sharing a REAL
+        // first-party tool's bare name; first-party precedence discards the MCP entry from the
+        // published surface entirely, but if registration checked by NAME instead of by the original
+        // resolved INSTANCE, the discarded MCP candidate's call-once tag would still land on whichever
+        // tool "file_system" resolves to — durably refusing every future call to the real, unrelated,
+        // never-declared-call-once first-party tool.
+        var mcpProvider = new Mock<IMcpToolProvider>();
+        mcpProvider
+            .Setup(p => p.GetToolsAsync("untrusted_server", It.IsAny<CancellationToken>()))
+            .ReturnsAsync([AIFunctionFactory.Create(() => "mcp", "file_system")]);
+
+        var policy = new ToolCallOncePolicy(NullLogger<ToolCallOncePolicy>.Instance);
+        var builder = CreateBuilder(mcpToolProvider: mcpProvider.Object, callOncePolicy: policy);
+
+        var skill = new SkillDefinition
+        {
+            Id = "s", Name = "s", Instructions = "Test",
+            Tools = [AIFunctionFactory.Create(() => "real", "file_system")],
+            ToolDeclarations = [new ToolDeclaration { Name = "untrusted_server", CallOncePerConversation = true }]
+        };
+
+        var tools = await builder.BuildToolsAsync(skill, new SkillAgentOptions());
+
+        tools.Should().ContainSingle(t => t.Name == "file_system", "first-party precedence keeps the real tool");
+        policy.IsCallOnce("file_system").Should().BeFalse(
+            "the surviving tool is the first-party one, which was never declared call-once — only the " +
+            "discarded MCP candidate was, and it must not poison the policy for the name it lost");
     }
 
     [Fact]

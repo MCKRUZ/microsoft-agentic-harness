@@ -113,6 +113,11 @@ public sealed class EscalationReconciliationService : BackgroundService
         _timeProvider = timeProvider;
         _logger = logger;
 
+        // CallOnceEnforcementEnabled is deliberately NOT part of this check: PruneAsync never
+        // touches tool_call_ledger (see GovernanceStatePruner's remarks — a ledger row is the
+        // enforcement token, not an audit record, so age-based pruning would re-arm the control).
+        // A host with only that toggle on has nothing for this pass to do, so it must not resolve
+        // the pruner factory either — see the factory's own remarks on the filesystem side effect.
         var durable = config.CurrentValue.AI.Governance.DurableState;
         _durableStateEnabled = durable.EscalationsEnabled || durable.ChangeProposalsEnabled;
     }
@@ -188,7 +193,9 @@ public sealed class EscalationReconciliationService : BackgroundService
     /// <c>ChangeProposalsEnabled</c> must still get the documented window — and skipped entirely
     /// when both were off at construction, which is what keeps the deferred pruner factory (and
     /// with it the schema initializer that would create the database file) unresolved on such
-    /// hosts. The enable check reads the construction-time snapshot, never
+    /// hosts. <c>CallOnceEnforcementEnabled</c> is deliberately excluded — see the constructor's
+    /// own remark and <c>GovernanceStatePruner</c>'s for why the ledger is never pruned by age at
+    /// all. The enable check reads the construction-time snapshot, never
     /// <see cref="IOptionsMonitor{TOptions}.CurrentValue"/>: see the constructor's <c>config</c>
     /// parameter for why a live re-read would be unsound. The retention window itself stays live,
     /// because retuning it on a running host changes only how far back this prune reaches.
