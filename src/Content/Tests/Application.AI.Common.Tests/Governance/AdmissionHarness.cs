@@ -61,19 +61,27 @@ internal static class AdmissionHarness
     /// when it recognizes something to scrub, without a test having to carry the injection-scrubbing
     /// logic itself. Centralized so a change to <c>Sanitize</c>'s signature only breaks one setup.
     /// </summary>
+    /// <remarks>
+    /// Reports <see cref="SanitizationResult.WasSanitized"/> accurately (true only when a replacement
+    /// actually happened) rather than always answering <see cref="SanitizationResult.Clean"/> — callers
+    /// of <c>ToolResultText.Sanitize</c> key their no-op fast path off that flag, not off whether the
+    /// returned text differs from the input, so a mock that gets the flag wrong would make every caller
+    /// silently skip reconstructing the sanitized result.
+    /// </remarks>
     public static ICompositeResponseSanitizer SubstitutingSanitizer(string find, string replacement)
     {
         var sanitizer = new Mock<ICompositeResponseSanitizer>();
         sanitizer
             .Setup(s => s.Sanitize(It.IsAny<string>(), It.IsAny<string?>()))
             .Returns((string content, string? _) =>
-                SanitizationResult.Clean(content.Replace(find, replacement)));
+            {
+                var replaced = content.Replace(find, replacement);
+                return replaced == content
+                    ? SanitizationResult.Clean(content)
+                    : new SanitizationResult(true, replaced, content, [], ThreatLevel.None);
+            });
         return sanitizer.Object;
     }
-
-    /// <summary>A sanitizer that fails the test if invoked — proves a code path never reaches it.</summary>
-    public static ICompositeResponseSanitizer NeverCalledSanitizer() =>
-        new Mock<ICompositeResponseSanitizer>(MockBehavior.Strict).Object;
 
     /// <summary>A redaction filter that returns content unchanged — nothing to scrub.</summary>
     public static IContentRedactionFilter PermissiveRedactionFilter()

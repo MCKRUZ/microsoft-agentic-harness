@@ -1,4 +1,3 @@
-using System.Text.Json;
 using System.Text.RegularExpressions;
 using Application.AI.Common.Interfaces.Escalation;
 using Application.AI.Common.Interfaces.Governance;
@@ -281,23 +280,9 @@ public sealed class ToolCallAdmissionPipelineTests
         gate.Verify(g => g.RedactResult(It.IsAny<string>(), It.IsAny<object?>()), Times.Never);
     }
 
-    [Fact]
-    public void ApplyOutputPolicy_PlainAllow_JsonElementResult_SanitizesWithoutUnwrappingTheShape()
-    {
-        // A genuine tool success reaches this method as a JsonElement, not a raw string (the
-        // function-invocation pipeline's own default marshaling — see ToolResultText). Returning a bare
-        // string instead would change how the model-facing chat client quotes the result.
-        var pipeline = AdmissionHarness.Pipeline(
-            classificationGate: new Mock<IToolClassificationGate>(MockBehavior.Strict).Object,
-            sanitizer: AdmissionHarness.SubstitutingSanitizer("secret", "[SCRUBBED]"));
-        var element = JsonSerializer.SerializeToElement("a secret value");
-
-        var result = pipeline.ApplyOutputPolicy(ToolCallAdmission.Allow(), Tool, element);
-
-        var resultElement = result.Should().BeOfType<JsonElement>().Subject;
-        resultElement.ValueKind.Should().Be(JsonValueKind.String);
-        resultElement.GetString().Should().Be("a [SCRUBBED] value");
-    }
+    // Shape-preservation across every result type (string, JsonElement, TextContent, AIContent[],
+    // structured) is covered exhaustively by ToolResultTextTests — this class only needs to prove
+    // ApplyOutputPolicy routes a plain allow to the sanitizer rather than the classification gate.
 
     [Fact]
     public async Task AdmitAsync_AStageRefusesWithNoMessage_TheCallerStillGetsTheCanonicalRefusal()

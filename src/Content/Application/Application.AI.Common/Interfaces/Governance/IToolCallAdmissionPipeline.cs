@@ -92,9 +92,11 @@ public interface IToolCallAdmissionPipeline
     /// <param name="result">The tool's raw result.</param>
     /// <returns>
     /// <paramref name="result"/>'s text, run unconditionally through the general-purpose sanitizer
-    /// (injection payloads, invisible characters, exfiltration URLs) and, when the admission carried a
-    /// redact verdict, additionally scrubbed for data sensitivity. A structured (non-text) result is
-    /// returned unchanged either way — the sanitizer operates on free text.
+    /// (injection payloads, invisible characters, exfiltration URLs) — the same treatment whether or not
+    /// the admission carried a redact verdict; a redact verdict routes through
+    /// <see cref="IToolClassificationGate.RedactResult"/>, which applies that same sanitizer rather than
+    /// a distinct sensitivity-aware scrub. A structured (non-text) result is returned unchanged either
+    /// way — the sanitizer operates on free text.
     /// </returns>
     /// <remarks>
     /// <para>
