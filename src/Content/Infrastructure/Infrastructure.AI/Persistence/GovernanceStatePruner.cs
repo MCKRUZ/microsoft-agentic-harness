@@ -11,13 +11,30 @@ namespace Infrastructure.AI.Persistence;
 /// </summary>
 /// <remarks>
 /// <para>
-/// Eligibility is deliberately narrow for the two workflow tables. Escalations must be in
+/// Only terminal rows are eligible. Escalations must be in
 /// <see cref="EscalationPersistedStatus.Resolved"/> — a pending escalation, or one parked
 /// awaiting reconciliation, is never pruned no matter how old, because deleting it would
 /// strand an approval or discard an unaudited verdict. Change proposals must be in a terminal
 /// <see cref="ChangeProposalStatus"/>; anything still moving through the gate pipeline stays.
-/// The call-once ledger has no such filter: a row records a fact with no lifecycle ("this tool
-/// already ran here"), so age alone determines eligibility.
+/// </para>
+/// <para>
+/// <strong>The call-once ledger (<c>tool_call_ledger</c>) is deliberately NOT pruned here at
+/// all</strong> — an earlier version of this pruner aged it out by <c>CalledAtTicks</c> alone,
+/// reasoning that a ledger row has no lifecycle to be mid-way through. That reasoning is correct
+/// for an audit record and wrong for this one: a ledger row is not a record OF an enforcement
+/// decision, it IS the enforcement token, and a row scoped to a durable conversation can
+/// legitimately outlive <see cref="Domain.Common.Config.AI.Governance.GovernanceDurableStateConfig
+/// .RetentionDays"/> — durable conversations are explicitly designed to span months. Deleting it
+/// by age alone would silently re-arm a call-once tool for any conversation still live past the
+/// retention window, defeating the exact guarantee the feature exists to provide. Rows scoped to
+/// a workflow run (rather than a conversation) genuinely do have a knowable terminal point — but
+/// this pruner only has the governance-state database, not <c>IPlanStateStore</c>/the run
+/// substrate, so it cannot itself tell a finished run's claims from a live conversation's. Left
+/// unpruned, ledger rows accumulate without bound for as long as the process runs — small
+/// individually (two short strings and a timestamp), but genuinely unbounded for a long-lived
+/// host with high run volume. Safe retention needs a way to know a claim's scope has actually
+/// ended, which this type does not have; that is a real gap, not a hidden one, and deserves its
+/// own design pass rather than a rushed fix that reintroduces the original bug in a new shape.
 /// </para>
 /// <para>
 /// Compliance history is untouched: the hash-chained JSONL audit stores are the retained
@@ -72,21 +89,17 @@ public sealed class GovernanceStatePruner : IGovernanceStatePruner
                 && p.SubmittedAtTicks < cutoffTicks)
             .ExecuteDeleteAsync(ct);
 
-        // No status filter: a ledger row has no lifecycle to be mid-way through — the moment it
-        // exists it already is the terminal fact ("this tool ran in this conversation"). Age alone
-        // is eligibility.
-        var ledgerRowsRemoved = await context.ToolCallLedger
-            .Where(l => l.CalledAtTicks < cutoffTicks)
-            .ExecuteDeleteAsync(ct);
-
-        if (escalationsRemoved > 0 || proposalsRemoved > 0 || ledgerRowsRemoved > 0)
+        // Deliberately no ToolCallLedger deletion here — see this type's remarks. A ledger row is
+        // the enforcement token itself, not an audit record of one; pruning it by age alone would
+        // re-arm a call-once tool for any conversation still live past the retention window.
+        if (escalationsRemoved > 0 || proposalsRemoved > 0)
         {
             _logger.LogInformation(
                 "Pruned governance state older than {Cutoff}: {EscalationCount} escalation(s), "
-                + "{ProposalCount} proposal(s), {LedgerCount} ledger claim(s)",
-                cutoff, escalationsRemoved, proposalsRemoved, ledgerRowsRemoved);
+                + "{ProposalCount} proposal(s)",
+                cutoff, escalationsRemoved, proposalsRemoved);
         }
 
-        return new GovernanceStatePruneResult(escalationsRemoved, proposalsRemoved, ledgerRowsRemoved);
+        return new GovernanceStatePruneResult(escalationsRemoved, proposalsRemoved);
     }
 }

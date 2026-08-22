@@ -12,9 +12,9 @@ namespace Infrastructure.AI.Governance;
 public sealed class NullToolCallLedger : IToolCallLedger
 {
     /// <inheritdoc />
-    public Task<bool> TryClaimAsync(string conversationId, string toolName, CancellationToken ct)
+    public Task<bool> TryClaimAsync(string scopeId, string toolName, CancellationToken ct)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(conversationId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(scopeId);
         ArgumentException.ThrowIfNullOrWhiteSpace(toolName);
 
         return Task.FromResult(true);

@@ -81,7 +81,13 @@ public class RunOrchestratedTaskCommandHandler : IRequestHandler<RunOrchestrated
 			// IAgentScopedRequest, so the pipeline doesn't initialize the execution context — set the
 			// orchestrator identity here so the governor can resolve it. Sub-agent delegation runs in
 			// its own child scope and governs itself per turn.
-			_executionContext.Initialize(request.OrchestratorName, request.ConversationId, 0);
+			//
+			// The orchestrator's own conversation id is the right call-once scope here — unlike
+			// DirectToolInvoker or a plan run, this handler's ConversationId is neither a fresh
+			// per-call value nor shared across unrelated runs; it identifies this orchestration
+			// exactly the way AgentContextPropagationBehavior's does for an ordinary agent turn.
+			_executionContext.Initialize(
+				request.OrchestratorName, request.ConversationId, 0, callOnceScopeId: request.ConversationId);
 
 			await ReportProgress(request, "planning", request.OrchestratorName, "Decomposing task...");
 

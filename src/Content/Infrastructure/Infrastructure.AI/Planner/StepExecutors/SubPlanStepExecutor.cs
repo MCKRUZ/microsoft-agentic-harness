@@ -168,7 +168,13 @@ public sealed class SubPlanStepExecutor : IPlanStepExecutor
         childAgentContext.Initialize(
             _agentContext.AgentId,
             _agentContext.ConversationId ?? childPlanId.Value.ToString(),
-            _agentContext.TurnNumber ?? 1);
+            _agentContext.TurnNumber ?? 1,
+            // Inherit the parent's call-once scope, not derive a new one from the child plan id.
+            // A call-once tool declared "once per conversation/run" must mean once across the whole
+            // parent execution, sub-plans included — a child scope that invented its own id here
+            // would let a sub-plan step call a call-once tool the parent already claimed, silently
+            // defeating the guarantee for every plan that delegates to a nested plan.
+            callOnceScopeId: _agentContext.CallOnceScopeId);
     }
 
     private async Task<PlanId?> ResolveChildPlanId(SubPlanConfig config, CancellationToken ct)

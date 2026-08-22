@@ -192,13 +192,15 @@ internal static class TestHelpers
         public string? AgentId { get; private set; }
         public string? ConversationId { get; private set; }
         public int? TurnNumber { get; private set; }
+        public string? CallOnceScopeId { get; private set; }
         public AgentIdentity? AgentIdentity { get; private set; }
 
-        public void Initialize(string agentId, string conversationId, int turnNumber)
+        public void Initialize(string agentId, string conversationId, int turnNumber, string? callOnceScopeId = null)
         {
             AgentId = agentId;
             ConversationId = conversationId;
             TurnNumber = turnNumber;
+            CallOnceScopeId = callOnceScopeId;
         }
 
         public void SetIdentity(AgentIdentity identity) => AgentIdentity = identity;

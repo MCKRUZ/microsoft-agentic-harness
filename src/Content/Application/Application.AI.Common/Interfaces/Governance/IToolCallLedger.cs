@@ -1,9 +1,9 @@
 namespace Application.AI.Common.Interfaces.Governance;
 
 /// <summary>
-/// Durably records which call-once tools have already been called in which conversations, so a
-/// second call can be refused regardless of what the model remembers, what turn it is, what run
-/// it is, or which host answers the call.
+/// Durably records which call-once tools have already been called in which
+/// <c>IAgentExecutionContext.CallOnceScopeId</c> scopes, so a second call can be refused
+/// regardless of what the model remembers, what turn it is, or which host answers the call.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -23,14 +23,20 @@ namespace Application.AI.Common.Interfaces.Governance;
 public interface IToolCallLedger
 {
     /// <summary>
-    /// Attempts to claim <paramref name="toolName"/> for <paramref name="conversationId"/>.
+    /// Attempts to claim <paramref name="toolName"/> for <paramref name="scopeId"/>.
     /// </summary>
-    /// <param name="conversationId">The conversation the call is being made in.</param>
+    /// <param name="scopeId">
+    /// The call-once scope the call is being made in — <c>IAgentExecutionContext
+    /// .CallOnceScopeId</c>'s value for this execution: a durable conversation id for an agent
+    /// turn, or a run id for a workflow run.
+    /// </param>
     /// <param name="toolName">The tool being called.</param>
     /// <param name="ct">Cancellation token.</param>
     /// <returns>
     /// <see langword="true"/> when this is the first successful claim — the call may proceed.
-    /// <see langword="false"/> when the pair was already claimed — the call must be refused.
+    /// <see langword="false"/> when the pair was already claimed, OR when the claim could not be
+    /// durably recorded for another reason (a write failure) — either way, the call must be
+    /// refused. See implementations' remarks for why these two causes are not distinguished here.
     /// </returns>
-    Task<bool> TryClaimAsync(string conversationId, string toolName, CancellationToken ct);
+    Task<bool> TryClaimAsync(string scopeId, string toolName, CancellationToken ct);
 }

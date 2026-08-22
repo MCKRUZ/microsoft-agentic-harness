@@ -61,7 +61,13 @@ public sealed class WorkflowRunKindExecutor : IRunKindExecutor
 
                 // Null lets the run scope derive from the plan id, which is what bounds the run-level
                 // conversation budget.
-                ConversationId = null
+                ConversationId = null,
+
+                // The run's own identity, distinct from the shared workflow (plan) id above — see
+                // PlanRunRequest.RunId's remarks for why call-once enforcement must not key on the
+                // plan id: doing so would let one claim permanently block every future run of this
+                // workflow, for every caller.
+                RunId = record.JobId
             },
             cancellationToken).ConfigureAwait(false);
 

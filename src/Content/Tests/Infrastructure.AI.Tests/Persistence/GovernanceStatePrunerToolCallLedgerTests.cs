@@ -8,8 +8,9 @@ using Xunit;
 namespace Infrastructure.AI.Tests.Persistence;
 
 /// <summary>
-/// Tests that <see cref="GovernanceStatePruner"/> prunes <c>tool_call_ledger</c> rows by age
-/// alone, with no status filter — a ledger row has no lifecycle to be mid-way through.
+/// Tests that <see cref="GovernanceStatePruner"/> never deletes <c>tool_call_ledger</c> rows by
+/// age — a ledger row is the enforcement token itself, not an audit record, so pruning it by age
+/// alone would re-arm a call-once tool for any conversation still live past the retention window.
 /// </summary>
 public sealed class GovernanceStatePrunerToolCallLedgerTests : IDisposable
 {
@@ -38,8 +39,13 @@ public sealed class GovernanceStatePrunerToolCallLedgerTests : IDisposable
     }
 
     [Fact]
-    public async Task PruneAsync_LedgerRowOlderThanCutoff_IsRemoved_NewerRowSurvives()
+    public async Task PruneAsync_LedgerRowsOfAnyAge_AreNeverRemoved()
     {
+        // Mutation control for the fix this test exists to lock in: an earlier version of the
+        // pruner aged tool_call_ledger rows out by CalledAtTicks alone, which is exactly the
+        // defect this asserts against — a row far older than the retention cutoff must still
+        // survive a prune pass, because there is no way for this pruner to know whether the
+        // conversation or run it belongs to has actually ended.
         var factory = new TestContextFactory(_options);
         var pruner = new GovernanceStatePruner(
             factory, new SchemaInitializer<GovernanceStateDbContext>(factory), NullLogger<GovernanceStatePruner>.Instance);
@@ -49,9 +55,9 @@ public sealed class GovernanceStatePrunerToolCallLedgerTests : IDisposable
         {
             context.ToolCallLedger.Add(new ToolCallLedgerEntity
             {
-                ConversationId = "old-conv",
+                ConversationId = "very-old-conv",
                 ToolName = "start_diagnostic_session",
-                CalledAtTicks = now.AddDays(-100).UtcTicks
+                CalledAtTicks = now.AddDays(-3650).UtcTicks
             });
             context.ToolCallLedger.Add(new ToolCallLedgerEntity
             {
@@ -64,9 +70,14 @@ public sealed class GovernanceStatePrunerToolCallLedgerTests : IDisposable
 
         var result = await pruner.PruneAsync(now.AddDays(-90), CancellationToken.None);
 
-        result.ToolCallLedgerRowsRemoved.Should().Be(1);
+        // The result shape itself has no ledger count — see IGovernanceStatePruner's remarks for
+        // why the ledger is not part of this contract at all.
+        result.EscalationsRemoved.Should().Be(0);
+        result.ChangeProposalsRemoved.Should().Be(0);
+
         await using var verify = factory.CreateDbContext();
-        verify.ToolCallLedger.Should().ContainSingle().Which.ConversationId.Should().Be("recent-conv");
+        verify.ToolCallLedger.Should().HaveCount(2,
+            "neither row should be removed regardless of age — see GovernanceStatePruner's remarks");
     }
 
     private sealed class TestContextFactory(DbContextOptions<GovernanceStateDbContext> options)

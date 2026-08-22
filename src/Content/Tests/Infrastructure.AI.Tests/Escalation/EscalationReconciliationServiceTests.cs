@@ -140,20 +140,20 @@ public sealed class EscalationReconciliationServiceTests
     }
 
     [Fact]
-    public async Task StartAsync_OnlyCallOnceEnforcementEnabled_StillResolvesThePruner()
+    public async Task StartAsync_OnlyCallOnceEnforcementEnabled_NeverResolvesThePruner()
     {
-        // The exact shape of the bug this test guards against: a host that opts into ONLY
-        // CallOnceEnforcementEnabled (never Escalations or ChangeProposals) still writes rows —
-        // to tool_call_ledger — and must still get the retention window, not silently skip pruning
-        // because the enable check only recognised the other two toggles.
+        // PruneAsync never touches tool_call_ledger at all (see GovernanceStatePruner's remarks —
+        // a ledger row is the enforcement token itself, not an audit record, so age-based pruning
+        // would re-arm a call-once tool for a still-live conversation). A host with only this
+        // toggle on therefore has nothing for the pruner to do, and must not resolve it — doing so
+        // would create the governance-state database file on a host that never needed one.
         var service = CreateService(escalationsEnabled: false, callOnceEnforcementEnabled: true);
 
         await service.StartAsync(CancellationToken.None);
         await WaitForReconcileCountAsync(1);
-        await WaitForAsync(() => _prunerResolved);
         await service.StopAsync(CancellationToken.None);
 
-        _prunerResolved.Should().BeTrue();
+        _prunerResolved.Should().BeFalse();
     }
 
     [Fact]

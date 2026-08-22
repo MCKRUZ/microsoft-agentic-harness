@@ -353,7 +353,7 @@ public class ToolChainBuilderTests
         var services = new ServiceCollection();
         services.AddKeyedSingleton<ITool>("start_diagnostic_session", toolMock.Object);
 
-        var policy = new ToolCallOncePolicy();
+        var policy = new ToolCallOncePolicy(NullLogger<ToolCallOncePolicy>.Instance);
         var builder = CreateBuilder(
             toolConverter: converter.Object,
             serviceProvider: services.BuildServiceProvider(),
@@ -420,7 +420,7 @@ public class ToolChainBuilderTests
         var services = new ServiceCollection();
         services.AddKeyedSingleton<ITool>("shared_tool", toolMock.Object);
 
-        var policy = new ToolCallOncePolicy();
+        var policy = new ToolCallOncePolicy(NullLogger<ToolCallOncePolicy>.Instance);
         var builder = CreateBuilder(
             toolConverter: converter.Object,
             serviceProvider: services.BuildServiceProvider(),

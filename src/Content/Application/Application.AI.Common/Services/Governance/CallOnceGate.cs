@@ -10,17 +10,29 @@ namespace Application.AI.Common.Services.Governance;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <strong>An absent conversation id fails OPEN, not closed — and this is not the same mistake
-/// as reading an absent identity as "global" (see <c>PlannerScopeFilter</c>,
+/// <strong>Reads <see cref="IAgentExecutionContext.CallOnceScopeId"/>, never
+/// <see cref="IAgentExecutionContext.ConversationId"/> directly.</strong> The latter already means
+/// three different things to three different callers — a durable conversation for an agent turn, a
+/// fresh-per-call value on the direct-invoke surface, and a value deliberately SHARED across every
+/// run of one workflow on the plan-run surface — so reading it here would inherit whichever meaning
+/// happened to be in scope. <see cref="IAgentExecutionContext.CallOnceScopeId"/> exists precisely
+/// so this gate has a scope stated on its own terms by each caller, correct or absent, never
+/// silently reinterpreted. See that property's remarks for the full reasoning and its two failure
+/// modes if this gate ever reverts to reading <see cref="IAgentExecutionContext.ConversationId"/>
+/// directly.
+/// </para>
+/// <para>
+/// <strong>An absent scope fails OPEN, not closed — and this is not the same mistake as reading
+/// an absent identity as "global" (see <c>PlannerScopeFilter</c>,
 /// <c>TenantIsolatedGraphStore</c>).</strong> Those are access-control decisions: getting them
 /// wrong widens who can read data that was never theirs. This is a refusal-producing control —
-/// see <see cref="IToolCallLedger"/>'s remarks — and "has this tool already run in this
-/// conversation" is not merely unknown without a conversation id, it is undefined: a Direct API
-/// invocation or a plan step with no conversation id has no conversation for a second call to
-/// happen within, so there is nothing this gate could be protecting against. Failing closed here
-/// would not narrow an access grant; it would make every call-once tool permanently unusable
-/// from every non-conversational surface, which is a different and disproportionate restriction
-/// a SKILL.md author declaring the tool call-once did not ask for.
+/// see <see cref="IToolCallLedger"/>'s remarks — and "has this tool already run in this scope" is
+/// not merely unknown without one, it is undefined: a Direct API invocation genuinely has no
+/// conversation for a second call to happen within, so there is nothing this gate could be
+/// protecting against. Failing closed here would not narrow an access grant; it would make every
+/// call-once tool permanently unusable from every surface with no call-once-meaningful scope,
+/// which is a different and disproportionate restriction a SKILL.md author declaring the tool
+/// call-once did not ask for.
 /// </para>
 /// <para>
 /// <strong><see cref="IToolCallLedger"/> is optional, unlike every other collaborator here.</strong>
@@ -72,24 +84,29 @@ public sealed class CallOnceGate : ICallOnceGate
         if (_ledger is null)
             return ToolInvocationDecision.Allow();
 
-        var conversationId = _executionContext.ConversationId;
-        if (string.IsNullOrEmpty(conversationId))
+        var scopeId = _executionContext.CallOnceScopeId;
+        if (string.IsNullOrEmpty(scopeId))
             return ToolInvocationDecision.Allow();
 
-        var claimed = await _ledger.TryClaimAsync(conversationId, toolName, cancellationToken).ConfigureAwait(false);
+        var claimed = await _ledger.TryClaimAsync(scopeId, toolName, cancellationToken).ConfigureAwait(false);
         if (claimed)
             return ToolInvocationDecision.Allow();
 
         _logger.LogInformation(
-            "Refused repeat call to call-once tool {ToolName} in conversation {ConversationId}.",
-            toolName, conversationId);
+            "Refused repeat call to call-once tool {ToolName} in scope {CallOnceScopeId}.",
+            toolName, scopeId);
 
         // Specific enough for the model to act on, mirroring the loop guard's halt message rather
         // than the generic access-control denial (GovernanceDenials.NotPermitted) every other gate
         // in this chain uses — this is not an access question, and the model needs to know not to
-        // retry, not just that it was refused.
+        // retry, not just that it was refused. Deliberately does not assert "you already have a
+        // result" as fact: TryClaimAsync also returns false on a write failure it could not
+        // distinguish from a genuine duplicate (see EfCoreToolCallLedger's remarks), and a message
+        // claiming a result exists when the tool may never have run would invite the model to
+        // fabricate one rather than surface the refusal honestly.
         return ToolInvocationDecision.Deny(
-            $"Tool '{toolName}' may be called at most once per conversation and has already been called. "
-            + "Do not call it again; use the result you already have.");
+            $"Tool '{toolName}' may be called at most once per conversation and cannot be called "
+            + "again right now. Do not retry it — if you need its result, use what you already have "
+            + "or report that it is unavailable.");
     }
 }

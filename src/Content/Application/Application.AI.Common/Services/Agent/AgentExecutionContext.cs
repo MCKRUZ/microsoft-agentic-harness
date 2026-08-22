@@ -33,24 +33,31 @@ public sealed class AgentExecutionContext : IAgentExecutionContext
     public int? TurnNumber { get; private set; }
 
     /// <inheritdoc />
+    public string? CallOnceScopeId { get; private set; }
+
+    /// <inheritdoc />
     public AgentIdentity? AgentIdentity { get; private set; }
 
     /// <inheritdoc />
-    public void Initialize(string agentId, string conversationId, int turnNumber)
+    public void Initialize(string agentId, string conversationId, int turnNumber, string? callOnceScopeId = null)
     {
         lock (_gate)
         {
-            // Guard against scope leak: re-initialization with a different agent or conversation
-            // within the same DI scope is always a bug. Only turn number may change (subsequent turns).
-            if (_initialized && (AgentId != agentId || ConversationId != conversationId))
+            // Guard against scope leak: re-initialization with a different agent, conversation, or
+            // call-once scope within the same DI scope is always a bug. Only turn number may change
+            // (subsequent turns).
+            if (_initialized && (AgentId != agentId || ConversationId != conversationId
+                || CallOnceScopeId != callOnceScopeId))
                 throw new InvalidOperationException(
                     $"AgentExecutionContext scope conflict: already bound to agent '{AgentId}' / " +
-                    $"conversation '{ConversationId}', cannot re-initialize with agent '{agentId}' / " +
-                    $"conversation '{conversationId}'.");
+                    $"conversation '{ConversationId}' / call-once scope '{CallOnceScopeId}', cannot " +
+                    $"re-initialize with agent '{agentId}' / conversation '{conversationId}' / " +
+                    $"call-once scope '{callOnceScopeId}'.");
 
             AgentId = agentId;
             ConversationId = conversationId;
             TurnNumber = turnNumber;
+            CallOnceScopeId = callOnceScopeId;
             _initialized = true;
         }
     }

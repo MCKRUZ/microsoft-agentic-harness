@@ -58,16 +58,21 @@ public sealed class EfCoreToolCallLedger : IToolCallLedger
     }
 
     /// <inheritdoc />
-    public async Task<bool> TryClaimAsync(string conversationId, string toolName, CancellationToken ct)
+    public async Task<bool> TryClaimAsync(string scopeId, string toolName, CancellationToken ct)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(conversationId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(scopeId);
         ArgumentException.ThrowIfNullOrWhiteSpace(toolName);
 
         await using var context = await _contextFactory.CreateDbContextAsync(ct);
 
+        // The entity's column is still named ConversationId (an additive rename would mean a real
+        // migration, not just an interface change) — it holds whatever IAgentExecutionContext
+        // .CallOnceScopeId supplied: a durable conversation id for an agent turn, or a run id for a
+        // workflow run. See IAgentExecutionContext.CallOnceScopeId's remarks for why those are two
+        // different values now, not one reused for both purposes.
         context.ToolCallLedger.Add(new ToolCallLedgerEntity
         {
-            ConversationId = conversationId,
+            ConversationId = scopeId,
             ToolName = toolName,
             CalledAtTicks = _time.GetUtcNow().UtcTicks
         });
@@ -80,8 +85,22 @@ public sealed class EfCoreToolCallLedger : IToolCallLedger
         catch (DbUpdateException ex) when (IsDuplicateClaim(ex))
         {
             _logger.LogInformation(
-                "Call-once tool {ToolName} refused a second call in conversation {ConversationId}.",
-                toolName, conversationId);
+                "Call-once tool {ToolName} refused a second call in scope {ScopeId}.",
+                toolName, scopeId);
+            return false;
+        }
+        catch (DbUpdateException ex)
+        {
+            // Fail closed on any other write failure too (disk full, locked file, a transient SQLite
+            // busy error) — a claim this method could not durably record must be treated as "not
+            // proven safe to allow," the same fail-closed reasoning the rest of this codebase's
+            // governance surfaces already apply. The bool return can't distinguish this from a
+            // genuine duplicate; CallOnceGate's denial message is worded to stay true under either
+            // cause rather than assert "already called" when it might only be "could not verify."
+            _logger.LogError(ex,
+                "Call-once claim for {ToolName} in scope {ScopeId} could not be recorded; refusing " +
+                "the call rather than risking an unrecorded, unenforced repeat.",
+                toolName, scopeId);
             return false;
         }
     }

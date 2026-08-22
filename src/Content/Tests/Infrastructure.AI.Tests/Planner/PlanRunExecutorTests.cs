@@ -44,7 +44,8 @@ public sealed class PlanRunExecutorTests
     }
 
     private static PlanRunRequest Request(
-        CapabilityEnvelope? envelope = null, string agentId = "caller-agent", string? conversationId = null) => new()
+        CapabilityEnvelope? envelope = null, string agentId = "caller-agent", string? conversationId = null,
+        string? runId = null) => new()
     {
         PlanId = PlanId.New(),
         Envelope = envelope ?? new CapabilityEnvelope
@@ -53,7 +54,8 @@ public sealed class PlanRunExecutorTests
             AutonomyCeiling = AutonomyLevel.Autonomous
         },
         AgentId = agentId,
-        ConversationId = conversationId
+        ConversationId = conversationId,
+        RunId = runId
     };
 
     [Fact]
@@ -80,6 +82,32 @@ public sealed class PlanRunExecutorTests
         await _sut.ExecuteAsync(request, CancellationToken.None);
 
         Assert.Equal(request.PlanId.Value.ToString(), _capture.ConversationIdDuringRun);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_RunIdSupplied_BecomesTheCallOnceScope()
+    {
+        var request = Request(conversationId: "conv-1", runId: "run-42");
+
+        await _sut.ExecuteAsync(request, CancellationToken.None);
+
+        Assert.Equal("run-42", _capture.CallOnceScopeIdDuringRun);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_NoRunId_CallOnceScopeIsNull_NotDerivedFromConversationOrPlanId()
+    {
+        // The defect this guards against: a call-once gate reading ConversationId directly would
+        // see the plan-id fallback here and treat every run of this workflow as sharing one scope —
+        // the first claim under a call-once tool would then permanently refuse every future run,
+        // for every caller, with no release short of the retention window. RunId must stay
+        // independent of both ConversationId and its plan-id fallback.
+        var request = Request();
+
+        await _sut.ExecuteAsync(request, CancellationToken.None);
+
+        Assert.Equal(request.PlanId.Value.ToString(), _capture.ConversationIdDuringRun);
+        Assert.Null(_capture.CallOnceScopeIdDuringRun);
     }
 
     [Fact]
@@ -229,6 +257,7 @@ public sealed class PlanRunExecutorTests
         public CapabilityEnvelope? EnvelopeDuringRun;
         public string? AgentIdDuringRun;
         public string? ConversationIdDuringRun;
+        public string? CallOnceScopeIdDuringRun;
         public Exception? ThrowOnExecute;
     }
 
@@ -244,6 +273,7 @@ public sealed class PlanRunExecutorTests
             capture.EnvelopeDuringRun = CapabilityEnvelopeAccessor.Current;
             capture.AgentIdDuringRun = agentContext.AgentId;
             capture.ConversationIdDuringRun = agentContext.ConversationId;
+            capture.CallOnceScopeIdDuringRun = agentContext.CallOnceScopeId;
 
             if (capture.ThrowOnExecute is not null)
                 throw capture.ThrowOnExecute;
