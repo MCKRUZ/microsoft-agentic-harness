@@ -6,6 +6,9 @@
 # Usage (pipe the review summary on stdin so the receipt is real evidence, not a flag):
 #   "...code-review findings..." | pwsh -NoProfile -File .claude/hooks/save-review-receipt.ps1 -Kind code-review
 #   "...simplify findings..."    | pwsh -NoProfile -File .claude/hooks/save-review-receipt.ps1 -Kind simplify
+#   scripts/rails/run-gates.sh writes its OWN "run-gates" receipt automatically on a
+#   full, default-base, all-gates-passed run — see the block near the end of that script.
+#   It is not meant to be invoked with -Kind run-gates by hand.
 #
 # The receipt is written to .claude/.review-receipts/<fingerprint>.<kind>, where the
 # fingerprint identifies the reviewable source diff itself (see review-scope.ps1) rather
@@ -16,16 +19,21 @@
 #     alone, so an existing receipt still applies and no re-review is demanded.
 # Receipts are gitignored (per-clone evidence).
 #
-# Honest scope: the receipt's CONTENT is whatever is piped in; this script binds it to the
-# reviewed code and timestamps it, but it cannot verify the review was done well — that is
-# on the reviewer, and ultimately on CI, which re-derives its verdict server-side. This
-# script's value is mechanical: the push is blocked until code-bound review evidence
-# exists, turning "might forget entirely" into "must produce inspectable review evidence."
+# Honest scope: for -Kind code-review / simplify, the receipt's CONTENT is whatever is
+# piped in; this script binds it to the reviewed code and timestamps it, but it cannot
+# verify the review was done well — that is on the reviewer, and ultimately on CI, which
+# re-derives its verdict server-side. This script's value there is mechanical: the push is
+# blocked until code-bound review evidence exists, turning "might forget entirely" into
+# "must produce inspectable review evidence."
+#
+# -Kind run-gates is different in kind: it is written by run-gates.sh itself, not typed by
+# an agent, so its existence is proof the local gates actually ran and actually passed
+# against this exact diff — not just a claim that they did.
 
 [CmdletBinding()]
 param(
   [Parameter(Mandatory = $true)]
-  [ValidateSet('code-review', 'simplify')]
+  [ValidateSet('code-review', 'simplify', 'run-gates')]
   [string]$Kind
 )
 

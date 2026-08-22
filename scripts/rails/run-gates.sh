@@ -21,11 +21,18 @@
 #      a CI queue slot, or a reviewer's attention.
 #
 # WHAT THIS IS NOT: a replacement for the remote gates. It cannot be — it runs on
-# the developer's machine, on their working tree, with their credentials, and
-# nothing verifies it ran. The remote gates remain the enforcement boundary; this
-# script is the fast, cheap pre-flight that makes the remote run a formality
-# instead of a discovery process. Do not disable the workflows on the strength of
-# this script.
+# the developer's machine, on their working tree, with their credentials, and the
+# remote gates re-derive their own verdict server-side regardless of what happened
+# here. The remote gates remain the enforcement boundary; this script is the fast,
+# cheap pre-flight that makes the remote run a formality instead of a discovery
+# process. Do not disable the workflows on the strength of this script.
+#
+# A full, default-base, all-gates-passed run through THIS script DOES get verified,
+# though: it writes its own "run-gates" receipt (see the end of this file), which
+# .claude/hooks/review-gate.ps1 requires before allowing a push through Claude Code.
+# That closes the specific gap where a fix-then-push rhythm never bothered to run
+# this pre-flight at all and paid for a fresh remote correctness-review / grader
+# cycle on every small fix.
 #
 # HONEST DIFFERENCES FROM CI (each one deliberate, none of them silent):
 #   * Billing: your local `claude` CLI session; CI uses CLAUDE_CODE_OAUTH_TOKEN. Same pot.
@@ -387,6 +394,42 @@ if [ ${#FAILED[@]} -gt 0 ]; then
 fi
 
 printf '\n\033[32mAll selected gates passed.\033[0m The remote run should be a formality.\n'
-printf 'Reminder: this does not replace the PR gates, and it records nothing — the\n'
-printf 'review-gate hook still needs its own /code-review and /simplify receipts.\n'
+
+# ---------------------------------------------------------------------------
+# Push-gate receipt — ONLY for a full, default-base run.
+#
+# review-gate.ps1 (the local push gate) requires a "run-gates" receipt in addition to
+# the /code-review and /simplify ones. That receipt is written HERE, automatically, on
+# a real passing run — never by hand — so its existence actually proves the local gates
+# ran, rather than being another claim an agent could type without running anything.
+#
+# Deliberately narrow: a partial run (a single named gate, --fast, --ai-only) or a
+# non-default base does not represent "the same checks the push gate cares about", so it
+# does not earn a receipt. Run with no flags (equivalent to --all) against main to
+# satisfy the push gate.
+# ---------------------------------------------------------------------------
+FULL_SET_SORTED="$(printf '%s\n' build test owasp docs-links grader correctness security docs-drift | sort | tr '\n' ' ')"
+SELECTED_SORTED="$(printf '%s\n' "${SELECTED[@]}" | sort -u | tr '\n' ' ')"
+if [ "$BASE_REF" = "main" ] && [ "$SELECTED_SORTED" = "$FULL_SET_SORTED" ]; then
+  RECEIPT_OUT="${TMPDIR_GATES}/run-gates-receipt-output.txt"
+  RECEIPT_SUMMARY="run-gates.sh (all gates) passed at $(git rev-parse --short HEAD) against base ${BASE_REF}: $(IFS=,; echo "${PASSED[*]:-none}")"
+  if command -v pwsh >/dev/null 2>&1; then
+    if printf '%s\n' "$RECEIPT_SUMMARY" | pwsh -NoProfile -File .claude/hooks/save-review-receipt.ps1 -Kind run-gates >"$RECEIPT_OUT" 2>&1; then
+      cat "$RECEIPT_OUT"
+    else
+      echo "run-gates: WARNING — could not record the run-gates receipt; the push gate will still ask for it:" >&2
+      cat "$RECEIPT_OUT" >&2
+    fi
+  else
+    echo "run-gates: WARNING — pwsh not on PATH, could not record the run-gates receipt." >&2
+    echo "           The push gate will still require it. Install PowerShell 7+ or run" >&2
+    echo "           save-review-receipt.ps1 manually via a pwsh you do have on this machine." >&2
+  fi
+else
+  echo "run-gates: partial run or non-default base — no run-gates receipt recorded."
+  echo "           Run with no flags against main to satisfy the push gate."
+fi
+
+printf '\nReminder: this does not replace the PR gates — the review-gate hook also still\n'
+printf 'needs its own /code-review and /simplify receipts.\n'
 exit 0
