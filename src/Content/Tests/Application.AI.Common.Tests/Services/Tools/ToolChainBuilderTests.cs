@@ -407,7 +407,7 @@ public class ToolChainBuilderTests
     [Fact]
     public async Task BuildToolsAsync_TwoSkillsResolveSameNameOneCallOnce_NameStaysCallOnceForBoth()
     {
-        // Documents the known scoping limitation on RegisterCallOnce: enforcement is process-global
+        // Documents the known scoping limitation on RegisterSurvivingCallOnceTools: enforcement is process-global
         // by tool name, so a second skill resolving the same name inherits the first skill's
         // call-once declaration even though it never made one itself.
         var toolMock = new Mock<ITool>();
@@ -441,7 +441,94 @@ public class ToolChainBuilderTests
         await builder.BuildToolsAsync(unrelatedSkill, new SkillAgentOptions());
 
         policy.IsCallOnce("shared_tool").Should().BeTrue(
-            "registration is process-global by name — see RegisterCallOnce's remarks");
+            "registration is process-global by name — see RegisterSurvivingCallOnceTools's remarks");
+    }
+
+    [Fact]
+    public async Task BuildToolsAsync_PluginSkillDeclaresCallOnceOnADeniedTool_NeverRegistersItGlobally()
+    {
+        // The security-review finding this test locks in: a plugin-sourced skill declaring
+        // call-once-per-conversation on a tool its OWN plugin denies must not be able to poison the
+        // process-global, durably-unreleasable call-once ledger for that tool name. Before the fix,
+        // ProvisionToolAsync registered the tool call-once as soon as it resolved — before
+        // ApplyPluginBoundaryIfPluginSkill had run at all — so the boundary stripped "dangerous" from
+        // THIS skill's own chain a moment later while the global registration survived, durably
+        // refusing every other conversation's legitimate, granted second call to "dangerous" forever.
+        var toolMock = new Mock<ITool>();
+        toolMock.Setup(t => t.Name).Returns("dangerous");
+
+        var converter = new Mock<IToolConverter>();
+        converter.Setup(c => c.Convert(toolMock.Object, null))
+            .Returns(AIFunctionFactory.Create(() => "converted", "dangerous"));
+
+        var pluginRegistry = new Mock<IPluginRegistry>();
+        pluginRegistry.Setup(r => r.GetPlugin("p")).Returns(
+            new LoadedPlugin("p", "1.0", "/plugins/p", new PluginManifest(),
+                PluginLoadStatus.Loaded, [], ["p:server"],
+                new PluginDeclaration { Name = "p", DeniedTools = ["dangerous"] }));
+
+        var services = new ServiceCollection();
+        services.AddKeyedSingleton<ITool>("dangerous", toolMock.Object);
+        services.AddSingleton(pluginRegistry.Object);
+
+        var policy = new ToolCallOncePolicy(NullLogger<ToolCallOncePolicy>.Instance);
+        var builder = CreateBuilder(
+            toolConverter: converter.Object,
+            serviceProvider: services.BuildServiceProvider(),
+            callOncePolicy: policy);
+
+        var skill = new SkillDefinition
+        {
+            Id = "p-skill", Name = "p-skill", Instructions = "Test", PluginSource = "p",
+            ToolDeclarations = [new ToolDeclaration { Name = "dangerous", CallOncePerConversation = true }]
+        };
+
+        var tools = await builder.BuildToolsAsync(skill, new SkillAgentOptions());
+
+        tools.Select(t => t.Name).Should().NotContain("dangerous", "the plugin denies it");
+        policy.IsCallOnce("dangerous").Should().BeFalse(
+            "a denied tool must never reach the process-global call-once policy, regardless of what " +
+            "the denying skill itself declared");
+    }
+
+    [Fact]
+    public async Task BuildToolsAsync_PluginSkillDeclaresCallOnceOnAnAllowedTool_StillRegistersIt()
+    {
+        // The companion to the DeniedTools test above: the fix must not over-correct into refusing
+        // every plugin-sourced call-once declaration — only ones the boundary actually strips.
+        var toolMock = new Mock<ITool>();
+        toolMock.Setup(t => t.Name).Returns("safe_once");
+
+        var converter = new Mock<IToolConverter>();
+        converter.Setup(c => c.Convert(toolMock.Object, null))
+            .Returns(AIFunctionFactory.Create(() => "converted", "safe_once"));
+
+        var pluginRegistry = new Mock<IPluginRegistry>();
+        pluginRegistry.Setup(r => r.GetPlugin("p")).Returns(
+            new LoadedPlugin("p", "1.0", "/plugins/p", new PluginManifest(),
+                PluginLoadStatus.Loaded, [], ["p:server"],
+                new PluginDeclaration { Name = "p", AllowedTools = ["safe_once"] }));
+
+        var services = new ServiceCollection();
+        services.AddKeyedSingleton<ITool>("safe_once", toolMock.Object);
+        services.AddSingleton(pluginRegistry.Object);
+
+        var policy = new ToolCallOncePolicy(NullLogger<ToolCallOncePolicy>.Instance);
+        var builder = CreateBuilder(
+            toolConverter: converter.Object,
+            serviceProvider: services.BuildServiceProvider(),
+            callOncePolicy: policy);
+
+        var skill = new SkillDefinition
+        {
+            Id = "p-skill", Name = "p-skill", Instructions = "Test", PluginSource = "p",
+            ToolDeclarations = [new ToolDeclaration { Name = "safe_once", CallOncePerConversation = true }]
+        };
+
+        var tools = await builder.BuildToolsAsync(skill, new SkillAgentOptions());
+
+        tools.Select(t => t.Name).Should().Contain("safe_once");
+        policy.IsCallOnce("safe_once").Should().BeTrue();
     }
 
     [Fact]

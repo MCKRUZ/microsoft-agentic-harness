@@ -19,11 +19,15 @@ public sealed class ToolCallOncePolicyTests
     private static ToolCallOncePolicy CreatePolicy(ISkillMetadataRegistry? skillRegistry = null) =>
         new(NullLogger<ToolCallOncePolicy>.Instance, skillRegistry);
 
-    private static SkillDefinition Skill(string id, params ToolDeclaration[] tools) => new()
+    private static SkillDefinition Skill(string id, params ToolDeclaration[] tools) =>
+        Skill(id, pluginSource: null, tools);
+
+    private static SkillDefinition Skill(string id, string? pluginSource, params ToolDeclaration[] tools) => new()
     {
         Id = id,
         Name = id,
         Instructions = "Test",
+        PluginSource = pluginSource,
         ToolDeclarations = [.. tools]
     };
 
@@ -136,6 +140,30 @@ public sealed class ToolCallOncePolicyTests
         policy.IsCallOnce("tool_b").Should().BeFalse();
 
         registry.Verify(r => r.GetAll(), Times.Once);
+    }
+
+    [Fact]
+    public void IsCallOnce_ToolDeclaredCallOnceByAPluginSourcedSkill_ManifestSeedSkipsIt()
+    {
+        // Security-review finding: a plugin-sourced skill's manifest cannot be trusted to speak for
+        // whether its own plugin's AllowedTools/DeniedTools boundary would actually grant this tool —
+        // that boundary is only ever consulted against a RESOLVED tool list, never a bare manifest
+        // scan. Seeding this policy straight from the manifest would let a denied tool's name poison
+        // the process-global, durably-unreleasable ledger before any conversation ever builds this
+        // skill for real. See ToolChainBuilder.RegisterSurvivingCallOnceTools's remarks — that is the
+        // one path that CAN verify the boundary, and this manifest seed must defer to it entirely.
+        var registry = new Mock<ISkillMetadataRegistry>();
+        registry.Setup(r => r.GetAll()).Returns(
+        [
+            Skill("plugin-skill", pluginSource: "some-plugin", new ToolDeclaration
+            {
+                Name = "plugin_declared_tool",
+                CallOncePerConversation = true
+            })
+        ]);
+        var policy = CreatePolicy(registry.Object);
+
+        policy.IsCallOnce("plugin_declared_tool").Should().BeFalse();
     }
 
     [Fact]

@@ -29,9 +29,12 @@ namespace Application.AI.Common.Services.Governance;
 /// gap than the one it closes.</strong> A <c>ToolDeclaration.Name</c> that names a first-party
 /// keyed-DI tool IS the name that reaches admission, so the seed covers that case exactly. A
 /// declaration that names an MCP server resolves to that server's own tool list at runtime,
-/// under names the manifest alone cannot predict — <c>ToolChainBuilder.RegisterCallOnce</c>
-/// remains the only source of truth for those, which is why runtime registration stays, as a
-/// top-up rather than being replaced.
+/// under names the manifest alone cannot predict —
+/// <c>ToolChainBuilder.RegisterSurvivingCallOnceTools</c> remains the only source of truth for
+/// those, which is why runtime registration stays, as a top-up rather than being replaced. It is
+/// also, independently, the only path that can verify a plugin-sourced declaration survived that
+/// plugin's own AllowedTools/DeniedTools boundary — see that method's remarks — which is why this
+/// seed skips plugin-sourced skills entirely rather than trying to approximate the boundary here.
 /// </para>
 /// <para>
 /// <strong>Registered as a singleton</strong> — the set must outlive the tool-resolution scope
@@ -102,6 +105,17 @@ public sealed class ToolCallOncePolicy : IToolCallOncePolicy
         {
             foreach (var skill in _skillRegistry.GetAll())
             {
+                // A plugin-sourced skill's own AllowedTools/DeniedTools boundary is applied by
+                // ToolChainBuilder against a RESOLVED tool list — it cannot be consulted here, over a
+                // bare manifest scan, without re-implementing that resolution and filtering logic a
+                // second time. Skipping plugin-sourced skills means a plugin's call-once declaration is
+                // enforced only via ToolChainBuilder.RegisterSurvivingCallOnceTools, the one path that
+                // can verify the tool actually survived the boundary — never from mere manifest
+                // discovery, which would let a denied tool's name poison this process-global seed
+                // before the skill is ever built for a real conversation.
+                if (!string.IsNullOrEmpty(skill.PluginSource))
+                    continue;
+
                 if (skill.ToolDeclarations is not { Count: > 0 } declarations)
                     continue;
 

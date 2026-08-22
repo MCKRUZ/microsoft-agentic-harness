@@ -85,7 +85,12 @@ public sealed class CallOnceGate : ICallOnceGate
             return ToolInvocationDecision.Allow();
 
         var scopeId = _executionContext.CallOnceScopeId;
-        if (string.IsNullOrEmpty(scopeId))
+        // IsNullOrWhiteSpace, not IsNullOrEmpty: IToolCallLedger.TryClaimAsync asserts
+        // ArgumentException.ThrowIfNullOrWhiteSpace on this same value, so a whitespace-only scope id
+        // must be treated as absent here too — otherwise it passes this guard and TryClaimAsync throws
+        // an unhandled ArgumentException out of the admission pipeline on every call-once tool call for
+        // that execution, rather than the fail-open Allow() an absent scope is supposed to produce.
+        if (string.IsNullOrWhiteSpace(scopeId))
             return ToolInvocationDecision.Allow();
 
         var claimed = await _ledger.TryClaimAsync(scopeId, toolName, cancellationToken).ConfigureAwait(false);
