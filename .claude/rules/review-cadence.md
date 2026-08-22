@@ -24,8 +24,10 @@ The `pre-push-review` skill runs all three in one pass — prefer it over doing 
   base `main`) writes its own `-Kind run-gates` receipt automatically on a clean pass. This one
   exists specifically to stop a fix-then-push rhythm: every push re-triggers the remote
   correctness-review and grader gates, so pushing after each small fix pays for a fresh Opus
-  review cycle instead of clearing checks locally once. Because the script writes it, not the
-  agent, it can't be produced without the gates having actually run — see `.github/RAILS.md`.
+  review cycle instead of clearing checks locally once. `run-gates.sh` being the intended writer is
+  a convention this hook enforces by making it the easy path, not a technical guarantee — an agent
+  with shell access can still call the writer by hand, same as for the other two receipts. See
+  `.github/RAILS.md`.
 - **Re-arming is content-based, not commit-based.** Receipts are named after a fingerprint of the
   reviewable source diff (`.claude/hooks/review-scope.ps1`), so:
   - changing a single line of source re-arms the gate and forces a fresh review — as before;
@@ -40,12 +42,12 @@ The `pre-push-review` skill runs all three in one pass — prefer it over doing 
 - **Coverage boundary:** the hook only fires for pushes made *through Claude Code* — a human pushing
   from their own terminal is not gated (that is the server-side CI check's job). The hook stops the
   *agent* from skipping review.
-- **Trust boundary:** for code-review/simplify, a receipt's content is whatever was piped in, so the
-  gate proves a review was recorded for this code, not that it was done well. The non-forgeable
-  enforcement there is CI (`correctness-review`, `security-review`, `grader`, OWASP), which
-  re-derives its verdict server-side. The run-gates receipt is stronger evidence — it's written by
-  the script itself only on an actual passing run, so it proves the local gates genuinely ran, even
-  though it still can't guarantee the fix underneath is correct.
+- **Trust boundary:** a receipt's content is whatever was piped in, for all three kinds — the
+  run-gates receipt is written by `run-gates.sh` itself rather than typed from memory, but nothing
+  stops an agent from calling the same writer by hand, so it proves a receipt exists for this code,
+  not that the underlying check was done, done well, or done at all. The non-forgeable enforcement
+  is CI (`correctness-review`, `security-review`, `grader`, OWASP), which re-derives its own verdict
+  server-side regardless of what any local receipt claims.
 - **Emergency bypass:** set `RAILS_SKIP_REVIEW_GATE=1` (auditable; use sparingly).
 - **Tests:** `pwsh -NoProfile -File .claude/hooks/tests/review-scope.tests.ps1` asserts the scoping
   and re-arm rules against real commits in this repo's history.

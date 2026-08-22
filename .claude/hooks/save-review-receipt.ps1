@@ -8,7 +8,10 @@
 #   "...simplify findings..."    | pwsh -NoProfile -File .claude/hooks/save-review-receipt.ps1 -Kind simplify
 #   scripts/rails/run-gates.sh writes its OWN "run-gates" receipt automatically on a
 #   full, default-base, all-gates-passed run — see the block near the end of that script.
-#   It is not meant to be invoked with -Kind run-gates by hand.
+#   It is the INTENDED writer for -Kind run-gates; nothing here or in review-gate.ps1
+#   enforces that, though (see "Honest scope" below) — do not invoke it by hand for
+#   -Kind run-gates unless you are genuinely reporting a run-gates.sh pass that already
+#   happened outside this script's own automatic call.
 #
 # The receipt is written to .claude/.review-receipts/<fingerprint>.<kind>, where the
 # fingerprint identifies the reviewable source diff itself (see review-scope.ps1) rather
@@ -19,16 +22,17 @@
 #     alone, so an existing receipt still applies and no re-review is demanded.
 # Receipts are gitignored (per-clone evidence).
 #
-# Honest scope: for -Kind code-review / simplify, the receipt's CONTENT is whatever is
-# piped in; this script binds it to the reviewed code and timestamps it, but it cannot
-# verify the review was done well — that is on the reviewer, and ultimately on CI, which
-# re-derives its verdict server-side. This script's value there is mechanical: the push is
-# blocked until code-bound review evidence exists, turning "might forget entirely" into
-# "must produce inspectable review evidence."
-#
-# -Kind run-gates is different in kind: it is written by run-gates.sh itself, not typed by
-# an agent, so its existence is proof the local gates actually ran and actually passed
-# against this exact diff — not just a claim that they did.
+# Honest scope, ALL THREE KINDS: a receipt's CONTENT is whatever is piped in — for
+# code-review/simplify that's a typed summary, for run-gates it's a summary run-gates.sh
+# assembles from its own PASSED array. This script binds it to the reviewed code and
+# timestamps it, but nothing here can verify the underlying check was actually done, let
+# alone done well — any command with shell access (an agent included) can produce any of
+# the three receipts without running the thing it claims to attest to. That is on the
+# reviewer/script to do honestly, and ultimately on CI, which re-derives its own verdict
+# server-side regardless of what a local receipt says. This script's value is mechanical,
+# not cryptographic: the push is blocked until code-bound evidence exists for all three,
+# turning "might forget entirely" into "must produce inspectable evidence" — a real
+# improvement over nothing, not a guarantee against a determined or careless bypass.
 
 [CmdletBinding()]
 param(

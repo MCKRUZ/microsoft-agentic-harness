@@ -403,14 +403,32 @@ printf '\n\033[32mAll selected gates passed.\033[0m The remote run should be a f
 # a real passing run — never by hand — so its existence actually proves the local gates
 # ran, rather than being another claim an agent could type without running anything.
 #
-# Deliberately narrow: a partial run (a single named gate, --fast, --ai-only) or a
-# non-default base does not represent "the same checks the push gate cares about", so it
-# does not earn a receipt. Run with no flags (equivalent to --all) against main to
-# satisfy the push gate.
+# Deliberately narrow: a partial run (a single named gate, --fast, --ai-only), a
+# non-default base, a run where --accept-risk overrode a BLOCK, or a run against a dirty
+# src/ tree does not represent "the same clean checks the push gate cares about", so none
+# of those earn a receipt. Run with no flags (equivalent to --all), no --accept-risk,
+# against main, with src/ clean, to satisfy the push gate.
 # ---------------------------------------------------------------------------
 FULL_SET_SORTED="$(printf '%s\n' build test owasp docs-links grader correctness security docs-drift | sort | tr '\n' ' ')"
 SELECTED_SORTED="$(printf '%s\n' "${SELECTED[@]}" | sort -u | tr '\n' ' ')"
-if [ "$BASE_REF" = "main" ] && [ "$SELECTED_SORTED" = "$FULL_SET_SORTED" ]; then
+NO_RECEIPT_REASON=""
+if [ "$BASE_REF" != "main" ]; then
+  NO_RECEIPT_REASON="base is '${BASE_REF}', not main"
+elif [ "$SELECTED_SORTED" != "$FULL_SET_SORTED" ]; then
+  NO_RECEIPT_REASON="partial gate selection (${SELECTED[*]})"
+elif [ -n "${ACCEPT_RISK// /}" ]; then
+  # A gate that BLOCKed and was overridden locally still lands in PASSED (see
+  # run_ai_gate's "risk accepted locally" branch), so FAILED stays empty and this
+  # function would otherwise print a receipt claiming a clean pass over a real BLOCK.
+  NO_RECEIPT_REASON="--accept-risk was used (${ACCEPT_RISK}) — a risk-accepted run does not attest to a clean pass"
+elif [ -n "$(git status --porcelain -- src 2>/dev/null)" ]; then
+  # The receipt's fingerprint covers the COMMITTED diff (review-scope.ps1), but the
+  # gates above just ran against the working tree. With src/ dirty those can disagree,
+  # so a receipt here would attest to code that was never actually tested.
+  NO_RECEIPT_REASON="src/ has uncommitted changes — the gates ran against the working tree, not the committed diff the receipt would attest to"
+fi
+
+if [ -z "$NO_RECEIPT_REASON" ]; then
   RECEIPT_OUT="${TMPDIR_GATES}/run-gates-receipt-output.txt"
   RECEIPT_SUMMARY="run-gates.sh (all gates) passed at $(git rev-parse --short HEAD) against base ${BASE_REF}: $(IFS=,; echo "${PASSED[*]:-none}")"
   if command -v pwsh >/dev/null 2>&1; then
@@ -426,8 +444,8 @@ if [ "$BASE_REF" = "main" ] && [ "$SELECTED_SORTED" = "$FULL_SET_SORTED" ]; then
     echo "           save-review-receipt.ps1 manually via a pwsh you do have on this machine." >&2
   fi
 else
-  echo "run-gates: partial run or non-default base — no run-gates receipt recorded."
-  echo "           Run with no flags against main to satisfy the push gate."
+  echo "run-gates: no run-gates receipt recorded — ${NO_RECEIPT_REASON}."
+  echo "           Run with no flags, no --accept-risk, against main, with src/ clean, to satisfy the push gate."
 fi
 
 printf '\nReminder: this does not replace the PR gates — the review-gate hook also still\n'

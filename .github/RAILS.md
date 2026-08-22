@@ -75,18 +75,23 @@ do not disable the workflows on the strength of it. Its deliberate differences f
 CI (no PR comment, no turn ceiling, local-only `--accept-risk`) are documented in
 the script header.
 
-One thing about it now IS verified: a full, default-base, all-gates-passed run
-writes its own `run-gates` receipt (`.claude/.review-receipts/<fingerprint>.run-gates`),
-and `.claude/hooks/review-gate.ps1` blocks `git push`/`gh pr create` through Claude
-Code until that receipt exists for the exact diff being pushed — the same mechanism
-already used for the `/code-review` and `/simplify` receipts (see review-cadence.md).
-Unlike those two, the run-gates receipt is written by the script itself on an actual
-passing run, not typed by the agent, so it can't be produced without the gates
-genuinely having run. This stops a fix-then-push rhythm from skipping the local
-pre-flight entirely and paying for a fresh remote correctness-review/grader cycle on
-every small fix. It does not, and can't, guarantee any given fix is actually
-correct or complete — that's still on the reviewer (locally) and on the remote
-gates re-deriving their own verdict (as the enforcement boundary).
+One more thing is now gated on it running, though not cryptographically verified: a
+full, default-base, all-gates-passed run writes its own `run-gates` receipt
+(`.claude/.review-receipts/<fingerprint>.run-gates`), and `.claude/hooks/review-gate.ps1`
+blocks `git push`/`gh pr create` through Claude Code until that receipt exists for the
+exact diff being pushed — the same mechanism already used for the `/code-review` and
+`/simplify` receipts (see review-cadence.md). Unlike those two, the run-gates receipt is
+written by the script itself, not typed from memory, so the intended path to producing
+it is an actual passing run. That is a convention this hook makes the path of least
+resistance, not a technical guarantee: an agent with shell access can still call the
+underlying writer by hand and skip the run entirely, exactly as it could type a fake
+`/code-review` summary. What it does achieve is making the honest path (run the gates,
+get the receipt for free) easier than the dishonest one, which stops a fix-then-push
+rhythm from skipping the local pre-flight *by default* and paying for a fresh remote
+correctness-review/grader cycle on every small fix. It does not, and can't, guarantee
+any given fix is actually correct or complete, or that the receipt wasn't hand-written —
+that's still on the reviewer (locally) and on the remote gates re-deriving their own
+verdict (the actual enforcement boundary).
 
 ## Go-live — what a human must do (not automatable from here)
 
