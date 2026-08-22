@@ -31,7 +31,8 @@ internal static class AdmissionHarness
         IProgressEvaluator? progressEvaluator = null,
         IAgentToolAuthorizationGate? authorizationGate = null,
         ICallOnceGate? callOnceGate = null,
-        IGovernanceTraceRecorder? trace = null) =>
+        IGovernanceTraceRecorder? trace = null,
+        ICompositeResponseSanitizer? sanitizer = null) =>
         new(authorizationGate ?? PermissiveAuthorizationGate(),
             governor ?? PermissiveGovernor(),
             classificationGate ?? PermissiveClassificationGate(),
@@ -40,7 +41,7 @@ internal static class AdmissionHarness
             callOnceGate ?? PermissiveCallOnceGate(),
             trace ?? TraceRecorder(),
             Mock.Of<IApprovalExecutionReporter>(),
-            PermissiveSanitizer(),
+            sanitizer ?? PermissiveSanitizer(),
             PermissiveRedactionFilter(),
             NullLogger<ToolCallAdmissionPipeline>.Instance);
 
@@ -51,6 +52,34 @@ internal static class AdmissionHarness
         sanitizer
             .Setup(s => s.Sanitize(It.IsAny<string>(), It.IsAny<string?>()))
             .Returns((string content, string? _) => SanitizationResult.Clean(content));
+        return sanitizer.Object;
+    }
+
+    /// <summary>
+    /// A sanitizer that replaces every occurrence of <paramref name="find"/> with
+    /// <paramref name="replacement"/> and leaves everything else unchanged — a real sanitizer's answer
+    /// when it recognizes something to scrub, without a test having to carry the injection-scrubbing
+    /// logic itself. Centralized so a change to <c>Sanitize</c>'s signature only breaks one setup.
+    /// </summary>
+    /// <remarks>
+    /// Reports <see cref="SanitizationResult.WasSanitized"/> accurately (true only when a replacement
+    /// actually happened) rather than always answering <see cref="SanitizationResult.Clean"/> — callers
+    /// of <c>ToolResultText.Sanitize</c> key their no-op fast path off that flag, not off whether the
+    /// returned text differs from the input, so a mock that gets the flag wrong would make every caller
+    /// silently skip reconstructing the sanitized result.
+    /// </remarks>
+    public static ICompositeResponseSanitizer SubstitutingSanitizer(string find, string replacement)
+    {
+        var sanitizer = new Mock<ICompositeResponseSanitizer>();
+        sanitizer
+            .Setup(s => s.Sanitize(It.IsAny<string>(), It.IsAny<string?>()))
+            .Returns((string content, string? _) =>
+            {
+                var replaced = content.Replace(find, replacement);
+                return replaced == content
+                    ? SanitizationResult.Clean(content)
+                    : new SanitizationResult(true, replaced, content, [], ThreatLevel.None);
+            });
         return sanitizer.Object;
     }
 

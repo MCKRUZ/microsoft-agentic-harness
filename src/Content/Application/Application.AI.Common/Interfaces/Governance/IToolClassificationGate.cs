@@ -46,11 +46,13 @@ public interface IToolClassificationGate
     /// <param name="toolName">The tool whose result is being redacted (passed to the sanitizers as context).</param>
     /// <param name="result">The tool's raw result object.</param>
     /// <returns>
-    /// The redacted result. A text result — a raw string or a serialized JSON string — is scrubbed and
-    /// returned; a structured result (JSON object/array, or any other type) is returned unchanged, since
-    /// the sanitizers operate on free text and rewriting a structured value's raw text risks malforming it.
+    /// The redacted result. A text result — a raw string, a serialized JSON string, or (for an MCP tool)
+    /// a <c>TextContent</c>/<c>AIContent[]</c> — is scrubbed and returned in its original shape; a
+    /// structured result (JSON object/array, or any other type) is returned unchanged, since the
+    /// sanitizers operate on free text and rewriting a structured value's raw text risks malforming it.
     /// Redaction therefore never alters a structured result's shape; use a block policy where structured
-    /// data must not reach the model.
+    /// data must not reach the model. See <c>ToolResultText</c>, which this method delegates the
+    /// shape-preserving scrub to, for the exact set of shapes recognized as text.
     /// </returns>
     object? RedactResult(string toolName, object? result);
 }

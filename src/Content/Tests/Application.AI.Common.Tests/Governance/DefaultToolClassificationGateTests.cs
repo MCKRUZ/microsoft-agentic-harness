@@ -194,10 +194,12 @@ public sealed class DefaultToolClassificationGateTests
     }
 
     [Fact]
-    public void RedactResult_JsonStringElement_ScrubsInnerText()
+    public void RedactResult_JsonStringElement_ScrubsInnerTextWithoutUnwrappingTheShape()
     {
-        // Tool results reach the gate as serialized JsonElements, not bare strings; the redactor must
-        // still scrub their text rather than pass them through.
+        // Tool results reach the gate as serialized JsonElements, not bare strings — the function
+        // invocation pipeline's own default marshaling. The redactor must scrub the inner text but
+        // return it re-wrapped as a JsonElement, not a bare string: the model-facing chat client quotes
+        // the two shapes differently (see ToolResultText).
         _sanitizer
             .Setup(s => s.Sanitize("secret data", "file_system"))
             .Returns(SanitizationResult.WithFindings("[redacted]", "secret data", []));
@@ -206,7 +208,9 @@ public sealed class DefaultToolClassificationGateTests
 
         var redacted = gate.RedactResult("file_system", element);
 
-        redacted.Should().Be("[redacted]");
+        var redactedElement = redacted.Should().BeOfType<JsonElement>().Subject;
+        redactedElement.ValueKind.Should().Be(JsonValueKind.String);
+        redactedElement.GetString().Should().Be("[redacted]");
     }
 
     [Fact]

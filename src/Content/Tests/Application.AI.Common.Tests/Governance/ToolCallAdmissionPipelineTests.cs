@@ -264,15 +264,25 @@ public sealed class ToolCallAdmissionPipelineTests
     }
 
     [Fact]
-    public void ApplyOutputPolicy_PlainAllow_ReturnsTheResultUntouchedWithoutCallingTheGate()
+    public void ApplyOutputPolicy_PlainAllow_SanitizesTheResultWithoutCallingTheClassificationGate()
     {
+        // #469: a plain allow never consults the classification gate — the sanitizer is the only
+        // guarantee a plain-allow result gets. A transforming sanitizer (not the permissive no-op) is
+        // what proves it actually ran.
         var gate = new Mock<IToolClassificationGate>(MockBehavior.Strict);
-        var pipeline = AdmissionHarness.Pipeline(classificationGate: gate.Object);
+        var pipeline = AdmissionHarness.Pipeline(
+            classificationGate: gate.Object,
+            sanitizer: AdmissionHarness.SubstitutingSanitizer("secret", "[SCRUBBED]"));
 
-        pipeline.ApplyOutputPolicy(ToolCallAdmission.Allow(), Tool, "plain").Should().Be("plain");
+        pipeline.ApplyOutputPolicy(ToolCallAdmission.Allow(), Tool, "a secret value")
+            .Should().Be("a [SCRUBBED] value");
 
         gate.Verify(g => g.RedactResult(It.IsAny<string>(), It.IsAny<object?>()), Times.Never);
     }
+
+    // Shape-preservation across every result type (string, JsonElement, TextContent, AIContent[],
+    // structured) is covered exhaustively by ToolResultTextTests — this class only needs to prove
+    // ApplyOutputPolicy routes a plain allow to the sanitizer rather than the classification gate.
 
     [Fact]
     public async Task AdmitAsync_AStageRefusesWithNoMessage_TheCallerStillGetsTheCanonicalRefusal()

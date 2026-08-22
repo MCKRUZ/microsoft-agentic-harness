@@ -85,8 +85,12 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
     /// Closes the approval loop for a call this pipeline approved — see <see cref="ReportExecutionAsync"/>.
     /// </param>
     /// <param name="sanitizer">
-    /// Prepares a failed call's raw failure text for reporting, along with <paramref name="redactionFilter"/>
-    /// — see <see cref="ReportExecutionAsync"/> and <see cref="ReportedFailureText.PrepareForReporting"/>.
+    /// Two independent uses. Paired with <paramref name="redactionFilter"/>, prepares a failed call's
+    /// raw failure text for reporting — see <see cref="ReportExecutionAsync"/> and
+    /// <see cref="ReportedFailureText.PrepareForReporting"/>. On its own, also the unconditional
+    /// injection-scrubber every plain-allow tool result is run through in
+    /// <see cref="ApplyOutputPolicy"/> — see #469; that path never reaches
+    /// <paramref name="redactionFilter"/> at all.
     /// </param>
     /// <param name="redactionFilter">Scrubs known secret patterns from a failed call's reported text.</param>
     /// <param name="logger">Records a redaction that could not be applied.</param>
@@ -247,9 +251,11 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
     {
         ArgumentNullException.ThrowIfNull(admission);
 
+        // #469: the sanitize pass below is unconditional — see the interface remarks for why. It stays
+        // in shape-preserving lockstep with RedactResult below via the shared ToolResultText.Sanitize.
         return admission.RedactsOutput
             ? _classificationGate.RedactResult(toolName, result)
-            : result;
+            : ToolResultText.Sanitize(result, _sanitizer, toolName);
     }
 
     /// <inheritdoc />

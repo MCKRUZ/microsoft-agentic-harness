@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Text.Json;
 using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.OpenTelemetry.Metrics;
@@ -118,21 +117,11 @@ public sealed class DefaultToolClassificationGate : IToolClassificationGate
     }
 
     /// <inheritdoc />
-    public object? RedactResult(string toolName, object? result)
-    {
-        // A tool result reaches the gate either as a raw string or, once the function pipeline has
-        // serialized it, as a JSON string element — the text shape the model reads, which is scrubbed. A
-        // structured result (JSON object/array, or any other type) is returned unchanged: the sanitizers
-        // operate on free text, and rewriting the raw text of a structured value risks producing a
-        // malformed result the model then mis-parses. Such cases are better handled by a Block policy.
-        return result switch
-        {
-            string content => _sanitizer.Sanitize(content, toolName).SanitizedContent,
-            JsonElement { ValueKind: JsonValueKind.String } element =>
-                _sanitizer.Sanitize(element.GetString() ?? string.Empty, toolName).SanitizedContent,
-            _ => result
-        };
-    }
+    public object? RedactResult(string toolName, object? result) =>
+        // See ToolResultText.Sanitize for why the result's shape (raw string vs. serialized JSON string
+        // element) must survive the round trip, and why a structured result is left unchanged — such
+        // cases are better handled by a Block policy.
+        ToolResultText.Sanitize(result, _sanitizer, toolName);
 
     private AssetReference Resolve(string toolName, IReadOnlyDictionary<string, object?> arguments)
     {
