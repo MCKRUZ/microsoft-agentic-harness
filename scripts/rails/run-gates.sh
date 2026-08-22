@@ -21,11 +21,18 @@
 #      a CI queue slot, or a reviewer's attention.
 #
 # WHAT THIS IS NOT: a replacement for the remote gates. It cannot be — it runs on
-# the developer's machine, on their working tree, with their credentials, and
-# nothing verifies it ran. The remote gates remain the enforcement boundary; this
-# script is the fast, cheap pre-flight that makes the remote run a formality
-# instead of a discovery process. Do not disable the workflows on the strength of
-# this script.
+# the developer's machine, on their working tree, with their credentials, and the
+# remote gates re-derive their own verdict server-side regardless of what happened
+# here. The remote gates remain the enforcement boundary; this script is the fast,
+# cheap pre-flight that makes the remote run a formality instead of a discovery
+# process. Do not disable the workflows on the strength of this script.
+#
+# A full, default-base, all-gates-passed run through THIS script DOES get verified,
+# though: it writes its own "run-gates" receipt (see the end of this file), which
+# .claude/hooks/review-gate.ps1 requires before allowing a push through Claude Code.
+# That closes the specific gap where a fix-then-push rhythm never bothered to run
+# this pre-flight at all and paid for a fresh remote correctness-review / grader
+# cycle on every small fix.
 #
 # HONEST DIFFERENCES FROM CI (each one deliberate, none of them silent):
 #   * Billing: your local `claude` CLI session; CI uses CLAUDE_CODE_OAUTH_TOKEN. Same pot.
@@ -66,7 +73,8 @@ set -uo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT" || exit 1
 
-BASE_REF="main"
+BASE_REF=""
+BASE_EXPLICIT=false
 ACCEPT_RISK=""
 COVERAGE=false
 LIST_ONLY=false
@@ -92,7 +100,7 @@ while [ $# -gt 0 ]; do
     --security)     SELECTED+=(security) ;;
     --coverage)     COVERAGE=true ;;
     --list)         LIST_ONLY=true ;;
-    --base)         shift; BASE_REF="${1:-main}" ;;
+    --base)         shift; BASE_REF="${1:-main}"; BASE_EXPLICIT=true ;;
     --accept-risk)  shift; ACCEPT_RISK="${ACCEPT_RISK} ${1:-}" ;;
     -h|--help)      usage ;;
     *) echo "run-gates: unknown option '$1' (try --help)" >&2; exit 2 ;;
@@ -101,6 +109,22 @@ while [ $# -gt 0 ]; do
 done
 
 [ ${#SELECTED[@]} -eq 0 ] && SELECTED=(build test owasp docs-links grader correctness security docs-drift)
+
+# When --base was not given, resolve the default EXACTLY the way review-scope.ps1's
+# Resolve-ReviewBase does (prefer origin/main, fall back to main) — not a bare literal
+# "main". These must agree: review-gate.ps1 requires the run-gates receipt against the
+# base IT resolves, and save-review-receipt.ps1 (called at the end of this script)
+# resolves its own base the same way independently of whatever $BASE_REF ends up being
+# here. If this script defaulted to a literal "main" while origin/main has diverged, the
+# gates below would review a different diff than the one the receipt actually attests
+# to. Only an explicit --base skips this — that's a deliberate exploratory override, and
+# it already forfeits the receipt (see the guard near the end of this file).
+if ! $BASE_EXPLICIT; then
+  BASE_REF="main"
+  if git rev-parse --verify --quiet origin/main >/dev/null 2>&1; then
+    BASE_REF="origin/main"
+  fi
+fi
 
 # ---------------------------------------------------------------------------
 # Preconditions
@@ -120,8 +144,11 @@ if $NEEDS_CLAUDE && ! command -v claude >/dev/null 2>&1; then
   exit 2
 fi
 
-TMPDIR_GATES="$(mktemp -d 2>/dev/null || echo "${TEMP:-/tmp}/run-gates.$$")"
-mkdir -p "$TMPDIR_GATES"
+# No predictable-path fallback: this directory holds AI-reviewer verdict files and (as
+# of the run-gates receipt) the push-gate receipt writer's output, so a guessable path
+# here is pre-creatable by anything else on the same machine, defeating both. Fail hard
+# instead of degrading to a guessable location.
+TMPDIR_GATES="$(mktemp -d)" || { echo "run-gates: mktemp failed — cannot create a private scratch directory. Aborting." >&2; exit 1; }
 trap 'rm -rf "$TMPDIR_GATES"' EXIT
 
 # The reviewer runs as a separate `claude` process. On Windows under Git Bash that
@@ -387,6 +414,72 @@ if [ ${#FAILED[@]} -gt 0 ]; then
 fi
 
 printf '\n\033[32mAll selected gates passed.\033[0m The remote run should be a formality.\n'
-printf 'Reminder: this does not replace the PR gates, and it records nothing — the\n'
-printf 'review-gate hook still needs its own /code-review and /simplify receipts.\n'
+
+# ---------------------------------------------------------------------------
+# Push-gate receipt — ONLY for a full, default-base run.
+#
+# review-gate.ps1 (the local push gate) requires a "run-gates" receipt in addition to
+# the /code-review and /simplify ones. That receipt is written HERE, automatically, on
+# a real passing run — never by hand — so its existence actually proves the local gates
+# ran, rather than being another claim an agent could type without running anything.
+#
+# Deliberately narrow: a partial run (a single named gate, --fast, --ai-only), an
+# explicit --base override, a run where --accept-risk overrode a BLOCK, or a run against
+# a dirty src/ tree does not represent "the same clean checks the push gate cares about",
+# so none of those earn a receipt. Run with no flags (equivalent to --all), no
+# --accept-risk, with src/ clean, to satisfy the push gate. An explicit --base always
+# forfeits the receipt, even --base origin/main matching the auto-resolved default
+# exactly — a plain no-flags run already resolves to the correct base, so there's no
+# legitimate reason to pass --base and still expect one.
+# ---------------------------------------------------------------------------
+FULL_SET_SORTED="$(printf '%s\n' build test owasp docs-links grader correctness security docs-drift | sort | tr '\n' ' ')"
+SELECTED_SORTED="$(printf '%s\n' "${SELECTED[@]}" | sort -u | tr '\n' ' ')"
+NO_RECEIPT_REASON=""
+if $BASE_EXPLICIT; then
+  NO_RECEIPT_REASON="--base was explicitly given ('${BASE_REF}') — run with no --base to use the auto-resolved default and earn a receipt"
+elif [ "$SELECTED_SORTED" != "$FULL_SET_SORTED" ]; then
+  NO_RECEIPT_REASON="partial gate selection (${SELECTED[*]})"
+elif [ -n "${ACCEPT_RISK// /}" ]; then
+  # A gate that BLOCKed and was overridden locally still lands in PASSED (see
+  # run_ai_gate's "risk accepted locally" branch), so FAILED stays empty and this
+  # function would otherwise print a receipt claiming a clean pass over a real BLOCK.
+  NO_RECEIPT_REASON="--accept-risk was used (${ACCEPT_RISK}) — a risk-accepted run does not attest to a clean pass"
+elif ! DIRTY_SRC="$(git status --porcelain -- src 2>&1)"; then
+  # Fail CLOSED on git itself failing (index lock, corrupt worktree, etc.) — the earlier
+  # version only checked stdout, so a failing `git status` looked identical to a clean
+  # tree and would have written a receipt with no idea whether src/ was actually clean.
+  NO_RECEIPT_REASON="git status failed, so src/ cleanliness could not be confirmed: ${DIRTY_SRC}"
+elif [ -n "$DIRTY_SRC" ]; then
+  # The receipt's fingerprint covers the COMMITTED diff (review-scope.ps1), but the
+  # gates above just ran against the working tree. With src/ dirty those can disagree,
+  # so a receipt here would attest to code that was never actually tested.
+  NO_RECEIPT_REASON="src/ has uncommitted changes — the gates ran against the working tree, not the committed diff the receipt would attest to"
+fi
+
+if [ -z "$NO_RECEIPT_REASON" ]; then
+  RECEIPT_OUT="${TMPDIR_GATES}/run-gates-receipt-output.txt"
+  # "(all gates)" would overstate this: a gate applies() ruled inapplicable (e.g.
+  # security when security-gate-scope.sh returns required=false) is neither PASSED nor
+  # FAILED, so it's real and correct for it to be absent from PASSED — but the label
+  # should say so plainly rather than implying every gate ran.
+  RECEIPT_SUMMARY="run-gates.sh (full applicable gate set for this diff) passed at $(git rev-parse --short HEAD) against base ${BASE_REF}. Passed: $(IFS=,; echo "${PASSED[*]:-none}"). Skipped (not applicable to this diff): $(IFS=,; echo "${SKIPPED[*]:-none}")."
+  if command -v pwsh >/dev/null 2>&1; then
+    if printf '%s\n' "$RECEIPT_SUMMARY" | pwsh -NoProfile -File .claude/hooks/save-review-receipt.ps1 -Kind run-gates >"$RECEIPT_OUT" 2>&1; then
+      cat "$RECEIPT_OUT"
+    else
+      echo "run-gates: WARNING — could not record the run-gates receipt; the push gate will still ask for it:" >&2
+      cat "$RECEIPT_OUT" >&2
+    fi
+  else
+    echo "run-gates: WARNING — pwsh not on PATH, could not record the run-gates receipt." >&2
+    echo "           The push gate will still require it. Install PowerShell 7+ or run" >&2
+    echo "           save-review-receipt.ps1 manually via a pwsh you do have on this machine." >&2
+  fi
+else
+  echo "run-gates: no run-gates receipt recorded — ${NO_RECEIPT_REASON}."
+  echo "           Run with no flags, no --base, no --accept-risk, and src/ clean, to satisfy the push gate."
+fi
+
+printf '\nReminder: this does not replace the PR gates — the review-gate hook also still\n'
+printf 'needs its own /code-review and /simplify receipts.\n'
 exit 0
