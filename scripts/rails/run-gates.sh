@@ -73,7 +73,8 @@ set -uo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT" || exit 1
 
-BASE_REF="main"
+BASE_REF=""
+BASE_EXPLICIT=false
 ACCEPT_RISK=""
 COVERAGE=false
 LIST_ONLY=false
@@ -99,7 +100,7 @@ while [ $# -gt 0 ]; do
     --security)     SELECTED+=(security) ;;
     --coverage)     COVERAGE=true ;;
     --list)         LIST_ONLY=true ;;
-    --base)         shift; BASE_REF="${1:-main}" ;;
+    --base)         shift; BASE_REF="${1:-main}"; BASE_EXPLICIT=true ;;
     --accept-risk)  shift; ACCEPT_RISK="${ACCEPT_RISK} ${1:-}" ;;
     -h|--help)      usage ;;
     *) echo "run-gates: unknown option '$1' (try --help)" >&2; exit 2 ;;
@@ -108,6 +109,22 @@ while [ $# -gt 0 ]; do
 done
 
 [ ${#SELECTED[@]} -eq 0 ] && SELECTED=(build test owasp docs-links grader correctness security docs-drift)
+
+# When --base was not given, resolve the default EXACTLY the way review-scope.ps1's
+# Resolve-ReviewBase does (prefer origin/main, fall back to main) — not a bare literal
+# "main". These must agree: review-gate.ps1 requires the run-gates receipt against the
+# base IT resolves, and save-review-receipt.ps1 (called at the end of this script)
+# resolves its own base the same way independently of whatever $BASE_REF ends up being
+# here. If this script defaulted to a literal "main" while origin/main has diverged, the
+# gates below would review a different diff than the one the receipt actually attests
+# to. Only an explicit --base skips this — that's a deliberate exploratory override, and
+# it already forfeits the receipt (see the guard near the end of this file).
+if ! $BASE_EXPLICIT; then
+  BASE_REF="main"
+  if git rev-parse --verify --quiet origin/main >/dev/null 2>&1; then
+    BASE_REF="origin/main"
+  fi
+fi
 
 # ---------------------------------------------------------------------------
 # Preconditions
@@ -127,8 +144,11 @@ if $NEEDS_CLAUDE && ! command -v claude >/dev/null 2>&1; then
   exit 2
 fi
 
-TMPDIR_GATES="$(mktemp -d 2>/dev/null || echo "${TEMP:-/tmp}/run-gates.$$")"
-mkdir -p "$TMPDIR_GATES"
+# No predictable-path fallback: this directory holds AI-reviewer verdict files and (as
+# of the run-gates receipt) the push-gate receipt writer's output, so a guessable path
+# here is pre-creatable by anything else on the same machine, defeating both. Fail hard
+# instead of degrading to a guessable location.
+TMPDIR_GATES="$(mktemp -d)" || { echo "run-gates: mktemp failed — cannot create a private scratch directory. Aborting." >&2; exit 1; }
 trap 'rm -rf "$TMPDIR_GATES"' EXIT
 
 # The reviewer runs as a separate `claude` process. On Windows under Git Bash that
@@ -403,17 +423,20 @@ printf '\n\033[32mAll selected gates passed.\033[0m The remote run should be a f
 # a real passing run — never by hand — so its existence actually proves the local gates
 # ran, rather than being another claim an agent could type without running anything.
 #
-# Deliberately narrow: a partial run (a single named gate, --fast, --ai-only), a
-# non-default base, a run where --accept-risk overrode a BLOCK, or a run against a dirty
-# src/ tree does not represent "the same clean checks the push gate cares about", so none
-# of those earn a receipt. Run with no flags (equivalent to --all), no --accept-risk,
-# against main, with src/ clean, to satisfy the push gate.
+# Deliberately narrow: a partial run (a single named gate, --fast, --ai-only), an
+# explicit --base override, a run where --accept-risk overrode a BLOCK, or a run against
+# a dirty src/ tree does not represent "the same clean checks the push gate cares about",
+# so none of those earn a receipt. Run with no flags (equivalent to --all), no
+# --accept-risk, with src/ clean, to satisfy the push gate. An explicit --base always
+# forfeits the receipt, even --base origin/main matching the auto-resolved default
+# exactly — a plain no-flags run already resolves to the correct base, so there's no
+# legitimate reason to pass --base and still expect one.
 # ---------------------------------------------------------------------------
 FULL_SET_SORTED="$(printf '%s\n' build test owasp docs-links grader correctness security docs-drift | sort | tr '\n' ' ')"
 SELECTED_SORTED="$(printf '%s\n' "${SELECTED[@]}" | sort -u | tr '\n' ' ')"
 NO_RECEIPT_REASON=""
-if [ "$BASE_REF" != "main" ]; then
-  NO_RECEIPT_REASON="base is '${BASE_REF}', not main"
+if $BASE_EXPLICIT; then
+  NO_RECEIPT_REASON="--base was explicitly given ('${BASE_REF}') — run with no --base to use the auto-resolved default and earn a receipt"
 elif [ "$SELECTED_SORTED" != "$FULL_SET_SORTED" ]; then
   NO_RECEIPT_REASON="partial gate selection (${SELECTED[*]})"
 elif [ -n "${ACCEPT_RISK// /}" ]; then
@@ -421,7 +444,12 @@ elif [ -n "${ACCEPT_RISK// /}" ]; then
   # run_ai_gate's "risk accepted locally" branch), so FAILED stays empty and this
   # function would otherwise print a receipt claiming a clean pass over a real BLOCK.
   NO_RECEIPT_REASON="--accept-risk was used (${ACCEPT_RISK}) — a risk-accepted run does not attest to a clean pass"
-elif [ -n "$(git status --porcelain -- src 2>/dev/null)" ]; then
+elif ! DIRTY_SRC="$(git status --porcelain -- src 2>&1)"; then
+  # Fail CLOSED on git itself failing (index lock, corrupt worktree, etc.) — the earlier
+  # version only checked stdout, so a failing `git status` looked identical to a clean
+  # tree and would have written a receipt with no idea whether src/ was actually clean.
+  NO_RECEIPT_REASON="git status failed, so src/ cleanliness could not be confirmed: ${DIRTY_SRC}"
+elif [ -n "$DIRTY_SRC" ]; then
   # The receipt's fingerprint covers the COMMITTED diff (review-scope.ps1), but the
   # gates above just ran against the working tree. With src/ dirty those can disagree,
   # so a receipt here would attest to code that was never actually tested.
@@ -445,7 +473,7 @@ if [ -z "$NO_RECEIPT_REASON" ]; then
   fi
 else
   echo "run-gates: no run-gates receipt recorded — ${NO_RECEIPT_REASON}."
-  echo "           Run with no flags, no --accept-risk, against main, with src/ clean, to satisfy the push gate."
+  echo "           Run with no flags, no --base, no --accept-risk, and src/ clean, to satisfy the push gate."
 fi
 
 printf '\nReminder: this does not replace the PR gates — the review-gate hook also still\n'
