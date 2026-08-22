@@ -55,6 +55,13 @@ internal static class PermissiveAdmission
             .Setup(p => p.Evaluate(It.IsAny<string>(), It.IsAny<Func<string?>>()))
             .Returns(ProgressVerdict.Continue());
 
+        // Admits everything, matching the real gate's answer for a tool that was never declared
+        // call-once — every tool these retrieval fixtures exercise.
+        var callOnceGate = new Mock<ICallOnceGate>();
+        callOnceGate
+            .Setup(g => g.EvaluateAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns(ValueTask.FromResult(ToolInvocationDecision.Allow()));
+
         // A real, ungoverned recorder, so the chain reports the empty trace.
         var trace = new GovernanceTraceRecorder(
             Mock.Of<IOptionsMonitor<GovernanceConfig>>(m => m.CurrentValue == new GovernanceConfig()),
@@ -76,6 +83,7 @@ internal static class PermissiveAdmission
             classificationGate.Object,
             Mock.Of<IToolCallObserverChain>(),
             progress.Object,
+            callOnceGate.Object,
             trace,
             Mock.Of<IApprovalExecutionReporter>(),
             sanitizer.Object,

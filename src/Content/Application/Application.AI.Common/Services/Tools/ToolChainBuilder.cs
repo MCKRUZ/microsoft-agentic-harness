@@ -30,6 +30,7 @@ public partial class ToolChainBuilder : IToolChainBuilder
     private readonly IOptionsMonitor<AIConfig>? _aiConfig;
     private readonly IToolCompositionAnalyzer? _compositionAnalyzer;
     private readonly ToolCompositionReporter? _compositionReporter;
+    private readonly IToolCallOncePolicy? _callOncePolicy;
 
     public ToolChainBuilder(
         ILogger<ToolChainBuilder> logger,
@@ -39,7 +40,8 @@ public partial class ToolChainBuilder : IToolChainBuilder
         IMcpToolSurfaceScanner? surfaceScanner = null,
         IOptionsMonitor<AIConfig>? aiConfig = null,
         IToolCompositionAnalyzer? compositionAnalyzer = null,
-        ToolCompositionReporter? compositionReporter = null)
+        ToolCompositionReporter? compositionReporter = null,
+        IToolCallOncePolicy? callOncePolicy = null)
     {
         _logger = logger;
         _serviceProvider = serviceProvider;
@@ -49,6 +51,7 @@ public partial class ToolChainBuilder : IToolChainBuilder
         _aiConfig = aiConfig;
         _compositionAnalyzer = compositionAnalyzer;
         _compositionReporter = compositionReporter;
+        _callOncePolicy = callOncePolicy;
     }
 
     /// <summary>
@@ -148,7 +151,7 @@ public partial class ToolChainBuilder : IToolChainBuilder
 
         if (skill.ToolDeclarations?.Count > 0)
         {
-            var provisionTasks = skill.ToolDeclarations.Select(d => ProvisionToolAsync(d, cancellationToken));
+            var provisionTasks = skill.ToolDeclarations.Select(d => ProvisionToolAsync(d, skill.Id, cancellationToken));
             var results = await Task.WhenAll(provisionTasks);
             foreach (var provisioned in results)
                 if (provisioned != null)
@@ -468,6 +471,7 @@ public partial class ToolChainBuilder : IToolChainBuilder
     /// </summary>
     private async Task<List<ProvisionedTool>?> ProvisionToolAsync(
         Domain.AI.Tools.ToolDeclaration declaration,
+        string skillId,
         CancellationToken cancellationToken = default)
     {
         // Reference-only MCP: a bundle run resolves a tool from an MCP server only when the caller's
@@ -492,9 +496,11 @@ public partial class ToolChainBuilder : IToolChainBuilder
                     // (never the bare, bundle-chosen one) so a malicious bundle cannot get a real host
                     // tool auto-granted by advertising a same-named tool of its own. See
                     // CapabilityEnvelope.IsBundleOwnedMcpServer and BundleOwnedMcpToolNaming.
-                    return mcpTools
+                    var provisionedMcpTools = mcpTools
                         .Select(t => new ProvisionedTool(PublishServerTool(t, effectiveServerName, isBundleOwned), effectiveServerName))
                         .ToList();
+                    RegisterCallOnce(declaration, provisionedMcpTools, skillId);
+                    return provisionedMcpTools;
                 }
             }
             catch (Exception ex)
@@ -506,7 +512,11 @@ public partial class ToolChainBuilder : IToolChainBuilder
         // Everything from here on is keyed-DI, not MCP — first-party.
         var resolved = ResolveToolByName(declaration.Name);
         if (resolved != null)
-            return resolved.Select(t => new ProvisionedTool(t, null)).ToList();
+        {
+            var provisionedFirstParty = resolved.Select(t => new ProvisionedTool(t, null)).ToList();
+            RegisterCallOnce(declaration, provisionedFirstParty, skillId);
+            return provisionedFirstParty;
+        }
 
         if (declaration.HasFallback && !declaration.FallbackIsManual)
         {
@@ -515,7 +525,9 @@ public partial class ToolChainBuilder : IToolChainBuilder
             {
                 _logger.LogInformation("Using fallback tool {Fallback} for {ToolName}",
                     declaration.Fallback, declaration.Name);
-                return resolved.Select(t => new ProvisionedTool(t, null)).ToList();
+                var provisionedFallback = resolved.Select(t => new ProvisionedTool(t, null)).ToList();
+                RegisterCallOnce(declaration, provisionedFallback, skillId);
+                return provisionedFallback;
             }
         }
 
@@ -528,6 +540,59 @@ public partial class ToolChainBuilder : IToolChainBuilder
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// Registers every tool <paramref name="resolved"/> under the call-once policy when
+    /// <paramref name="declaration"/> was declared <c>CallOncePerConversation</c>. A no-op when the
+    /// declaration was not (the common case), or when no <see cref="IToolCallOncePolicy"/> was
+    /// injected (a caller that constructed this builder without one — matches every other optional
+    /// governance dependency here).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Registers by the tool's own resolved <see cref="AITool.Name"/>, not
+    /// <paramref name="declaration"/>'s <see cref="Domain.AI.Tools.ToolDeclaration.Name"/> — the two
+    /// diverge for an MCP server resolution (the declaration names the server; each returned tool
+    /// keeps its own name, possibly namespaced for a bundle-owned server) and for a fallback
+    /// resolution (the declaration names the primary tool; the resolved tool is the fallback). This
+    /// is the same name <see cref="Interfaces.Governance.ToolCallAdmissionRequest.ToolName"/> carries
+    /// at invocation time, which is what the call-once gate actually checks against.
+    /// </para>
+    /// <para>
+    /// <strong>Registration is process-global by tool name, not scoped to
+    /// <paramref name="skillId"/>.</strong> <see cref="IToolCallOncePolicy"/> answers "was this name
+    /// EVER declared call-once by ANY skill" — it has no way to answer "call-once for skill X but not
+    /// skill Y", because <see cref="Interfaces.Governance.ToolCallAdmissionRequest"/> itself carries
+    /// no skill identity for the check to key on. This matches how <c>ToolBehaviorRegistry</c>
+    /// already treats a tool name as a global identifier for a single capability, and is the correct
+    /// reading for the common case (a first-party keyed-DI tool has exactly one registration in the
+    /// process). It is the WRONG reading if two unrelated skills happen to resolve a same-named tool
+    /// with genuinely different call-once intent — <paramref name="skillId"/> exists so that case can
+    /// at least be logged, not silently misapplied. Properly scoping this would mean threading skill
+    /// or agent identity through the whole admission chain, which is a larger, separate change.
+    /// </para>
+    /// </remarks>
+    private void RegisterCallOnce(
+        Domain.AI.Tools.ToolDeclaration declaration, List<ProvisionedTool> resolved, string skillId)
+    {
+        if (!declaration.CallOncePerConversation || _callOncePolicy is null)
+            return;
+
+        foreach (var provisioned in resolved)
+        {
+            if (_callOncePolicy.IsCallOnce(provisioned.Tool.Name))
+            {
+                _logger.LogWarning(
+                    "Tool {ToolName} was already registered call-once (by an earlier skill build) before " +
+                    "skill {SkillId} declared it call-once too. Call-once enforcement is process-global by " +
+                    "tool name — if these are genuinely different tools that happen to share a name, or if " +
+                    "only one skill actually intends call-once semantics, this will over-restrict the other.",
+                    provisioned.Tool.Name, skillId);
+            }
+
+            _callOncePolicy.Register(provisioned.Tool.Name);
+        }
     }
 
     /// <summary>

@@ -79,4 +79,22 @@ public class ToolDeclaration
 	/// Whether this tool has specific operations defined.
 	/// </summary>
 	public bool HasOperations => Operations.Count > 0;
+
+	/// <summary>
+	/// Whether this tool may be invoked at most once per conversation. When true, the tool-call
+	/// admission pipeline refuses a second call durably — keyed by conversation id, surviving
+	/// across turns, across separate runs continuing the same conversation, and across hosts —
+	/// regardless of whether the model remembers calling it before. Use this for a tool with a
+	/// side effect that is unsafe to repeat within one logical conversation (opening a stateful
+	/// session, a non-idempotent external call), not as a general rate limit.
+	/// </summary>
+	/// <remarks>
+	/// <strong>Enforcement is process-global by tool name, not scoped to this skill.</strong> If
+	/// a different skill resolves a tool that happens to share this exact name, that skill's
+	/// calls are refused too, even if it never declared the tool call-once. This is safe for the
+	/// common case — a first-party keyed-DI tool name is meant to identify one capability across
+	/// the whole harness — but is the wrong choice if two genuinely unrelated tools could ever
+	/// share a name.
+	/// </remarks>
+	public bool CallOncePerConversation { get; set; }
 }

@@ -41,12 +41,14 @@ public sealed class EscalationReconciliationServiceTests
     private AppConfig _config = new();
 
     private EscalationReconciliationService CreateService(
-        bool escalationsEnabled, int retentionDays = 90, int intervalSeconds = 300)
+        bool escalationsEnabled, int retentionDays = 90, int intervalSeconds = 300,
+        bool callOnceEnforcementEnabled = false)
     {
         var config = new AppConfig();
         config.AI.Governance.DurableState.EscalationsEnabled = escalationsEnabled;
         config.AI.Governance.DurableState.RetentionDays = retentionDays;
         config.AI.Governance.DurableState.ReconcileIntervalSeconds = intervalSeconds;
+        config.AI.Governance.DurableState.CallOnceEnforcementEnabled = callOnceEnforcementEnabled;
         _config = config;
 
         var monitor = new Mock<IOptionsMonitor<AppConfig>>();
@@ -135,6 +137,23 @@ public sealed class EscalationReconciliationServiceTests
         await WaitForReconcileCountAsync(2);
 
         await service.StopAsync(CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task StartAsync_OnlyCallOnceEnforcementEnabled_StillResolvesThePruner()
+    {
+        // The exact shape of the bug this test guards against: a host that opts into ONLY
+        // CallOnceEnforcementEnabled (never Escalations or ChangeProposals) still writes rows —
+        // to tool_call_ledger — and must still get the retention window, not silently skip pruning
+        // because the enable check only recognised the other two toggles.
+        var service = CreateService(escalationsEnabled: false, callOnceEnforcementEnabled: true);
+
+        await service.StartAsync(CancellationToken.None);
+        await WaitForReconcileCountAsync(1);
+        await WaitForAsync(() => _prunerResolved);
+        await service.StopAsync(CancellationToken.None);
+
+        _prunerResolved.Should().BeTrue();
     }
 
     [Fact]

@@ -11,7 +11,7 @@ using Microsoft.Extensions.Logging;
 namespace Application.AI.Common.Services.Governance;
 
 /// <summary>
-/// Default <see cref="IToolCallAdmissionPipeline"/>: runs the four admission stages in the one order
+/// Default <see cref="IToolCallAdmissionPipeline"/>: runs the six admission stages in the one order
 /// that is safe, and owns everything that follows from that ordering.
 /// </summary>
 /// <remarks>
@@ -52,6 +52,7 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
     private readonly IToolClassificationGate _classificationGate;
     private readonly IToolCallObserverChain _observers;
     private readonly IProgressEvaluator _progressEvaluator;
+    private readonly ICallOnceGate _callOnceGate;
     private readonly IGovernanceTraceRecorder _trace;
     private readonly IApprovalExecutionReporter _executionReporter;
     private readonly ICompositeResponseSanitizer _sanitizer;
@@ -75,6 +76,10 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
     /// nothing in it are indistinguishable at runtime.
     /// </param>
     /// <param name="progressEvaluator">Stage 5 — the loop guard.</param>
+    /// <param name="callOnceGate">
+    /// Stage 6 — durable call-once enforcement, after the loop guard for the same reason: it too
+    /// only makes sense to ask about a call that has cleared every access question already.
+    /// </param>
     /// <param name="trace">The turn's governance trail, which the stages write to and this type snapshots.</param>
     /// <param name="executionReporter">
     /// Closes the approval loop for a call this pipeline approved — see <see cref="ReportExecutionAsync"/>.
@@ -91,6 +96,7 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
         IToolClassificationGate classificationGate,
         IToolCallObserverChain observers,
         IProgressEvaluator progressEvaluator,
+        ICallOnceGate callOnceGate,
         IGovernanceTraceRecorder trace,
         IApprovalExecutionReporter executionReporter,
         ICompositeResponseSanitizer sanitizer,
@@ -102,6 +108,7 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
         ArgumentNullException.ThrowIfNull(classificationGate);
         ArgumentNullException.ThrowIfNull(observers);
         ArgumentNullException.ThrowIfNull(progressEvaluator);
+        ArgumentNullException.ThrowIfNull(callOnceGate);
         ArgumentNullException.ThrowIfNull(trace);
         ArgumentNullException.ThrowIfNull(executionReporter);
         ArgumentNullException.ThrowIfNull(sanitizer);
@@ -113,6 +120,7 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
         _classificationGate = classificationGate;
         _observers = observers;
         _progressEvaluator = progressEvaluator;
+        _callOnceGate = callOnceGate;
         _trace = trace;
         _executionReporter = executionReporter;
         _sanitizer = sanitizer;
@@ -207,6 +215,20 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
                 toolName, () => ComputeArgumentsSignature(request.Arguments));
             if (verdict.ShouldHalt)
                 return Refuse(verdict.HaltMessage, toolName);
+        }
+
+        // 6 — durable call-once enforcement, last of all: a different kind of question ("has this
+        // call already happened", not "may this call happen") that only makes sense to ask once
+        // every access question above has already cleared. Unlike the loop guard, this gate carries
+        // no in-process state to be careful about — see ICallOnceGate's remarks.
+        var callOnce = await _callOnceGate.EvaluateAsync(toolName, cancellationToken).ConfigureAwait(false);
+        if (!callOnce.IsAllowed)
+        {
+            // Recorded here, not inside CallOnceGate itself, mirroring stage 1's own trace write —
+            // an unreported denial is indistinguishable from an unenforced rule to governance
+            // reporting, the dashboard, and the audit.
+            _trace.RecordDownstreamBlock(toolName, "denied by call-once enforcement");
+            return Refuse(callOnce.DeniedMessage, toolName);
         }
 
         var admission = classification.Outcome == ClassificationGateOutcome.RedactOutput

@@ -61,6 +61,7 @@ public sealed class SkillMetadataParserToolDeclarationTests : IDisposable
               - name: "file_system"
                 operations: ["read", "search", "list"]
                 optional: false
+                call-once-per-conversation: true
                 description: "Read and search project files"
               - name: "github_repos"
                 optional: true
@@ -79,6 +80,7 @@ public sealed class SkillMetadataParserToolDeclarationTests : IDisposable
         fileSystem.Name.Should().Be("file_system");
         fileSystem.Operations.Should().Equal("read", "search", "list");
         fileSystem.Optional.Should().BeFalse();
+        fileSystem.CallOncePerConversation.Should().BeTrue();
         fileSystem.Description.Should().Be("Read and search project files");
         fileSystem.Fallback.Should().BeNull();
 
@@ -86,9 +88,35 @@ public sealed class SkillMetadataParserToolDeclarationTests : IDisposable
         github.Name.Should().Be("github_repos");
         github.Operations.Should().BeEmpty();
         github.Optional.Should().BeTrue();
+        github.CallOncePerConversation.Should().BeFalse();
         github.Fallback.Should().Be("file_system");
         github.HasFallback.Should().BeTrue();
         github.FallbackIsManual.Should().BeFalse();
+    }
+
+    /// <summary>
+    /// A declaration with no <c>call-once-per-conversation</c> key defaults to false — an
+    /// ordinary, repeatable tool. This is the common case, and getting the default backwards
+    /// would make every existing manifest's tools call-once by accident.
+    /// </summary>
+    [Fact]
+    public void ParseFromFile_CallOncePerConversationAbsent_DefaultsToFalse()
+    {
+        var content = """
+            ---
+            name: "orchestrator-agent"
+            description: "Delegates work"
+            tools:
+              - name: "delegate_task"
+                description: "Delegate a subtask to a sub-agent."
+            ---
+            Body.
+            """;
+
+        var skill = _sut.ParseFromFile(WriteSkillFile(content), _tempDir);
+
+        skill.ToolDeclarations.Should().ContainSingle();
+        skill.ToolDeclarations![0].CallOncePerConversation.Should().BeFalse();
     }
 
     /// <summary>

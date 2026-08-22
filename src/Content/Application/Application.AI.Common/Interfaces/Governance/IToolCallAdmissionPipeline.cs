@@ -43,11 +43,17 @@ namespace Application.AI.Common.Interfaces.Governance;
 /// deny list. That is the whole reason it is safe to let consumer code into this path.
 /// </description></item>
 /// <item><description>
-/// <see cref="IProgressEvaluator"/> — the loop guard, last of all because it is the only stage that
+/// <see cref="IProgressEvaluator"/> — the loop guard, second-to-last because it is a stage that
 /// <strong>mutates</strong> state. Asking it about a call is also what records that call, so it must
 /// only ever be asked about calls that have cleared everything else. Running it earlier let blocked
 /// calls reset the no-progress counter, and an agent retrying a blocked call with a slightly different
 /// argument each time never tripped the guard it was spinning against.
+/// </description></item>
+/// <item><description>
+/// <see cref="ICallOnceGate"/> — durable call-once enforcement, last of all, and for the same
+/// "asking is claiming" reason as the loop guard: it too only makes sense to ask about a call that
+/// has cleared everything else. Unlike the loop guard it carries no in-process state — the claim is
+/// durable — so nothing here is reset per turn.
 /// </description></item>
 /// </list>
 /// <para>
@@ -162,9 +168,17 @@ public interface IToolCallAdmissionPipeline
     /// call history.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Called once at the start of a turn or a single invocation. Resetting the whole chain in one call
     /// is deliberate: the stateful parts were previously reset independently at each arming site, and a
     /// site that reset one but not the other carried a turn's history into the next.
+    /// </para>
+    /// <para>
+    /// <strong>Deliberately does not touch <see cref="ICallOnceGate"/>.</strong> That stage carries no
+    /// per-turn, in-process state to clear — its claim is durable, keyed by conversation, and surviving
+    /// exactly this reset (and everything else that resets per turn, per run, or per host) is the whole
+    /// point of it.
+    /// </para>
     /// </remarks>
     void Reset();
 }

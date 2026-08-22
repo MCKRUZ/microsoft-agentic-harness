@@ -297,18 +297,19 @@ public static class DependencyInjection
 
     /// <summary>
     /// Registers the composed tool-call admission chain: the turn's governance trace recorder, the
-    /// five gates it sequences, and the pipeline itself.
+    /// six gates it sequences, and the pipeline itself.
     /// </summary>
     /// <param name="services">The service collection to configure.</param>
     /// <returns>The service collection for chaining.</returns>
     /// <remarks>
     /// <para>
-    /// Registers the turn's governance trace recorder, the five admission gates
+    /// Registers the turn's governance trace recorder, the six admission gates
     /// (<see cref="Interfaces.Governance.IToolInvocationGovernor"/>,
     /// <see cref="Interfaces.Governance.IToolClassificationGate"/>,
     /// <see cref="Interfaces.Governance.IToolCallObserverChain"/>,
     /// <see cref="Interfaces.Governance.IAgentToolAuthorizationGate"/>,
-    /// <see cref="Interfaces.Governance.IProgressEvaluator"/>), and the
+    /// <see cref="Interfaces.Governance.IProgressEvaluator"/>,
+    /// <see cref="Interfaces.Governance.ICallOnceGate"/>), and the
     /// <see cref="Interfaces.Governance.IToolCallAdmissionPipeline"/> that composes them, so both the
     /// production composition root and a test fixture that wants a real chain build it from the one
     /// place that knows the current wiring.
@@ -359,7 +360,17 @@ public static class DependencyInjection
         // unconditionally so an unregistered gate and a switched-off gate are never confusable.
         services.TryAddScoped<Interfaces.Governance.IAgentToolAuthorizationGate, Services.Governance.DefaultAgentToolAuthorizationGate>();
 
-        // The composed chain over the five gates above. Every execution path that can reach a tool
+        // Gate 6 — durable call-once enforcement (opt-in via
+        // GovernanceDurableStateConfig.CallOnceEnforcementEnabled; a tool may be declared call-once
+        // and go unenforced with the toggle off, matching every other opt-in gate here). The policy
+        // registry is a singleton — it must outlive the tool-resolution scope that populates it — and
+        // is also injected into ToolChainBuilder. IToolCallLedger itself is registered by
+        // Infrastructure.AI (RegisterGovernanceStateServices), not here: this layer never references
+        // Infrastructure, and the ledger's two implementations live there.
+        services.TryAddSingleton<Interfaces.Governance.IToolCallOncePolicy, Services.Governance.ToolCallOncePolicy>();
+        services.TryAddScoped<Interfaces.Governance.ICallOnceGate, Services.Governance.CallOnceGate>();
+
+        // The composed chain over the six gates above. Every execution path that can reach a tool
         // calls this and nothing else, so a gate added here reaches all of them at once.
         services.TryAddScoped<Interfaces.Governance.IToolCallAdmissionPipeline, Services.Governance.ToolCallAdmissionPipeline>();
 

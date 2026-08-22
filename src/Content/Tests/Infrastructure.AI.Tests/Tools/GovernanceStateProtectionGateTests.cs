@@ -55,8 +55,13 @@ public sealed class GovernanceStateProtectionGateTests : IDisposable
     }
 
     private static GovernanceDurableStateConfig Durable(
-        bool escalations = false, bool changeProposals = false) =>
-        new() { EscalationsEnabled = escalations, ChangeProposalsEnabled = changeProposals };
+        bool escalations = false, bool changeProposals = false, bool callOnceEnforcement = false) =>
+        new()
+        {
+            EscalationsEnabled = escalations,
+            ChangeProposalsEnabled = changeProposals,
+            CallOnceEnforcementEnabled = callOnceEnforcement
+        };
 
     /// <summary>
     /// Boots a validator over the paths the gate produced, with the hard-link platform capability
@@ -112,15 +117,19 @@ public sealed class GovernanceStateProtectionGateTests : IDisposable
     }
 
     [Theory]
-    [InlineData(true, false)]
-    [InlineData(false, true)]
-    [InlineData(true, true)]
+    [InlineData(true, false, false)]
+    [InlineData(false, true, false)]
+    [InlineData(false, false, true)]
+    [InlineData(true, true, true)]
     public async Task EitherToggleOn_RegistersTheDirectoryEvenBeforeItExists(
-        bool escalations, bool changeProposals)
+        bool escalations, bool changeProposals, bool callOnceEnforcement)
     {
-        // Both toggles, because either one on its own puts records in that database — escalations
-        // write escalation_state, change proposals write change_proposal — and a gate that checked
-        // only EscalationsEnabled would leave a change-proposal-only host unguarded.
+        // All three toggles, because any one of them on its own puts records in that database —
+        // escalations write escalation_state, change proposals write change_proposal, and call-once
+        // enforcement writes tool_call_ledger — and a gate that checked only a subset would leave a
+        // host running just the omitted one unguarded. This is the exact shape #453/#473's own
+        // Common Mistakes entry warns about: a new toggle wired everywhere except one hand-maintained
+        // condition that claims to cover "either toggle."
         //
         // The directory deliberately does NOT exist yet: on a first run with durability enabled the
         // gate is evaluated at composition, before anything resolves the DbContext factory that
@@ -130,7 +139,7 @@ public sealed class GovernanceStateProtectionGateTests : IDisposable
             "the point of this case is that the directory has not been created yet");
 
         var protectedPaths = DependencyInjection.ResolveGovernanceStateProtectedPaths(
-            Durable(escalations, changeProposals), _governanceStateDirectory);
+            Durable(escalations, changeProposals, callOnceEnforcement), _governanceStateDirectory);
 
         protectedPaths.Should().ContainSingle().Which.Should().Be(
             _governanceStateDirectory,

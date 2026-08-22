@@ -56,13 +56,14 @@ public sealed class ToolCallAdmissionPipelineTests
             new ToolCallAdmissionRequest(Tool, Args, CountsTowardLoopDetection: true), CancellationToken.None);
 
         order.Should().Equal(
-            ["agent-authorization", "governor", "classification", "host-rules", "loop-guard"],
+            ["agent-authorization", "governor", "classification", "host-rules", "loop-guard", "call-once"],
             "agent RBAC runs first because it is the cheapest and most fundamental access question, "
             + "and because the governor can escalate to a human — nobody should be asked to approve a "
             + "call that RBAC refuses anyway; permission and policy then settle whether the agent may "
-            + "use the tool at all; the host's own rules run after them so they can only tighten; and "
-            + "the loop guard runs last because asking it is also what records the call, so it must "
-            + "only ever be asked about calls that reached the tool");
+            + "use the tool at all; the host's own rules run after them so they can only tighten; the "
+            + "loop guard runs after that because asking it is also what records the call, so it must "
+            + "only ever be asked about calls that reached the tool; and call-once enforcement runs "
+            + "last of all because it too only makes sense to ask about a call that cleared everything else");
     }
 
     [Theory]
@@ -71,6 +72,7 @@ public sealed class ToolCallAdmissionPipelineTests
     [InlineData("classification")]
     [InlineData("host-rules")]
     [InlineData("loop-guard")]
+    [InlineData("call-once")]
     public async Task AdmitAsync_AStageRefuses_NothingAfterItRuns(string refusingStage)
     {
         var order = new List<string>();
@@ -103,6 +105,25 @@ public sealed class ToolCallAdmissionPipelineTests
         admission.IsAllowed.Should().BeFalse();
         trace.Verify(
             t => t.RecordDownstreamBlock(Tool, It.Is<string>(r => r.Contains("authorization"))),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task AdmitAsync_CallOnceRefuses_TheRefusalIsRecordedOnTheTrace()
+    {
+        var trace = new Mock<IGovernanceTraceRecorder>();
+
+        var pipeline = AdmissionHarness.Pipeline(
+            trace: trace.Object,
+            callOnceGate: AdmissionHarness.DenyingCallOnceGate("already called").Object);
+
+        var admission = await pipeline.AdmitAsync(
+            new ToolCallAdmissionRequest(Tool, Args), CancellationToken.None);
+
+        admission.IsAllowed.Should().BeFalse();
+        admission.DeniedMessage.Should().Be("already called");
+        trace.Verify(
+            t => t.RecordDownstreamBlock(Tool, It.Is<string>(r => r.Contains("call-once"))),
             Times.Once);
     }
 
@@ -295,16 +316,24 @@ public sealed class ToolCallAdmissionPipelineTests
         // other carried a turn's history into the next. One call now covers both — the shared
         // governance trail, and the loop guard's own call history, which is the only per-turn state
         // that does not live on the trail.
+        //
+        // Deliberately does NOT include the call-once gate: it is a strict mock with no setup on
+        // this test's pipeline, so if Reset() were ever changed to touch it, this test would throw
+        // rather than silently pass — proving there is nothing here for Reset() to clear, not just
+        // failing to assert it was cleared. Its claim is durable and must survive exactly this call.
         var trace = AdmissionHarness.TraceRecorder();
         trace.Record(new ToolDecisionRecord(Tool, ToolDecisionOutcome.Denied, "nope", BlastRadius.Low,
             RequiredApproval: false, ApprovalGranted: false, Enforced: true));
         trace.RecordEscalation("progress.spin_detected");
         var progress = new Mock<IProgressEvaluator>();
+        var callOnceGate = new Mock<ICallOnceGate>(MockBehavior.Strict);
 
-        AdmissionHarness.Pipeline(progressEvaluator: progress.Object, trace: trace).Reset();
+        AdmissionHarness.Pipeline(
+            progressEvaluator: progress.Object, callOnceGate: callOnceGate.Object, trace: trace).Reset();
 
         trace.Snapshot().Should().BeSameAs(GovernanceTrace.Empty);
         progress.Verify(p => p.Reset(), Times.Once);
+        callOnceGate.VerifyNoOtherCalls();
     }
 
     [Fact]
@@ -384,9 +413,17 @@ public sealed class ToolCallAdmissionPipelineTests
                 ? ProgressVerdict.Halt("no")
                 : ProgressVerdict.Continue());
 
+        var callOnceGate = new Mock<ICallOnceGate>();
+        callOnceGate
+            .Setup(g => g.EvaluateAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Callback(() => order.Add("call-once"))
+            .ReturnsAsync(refusingStage == "call-once"
+                ? ToolInvocationDecision.Deny("no")
+                : ToolInvocationDecision.Allow());
+
         return new ToolCallAdmissionPipeline(
             authorizationGate.Object, governor.Object, classificationGate.Object, observers.Object,
-            progress.Object, AdmissionHarness.TraceRecorder(),
+            progress.Object, callOnceGate.Object, AdmissionHarness.TraceRecorder(),
             new Mock<IApprovalExecutionReporter>().Object,
             AdmissionHarness.PermissiveSanitizer(), AdmissionHarness.PermissiveRedactionFilter(),
             NullLogger<ToolCallAdmissionPipeline>.Instance);
@@ -400,7 +437,7 @@ public sealed class ToolCallAdmissionPipelineTests
         IContentRedactionFilter? redactionFilter = null) => new(
         Mock.Of<IAgentToolAuthorizationGate>(), Mock.Of<IToolInvocationGovernor>(),
         Mock.Of<IToolClassificationGate>(), Mock.Of<IToolCallObserverChain>(), Mock.Of<IProgressEvaluator>(),
-        AdmissionHarness.TraceRecorder(), reporter.Object,
+        Mock.Of<ICallOnceGate>(), AdmissionHarness.TraceRecorder(), reporter.Object,
         sanitizer ?? AdmissionHarness.PermissiveSanitizer(), redactionFilter ?? AdmissionHarness.PermissiveRedactionFilter(),
         NullLogger<ToolCallAdmissionPipeline>.Instance);
 

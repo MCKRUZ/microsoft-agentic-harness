@@ -54,6 +54,7 @@ internal static class PermissiveAdmission
             ClassificationGate(),
             observers ?? Mock.Of<IToolCallObserverChain>(),
             ProgressGuard(),
+            CallOnceGate(),
             TraceRecorder(),
             Mock.Of<IApprovalExecutionReporter>(),
             PermissiveSanitizer(),
@@ -93,6 +94,21 @@ internal static class PermissiveAdmission
             .Setup(p => p.Evaluate(It.IsAny<string>(), It.IsAny<Func<string?>>()))
             .Returns(ProgressVerdict.Continue());
         return progress.Object;
+    }
+
+    /// <summary>A call-once gate that admits everything — no fixture here declares a tool call-once.</summary>
+    /// <remarks>
+    /// Not <c>Mock.Of&lt;ICallOnceGate&gt;()</c>, for the same reason as <see cref="ProgressGuard"/>
+    /// and <see cref="ClassificationGate"/>: a loose mock's <c>EvaluateAsync</c> awaits to
+    /// <see langword="null"/>, and the chain is entitled to assume a verdict exists.
+    /// </remarks>
+    public static ICallOnceGate CallOnceGate()
+    {
+        var gate = new Mock<ICallOnceGate>();
+        gate
+            .Setup(g => g.EvaluateAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns(ValueTask.FromResult(ToolInvocationDecision.Allow()));
+        return gate.Object;
     }
 
     /// <summary>

@@ -2,6 +2,7 @@ using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Plugins;
 using Application.AI.Common.Interfaces.Tools;
+using Application.AI.Common.Services.Governance;
 using Application.AI.Common.Services.Tools;
 using Domain.AI.Skills;
 using Domain.AI.Tools;
@@ -31,7 +32,8 @@ public class ToolChainBuilderTests
         IToolConverter? toolConverter = null,
         IServiceProvider? serviceProvider = null,
         IMcpToolSurfaceScanner? surfaceScanner = null,
-        IOptionsMonitor<AIConfig>? aiConfig = null)
+        IOptionsMonitor<AIConfig>? aiConfig = null,
+        IToolCallOncePolicy? callOncePolicy = null)
     {
         return new ToolChainBuilder(
             NullLogger<ToolChainBuilder>.Instance,
@@ -39,7 +41,8 @@ public class ToolChainBuilderTests
             toolConverter,
             mcpToolProvider,
             surfaceScanner,
-            aiConfig);
+            aiConfig,
+            callOncePolicy: callOncePolicy);
     }
 
     /// <summary>
@@ -333,6 +336,112 @@ public class ToolChainBuilderTests
         var tools = await builder.BuildToolsAsync(skill, new SkillAgentOptions());
 
         tools.Should().Contain(t => t.Name == "calc");
+    }
+
+    // --- Call-once registration ---
+
+    [Fact]
+    public async Task BuildToolsAsync_ToolDeclaredCallOnce_RegistersItsResolvedNameWithThePolicy()
+    {
+        var toolMock = new Mock<ITool>();
+        toolMock.Setup(t => t.Name).Returns("start_diagnostic_session");
+
+        var converter = new Mock<IToolConverter>();
+        converter.Setup(c => c.Convert(toolMock.Object, null))
+            .Returns(AIFunctionFactory.Create(() => "converted", "start_diagnostic_session"));
+
+        var services = new ServiceCollection();
+        services.AddKeyedSingleton<ITool>("start_diagnostic_session", toolMock.Object);
+
+        var policy = new ToolCallOncePolicy();
+        var builder = CreateBuilder(
+            toolConverter: converter.Object,
+            serviceProvider: services.BuildServiceProvider(),
+            callOncePolicy: policy);
+
+        var skill = new SkillDefinition
+        {
+            Id = "diagnostics", Name = "diagnostics", Instructions = "Test",
+            ToolDeclarations = [new ToolDeclaration
+            {
+                Name = "start_diagnostic_session",
+                CallOncePerConversation = true
+            }]
+        };
+
+        await builder.BuildToolsAsync(skill, new SkillAgentOptions());
+
+        policy.IsCallOnce("start_diagnostic_session").Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task BuildToolsAsync_ToolNotDeclaredCallOnce_PolicyNeverConsulted()
+    {
+        var toolMock = new Mock<ITool>();
+        toolMock.Setup(t => t.Name).Returns("calc");
+
+        var converter = new Mock<IToolConverter>();
+        converter.Setup(c => c.Convert(toolMock.Object, null))
+            .Returns(AIFunctionFactory.Create(() => "converted", "calc"));
+
+        var services = new ServiceCollection();
+        services.AddKeyedSingleton<ITool>("calc", toolMock.Object);
+
+        var policy = new Mock<IToolCallOncePolicy>(MockBehavior.Strict);
+        var builder = CreateBuilder(
+            toolConverter: converter.Object,
+            serviceProvider: services.BuildServiceProvider(),
+            callOncePolicy: policy.Object);
+
+        var skill = new SkillDefinition
+        {
+            Id = "s", Name = "s", Instructions = "Test",
+            ToolDeclarations = [new ToolDeclaration { Name = "calc" }]
+        };
+
+        await builder.BuildToolsAsync(skill, new SkillAgentOptions());
+
+        policy.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task BuildToolsAsync_TwoSkillsResolveSameNameOneCallOnce_NameStaysCallOnceForBoth()
+    {
+        // Documents the known scoping limitation on RegisterCallOnce: enforcement is process-global
+        // by tool name, so a second skill resolving the same name inherits the first skill's
+        // call-once declaration even though it never made one itself.
+        var toolMock = new Mock<ITool>();
+        toolMock.Setup(t => t.Name).Returns("shared_tool");
+
+        var converter = new Mock<IToolConverter>();
+        converter.Setup(c => c.Convert(toolMock.Object, null))
+            .Returns(AIFunctionFactory.Create(() => "converted", "shared_tool"));
+
+        var services = new ServiceCollection();
+        services.AddKeyedSingleton<ITool>("shared_tool", toolMock.Object);
+
+        var policy = new ToolCallOncePolicy();
+        var builder = CreateBuilder(
+            toolConverter: converter.Object,
+            serviceProvider: services.BuildServiceProvider(),
+            callOncePolicy: policy);
+
+        var declaringSkill = new SkillDefinition
+        {
+            Id = "declaring-skill", Name = "declaring-skill", Instructions = "Test",
+            ToolDeclarations = [new ToolDeclaration { Name = "shared_tool", CallOncePerConversation = true }]
+        };
+        var unrelatedSkill = new SkillDefinition
+        {
+            Id = "unrelated-skill", Name = "unrelated-skill", Instructions = "Test",
+            ToolDeclarations = [new ToolDeclaration { Name = "shared_tool" }]
+        };
+
+        await builder.BuildToolsAsync(declaringSkill, new SkillAgentOptions());
+        await builder.BuildToolsAsync(unrelatedSkill, new SkillAgentOptions());
+
+        policy.IsCallOnce("shared_tool").Should().BeTrue(
+            "registration is process-global by name — see RegisterCallOnce's remarks");
     }
 
     [Fact]

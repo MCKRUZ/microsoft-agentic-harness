@@ -1,7 +1,9 @@
 using Application.AI.Common.Interfaces.Escalation;
+using Application.AI.Common.Interfaces.Governance;
 using Domain.Common.Config;
 using Infrastructure.AI.Changes;
 using Infrastructure.AI.Escalation;
+using Infrastructure.AI.Governance;
 using Infrastructure.AI.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -15,10 +17,10 @@ public static partial class DependencyInjection
     /// <summary>
     /// Registers the durable governance-state store (SQLite): the
     /// <see cref="GovernanceStateDbContext"/> factory, its schema initializer, the outcome
-    /// sealer, the retention pruner, both EF-backed store implementations, and the
-    /// <see cref="IEscalationStateStore"/> selection. Everything here is passive until a
-    /// <c>AppConfig:AI:Governance:DurableState</c> toggle opts in — with both toggles off
-    /// (the default) no database file, directory, or connection is ever created.
+    /// sealer, the retention pruner, the EF-backed store implementations, and the
+    /// <see cref="IEscalationStateStore"/>/<see cref="IToolCallLedger"/> selections. Everything
+    /// here is passive until a <c>AppConfig:AI:Governance:DurableState</c> toggle opts in — with
+    /// every toggle off (the default) no database file, directory, or connection is ever created.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -82,6 +84,8 @@ public static partial class DependencyInjection
         services.AddSingleton<EfCoreEscalationStateStore>();
         services.AddSingleton<NullEscalationStateStore>();
         services.AddSingleton<EfCoreChangeProposalStore>();
+        services.AddSingleton<EfCoreToolCallLedger>();
+        services.AddSingleton<NullToolCallLedger>();
 
         // Toggle read once, at first resolution (see remarks). The Null store preserves the
         // in-memory-only escalation behavior byte-for-byte when durability is off.
@@ -90,5 +94,14 @@ public static partial class DependencyInjection
                 .CurrentValue.AI.Governance.DurableState.EscalationsEnabled
                 ? sp.GetRequiredService<EfCoreEscalationStateStore>()
                 : sp.GetRequiredService<NullEscalationStateStore>());
+
+        // Same toggle-read-once pattern for the call-once ledger. Consumed by CallOnceGate
+        // (Application.AI.Common), registered unconditionally there so an unregistered gate and a
+        // switched-off gate are never confusable — the Null ledger IS the off state.
+        services.AddSingleton<IToolCallLedger>(sp =>
+            sp.GetRequiredService<IOptionsMonitor<AppConfig>>()
+                .CurrentValue.AI.Governance.DurableState.CallOnceEnforcementEnabled
+                ? sp.GetRequiredService<EfCoreToolCallLedger>()
+                : sp.GetRequiredService<NullToolCallLedger>());
     }
 }

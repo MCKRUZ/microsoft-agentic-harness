@@ -235,6 +235,59 @@ You are a thorough research assistant. When given a question, you:
                         below.
                     </p>
 
+                    <h3>The richer <code>tools:</code> block</h3>
+                    <p>
+                        <code>allowed-tools:</code> is a bare name list — enough when a skill just needs a tool
+                        available. A skill that needs to say more about <em>how</em> it uses a tool — required
+                        operations, a fallback if the tool is unavailable, or that a tool must be called at most
+                        once per conversation — declares a structured <code>tools:</code> block instead. Each entry
+                        parses into a <code>Domain.AI.Tools.ToolDeclaration</code>:
+                    </p>
+                    <div class="code-block">
+                        <div class="code-block-header"><span class="code-block-lang">markdown · SKILL.md frontmatter</span></div>
+                        <pre><code>---
+id: diagnostics
+name: Diagnostic Agent
+tools:
+  - name: start_diagnostic_session
+    operations: [open, close]
+    optional: false
+    call-once-per-conversation: true    # refused durably on a second call — see below
+    description: Opens the stateful session a diagnostic conversation runs inside.
+  - name: github_repos
+    optional: true
+    fallback: file_system
+    description: Looks up related issues when available.
+---</code></pre>
+                    </div>
+                    <ul>
+                        <li><strong><code>name</code></strong> — the tool name (keyed-DI key, or an MCP server name in Managed mode). An entry with no name is dropped, not loaded nameless.</li>
+                        <li><strong><code>operations</code></strong> — the specific operations this skill uses; empty means all are allowed.</li>
+                        <li><strong><code>optional</code></strong> — whether the skill can function without this tool. Absent means <strong>required</strong>: <code>ToolChainBuilder</code> throws at resolution rather than silently proceeding without a tool the skill depends on.</li>
+                        <li><strong><code>fallback</code></strong> — another tool name to substitute, or the literal <code>manual</code> for "a human does it instead."</li>
+                        <li><strong><code>call-once-per-conversation</code></strong> — when <code>true</code>, the admission chain's <code>ICallOnceGate</code> refuses a second call to this tool within the same conversation, durably — surviving across turns, across separate runs continuing the same conversation, and across hosts. Absent (or <code>false</code>) is the default: an ordinary, repeatable tool. Enforcement itself is a separate host opt-in — see <a href="../security/03-autonomy-and-governance.html#governance-behavior">Autonomy &amp; Governance</a> — so a skill can declare a tool call-once well before a host chooses to enforce it.</li>
+                    </ul>
+                    <div class="callout callout-tip">
+                        <span class="callout-icon">✓</span>
+                        <div class="callout-body">
+                            <div class="callout-title">Use <code>call-once-per-conversation</code> for a side effect that can't repeat, not as a rate limit</div>
+                            <p style="margin: 0">
+                                It's the right fit for a tool that opens a stateful session or triggers a
+                                non-idempotent external action — something genuinely unsafe to run twice in one
+                                logical conversation. It is a hard guarantee enforced by the harness itself, not a
+                                hint the model might forget: even a confused or adversarially-prompted model cannot
+                                call the tool a second time once the first call has been recorded.
+                            </p>
+                            <p style="margin: 8px 0 0 0">
+                                Enforcement is <strong>process-global by tool name</strong>, not scoped to this
+                                skill. If a different skill resolves a tool that happens to share this exact
+                                name, its calls are refused too — safe for the common case, since a first-party
+                                keyed-DI tool name is meant to identify one capability across the whole harness,
+                                but the wrong choice if two genuinely unrelated tools could ever share a name.
+                            </p>
+                        </div>
+                    </div>
+
                     <h2>How a skill becomes an agent</h2>
                     <p>The runtime journey of a skill, end-to-end:</p>
 

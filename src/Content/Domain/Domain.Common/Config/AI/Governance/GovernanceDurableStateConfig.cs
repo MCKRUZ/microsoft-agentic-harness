@@ -26,11 +26,13 @@ namespace Domain.Common.Config.AI.Governance;
 /// eventual outcome is durably queryable.
 /// </para>
 /// <para>
-/// <b>Prerequisite when either toggle is true:</b> HMAC attestation key material must be
-/// configured (User Secrets / Key Vault, never appsettings). Persisted escalation outcomes and
-/// change proposals are sealed with it, each bound to its own record id, and a record whose
-/// seal does not verify is never served or re-driven — otherwise anyone with write access to
-/// the database file could launder a forged approval into the hash-chained audit log.
+/// <b>Prerequisite when <see cref="EscalationsEnabled"/> or <see cref="ChangeProposalsEnabled"/>
+/// is true:</b> HMAC attestation key material must be configured (User Secrets / Key Vault,
+/// never appsettings). Persisted escalation outcomes and change proposals are sealed with it,
+/// each bound to its own record id, and a record whose seal does not verify is never served or
+/// re-driven — otherwise anyone with write access to the database file could launder a forged
+/// approval into the hash-chained audit log. <see cref="CallOnceEnforcementEnabled"/> does not
+/// share this prerequisite — see its own remarks.
 /// </para>
 /// <para>
 /// <b>Key retirement is destructive here.</b> A seal records the key version that produced it,
@@ -59,9 +61,27 @@ public sealed class GovernanceDurableStateConfig
     public bool ChangeProposalsEnabled { get; set; }
 
     /// <summary>
-    /// Path of the SQLite database file holding both escalation state and change proposals.
-    /// Relative paths resolve from the application base directory. The path is normalized and
-    /// must remain under that directory; the containing folder is created lazily, on first use.
+    /// When true, a tool declared <c>CallOncePerConversation</c> is enforced durably: the
+    /// admission pipeline refuses a second call to it within the same conversation, keyed by
+    /// conversation id, surviving across turns, across separate runs continuing the same
+    /// conversation, and across hosts sharing this database. Default false — call-once tools
+    /// are declared but not enforced until a template consumer opts in.
+    /// </summary>
+    /// <remarks>
+    /// Does <b>not</b> require HMAC attestation key material, unlike
+    /// <see cref="EscalationsEnabled"/> and <see cref="ChangeProposalsEnabled"/>. A ledger row
+    /// here records a refusal-producing fact ("this tool already ran"), not an approval-producing
+    /// one: forging or corrupting a row can only make the system MORE restrictive — it denies a
+    /// call that should have been allowed — never less, so there is no equivalent of laundering
+    /// a forged approval for an attacker to gain from.
+    /// </remarks>
+    public bool CallOnceEnforcementEnabled { get; set; }
+
+    /// <summary>
+    /// Path of the SQLite database file holding escalation state, change proposals, and the
+    /// call-once tool ledger. Relative paths resolve from the application base directory. The
+    /// path is normalized and must remain under that directory; the containing folder is
+    /// created lazily, on first use.
     /// </summary>
     /// <remarks>
     /// Deliberately <b>not</b> under <c>.agent-sessions/</c>. That tree is the harness's own
@@ -80,7 +100,7 @@ public sealed class GovernanceDurableStateConfig
 
     /// <summary>
     /// How long (in days) terminal records are retained before the prune pass deletes them.
-    /// Without this, both tables grow without bound. Zero or negative disables pruning
+    /// Without this, all three tables grow without bound. Zero or negative disables pruning
     /// entirely (the operator takes over retention). Default 90 days.
     /// </summary>
     public int RetentionDays { get; set; } = 90;

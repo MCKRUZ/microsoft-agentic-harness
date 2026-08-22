@@ -208,7 +208,8 @@ public static partial class DependencyInjection
         if (string.IsNullOrWhiteSpace(governanceStateDirectory))
             return [];
 
-        if (durableState.EscalationsEnabled || durableState.ChangeProposalsEnabled)
+        if (durableState.EscalationsEnabled || durableState.ChangeProposalsEnabled ||
+            durableState.CallOnceEnforcementEnabled)
             return [governanceStateDirectory];
 
         return Directory.Exists(governanceStateDirectory) ? [governanceStateDirectory] : [];
