@@ -100,8 +100,11 @@ public sealed class GovernanceDurableStateConfig
 
     /// <summary>
     /// How long (in days) terminal records are retained before the prune pass deletes them.
-    /// Without this, all three tables grow without bound. Zero or negative disables pruning
-    /// entirely (the operator takes over retention). Default 90 days.
+    /// Governs the escalation and change-proposal tables only — the call-once tool ledger is
+    /// never pruned by this setting; see <c>GovernanceStatePruner</c>'s remarks for why a ledger
+    /// row cannot be safely aged out and is left to grow without bound regardless of this value.
+    /// Zero or negative disables pruning of the two governed tables entirely (the operator takes
+    /// over retention). Default 90 days.
     /// </summary>
     public int RetentionDays { get; set; } = 90;
 

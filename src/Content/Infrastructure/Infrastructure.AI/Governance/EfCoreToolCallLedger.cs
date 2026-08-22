@@ -18,17 +18,11 @@ namespace Infrastructure.AI.Governance;
 /// letting SQLite reject a duplicate is what keeps the check-and-claim atomic under a parallel
 /// batch of calls to the same tool within one assistant message. Matches
 /// <c>EfCoreConversationStore.IsDuplicateConversationId</c>'s reasoning for accepting either
-/// extended result code: which one SQLite reports depends on how the key is declared, not on
-/// anything the caller controls.
+/// <see cref="SqliteErrorCodes"/> value: which one SQLite reports depends on how the key is
+/// declared, not on anything the caller controls.
 /// </remarks>
 public sealed class EfCoreToolCallLedger : IToolCallLedger
 {
-    /// <summary>SQLite's <c>SQLITE_CONSTRAINT_PRIMARYKEY</c> extended result code.</summary>
-    private const int SqliteConstraintPrimaryKey = 1555;
-
-    /// <summary>SQLite's <c>SQLITE_CONSTRAINT_UNIQUE</c> extended result code.</summary>
-    private const int SqliteConstraintUnique = 2067;
-
     private readonly IDbContextFactory<GovernanceStateDbContext> _contextFactory;
     private readonly TimeProvider _time;
     private readonly ILogger<EfCoreToolCallLedger> _logger;
@@ -108,6 +102,6 @@ public sealed class EfCoreToolCallLedger : IToolCallLedger
     private static bool IsDuplicateClaim(DbUpdateException ex) =>
         ex.InnerException is SqliteException
         {
-            SqliteExtendedErrorCode: SqliteConstraintPrimaryKey or SqliteConstraintUnique
+            SqliteExtendedErrorCode: SqliteErrorCodes.ConstraintPrimaryKey or SqliteErrorCodes.ConstraintUnique
         };
 }
