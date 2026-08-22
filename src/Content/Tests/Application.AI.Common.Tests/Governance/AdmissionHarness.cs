@@ -31,7 +31,8 @@ internal static class AdmissionHarness
         IProgressEvaluator? progressEvaluator = null,
         IAgentToolAuthorizationGate? authorizationGate = null,
         ICallOnceGate? callOnceGate = null,
-        IGovernanceTraceRecorder? trace = null) =>
+        IGovernanceTraceRecorder? trace = null,
+        ICompositeResponseSanitizer? sanitizer = null) =>
         new(authorizationGate ?? PermissiveAuthorizationGate(),
             governor ?? PermissiveGovernor(),
             classificationGate ?? PermissiveClassificationGate(),
@@ -40,7 +41,7 @@ internal static class AdmissionHarness
             callOnceGate ?? PermissiveCallOnceGate(),
             trace ?? TraceRecorder(),
             Mock.Of<IApprovalExecutionReporter>(),
-            PermissiveSanitizer(),
+            sanitizer ?? PermissiveSanitizer(),
             PermissiveRedactionFilter(),
             NullLogger<ToolCallAdmissionPipeline>.Instance);
 

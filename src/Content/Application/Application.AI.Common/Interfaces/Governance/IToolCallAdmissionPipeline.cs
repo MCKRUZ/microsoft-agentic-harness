@@ -91,13 +91,25 @@ public interface IToolCallAdmissionPipeline
     /// <param name="toolName">The tool that produced <paramref name="result"/>.</param>
     /// <param name="result">The tool's raw result.</param>
     /// <returns>
-    /// <paramref name="result"/> unchanged unless the admission carried a redact verdict, in which case
-    /// the scrubbed result.
+    /// <paramref name="result"/>'s text, run unconditionally through the general-purpose sanitizer
+    /// (injection payloads, invisible characters, exfiltration URLs) and, when the admission carried a
+    /// redact verdict, additionally scrubbed for data sensitivity. A structured (non-text) result is
+    /// returned unchanged either way — the sanitizer operates on free text.
     /// </returns>
     /// <remarks>
+    /// <para>
     /// Admission is not purely a pre-call decision: a classified asset can be allowed through and have
     /// its output scrubbed instead of being refused outright. Keeping that second half here means a
     /// caller never has to hold the classification gate itself, and cannot forget to consult it.
+    /// </para>
+    /// <para>
+    /// <strong>The sanitize pass is unconditional, not gated on <see cref="ToolCallAdmission.RedactsOutput"/>.</strong>
+    /// A tool's result is attacker-influenced content on this method's one caller — the agent turn,
+    /// which hands the result straight to the model — regardless of whether the classification gate ever
+    /// flagged this particular call for redaction. Gating the sanitizer on that flag would leave every
+    /// unclassified or intentionally-unredacted tool call with no injection-scrubbing pass at all (#469),
+    /// unlike this pipeline's other execution paths, which already sanitize unconditionally.
+    /// </para>
     /// </remarks>
     object? ApplyOutputPolicy(ToolCallAdmission admission, string toolName, object? result);
 

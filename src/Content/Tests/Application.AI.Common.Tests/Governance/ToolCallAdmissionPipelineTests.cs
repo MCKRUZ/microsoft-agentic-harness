@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using Application.AI.Common.Interfaces.Escalation;
 using Application.AI.Common.Interfaces.Governance;
@@ -264,14 +265,65 @@ public sealed class ToolCallAdmissionPipelineTests
     }
 
     [Fact]
-    public void ApplyOutputPolicy_PlainAllow_ReturnsTheResultUntouchedWithoutCallingTheGate()
+    public void ApplyOutputPolicy_PlainAllow_SanitizesTheResultWithoutCallingTheClassificationGate()
     {
+        // #469: a plain allow never consults the classification gate at all — the sanitizer is the
+        // only guarantee a plain-allow result gets. A permissive (no-op) sanitizer mock would let this
+        // test pass whether or not the sanitizer actually ran; asserting a real transformation is what
+        // proves it does.
         var gate = new Mock<IToolClassificationGate>(MockBehavior.Strict);
-        var pipeline = AdmissionHarness.Pipeline(classificationGate: gate.Object);
+        var sanitizer = new Mock<ICompositeResponseSanitizer>();
+        sanitizer
+            .Setup(s => s.Sanitize(It.IsAny<string>(), It.IsAny<string?>()))
+            .Returns((string content, string? _) =>
+                SanitizationResult.Clean(content.Replace("secret", "[SCRUBBED]")));
+        var pipeline = AdmissionHarness.Pipeline(classificationGate: gate.Object, sanitizer: sanitizer.Object);
 
-        pipeline.ApplyOutputPolicy(ToolCallAdmission.Allow(), Tool, "plain").Should().Be("plain");
+        pipeline.ApplyOutputPolicy(ToolCallAdmission.Allow(), Tool, "a secret value")
+            .Should().Be("a [SCRUBBED] value");
 
         gate.Verify(g => g.RedactResult(It.IsAny<string>(), It.IsAny<object?>()), Times.Never);
+    }
+
+    [Fact]
+    public void ApplyOutputPolicy_PlainAllow_JsonElementResult_SanitizesWithoutUnwrappingTheShape()
+    {
+        // A genuine tool success reaches this method as a JsonElement, not a raw string — the
+        // function-invocation pipeline's own default marshaling (see GovernedAIFunction's remarks on
+        // Unwrap). Returning a bare string here instead would silently change how the model-facing
+        // chat client quotes the result for every successful, unredacted tool call — the bug an
+        // earlier cut of the #469 fix shipped, caught by code review rather than by a test.
+        var gate = new Mock<IToolClassificationGate>(MockBehavior.Strict);
+        var sanitizer = new Mock<ICompositeResponseSanitizer>();
+        sanitizer
+            .Setup(s => s.Sanitize(It.IsAny<string>(), It.IsAny<string?>()))
+            .Returns((string content, string? _) =>
+                SanitizationResult.Clean(content.Replace("secret", "[SCRUBBED]")));
+        var pipeline = AdmissionHarness.Pipeline(classificationGate: gate.Object, sanitizer: sanitizer.Object);
+        var element = JsonSerializer.SerializeToElement("a secret value");
+
+        var result = pipeline.ApplyOutputPolicy(ToolCallAdmission.Allow(), Tool, element);
+
+        var resultElement = result.Should().BeOfType<JsonElement>().Subject;
+        resultElement.ValueKind.Should().Be(JsonValueKind.String);
+        resultElement.GetString().Should().Be("a [SCRUBBED] value");
+    }
+
+    [Fact]
+    public void ApplyOutputPolicy_PlainAllow_StructuredResult_ReturnsUnchanged()
+    {
+        // The sanitizer operates on free text: a structured JSON object/array (or any other type) is
+        // not text to sanitize, and rewriting its raw form risks a malformed result the model then
+        // mis-parses. Mirrors DefaultToolClassificationGate.RedactResult's own documented behavior for
+        // the same shape.
+        var gate = new Mock<IToolClassificationGate>(MockBehavior.Strict);
+        var sanitizer = new Mock<ICompositeResponseSanitizer>(MockBehavior.Strict);
+        var pipeline = AdmissionHarness.Pipeline(classificationGate: gate.Object, sanitizer: sanitizer.Object);
+        var structured = JsonSerializer.SerializeToElement(new { name = "file.txt" });
+
+        pipeline.ApplyOutputPolicy(ToolCallAdmission.Allow(), Tool, structured)
+            .Should().BeOfType<JsonElement>()
+            .Which.GetProperty("name").GetString().Should().Be("file.txt");
     }
 
     [Fact]

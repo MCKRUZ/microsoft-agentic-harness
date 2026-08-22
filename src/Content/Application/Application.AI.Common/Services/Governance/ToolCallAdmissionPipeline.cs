@@ -85,8 +85,12 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
     /// Closes the approval loop for a call this pipeline approved — see <see cref="ReportExecutionAsync"/>.
     /// </param>
     /// <param name="sanitizer">
-    /// Prepares a failed call's raw failure text for reporting, along with <paramref name="redactionFilter"/>
-    /// — see <see cref="ReportExecutionAsync"/> and <see cref="ReportedFailureText.PrepareForReporting"/>.
+    /// Two independent uses. Paired with <paramref name="redactionFilter"/>, prepares a failed call's
+    /// raw failure text for reporting — see <see cref="ReportExecutionAsync"/> and
+    /// <see cref="ReportedFailureText.PrepareForReporting"/>. On its own, also the unconditional
+    /// injection-scrubber every plain-allow tool result is run through in
+    /// <see cref="ApplyOutputPolicy"/> — see #469; that path never reaches
+    /// <paramref name="redactionFilter"/> at all.
     /// </param>
     /// <param name="redactionFilter">Scrubs known secret patterns from a failed call's reported text.</param>
     /// <param name="logger">Records a redaction that could not be applied.</param>
@@ -247,9 +251,22 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
     {
         ArgumentNullException.ThrowIfNull(admission);
 
+        // #469: a plain allow still runs the tool's own text through the general-purpose sanitizer —
+        // the injection scrubber, unconditionally, regardless of what the classification gate decided.
+        // A redact verdict already gets this via RedactResult (the same ICompositeResponseSanitizer,
+        // one call below), so this only changes the previously-uncovered case: an MCP or skill-provided
+        // tool whose call was never flagged for redaction could otherwise put an injection payload
+        // straight into the agent's own context on this, the primary autonomous tool-calling path — the
+        // one guarantee DirectToolInvoker's and ToolUseStepExecutor's sibling paths already gave every
+        // result unconditionally.
+        // ToolResultText.TransformText is what keeps this in shape-preserving lockstep with
+        // DefaultToolClassificationGate.RedactResult (the RedactsOutput branch above): both route a
+        // tool result's text through the same shape-preserving primitive rather than each hand-rolling
+        // the string/JsonElement switch, which is what let them diverge the first time this was
+        // written — this branch preserved shape, RedactResult silently didn't.
         return admission.RedactsOutput
             ? _classificationGate.RedactResult(toolName, result)
-            : result;
+            : ToolResultText.TransformText(result, text => _sanitizer.Sanitize(text, toolName).SanitizedContent);
     }
 
     /// <inheritdoc />
