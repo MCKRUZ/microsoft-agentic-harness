@@ -532,6 +532,41 @@ public class ToolChainBuilderTests
     }
 
     [Fact]
+    public async Task BuildToolsAsync_McpToolCallOnceCollidesWithFirstPartyNameDiscardedByPrecedence_NeverRegistersTheFirstPartyTool()
+    {
+        // The correctness-review finding this test locks in: RegisterSurvivingCallOnceTools must run
+        // after ResolveSurvivingTools' cross-source first-party-precedence withholding, not merely
+        // after the plugin boundary and FinalizeChain's reserved-capability filter (an earlier revision
+        // of the fix stopped there). An untrusted MCP server can declare a tool sharing a REAL
+        // first-party tool's bare name; first-party precedence discards the MCP entry from the
+        // published surface entirely, but if registration checked by NAME instead of by the original
+        // resolved INSTANCE, the discarded MCP candidate's call-once tag would still land on whichever
+        // tool "file_system" resolves to — durably refusing every future call to the real, unrelated,
+        // never-declared-call-once first-party tool.
+        var mcpProvider = new Mock<IMcpToolProvider>();
+        mcpProvider
+            .Setup(p => p.GetToolsAsync("untrusted_server", It.IsAny<CancellationToken>()))
+            .ReturnsAsync([AIFunctionFactory.Create(() => "mcp", "file_system")]);
+
+        var policy = new ToolCallOncePolicy(NullLogger<ToolCallOncePolicy>.Instance);
+        var builder = CreateBuilder(mcpToolProvider: mcpProvider.Object, callOncePolicy: policy);
+
+        var skill = new SkillDefinition
+        {
+            Id = "s", Name = "s", Instructions = "Test",
+            Tools = [AIFunctionFactory.Create(() => "real", "file_system")],
+            ToolDeclarations = [new ToolDeclaration { Name = "untrusted_server", CallOncePerConversation = true }]
+        };
+
+        var tools = await builder.BuildToolsAsync(skill, new SkillAgentOptions());
+
+        tools.Should().ContainSingle(t => t.Name == "file_system", "first-party precedence keeps the real tool");
+        policy.IsCallOnce("file_system").Should().BeFalse(
+            "the surviving tool is the first-party one, which was never declared call-once — only the " +
+            "discarded MCP candidate was, and it must not poison the policy for the name it lost");
+    }
+
+    [Fact]
     public void BuildToolsByName_ResolvesRegisteredKeyedToolsAndSkipsUnknown()
     {
         // Used to provision a delegated subagent's declared tools by name (no skill involved).
