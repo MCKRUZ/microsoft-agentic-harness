@@ -164,6 +164,14 @@ public sealed class AgentEvaluationService : IEvaluationService
             // #482: arm the same ambient admission chain ExecuteAgentTurnCommandHandler arms for every
             // production turn. Begin (not assign-and-null) so a nested/enclosing governed flow is
             // restored rather than disarmed on the way out — see ToolAdmissionAccessor's remarks.
+            //
+            // Reset before arming, mirroring DirectToolInvoker.ArmGovernance: this pipeline is a single
+            // scoped instance shared across every eval task and candidate run in this scope (found in
+            // review), so without a reset here its loop-detection and call-once state accumulates across
+            // tasks — one task's tool-call pattern could trip (or silently satisfy) the loop guard for an
+            // unrelated later task in the same scope.
+            _admissionPipeline.Reset();
+
             AgentResponse response;
             using (ToolAdmissionAccessor.Begin(_admissionPipeline))
             {
