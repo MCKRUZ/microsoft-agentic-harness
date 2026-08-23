@@ -578,6 +578,43 @@ public sealed class DirectToolInvokerTests
     }
 
     [Fact]
+    public async Task A_redact_verdict_scrubs_a_failing_tools_error_before_it_leaves()
+    {
+        // Code review on the PR that added #479/#484's guarantees to the success path above caught
+        // that the failure branch never picked them up — a call the gate flagged as touching sensitive
+        // data could fail with that data embedded in its own error text (a connection string, a stack
+        // trace carrying an API key) and the caller-facing Error would carry it unredacted, even though
+        // the identical scenario on the success path was already covered by
+        // A_redact_verdict_scrubs_the_output_before_it_leaves.
+        _classificationGate = new FakeClassificationGate(ClassificationVerdict.RedactOutput());
+        _sanitizer.PassThrough = true;
+        var tool = Tool("alpha", result: ToolResult.Fail("classified failure detail"));
+
+        var outcome = await Invoke(Request("alpha"), tool);
+
+        outcome.Status.Should().Be(DirectToolInvocationStatus.ToolFailed);
+        outcome.Error.Should().Be(FakeClassificationGate.Redacted);
+    }
+
+    [Fact]
+    public async Task A_redaction_that_cannot_be_applied_to_a_failing_tools_error_withholds_it()
+    {
+        // The failure-path mirror of A_redaction_that_cannot_be_applied_withholds_the_result: a gate
+        // that cannot redact must fail closed for an error the same way it does for an output.
+        _classificationGate = new FakeClassificationGate(ClassificationVerdict.RedactOutput())
+        {
+            RedactionResult = 42
+        };
+        _sanitizer.PassThrough = true;
+        var tool = Tool("alpha", result: ToolResult.Fail("classified failure detail"));
+
+        var outcome = await Invoke(Request("alpha"), tool);
+
+        outcome.Status.Should().Be(DirectToolInvocationStatus.Denied);
+        outcome.Error.Should().NotContain("classified failure detail");
+    }
+
+    [Fact]
     public async Task A_failing_tools_error_is_bounded_like_its_output()
     {
         // An error string is as capable of being enormous as an output one — a tool echoing a large

@@ -62,7 +62,24 @@ public sealed partial class DirectToolInvoker
 
         if (!result.Success)
         {
-            var (error, _) = ScrubAndBound(result.Error ?? "The tool reported a failure.", ceiling, armed.ToolName);
+            var rawError = result.Error ?? "The tool reported a failure.";
+
+            // Classification-gate redaction applies here too, not just to a success. A call the gate
+            // flagged as touching sensitive data can fail with that data embedded in its own error
+            // text (a connection string, a stack trace carrying an API key) exactly as easily as it
+            // can succeed with it in its output — code review on the PR that added #479/#484's
+            // guarantees to the success path below caught that this branch never picked them up.
+            var (preCutError, _) = PreCutForScrub(rawError, ceiling);
+            if (!armed.AdmissionPipeline.TryApplyTextOutputPolicy(admission, armed.ToolName, preCutError, out var admittedError))
+            {
+                return DirectToolInvocationOutcome.Refused(
+                    DirectToolInvocationStatus.Denied,
+                    GovernanceDenials.NotPermitted(armed.ToolName),
+                    duration);
+            }
+
+            // No ErrorTruncated outcome field exists to report a drop on, matching prior behavior.
+            var (error, _) = ScrubAndBound(admittedError ?? string.Empty, ceiling, armed.ToolName);
             return new DirectToolInvocationOutcome
             {
                 Status = DirectToolInvocationStatus.ToolFailed,

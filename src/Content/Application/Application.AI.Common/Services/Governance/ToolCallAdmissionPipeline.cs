@@ -264,21 +264,18 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
     {
         ArgumentNullException.ThrowIfNull(admission);
 
-        // #479: null content has nothing to sanitize or redact — exempt from both paths exactly as it
-        // always was for the non-redact path. Routing it through ToolResultText.Sanitize below would
-        // hit the default (unrecognized-shape) case and return null unchanged, which is
-        // indistinguishable from "the gate failed closed" to the `is string text` check that follows —
-        // so it is handled here, explicitly, rather than relying on that check to do it by accident.
-        if (content is null)
-        {
-            result = null;
-            return true;
-        }
-
         // #479: sanitize unconditionally on both branches, the same guarantee ApplyOutputPolicy carries
         // (#469) — this method used to sanitize only when a redaction was required, leaving the
         // invariant enforced by caller discipline (both current callers ran their own unconditional
         // scrub immediately after) rather than by this interface itself.
+        //
+        // Null content is deliberately NOT special-cased ahead of this branch: ToolResultText.Sanitize
+        // already answers null with null on the non-redact path (its default, unrecognized-shape case),
+        // and on the redact path _classificationGate.RedactResult answers null with null too — which
+        // then correctly fails the `is string text` check below and fails closed, exactly as it did
+        // before #479. A short-circuit here that returned true for null unconditionally would silently
+        // skip that fail-closed check for a redact-required call that happens to have no content yet,
+        // turning a denial into a reported success — caught by code review on the PR that introduced it.
         var processed = admission.RedactsOutput
             ? _classificationGate.RedactResult(toolName, content)
             : ToolResultText.Sanitize(content, _sanitizer, toolName);
@@ -286,6 +283,14 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
         if (processed is string text)
         {
             result = text;
+            return true;
+        }
+
+        if (content is null && !admission.RedactsOutput)
+        {
+            // The non-redact path's only non-string outcome for null input is null itself (Sanitize's
+            // default case) — not a fail-closed signal, just "there was nothing to sanitize."
+            result = null;
             return true;
         }
 

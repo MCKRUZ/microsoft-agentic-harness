@@ -335,16 +335,34 @@ public sealed class ToolCallAdmissionPipelineTests
     }
 
     [Fact]
-    public void TryApplyTextOutputPolicy_NullContent_PassesThroughWithoutSanitizingOrRedacting()
+    public void TryApplyTextOutputPolicy_PlainAllow_NullContent_PassesThroughWithoutSanitizing()
     {
         var sanitizer = new Mock<ICompositeResponseSanitizer>(MockBehavior.Strict);
-        var gate = new Mock<IToolClassificationGate>(MockBehavior.Strict);
-        var pipeline = AdmissionHarness.Pipeline(classificationGate: gate.Object, sanitizer: sanitizer.Object);
+        var pipeline = AdmissionHarness.Pipeline(sanitizer: sanitizer.Object);
+
+        var ok = pipeline.TryApplyTextOutputPolicy(ToolCallAdmission.Allow(), Tool, null, out var result);
+
+        ok.Should().BeTrue("there is nothing to sanitize in an absent result");
+        result.Should().BeNull();
+    }
+
+    [Fact]
+    public void TryApplyTextOutputPolicy_RedactVerdict_NullContent_FailsClosed()
+    {
+        // Regression: an early null-content short-circuit ahead of the RedactsOutput branch would
+        // silently answer true for a redact-required call with no content yet — turning a denial into
+        // a reported success with no fail-closed signal at all. Caught by code review on the PR that
+        // introduced it (#479). A real classification gate answers a null target the same way it
+        // answers any non-string result: not a string, so this must fail closed exactly like
+        // TryApplyTextOutputPolicy_RedactVerdict_ClassificationGateReturnsNonString_FailsClosed.
+        var gate = new Mock<IToolClassificationGate>();
+        gate.Setup(g => g.RedactResult(Tool, null)).Returns((object?)null);
+        var pipeline = AdmissionHarness.Pipeline(classificationGate: gate.Object);
 
         var ok = pipeline.TryApplyTextOutputPolicy(
             ToolCallAdmission.AllowWithOutputRedaction(), Tool, null, out var result);
 
-        ok.Should().BeTrue("there is nothing to sanitize or redact in an absent result");
+        ok.Should().BeFalse("a redact-required call must never report success just because there was nothing to redact yet");
         result.Should().BeNull();
     }
 
