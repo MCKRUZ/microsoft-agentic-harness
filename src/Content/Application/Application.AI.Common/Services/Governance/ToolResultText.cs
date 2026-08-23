@@ -144,7 +144,13 @@ internal static class ToolResultText
         }
     }
 
-    private static bool TryGetContentArray(JsonElement element, out JsonElement content) =>
+    /// <summary>
+    /// Recognizes the MCP wire shape's top-level <c>content</c> array by structure — shared with
+    /// <see cref="Tools.McpFailureNormalizingAIFunction"/>, which recognizes the same array to find a
+    /// failure's text rather than to rewrite one. Kept as one structural check rather than two so the
+    /// "what does an MCP content array look like" knowledge can't drift between the two call sites.
+    /// </summary>
+    internal static bool TryGetContentArray(JsonElement element, out JsonElement content) =>
         element.TryGetProperty("content", out content) && content.ValueKind == JsonValueKind.Array;
 
     /// <summary>

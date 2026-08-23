@@ -286,10 +286,13 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
             return true;
         }
 
-        if (content is null && !admission.RedactsOutput)
+        if (!admission.RedactsOutput)
         {
-            // The non-redact path's only non-string outcome for null input is null itself (Sanitize's
-            // default case) — not a fail-closed signal, just "there was nothing to sanitize."
+            // Reaching here on the non-redact branch means content was null: ToolResultText.Sanitize's
+            // only non-string outcome for a string? input is null-in -> null-out (its default,
+            // unrecognized-shape case), and every non-null string always comes back as a string from
+            // its `case string content:` branch — so `processed is string text` above already ruled
+            // out every other possibility on this branch.
             result = null;
             return true;
         }

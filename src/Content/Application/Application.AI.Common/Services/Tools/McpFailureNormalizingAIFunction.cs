@@ -1,3 +1,4 @@
+using Application.AI.Common.Services.Governance;
 using Microsoft.Extensions.AI;
 using System.Text.Json;
 
@@ -60,7 +61,7 @@ internal sealed class McpFailureNormalizingAIFunction : DelegatingAIFunction
         if (!element.TryGetProperty("isError", out var isError) || isError.ValueKind != JsonValueKind.True)
             return null;
 
-        if (element.TryGetProperty("content", out var content) && content.ValueKind == JsonValueKind.Array)
+        if (ToolResultText.TryGetContentArray(element, out var content))
         {
             foreach (var block in content.EnumerateArray())
             {
