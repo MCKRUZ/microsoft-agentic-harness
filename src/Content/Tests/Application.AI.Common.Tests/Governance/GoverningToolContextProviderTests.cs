@@ -87,6 +87,35 @@ public sealed class GoverningToolContextProviderTests
     }
 
     [Fact]
+    public async Task Govern_SkillDisclosureTool_UnwrapsConvertedToolFailureLikeGovernedAIFunctionDoes()
+    {
+        // Security review finding: this decorator originally called ToolResultText.Sanitize directly on
+        // the inner function's raw return, so a ConvertedToolFailure marker (recognized by
+        // Sanitize's default/unrecognized-shape case) would reach the framework layer unwrapped and
+        // unsanitized — the exact leak GovernedAIFunction.Unwrap exists to prevent for every other
+        // ITool-backed tool. Not reachable in production today (neither exempted tool is
+        // AIToolConverter-produced), but the wrapper must not silently regress if that ever changes.
+        // MarshalResult overridden the same way GovernedAIFunctionTests.MakeFailingInner does: the
+        // framework's default marshaling would otherwise JSON-serialize the record away before this
+        // class ever sees it, losing the type identity Unwrap's `is ConvertedToolFailure` pattern needs.
+        var inner = AIFunctionFactory.Create(
+            () => new ConvertedToolFailure("could not open C:\\keys\\prod.pem"),
+            new AIFunctionFactoryOptions
+            {
+                Name = "load_skill",
+                Description = "t",
+                MarshalResult = (result, _, _) => new ValueTask<object?>(result)
+            });
+        var wrapped = (AIFunction)GoverningToolContextProvider.Govern(inner, AdmissionHarness.PermissiveSanitizer());
+
+        var result = await wrapped.InvokeAsync(new AIFunctionArguments(), CancellationToken.None);
+
+        var element = Assert.IsType<JsonElement>(result);
+        Assert.Equal(JsonValueKind.String, element.ValueKind);
+        Assert.Equal("could not open C:\\keys\\prod.pem", element.GetString());
+    }
+
+    [Fact]
     public async Task Govern_SkillDisclosureTool_CleanOutput_ReturnsUnchanged()
     {
         var inner = AIFunctionFactory.Create(

@@ -97,8 +97,12 @@ public interface IToolCallAdmissionPipeline
     /// <see cref="IToolClassificationGate.RedactResult"/>'s known-secret-pattern scrub (#484) — a strict
     /// superset of the baseline sanitize, not a substitute for it. A structured (non-text) result is
     /// returned unchanged — the sanitizer operates on free text, and every recognized text-carrying
-    /// shape (including a serialized MCP <c>CallToolResult</c>, #483) is scrubbed via
-    /// <c>ToolResultText</c>, the type this method delegates the shape-preserving sanitize to.
+    /// shape (a plain string, a serialized MCP <c>CallToolResult</c>'s text and embedded-resource content
+    /// blocks, #483) is scrubbed via <c>ToolResultText</c>, the type this method delegates the
+    /// shape-preserving sanitize to. One shape is deliberately NOT scrubbed: a serialized
+    /// <c>CallToolResult</c>'s <c>structuredContent</c> is typed JSON, not free text — rewriting its raw
+    /// values risks producing a malformed result the model then mis-parses, the same reasoning that
+    /// already applies to any other structured tool result.
     /// </returns>
     /// <remarks>
     /// <para>

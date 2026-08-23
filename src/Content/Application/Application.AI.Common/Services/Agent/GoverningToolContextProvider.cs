@@ -225,7 +225,13 @@ public sealed class GoverningToolContextProvider : AIContextProvider
             AIFunctionArguments arguments, CancellationToken cancellationToken)
         {
             var result = await base.InvokeCoreAsync(arguments, cancellationToken).ConfigureAwait(false);
-            return ToolResultText.Sanitize(result, _sanitizer, Name);
+
+            // Not reachable today (only load_skill/read_skill_resource are wrapped here, and neither is
+            // ITool-backed/AIToolConverter-produced — see the class remarks), but this wrapper owes the
+            // same guarantee GovernedAIFunction does: a ConvertedToolFailure marker must never cross into
+            // the framework layer unwrapped, and its error text must be sanitized like any other
+            // model-facing text rather than falling into Sanitize's structured/unrecognized default case.
+            return ToolResultText.Sanitize(GovernedAIFunction.Unwrap(result), _sanitizer, Name);
         }
     }
 }

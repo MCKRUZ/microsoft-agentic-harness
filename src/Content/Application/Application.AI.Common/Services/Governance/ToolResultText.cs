@@ -155,11 +155,20 @@ internal static class ToolResultText
 
     /// <summary>
     /// Walks the <c>content</c> array of a serialized <c>CallToolResult</c>, applying
-    /// <paramref name="transform"/> to every <c>{"type":"text","text":"..."}</c> block's text. Every
-    /// other property (<c>isError</c>, <c>structuredContent</c>, <c>_meta</c>, non-text content blocks)
-    /// is carried through unchanged. Returns <see langword="null"/> when no text block's content
-    /// changed, so the caller can keep the original <see cref="JsonElement"/> instead of an equivalent
-    /// reconstruction.
+    /// <paramref name="transform"/> to every block that carries free text: a <c>{"type":"text",
+    /// "text":"..."}</c> block, and a <c>{"type":"resource","resource":{"text":"...",...}}</c> embedded
+    /// text resource — confirmed against <c>ModelContextProtocol.Core</c>'s content-block union
+    /// (<c>EmbeddedResourceBlock</c>/<c>TextResourceContents</c>): the SDK converts both shapes to
+    /// model-visible text on the <c>AIContent[]</c> path, so both must be scrubbed here too, or an MCP
+    /// server picks which shape to answer with and skips the pass by choosing <c>resource</c> (#483's
+    /// original text-only handling was a security review finding on the PR that added it). A <c>resource</c>
+    /// block backing a binary blob (no <c>text</c> property) has nothing to transform and passes through.
+    /// Every other property (<c>isError</c>, <c>structuredContent</c>, <c>_meta</c>, non-text-carrying
+    /// blocks) is carried through unchanged — <c>structuredContent</c> is typed JSON, not free text, and
+    /// rewriting it risks producing a malformed result the model then mis-parses (tracked separately,
+    /// see <see cref="IToolClassificationGate.RedactResult"/>'s remarks on the Redact verdict's coverage
+    /// there). Returns <see langword="null"/> when no block's content changed, so the caller can keep
+    /// the original <see cref="JsonElement"/> instead of an equivalent reconstruction.
     /// </summary>
     private static JsonElement? TransformSerializedContentBlocks(
         JsonElement original, JsonElement content, Func<string, string> transform)
@@ -172,18 +181,16 @@ internal static class ToolResultText
             if (block.ValueKind == JsonValueKind.Object
                 && block.TryGetProperty("type", out var typeProp)
                 && typeProp.ValueKind == JsonValueKind.String
-                && typeProp.GetString() == "text"
-                && block.TryGetProperty("text", out var textProp)
-                && textProp.ValueKind == JsonValueKind.String)
+                && TryGetBlockText(block, typeProp.GetString(), out var text, out var isEmbeddedResource))
             {
-                var text = textProp.GetString() ?? string.Empty;
                 var transformed = transform(text);
                 if (!string.Equals(transformed, text, StringComparison.Ordinal))
                 {
                     // Parsed lazily, only once a block actually needs rewriting: the common case (a
                     // structured result with nothing to scrub) pays no JsonNode allocation at all.
                     root ??= JsonNode.Parse(original.GetRawText());
-                    root!["content"]![index]!["text"] = transformed;
+                    var target = isEmbeddedResource ? root!["content"]![index]!["resource"] : root!["content"]![index];
+                    target!["text"] = transformed;
                 }
             }
 
@@ -191,6 +198,35 @@ internal static class ToolResultText
         }
 
         return root is null ? null : JsonSerializer.SerializeToElement(root);
+    }
+
+    /// <summary>
+    /// Extracts the free text a content block carries, if any: a plain <c>"text"</c> block's own
+    /// <c>text</c> property, or a <c>"resource"</c> block's nested <c>resource.text</c> (a
+    /// <c>TextResourceContents</c> — a <c>BlobResourceContents</c> has no <c>text</c> property and
+    /// correctly answers <see langword="false"/> here, since there is nothing to sanitize).
+    /// </summary>
+    private static bool TryGetBlockText(JsonElement block, string? type, out string text, out bool isEmbeddedResource)
+    {
+        isEmbeddedResource = type == "resource";
+        var holder = block;
+        if (isEmbeddedResource
+            && (!block.TryGetProperty("resource", out holder) || holder.ValueKind != JsonValueKind.Object))
+        {
+            text = string.Empty;
+            return false;
+        }
+
+        if ((type == "text" || isEmbeddedResource)
+            && holder.TryGetProperty("text", out var textProp)
+            && textProp.ValueKind == JsonValueKind.String)
+        {
+            text = textProp.GetString() ?? string.Empty;
+            return true;
+        }
+
+        text = string.Empty;
+        return false;
     }
 
     private static string SanitizeText(string text, ICompositeResponseSanitizer sanitizer, string toolName)

@@ -150,7 +150,11 @@ internal sealed class GovernedAIFunction : DelegatingAIFunction
     /// success, so the marker never reaches the framework layer. The single definition of that
     /// transformation — both the bypass path above and the reporting path route through it rather
     /// than each re-deriving the same pattern match, so a future change to what "unwrapped" means
-    /// can't update one and miss the other.
+    /// can't update one and miss the other. Internal rather than private: <see cref="Agent.GoverningToolContextProvider"/>'s
+    /// sanitize-only decorator for the two tools it deliberately does not wrap in this type owes the
+    /// same guarantee — a <see cref="ConvertedToolFailure"/> reaching either wrapper must never cross
+    /// into the framework layer unwrapped, so both call the one definition rather than each
+    /// re-deriving (or, worse, one of them forgetting) the same pattern match.
     /// </summary>
     /// <remarks>
     /// Re-wraps <see cref="ConvertedToolFailure.ErrorText"/> as a <see cref="JsonElement"/> rather
@@ -164,6 +168,6 @@ internal sealed class GovernedAIFunction : DelegatingAIFunction
     /// quoted text for a failure than for a success, silently contradicting this type's own contract
     /// that unwrapping leaves the model-facing text unchanged.
     /// </remarks>
-    private static object? Unwrap(object? result) =>
+    internal static object? Unwrap(object? result) =>
         result is ConvertedToolFailure failure ? JsonSerializer.SerializeToElement(failure.ErrorText) : result;
 }
