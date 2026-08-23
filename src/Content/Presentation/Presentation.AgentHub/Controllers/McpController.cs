@@ -212,11 +212,20 @@ public sealed class McpController : ControllerBase
     {
         var resolved = _envelopeResolver.Resolve(User);
 
-        // AllowedMcpServers alone, not OR'd with AllowedTools: AllowedTools is shared with the
-        // unrelated keyed-DI direct-invocation surface, so an operator who narrowed only that grant
-        // (with no MCP-specific configuration at all) would otherwise have this MCP-specific auto-open
-        // fallback below suppressed by a grant that says nothing about MCP servers (found in review).
-        if (resolved.AllowedMcpServers.Count > 0)
+        // AllowedMcpServers OR'd with AllowedTools, deliberately. An earlier version of this check
+        // narrowed to AllowedMcpServers alone, reasoning that AllowedTools is "shared with the
+        // unrelated keyed-DI surface" — but CapabilityEnvelope.AllowedTools's own remarks say
+        // otherwise: "Tools reached through a granted MCP server are no exception — AllowedMcpServers
+        // controls which servers may be contacted, while invoking any tool it publishes still requires
+        // that tool's name here." AllowedTools IS the MCP tool gate too (DirectToolInvoker.Mcp.cs
+        // enforces it via Envelope.GrantsTool). Narrowing this check to AllowedMcpServers alone meant
+        // an operator who deliberately configured a least-privilege grant naming only tools — with a
+        // restrictive AutonomyCeiling and no MCP servers at all — had that grant silently discarded and
+        // replaced with every connected server, every tool it publishes, and Autonomous ceiling: a
+        // fail-open privilege escalation caught by independent security review, not the two prior
+        // passes. Only a caller with NOTHING granted anywhere — the resolver's genuine fail-closed
+        // default — should reach the auto-open fallback below.
+        if (resolved.AllowedMcpServers.Count > 0 || resolved.AllowedTools.Count > 0)
             return resolved;
 
         // No operator-configured grant for this caller — the shared resolver's fail-closed default.

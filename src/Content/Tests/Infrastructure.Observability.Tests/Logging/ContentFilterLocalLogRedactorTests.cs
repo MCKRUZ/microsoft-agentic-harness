@@ -5,7 +5,6 @@ using Domain.AI.Telemetry.Redaction;
 using Domain.Common.Config.Observability;
 using FluentAssertions;
 using Infrastructure.Observability.Logging;
-using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Moq;
 using Xunit;
@@ -44,8 +43,7 @@ public sealed class ContentFilterLocalLogRedactorTests
         // #457's whole point: local-sink redaction must not depend on the OTel bridge being on.
         var config = new LogsConfig { OtelExportEnabled = false, RedactionEnabled = true };
         var redactor = new ContentFilterLocalLogRedactor(
-            PassthroughSanitizer().Object, MockFilter().Object, ConfigOf(config),
-            NullLogger<ContentFilterLocalLogRedactor>.Instance);
+            PassthroughSanitizer().Object, MockFilter().Object, ConfigOf(config));
 
         redactor.Enabled.Should().BeTrue();
     }
@@ -55,8 +53,7 @@ public sealed class ContentFilterLocalLogRedactorTests
     {
         var config = new LogsConfig { RedactionEnabled = false };
         var redactor = new ContentFilterLocalLogRedactor(
-            PassthroughSanitizer().Object, MockFilter().Object, ConfigOf(config),
-            NullLogger<ContentFilterLocalLogRedactor>.Instance);
+            PassthroughSanitizer().Object, MockFilter().Object, ConfigOf(config));
 
         redactor.Enabled.Should().BeFalse();
     }
@@ -67,8 +64,7 @@ public sealed class ContentFilterLocalLogRedactorTests
         var filter = MockFilter();
         var config = new LogsConfig { RedactionEnabled = true, RedactionCategories = ["Email", "Generic"] };
         var redactor = new ContentFilterLocalLogRedactor(
-            PassthroughSanitizer().Object, filter.Object, ConfigOf(config),
-            NullLogger<ContentFilterLocalLogRedactor>.Instance);
+            PassthroughSanitizer().Object, filter.Object, ConfigOf(config));
 
         var result = redactor.Redact($"token is {Marker}");
 
@@ -87,8 +83,7 @@ public sealed class ContentFilterLocalLogRedactorTests
         var filter = MockFilter();
         var config = new LogsConfig { RedactionEnabled = true, RedactionCategories = ["not-a-real-category"] };
         var redactor = new ContentFilterLocalLogRedactor(
-            PassthroughSanitizer().Object, filter.Object, ConfigOf(config),
-            NullLogger<ContentFilterLocalLogRedactor>.Instance);
+            PassthroughSanitizer().Object, filter.Object, ConfigOf(config));
 
         var result = redactor.Redact($"token is {Marker}");
 
@@ -122,8 +117,7 @@ public sealed class ContentFilterLocalLogRedactorTests
             .Returns((string? s, IReadOnlyList<RedactionCategory> _) => s == joined ? "[REDACTED:AwsKey]" : s ?? string.Empty);
 
         var config = new LogsConfig { RedactionEnabled = true, RedactionCategories = ["AwsKey"] };
-        var redactor = new ContentFilterLocalLogRedactor(
-            sanitizer.Object, filter.Object, ConfigOf(config), NullLogger<ContentFilterLocalLogRedactor>.Instance);
+        var redactor = new ContentFilterLocalLogRedactor(sanitizer.Object, filter.Object, ConfigOf(config));
 
         var result = redactor.Redact(split);
 
@@ -135,8 +129,7 @@ public sealed class ContentFilterLocalLogRedactorTests
     public void Constructor_NullSanitizer_Throws()
     {
         var config = new LogsConfig();
-        var act = () => new ContentFilterLocalLogRedactor(
-            null!, MockFilter().Object, ConfigOf(config), NullLogger<ContentFilterLocalLogRedactor>.Instance);
+        var act = () => new ContentFilterLocalLogRedactor(null!, MockFilter().Object, ConfigOf(config));
 
         act.Should().Throw<ArgumentNullException>();
     }

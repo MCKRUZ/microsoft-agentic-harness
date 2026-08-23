@@ -136,13 +136,16 @@ public sealed class DefaultContentRedactionFilter : IContentRedactionFilter
         // #471: the guard recognizes both the bare [REDACTED] this rule itself produces and this
         // file's own categorized placeholders (e.g. [REDACTED:VendorApiKey]), so a Generic rule running
         // after a categorized one in the same pass doesn't rewrite an already-redacted value and
-        // silently discard the more specific tag. Anchored to the closing bracket — (?!\[REDACTED\]|\[REDACTED:[A-Za-z]+\])
-        // rather than a bare (?!\[REDACTED) — deliberately: an unanchored prefix match treats ANY
-        // value that happens to start with the literal text "[REDACTED" as already-safe and skips
-        // scrubbing it, which is exactly backwards for a value an attacker controls (found in review:
-        // a secret payload beginning with that literal string would evade this rule entirely).
+        // silently discard the more specific tag. Requires the placeholder to be the WHOLE value —
+        // (?!\[REDACTED(?::[A-Za-z]+)?\](?![^;"'\s])) — not merely a prefix of it: independent security
+        // review found the first fix's anchor (closing bracket only) still treated any value merely
+        // PREFIXED with a well-formed placeholder (e.g. "[REDACTED:Foo]hunter2ACTUALSECRET") as
+        // already-safe, skipping it entirely — trading one evasion string for an unbounded family of
+        // them. The added (?![^;"'\s]) after the bracket asserts the placeholder is immediately followed
+        // by a value terminator (or end of string), so only a value that IS exactly a placeholder is
+        // left alone; anything with real content trailing it still gets redacted whole.
         b.Add(Compile(RedactionCategory.Generic,
-            @"(?i)(AccountKey|Password|pwd|SharedAccessKey)\s*=\s*(?!\[REDACTED\]|\[REDACTED:[A-Za-z]+\])[^;""'\s]+",
+            @"(?i)(AccountKey|Password|pwd|SharedAccessKey)\s*=\s*(?!\[REDACTED(?::[A-Za-z]+)?\](?![^;""'\s]))[^;""'\s]+",
             "$1=[REDACTED]"));
 
         // Azure SAS query signatures — sv=...&sp=...&se=...&sig=<value>. The other query
@@ -153,11 +156,11 @@ public sealed class DefaultContentRedactionFilter : IContentRedactionFilter
         // is just as likely to appear as (e.g. a document ingest URI, per CLAUDE.md's own
         // recorded history of SAS tokens leaking through exception messages).
         b.Add(Compile(RedactionCategory.Generic,
-            @"(?i)([?&]sig=)(?!\[REDACTED\]|\[REDACTED:[A-Za-z]+\])[^&\s""']+",
+            @"(?i)([?&]sig=)(?!\[REDACTED(?::[A-Za-z]+)?\](?![^&\s""']))[^&\s""']+",
             "$1[REDACTED]"));
 
         b.Add(Compile(RedactionCategory.Generic,
-            @"(?i)(api[_-]?key|access[_-]?token|secret[_-]?key)\s*[=:]\s*(?!\[REDACTED\]|\[REDACTED:[A-Za-z]+\])\S+",
+            @"(?i)(api[_-]?key|access[_-]?token|secret[_-]?key)\s*[=:]\s*(?!\[REDACTED(?::[A-Za-z]+)?\](?!\S))\S+",
             "$1=[REDACTED]"));
 
         return b.ToImmutable();

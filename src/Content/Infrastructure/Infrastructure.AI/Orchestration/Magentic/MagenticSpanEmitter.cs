@@ -260,9 +260,11 @@ public sealed class MagenticSpanEmitter : IDisposable
         int planVersion,
         string? planText,
         IContentCapturePolicy policy,
+        ICompositeResponseSanitizer sanitizer,
         IContentRedactionFilter filter)
     {
         ArgumentNullException.ThrowIfNull(policy);
+        ArgumentNullException.ThrowIfNull(sanitizer);
         ArgumentNullException.ThrowIfNull(filter);
 
         managerSpan?.SetTag(MagenticConventions.PlanVersion, planVersion);
@@ -270,6 +272,7 @@ public sealed class MagenticSpanEmitter : IDisposable
             MagenticConventions.EventPlanCreated,
             planText,
             policy,
+            sanitizer,
             filter);
         managerSpan?.AddEvent(evt);
     }
@@ -284,9 +287,11 @@ public sealed class MagenticSpanEmitter : IDisposable
         int planVersion,
         string? planText,
         IContentCapturePolicy policy,
+        ICompositeResponseSanitizer sanitizer,
         IContentRedactionFilter filter)
     {
         ArgumentNullException.ThrowIfNull(policy);
+        ArgumentNullException.ThrowIfNull(sanitizer);
         ArgumentNullException.ThrowIfNull(filter);
 
         managerSpan?.SetTag(MagenticConventions.PlanVersion, planVersion);
@@ -294,6 +299,7 @@ public sealed class MagenticSpanEmitter : IDisposable
             MagenticConventions.EventReplanned,
             planText,
             policy,
+            sanitizer,
             filter);
         managerSpan?.AddEvent(evt);
     }
@@ -307,9 +313,11 @@ public sealed class MagenticSpanEmitter : IDisposable
         Activity? resetSpan,
         string? replanReason,
         IContentCapturePolicy policy,
+        ICompositeResponseSanitizer sanitizer,
         IContentRedactionFilter filter)
     {
         ArgumentNullException.ThrowIfNull(policy);
+        ArgumentNullException.ThrowIfNull(sanitizer);
         ArgumentNullException.ThrowIfNull(filter);
         if (resetSpan is null) return;
         if (string.IsNullOrEmpty(replanReason)) return;
@@ -317,7 +325,7 @@ public sealed class MagenticSpanEmitter : IDisposable
 
         resetSpan.SetTag(
             MagenticConventions.ReplanReason,
-            filter.Redact(replanReason, policy.Categories));
+            SanitizeThenRedact.Apply(replanReason, sanitizer, filter, policy.Categories));
     }
 
     /// <summary>
@@ -329,9 +337,11 @@ public sealed class MagenticSpanEmitter : IDisposable
         Activity? roundSpan,
         string? instructionOrQuestion,
         IContentCapturePolicy policy,
+        ICompositeResponseSanitizer sanitizer,
         IContentRedactionFilter filter)
     {
         ArgumentNullException.ThrowIfNull(policy);
+        ArgumentNullException.ThrowIfNull(sanitizer);
         ArgumentNullException.ThrowIfNull(filter);
         if (roundSpan is null) return;
         if (string.IsNullOrEmpty(instructionOrQuestion)) return;
@@ -339,7 +349,7 @@ public sealed class MagenticSpanEmitter : IDisposable
 
         roundSpan.SetTag(
             MagenticConventions.ProgressInstructionOrQuestion,
-            filter.Redact(instructionOrQuestion, policy.Categories));
+            SanitizeThenRedact.Apply(instructionOrQuestion, sanitizer, filter, policy.Categories));
     }
 
     /// <summary>
@@ -351,9 +361,11 @@ public sealed class MagenticSpanEmitter : IDisposable
         Activity? planReviewSpan,
         string? revisionFeedback,
         IContentCapturePolicy policy,
+        ICompositeResponseSanitizer sanitizer,
         IContentRedactionFilter filter)
     {
         ArgumentNullException.ThrowIfNull(policy);
+        ArgumentNullException.ThrowIfNull(sanitizer);
         ArgumentNullException.ThrowIfNull(filter);
         if (planReviewSpan is null) return;
         if (string.IsNullOrEmpty(revisionFeedback)) return;
@@ -361,13 +373,14 @@ public sealed class MagenticSpanEmitter : IDisposable
 
         planReviewSpan.SetTag(
             MagenticConventions.PlanReviewFeedback,
-            filter.Redact(revisionFeedback, policy.Categories));
+            SanitizeThenRedact.Apply(revisionFeedback, sanitizer, filter, policy.Categories));
     }
 
     private static ActivityEvent BuildPlanEvent(
         string eventName,
         string? planText,
         IContentCapturePolicy policy,
+        ICompositeResponseSanitizer sanitizer,
         IContentRedactionFilter filter)
     {
         if (string.IsNullOrEmpty(planText) || !policy.ShouldCaptureMagenticPlanContent())
@@ -375,7 +388,7 @@ public sealed class MagenticSpanEmitter : IDisposable
             return new ActivityEvent(eventName);
         }
 
-        var redacted = filter.Redact(planText, policy.Categories);
+        var redacted = SanitizeThenRedact.Apply(planText, sanitizer, filter, policy.Categories);
         var tags = new ActivityTagsCollection
         {
             { MagenticConventions.PlanContent, redacted },

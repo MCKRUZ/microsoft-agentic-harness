@@ -229,15 +229,19 @@ public sealed class McpControllerTests : IClassFixture<TestWebApplicationFactory
     }
 
     /// <summary>
-    /// Review finding: <c>ResolveMcpEnvelopeAsync</c> used to skip its auto-open fallback whenever
-    /// <c>AllowedTools</c> was non-empty, even if <c>AllowedMcpServers</c> was empty — but
-    /// <c>AllowedTools</c> is shared with the unrelated keyed-DI direct-invocation surface, so an
-    /// operator who narrowed only that grant (naming a tool that has nothing to do with MCP, and
-    /// configuring no MCP servers at all) would have silently suppressed the MCP-specific fallback too.
-    /// This proves the fallback still opens when only <c>AllowedTools</c> is populated.
+    /// Security review finding: an earlier version of <c>ResolveMcpEnvelopeAsync</c> skipped its
+    /// auto-open fallback only when <c>AllowedMcpServers</c> was populated, reasoning that
+    /// <c>AllowedTools</c> is "shared with the unrelated keyed-DI surface" — but
+    /// <see cref="CapabilityEnvelope.AllowedTools"/>'s own remarks say otherwise: it is the MCP tool
+    /// gate too, checked by <c>DirectToolInvoker.Mcp.cs</c>'s <c>Envelope.GrantsTool</c>. That version
+    /// let an operator's deliberate least-privilege grant (a narrow <c>AllowedTools</c> list, no MCP
+    /// servers, a restrictive autonomy ceiling) get silently discarded and replaced with every
+    /// connected server and Autonomous ceiling — a fail-open privilege escalation. This proves the
+    /// fallback stays closed once <em>any</em> grant exists, and that an ungranted tool under that
+    /// grant is still denied rather than auto-opened.
     /// </summary>
     [Fact]
-    public async Task InvokeTool_EnvelopeGrantsOnlyUnrelatedKeyedDiTool_StillFallsBackToAutoOpenForMcp()
+    public async Task InvokeTool_EnvelopeGrantsOnlyAnUnrelatedTool_DoesNotFallBackToAutoOpenForMcp()
     {
         var logs = new TestLoggerProvider();
         var fakeProvider = BuildFakeToolProvider("mcp-only-tool", () => ValueTask.FromResult<object?>("tool result"), throwOnInvoke: false);
@@ -254,17 +258,18 @@ public sealed class McpControllerTests : IClassFixture<TestWebApplicationFactory
                 services.Replace(ServiceDescriptor.Singleton<ICapabilityEnvelopeResolver>(
                     new FixedEnvelopeResolver(new CapabilityEnvelope
                     {
-                        // Names a keyed-DI tool that has nothing to do with MCP; AllowedMcpServers is
-                        // deliberately left empty so this exercises the auto-open fallback condition.
-                        AllowedTools = ["some-unrelated-keyed-di-tool"],
+                        // A deliberate, narrow grant naming a tool unrelated to the one being invoked;
+                        // AllowedMcpServers is empty and the ceiling is restrictive — exactly the
+                        // least-privilege shape the fail-open bug discarded.
+                        AllowedTools = ["some-other-tool"],
                         AllowedMcpServers = [],
-                        AutonomyCeiling = AutonomyLevel.Autonomous
+                        AutonomyCeiling = AutonomyLevel.Restricted
                     })));
             });
         });
 
         var client = factory.CreateClient();
-        client.DefaultRequestHeaders.Add(TestAuthHandler.UserIdHeader, "mcp-narrowed-keyeddi-user");
+        client.DefaultRequestHeaders.Add(TestAuthHandler.UserIdHeader, "mcp-narrow-grant-user");
 
         var body = new StringContent(
             JsonSerializer.Serialize(new { Arguments = new { } }),
@@ -272,10 +277,9 @@ public sealed class McpControllerTests : IClassFixture<TestWebApplicationFactory
 
         using var response = await client.PostAsync("/api/mcp/tools/mcp-only-tool/invoke", body);
 
-        response.StatusCode.Should().Be(HttpStatusCode.OK);
-        var result = await response.Content.ReadFromJsonAsync<McpToolInvokeResponse>();
-        result.Should().NotBeNull();
-        result!.Success.Should().BeTrue();
+        // The narrow grant is honored as-is: mcp-only-tool isn't in AllowedTools, so it's denied
+        // rather than reached via the every-server-every-tool auto-open fallback.
+        response.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
 
     /// <summary>POST /api/mcp/tools/{name}/invoke returns 200 with Success=true for a working tool.</summary>

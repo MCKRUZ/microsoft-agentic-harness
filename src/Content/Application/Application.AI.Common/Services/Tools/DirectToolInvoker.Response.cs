@@ -170,7 +170,10 @@ public sealed partial class DirectToolInvoker
             : int.MaxValue;
 
         var dropped = text.Length > scanCeiling;
-        return (dropped ? text[..scanCeiling] : text, dropped);
+        // BoundedText.Cap, not a raw slice: guards the surrogate boundary the same way FinalCut's own
+        // cut does (found in independent security review — this was the one truncation site in this
+        // file that predated BoundedText and never migrated to it).
+        return dropped ? (Governance.BoundedText.Cap(text, scanCeiling, string.Empty).Text, true) : (text, false);
     }
 
     /// <summary>

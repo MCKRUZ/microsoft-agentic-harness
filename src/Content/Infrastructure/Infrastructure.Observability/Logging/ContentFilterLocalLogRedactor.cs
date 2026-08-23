@@ -7,6 +7,7 @@ using Domain.AI.Telemetry.Redaction;
 using Domain.Common.Config.Observability;
 using Infrastructure.Observability.Processors;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
 namespace Infrastructure.Observability.Logging;
@@ -33,29 +34,38 @@ namespace Infrastructure.Observability.Logging;
 /// away, but the redaction filter's anchored patterns do not) could dodge redaction here specifically,
 /// the exact evasion #470 closed for the OTel span paths.
 /// </para>
+/// <para>
+/// <strong>Deliberately takes no <see cref="ILogger{TCategoryName}"/>.</strong> This type is
+/// constructed from inside <c>IServiceCollectionExtensions.WrapWithLocalLogRedaction</c>'s
+/// <see cref="ILoggerFactory"/> replacement factory — resolving one here would mean
+/// <see cref="ILoggerFactory.CreateLogger"/> calling back into the very factory delegate still being
+/// constructed. The container's cycle detection does not see through a factory call site, so instead
+/// of throwing it hangs the whole host at first <c>ILogger&lt;T&gt;</c> resolution — this is a real,
+/// reproduced startup deadlock, not a hypothetical one, found by independent security review of #457.
+/// <see cref="NullLogger{T}"/> needs no DI resolution at all, which is what actually breaks the cycle:
+/// it is not merely the quietest logger, it is the only one that doesn't reach back into
+/// <see cref="ILoggerFactory"/>.
+/// </para>
 /// </remarks>
 public sealed class ContentFilterLocalLogRedactor : ILocalLogRedactor
 {
     private readonly ICompositeResponseSanitizer _sanitizer;
     private readonly IContentRedactionFilter _filter;
     private readonly IOptionsMonitor<LogsConfig> _config;
-    private readonly ILogger<ContentFilterLocalLogRedactor> _logger;
+    private readonly ILogger<ContentFilterLocalLogRedactor> _logger = NullLogger<ContentFilterLocalLogRedactor>.Instance;
 
     public ContentFilterLocalLogRedactor(
         ICompositeResponseSanitizer sanitizer,
         IContentRedactionFilter filter,
-        IOptionsMonitor<LogsConfig> config,
-        ILogger<ContentFilterLocalLogRedactor> logger)
+        IOptionsMonitor<LogsConfig> config)
     {
         ArgumentNullException.ThrowIfNull(sanitizer);
         ArgumentNullException.ThrowIfNull(filter);
         ArgumentNullException.ThrowIfNull(config);
-        ArgumentNullException.ThrowIfNull(logger);
 
         _sanitizer = sanitizer;
         _filter = filter;
         _config = config;
-        _logger = logger;
     }
 
     /// <inheritdoc />

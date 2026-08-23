@@ -29,8 +29,37 @@ public sealed class RedactingLogger : ILogger
         _redactor = redactor;
     }
 
+    /// <summary>
+    /// Redacts scope state the same way <see cref="Log{TState}"/> redacts a message — found in
+    /// independent security review: forwarding <paramref name="state"/> unchanged meant a secret or PII
+    /// value placed in scope state (a connection string, an email — categories this redactor's default
+    /// set already covers) reached every local sink in cleartext, since a console/file formatter renders
+    /// scope contents directly. Handles the two shapes scope state actually takes: a structured scope
+    /// (<c>IEnumerable&lt;KeyValuePair&lt;string, object?&gt;&gt;</c>, from a dictionary or
+    /// <c>LoggerMessage.DefineScope</c>) has its string-valued entries redacted in place; anything else
+    /// is redacted via its rendered <see cref="object.ToString"/> text, mirroring how a formatter that
+    /// doesn't understand the structured shape would render it anyway.
+    /// </summary>
     /// <inheritdoc />
-    public IDisposable? BeginScope<TState>(TState state) where TState : notnull => _inner.BeginScope(state);
+    public IDisposable? BeginScope<TState>(TState state) where TState : notnull
+    {
+        if (!_redactor.Enabled)
+        {
+            return _inner.BeginScope(state);
+        }
+
+        if (state is IEnumerable<KeyValuePair<string, object?>> pairs)
+        {
+            var redactedPairs = pairs
+                .Select(kv => kv.Value is string value
+                    ? new KeyValuePair<string, object?>(kv.Key, _redactor.Redact(value))
+                    : kv)
+                .ToList();
+            return _inner.BeginScope(redactedPairs);
+        }
+
+        return _inner.BeginScope(_redactor.Redact(state.ToString() ?? string.Empty));
+    }
 
     /// <inheritdoc />
     public bool IsEnabled(LogLevel logLevel) => _inner.IsEnabled(logLevel);

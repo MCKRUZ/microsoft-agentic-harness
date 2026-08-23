@@ -237,4 +237,48 @@ public sealed class DefaultContentRedactionFilterTests
             "a value that merely starts with the marker text is not an already-redacted placeholder");
         result.Should().Contain("api_key=[REDACTED]");
     }
+
+    /// <summary>
+    /// Independent security review finding on #471's own fix: anchoring the guard to the closing
+    /// bracket closed the unbounded-prefix evasion, but still let a value merely PREFIXED with a
+    /// well-formed placeholder — "[REDACTED:Foo]" followed by a real secret — through untouched, since
+    /// the guard only checked that a valid placeholder shape appeared, not that the placeholder was the
+    /// entire value. Trades one evasion string for an unbounded family of them (any category name
+    /// works). The fix requires the placeholder to be immediately followed by a value terminator (or
+    /// end of string) — i.e. the value must BE the placeholder, not merely start with one.
+    /// </summary>
+    [Theory]
+    [InlineData("api_key=[REDACTED:Foo]hunter2SUPERSECRET", "api_key=[REDACTED]")]
+    [InlineData("AccountKey=[REDACTED:Zz]abc123realkey==", "AccountKey=[REDACTED]")]
+    public void Redact_GenericSecretValuePrefixedWithWellFormedPlaceholder_IsStillFullyRedacted(
+        string input, string mustContain)
+    {
+        var result = _filter.Redact(input, [RedactionCategory.Generic]);
+
+        result.Should().NotContain("hunter2SUPERSECRET").And.NotContain("abc123realkey");
+        result.Should().Contain(mustContain);
+    }
+
+    [Fact]
+    public void Redact_GenericSasSignatureValuePrefixedWithWellFormedPlaceholder_IsStillFullyRedacted()
+    {
+        var result = _filter.Redact(
+            "https://acct.blob.core.windows.net/c/b?sv=2021-08-06&sig=[REDACTED:Q]REALSIGVALUE",
+            [RedactionCategory.Generic]);
+
+        result.Should().NotContain("REALSIGVALUE");
+        result.Should().Contain("sig=[REDACTED]");
+    }
+
+    /// <summary>
+    /// A genuine, standalone placeholder (nothing trailing it) must still be left alone — the #471
+    /// idempotence property the M1 fix must not regress.
+    /// </summary>
+    [Fact]
+    public void Redact_GenuineStandalonePlaceholder_IsLeftAlone()
+    {
+        var result = _filter.Redact("api_key=[REDACTED:VendorApiKey]", [RedactionCategory.Generic]);
+
+        result.Should().Be("api_key=[REDACTED:VendorApiKey]");
+    }
 }

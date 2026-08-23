@@ -17,8 +17,14 @@ public sealed class RedactingLoggerTests
     {
         public string? LastMessage { get; private set; }
         public Exception? LastException { get; private set; }
+        public object? LastScopeState { get; private set; }
 
-        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull
+        {
+            LastScopeState = state;
+            return null;
+        }
+
         public bool IsEnabled(LogLevel logLevel) => true;
 
         public void Log<TState>(
@@ -109,5 +115,54 @@ public sealed class RedactingLoggerTests
 
         inner.LastException!.ToString().Should().Contain("[REDACTED]");
         inner.LastException.ToString().Should().NotContain("secret-value");
+    }
+
+    /// <summary>
+    /// Independent security review finding: <c>BeginScope</c> forwarded scope state unchanged, so a
+    /// secret or PII value placed in a structured scope (a connection string, an email) reached every
+    /// local sink in cleartext even with redaction enabled — a formatter that renders scope contents
+    /// (e.g. a console formatter with <c>IncludeScopes = true</c>) bypassed #457's guarantee entirely.
+    /// This proves a string-valued entry in a structured (key/value) scope is redacted.
+    /// </summary>
+    [Fact]
+    public void BeginScope_StructuredScopeWithSecretValue_RedactsTheStringEntries()
+    {
+        var inner = new CapturingLogger();
+        var redactor = new FixedRedactor(enabled: true, redact: t => t.Replace("secret-value", "[REDACTED]"));
+        var logger = new RedactingLogger(inner, redactor);
+
+        var scope = new Dictionary<string, object?> { ["ConnectionString"] = "secret-value", ["Count"] = 3 };
+        logger.BeginScope(scope);
+
+        var captured = inner.LastScopeState.Should().BeAssignableTo<IEnumerable<KeyValuePair<string, object?>>>().Subject;
+        var pairs = captured.ToDictionary(kv => kv.Key, kv => kv.Value);
+        pairs["ConnectionString"].Should().Be("[REDACTED]");
+        pairs["Count"].Should().Be(3, "non-string values pass through unchanged — nothing to redact");
+    }
+
+    /// <summary>A plain (non-structured) scope value is redacted via its rendered text.</summary>
+    [Fact]
+    public void BeginScope_PlainScopeValue_IsRedactedViaItsRenderedText()
+    {
+        var inner = new CapturingLogger();
+        var redactor = new FixedRedactor(enabled: true, redact: t => t.Replace("secret-value", "[REDACTED]"));
+        var logger = new RedactingLogger(inner, redactor);
+
+        logger.BeginScope("token is secret-value");
+
+        inner.LastScopeState.Should().Be("token is [REDACTED]");
+    }
+
+    [Fact]
+    public void BeginScope_RedactorDisabled_PassesScopeThroughUnchanged()
+    {
+        var inner = new CapturingLogger();
+        var redactor = new FixedRedactor(enabled: false, redact: _ => "SHOULD NOT BE CALLED");
+        var logger = new RedactingLogger(inner, redactor);
+        var scope = new Dictionary<string, object?> { ["ConnectionString"] = "secret-value" };
+
+        logger.BeginScope(scope);
+
+        inner.LastScopeState.Should().BeSameAs(scope);
     }
 }
