@@ -63,7 +63,11 @@ public sealed class AgentExecutionContextFactoryGovernanceTests
             NullLoggerFactory.Instance,
             toolChainBuilder,
             new SkillPrerequisiteResolver(),
-            new UnsandboxedSkillFileReader());
+            new UnsandboxedSkillFileReader(),
+            // #480: GoverningToolContextProvider now resolves a sanitizer to scrub load_skill/
+            // read_skill_resource output — this fixture builds agents through the real
+            // AIContextProvider rail, so it needs one, matching every real composition.
+            Application.AI.Common.Tests.Governance.AdmissionHarness.PermissiveSanitizer());
     }
 
     private void SetupMcpTools(params (string server, string[] tools)[] servers)

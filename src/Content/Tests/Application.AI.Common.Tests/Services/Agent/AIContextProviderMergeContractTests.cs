@@ -79,7 +79,9 @@ public sealed class AIContextProviderMergeContractTests
     {
         [nameof(ToolPermissionFilter)] = () => new ToolPermissionFilter(["alpha", "beta"]),
         [nameof(GoverningToolContextProvider)] = () =>
-            new GoverningToolContextProvider(NullLogger<GoverningToolContextProvider>.Instance),
+            new GoverningToolContextProvider(
+                NullLogger<GoverningToolContextProvider>.Instance,
+                Application.AI.Common.Tests.Governance.AdmissionHarness.PermissiveSanitizer()),
         [nameof(KnowledgeMemoryContextProvider)] = BuildKnowledgeMemory,
         [nameof(LearningsRecallContextProvider)] = BuildLearningsRecall,
         [nameof(PerTurnBudgetContextProvider)] = () => new PerTurnBudgetContextProvider(
@@ -269,7 +271,8 @@ public sealed class AIContextProviderMergeContractTests
         };
 
         var result = await new GoverningToolContextProvider(
-            NullLogger<GoverningToolContextProvider>.Instance).InvokingAsync(MakeContext(input));
+                NullLogger<GoverningToolContextProvider>.Instance, Application.AI.Common.Tests.Governance.AdmissionHarness.PermissiveSanitizer())
+            .InvokingAsync(MakeContext(input));
 
         var names = result.Tools?.Select(t => t.Name).ToList() ?? [];
         names.Should().NotContain(reservedName,
@@ -281,7 +284,8 @@ public sealed class AIContextProviderMergeContractTests
     public async Task GoverningProvider_PublishesOnlyTheGovernedCopyOfEachTool()
     {
         var result = await new GoverningToolContextProvider(
-            NullLogger<GoverningToolContextProvider>.Instance).InvokingAsync(MakeContext(ActiveInput()));
+                NullLogger<GoverningToolContextProvider>.Instance, Application.AI.Common.Tests.Governance.AdmissionHarness.PermissiveSanitizer())
+            .InvokingAsync(MakeContext(ActiveInput()));
 
         var tools = result.Tools?.ToList() ?? [];
         tools.Should().HaveCount(2, "wrapping must replace each tool, not add a second copy alongside it");

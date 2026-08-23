@@ -92,14 +92,17 @@ public interface IToolCallAdmissionPipeline
     /// <param name="result">The tool's raw result.</param>
     /// <returns>
     /// <paramref name="result"/>'s text, run unconditionally through the general-purpose sanitizer
-    /// (injection payloads, invisible characters, exfiltration URLs) — the same treatment whether or not
-    /// the admission carried a redact verdict; a redact verdict routes through
-    /// <see cref="IToolClassificationGate.RedactResult"/>, which applies that same sanitizer rather than
-    /// a distinct sensitivity-aware scrub. A structured (non-text) result is returned unchanged either
-    /// way — the sanitizer operates on free text. One MCP-specific shape currently falls into that
-    /// unchanged bucket even though it does carry embedded text — a serialized <c>CallToolResult</c>
-    /// (structured content or protocol metadata present) — tracked separately as a known gap in
-    /// <c>ToolResultText</c>, the type this method delegates the shape-preserving sanitize to.
+    /// (injection payloads, invisible characters, exfiltration URLs) regardless of whether the admission
+    /// carried a redact verdict; a redact verdict additionally routes through
+    /// <see cref="IToolClassificationGate.RedactResult"/>'s known-secret-pattern scrub (#484) — a strict
+    /// superset of the baseline sanitize, not a substitute for it. A structured (non-text) result is
+    /// returned unchanged — the sanitizer operates on free text, and every recognized text-carrying
+    /// shape (a plain string, a serialized MCP <c>CallToolResult</c>'s text and embedded-resource content
+    /// blocks, #483) is scrubbed via <c>ToolResultText</c>, the type this method delegates the
+    /// shape-preserving sanitize to. One shape is deliberately NOT scrubbed: a serialized
+    /// <c>CallToolResult</c>'s <c>structuredContent</c> is typed JSON, not free text — rewriting its raw
+    /// values risks producing a malformed result the model then mis-parses, the same reasoning that
+    /// already applies to any other structured tool result.
     /// </returns>
     /// <remarks>
     /// <para>
@@ -126,8 +129,12 @@ public interface IToolCallAdmissionPipeline
     /// <param name="toolName">The tool that produced <paramref name="content"/>.</param>
     /// <param name="content">The tool's raw text.</param>
     /// <param name="result">
-    /// The text to emit: <paramref name="content"/> unchanged when no redaction was required, or the
-    /// scrubbed text. Null when the method returns <see langword="false"/>.
+    /// <paramref name="content"/>, run unconditionally through the general-purpose sanitizer — the same
+    /// guarantee <see cref="ApplyOutputPolicy"/> carries (#469) — and additionally through
+    /// <see cref="IToolClassificationGate.RedactResult"/>'s known-secret-pattern scrub when a redaction
+    /// was required (#479 closed the gap where this method sanitized only on that second path, unlike
+    /// its sibling). Null content passes through as null: there is nothing to sanitize or redact. Null
+    /// when the method returns <see langword="false"/>.
     /// </param>
     /// <returns>
     /// <see langword="false"/> when a redaction was required but did not produce text, in which case
@@ -140,7 +147,9 @@ public interface IToolCallAdmissionPipeline
     /// across a boundary, and for them a non-text answer means a gate did something unexpected — on a
     /// redaction path that is a reason to withhold, not to shrug. Both used to implement that
     /// fail-closed rule themselves, in two copies, which is one copy more than a rule like this
-    /// survives.
+    /// survives. Both also used to implement the unconditional sanitize themselves, immediately after
+    /// calling this method — caller discipline standing in for a guarantee that now lives here instead
+    /// (#479).
     /// </remarks>
     bool TryApplyTextOutputPolicy(
         ToolCallAdmission admission, string toolName, string? content, out string? result);

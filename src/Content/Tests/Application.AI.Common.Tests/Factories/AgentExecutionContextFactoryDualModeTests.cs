@@ -63,7 +63,8 @@ public class AgentExecutionContextFactoryDualModeTests
             NullLoggerFactory.Instance,
             toolChainBuilder,
             new SkillPrerequisiteResolver(),
-            new UnsandboxedSkillFileReader());
+            new UnsandboxedSkillFileReader(),
+            Application.AI.Common.Tests.Governance.AdmissionHarness.PermissiveSanitizer());
     }
 
     [Fact]

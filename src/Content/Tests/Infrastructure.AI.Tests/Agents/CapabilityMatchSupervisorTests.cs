@@ -83,7 +83,8 @@ public sealed class CapabilityMatchSupervisorTests : IDisposable
             NullLoggerFactory.Instance,
             Mock.Of<IToolChainBuilder>(),
             Mock.Of<ISkillPrerequisiteResolver>(),
-            new UnsandboxedSkillFileReader());
+            new UnsandboxedSkillFileReader(),
+            Infrastructure.AI.Tests.Planner.StepExecutors.PermissiveAdmission.PermissiveSanitizer());
 
         SetupDefaults();
 

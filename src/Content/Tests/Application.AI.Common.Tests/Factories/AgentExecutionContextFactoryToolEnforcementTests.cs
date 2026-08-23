@@ -54,7 +54,8 @@ public class AgentExecutionContextFactoryToolEnforcementTests
             new ToolChainBuilder(
                 NullLogger<ToolChainBuilder>.Instance, sp),
             new SkillPrerequisiteResolver(),
-            new UnsandboxedSkillFileReader());
+            new UnsandboxedSkillFileReader(),
+            Application.AI.Common.Tests.Governance.AdmissionHarness.PermissiveSanitizer());
     }
 
     [Fact]

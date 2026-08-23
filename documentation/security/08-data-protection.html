@@ -572,8 +572,10 @@
                         <li>
                             <strong><code>Enforce</code></strong> — verdicts act. A <strong>Block</strong> verdict returns
                             a model-facing message instead of running the tool; a <strong>RedactOutput</strong> verdict
-                            lets the tool run, then scrubs the sensitive spans from the result via
-                            <code>ICompositeResponseSanitizer</code> before it re-enters the model's context.
+                            lets the tool run, then scrubs the result through <code>ICompositeResponseSanitizer</code>
+                            and additionally through <code>IContentRedactionFilter</code>'s known-secret-pattern scrub —
+                            strictly more than the unconditional sanitize every other tool result already gets — before
+                            it re-enters the model's context.
                         </li>
                     </ul>
                     <p>

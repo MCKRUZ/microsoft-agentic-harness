@@ -52,7 +52,8 @@ public sealed class AgentExecutionContextFactoryToolCeilingTests
             new ToolChainBuilder(
                 NullLogger<ToolChainBuilder>.Instance, sp),
             new SkillPrerequisiteResolver(),
-            new UnsandboxedSkillFileReader());
+            new UnsandboxedSkillFileReader(),
+            Application.AI.Common.Tests.Governance.AdmissionHarness.PermissiveSanitizer());
     }
 
     private static SkillDefinition Skill(string id, params string[] allowedTools) => new()

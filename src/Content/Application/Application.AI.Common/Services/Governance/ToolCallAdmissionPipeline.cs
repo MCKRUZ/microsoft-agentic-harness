@@ -264,16 +264,36 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
     {
         ArgumentNullException.ThrowIfNull(admission);
 
-        if (!admission.RedactsOutput)
+        // #479: sanitize unconditionally on both branches, the same guarantee ApplyOutputPolicy carries
+        // (#469) — this method used to sanitize only when a redaction was required, leaving the
+        // invariant enforced by caller discipline (both current callers ran their own unconditional
+        // scrub immediately after) rather than by this interface itself.
+        //
+        // Null content is deliberately NOT special-cased ahead of this branch: ToolResultText.Sanitize
+        // already answers null with null on the non-redact path (its default, unrecognized-shape case),
+        // and on the redact path _classificationGate.RedactResult answers null with null too — which
+        // then correctly fails the `is string text` check below and fails closed, exactly as it did
+        // before #479. A short-circuit here that returned true for null unconditionally would silently
+        // skip that fail-closed check for a redact-required call that happens to have no content yet,
+        // turning a denial into a reported success — caught by code review on the PR that introduced it.
+        var processed = admission.RedactsOutput
+            ? _classificationGate.RedactResult(toolName, content)
+            : ToolResultText.Sanitize(content, _sanitizer, toolName);
+
+        if (processed is string text)
         {
-            result = content;
+            result = text;
             return true;
         }
 
-        var redacted = _classificationGate.RedactResult(toolName, content);
-        if (redacted is string text)
+        if (!admission.RedactsOutput)
         {
-            result = text;
+            // Reaching here on the non-redact branch means content was null: ToolResultText.Sanitize's
+            // only non-string outcome for a string? input is null-in -> null-out (its default,
+            // unrecognized-shape case), and every non-null string always comes back as a string from
+            // its `case string content:` branch — so `processed is string text` above already ruled
+            // out every other possibility on this branch.
+            result = null;
             return true;
         }
 
@@ -284,7 +304,7 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
         _logger.LogWarning(
             "Classification gate returned a {ResultType} rather than a string when redacting output of "
             + "{ToolName}; the result is withheld rather than returned unredacted.",
-            redacted?.GetType().Name ?? "null",
+            processed?.GetType().Name ?? "null",
             toolName);
 
         result = null;

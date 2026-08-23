@@ -87,7 +87,8 @@ public sealed class CapabilityMatchSupervisorEscalationTests : IDisposable
             NullLoggerFactory.Instance,
             Mock.Of<IToolChainBuilder>(),
             Mock.Of<ISkillPrerequisiteResolver>(),
-            new UnsandboxedSkillFileReader());
+            new UnsandboxedSkillFileReader(),
+            Infrastructure.AI.Tests.Planner.StepExecutors.PermissiveAdmission.PermissiveSanitizer());
 
         _supervisor = new CapabilityMatchSupervisor(
             _strategyMock.Object,

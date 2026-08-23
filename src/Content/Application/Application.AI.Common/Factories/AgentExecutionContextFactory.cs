@@ -2,6 +2,7 @@ using Application.AI.Common.Extensions;
 using Application.AI.Common.Helpers;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Context;
+using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Resilience;
 using Application.AI.Common.Interfaces.Skills;
 using Application.AI.Common.Interfaces.Tools;
@@ -48,11 +49,33 @@ public partial class AgentExecutionContextFactory
     private readonly IToolChainBuilder _toolChainBuilder;
     private readonly ISkillPrerequisiteResolver _prerequisiteResolver;
     private readonly ISkillFileReader _skillFileReader;
+    private readonly ICompositeResponseSanitizer _sanitizer;
     private readonly IContextBudgetTracker? _budgetTracker;
     private readonly IExecutionTraceStore? _traceStore;
     private readonly IAgentConfigReporter? _agentConfigReporter;
     private readonly IResilientChatClientProvider? _resilientChatClientProvider;
 
+    /// <summary>Initializes a new instance of the <see cref="AgentExecutionContextFactory"/> class.</summary>
+    /// <param name="logger">Records factory-level diagnostics.</param>
+    /// <param name="appConfig">The harness's live configuration, read for deployment/framework defaults.</param>
+    /// <param name="serviceProvider">
+    /// Resolves late-bound, host-optional dependencies this factory does not take as first-class
+    /// constructor parameters — see <c>AgentExecutionContextFactory.ContextProviders.cs</c> for the
+    /// pattern (e.g. <c>GetService&lt;IAmbientRequestScope&gt;()</c>).
+    /// </param>
+    /// <param name="loggerFactory">Creates the per-provider loggers each <c>AIContextProvider</c> on the rail needs.</param>
+    /// <param name="toolChainBuilder">Provisions and governs the tool set an agent's context carries.</param>
+    /// <param name="prerequisiteResolver">Resolves a multi-skill agent's prerequisite ordering.</param>
+    /// <param name="skillFileReader">Reads skill files for progressive disclosure. Required — never null.</param>
+    /// <param name="sanitizer">
+    /// Passed to <see cref="Services.Agent.GoverningToolContextProvider"/> so it can scrub the output of
+    /// the two skill-content transport tools it exempts from full governance wrapping (#480) — see that
+    /// type's remarks for why a capability-grant exemption is not also a sanitization exemption.
+    /// </param>
+    /// <param name="budgetTracker">Tracks per-turn context spend, when the host wires one in.</param>
+    /// <param name="traceStore">Persists per-turn execution traces, when the host wires one in.</param>
+    /// <param name="agentConfigReporter">Reports the resolved agent configuration, when the host wires one in.</param>
+    /// <param name="resilientChatClientProvider">Supplies a resilience-wrapped chat client, when the host wires one in.</param>
     public AgentExecutionContextFactory(
         ILogger<AgentExecutionContextFactory> logger,
         IOptionsMonitor<AppConfig> appConfig,
@@ -61,6 +84,7 @@ public partial class AgentExecutionContextFactory
         IToolChainBuilder toolChainBuilder,
         ISkillPrerequisiteResolver prerequisiteResolver,
         ISkillFileReader skillFileReader,
+        ICompositeResponseSanitizer sanitizer,
         IContextBudgetTracker? budgetTracker = null,
         IExecutionTraceStore? traceStore = null,
         IAgentConfigReporter? agentConfigReporter = null,
@@ -75,6 +99,7 @@ public partial class AgentExecutionContextFactory
         _toolChainBuilder = toolChainBuilder;
         _prerequisiteResolver = prerequisiteResolver;
         _skillFileReader = skillFileReader;
+        _sanitizer = sanitizer;
         _budgetTracker = budgetTracker;
         _traceStore = traceStore;
         _agentConfigReporter = agentConfigReporter;

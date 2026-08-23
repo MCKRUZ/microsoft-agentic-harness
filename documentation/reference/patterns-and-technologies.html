@@ -941,7 +941,8 @@ return quality.MaxScore switch
                         sensitivity labels. Opt-in via <code>AppConfig:AI:Governance:DataClassification:Mode</code>
                         (<code>Off</code> / <code>Audit</code> / <code>Enforce</code>). A <strong>Block</strong> verdict
                         returns a model-facing message instead of running the tool; a <strong>RedactOutput</strong>
-                        verdict runs the tool then scrubs the result via <code>ICompositeResponseSanitizer</code>.
+                        verdict runs the tool then scrubs the result via <code>ICompositeResponseSanitizer</code> and
+                        <code>IContentRedactionFilter</code>'s known-secret-pattern scrub.
                         Defaults <code>Off</code> and Unknown-classification → Allow.
                     </p>
 

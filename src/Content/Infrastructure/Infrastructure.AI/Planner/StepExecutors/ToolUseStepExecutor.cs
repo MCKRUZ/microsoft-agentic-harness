@@ -39,7 +39,6 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
     private readonly IToolCallAdmissionPipeline _admissionPipeline;
     private readonly IServiceProvider _serviceProvider;
     private readonly IAttestationService _attestationService;
-    private readonly ICompositeResponseSanitizer _responseSanitizer;
     private readonly IPlanProgressNotifier _notifier;
     private readonly PlanExecutionContext _executionContext;
     private readonly ILogger<ToolUseStepExecutor> _logger;
@@ -49,7 +48,6 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
         IToolCallAdmissionPipeline admissionPipeline,
         IServiceProvider serviceProvider,
         IAttestationService attestationService,
-        ICompositeResponseSanitizer responseSanitizer,
         IPlanProgressNotifier notifier,
         PlanExecutionContext executionContext,
         ILogger<ToolUseStepExecutor> logger)
@@ -58,7 +56,6 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
         _admissionPipeline = admissionPipeline;
         _serviceProvider = serviceProvider;
         _attestationService = attestationService;
-        _responseSanitizer = responseSanitizer;
         _notifier = notifier;
         _executionContext = executionContext;
         _logger = logger;
@@ -224,7 +221,9 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
         // and have its output scrubbed instead of being refused outright. Skipping this would leave
         // the gate's audit line and metric asserting a redaction that never happened, while the raw
         // content went back to the caller — a worse failure than not classifying at all, because it
-        // reports itself as safe.
+        // reports itself as safe. #479: this call now sanitizes unconditionally on both the redact and
+        // plain-allow branches — the separate unconditional Sanitize() call this method used to make
+        // immediately afterward is gone, not just moved; making it again here would scrub twice.
         if (!_admissionPipeline.TryApplyTextOutputPolicy(
                 admission, config.ToolName, sandboxResult.Output, out var content))
         {
@@ -240,9 +239,6 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
                 Attestation = sandboxResult.Attestation
             };
         }
-
-        if (!string.IsNullOrEmpty(content))
-            content = _responseSanitizer.Sanitize(content, config.ToolName).SanitizedContent;
 
         await ReportExecutionAsync(admission, EscalationExecutionStatus.Succeeded, failureReason: null, config.ToolName);
 

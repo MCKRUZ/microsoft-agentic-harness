@@ -125,6 +125,7 @@ public sealed class AgentExecutionContextFactoryProgressiveDisclosureTests : IDi
                 NullLogger<ToolChainBuilder>.Instance, sp),
             new SkillPrerequisiteResolver(),
             new UnsandboxedSkillFileReader(),
+            Application.AI.Common.Tests.Governance.AdmissionHarness.PermissiveSanitizer(),
             budgetTracker);
     }
 
