@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Text.Json;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Governance;
@@ -293,7 +292,7 @@ public sealed partial class DirectToolInvoker
             };
         }
 
-        var raw = McpResultText(rawResult);
+        var raw = ToolResultText.ExtractText(rawResult);
         var (preCut, droppedByPreCut) = PreCutForScrub(raw, ceiling);
 
         if (!admissionPipeline.TryApplyTextOutputPolicy(admission, toolName, preCut, out var admitted))
@@ -313,18 +312,6 @@ public sealed partial class DirectToolInvoker
             Duration = duration
         };
     }
-
-    /// <summary>
-    /// Reduces an MCP tool's raw success result — typically a <see cref="JsonElement"/>, the framework's
-    /// own default marshaling — to the text every downstream scrub/bound step operates on.
-    /// </summary>
-    private static string McpResultText(object? result) => result switch
-    {
-        null => string.Empty,
-        string text => text,
-        JsonElement element => element.GetRawText(),
-        _ => JsonSerializer.Serialize(result)
-    };
 
     /// <summary>
     /// The result of MCP pre-flight: either a refusal to return as-is, or the resolved tool and caller

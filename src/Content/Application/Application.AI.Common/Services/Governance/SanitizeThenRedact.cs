@@ -28,15 +28,26 @@ public static class SanitizeThenRedact
     /// <param name="redactionFilter">Scrubs known secret patterns (emails, SSNs, AWS keys, JWTs, etc.).</param>
     /// <param name="categories">Which redaction categories to scrub for.</param>
     /// <param name="context">Passed to the sanitizer as context (e.g. a tool or span name).</param>
-    /// <returns>The sanitized-then-redacted text.</returns>
+    /// <param name="onSanitizedEmpty">
+    /// Called with the sanitizer's output instead of redacting, when that output is null or whitespace —
+    /// for a caller (<c>Tools.ReportedFailureText.PrepareForReporting</c>) that needs to substitute a
+    /// placeholder rather than hand an empty string to a downstream consumer that rejects one. Omitted
+    /// by callers with nothing that cares about the distinction: <see cref="IContentRedactionFilter.Redact"/>
+    /// already treats a null/empty input as a no-op, so the ordering stays correct either way.
+    /// </param>
+    /// <returns>The sanitized-then-redacted text, or <paramref name="onSanitizedEmpty"/>'s result.</returns>
     public static string Apply(
         string text,
         ICompositeResponseSanitizer sanitizer,
         IContentRedactionFilter redactionFilter,
         IReadOnlyList<RedactionCategory> categories,
-        string? context = null)
+        string? context = null,
+        Func<string, string>? onSanitizedEmpty = null)
     {
         var sanitized = sanitizer.Sanitize(text, context).SanitizedContent;
+        if (onSanitizedEmpty is not null && string.IsNullOrWhiteSpace(sanitized))
+            return onSanitizedEmpty(sanitized ?? string.Empty);
+
         return redactionFilter.Redact(sanitized, categories);
     }
 }

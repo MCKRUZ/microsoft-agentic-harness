@@ -298,6 +298,35 @@ public sealed class McpControllerTests : IClassFixture<TestWebApplicationFactory
         result!.Success.Should().BeTrue();
     }
 
+    /// <summary>
+    /// The dominant MCP tool-success shape (see <c>ToolResultTextTests</c>'s header remarks, confirmed
+    /// by decompiling <c>ModelContextProtocol.Core</c>'s <c>McpClientTool.InvokeCoreAsync</c>): a
+    /// single-content-block success reaches <see cref="Application.AI.Common.Services.Tools.DirectToolInvoker"/>
+    /// as a bare <see cref="TextContent"/>, not a plain string. Before <c>ToolResultText.ExtractText</c>
+    /// existed, the invoker's own reduction fell through to serializing the whole <see cref="TextContent"/>
+    /// object as JSON instead of extracting its <c>Text</c> — this proves the real end-to-end HTTP path
+    /// returns the tool's actual text for the shape a real MCP tool call is most likely to produce.
+    /// </summary>
+    [Fact]
+    public async Task InvokeTool_ToolReturnsTextContent_ExtractsItsTextRatherThanSerializingTheObject()
+    {
+        var (client, _) = CreateClientWithFakeTool(
+            "text-content-tool",
+            invokeImpl: () => ValueTask.FromResult<object?>(new TextContent("the tool's actual answer")));
+
+        var body = new StringContent(
+            JsonSerializer.Serialize(new { Arguments = new { } }),
+            Encoding.UTF8, "application/json");
+
+        using var response = await client.PostAsync("/api/mcp/tools/text-content-tool/invoke", body);
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var result = await response.Content.ReadFromJsonAsync<McpToolInvokeResponse>();
+        result.Should().NotBeNull();
+        result!.Success.Should().BeTrue();
+        result.Output.Should().Be("the tool's actual answer");
+    }
+
     /// <summary>POST /api/mcp/tools/{name}/invoke returns 404 for an unknown tool name.</summary>
     [Fact]
     public async Task InvokeTool_UnknownTool_Returns404()

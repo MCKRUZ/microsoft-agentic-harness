@@ -62,11 +62,10 @@ public sealed class ContentFilterLocalLogRedactor : ILocalLogRedactor
     public bool Enabled => _config.CurrentValue.RedactionEnabled;
 
     /// <inheritdoc />
-    public string Redact(string text)
-    {
-        var categories = ResolveCategories();
-        return categories.Length == 0 ? text : SanitizeThenRedact.Apply(text, _sanitizer, _filter, categories);
-    }
+    public string Redact(string text) =>
+        // ResolveCategories always returns a non-empty set (RedactionCategoryParser's fail-safe-not-open
+        // fallback guarantees it whenever this is called with enabled: true, which it always is here).
+        SanitizeThenRedact.Apply(text, _sanitizer, _filter, ResolveCategories());
 
     /// <summary>
     /// Re-parses on every call rather than caching: <see cref="LogsConfig"/> is bound from
@@ -75,13 +74,9 @@ public sealed class ContentFilterLocalLogRedactor : ILocalLogRedactor
     /// its own next construction. Cheap regardless — the configured list is a handful of strings, not a
     /// hot-path allocation worth guarding.
     /// </summary>
-    private ImmutableArray<RedactionCategory> ResolveCategories()
-    {
-        var categories = RedactionCategoryParser.Parse(_config.CurrentValue.RedactionCategories, _logger);
-
-        // Same fail-safe-not-open posture as LogRecordRedactionProcessor: redaction was requested
-        // (Enabled is checked by the caller before Redact is ever invoked) but no category resolved,
-        // so over-redact with the full set rather than silently emit unredacted PII.
-        return categories.Length == 0 ? RedactionCategories.All : categories;
-    }
+    private ImmutableArray<RedactionCategory> ResolveCategories() =>
+        // The fail-safe-not-open fallback (empty-but-enabled → every category) lives once in
+        // RedactionCategoryParser, shared with LogRecordRedactionProcessor. `enabled: true` here
+        // because the caller (Redact) only reaches this after checking Enabled itself.
+        RedactionCategoryParser.Parse(_config.CurrentValue.RedactionCategories, _logger, enabled: true);
 }

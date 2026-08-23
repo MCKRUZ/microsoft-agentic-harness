@@ -77,14 +77,34 @@ public static class IServiceCollectionExtensions
             builder.AddInMemoryRingBuffer();
         });
 
-        // #457: redact every local sink the same way the OTel logging bridge already does — one
-        // front door (ILoggerFactory.CreateLogger) rather than patching each current and future
-        // ILoggerProvider individually. Replaces AddLogging's own ILoggerFactory registration with an
-        // equivalent LoggerFactory (same providers, same filter/scope options, all resolved from this
-        // same container) wrapped in RedactingLoggerFactory. ILocalLogRedactor is resolved lazily and
-        // optionally: a host with no implementation registered (this project has no reference to
-        // wherever IContentRedactionFilter lives, by design — see ILocalLogRedactor's remarks) gets an
-        // unmodified pipeline, byte-identical to before this existed.
+        services.WrapWithLocalLogRedaction();
+
+        // Azure SDK EventSource-to-ILogger bridge (issue #383) — surfaces which credential
+        // DefaultAzureCredential selected at Information level, without full EventSource tracing.
+        services.AddAzureIdentityDiagnostics();
+
+        return services;
+    }
+
+    /// <summary>
+    /// Redacts every local sink (console, file, JSONL, named pipe) the same way the OTel logging bridge
+    /// already does — one front door (<see cref="ILoggerFactory.CreateLogger"/>) rather than patching
+    /// each current and future <see cref="ILoggerProvider"/> individually (#457). Named and kept
+    /// separate from <see cref="ConfigureLogging"/>'s provider setup so this security-relevant wiring is
+    /// discoverable by name (IDE outline, a grep for "Redaction") rather than buried as an unlabeled
+    /// statement block inside a more generic method.
+    /// </summary>
+    /// <remarks>
+    /// Replaces <c>AddLogging</c>'s own <see cref="ILoggerFactory"/> registration with an equivalent
+    /// <see cref="LoggerFactory"/> (same providers, same filter/scope options, all resolved from this
+    /// same container) wrapped in <see cref="RedactingLoggerFactory"/>. <see cref="ILocalLogRedactor"/>
+    /// is resolved lazily and optionally: a host with no implementation registered (this project has no
+    /// reference to wherever <c>IContentRedactionFilter</c> lives, by design — see
+    /// <see cref="ILocalLogRedactor"/>'s remarks) gets an unmodified pipeline, byte-identical to before
+    /// this existed.
+    /// </remarks>
+    private static void WrapWithLocalLogRedaction(this IServiceCollection services)
+    {
         services.Replace(ServiceDescriptor.Singleton<ILoggerFactory>(sp =>
         {
             var providers = sp.GetServices<ILoggerProvider>();
@@ -99,11 +119,5 @@ public static class IServiceCollectionExtensions
             var redactor = sp.GetService<ILocalLogRedactor>();
             return redactor is null ? inner : new RedactingLoggerFactory(inner, redactor);
         }));
-
-        // Azure SDK EventSource-to-ILogger bridge (issue #383) — surfaces which credential
-        // DefaultAzureCredential selected at Information level, without full EventSource tracing.
-        services.AddAzureIdentityDiagnostics();
-
-        return services;
     }
 }

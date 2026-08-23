@@ -368,4 +368,78 @@ public sealed class ToolResultTextTests
         ToolResultText.SanitizeAndRedact(structured, sanitizer.Object, redactionFilter.Object, ToolName)
             .Should().BeSameAs(structured);
     }
+
+    // ── ExtractText: the flat-text reduction DirectToolInvoker.Mcp.cs uses for its HTTP response ──
+
+    [Fact]
+    public void ExtractText_Null_ReturnsEmptyString() =>
+        ToolResultText.ExtractText(null).Should().BeEmpty();
+
+    [Fact]
+    public void ExtractText_String_ReturnsItUnchanged() =>
+        ToolResultText.ExtractText("plain tool output").Should().Be("plain tool output");
+
+    [Fact]
+    public void ExtractText_JsonElementString_ReturnsTheUnquotedValue()
+    {
+        var element = JsonSerializer.SerializeToElement("quoted value");
+
+        ToolResultText.ExtractText(element).Should().Be("quoted value");
+    }
+
+    /// <summary>
+    /// The dominant MCP tool-success shape (see this file's own header remarks): a single content
+    /// block reaches here as a bare <see cref="TextContent"/>, not a <see cref="JsonElement"/>. Before
+    /// this method existed, <c>DirectToolInvoker.Mcp.cs</c>'s own reduction fell through to
+    /// <c>JsonSerializer.Serialize(result)</c> for this exact shape — producing a JSON dump of
+    /// <see cref="TextContent"/>'s CLR properties instead of the tool's actual text.
+    /// </summary>
+    [Fact]
+    public void ExtractText_SingleTextContent_ReturnsItsText() =>
+        ToolResultText.ExtractText(new TextContent("the tool's actual answer")).Should().Be("the tool's actual answer");
+
+    [Fact]
+    public void ExtractText_ContentArray_JoinsOnlyTheTextBlocks()
+    {
+        var blocks = new AIContent[]
+        {
+            new TextContent("first block"),
+            new DataContent("data:image/png;base64,aGVsbG8="),
+            new TextContent("second block"),
+        };
+
+        ToolResultText.ExtractText(blocks).Should().Be($"first block{Environment.NewLine}second block");
+    }
+
+    [Fact]
+    public void ExtractText_SerializedCallToolResultWithTextBlocks_JoinsThem()
+    {
+        var structured = JsonSerializer.SerializeToElement(new
+        {
+            content = new object[]
+            {
+                new { type = "text", text = "line one" },
+                new { type = "image", data = "aGVsbG8=", mimeType = "image/png" },
+                new { type = "text", text = "line two" }
+            }
+        });
+
+        ToolResultText.ExtractText(structured).Should().Be($"line one{Environment.NewLine}line two");
+    }
+
+    [Fact]
+    public void ExtractText_StructuredJsonElementWithoutContentArray_ReturnsRawJson()
+    {
+        var structured = JsonSerializer.SerializeToElement(new { rows = 3 });
+
+        ToolResultText.ExtractText(structured).Should().Be(structured.GetRawText());
+    }
+
+    [Fact]
+    public void ExtractText_UnrecognizedObject_FallsBackToSerializing()
+    {
+        var result = new { Rows = 3 };
+
+        ToolResultText.ExtractText(result).Should().Be(JsonSerializer.Serialize(result));
+    }
 }
