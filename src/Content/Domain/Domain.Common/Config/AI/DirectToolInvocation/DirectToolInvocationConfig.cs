@@ -17,13 +17,17 @@ namespace Domain.Common.Config.AI.DirectToolInvocation;
 /// </para>
 /// <para>
 /// <strong>This section does not decide which tools a caller may invoke.</strong> That is the
-/// caller's <c>CapabilityEnvelope</c>, resolved per credential, and nothing here widens it. What this
-/// section bounds is the shape of a single invocation: how long it may run, how large its arguments may
-/// be, and how much output it may return. A caller granted a tool can still only use it within these.
+/// caller's <c>CapabilityEnvelope</c>, resolved per credential, and nothing here widens it — with one
+/// deliberate exception: <see cref="McpEnabled"/> covers a narrower surface (tools reached through a
+/// server the operator already connected this host to) and is on by default. See its own remarks.
+/// What this section bounds is the shape of a single invocation: how long it may run, how large its
+/// arguments may be, and how much output it may return. A caller granted a tool can still only use it
+/// within these.
 /// </para>
 /// <code>
 /// AppConfig.AI.DirectToolInvocation
-/// ├── Enabled              — Master toggle (default false)
+/// ├── Enabled              — Master toggle for keyed-DI tool invocation (default false)
+/// ├── McpEnabled           — Master toggle for MCP tool invocation (default true)
 /// ├── MaxRequestBytes      — Reject a request body larger than this, before deserialization
 /// ├── InvocationTimeout    — Server ceiling on how long one invocation may run
 /// ├── MaxOutputCharacters  — Truncate a tool's output beyond this before returning it
@@ -44,6 +48,30 @@ public class DirectToolInvocationConfig
     /// </remarks>
     /// <value>Default: false</value>
     public bool Enabled { get; set; }
+
+    /// <summary>
+    /// Master toggle for the MCP-tool half of direct invocation (#481's <c>InvokeMcpToolAsync</c>),
+    /// independent of <see cref="Enabled"/>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>On by default, unlike <see cref="Enabled"/>, and deliberately so.</strong> The two
+    /// surfaces grant materially different authority. <see cref="Enabled"/> gates a caller naming one
+    /// of the host's own first-party tools directly — file system access, sandboxed execution, whatever
+    /// this deployment registers — which is exactly the "materially larger grant" <see cref="Enabled"/>'s
+    /// own remarks describe. MCP invocation only reaches tools an operator already decided to trust
+    /// enough to connect this host to, via <c>AppConfig.AI.McpServers</c>; running one of those tools
+    /// from the WebUI's MCP panel is inspecting a connection the operator already made, not opening a
+    /// new one. The panel is expected to work out of the box.
+    /// </para>
+    /// <para>
+    /// Both surfaces still run every call through the identical admission/sanitize/redact/bound chain —
+    /// this flag and <see cref="Enabled"/> gate whether a caller can reach that chain at all, never what
+    /// the chain itself does once reached.
+    /// </para>
+    /// </remarks>
+    /// <value>Default: true</value>
+    public bool McpEnabled { get; set; } = true;
 
     /// <summary>
     /// Maximum accepted size, in bytes, of an invocation request body. Enforced before deserialization,

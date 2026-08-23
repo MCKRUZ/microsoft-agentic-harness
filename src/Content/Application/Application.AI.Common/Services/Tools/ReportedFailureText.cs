@@ -60,6 +60,14 @@ internal static class ReportedFailureText
     /// </param>
     /// <param name="redactionFilter">Scrubs known secret patterns (emails, SSNs, AWS keys, JWTs, etc.).</param>
     /// <param name="toolName">The tool that produced <paramref name="text"/>, passed to the sanitizer as context.</param>
+    /// <returns>
+    /// #472: a <see cref="PreparedFailureText"/> rather than a bare string, so "this is one of the
+    /// placeholder cases below, not the tool's own message" is a field a caller checks
+    /// (<see cref="PreparedFailureText.WasWithheld"/>) instead of an implicit convention that the text
+    /// happens to string-equal one of three fixed constants. No caller branches on it today — the point
+    /// is that a future one, or a future edit that makes a placeholder templated (e.g. including the
+    /// tool name), has a type-checked case to handle rather than a string comparison to remember.
+    /// </returns>
     /// <remarks>
     /// <para>
     /// <strong>Sanitize before redact.</strong> Sanitizing first means an injection payload is stripped
@@ -78,7 +86,7 @@ internal static class ReportedFailureText
     /// (already-safe) result afterward is the only ordering that can't leak a fragment.
     /// </para>
     /// </remarks>
-    public static string PrepareForReporting(
+    public static PreparedFailureText PrepareForReporting(
         string text, ICompositeResponseSanitizer sanitizer, IContentRedactionFilter redactionFilter, string? toolName)
     {
         // Bounds the cost of every pattern in the sanitizer/redaction chain before any of them run,
@@ -86,36 +94,54 @@ internal static class ReportedFailureText
         // does nothing to bound how much text the dozens of regex passes upstream of it must scan.
         if (text.Length > MaxScanLength)
         {
-            return OversizedInputPlaceholder;
+            return PreparedFailureText.Withheld(OversizedInputPlaceholder);
         }
 
+        // Sanitize-then-redact ordering lives once in SanitizeThenRedact (#470) — this method no
+        // longer needs to know the empty-after-sanitization check requires the sanitize half to run
+        // first, only that it must, so the two steps stay split rather than folded into one call: the
+        // withheld-placeholder decision below depends on the sanitizer's output alone, before redaction
+        // ever runs.
         var sanitized = sanitizer.Sanitize(text, toolName).SanitizedContent;
         if (string.IsNullOrWhiteSpace(sanitized))
         {
-            return EmptyAfterSanitizationPlaceholder;
+            return PreparedFailureText.Withheld(EmptyAfterSanitizationPlaceholder);
         }
 
         var redacted = redactionFilter.Redact(sanitized, RedactionCategories.All);
-        return Cap(redacted);
+        return PreparedFailureText.Reported(Cap(redacted));
     }
 
     /// <summary>
-    /// Truncates <paramref name="text"/> to a bounded length, if it exceeds one. Never splits a
-    /// surrogate pair — a cut that would land inside one backs off by one character instead, so the
-    /// result is always a well-formed string.
+    /// Truncates <paramref name="text"/> to a bounded length, if it exceeds one, via the one
+    /// cut-and-mark primitive every trust-boundary truncation site shares (#467/#470).
     /// </summary>
-    public static string Cap(string text)
-    {
-        if (text.Length <= MaxLength)
-        {
-            return text;
-        }
+    public static string Cap(string text) =>
+        Services.Governance.BoundedText.Cap(text, MaxLength, "…[truncated]").Text;
+}
 
-        var cutIndex = MaxLength;
-        if (char.IsHighSurrogate(text[cutIndex - 1]))
-        {
-            cutIndex--;
-        }
-        return string.Concat(text.AsSpan(0, cutIndex), "…[truncated]");
-    }
+/// <summary>
+/// The result of <see cref="ReportedFailureText.PrepareForReporting"/> (#472): the text to report,
+/// plus a type-checked flag for whether it is the tool's own (sanitized/redacted/capped) message or one
+/// of the fixed withheld-placeholder cases.
+/// </summary>
+/// <remarks>
+/// Both cases carry a non-null, non-whitespace <see cref="Text"/> — <c>EscalationExecutionRecord.Failed</c>
+/// and <c>InProcessApprovalFailureMemory.RecordFailure</c> both reject one, so a withheld placeholder must
+/// remain a usable string for whichever downstream consumer receives it. <see cref="WasWithheld"/> is what
+/// lets a consumer tell the two apart without comparing <see cref="Text"/> against a magic constant.
+/// </remarks>
+/// <param name="Text">The text to report — either the tool's own prepared message, or a withheld placeholder.</param>
+/// <param name="WasWithheld">
+/// <see langword="true"/> when <see cref="Text"/> is one of the fixed placeholder cases (oversized input,
+/// empty after sanitization, or — via <c>ToolCallAdmissionPipeline.SafePrepareFailureText</c>'s
+/// catch — a sanitize/redact failure), rather than the tool's own text.
+/// </param>
+internal readonly record struct PreparedFailureText(string Text, bool WasWithheld)
+{
+    /// <summary>The tool's own text, sanitized, redacted, and capped — safe to report as-is.</summary>
+    public static PreparedFailureText Reported(string text) => new(text, WasWithheld: false);
+
+    /// <summary>One of the fixed placeholder cases, in place of the tool's own text.</summary>
+    public static PreparedFailureText Withheld(string placeholder) => new(placeholder, WasWithheld: true);
 }

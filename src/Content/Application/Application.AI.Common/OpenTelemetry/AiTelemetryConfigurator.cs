@@ -1,3 +1,4 @@
+using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Telemetry;
 using Application.AI.Common.OpenTelemetry.Instruments;
 using Application.AI.Common.OpenTelemetry.Processors;
@@ -19,16 +20,21 @@ namespace Application.AI.Common.OpenTelemetry;
 /// </remarks>
 public sealed class AiTelemetryConfigurator : ITelemetryConfigurator
 {
+    private readonly ICompositeResponseSanitizer _sanitizer;
     private readonly IContentRedactionFilter _redactionFilter;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="AiTelemetryConfigurator"/> class.
     /// </summary>
+    /// <param name="sanitizer">Passed to <see cref="AgentFrameworkSpanProcessor"/> so tool-result
+    /// content is sanitized before it is redacted (#470).</param>
     /// <param name="redactionFilter">Passed to <see cref="AgentFrameworkSpanProcessor"/> so
     /// tool-result content is redacted before it reaches <c>gen_ai.event.content</c>.</param>
-    public AiTelemetryConfigurator(IContentRedactionFilter redactionFilter)
+    public AiTelemetryConfigurator(ICompositeResponseSanitizer sanitizer, IContentRedactionFilter redactionFilter)
     {
+        ArgumentNullException.ThrowIfNull(sanitizer);
         ArgumentNullException.ThrowIfNull(redactionFilter);
+        _sanitizer = sanitizer;
         _redactionFilter = redactionFilter;
     }
 
@@ -42,7 +48,7 @@ public sealed class AiTelemetryConfigurator : ITelemetryConfigurator
             .AddSource(AiSourceNames.MicrosoftAgentsAI)
             .AddSource(AiSourceNames.MicrosoftExtensionsAI)
             .AddSource(AiSourceNames.SemanticKernel)
-            .AddProcessor(new AgentFrameworkSpanProcessor(_redactionFilter))
+            .AddProcessor(new AgentFrameworkSpanProcessor(_sanitizer, _redactionFilter))
             .AddProcessor(new ConversationSpanProcessor());
     }
 

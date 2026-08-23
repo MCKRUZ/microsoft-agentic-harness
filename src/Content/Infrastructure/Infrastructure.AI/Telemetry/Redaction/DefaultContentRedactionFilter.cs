@@ -133,8 +133,16 @@ public sealed class DefaultContentRedactionFilter : IContentRedactionFilter
             @"Bearer\s+[A-Za-z0-9\-._~+/]+=*",
             "Bearer [REDACTED]"));
 
+        // #471: the guard recognizes both the bare [REDACTED] this rule itself produces and this
+        // file's own categorized placeholders (e.g. [REDACTED:VendorApiKey]), so a Generic rule running
+        // after a categorized one in the same pass doesn't rewrite an already-redacted value and
+        // silently discard the more specific tag. Anchored to the closing bracket — (?!\[REDACTED\]|\[REDACTED:[A-Za-z]+\])
+        // rather than a bare (?!\[REDACTED) — deliberately: an unanchored prefix match treats ANY
+        // value that happens to start with the literal text "[REDACTED" as already-safe and skips
+        // scrubbing it, which is exactly backwards for a value an attacker controls (found in review:
+        // a secret payload beginning with that literal string would evade this rule entirely).
         b.Add(Compile(RedactionCategory.Generic,
-            @"(?i)(AccountKey|Password|pwd|SharedAccessKey)\s*=\s*(?!\[REDACTED\])[^;""'\s]+",
+            @"(?i)(AccountKey|Password|pwd|SharedAccessKey)\s*=\s*(?!\[REDACTED\]|\[REDACTED:[A-Za-z]+\])[^;""'\s]+",
             "$1=[REDACTED]"));
 
         // Azure SAS query signatures — sv=...&sp=...&se=...&sig=<value>. The other query
@@ -145,11 +153,11 @@ public sealed class DefaultContentRedactionFilter : IContentRedactionFilter
         // is just as likely to appear as (e.g. a document ingest URI, per CLAUDE.md's own
         // recorded history of SAS tokens leaking through exception messages).
         b.Add(Compile(RedactionCategory.Generic,
-            @"(?i)([?&]sig=)(?!\[REDACTED\])[^&\s""']+",
+            @"(?i)([?&]sig=)(?!\[REDACTED\]|\[REDACTED:[A-Za-z]+\])[^&\s""']+",
             "$1[REDACTED]"));
 
         b.Add(Compile(RedactionCategory.Generic,
-            @"(?i)(api[_-]?key|access[_-]?token|secret[_-]?key)\s*[=:]\s*(?!\[REDACTED\])\S+",
+            @"(?i)(api[_-]?key|access[_-]?token|secret[_-]?key)\s*[=:]\s*(?!\[REDACTED\]|\[REDACTED:[A-Za-z]+\])\S+",
             "$1=[REDACTED]"));
 
         return b.ToImmutable();

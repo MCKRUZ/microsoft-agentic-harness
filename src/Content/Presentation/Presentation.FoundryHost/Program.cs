@@ -1,5 +1,7 @@
 using System.Runtime.InteropServices;
 using Application.AI.Common.Interfaces;
+using Application.AI.Common.Interfaces.Governance;
+using Application.AI.Common.Services.Governance;
 using Azure.AI.AgentServer.Core;
 using Domain.AI.Skills;
 using Microsoft.Agents.AI;
@@ -111,6 +113,29 @@ public static class Program
             builder.RegisterProtocol("responses", endpoints => endpoints.MapFoundryResponses());
 
             var app = builder.Build();
+
+            // #478: AgentHost's own request loop never dispatches through ExecuteAgentTurnCommand —
+            // every other host arms ToolAdmissionAccessor there, so without this, GovernedAIFunction's
+            // null-ambient early-return path silently skips admission, sanitize, classification,
+            // authorization, the loop guard, and call-once enforcement for every request this container
+            // serves. AgentHostApp.App is the documented escape hatch onto the underlying
+            // WebApplication for exactly this kind of custom middleware. The harness's own composition
+            // root (`provider`, held open for process lifetime above) — not AgentHost's separate
+            // WebApplicationBuilder.Services, which never had the harness's services registered into
+            // it — is what resolves the scoped admission pipeline, one fresh scope per request,
+            // mirroring how ExecuteAgentTurnCommandHandler arms it once per turn.
+            app.App.Use(async (context, next) =>
+            {
+                await using var requestScope = provider.CreateAsyncScope();
+                var admissionPipeline = requestScope.ServiceProvider
+                    .GetRequiredService<IToolCallAdmissionPipeline>();
+
+                using (ToolAdmissionAccessor.Begin(admissionPipeline))
+                {
+                    await next(context).ConfigureAwait(false);
+                }
+            });
+
             await app.RunAsync().ConfigureAwait(false);
         }
         catch (OperationCanceledException)

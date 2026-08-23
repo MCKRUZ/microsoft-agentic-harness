@@ -14,7 +14,7 @@ public class AiTelemetryConfiguratorTests
     [Fact]
     public void Order_Returns150()
     {
-        var configurator = new AiTelemetryConfigurator(TestRedactionFilter.Instance);
+        var configurator = new AiTelemetryConfigurator(TestSanitizer.Instance, TestRedactionFilter.Instance);
 
         configurator.Order.Should().Be(150);
     }
@@ -22,7 +22,7 @@ public class AiTelemetryConfiguratorTests
     [Fact]
     public void ImplementsITelemetryConfigurator()
     {
-        var configurator = new AiTelemetryConfigurator(TestRedactionFilter.Instance);
+        var configurator = new AiTelemetryConfigurator(TestSanitizer.Instance, TestRedactionFilter.Instance);
 
         configurator.Should().BeAssignableTo<ITelemetryConfigurator>();
     }
@@ -30,7 +30,7 @@ public class AiTelemetryConfiguratorTests
     [Fact]
     public void Order_IsAfterBaseAppConfigurator_AndBeforeDomainSpecific()
     {
-        var configurator = new AiTelemetryConfigurator(TestRedactionFilter.Instance);
+        var configurator = new AiTelemetryConfigurator(TestSanitizer.Instance, TestRedactionFilter.Instance);
 
         // Base app configurator is at 100, domain-specific at 200+
         configurator.Order.Should().BeGreaterThan(100);
@@ -40,7 +40,7 @@ public class AiTelemetryConfiguratorTests
     [Fact]
     public void ConfigureTracing_MethodExists()
     {
-        var configurator = new AiTelemetryConfigurator(TestRedactionFilter.Instance);
+        var configurator = new AiTelemetryConfigurator(TestSanitizer.Instance, TestRedactionFilter.Instance);
 
         // Verify the method is available through the interface
         var method = typeof(ITelemetryConfigurator).GetMethod("ConfigureTracing");
@@ -50,7 +50,7 @@ public class AiTelemetryConfiguratorTests
     [Fact]
     public void ConfigureMetrics_MethodExists()
     {
-        var configurator = new AiTelemetryConfigurator(TestRedactionFilter.Instance);
+        var configurator = new AiTelemetryConfigurator(TestSanitizer.Instance, TestRedactionFilter.Instance);
 
         // Verify the method is available through the interface
         var method = typeof(ITelemetryConfigurator).GetMethod("ConfigureMetrics");
@@ -58,9 +58,17 @@ public class AiTelemetryConfiguratorTests
     }
 
     [Fact]
+    public void Constructor_NullSanitizer_Throws()
+    {
+        var act = () => new AiTelemetryConfigurator(null!, TestRedactionFilter.Instance);
+
+        act.Should().Throw<ArgumentNullException>();
+    }
+
+    [Fact]
     public void Constructor_NullFilter_Throws()
     {
-        var act = () => new AiTelemetryConfigurator(null!);
+        var act = () => new AiTelemetryConfigurator(TestSanitizer.Instance, null!);
 
         act.Should().Throw<ArgumentNullException>();
     }

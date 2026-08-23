@@ -341,7 +341,7 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
             // the audit write and approver notification with no compensating log.
             { Status: EscalationExecutionStatus.Failed, FailureReason: { } reason } =>
                 _executionReporter.ReportFailedAsync(
-                    call, SafePrepareFailureText(reason, report.ToolName), reportedBy, cancellationToken),
+                    call, SafePrepareFailureText(reason, report.ToolName).Text, reportedBy, cancellationToken),
             { Status: EscalationExecutionStatus.NeverExecuted, NotExecutedReason: { } notExecuted } =>
                 _executionReporter.ReportNotExecutedAsync(call, notExecuted, reportedBy, cancellationToken),
             // An incoherent report (Failed with no reason, NeverExecuted with no reason) is a
@@ -358,7 +358,7 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
     /// otherwise bypass entirely (the exception would propagate before <see cref="ReportExecutionAsync"/>
     /// ever reaches its own body). Fails closed: never returns the raw, untreated text on this path.
     /// </summary>
-    private string SafePrepareFailureText(string reason, string? toolName)
+    private PreparedFailureText SafePrepareFailureText(string reason, string? toolName)
     {
         try
         {
@@ -369,7 +369,7 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
             _logger.LogError(ex,
                 "Failed to sanitize/redact failure text for {ToolName}; withholding raw text from the report",
                 toolName);
-            return "[tool failure text withheld: sanitization or redaction failed]";
+            return PreparedFailureText.Withheld("[tool failure text withheld: sanitization or redaction failed]");
         }
     }
 

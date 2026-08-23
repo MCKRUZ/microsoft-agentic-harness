@@ -1,7 +1,9 @@
 using Application.AI.Common.Interfaces;
 using Application.Common.Interfaces.Telemetry;
+using Application.Common.Logging;
 using Domain.Common.Config;
 using Infrastructure.Observability.Exporters;
+using Infrastructure.Observability.Logging;
 using Infrastructure.Observability.Persistence;
 using Infrastructure.Observability.Processors;
 using Infrastructure.Observability.Services;
@@ -41,6 +43,12 @@ public static class DependencyInjection
     {
         // Observability pipeline configurator — adds processors and exporters at Order 300
         services.AddSingleton<ITelemetryConfigurator, ObservabilityTelemetryConfigurator>();
+
+        // #457: the one ILocalLogRedactor implementation, closing the parity gap between the OTel
+        // logging bridge's own redaction and every local ILoggerProvider sink. Application.Common's
+        // ConfigureLogging resolves this optionally, so registering it here is what turns local-sink
+        // redaction on for every host that references Infrastructure.Observability (i.e. every host).
+        services.AddSingleton<ILocalLogRedactor, ContentFilterLocalLogRedactor>();
 
         // Budget tracking service — cost spend state machine with ObservableGauge callbacks
         services.AddSingleton<IBudgetTrackingService>(sp =>

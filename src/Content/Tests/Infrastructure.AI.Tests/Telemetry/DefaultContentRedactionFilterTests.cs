@@ -204,4 +204,37 @@ public sealed class DefaultContentRedactionFilterTests
 
         result.Should().Be(input);
     }
+
+    /// <summary>
+    /// #471: a categorized rule (VendorApiKey) firing before a Generic rule in the same pass must not
+    /// have its more specific tag discarded — the Generic rule's own idempotency guard only recognized
+    /// the bare [REDACTED] it produces itself, not [REDACTED:VendorApiKey], so it re-redacted an
+    /// already-redacted value and silently downgraded the tag.
+    /// </summary>
+    [Fact]
+    public void Redact_VendorApiKeyThenGenericRulesInSamePass_PreservesTheMoreSpecificTag()
+    {
+        var result = _filter.Redact("api_key=sk-XXXXXXXXXXXXXXXXXXXXXXXX", AllCategories);
+
+        result.Should().Contain("[REDACTED:VendorApiKey]");
+        result.Should().NotContain("[REDACTED]", "the Generic rule must not re-redact an already-tagged value");
+    }
+
+    /// <summary>
+    /// #471 review finding: the first fix's negative lookahead — <c>(?!\[REDACTED)</c>, no closing
+    /// bracket — matched ANY value that merely starts with the literal text "[REDACTED", not just the
+    /// actual placeholder shapes this file produces. A real secret an attacker controls could therefore
+    /// begin with that literal string and be waved through as "already redacted" without ever being
+    /// scrubbed. The fix anchors the guard to the two real shapes only: the bare marker with its
+    /// closing bracket, or a categorized marker with its closing bracket.
+    /// </summary>
+    [Fact]
+    public void Redact_GenericSecretValueLiterallyStartingWithRedactedMarkerText_IsStillRedacted()
+    {
+        var result = _filter.Redact("api_key=[REDACTEDbutActuallyASecretToken123", [RedactionCategory.Generic]);
+
+        result.Should().NotContain("[REDACTEDbutActuallyASecretToken123",
+            "a value that merely starts with the marker text is not an already-redacted placeholder");
+        result.Should().Contain("api_key=[REDACTED]");
+    }
 }

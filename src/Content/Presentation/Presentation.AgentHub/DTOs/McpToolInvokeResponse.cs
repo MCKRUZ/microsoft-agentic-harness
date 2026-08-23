@@ -1,12 +1,21 @@
-using System.Text.Json;
-
 namespace Presentation.AgentHub.DTOs;
 
 /// <summary>Response envelope for an MCP tool invocation.</summary>
 public sealed record McpToolInvokeResponse
 {
-    /// <summary>Serialized output from the tool. Populated only when <see cref="Success"/> is <see langword="true"/>; <see langword="null"/> on failure.</summary>
-    public JsonElement? Output { get; init; }
+    /// <summary>
+    /// Sanitized, length-bounded output from the tool. Populated only when <see cref="Success"/> is
+    /// <see langword="true"/>; <see langword="null"/> on failure.
+    /// </summary>
+    /// <remarks>
+    /// A string, not a <c>JsonElement</c>, since #481: the caller-facing scrub every direct-invocation
+    /// surface applies operates on text, and returning structured JSON here would mean either skipping
+    /// that scrub or re-deriving it for a JSON tree — see <c>IDirectToolInvoker.InvokeMcpToolAsync</c>.
+    /// </remarks>
+    public string? Output { get; init; }
+
+    /// <summary>Whether <see cref="Output"/> was cut short at the host's configured character ceiling.</summary>
+    public bool OutputTruncated { get; init; }
 
     /// <summary>Wall-clock duration of the invocation in milliseconds.</summary>
     public long DurationMs { get; init; }

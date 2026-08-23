@@ -1,8 +1,10 @@
 using Application.Common.Logging;
 using Domain.Common.Config;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Console;
+using Microsoft.Extensions.Options;
 
 namespace Application.Common.Extensions;
 
@@ -74,6 +76,29 @@ public static class IServiceCollectionExtensions
             // In-memory ring buffer for diagnostics endpoints (always enabled)
             builder.AddInMemoryRingBuffer();
         });
+
+        // #457: redact every local sink the same way the OTel logging bridge already does — one
+        // front door (ILoggerFactory.CreateLogger) rather than patching each current and future
+        // ILoggerProvider individually. Replaces AddLogging's own ILoggerFactory registration with an
+        // equivalent LoggerFactory (same providers, same filter/scope options, all resolved from this
+        // same container) wrapped in RedactingLoggerFactory. ILocalLogRedactor is resolved lazily and
+        // optionally: a host with no implementation registered (this project has no reference to
+        // wherever IContentRedactionFilter lives, by design — see ILocalLogRedactor's remarks) gets an
+        // unmodified pipeline, byte-identical to before this existed.
+        services.Replace(ServiceDescriptor.Singleton<ILoggerFactory>(sp =>
+        {
+            var providers = sp.GetServices<ILoggerProvider>();
+            var filterOptions = sp.GetRequiredService<IOptionsMonitor<LoggerFilterOptions>>();
+            var factoryOptions = sp.GetRequiredService<IOptions<LoggerFactoryOptions>>();
+            var scopeProvider = sp.GetService<IExternalScopeProvider>();
+
+            ILoggerFactory inner = scopeProvider is not null
+                ? new LoggerFactory(providers, filterOptions, factoryOptions, scopeProvider)
+                : new LoggerFactory(providers, filterOptions, factoryOptions);
+
+            var redactor = sp.GetService<ILocalLogRedactor>();
+            return redactor is null ? inner : new RedactingLoggerFactory(inner, redactor);
+        }));
 
         // Azure SDK EventSource-to-ILogger bridge (issue #383) — surfaces which credential
         // DefaultAzureCredential selected at Information level, without full EventSource tracing.

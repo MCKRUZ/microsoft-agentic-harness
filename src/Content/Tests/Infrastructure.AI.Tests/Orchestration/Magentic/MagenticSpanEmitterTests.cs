@@ -2,8 +2,10 @@ using System.Linq;
 using Application.AI.Common.Interfaces.Orchestration.Magentic;
 using Domain.AI.Telemetry.Conventions;
 using FluentAssertions;
+using Infrastructure.AI.Orchestration.Magentic;
 using Microsoft.Agents.AI.Workflows.Specialized.Magentic;
 using Microsoft.Extensions.AI;
+using Moq;
 using Xunit;
 
 #pragma warning disable MAAIW001
@@ -113,6 +115,49 @@ public sealed class MagenticSpanEmitterTests
         rounds[2].GetTagItem(MagenticConventions.RoundStallCountAfter).Should().Be(1);
         subscriber.RoundsExecuted.Should().Be(3);
         subscriber.ResetsExecuted.Should().Be(0);
+    }
+
+    /// <summary>
+    /// #470: <c>EndWorkflowSpan</c> used to redact <c>errorMessage</c> without sanitizing first, so a
+    /// secret split by invisible/zero-width characters (which the sanitizer canonicalizes away, but
+    /// the redaction filter's anchored patterns do not) could dodge redaction here while the identical
+    /// string was caught on the tool-failure-reporting path. Proven by ordering, not by depending on
+    /// the real sanitizer's exact zero-width handling: a sanitizer mock that joins a split key only
+    /// shows up redacted if redaction ran against the sanitizer's output.
+    /// </summary>
+    [Fact]
+    public void EndWorkflowSpan_SanitizesBeforeRedacting()
+    {
+        using var source = new System.Diagnostics.ActivitySource("test.magentic.sanitize-order");
+        using var listener = new System.Diagnostics.ActivityListener
+        {
+            ShouldListenTo = _ => true,
+            Sample = (ref System.Diagnostics.ActivityCreationOptions<System.Diagnostics.ActivityContext> _)
+                => System.Diagnostics.ActivitySamplingResult.AllDataAndRecorded
+        };
+        System.Diagnostics.ActivitySource.AddActivityListener(listener);
+        using var workflowSpan = source.StartActivity("workflow-span");
+        workflowSpan.Should().NotBeNull();
+
+        var sanitizer = new Moq.Mock<Application.AI.Common.Interfaces.Governance.ICompositeResponseSanitizer>();
+        sanitizer
+            .Setup(s => s.Sanitize("secret is AKIA<split>ABCDEFGHIJ123456", It.IsAny<string?>()))
+            .Returns(Domain.AI.Governance.SanitizationResult.Clean("secret is AKIAABCDEFGHIJ123456"));
+
+        MagenticSpanEmitter.EndWorkflowSpan(
+            workflowSpan,
+            roundsExecuted: 1,
+            resetsExecuted: 0,
+            completionReason: MagenticConventions.CompletionReasonError,
+            errorMessage: "secret is AKIA<split>ABCDEFGHIJ123456",
+            sanitizer.Object,
+            new Infrastructure.AI.Telemetry.Redaction.DefaultContentRedactionFilter());
+
+        var tag = workflowSpan!.GetTagItem(GenAiSemconvRegistry.ErrorType) as string;
+        tag.Should().NotBeNull();
+        tag.Should().Contain("[REDACTED:AwsKey]",
+            "redaction must run against the sanitizer's output, which joined the split key back together");
+        tag.Should().NotContain("AKIAABCDEFGHIJ123456");
     }
 }
 

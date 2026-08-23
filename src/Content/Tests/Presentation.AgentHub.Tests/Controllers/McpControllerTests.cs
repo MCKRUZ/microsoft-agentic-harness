@@ -1,16 +1,21 @@
 using Application.AI.Common.Interfaces;
+using Application.AI.Common.Interfaces.Governance;
+using Domain.AI.Bundles;
+using Domain.AI.Governance;
 using FluentAssertions;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
 using Moq;
 using Presentation.AgentHub.DTOs;
 using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Http.Json;
+using System.Security.Claims;
 using System.Text;
 using System.Text.Json;
 using Xunit;
@@ -32,8 +37,21 @@ public sealed class McpControllerTests : IClassFixture<TestWebApplicationFactory
     // ── Helpers ──────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// Creates a factory variant that registers a fake <see cref="IMcpToolProvider"/>
-    /// and a log-capturing provider, then returns both along with a configured client.
+    /// The fake tool provider's one server key. #481 routes invocation through
+    /// <c>IDirectToolInvoker.InvokeMcpToolAsync</c>, which resolves a tool only by walking the caller's
+    /// <see cref="CapabilityEnvelope.AllowedMcpServers"/> — so the granted envelope built here must name
+    /// this same server, or every invocation test would see a governance-refused tool rather than
+    /// whatever behaviour it means to exercise.
+    /// </summary>
+    private const string TestServerName = "test-server";
+
+    /// <summary>
+    /// Creates a factory variant that registers a fake <see cref="IMcpToolProvider"/>, a log-capturing
+    /// provider, and — #481 — an operator-configured envelope explicitly granting
+    /// <paramref name="toolName"/> through <see cref="TestServerName"/>. Exercises the "operator
+    /// narrowed this caller's grant" path; <see cref="InvokeTool_NoOperatorConfig_StillWorksByDefault"/>
+    /// exercises the unconfigured default instead. <c>DirectToolInvocationConfig.McpEnabled</c> is on
+    /// by default so, unlike the keyed-DI surface, no config override is needed to switch this on.
     /// </summary>
     private (HttpClient client, TestLoggerProvider logs) CreateClientWithFakeTool(
         string toolName,
@@ -52,11 +70,51 @@ public sealed class McpControllerTests : IClassFixture<TestWebApplicationFactory
                         TestAuthHandler.SchemeName, _ => { });
                 services.AddSingleton<IMcpToolProvider>(fakeProvider);
                 services.AddSingleton<ILoggerProvider>(logs);
+                services.Replace(ServiceDescriptor.Singleton<ICapabilityEnvelopeResolver>(
+                    new FixedEnvelopeResolver(new CapabilityEnvelope
+                    {
+                        AllowedTools = [toolName],
+                        AllowedMcpServers = [TestServerName],
+                        // A CapabilityEnvelope grant alone maps to "Ask", not "Autonomous" — see
+                        // CapabilityEnvelope.AutonomyCeiling's remarks. This harness wires no approval
+                        // routing, so anything short of Autonomous fails closed as Denied rather than
+                        // exercising the invocation path these tests mean to cover.
+                        AutonomyCeiling = AutonomyLevel.Autonomous
+                    })));
             });
         });
 
         var client = factory.CreateClient();
         client.DefaultRequestHeaders.Add(TestAuthHandler.UserIdHeader, "mcp-test-user");
+        return (client, logs);
+    }
+
+    /// <summary>
+    /// Same as <see cref="CreateClientWithFakeTool"/> but leaves <see cref="ICapabilityEnvelopeResolver"/>
+    /// as the host's real, unconfigured default — which resolves to an empty grant — so the request
+    /// exercises <c>McpController.ResolveMcpEnvelopeAsync</c>'s own fallback rather than a test double's
+    /// grant.
+    /// </summary>
+    private (HttpClient client, TestLoggerProvider logs) CreateClientWithFakeToolAndNoEnvelopeOverride(
+        string toolName, Func<ValueTask<object?>>? invokeImpl = null)
+    {
+        var logs = new TestLoggerProvider();
+        var fakeProvider = BuildFakeToolProvider(toolName, invokeImpl, throwOnInvoke: false);
+
+        var factory = _factory.WithWebHostBuilder(b =>
+        {
+            b.ConfigureTestServices(services =>
+            {
+                services.AddAuthentication(TestAuthHandler.SchemeName)
+                    .AddScheme<AuthenticationSchemeOptions, TestAuthHandler>(
+                        TestAuthHandler.SchemeName, _ => { });
+                services.AddSingleton<IMcpToolProvider>(fakeProvider);
+                services.AddSingleton<ILoggerProvider>(logs);
+            });
+        });
+
+        var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Add(TestAuthHandler.UserIdHeader, "mcp-test-user-noconfig");
         return (client, logs);
     }
 
@@ -74,14 +132,31 @@ public sealed class McpControllerTests : IClassFixture<TestWebApplicationFactory
         mock.Setup(p => p.GetAllToolsAsync(It.IsAny<CancellationToken>()))
             .ReturnsAsync(new Dictionary<string, IList<AITool>>
             {
-                ["test-server"] = new List<AITool> { fn },
+                [TestServerName] = new List<AITool> { fn },
             });
         mock.Setup(p => p.GetToolByNameAsync(toolName, It.IsAny<CancellationToken>()))
             .ReturnsAsync(fn);
         mock.Setup(p => p.GetToolByNameAsync(
                 It.Is<string>(n => n != toolName), It.IsAny<CancellationToken>()))
             .ReturnsAsync((AIFunction?)null);
+
+        // #481: IDirectToolInvoker.InvokeMcpToolAsync resolves a tool by walking the envelope's granted
+        // servers via GetToolsAsync, never GetToolByNameAsync (which would search every configured
+        // server regardless of grant) — so the fake must answer this call too, not just the one the
+        // controller's old direct-provider path used.
+        mock.Setup(p => p.GetToolsAsync(TestServerName, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((IList<AITool>)new List<AITool> { fn });
+        mock.Setup(p => p.GetToolsAsync(
+                It.Is<string>(n => n != TestServerName), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((IList<AITool>)new List<AITool>());
+
         return mock.Object;
+    }
+
+    /// <summary>A fixed, always-granting <see cref="ICapabilityEnvelopeResolver"/> test double.</summary>
+    private sealed class FixedEnvelopeResolver(CapabilityEnvelope envelope) : ICapabilityEnvelopeResolver
+    {
+        public CapabilityEnvelope Resolve(ClaimsPrincipal? principal) => envelope;
     }
 
     // ── Tests: Tool listing ───────────────────────────────────────────────────
@@ -129,6 +204,80 @@ public sealed class McpControllerTests : IClassFixture<TestWebApplicationFactory
 
     // ── Tests: Tool invocation ────────────────────────────────────────────────
 
+    /// <summary>
+    /// POST /api/mcp/tools/{name}/invoke works with no operator configuration at all — no
+    /// <c>DirectToolInvocationConfig.McpEnabled</c> override, no <see cref="ICapabilityEnvelopeResolver"/>
+    /// grant — because both default open for MCP invocation specifically, unlike the keyed-DI direct
+    /// invocation surface. Guards against a regression to the keyed-DI surface's deny-by-default posture.
+    /// </summary>
+    [Fact]
+    public async Task InvokeTool_NoOperatorConfig_StillWorksByDefault()
+    {
+        var (client, _) = CreateClientWithFakeToolAndNoEnvelopeOverride(
+            "default-open-tool", invokeImpl: () => ValueTask.FromResult<object?>("tool result"));
+
+        var body = new StringContent(
+            JsonSerializer.Serialize(new { Arguments = new { } }),
+            Encoding.UTF8, "application/json");
+
+        using var response = await client.PostAsync("/api/mcp/tools/default-open-tool/invoke", body);
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var result = await response.Content.ReadFromJsonAsync<McpToolInvokeResponse>();
+        result.Should().NotBeNull();
+        result!.Success.Should().BeTrue();
+    }
+
+    /// <summary>
+    /// Review finding: <c>ResolveMcpEnvelopeAsync</c> used to skip its auto-open fallback whenever
+    /// <c>AllowedTools</c> was non-empty, even if <c>AllowedMcpServers</c> was empty — but
+    /// <c>AllowedTools</c> is shared with the unrelated keyed-DI direct-invocation surface, so an
+    /// operator who narrowed only that grant (naming a tool that has nothing to do with MCP, and
+    /// configuring no MCP servers at all) would have silently suppressed the MCP-specific fallback too.
+    /// This proves the fallback still opens when only <c>AllowedTools</c> is populated.
+    /// </summary>
+    [Fact]
+    public async Task InvokeTool_EnvelopeGrantsOnlyUnrelatedKeyedDiTool_StillFallsBackToAutoOpenForMcp()
+    {
+        var logs = new TestLoggerProvider();
+        var fakeProvider = BuildFakeToolProvider("mcp-only-tool", () => ValueTask.FromResult<object?>("tool result"), throwOnInvoke: false);
+
+        var factory = _factory.WithWebHostBuilder(b =>
+        {
+            b.ConfigureTestServices(services =>
+            {
+                services.AddAuthentication(TestAuthHandler.SchemeName)
+                    .AddScheme<AuthenticationSchemeOptions, TestAuthHandler>(
+                        TestAuthHandler.SchemeName, _ => { });
+                services.AddSingleton<IMcpToolProvider>(fakeProvider);
+                services.AddSingleton<ILoggerProvider>(logs);
+                services.Replace(ServiceDescriptor.Singleton<ICapabilityEnvelopeResolver>(
+                    new FixedEnvelopeResolver(new CapabilityEnvelope
+                    {
+                        // Names a keyed-DI tool that has nothing to do with MCP; AllowedMcpServers is
+                        // deliberately left empty so this exercises the auto-open fallback condition.
+                        AllowedTools = ["some-unrelated-keyed-di-tool"],
+                        AllowedMcpServers = [],
+                        AutonomyCeiling = AutonomyLevel.Autonomous
+                    })));
+            });
+        });
+
+        var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Add(TestAuthHandler.UserIdHeader, "mcp-narrowed-keyeddi-user");
+
+        var body = new StringContent(
+            JsonSerializer.Serialize(new { Arguments = new { } }),
+            Encoding.UTF8, "application/json");
+
+        using var response = await client.PostAsync("/api/mcp/tools/mcp-only-tool/invoke", body);
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var result = await response.Content.ReadFromJsonAsync<McpToolInvokeResponse>();
+        result.Should().NotBeNull();
+        result!.Success.Should().BeTrue();
+    }
+
     /// <summary>POST /api/mcp/tools/{name}/invoke returns 200 with Success=true for a working tool.</summary>
     [Fact]
     public async Task InvokeTool_ValidArgs_Returns200WithOutput()
@@ -163,11 +312,22 @@ public sealed class McpControllerTests : IClassFixture<TestWebApplicationFactory
         response.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
 
-    /// <summary>POST /api/mcp/tools/{name}/invoke returns 200 with Success=false when the tool throws.</summary>
+    /// <summary>
+    /// POST /api/mcp/tools/{name}/invoke returns 200 with Success=false when the MCP tool reports a
+    /// protocol-level failure (<c>isError: true</c>) without throwing — the shape
+    /// <see cref="Application.AI.Common.Services.Tools.McpFailureNormalizingAIFunction"/> recognizes
+    /// and DirectToolInvoker's response shaping treats as a completed, "the tool said no" invocation.
+    /// </summary>
     [Fact]
-    public async Task InvokeTool_ToolExecutionFailure_Returns200WithSuccessFalse()
+    public async Task InvokeTool_ToolReportsProtocolFailure_Returns200WithSuccessFalse()
     {
-        var (client, _) = CreateClientWithFakeTool("failing-tool", throwOnInvoke: true);
+        var mcpFailure = JsonSerializer.SerializeToElement(new
+        {
+            isError = true,
+            content = new[] { new { type = "text", text = "Simulated tool failure" } }
+        });
+        var (client, _) = CreateClientWithFakeTool(
+            "failing-tool", invokeImpl: () => ValueTask.FromResult<object?>(mcpFailure));
         var body = new StringContent(
             JsonSerializer.Serialize(new { Arguments = new { } }),
             Encoding.UTF8, "application/json");
@@ -179,6 +339,25 @@ public sealed class McpControllerTests : IClassFixture<TestWebApplicationFactory
         result.Should().NotBeNull();
         result!.Success.Should().BeFalse();
         result.Output.Should().BeNull("error responses must not populate Output");
+        result.Error.Should().Contain("Simulated tool failure");
+    }
+
+    /// <summary>
+    /// POST /api/mcp/tools/{name}/invoke returns 500 when the tool call itself throws — distinct from a
+    /// protocol-level failure, and deliberately does not echo the exception message across the trust
+    /// boundary (matches <c>ToolsController.Invoke</c>'s keyed-DI convention).
+    /// </summary>
+    [Fact]
+    public async Task InvokeTool_ToolThrows_Returns500Faulted()
+    {
+        var (client, _) = CreateClientWithFakeTool("throwing-tool", throwOnInvoke: true);
+        var body = new StringContent(
+            JsonSerializer.Serialize(new { Arguments = new { } }),
+            Encoding.UTF8, "application/json");
+
+        using var response = await client.PostAsync("/api/mcp/tools/throwing-tool/invoke", body);
+
+        response.StatusCode.Should().Be(HttpStatusCode.InternalServerError);
     }
 
     /// <summary>POST /api/mcp/tools/{name}/invoke emits a structured audit log entry with UserId, ToolName, InputHash.</summary>

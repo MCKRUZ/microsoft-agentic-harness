@@ -9,6 +9,7 @@ using Domain.Common.MetaHarness;
 using Infrastructure.AI.MetaHarness;
 using Infrastructure.AI.Security;
 using Infrastructure.AI.Tests.Helpers;
+using Infrastructure.AI.Tests.Planner.StepExecutors;
 using Infrastructure.AI.Traces;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
@@ -34,7 +35,8 @@ public class AgentEvaluationServiceTests : IAsyncDisposable
         var opts = Mock.Of<IOptionsMonitor<MetaHarnessConfig>>(m => m.CurrentValue == cfg);
         var traceStore = BuildTraceStore(cfg.TraceDirectoryRoot);
         return new AgentEvaluationService(opts, traceStore, _agentFactoryMock.Object,
-            NullLogger<AgentEvaluationService>.Instance);
+            PermissiveAdmission.Pipeline(), PermissiveAdmission.PermissiveSanitizer(),
+            NullLoggerFactory.Instance, NullLogger<AgentEvaluationService>.Instance);
     }
 
     private IExecutionTraceStore BuildTraceStore(string traceRoot)

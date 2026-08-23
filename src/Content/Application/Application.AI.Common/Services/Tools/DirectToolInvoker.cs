@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Tools;
@@ -61,6 +62,7 @@ public sealed partial class DirectToolInvoker : IDirectToolInvoker
     private readonly IToolCatalog _catalog;
     private readonly ICompositeResponseSanitizer _sanitizer;
     private readonly IOptionsMonitor<DirectToolInvocationConfig> _config;
+    private readonly IMcpToolProvider? _mcpToolProvider;
     private readonly ILogger<DirectToolInvoker> _logger;
 
     /// <summary>Initializes the invoker.</summary>
@@ -68,13 +70,20 @@ public sealed partial class DirectToolInvoker : IDirectToolInvoker
     /// <param name="catalog">Resolves the tool, filtered to the caller's grant.</param>
     /// <param name="sanitizer">Scrubs everything leaving the trust boundary.</param>
     /// <param name="config">The host's direct-invocation settings, read per request.</param>
+    /// <param name="mcpToolProvider">
+    /// Resolves MCP-published tools for <see cref="InvokeMcpToolAsync"/> (#481). Optional, mirroring
+    /// <c>ToolChainBuilder</c>'s own MCP dependency: a host with no MCP servers configured need not
+    /// register a provider, and <see cref="InvokeMcpToolAsync"/> answers <see cref="DirectToolInvocationStatus.NotFound"/>
+    /// rather than throwing when it is absent.
+    /// </param>
     /// <param name="logger">Records denials, faults, and the governance trace.</param>
     public DirectToolInvoker(
         IServiceScopeFactory scopeFactory,
         IToolCatalog catalog,
         ICompositeResponseSanitizer sanitizer,
         IOptionsMonitor<DirectToolInvocationConfig> config,
-        ILogger<DirectToolInvoker> logger)
+        ILogger<DirectToolInvoker> logger,
+        IMcpToolProvider? mcpToolProvider = null)
     {
         ArgumentNullException.ThrowIfNull(scopeFactory);
         ArgumentNullException.ThrowIfNull(catalog);
@@ -86,6 +95,7 @@ public sealed partial class DirectToolInvoker : IDirectToolInvoker
         _catalog = catalog;
         _sanitizer = sanitizer;
         _config = config;
+        _mcpToolProvider = mcpToolProvider;
         _logger = logger;
     }
 
@@ -151,24 +161,10 @@ public sealed partial class DirectToolInvoker : IDirectToolInvoker
             // reached through this surface is therefore not enforceable here — the call-once gate
             // fails open on a null scope, which is the documented, correct answer, not a gap. See
             // IAgentExecutionContext.CallOnceScopeId's remarks.
-            var executionContext = scope.ServiceProvider.GetRequiredService<IAgentExecutionContext>();
-            executionContext.Initialize(agentId, conversationId: Guid.NewGuid().ToString(), turnNumber: 1);
-
-            // Required, not GetService: the chain is registered unconditionally, and an absent one is
-            // indistinguishable at runtime from a host whose gates all happen to be off — so tolerating
-            // null here would let a broken composition run this path silently unguarded.
-            var admissionPipeline = scope.ServiceProvider.GetRequiredService<IToolCallAdmissionPipeline>();
-            admissionPipeline.Reset();
-
-            // Both ambient values are published with restoring scopes rather than assigned and nulled.
-            // The difference only shows under nesting, where it is the whole game: nulling on teardown
-            // disarms whatever an enclosing flow had armed, leaving the outer call ungoverned for the
-            // rest of its life. Restoring cannot do that.
-            //
-            // The chain is armed as well as called directly, because a tool that spawns an agent turn
-            // beneath it must reach the same chain rather than run unadmitted.
-            using var grantedEnvelope = CapabilityEnvelopeAccessor.Begin(request.Envelope);
-            using var armedAdmission = ToolAdmissionAccessor.Begin(admissionPipeline);
+            var (admissionPipeline, grantedEnvelope, armedAdmission) =
+                ArmGovernance(scope.ServiceProvider, agentId, request.Envelope);
+            using var _grantedEnvelope = grantedEnvelope;
+            using var _armedAdmission = armedAdmission;
 
             try
             {
@@ -205,6 +201,58 @@ public sealed partial class DirectToolInvoker : IDirectToolInvoker
             return DirectToolInvocationOutcome.Refused(
                 DirectToolInvocationStatus.Faulted, DirectToolInvocationErrors.Failed, sw.Elapsed);
         }
+    }
+
+    /// <summary>
+    /// Establishes the caller's identity and capability envelope, then arms the ambient admission
+    /// chain — the fixed-order sequence every direct-invocation surface must run before its own
+    /// tool-specific resolution, whatever kind of tool that turns out to be (#481). Extracted so the
+    /// keyed-DI <see cref="ITool"/> path (<see cref="RunArmedAsync"/>) and the MCP path
+    /// (<c>DirectToolInvoker.Mcp.cs</c>) share the one implementation rather than each re-deriving this
+    /// order by hand — see this type's remarks for what goes wrong when that discipline is duplicated.
+    /// </summary>
+    /// <returns>
+    /// The scoped admission chain, reset and ready, plus the two restoring scopes the caller must
+    /// dispose (in either order — both restore independently) when the invocation ends.
+    /// </returns>
+    private (IToolCallAdmissionPipeline Pipeline, IDisposable EnvelopeScope, IDisposable AdmissionScope) ArmGovernance(
+        IServiceProvider scopedProvider, string agentId, Domain.AI.Bundles.CapabilityEnvelope envelope)
+    {
+        // Identity and envelope. Both must be in place before AdmitAsync — see the type remarks for
+        // what the governor reads, and when.
+        //
+        // The conversation id is deliberately NOT agentId. #325's retry-attribution memory is keyed on
+        // (conversation, agent, tool) precisely so it expires — but agentId here is the caller's stable
+        // synthetic identity, reused for every direct invocation that caller ever makes. Passing it as
+        // the conversation id too would give the failure-memory key no expiry at all. A direct
+        // invocation is a single, standalone call with no request-level session concept to key on, so
+        // each one mints its own one-shot id.
+        //
+        // callOnceScopeId is deliberately omitted (null), for the identical reason: a direct invocation
+        // has no request-level session to key a repeat-call check on either. A call-once tool reached
+        // through this surface is therefore not enforceable here — the call-once gate fails open on a
+        // null scope, which is the documented, correct answer, not a gap. See
+        // IAgentExecutionContext.CallOnceScopeId's remarks.
+        var executionContext = scopedProvider.GetRequiredService<IAgentExecutionContext>();
+        executionContext.Initialize(agentId, conversationId: Guid.NewGuid().ToString(), turnNumber: 1);
+
+        // Required, not GetService: the chain is registered unconditionally, and an absent one is
+        // indistinguishable at runtime from a host whose gates all happen to be off — so tolerating
+        // null here would let a broken composition run this path silently unguarded.
+        var admissionPipeline = scopedProvider.GetRequiredService<IToolCallAdmissionPipeline>();
+        admissionPipeline.Reset();
+
+        // Both ambient values are published with restoring scopes rather than assigned and nulled. The
+        // difference only shows under nesting, where it is the whole game: nulling on teardown disarms
+        // whatever an enclosing flow had armed, leaving the outer call ungoverned for the rest of its
+        // life. Restoring cannot do that.
+        //
+        // The chain is armed as well as called directly, because a tool that spawns an agent turn
+        // beneath it must reach the same chain rather than run unadmitted.
+        var grantedEnvelope = CapabilityEnvelopeAccessor.Begin(envelope);
+        var armedAdmission = ToolAdmissionAccessor.Begin(admissionPipeline);
+
+        return (admissionPipeline, grantedEnvelope, armedAdmission);
     }
 
     /// <summary>
