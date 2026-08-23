@@ -9,13 +9,19 @@ namespace Application.Common.Logging;
 /// </summary>
 /// <remarks>
 /// <para>
-/// Both halves funnel through the same <c>Log(logLevel, eventId, string, Exception?, ...)</c> overload
-/// regardless of the original <c>TState</c> shape. That is deliberate, not a loss of fidelity: every
-/// local <see cref="ILoggerProvider"/> in this harness (console, file, JSONL, named pipe, in-memory
-/// ring buffer) only ever reads the formatted message string and the exception, never <c>TState</c>'s
-/// own fields directly — confirmed by reading each one before writing this type. Re-invoking with the
-/// original, untouched <c>TState</c> would let a provider's own formatter re-render the unredacted
-/// original underneath this wrapper.
+/// <c>Log</c> re-invokes the inner logger with the <em>original, untouched</em> <c>state</c> — never a
+/// collapsed string — swapping in only a formatter that returns the already-redacted message text. An
+/// earlier version collapsed <c>state</c> to a plain string unconditionally; CI's correctness-review
+/// caught that this dropped every structured attribute (<c>{OriginalFormat}</c>, named arguments) the
+/// OTel logging bridge extracts by reading <c>state</c> directly, once <c>LogsConfig.OtelExportEnabled</c>
+/// is on. Preserving <c>state</c> is safe specifically because the OTel bridge is not left unprotected:
+/// <c>Infrastructure.Observability.Processors.LogRecordRedactionProcessor</c> is registered ahead of its
+/// exporter and independently redacts <c>LogRecord.Attributes</c>/<c>FormattedMessage</c>/<c>Exception</c>
+/// on that path already — this type's own job, per #457, is the local sinks that processor never reaches
+/// (console, file, JSONL, named pipe, in-memory ring buffer), and every one of those was confirmed, by
+/// reading each, to only ever consume the formatted message string and the exception — never
+/// <c>state</c>'s own fields directly. Whichever sink actually reads it, the formatted text it renders
+/// is the redacted one.
 /// </para>
 /// </remarks>
 public sealed class RedactingLogger : ILogger
@@ -30,22 +36,39 @@ public sealed class RedactingLogger : ILogger
     }
 
     /// <summary>
-    /// Redacts scope state the same way <see cref="Log{TState}"/> redacts a message — found in
-    /// independent security review: forwarding <paramref name="state"/> unchanged meant a secret or PII
-    /// value placed in scope state (a connection string, an email — categories this redactor's default
-    /// set already covers) reached every local sink in cleartext, since a console/file formatter renders
-    /// scope contents directly. Handles the two shapes scope state actually takes: a structured scope
+    /// Redacts scope state carrying free text — found in independent security review: forwarding
+    /// <paramref name="state"/> unchanged meant a secret or PII value placed in scope state (a
+    /// connection string, an email) reached every local sink in cleartext, since a console/file
+    /// formatter renders scope contents directly. Handles only the two shapes actually capable of
+    /// carrying arbitrary text: a plain <see cref="string"/>, and a structured scope
     /// (<c>IEnumerable&lt;KeyValuePair&lt;string, object?&gt;&gt;</c>, from a dictionary or
-    /// <c>LoggerMessage.DefineScope</c>) has its string-valued entries redacted in place; anything else
-    /// is redacted via its rendered <see cref="object.ToString"/> text, mirroring how a formatter that
-    /// doesn't understand the structured shape would render it anyway.
+    /// <c>LoggerMessage.DefineScope</c>) has its string-valued entries redacted in place.
     /// </summary>
+    /// <remarks>
+    /// Anything else passes through <em>unchanged</em> — not redacted via its rendered
+    /// <see cref="object.ToString"/> text. An earlier version of this method did exactly that, and CI's
+    /// correctness-review caught the regression: <c>ExecutionScope</c> (this codebase's own domain scope
+    /// type, carrying executor/correlation ids and a step number — structural identifiers, never
+    /// arbitrary text, so nothing here needs redacting) does not implement the structured-KVP shape
+    /// above, so it fell through to the string-collapse branch. That replaced the pushed scope object
+    /// with a plain <see cref="string"/>, which broke <c>ExecutionScopeProvider.GetCurrentScope</c>'s
+    /// <c>scope is ExecutionScope</c> type check for every request — not merely a fidelity loss but a
+    /// silent breakage of an already-wired feature, for every local sink, whenever redaction is enabled
+    /// (the default). Transforming an unrecognized object risks exactly this: breaking a downstream
+    /// consumer that depends on the exact runtime type of what it pushed. Only the two shapes this type
+    /// can safely reconstruct after redacting are transformed; everything else is left alone.
+    /// </remarks>
     /// <inheritdoc />
     public IDisposable? BeginScope<TState>(TState state) where TState : notnull
     {
         if (!_redactor.Enabled)
         {
             return _inner.BeginScope(state);
+        }
+
+        if (state is string text)
+        {
+            return _inner.BeginScope(_redactor.Redact(text));
         }
 
         if (state is IEnumerable<KeyValuePair<string, object?>> pairs)
@@ -58,7 +81,7 @@ public sealed class RedactingLogger : ILogger
             return _inner.BeginScope(redactedPairs);
         }
 
-        return _inner.BeginScope(_redactor.Redact(state.ToString() ?? string.Empty));
+        return _inner.BeginScope(state);
     }
 
     /// <inheritdoc />
@@ -82,7 +105,11 @@ public sealed class RedactingLogger : ILogger
         var redactedMessage = _redactor.Redact(rendered);
         var redactedException = RedactException(exception);
 
-        _inner.Log(logLevel, eventId, redactedMessage, redactedException, static (message, _) => message);
+        // state passes through unchanged — see this type's remarks for why that's safe. Only the
+        // formatter is replaced, so whatever reads state.ToString()-equivalent text gets the redacted
+        // message; whatever reads state's own fields directly gets the real ones, protected downstream
+        // on the one path that matters (OTel export) by LogRecordRedactionProcessor.
+        _inner.Log(logLevel, eventId, state, redactedException, (_, _) => redactedMessage);
     }
 
     /// <summary>
