@@ -36,49 +36,47 @@ public sealed class RedactingLogger : ILogger
     }
 
     /// <summary>
-    /// Redacts scope state carrying free text — found in independent security review: forwarding
-    /// <paramref name="state"/> unchanged meant a secret or PII value placed in scope state (a
-    /// connection string, an email) reached every local sink in cleartext, since a console/file
-    /// formatter renders scope contents directly. Handles only the two shapes actually capable of
-    /// carrying arbitrary text: a plain <see cref="string"/>, and a structured scope
-    /// (<c>IEnumerable&lt;KeyValuePair&lt;string, object?&gt;&gt;</c>, from a dictionary or
-    /// <c>LoggerMessage.DefineScope</c>) has its string-valued entries redacted in place.
+    /// Redacts scope state, but only the one shape this type can safely redact without risking a
+    /// downstream regression: a plain <see cref="string"/>, pushed back as the redacted string itself —
+    /// no reconstruction, so nothing about it can differ from the original except the text.
     /// </summary>
     /// <remarks>
-    /// Anything else passes through <em>unchanged</em> — not redacted via its rendered
-    /// <see cref="object.ToString"/> text. An earlier version of this method did exactly that, and CI's
-    /// correctness-review caught the regression: <c>ExecutionScope</c> (this codebase's own domain scope
-    /// type, carrying executor/correlation ids and a step number — structural identifiers, never
-    /// arbitrary text, so nothing here needs redacting) does not implement the structured-KVP shape
-    /// above, so it fell through to the string-collapse branch. That replaced the pushed scope object
-    /// with a plain <see cref="string"/>, which broke <c>ExecutionScopeProvider.GetCurrentScope</c>'s
-    /// <c>scope is ExecutionScope</c> type check for every request — not merely a fidelity loss but a
-    /// silent breakage of an already-wired feature, for every local sink, whenever redaction is enabled
-    /// (the default). Transforming an unrecognized object risks exactly this: breaking a downstream
-    /// consumer that depends on the exact runtime type of what it pushed. Only the two shapes this type
-    /// can safely reconstruct after redacting are transformed; everything else is left alone.
+    /// <para>
+    /// Everything else passes through <em>completely unchanged</em>. Two earlier versions of this method
+    /// each tried to redact one more shape, and CI's correctness-review caught a real regression in both:
+    /// </para>
+    /// <list type="bullet">
+    /// <item><description>
+    /// Collapsing any unrecognized object to a redacted string via <see cref="object.ToString"/> broke
+    /// <c>ExecutionScopeProvider.GetCurrentScope</c>'s <c>scope is ExecutionScope</c> type check — the
+    /// pushed object's runtime type must survive for that consumer to recognize it at all.
+    /// </description></item>
+    /// <item><description>
+    /// Reconstructing a structured scope (<c>IEnumerable&lt;KeyValuePair&lt;string, object?&gt;&gt;</c>)
+    /// as a plain <c>List&lt;KeyValuePair&lt;string, object?&gt;&gt;</c> broke every local formatter that
+    /// renders a scope by calling <see cref="object.ToString"/> on whatever was pushed —
+    /// <c>ColorfulConsoleFormatter.WriteScopeInformation</c> does exactly this — because a
+    /// compiler-generated templated <c>BeginScope("... {Arg} ...", args)</c> call's state implements that
+    /// same interface <em>and</em> overrides <c>ToString()</c> to render the interpolated text; the
+    /// reconstructed <c>List&lt;T&gt;</c> has no such override, so the rendered scope silently became
+    /// useless boilerplate instead of the original text, for every templated scope, everywhere.
+    /// </description></item>
+    /// </list>
+    /// <para>
+    /// A templated <c>BeginScope</c> call is also the one realistic way a secret reaches scope state in
+    /// this codebase — and it is exactly the shape the fix above cannot safely rewrite without breaking
+    /// its own rendering identity. That gap is real and tracked (issue #500) rather than "fixed" a third
+    /// time with the same category of regression; the plain-string case this method does handle is the
+    /// one already-common, already-safe pattern (<c>BeginScope("free text here")</c>) with zero
+    /// type-identity risk.
+    /// </para>
     /// </remarks>
     /// <inheritdoc />
     public IDisposable? BeginScope<TState>(TState state) where TState : notnull
     {
-        if (!_redactor.Enabled)
-        {
-            return _inner.BeginScope(state);
-        }
-
-        if (state is string text)
+        if (_redactor.Enabled && state is string text)
         {
             return _inner.BeginScope(_redactor.Redact(text));
-        }
-
-        if (state is IEnumerable<KeyValuePair<string, object?>> pairs)
-        {
-            var redactedPairs = pairs
-                .Select(kv => kv.Value is string value
-                    ? new KeyValuePair<string, object?>(kv.Key, _redactor.Redact(value))
-                    : kv)
-                .ToList();
-            return _inner.BeginScope(redactedPairs);
         }
 
         return _inner.BeginScope(state);

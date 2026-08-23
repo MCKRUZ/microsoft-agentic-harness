@@ -144,26 +144,25 @@ public sealed class RedactingLoggerTests
     }
 
     /// <summary>
-    /// Independent security review finding: <c>BeginScope</c> forwarded scope state unchanged, so a
-    /// secret or PII value placed in a structured scope (a connection string, an email) reached every
-    /// local sink in cleartext even with redaction enabled — a formatter that renders scope contents
-    /// (e.g. a console formatter with <c>IncludeScopes = true</c>) bypassed #457's guarantee entirely.
-    /// This proves a string-valued entry in a structured (key/value) scope is redacted.
+    /// CI's correctness-review finding on a second attempt at redacting structured scopes: reconstructing
+    /// a <c>Dictionary</c>/KVP-shaped scope as a plain <c>List&lt;KeyValuePair&lt;string, object?&gt;&gt;</c>
+    /// broke <c>ColorfulConsoleFormatter</c>'s scope rendering — it calls <see cref="object.ToString"/> on
+    /// whatever was pushed, and a compiler-generated templated <c>BeginScope</c> call's state overrides
+    /// that to render interpolated text, which the reconstructed <c>List&lt;T&gt;</c> cannot reproduce.
+    /// This proves a structured scope now passes through as the exact same instance, unredacted — a
+    /// documented, deferred gap (see this type's own remarks), not a silent one.
     /// </summary>
     [Fact]
-    public void BeginScope_StructuredScopeWithSecretValue_RedactsTheStringEntries()
+    public void BeginScope_StructuredScope_PassesThroughAsTheSameInstance()
     {
         var inner = new CapturingLogger();
-        var redactor = new FixedRedactor(enabled: true, redact: t => t.Replace("secret-value", "[REDACTED]"));
+        var redactor = new FixedRedactor(enabled: true, redact: _ => "SHOULD NOT BE CALLED");
         var logger = new RedactingLogger(inner, redactor);
 
         var scope = new Dictionary<string, object?> { ["ConnectionString"] = "secret-value", ["Count"] = 3 };
         logger.BeginScope(scope);
 
-        var captured = inner.LastScopeState.Should().BeAssignableTo<IEnumerable<KeyValuePair<string, object?>>>().Subject;
-        var pairs = captured.ToDictionary(kv => kv.Key, kv => kv.Value);
-        pairs["ConnectionString"].Should().Be("[REDACTED]");
-        pairs["Count"].Should().Be(3, "non-string values pass through unchanged — nothing to redact");
+        inner.LastScopeState.Should().BeSameAs(scope);
     }
 
     /// <summary>A plain (non-structured) scope value is redacted via its rendered text.</summary>
