@@ -2,8 +2,10 @@ using System.Text.RegularExpressions;
 using Application.AI.Common.Extensions;
 using Application.AI.Common.Helpers;
 using Application.AI.Common.Interfaces;
+using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.MetaHarness;
 using Application.AI.Common.Interfaces.Traces;
+using Application.AI.Common.Services.Governance;
 using Domain.AI.Agents;
 using Domain.Common.Config.MetaHarness;
 using Domain.Common.MetaHarness;
@@ -27,6 +29,9 @@ public sealed class AgentEvaluationService : IEvaluationService
     private readonly IOptionsMonitor<MetaHarnessConfig> _config;
     private readonly IExecutionTraceStore _traceStore;
     private readonly IAgentFactory _agentFactory;
+    private readonly IToolCallAdmissionPipeline _admissionPipeline;
+    private readonly ICompositeResponseSanitizer _sanitizer;
+    private readonly ILoggerFactory _loggerFactory;
     private readonly ILogger<AgentEvaluationService> _logger;
 
     // Candidate-proposed scripts are never executed during evaluation — running untrusted
@@ -35,15 +40,33 @@ public sealed class AgentEvaluationService : IEvaluationService
         (skill, script, arguments, serviceProvider, cancellationToken) =>
             Task.FromResult<object?>(null);
 
+    /// <param name="admissionPipeline">
+    /// The scoped admission chain armed around every eval run's <c>agent.RunAsync</c> call (#482) —
+    /// without it, <c>GovernedAIFunction</c>'s null-ambient early-return path leaves any tool a
+    /// candidate-loaded skill declares completely ungoverned, the same gap #478 closed for
+    /// <c>Presentation.FoundryHost</c>.
+    /// </param>
+    /// <param name="sanitizer">
+    /// Passed to the <see cref="Application.AI.Common.Services.Agent.GoverningToolContextProvider"/> this service now wires onto its own
+    /// context (#482), matching how <c>AgentExecutionContextFactory</c> wires it for every production
+    /// agent — otherwise eval's skill-disclosure tools (<c>load_skill</c>/<c>read_skill_resource</c>)
+    /// carry no sanitize coverage at all.
+    /// </param>
     public AgentEvaluationService(
         IOptionsMonitor<MetaHarnessConfig> config,
         IExecutionTraceStore traceStore,
         IAgentFactory agentFactory,
+        IToolCallAdmissionPipeline admissionPipeline,
+        ICompositeResponseSanitizer sanitizer,
+        ILoggerFactory loggerFactory,
         ILogger<AgentEvaluationService> logger)
     {
         _config = config;
         _traceStore = traceStore;
         _agentFactory = agentFactory;
+        _admissionPipeline = admissionPipeline;
+        _sanitizer = sanitizer;
+        _loggerFactory = loggerFactory;
         _logger = logger;
     }
 
@@ -129,7 +152,7 @@ public sealed class AgentEvaluationService : IEvaluationService
                 Instruction = candidate.Snapshot.SystemPromptSnapshot,
                 DeploymentName = string.IsNullOrEmpty(cfg.EvaluationModelVersion) ? null : cfg.EvaluationModelVersion,
                 TraceScope = scope,
-                AIContextProviders = BuildSkillsProviders(skillDirectory),
+                AIContextProviders = BuildContextProviders(skillDirectory),
                 AdditionalProperties = new Dictionary<string, object>
                 {
                     [ITraceWriter.AdditionalPropertiesKey] = traceWriter
@@ -137,9 +160,25 @@ public sealed class AgentEvaluationService : IEvaluationService
             };
 
             var agent = await _agentFactory.CreateAgentAsync(context, cancellationToken);
-            var response = await agent.RunAsync(
-                [new ChatMessage(ChatRole.User, task.InputPrompt)],
-                cancellationToken: cancellationToken);
+
+            // #482: arm the same ambient admission chain ExecuteAgentTurnCommandHandler arms for every
+            // production turn. Begin (not assign-and-null) so a nested/enclosing governed flow is
+            // restored rather than disarmed on the way out — see ToolAdmissionAccessor's remarks.
+            //
+            // Reset before arming, mirroring DirectToolInvoker.ArmGovernance: this pipeline is a single
+            // scoped instance shared across every eval task and candidate run in this scope (found in
+            // review), so without a reset here its loop-detection and call-once state accumulates across
+            // tasks — one task's tool-call pattern could trip (or silently satisfy) the loop guard for an
+            // unrelated later task in the same scope.
+            _admissionPipeline.Reset();
+
+            AgentResponse response;
+            using (ToolAdmissionAccessor.Begin(_admissionPipeline))
+            {
+                response = await agent.RunAsync(
+                    [new ChatMessage(ChatRole.User, task.InputPrompt)],
+                    cancellationToken: cancellationToken);
+            }
 
             var output = ExtractContent(response);
             var (passed, failureReason) = Grade(output, task.ExpectedOutputPattern);
@@ -228,22 +267,34 @@ public sealed class AgentEvaluationService : IEvaluationService
     }
 
     /// <summary>
-    /// Builds the eval context's progressive-disclosure skills provider over <paramref name="skillDirectory"/>,
-    /// mirroring the production wiring in <c>AgentExecutionContextFactory</c>. Returns <see langword="null"/>
-    /// when there is no skill directory so the eval context carries no provider.
+    /// Builds the eval context's <see cref="AIContextProvider"/> rail: the progressive-disclosure skills
+    /// provider over <paramref name="skillDirectory"/> (when present) followed unconditionally by
+    /// <see cref="Application.AI.Common.Services.Agent.GoverningToolContextProvider"/>, mirroring the production wiring in
+    /// <c>AgentExecutionContextFactory.BuildMergedAIContextProviders</c>.
     /// </summary>
-    private static IList<AIContextProvider>? BuildSkillsProviders(string? skillDirectory)
+    /// <remarks>
+    /// #482: the governance wrapper is attached unconditionally, same as the production factory —
+    /// without it, <c>load_skill</c>/<c>read_skill_resource</c> carry no sanitize coverage on this path
+    /// at all, since <c>ToolChainBuilder</c> (the other place governance gets wired in) is never
+    /// consulted for an eval context built directly from a materialized skill snapshot.
+    /// </remarks>
+    private IList<AIContextProvider> BuildContextProviders(string? skillDirectory)
     {
-        if (skillDirectory is null)
-            return null;
+        var providers = new List<AIContextProvider>();
 
-        var provider = new AgentSkillsProviderBuilder()
-            .UseFileScriptRunner(NoOpScriptRunner)
-            .UseOptions(SkillDisclosureDefaults.Configure)
-            .UseFileSkill(skillDirectory)
-            .Build();
+        if (skillDirectory is not null)
+        {
+            providers.Add(new AgentSkillsProviderBuilder()
+                .UseFileScriptRunner(NoOpScriptRunner)
+                .UseOptions(SkillDisclosureDefaults.Configure)
+                .UseFileSkill(skillDirectory)
+                .Build());
+        }
 
-        return [provider];
+        providers.Add(new Application.AI.Common.Services.Agent.GoverningToolContextProvider(
+            _loggerFactory.CreateLogger<Application.AI.Common.Services.Agent.GoverningToolContextProvider>(), _sanitizer));
+
+        return providers;
     }
 
     /// <summary>

@@ -11,11 +11,13 @@ namespace Domain.Common.Config.Observability;
 /// </summary>
 /// <remarks>
 /// <para>
-/// The local <c>ILogger</c> sinks are unaffected: this signal is
-/// <strong>additional</strong>, not a replacement. When enabled, PII is scrubbed
-/// in-process (see <see cref="RedactionEnabled"/>) before any log record leaves
-/// the process, so nothing sensitive transits the OTLP wire — even when the
-/// collector, not the app, ultimately forwards the logs.
+/// <see cref="OtelExportEnabled"/> itself is additional, not a replacement: the local <c>ILogger</c>
+/// sinks (console / file / JSONL / ring-buffer) keep running whether or not this signal is on. When
+/// export is enabled, PII is scrubbed in-process (see <see cref="RedactionEnabled"/>) before any log
+/// record leaves the process, so nothing sensitive transits the OTLP wire — even when the collector,
+/// not the app, ultimately forwards the logs. <see cref="RedactionEnabled"/> itself is independent of
+/// this flag (#457): it also governs the local sinks, on or off, so turning redaction on protects both
+/// surfaces regardless of whether OTel export is ever switched on.
 /// </para>
 /// <para>
 /// Binds from <c>AppConfig:Observability:Logs</c>. Validated at host start by
@@ -44,20 +46,25 @@ public sealed class LogsConfig
     public string MinExportLevel { get; set; } = "Information";
 
     /// <summary>
-    /// Whether PII / secret content is scrubbed from log records before export.
-    /// Default: <c>true</c> — a compliance-sensitive template must not leak PII
-    /// onto the wire, so redaction is on whenever export is on. The scrub runs
-    /// as the first pipeline stage (before any exporter), covering the formatted
-    /// message, the body, and every string-valued attribute.
+    /// Whether PII / secret content is scrubbed from logs. Default: <c>true</c> — a
+    /// compliance-sensitive template must not leak PII, in-process or on the wire.
     /// </summary>
+    /// <remarks>
+    /// Governs two independent surfaces, not just OTel export (#457): the OTel logging bridge's
+    /// <c>LogRecordRedactionProcessor</c> (active only when <see cref="OtelExportEnabled"/> is also
+    /// on — the scrub runs as the first pipeline stage, before any exporter, covering the formatted
+    /// message, the body, and every string-valued attribute), and every local <c>ILoggerProvider</c>
+    /// sink (console, file, JSONL, named pipe — active independent of <see cref="OtelExportEnabled"/>,
+    /// via <c>Application.Common.Logging.RedactingLoggerFactory</c>). One flag, one operator intent,
+    /// both surfaces.
+    /// </remarks>
     public bool RedactionEnabled { get; set; } = true;
 
     /// <summary>
-    /// Names of <c>Domain.AI.Telemetry.Redaction.RedactionCategory</c> values the
-    /// redactor applies before export. Unknown names fail validation at boot.
-    /// Default: the full set, so a consumer that flips
-    /// <see cref="OtelExportEnabled"/> on without tuning categories still gets the
-    /// safest (over-redactive) posture.
+    /// Names of <c>Domain.AI.Telemetry.Redaction.RedactionCategory</c> values the redactor applies —
+    /// on both surfaces <see cref="RedactionEnabled"/> governs. Unknown names fail validation at boot.
+    /// Default: the full set, so a consumer that turns redaction on without tuning categories still
+    /// gets the safest (over-redactive) posture.
     /// </summary>
     /// <remarks>
     /// Held as strings (not the enum) because the <c>AppConfig</c> hierarchy lives

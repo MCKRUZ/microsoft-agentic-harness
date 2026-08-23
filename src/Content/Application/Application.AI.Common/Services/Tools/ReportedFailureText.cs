@@ -1,5 +1,6 @@
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Telemetry;
+using Application.AI.Common.Services.Governance;
 using Domain.AI.Telemetry.Redaction;
 
 namespace Application.AI.Common.Services.Tools;
@@ -60,6 +61,10 @@ internal static class ReportedFailureText
     /// </param>
     /// <param name="redactionFilter">Scrubs known secret patterns (emails, SSNs, AWS keys, JWTs, etc.).</param>
     /// <param name="toolName">The tool that produced <paramref name="text"/>, passed to the sanitizer as context.</param>
+    /// <returns>
+    /// The text to report: either the tool's own sanitized/redacted/capped message, or one of the fixed
+    /// withheld placeholders below.
+    /// </returns>
     /// <remarks>
     /// <para>
     /// <strong>Sanitize before redact.</strong> Sanitizing first means an injection payload is stripped
@@ -89,33 +94,20 @@ internal static class ReportedFailureText
             return OversizedInputPlaceholder;
         }
 
-        var sanitized = sanitizer.Sanitize(text, toolName).SanitizedContent;
-        if (string.IsNullOrWhiteSpace(sanitized))
-        {
-            return EmptyAfterSanitizationPlaceholder;
-        }
+        // Sanitize-then-redact ordering lives once in SanitizeThenRedact (#470); the withheld-placeholder
+        // decision plugs into its onSanitizedEmpty hook, so this method no longer hand-rolls the same
+        // sanitize → check → redact sequence every other call site already converged on.
+        var reported = SanitizeThenRedact.Apply(
+            text, sanitizer, redactionFilter, RedactionCategories.All, toolName,
+            onSanitizedEmpty: _ => EmptyAfterSanitizationPlaceholder);
 
-        var redacted = redactionFilter.Redact(sanitized, RedactionCategories.All);
-        return Cap(redacted);
+        return Cap(reported);
     }
 
     /// <summary>
-    /// Truncates <paramref name="text"/> to a bounded length, if it exceeds one. Never splits a
-    /// surrogate pair — a cut that would land inside one backs off by one character instead, so the
-    /// result is always a well-formed string.
+    /// Truncates <paramref name="text"/> to a bounded length, if it exceeds one, via the one
+    /// cut-and-mark primitive every trust-boundary truncation site shares (#467/#470).
     /// </summary>
-    public static string Cap(string text)
-    {
-        if (text.Length <= MaxLength)
-        {
-            return text;
-        }
-
-        var cutIndex = MaxLength;
-        if (char.IsHighSurrogate(text[cutIndex - 1]))
-        {
-            cutIndex--;
-        }
-        return string.Concat(text.AsSpan(0, cutIndex), "…[truncated]");
-    }
+    public static string Cap(string text) =>
+        BoundedText.Cap(text, MaxLength, "…[truncated]").Text;
 }

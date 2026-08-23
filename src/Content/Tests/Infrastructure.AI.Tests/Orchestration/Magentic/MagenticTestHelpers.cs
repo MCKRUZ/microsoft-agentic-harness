@@ -1,8 +1,10 @@
 using System.Diagnostics;
+using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Orchestration.Magentic;
 using Application.AI.Common.Interfaces.Telemetry;
 using Domain.AI.Telemetry.Conventions;
 using Infrastructure.AI.Orchestration.Magentic;
+using Infrastructure.AI.Tests.Planner.StepExecutors;
 using Infrastructure.AI.Tests.Support;
 using MediatR;
 using Microsoft.Extensions.AI;
@@ -87,6 +89,7 @@ internal static class MagenticTestHelpers
         out Mock<IMediator> mediator,
         MagenticSpanEmitter? emitter = null,
         IContentCapturePolicy? capturePolicy = null,
+        ICompositeResponseSanitizer? sanitizer = null,
         IContentRedactionFilter? redactionFilter = null)
     {
         bridge = new Mock<IMagenticPlanReviewBridge>();
@@ -101,6 +104,9 @@ internal static class MagenticTestHelpers
             // Default to capture-off mocks so pre-content-capture tests are
             // unaffected; ShouldCapture* on a bare mock returns false.
             capturePolicy ?? Mock.Of<IContentCapturePolicy>(),
+            // Passthrough by default (mirrors PermissiveAdmission.PermissiveSanitizer) so tests
+            // asserting on redacted content aren't also silently exercising sanitization findings.
+            sanitizer ?? PermissiveAdmission.PermissiveSanitizer(),
             redactionFilter ?? Mock.Of<IContentRedactionFilter>(),
             NullLogger<MagenticEventSubscriber>.Instance);
     }

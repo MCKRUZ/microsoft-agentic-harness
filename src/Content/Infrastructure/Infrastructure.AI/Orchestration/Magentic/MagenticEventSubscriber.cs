@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Orchestration.Magentic;
 using Application.AI.Common.Interfaces.Telemetry;
 using Domain.AI.Telemetry.Conventions;
@@ -40,6 +41,7 @@ public sealed class MagenticEventSubscriber : IDisposable
     private readonly IMagenticPlanReviewBridge _planReviewBridge;
     private readonly MagenticChangeProposalRouter _changeProposalRouter;
     private readonly IContentCapturePolicy _contentCapturePolicy;
+    private readonly ICompositeResponseSanitizer _sanitizer;
     private readonly IContentRedactionFilter _contentRedactionFilter;
     private readonly ILogger<MagenticEventSubscriber> _logger;
 
@@ -80,6 +82,7 @@ public sealed class MagenticEventSubscriber : IDisposable
         IMagenticPlanReviewBridge planReviewBridge,
         MagenticChangeProposalRouter changeProposalRouter,
         IContentCapturePolicy contentCapturePolicy,
+        ICompositeResponseSanitizer sanitizer,
         IContentRedactionFilter contentRedactionFilter,
         ILogger<MagenticEventSubscriber> logger)
     {
@@ -87,6 +90,7 @@ public sealed class MagenticEventSubscriber : IDisposable
         _planReviewBridge = planReviewBridge;
         _changeProposalRouter = changeProposalRouter;
         _contentCapturePolicy = contentCapturePolicy;
+        _sanitizer = sanitizer;
         _contentRedactionFilter = contentRedactionFilter;
         _logger = logger;
     }
@@ -318,6 +322,7 @@ public sealed class MagenticEventSubscriber : IDisposable
             _resetCount,
             completionReason,
             _errorMessage,
+            _sanitizer,
             _contentRedactionFilter);
         _workflowSpan = null;
     }

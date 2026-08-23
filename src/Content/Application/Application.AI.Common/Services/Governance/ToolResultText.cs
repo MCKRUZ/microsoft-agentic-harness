@@ -145,6 +145,49 @@ internal static class ToolResultText
     }
 
     /// <summary>
+    /// Reduces <paramref name="result"/>'s free text to one flat string, across the same shapes
+    /// <see cref="Transform"/> recognizes — the extraction counterpart for a caller that needs plain
+    /// text rather than a shape-preserving rewrite (the direct-invocation HTTP surface, which returns a
+    /// flat string to its caller rather than replaying structured content back to a model). A
+    /// multi-block <see cref="AIContent"/>[] or content array joins every text-carrying block with a
+    /// newline, skipping non-text blocks (e.g. images) — there is no shape left to preserve them in once
+    /// reduced to a single string.
+    /// </summary>
+    public static string ExtractText(object? result) => result switch
+    {
+        null => string.Empty,
+        string text => text,
+        JsonElement { ValueKind: JsonValueKind.String } element => element.GetString() ?? string.Empty,
+        TextContent text => text.Text,
+        AIContent[] blocks => string.Join(Environment.NewLine, blocks.OfType<TextContent>().Select(b => b.Text)),
+        JsonElement { ValueKind: JsonValueKind.Object } element when TryGetContentArray(element, out var content) =>
+            ExtractContentArrayText(content),
+        JsonElement element => element.GetRawText(),
+        _ => JsonSerializer.Serialize(result)
+    };
+
+    /// <summary>
+    /// Joins every text-carrying block's text (plain <c>text</c> blocks and embedded <c>resource</c>
+    /// blocks, the same two shapes <see cref="TryGetBlockText"/> recognizes for rewriting) with a
+    /// newline, skipping blocks with nothing to extract (e.g. a binary <c>resource</c> or image block).
+    /// </summary>
+    private static string ExtractContentArrayText(JsonElement content)
+    {
+        List<string>? texts = null;
+        foreach (var block in content.EnumerateArray())
+        {
+            if (block.ValueKind == JsonValueKind.Object
+                && block.TryGetProperty("type", out var typeProp)
+                && typeProp.ValueKind == JsonValueKind.String
+                && TryGetBlockText(block, typeProp.GetString(), out var text, out _))
+            {
+                (texts ??= []).Add(text);
+            }
+        }
+        return texts is null ? string.Empty : string.Join(Environment.NewLine, texts);
+    }
+
+    /// <summary>
     /// Recognizes the MCP wire shape's top-level <c>content</c> array by structure — shared with
     /// <see cref="Tools.McpFailureNormalizingAIFunction"/>, which recognizes the same array to find a
     /// failure's text rather than to rewrite one. Kept as one structural check rather than two so the

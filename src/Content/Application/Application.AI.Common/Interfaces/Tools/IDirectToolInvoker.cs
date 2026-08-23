@@ -51,6 +51,23 @@ public interface IDirectToolInvoker
     Task<DirectToolInvocationOutcome> InvokeAsync(
         DirectToolInvocationRequest request,
         CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Invokes a tool published by a host-connected MCP server and returns its sanitized result, under
+    /// the identical governance <see cref="InvokeAsync"/> runs a keyed-DI tool under (#481).
+    /// </summary>
+    /// <param name="request">Which MCP tool to run, for whom, and under which grant.</param>
+    /// <param name="cancellationToken">Cancels the invocation; the caller disconnecting cancels it too.</param>
+    /// <returns>
+    /// The outcome, always — the same <see cref="DirectToolInvocationStatus"/> vocabulary
+    /// <see cref="InvokeAsync"/> uses. <see cref="DirectToolInvocationStatus.NotFound"/> additionally
+    /// covers a tool whose owning server the caller's envelope does not grant: an MCP tool is reached
+    /// only through a server in <see cref="Domain.AI.Bundles.CapabilityEnvelope.AllowedMcpServers"/>,
+    /// never by searching every configured server, so an ungranted server is never even contacted.
+    /// </returns>
+    Task<DirectToolInvocationOutcome> InvokeMcpToolAsync(
+        DirectMcpToolInvocationRequest request,
+        CancellationToken cancellationToken);
 }
 
 /// <summary>
@@ -97,6 +114,43 @@ public sealed record DirectToolInvocationRequest
     /// who requested ten minutes and was quietly given thirty seconds would experience an unexplainable
     /// timeout, with nothing in the response to attribute it to.
     /// </remarks>
+    public TimeSpan? RequestedTimeout { get; init; }
+}
+
+/// <summary>
+/// A request to run one MCP-published tool on behalf of one caller.
+/// </summary>
+/// <remarks>
+/// No <c>Operation</c> field: unlike a keyed-DI <see cref="ITool"/>, an MCP tool is a single named
+/// action described entirely by its own JSON schema — there is no host-declared operation to select.
+/// <see cref="Arguments"/> plays the role <see cref="DirectToolInvocationRequest.Parameters"/> plays for
+/// the keyed-DI path.
+/// </remarks>
+public sealed record DirectMcpToolInvocationRequest
+{
+    /// <summary>The MCP tool to run, matched case-insensitively against its published name.</summary>
+    public required string ToolName { get; init; }
+
+    /// <summary>The tool's arguments, matched against its own published JSON schema.</summary>
+    public IReadOnlyDictionary<string, object?> Arguments { get; init; } =
+        new Dictionary<string, object?>();
+
+    /// <summary>
+    /// The caller's stable identifier, resolved from their token at the transport boundary and never
+    /// accepted from the request body — identical provenance rule to
+    /// <see cref="DirectToolInvocationRequest.OwnerId"/>.
+    /// </summary>
+    public required string OwnerId { get; init; }
+
+    /// <summary>
+    /// The capability envelope the host grants this caller. <see cref="CapabilityEnvelope.AllowedMcpServers"/>
+    /// gates which servers may be contacted at all; <see cref="CapabilityEnvelope.AllowedTools"/> still
+    /// gates the specific tool name on top of that — a granted server does not imply every tool it
+    /// publishes is granted.
+    /// </summary>
+    public required CapabilityEnvelope Envelope { get; init; }
+
+    /// <summary>An optional shorter deadline for this invocation. Null means the configured ceiling.</summary>
     public TimeSpan? RequestedTimeout { get; init; }
 }
 

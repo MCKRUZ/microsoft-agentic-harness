@@ -1,3 +1,4 @@
+using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Orchestration.Magentic;
 using Application.AI.Common.Interfaces.Telemetry;
 using Domain.AI.Telemetry.Conventions;
@@ -35,6 +36,7 @@ public sealed class MagenticOrchestrator : IMagenticOrchestrator
     private readonly IMagenticPlanReviewBridge _planReviewBridge;
     private readonly MagenticChangeProposalRouter _changeProposalRouter;
     private readonly IContentCapturePolicy _contentCapturePolicy;
+    private readonly ICompositeResponseSanitizer _sanitizer;
     private readonly IContentRedactionFilter _contentRedactionFilter;
     private readonly ILoggerFactory _loggerFactory;
     private readonly ILogger<MagenticOrchestrator> _logger;
@@ -45,6 +47,7 @@ public sealed class MagenticOrchestrator : IMagenticOrchestrator
         IMagenticPlanReviewBridge planReviewBridge,
         MagenticChangeProposalRouter changeProposalRouter,
         IContentCapturePolicy contentCapturePolicy,
+        ICompositeResponseSanitizer sanitizer,
         IContentRedactionFilter contentRedactionFilter,
         ILoggerFactory loggerFactory)
     {
@@ -52,6 +55,7 @@ public sealed class MagenticOrchestrator : IMagenticOrchestrator
         _planReviewBridge = planReviewBridge;
         _changeProposalRouter = changeProposalRouter;
         _contentCapturePolicy = contentCapturePolicy;
+        _sanitizer = sanitizer;
         _contentRedactionFilter = contentRedactionFilter;
         _loggerFactory = loggerFactory;
         _logger = loggerFactory.CreateLogger<MagenticOrchestrator>();
@@ -72,6 +76,7 @@ public sealed class MagenticOrchestrator : IMagenticOrchestrator
             _planReviewBridge,
             _changeProposalRouter,
             _contentCapturePolicy,
+            _sanitizer,
             _contentRedactionFilter,
             _loggerFactory.CreateLogger<MagenticEventSubscriber>());
 

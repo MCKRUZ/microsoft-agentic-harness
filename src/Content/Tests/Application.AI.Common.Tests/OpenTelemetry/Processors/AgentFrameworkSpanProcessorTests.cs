@@ -1,8 +1,11 @@
 using System.Diagnostics;
+using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.OpenTelemetry.Instruments;
 using Application.AI.Common.OpenTelemetry.Processors;
+using Domain.AI.Governance;
 using Domain.AI.Telemetry.Conventions;
 using FluentAssertions;
+using Moq;
 using Xunit;
 
 namespace Application.AI.Common.Tests.OpenTelemetry.Processors;
@@ -16,7 +19,7 @@ public class AgentFrameworkSpanProcessorTests : IDisposable
     private readonly ActivitySource _agentSource = new(AiSourceNames.AgentFrameworkExact);
     private readonly ActivitySource _otherSource = new("SomeOther.Source");
     private readonly ActivityListener _listener;
-    private readonly AgentFrameworkSpanProcessor _processor = new(TestRedactionFilter.Instance);
+    private readonly AgentFrameworkSpanProcessor _processor = new(TestSanitizer.Instance, TestRedactionFilter.Instance);
 
     public AgentFrameworkSpanProcessorTests()
     {
@@ -130,10 +133,50 @@ public class AgentFrameworkSpanProcessorTests : IDisposable
         eventContent.Should().Contain("[REDACTED:VendorApiKey]");
     }
 
+    /// <summary>
+    /// #470: this span used to redact without sanitizing first, so a secret split by
+    /// invisible/zero-width characters (which the sanitizer canonicalizes away, but the redaction
+    /// filter's anchored patterns do not) could dodge redaction here while the identical string was
+    /// caught on the tool-failure-reporting path. Proven by ordering, not by depending on the real
+    /// sanitizer's exact zero-width handling: a sanitizer mock that strips a marker only reveals it in
+    /// the tag if redaction ran against the sanitizer's output, not the raw text.
+    /// </summary>
+    [Fact]
+    public void OnEnd_SanitizesBeforeRedacting()
+    {
+        var sanitizer = new Mock<ICompositeResponseSanitizer>();
+        sanitizer
+            .Setup(s => s.Sanitize("secret is AKIA<split>ABCDEFGHIJ123456", It.IsAny<string?>()))
+            .Returns(SanitizationResult.Clean("secret is AKIAABCDEFGHIJ123456"));
+        var processor = new AgentFrameworkSpanProcessor(sanitizer.Object, TestRedactionFilter.Instance);
+
+        using var activity = _agentSource.StartActivity("test");
+        activity.Should().NotBeNull();
+        activity!.SetTag(ToolConventions.GenAiOperationName, ToolConventions.ExecuteToolOperation);
+        activity.SetTag(ToolConventions.ToolCallResult, "secret is AKIA<split>ABCDEFGHIJ123456");
+
+        processor.OnEnd(activity);
+        processor.Dispose();
+
+        var eventContent = activity.GetTagItem("gen_ai.event.content") as string;
+        eventContent.Should().NotBeNull();
+        eventContent.Should().Contain("[REDACTED:AwsKey]",
+            "redaction must run against the sanitizer's output, which joined the split key back together");
+        eventContent.Should().NotContain("AKIAABCDEFGHIJ123456");
+    }
+
+    [Fact]
+    public void Constructor_NullSanitizer_Throws()
+    {
+        var act = () => new AgentFrameworkSpanProcessor(null!, TestRedactionFilter.Instance);
+
+        act.Should().Throw<ArgumentNullException>();
+    }
+
     [Fact]
     public void Constructor_NullFilter_Throws()
     {
-        var act = () => new AgentFrameworkSpanProcessor(null!);
+        var act = () => new AgentFrameworkSpanProcessor(TestSanitizer.Instance, null!);
 
         act.Should().Throw<ArgumentNullException>();
     }

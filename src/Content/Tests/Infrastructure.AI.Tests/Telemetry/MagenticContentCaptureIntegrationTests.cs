@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Telemetry;
 using Domain.AI.Telemetry.Conventions;
 using Domain.Common.Config.AI.Telemetry;
@@ -6,7 +7,9 @@ using FluentAssertions;
 using Infrastructure.AI.Orchestration.Magentic;
 using Infrastructure.AI.Telemetry.Redaction;
 using Microsoft.Extensions.Logging.Abstractions;
+using Moq;
 using Xunit;
+using static Infrastructure.AI.Tests.Planner.StepExecutors.PermissiveAdmission;
 
 namespace Infrastructure.AI.Tests.Telemetry;
 
@@ -49,6 +52,7 @@ public sealed class MagenticContentCaptureIntegrationTests
             NullLogger<ContentCapturePolicy>.Instance);
 
     private static readonly DefaultContentRedactionFilter Filter = new();
+    private static readonly ICompositeResponseSanitizer Sanitizer = PermissiveSanitizer();
 
     private const string PlanWithEmail = "Step 1: email the owner alice@example.com about the plan.";
 
@@ -62,7 +66,7 @@ public sealed class MagenticContentCaptureIntegrationTests
 
         MagenticSpanEmitter.RecordPlanCreatedWithContent(
             manager, planVersion: 1, planText: PlanWithEmail,
-            Policy(ContentCaptureTestConfig.AllOn()), Filter);
+            Policy(ContentCaptureTestConfig.AllOn()), Sanitizer, Filter);
 
         var evt = manager!.Events.Single(e => e.Name == MagenticConventions.EventPlanCreated);
         var content = evt.Tags.Single(t => t.Key == MagenticConventions.PlanContent).Value as string;
@@ -83,7 +87,7 @@ public sealed class MagenticContentCaptureIntegrationTests
         var off = ContentCaptureTestConfig.AllOn();
         off.Enabled = false;
         MagenticSpanEmitter.RecordPlanCreatedWithContent(
-            manager, planVersion: 1, planText: PlanWithEmail, Policy(off), Filter);
+            manager, planVersion: 1, planText: PlanWithEmail, Policy(off), Sanitizer, Filter);
 
         var evt = manager!.Events.Single(e => e.Name == MagenticConventions.EventPlanCreated);
         evt.Tags.Should().NotContain(t => t.Key == MagenticConventions.PlanContent);
@@ -101,7 +105,7 @@ public sealed class MagenticContentCaptureIntegrationTests
         var capture = ContentCaptureTestConfig.AllOn();
         capture.CaptureMagenticPlanContent = false;
         MagenticSpanEmitter.RecordPlanCreatedWithContent(
-            manager, planVersion: 1, planText: PlanWithEmail, Policy(capture), Filter);
+            manager, planVersion: 1, planText: PlanWithEmail, Policy(capture), Sanitizer, Filter);
 
         var evt = manager!.Events.Single(e => e.Name == MagenticConventions.EventPlanCreated);
         evt.Tags.Should().NotContain(t => t.Key == MagenticConventions.PlanContent);
@@ -117,7 +121,7 @@ public sealed class MagenticContentCaptureIntegrationTests
 
         MagenticSpanEmitter.RecordReplannedWithContent(
             manager, planVersion: 2, planText: PlanWithEmail,
-            Policy(ContentCaptureTestConfig.AllOn()), Filter);
+            Policy(ContentCaptureTestConfig.AllOn()), Sanitizer, Filter);
 
         var evt = manager!.Events.Single(e => e.Name == MagenticConventions.EventReplanned);
         var content = evt.Tags.Single(t => t.Key == MagenticConventions.PlanContent).Value as string;
@@ -138,7 +142,7 @@ public sealed class MagenticContentCaptureIntegrationTests
 
         MagenticSpanEmitter.RecordResetReason(
             reset, "Reset because user bob@example.com reported a stall.",
-            Policy(ContentCaptureTestConfig.AllOn()), Filter);
+            Policy(ContentCaptureTestConfig.AllOn()), Sanitizer, Filter);
 
         var reason = reset!.GetTagItem(MagenticConventions.ReplanReason) as string;
         reason.Should().NotBeNull();
@@ -158,8 +162,44 @@ public sealed class MagenticContentCaptureIntegrationTests
         var off = ContentCaptureTestConfig.AllOn();
         off.Enabled = false;
         MagenticSpanEmitter.RecordResetReason(
-            reset, "Reset because user bob@example.com reported a stall.", Policy(off), Filter);
+            reset, "Reset because user bob@example.com reported a stall.", Policy(off), Sanitizer, Filter);
 
         reset!.GetTagItem(MagenticConventions.ReplanReason).Should().BeNull();
+    }
+
+    /// <summary>
+    /// Independent security review finding: unlike <c>EndWorkflowSpan</c> (fixed under #470),
+    /// <c>RecordPlanCreatedWithContent</c> and its four siblings (<c>RecordReplannedWithContent</c>,
+    /// <c>RecordResetReason</c>, <c>RecordRoundInstruction</c>, <c>RecordPlanReviewFeedback</c>) still
+    /// redacted without sanitizing first — the same zero-width-character evasion #470 closed for
+    /// workflow-error spans was still open on every LLM-generated plan/reason/instruction span these
+    /// content-capture paths carry. Proven by ordering, mirroring
+    /// <c>AgentFrameworkSpanProcessorTests.OnEnd_SanitizesBeforeRedacting</c>: a sanitizer mock that
+    /// joins a split marker back together only reveals it in the tag if redaction ran against the
+    /// sanitizer's output, not the raw split text.
+    /// </summary>
+    [Fact]
+    public void RecordPlanCreatedWithContent_SanitizesBeforeRedacting()
+    {
+        using var captured = new CapturedSpans();
+        using var emitter = new MagenticSpanEmitter();
+        var workflow = emitter.StartWorkflowSpan("wf", null, 3, null, false, ["p"]);
+        var manager = emitter.StartManagerSpan(workflow);
+
+        var sanitizer = new Mock<ICompositeResponseSanitizer>();
+        sanitizer
+            .Setup(s => s.Sanitize("secret is AKIA<split>ABCDEFGHIJ123456", It.IsAny<string?>()))
+            .Returns(Domain.AI.Governance.SanitizationResult.Clean("secret is AKIAABCDEFGHIJ123456"));
+
+        MagenticSpanEmitter.RecordPlanCreatedWithContent(
+            manager, planVersion: 1, planText: "secret is AKIA<split>ABCDEFGHIJ123456",
+            Policy(ContentCaptureTestConfig.AllOn()), sanitizer.Object, Filter);
+
+        var evt = manager!.Events.Single(e => e.Name == MagenticConventions.EventPlanCreated);
+        var content = evt.Tags.Single(t => t.Key == MagenticConventions.PlanContent).Value as string;
+
+        content.Should().Contain("[REDACTED:AwsKey]",
+            "redaction must run against the sanitizer's output, which joined the split key back together");
+        content.Should().NotContain("AKIAABCDEFGHIJ123456");
     }
 }

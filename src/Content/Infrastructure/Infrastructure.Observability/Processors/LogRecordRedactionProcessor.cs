@@ -1,6 +1,5 @@
 using System.Collections.Immutable;
 using Application.AI.Common.Interfaces.Telemetry;
-using Domain.Common.Helpers;
 using Domain.AI.Telemetry.Redaction;
 using Domain.Common.Config.Observability;
 using Microsoft.Extensions.Logging;
@@ -74,22 +73,9 @@ public sealed class LogRecordRedactionProcessor : BaseProcessor<LogRecord>
 
         _filter = filter;
         _enabled = config.RedactionEnabled;
-        _categories = ParseCategories(config.RedactionCategories, logger);
-
-        // Fail safe, not open. Startup validation (LogsConfigValidator) already rejects an
-        // enabled-but-empty/unknown category set on every host that wires ValidateOnStart. This
-        // guards the residual case — a consumer's custom host that bypasses that pipeline: if
-        // redaction is requested but no category resolves, over-redact with the full set rather
-        // than silently emitting unredacted PII. Matches the redactor's conservative-by-default
-        // posture (a false positive that masks text is acceptable; a leaked PAN is not).
-        if (_enabled && _categories.Length == 0)
-        {
-            _categories = RedactionCategories.All;
-            logger.LogWarning(
-                "Log redaction is enabled but no valid categories were configured; falling back " +
-                "to the full redaction set ({CategoryCount} categories) to avoid emitting unredacted PII.",
-                _categories.Length);
-        }
+        // Fail-safe-not-open fallback (empty-but-enabled → every category) lives once in
+        // RedactionCategoryParser, shared with the local-sink redactor (#457).
+        _categories = RedactionCategoryParser.Parse(config.RedactionCategories, logger, _enabled);
 
         logger.LogInformation(
             "Log-record redaction initialized: enabled={Enabled}, {CategoryCount} categories active.",
@@ -229,40 +215,4 @@ public sealed class LogRecordRedactionProcessor : BaseProcessor<LogRecord>
         }
     }
 
-    /// <summary>
-    /// Parses the configured category names to <see cref="RedactionCategory"/> values,
-    /// skipping (and logging) any name the enum does not recognise. Startup validation
-    /// (<c>LogsConfigValidator</c>) already rejects unknown names, so this is defence in
-    /// depth for hosts that bypass the validated-options pipeline.
-    /// </summary>
-    private static ImmutableArray<RedactionCategory> ParseCategories(
-        IReadOnlyList<string>? names,
-        ILogger logger)
-    {
-        if (names is null || names.Count == 0)
-        {
-            return [];
-        }
-
-        var parsed = new List<RedactionCategory>(names.Count);
-        foreach (var name in names)
-        {
-            // Name-only, matching LogsConfigValidator exactly (the helper trims, so the local Trim
-            // is no longer needed). The two sides disagreed before: the validator refused "2" while
-            // this accepted it as a category, which is the boot-vs-runtime divergence #296 was.
-            if (EnumNameHelper.TryParseName<RedactionCategory>(name, out var category))
-            {
-                parsed.Add(category);
-            }
-            else
-            {
-                logger.LogWarning(
-                    "Ignoring unknown log-redaction category '{Category}'. Valid values: {Valid}.",
-                    name,
-                    string.Join(", ", Enum.GetNames<RedactionCategory>()));
-            }
-        }
-
-        return [.. parsed.Distinct()];
-    }
 }

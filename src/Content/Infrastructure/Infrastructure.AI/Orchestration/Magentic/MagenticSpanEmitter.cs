@@ -1,5 +1,7 @@
 using System.Diagnostics;
+using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Telemetry;
+using Application.AI.Common.Services.Governance;
 using Domain.AI.Telemetry.Conventions;
 using Domain.AI.Telemetry.Redaction;
 
@@ -205,8 +207,8 @@ public sealed class MagenticSpanEmitter : IDisposable
 
     /// <summary>
     /// Stamps the derived counters and completion reason on the root workflow
-    /// span at workflow close. <paramref name="errorMessage"/> is redacted against
-    /// <see cref="RedactionCategories.All"/> before being attached — unlike the
+    /// span at workflow close. <paramref name="errorMessage"/> is sanitized then redacted against
+    /// <see cref="RedactionCategories.All"/> before being attached (#470) — unlike the
     /// content-capture-gated Record* methods below, error diagnostics on this span are
     /// not optional telemetry a consumer can choose to leave unredacted.
     /// </summary>
@@ -216,8 +218,10 @@ public sealed class MagenticSpanEmitter : IDisposable
         int resetsExecuted,
         string completionReason,
         string? errorMessage,
+        ICompositeResponseSanitizer sanitizer,
         IContentRedactionFilter filter)
     {
+        ArgumentNullException.ThrowIfNull(sanitizer);
         ArgumentNullException.ThrowIfNull(filter);
         if (workflowSpan is null) return;
         workflowSpan.SetTag(MagenticConventions.RoundsExecuted, roundsExecuted);
@@ -225,9 +229,13 @@ public sealed class MagenticSpanEmitter : IDisposable
         workflowSpan.SetTag(MagenticConventions.CompletionReason, completionReason);
         if (!string.IsNullOrEmpty(errorMessage))
         {
-            var redacted = filter.Redact(errorMessage, RedactionCategories.All);
-            workflowSpan.SetTag(GenAiSemconvRegistry.ErrorType, redacted);
-            workflowSpan.SetStatus(ActivityStatusCode.Error, redacted);
+            // #470: sanitize before redact, matching ReportedFailureText.PrepareForReporting's
+            // ordering — otherwise a secret split by invisible/zero-width characters (which the
+            // sanitizer canonicalizes away) can dodge the redaction filter's anchored patterns here
+            // while the identical string is caught on the tool-failure-reporting path.
+            var treated = SanitizeThenRedact.Apply(errorMessage, sanitizer, filter, RedactionCategories.All);
+            workflowSpan.SetTag(GenAiSemconvRegistry.ErrorType, treated);
+            workflowSpan.SetStatus(ActivityStatusCode.Error, treated);
         }
         workflowSpan.Dispose();
     }
@@ -252,9 +260,11 @@ public sealed class MagenticSpanEmitter : IDisposable
         int planVersion,
         string? planText,
         IContentCapturePolicy policy,
+        ICompositeResponseSanitizer sanitizer,
         IContentRedactionFilter filter)
     {
         ArgumentNullException.ThrowIfNull(policy);
+        ArgumentNullException.ThrowIfNull(sanitizer);
         ArgumentNullException.ThrowIfNull(filter);
 
         managerSpan?.SetTag(MagenticConventions.PlanVersion, planVersion);
@@ -262,6 +272,7 @@ public sealed class MagenticSpanEmitter : IDisposable
             MagenticConventions.EventPlanCreated,
             planText,
             policy,
+            sanitizer,
             filter);
         managerSpan?.AddEvent(evt);
     }
@@ -276,9 +287,11 @@ public sealed class MagenticSpanEmitter : IDisposable
         int planVersion,
         string? planText,
         IContentCapturePolicy policy,
+        ICompositeResponseSanitizer sanitizer,
         IContentRedactionFilter filter)
     {
         ArgumentNullException.ThrowIfNull(policy);
+        ArgumentNullException.ThrowIfNull(sanitizer);
         ArgumentNullException.ThrowIfNull(filter);
 
         managerSpan?.SetTag(MagenticConventions.PlanVersion, planVersion);
@@ -286,6 +299,7 @@ public sealed class MagenticSpanEmitter : IDisposable
             MagenticConventions.EventReplanned,
             planText,
             policy,
+            sanitizer,
             filter);
         managerSpan?.AddEvent(evt);
     }
@@ -299,9 +313,11 @@ public sealed class MagenticSpanEmitter : IDisposable
         Activity? resetSpan,
         string? replanReason,
         IContentCapturePolicy policy,
+        ICompositeResponseSanitizer sanitizer,
         IContentRedactionFilter filter)
     {
         ArgumentNullException.ThrowIfNull(policy);
+        ArgumentNullException.ThrowIfNull(sanitizer);
         ArgumentNullException.ThrowIfNull(filter);
         if (resetSpan is null) return;
         if (string.IsNullOrEmpty(replanReason)) return;
@@ -309,7 +325,7 @@ public sealed class MagenticSpanEmitter : IDisposable
 
         resetSpan.SetTag(
             MagenticConventions.ReplanReason,
-            filter.Redact(replanReason, policy.Categories));
+            SanitizeThenRedact.Apply(replanReason, sanitizer, filter, policy.Categories));
     }
 
     /// <summary>
@@ -321,9 +337,11 @@ public sealed class MagenticSpanEmitter : IDisposable
         Activity? roundSpan,
         string? instructionOrQuestion,
         IContentCapturePolicy policy,
+        ICompositeResponseSanitizer sanitizer,
         IContentRedactionFilter filter)
     {
         ArgumentNullException.ThrowIfNull(policy);
+        ArgumentNullException.ThrowIfNull(sanitizer);
         ArgumentNullException.ThrowIfNull(filter);
         if (roundSpan is null) return;
         if (string.IsNullOrEmpty(instructionOrQuestion)) return;
@@ -331,7 +349,7 @@ public sealed class MagenticSpanEmitter : IDisposable
 
         roundSpan.SetTag(
             MagenticConventions.ProgressInstructionOrQuestion,
-            filter.Redact(instructionOrQuestion, policy.Categories));
+            SanitizeThenRedact.Apply(instructionOrQuestion, sanitizer, filter, policy.Categories));
     }
 
     /// <summary>
@@ -343,9 +361,11 @@ public sealed class MagenticSpanEmitter : IDisposable
         Activity? planReviewSpan,
         string? revisionFeedback,
         IContentCapturePolicy policy,
+        ICompositeResponseSanitizer sanitizer,
         IContentRedactionFilter filter)
     {
         ArgumentNullException.ThrowIfNull(policy);
+        ArgumentNullException.ThrowIfNull(sanitizer);
         ArgumentNullException.ThrowIfNull(filter);
         if (planReviewSpan is null) return;
         if (string.IsNullOrEmpty(revisionFeedback)) return;
@@ -353,13 +373,14 @@ public sealed class MagenticSpanEmitter : IDisposable
 
         planReviewSpan.SetTag(
             MagenticConventions.PlanReviewFeedback,
-            filter.Redact(revisionFeedback, policy.Categories));
+            SanitizeThenRedact.Apply(revisionFeedback, sanitizer, filter, policy.Categories));
     }
 
     private static ActivityEvent BuildPlanEvent(
         string eventName,
         string? planText,
         IContentCapturePolicy policy,
+        ICompositeResponseSanitizer sanitizer,
         IContentRedactionFilter filter)
     {
         if (string.IsNullOrEmpty(planText) || !policy.ShouldCaptureMagenticPlanContent())
@@ -367,7 +388,7 @@ public sealed class MagenticSpanEmitter : IDisposable
             return new ActivityEvent(eventName);
         }
 
-        var redacted = filter.Redact(planText, policy.Categories);
+        var redacted = SanitizeThenRedact.Apply(planText, sanitizer, filter, policy.Categories);
         var tags = new ActivityTagsCollection
         {
             { MagenticConventions.PlanContent, redacted },

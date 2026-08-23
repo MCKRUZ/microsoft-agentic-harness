@@ -170,11 +170,15 @@ public sealed partial class DirectToolInvoker
             : int.MaxValue;
 
         var dropped = text.Length > scanCeiling;
-        return (dropped ? text[..scanCeiling] : text, dropped);
+        // BoundedText.Cap, not a raw slice: guards the surrogate boundary the same way FinalCut's own
+        // cut does (found in independent security review — this was the one truncation site in this
+        // file that predated BoundedText and never migrated to it).
+        return dropped ? (Governance.BoundedText.Cap(text, scanCeiling, string.Empty).Text, true) : (text, false);
     }
 
     /// <summary>
-    /// Bounds already-sanitized text to <paramref name="ceiling"/> characters, and folds in whether
+    /// Bounds already-sanitized text to <paramref name="ceiling"/> characters via the shared
+    /// <see cref="Governance.BoundedText.Cap"/> primitive (#467/#470), and folds in whether
     /// <see cref="PreCutForScrub"/> already dropped anything ahead of sanitizing.
     /// </summary>
     private static (string Text, bool Truncated) FinalCut(string scrubbed, int ceiling, bool droppedBeforeScrubbing)
@@ -182,23 +186,12 @@ public sealed partial class DirectToolInvoker
         // Re-checked rather than inferred from the pre-cut: scrubbing changes length in both directions
         // (a placeholder is rarely the width of what it replaced), so whether the ceiling is still
         // exceeded is only knowable now.
-        var cutAfterScrubbing = scrubbed.Length > ceiling;
-        if (cutAfterScrubbing)
-        {
-            // The marker counts against the ceiling rather than being added on top of it: a caller that
-            // set the ceiling to satisfy a downstream size contract would otherwise receive a payload
-            // slightly over the limit they asked for, which is the one thing such a ceiling exists to
-            // prevent. A ceiling smaller than the marker drops the marker rather than overshoot — the
-            // ceiling is the promise, and the truncation flag is what carries the meaning.
-            scrubbed = ceiling > TruncationMarker.Length
-                ? string.Concat(scrubbed.AsSpan(0, ceiling - TruncationMarker.Length), TruncationMarker)
-                : scrubbed[..ceiling];
-        }
+        var (bounded, cutAfterScrubbing) = Governance.BoundedText.Cap(scrubbed, ceiling, TruncationMarker);
 
         // Reported from what was actually dropped, never from what the raw length suggested. A string
         // barely over the ceiling that scrubbing shortened below it lost nothing, and claiming
         // otherwise would send a caller looking for content that is all present.
-        return (scrubbed, droppedBeforeScrubbing || cutAfterScrubbing);
+        return (bounded, droppedBeforeScrubbing || cutAfterScrubbing);
     }
 
     /// <summary>Runs text through the response-sanitizer chain. Empty text is returned untouched.</summary>

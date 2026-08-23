@@ -1,5 +1,6 @@
 using Application.AI.Common.Helpers;
 using Application.AI.Common.Interfaces;
+using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.MetaHarness;
 using Application.AI.Common.Interfaces.Traces;
 using Domain.AI.Agents;
@@ -9,6 +10,7 @@ using Domain.Common.MetaHarness;
 using Infrastructure.AI.MetaHarness;
 using Infrastructure.AI.Security;
 using Infrastructure.AI.Tests.Helpers;
+using Infrastructure.AI.Tests.Planner.StepExecutors;
 using Infrastructure.AI.Traces;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
@@ -34,7 +36,8 @@ public class AgentEvaluationServiceTests : IAsyncDisposable
         var opts = Mock.Of<IOptionsMonitor<MetaHarnessConfig>>(m => m.CurrentValue == cfg);
         var traceStore = BuildTraceStore(cfg.TraceDirectoryRoot);
         return new AgentEvaluationService(opts, traceStore, _agentFactoryMock.Object,
-            NullLogger<AgentEvaluationService>.Instance);
+            PermissiveAdmission.Pipeline(), PermissiveAdmission.PermissiveSanitizer(),
+            NullLoggerFactory.Instance, NullLogger<AgentEvaluationService>.Instance);
     }
 
     private IExecutionTraceStore BuildTraceStore(string traceRoot)
@@ -99,6 +102,41 @@ public class AgentEvaluationServiceTests : IAsyncDisposable
 
         Assert.Equal(1.0, result.PassRate);
         Assert.All(result.PerExampleResults, r => Assert.True(r.Passed));
+    }
+
+    /// <summary>
+    /// CI's correctness-review finding: <c>_admissionPipeline</c> is a single scoped instance shared
+    /// across every eval task and candidate run in this scope, but it was armed via
+    /// <c>ToolAdmissionAccessor.Begin</c> without ever being reset first — unlike
+    /// <c>DirectToolInvoker.ArmGovernance</c>, which resets before every arm. Without a reset, loop-
+    /// detection and call-once state from one task would leak into the next task run in the same scope.
+    /// This proves <c>Reset()</c> is called once per task.
+    /// </summary>
+    [Fact]
+    public async Task EvaluateAsync_MultipleTasks_ResetsAdmissionPipelineBeforeEachTask()
+    {
+        _agentFactoryMock
+            .Setup(f => f.CreateAgentAsync(It.IsAny<AgentExecutionContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new TestableAIAgent("The answer is 42"));
+
+        var admissionPipeline = new Mock<IToolCallAdmissionPipeline>();
+        var cfg = new MetaHarnessConfig { TraceDirectoryRoot = _traceRoot };
+        var opts = Mock.Of<IOptionsMonitor<MetaHarnessConfig>>(m => m.CurrentValue == cfg);
+        var sut = new AgentEvaluationService(
+            opts, BuildTraceStore(cfg.TraceDirectoryRoot), _agentFactoryMock.Object,
+            admissionPipeline.Object, PermissiveAdmission.PermissiveSanitizer(),
+            NullLoggerFactory.Instance, NullLogger<AgentEvaluationService>.Instance);
+
+        var candidate = BuildCandidate();
+        var tasks = new[]
+        {
+            BuildTask("t1", "question 1", pattern: "answer"),
+            BuildTask("t2", "question 2", pattern: "42")
+        };
+
+        await sut.EvaluateAsync(candidate, tasks);
+
+        admissionPipeline.Verify(p => p.Reset(), Times.Exactly(tasks.Length));
     }
 
     /// <summary>No tasks match their expected output patterns. PassRate should equal 0.0.</summary>
