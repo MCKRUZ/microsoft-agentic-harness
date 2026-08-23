@@ -26,7 +26,6 @@ public sealed class ToolUseStepExecutorSolutionReviewFixTests
 {
     private readonly Mock<ICapabilityEnforcer> _capabilityEnforcer = new();
     private readonly Mock<IAttestationService> _attestationService = new();
-    private readonly Mock<ICompositeResponseSanitizer> _responseSanitizer = new();
     private readonly Mock<IPlanProgressNotifier> _notifier = new();
     private readonly Mock<ISandboxExecutor> _processExecutor = new();
     private readonly Mock<ISandboxExecutor> _containerExecutor = new();
@@ -39,9 +38,6 @@ public sealed class ToolUseStepExecutorSolutionReviewFixTests
             It.IsAny<PlanId>(), It.IsAny<PlanStepId>(), It.IsAny<string>(), It.IsAny<SandboxIsolationLevel>(),
             It.IsAny<ResourceUsage>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
             .Returns(Task.CompletedTask);
-
-        _responseSanitizer.Setup(s => s.Sanitize(It.IsAny<string>(), It.IsAny<string?>()))
-            .Returns<string, string?>((content, _) => SanitizationResult.Clean(content));
 
         // Mirror production DI (DependencyInjection.Planner.cs): only Process and Container
         // are keyed. There is deliberately NO executor registered for None — that is exactly
@@ -57,7 +53,6 @@ public sealed class ToolUseStepExecutorSolutionReviewFixTests
             PermissiveAdmission.Pipeline(),
             sp,
             _attestationService.Object,
-            _responseSanitizer.Object,
             _notifier.Object,
             _context,
             NullLogger<ToolUseStepExecutor>.Instance);

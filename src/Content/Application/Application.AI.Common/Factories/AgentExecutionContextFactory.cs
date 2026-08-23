@@ -2,6 +2,7 @@ using Application.AI.Common.Extensions;
 using Application.AI.Common.Helpers;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Context;
+using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Resilience;
 using Application.AI.Common.Interfaces.Skills;
 using Application.AI.Common.Interfaces.Tools;
@@ -48,6 +49,7 @@ public partial class AgentExecutionContextFactory
     private readonly IToolChainBuilder _toolChainBuilder;
     private readonly ISkillPrerequisiteResolver _prerequisiteResolver;
     private readonly ISkillFileReader _skillFileReader;
+    private readonly ICompositeResponseSanitizer _sanitizer;
     private readonly IContextBudgetTracker? _budgetTracker;
     private readonly IExecutionTraceStore? _traceStore;
     private readonly IAgentConfigReporter? _agentConfigReporter;
@@ -61,6 +63,7 @@ public partial class AgentExecutionContextFactory
         IToolChainBuilder toolChainBuilder,
         ISkillPrerequisiteResolver prerequisiteResolver,
         ISkillFileReader skillFileReader,
+        ICompositeResponseSanitizer sanitizer,
         IContextBudgetTracker? budgetTracker = null,
         IExecutionTraceStore? traceStore = null,
         IAgentConfigReporter? agentConfigReporter = null,
@@ -75,6 +78,7 @@ public partial class AgentExecutionContextFactory
         _toolChainBuilder = toolChainBuilder;
         _prerequisiteResolver = prerequisiteResolver;
         _skillFileReader = skillFileReader;
+        _sanitizer = sanitizer;
         _budgetTracker = budgetTracker;
         _traceStore = traceStore;
         _agentConfigReporter = agentConfigReporter;

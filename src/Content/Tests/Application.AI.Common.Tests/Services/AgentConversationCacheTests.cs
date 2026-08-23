@@ -66,7 +66,11 @@ public sealed class AgentConversationCacheTests
             NullLoggerFactory.Instance,
             new ToolChainBuilder(NullLogger<ToolChainBuilder>.Instance, services, null),
             new SkillPrerequisiteResolver(),
-            new UnsandboxedSkillFileReader());
+            new UnsandboxedSkillFileReader(),
+            // #480: GoverningToolContextProvider now resolves a sanitizer to scrub load_skill/
+            // read_skill_resource output, so the live-agent-build path this fixture exercises needs
+            // one, matching what every real composition already provides unconditionally.
+            Application.AI.Common.Tests.Governance.AdmissionHarness.PermissiveSanitizer());
 
         // Registry returns a two-skill graph where "deploy" depends on "validate".
         var registry = new Mock<ISkillMetadataRegistry>();

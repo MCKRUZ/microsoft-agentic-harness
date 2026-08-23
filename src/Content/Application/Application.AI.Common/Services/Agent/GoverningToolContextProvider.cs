@@ -1,3 +1,5 @@
+using Application.AI.Common.Interfaces.Governance;
+using Application.AI.Common.Services.Governance;
 using Application.AI.Common.Services.Tools;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
@@ -76,16 +78,24 @@ public sealed class GoverningToolContextProvider : AIContextProvider
     private const string ChannelDescription = "AIContext.Tools contributed by an AIContextProvider";
 
     private readonly ILogger<GoverningToolContextProvider> _logger;
+    private readonly ICompositeResponseSanitizer _sanitizer;
 
     /// <summary>Initializes a new <see cref="GoverningToolContextProvider"/>.</summary>
     /// <param name="logger">Logger that receives reserved plan-capability collision reports.</param>
-    public GoverningToolContextProvider(ILogger<GoverningToolContextProvider> logger)
+    /// <param name="sanitizer">
+    /// Scrubs the output of <c>load_skill</c>/<c>read_skill_resource</c> (#480) — the two tools this
+    /// provider exempts from <see cref="GovernedAIFunction"/> wrapping, and so also from #469's
+    /// unconditional sanitize, since that guarantee is carried by the wrapper these two never receive.
+    /// </param>
+    public GoverningToolContextProvider(
+        ILogger<GoverningToolContextProvider> logger, ICompositeResponseSanitizer sanitizer)
         : base(
             provideInputMessageFilter: messages => messages,
             storeInputRequestMessageFilter: messages => messages,
             storeInputResponseMessageFilter: messages => messages)
     {
         _logger = logger;
+        _sanitizer = sanitizer;
     }
 
     /// <inheritdoc />
@@ -103,7 +113,7 @@ public sealed class GoverningToolContextProvider : AIContextProvider
         // every provider ahead of this one — then filter and wrap what it produced.
         var merged = await base.InvokingCoreAsync(context, cancellationToken).ConfigureAwait(false);
 
-        var tools = FilterAndGovern(merged.Tools, _logger);
+        var tools = FilterAndGovern(merged.Tools, _logger, _sanitizer);
 
         // Nothing was dropped or needed wrapping — avoid allocating a new AIContext.
         if (tools is null)
@@ -125,7 +135,9 @@ public sealed class GoverningToolContextProvider : AIContextProvider
     /// </summary>
     /// <param name="tools">The tools accumulated on the context, possibly null or empty.</param>
     /// <param name="logger">Logger that receives reserved plan-capability collision reports.</param>
-    internal static List<AITool>? FilterAndGovern(IEnumerable<AITool>? tools, ILogger logger)
+    /// <param name="sanitizer">Passed through to <see cref="Govern"/> — see its remarks.</param>
+    internal static List<AITool>? FilterAndGovern(
+        IEnumerable<AITool>? tools, ILogger logger, ICompositeResponseSanitizer sanitizer)
     {
         var original = tools?.ToList();
         if (original is null or { Count: 0 })
@@ -137,7 +149,7 @@ public sealed class GoverningToolContextProvider : AIContextProvider
 
         for (var i = 0; i < permitted.Count; i++)
         {
-            var governed = Govern(permitted[i]);
+            var governed = Govern(permitted[i], sanitizer);
             if (!ReferenceEquals(governed, permitted[i]))
             {
                 permitted[i] = governed;
@@ -150,34 +162,70 @@ public sealed class GoverningToolContextProvider : AIContextProvider
 
     /// <summary>
     /// Returns <paramref name="tool"/> wrapped in a <see cref="GovernedAIFunction"/> when it is an
-    /// unwrapped callable function, or the tool unchanged when it is already governed, is not a
-    /// function, or is one of the two skill-content transport tools. Extracted for unit testing of the
-    /// wrapping decision.
+    /// unwrapped callable function, wrapped in a sanitize-only decorator when it is one of the two
+    /// skill-content transport tools, or the tool unchanged when it is already wrapped or is not a
+    /// function. Extracted for unit testing of the wrapping decision.
     /// </summary>
     /// <remarks>
     /// <para>
-    /// <strong>Why <c>load_skill</c> and <c>read_skill_resource</c> are not governed.</strong> They are
-    /// not capabilities an agent is granted — they are how the agent reads the instructions for skills it
-    /// has <em>already</em> been assigned, and the provider that publishes them is built from this agent's
-    /// own skills, so neither can name a skill the agent was not given. Gating them on a tool grant asks
-    /// the wrong question: on a bundle run the ambient capability envelope lists the domain tools the
-    /// caller may invoke, would never list a framework transport tool, and the governor refuses anything
-    /// the envelope does not name — so wrapping these would leave a bundle agent unable to load the
-    /// instructions of the skills it shipped with, silently, with a refusal string where its own skill
-    /// body should be.
+    /// <strong>Why <c>load_skill</c> and <c>read_skill_resource</c> are not capability-gated.</strong>
+    /// They are not capabilities an agent is granted — they are how the agent reads the instructions for
+    /// skills it has <em>already</em> been assigned, and the provider that publishes them is built from
+    /// this agent's own skills, so neither can name a skill the agent was not given. Gating them on a
+    /// tool grant asks the wrong question: on a bundle run the ambient capability envelope lists the
+    /// domain tools the caller may invoke, would never list a framework transport tool, and the governor
+    /// refuses anything the envelope does not name — so wrapping these in <see cref="GovernedAIFunction"/>
+    /// would leave a bundle agent unable to load the instructions of the skills it shipped with, silently,
+    /// with a refusal string where its own skill body should be.
     /// </para>
     /// <para>
-    /// The exemption reuses <see cref="ToolPermissionFilter.SkillDisclosureToolNames"/> rather than
-    /// restating the pair, because that filter already exempts exactly these two for exactly this reason.
-    /// Two copies of "which tools are content transport" is how one of them ends up out of date.
-    /// <c>run_skill_script</c> is deliberately <em>not</em> in that set and is governed here: executing a
-    /// skill's script is a capability, and on a bundle run it is one the caller's envelope must grant.
+    /// <strong>That exemption is from capability-gating, not from sanitizing (#480).</strong> These two
+    /// tools return free-form third-party markdown — a plugin-sourced <c>SKILL.md</c> — straight to the
+    /// model, exactly the kind of content #469's sanitize pass exists to scrub. Capability-grant and
+    /// sanitize-on-output are different questions; exempting both from one shared exemption list was the
+    /// gap. They get a sanitize-only wrapper instead of full governance: it never asks the admission
+    /// pipeline anything (so the capability-grant exemption is preserved intact), but it still scrubs the
+    /// result before the model sees it.
+    /// </para>
+    /// <para>
+    /// The exemption from <see cref="GovernedAIFunction"/> reuses
+    /// <see cref="ToolPermissionFilter.SkillDisclosureToolNames"/> rather than restating the pair, because
+    /// that filter already exempts exactly these two for exactly this reason. Two copies of "which tools
+    /// are content transport" is how one of them ends up out of date. <c>run_skill_script</c> is
+    /// deliberately <em>not</em> in that set and is fully governed here: executing a skill's script is a
+    /// capability, and on a bundle run it is one the caller's envelope must grant.
     /// </para>
     /// </remarks>
-    internal static AITool Govern(AITool tool)
-        => tool is AIFunction fn
-           && tool is not GovernedAIFunction
-           && !ToolPermissionFilter.SkillDisclosureToolNames.Contains(fn.Name)
-            ? new GovernedAIFunction(fn)
-            : tool;
+    internal static AITool Govern(AITool tool, ICompositeResponseSanitizer sanitizer)
+    {
+        if (tool is not AIFunction fn || tool is GovernedAIFunction || tool is SanitizingAIFunction)
+            return tool;
+
+        return ToolPermissionFilter.SkillDisclosureToolNames.Contains(fn.Name)
+            ? new SanitizingAIFunction(fn, sanitizer)
+            : new GovernedAIFunction(fn);
+    }
+
+    /// <summary>
+    /// Wraps a tool this provider deliberately does not run through <see cref="GovernedAIFunction"/> —
+    /// today, only <c>load_skill</c>/<c>read_skill_resource</c> — so its output is still sanitized (#480)
+    /// even though it is exempt from admission, classification, and every other governance stage.
+    /// </summary>
+    private sealed class SanitizingAIFunction : DelegatingAIFunction
+    {
+        private readonly ICompositeResponseSanitizer _sanitizer;
+
+        public SanitizingAIFunction(AIFunction innerFunction, ICompositeResponseSanitizer sanitizer)
+            : base(innerFunction)
+        {
+            _sanitizer = sanitizer;
+        }
+
+        protected override async ValueTask<object?> InvokeCoreAsync(
+            AIFunctionArguments arguments, CancellationToken cancellationToken)
+        {
+            var result = await base.InvokeCoreAsync(arguments, cancellationToken).ConfigureAwait(false);
+            return ToolResultText.Sanitize(result, _sanitizer, Name);
+        }
+    }
 }

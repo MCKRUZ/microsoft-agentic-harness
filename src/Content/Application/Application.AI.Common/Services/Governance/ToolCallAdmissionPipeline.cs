@@ -264,14 +264,26 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
     {
         ArgumentNullException.ThrowIfNull(admission);
 
-        if (!admission.RedactsOutput)
+        // #479: null content has nothing to sanitize or redact — exempt from both paths exactly as it
+        // always was for the non-redact path. Routing it through ToolResultText.Sanitize below would
+        // hit the default (unrecognized-shape) case and return null unchanged, which is
+        // indistinguishable from "the gate failed closed" to the `is string text` check that follows —
+        // so it is handled here, explicitly, rather than relying on that check to do it by accident.
+        if (content is null)
         {
-            result = content;
+            result = null;
             return true;
         }
 
-        var redacted = _classificationGate.RedactResult(toolName, content);
-        if (redacted is string text)
+        // #479: sanitize unconditionally on both branches, the same guarantee ApplyOutputPolicy carries
+        // (#469) — this method used to sanitize only when a redaction was required, leaving the
+        // invariant enforced by caller discipline (both current callers ran their own unconditional
+        // scrub immediately after) rather than by this interface itself.
+        var processed = admission.RedactsOutput
+            ? _classificationGate.RedactResult(toolName, content)
+            : ToolResultText.Sanitize(content, _sanitizer, toolName);
+
+        if (processed is string text)
         {
             result = text;
             return true;
@@ -284,7 +296,7 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
         _logger.LogWarning(
             "Classification gate returned a {ResultType} rather than a string when redacting output of "
             + "{ToolName}; the result is withheld rather than returned unredacted.",
-            redacted?.GetType().Name ?? "null",
+            processed?.GetType().Name ?? "null",
             toolName);
 
         result = null;

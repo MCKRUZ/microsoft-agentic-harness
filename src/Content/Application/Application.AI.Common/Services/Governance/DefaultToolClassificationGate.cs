@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Governance;
+using Application.AI.Common.Interfaces.Telemetry;
 using Application.AI.Common.OpenTelemetry.Metrics;
 using Domain.AI.Governance;
 using Domain.AI.Telemetry.Conventions;
@@ -28,6 +29,7 @@ public sealed class DefaultToolClassificationGate : IToolClassificationGate
     private readonly IDataClassificationProvider _provider;
     private readonly IClassificationPolicyEvaluator _evaluator;
     private readonly ICompositeResponseSanitizer _sanitizer;
+    private readonly IContentRedactionFilter _redactionFilter;
     private readonly IGovernanceAuditService _auditService;
     private readonly IAgentExecutionContext _executionContext;
     private readonly IOptionsMonitor<GovernanceConfig> _governanceConfig;
@@ -39,6 +41,7 @@ public sealed class DefaultToolClassificationGate : IToolClassificationGate
         IDataClassificationProvider provider,
         IClassificationPolicyEvaluator evaluator,
         ICompositeResponseSanitizer sanitizer,
+        IContentRedactionFilter redactionFilter,
         IGovernanceAuditService auditService,
         IAgentExecutionContext executionContext,
         IOptionsMonitor<GovernanceConfig> governanceConfig,
@@ -48,6 +51,7 @@ public sealed class DefaultToolClassificationGate : IToolClassificationGate
         ArgumentNullException.ThrowIfNull(provider);
         ArgumentNullException.ThrowIfNull(evaluator);
         ArgumentNullException.ThrowIfNull(sanitizer);
+        ArgumentNullException.ThrowIfNull(redactionFilter);
         ArgumentNullException.ThrowIfNull(auditService);
         ArgumentNullException.ThrowIfNull(executionContext);
         ArgumentNullException.ThrowIfNull(governanceConfig);
@@ -57,6 +61,7 @@ public sealed class DefaultToolClassificationGate : IToolClassificationGate
         _provider = provider;
         _evaluator = evaluator;
         _sanitizer = sanitizer;
+        _redactionFilter = redactionFilter;
         _auditService = auditService;
         _executionContext = executionContext;
         _governanceConfig = governanceConfig;
@@ -117,11 +122,18 @@ public sealed class DefaultToolClassificationGate : IToolClassificationGate
     }
 
     /// <inheritdoc />
+    /// <remarks>
+    /// #484: a <c>Redact</c> verdict must do strictly more than the unconditional sanitize every other
+    /// tool result already gets (<see cref="ToolCallAdmissionPipeline.ApplyOutputPolicy"/>) — otherwise
+    /// an operator-configured classification policy is a control with no distinct effect. Routes through
+    /// <see cref="ToolResultText.SanitizeAndRedact"/> rather than <see cref="ToolResultText.Sanitize"/>,
+    /// which also applies <see cref="_redactionFilter"/>'s known-secret-pattern scrub. See
+    /// <see cref="ToolResultText.Sanitize"/> for why the result's shape (raw string vs. serialized JSON
+    /// string element) must survive the round trip, and why a structured result is left unchanged — such
+    /// cases are better handled by a Block policy.
+    /// </remarks>
     public object? RedactResult(string toolName, object? result) =>
-        // See ToolResultText.Sanitize for why the result's shape (raw string vs. serialized JSON string
-        // element) must survive the round trip, and why a structured result is left unchanged — such
-        // cases are better handled by a Block policy.
-        ToolResultText.Sanitize(result, _sanitizer, toolName);
+        ToolResultText.SanitizeAndRedact(result, _sanitizer, _redactionFilter, toolName);
 
     private AssetReference Resolve(string toolName, IReadOnlyDictionary<string, object?> arguments)
     {

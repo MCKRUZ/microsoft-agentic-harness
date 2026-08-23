@@ -27,7 +27,6 @@ namespace Infrastructure.AI.Tests.Planner.StepExecutors;
 public sealed class ToolUseStepExecutorAttestationBindingTests
 {
     private readonly Mock<ICapabilityEnforcer> _capabilityEnforcer = new();
-    private readonly Mock<ICompositeResponseSanitizer> _responseSanitizer = new();
     private readonly Mock<IPlanProgressNotifier> _notifier = new();
     private readonly Mock<ISandboxExecutor> _sandboxExecutor = new();
     private readonly HmacAttestationService _attestationService;
@@ -42,9 +41,6 @@ public sealed class ToolUseStepExecutorAttestationBindingTests
 
         _capabilityEnforcer.Setup(c => c.ResolveProfileAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new ToolPermissionProfile { RequiredCapabilities = ToolCapability.FileRead });
-
-        _responseSanitizer.Setup(s => s.Sanitize(It.IsAny<string>(), It.IsAny<string?>()))
-            .Returns<string, string?>((content, _) => SanitizationResult.Clean(content));
 
         var keyOptions = new AttestationKeyOptions
         {
@@ -73,7 +69,6 @@ public sealed class ToolUseStepExecutorAttestationBindingTests
             PermissiveAdmission.Pipeline(),
             services.BuildServiceProvider(),
             _attestationService,
-            _responseSanitizer.Object,
             _notifier.Object,
             new PlanExecutionContext { CurrentPlanId = new PlanId(Guid.NewGuid()) },
             NullLogger<ToolUseStepExecutor>.Instance);

@@ -66,7 +66,6 @@ public sealed class ToolUseStepExecutorTests
             BuildAdmissionPipeline(Mock.Of<IToolCallObserverChain>()),
             sp,
             _attestationService.Object,
-            _responseSanitizer.Object,
             _notifier.Object,
             _context,
             NullLogger<ToolUseStepExecutor>.Instance);
@@ -466,7 +465,6 @@ public sealed class ToolUseStepExecutorTests
             BuildAdmissionPipeline(observers),
             services.BuildServiceProvider(),
             _attestationService.Object,
-            _responseSanitizer.Object,
             _notifier.Object,
             _context,
             NullLogger<ToolUseStepExecutor>.Instance);

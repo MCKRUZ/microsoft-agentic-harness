@@ -285,6 +285,70 @@ public sealed class ToolCallAdmissionPipelineTests
     // ApplyOutputPolicy routes a plain allow to the sanitizer rather than the classification gate.
 
     [Fact]
+    public void TryApplyTextOutputPolicy_PlainAllow_SanitizesTheResult()
+    {
+        // #479: before this fix, the plain-allow branch was a pure passthrough — the string-shaped
+        // sibling of ApplyOutputPolicy did NOT carry the same unconditional-sanitize guarantee #469 gave
+        // its object-shaped twin. Both current callers papered over the gap with their own duplicate
+        // scrub; this proves the guarantee now lives on the interface method itself.
+        var gate = new Mock<IToolClassificationGate>(MockBehavior.Strict);
+        var pipeline = AdmissionHarness.Pipeline(
+            classificationGate: gate.Object,
+            sanitizer: AdmissionHarness.SubstitutingSanitizer("secret", "[SCRUBBED]"));
+
+        var ok = pipeline.TryApplyTextOutputPolicy(ToolCallAdmission.Allow(), Tool, "a secret value", out var result);
+
+        ok.Should().BeTrue();
+        result.Should().Be("a [SCRUBBED] value");
+        gate.Verify(g => g.RedactResult(It.IsAny<string>(), It.IsAny<object?>()), Times.Never);
+    }
+
+    [Fact]
+    public void TryApplyTextOutputPolicy_RedactVerdict_RoutesThroughTheClassificationGate()
+    {
+        var gate = new Mock<IToolClassificationGate>();
+        gate.Setup(g => g.RedactResult(Tool, "raw text")).Returns("[redacted]");
+        var pipeline = AdmissionHarness.Pipeline(classificationGate: gate.Object);
+
+        var ok = pipeline.TryApplyTextOutputPolicy(
+            ToolCallAdmission.AllowWithOutputRedaction(), Tool, "raw text", out var result);
+
+        ok.Should().BeTrue();
+        result.Should().Be("[redacted]");
+    }
+
+    [Fact]
+    public void TryApplyTextOutputPolicy_RedactVerdict_ClassificationGateReturnsNonString_FailsClosed()
+    {
+        // Preserved from before #479: a consumer-supplied IToolClassificationGate that violates the
+        // "redact always answers with a string" contract must withhold, not fall back to the original —
+        // see the pipeline's own remarks on why `RedactResult(...) as string ?? content` would be a trap.
+        var gate = new Mock<IToolClassificationGate>();
+        gate.Setup(g => g.RedactResult(Tool, "raw text")).Returns(new { Rows = 3 });
+        var pipeline = AdmissionHarness.Pipeline(classificationGate: gate.Object);
+
+        var ok = pipeline.TryApplyTextOutputPolicy(
+            ToolCallAdmission.AllowWithOutputRedaction(), Tool, "raw text", out var result);
+
+        ok.Should().BeFalse();
+        result.Should().BeNull();
+    }
+
+    [Fact]
+    public void TryApplyTextOutputPolicy_NullContent_PassesThroughWithoutSanitizingOrRedacting()
+    {
+        var sanitizer = new Mock<ICompositeResponseSanitizer>(MockBehavior.Strict);
+        var gate = new Mock<IToolClassificationGate>(MockBehavior.Strict);
+        var pipeline = AdmissionHarness.Pipeline(classificationGate: gate.Object, sanitizer: sanitizer.Object);
+
+        var ok = pipeline.TryApplyTextOutputPolicy(
+            ToolCallAdmission.AllowWithOutputRedaction(), Tool, null, out var result);
+
+        ok.Should().BeTrue("there is nothing to sanitize or redact in an absent result");
+        result.Should().BeNull();
+    }
+
+    [Fact]
     public async Task AdmitAsync_AStageRefusesWithNoMessage_TheCallerStillGetsTheCanonicalRefusal()
     {
         // Defensive: every stage's own refusal factory requires a message, so this is unreachable

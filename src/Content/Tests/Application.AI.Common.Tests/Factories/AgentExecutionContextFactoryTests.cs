@@ -74,6 +74,7 @@ public class AgentExecutionContextFactoryTests
             toolChainBuilder,
             new SkillPrerequisiteResolver(),
             new UnsandboxedSkillFileReader(),
+            Application.AI.Common.Tests.Governance.AdmissionHarness.PermissiveSanitizer(),
             budgetTracker: budgetTracker,
             traceStore: traceStore);
     }
@@ -197,7 +198,8 @@ public class AgentExecutionContextFactoryTests
             NullLoggerFactory.Instance,
             new ToolChainBuilder(NullLogger<ToolChainBuilder>.Instance, sp),
             new SkillPrerequisiteResolver(),
-            new UnsandboxedSkillFileReader());
+            new UnsandboxedSkillFileReader(),
+            Application.AI.Common.Tests.Governance.AdmissionHarness.PermissiveSanitizer());
 
         var context = await factory.MapToAgentContextAsync(SimpleSkill(), new SkillAgentOptions());
 

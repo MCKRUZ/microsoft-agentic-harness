@@ -144,6 +144,7 @@ public sealed class AgentExecutionContextFactoryRailOrderTests : IDisposable
                 NullLogger<ToolChainBuilder>.Instance, sp, new PassThroughToolConverter()),
             new SkillPrerequisiteResolver(),
             new UnsandboxedSkillFileReader(),
+            Application.AI.Common.Tests.Governance.AdmissionHarness.PermissiveSanitizer(),
             budgetTracker
                 ? new ContextBudgetTracker(
                     Mock.Of<IOptionsMonitor<AppConfig>>(m => m.CurrentValue == new AppConfig()),

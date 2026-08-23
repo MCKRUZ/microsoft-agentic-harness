@@ -75,7 +75,7 @@ public sealed class AgentFactoryResilienceWiringTests
             monitor,
             new ServiceCollection().BuildServiceProvider(),
             NullLoggerFactory.Instance,
-            null!, null!, new UnsandboxedSkillFileReader(), null!, null!, null!, null!);
+            null!, null!, new UnsandboxedSkillFileReader(), null!, null!, null!, null!, null!);
 
         var factory = new AgentFactory(
             NullLogger<AgentFactory>.Instance,
@@ -248,6 +248,7 @@ public sealed class AgentFactoryResilienceWiringTests
                 NullLogger<ToolChainBuilder>.Instance, services),
             new SkillPrerequisiteResolver(),
             new UnsandboxedSkillFileReader(),
+            Application.AI.Common.Tests.Governance.AdmissionHarness.PermissiveSanitizer(),
             resilientChatClientProvider: resilientProvider);
     }
 
