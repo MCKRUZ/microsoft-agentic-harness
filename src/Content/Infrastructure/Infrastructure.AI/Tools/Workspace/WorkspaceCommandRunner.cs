@@ -170,10 +170,13 @@ public static class WorkspaceCommandRunner
             Timeout = timeout ?? TimeSpan.FromMinutes(5)
         };
 
-        // ExecuteNonNullAsync guards a custom ISandboxExecutor violating its non-nullable contract —
-        // without it, sandboxResult.ExitCode/.Success below was an unguarded NullReferenceException
-        // caught only by RunAsync's outer catch, degrading to a generic message instead of the
-        // specific, stable-error-code failure every other dispatch-time fault in this method returns.
+        // ExecuteNonNullAsync guards a custom ISandboxExecutor violating its non-nullable contract.
+        // Both the guarded and unguarded paths reach the same generic message shape via RunAsync's
+        // outer catch (correctness-review finding: an earlier version of this comment overstated the
+        // difference) — what actually improves is which exception type name lands in that message:
+        // InvalidOperationException, naming the real defect (a broken executor contract), instead of
+        // NullReferenceException, which reads as a coding bug in this method rather than in a plugged-in
+        // executor.
         var sandboxResult = await executor.ExecuteNonNullAsync(request, cancellationToken).ConfigureAwait(false);
 
         var summary =
