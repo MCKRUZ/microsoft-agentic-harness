@@ -66,6 +66,13 @@
 #   scripts/rails/run-gates.sh --base develop   # diff against a different base
 #   scripts/rails/run-gates.sh --list           # show which gates apply and why
 #
+# --fast is the expected default before pushing (2026-08 change): it's minutes, not
+# hours, and touches nothing but dotnet/node — no local `claude` subprocess competing
+# with everything else on your machine while it runs. A clean --fast run (or --all)
+# earns the "run-gates" receipt review-gate.ps1 requires; the AI gates it skips
+# (grader/correctness/security/docs-drift) are covered by CI's required checks
+# regardless — see the push-gate receipt section below and .github/RAILS.md.
+#
 # Exit code: 0 if every selected gate passed or was not applicable; 1 otherwise.
 
 set -uo pipefail
@@ -416,29 +423,45 @@ fi
 printf '\n\033[32mAll selected gates passed.\033[0m The remote run should be a formality.\n'
 
 # ---------------------------------------------------------------------------
-# Push-gate receipt — ONLY for a full, default-base run.
+# Push-gate receipt — for a full run, OR a clean --fast run, at the default base.
 #
 # review-gate.ps1 (the local push gate) requires a "run-gates" receipt in addition to
 # the /code-review and /simplify ones. That receipt is written HERE, automatically, on
 # a real passing run — never by hand — so its existence actually proves the local gates
 # ran, rather than being another claim an agent could type without running anything.
 #
-# Deliberately narrow: a partial run (a single named gate, --fast, --ai-only), an
-# explicit --base override, a run where --accept-risk overrode a BLOCK, or a run against
-# a dirty src/ tree does not represent "the same clean checks the push gate cares about",
-# so none of those earn a receipt. Run with no flags (equivalent to --all), no
-# --accept-risk, with src/ clean, to satisfy the push gate. An explicit --base always
-# forfeits the receipt, even --base origin/main matching the auto-resolved default
-# exactly — a plain no-flags run already resolves to the correct base, so there's no
-# legitimate reason to pass --base and still expect one.
+# --fast earns a receipt too (2026-08 change), deliberately: build/test/owasp/docs-links
+# are plain dotnet/node — fast, deterministic, and zero `claude` subprocesses — while the
+# four AI gates (grader/correctness/security/docs-drift) bill the identical Claude
+# subscription CI already spends on security-review and correctness-review as REQUIRED,
+# blocking checks on every PR regardless of what ran here first (see .github/RAILS.md).
+# Running them again locally, unbounded in turns (no --max-turns equivalent exists for
+# the local CLI — see this file's header), duplicates work CI does anyway and does not
+# raise the bar CI already enforces. It just costs local wall-clock and competes with
+# everything else on the developer's machine for CPU/disk while it runs — measured at
+# 2.5+ hours for one full local pass against a mid-size diff, an order of magnitude
+# slower than the equivalent CI round trip. --fast is now the expected default; --all
+# still exists and still earns a receipt for anyone who wants the full local pass on a
+# diff small enough that the AI gates finish quickly.
+#
+# Still deliberately narrow beyond that: any OTHER partial run (a single named gate,
+# --ai-only), an explicit --base override, a run where --accept-risk overrode a BLOCK, or
+# a run against a dirty src/ tree does not represent "the same clean checks the push gate
+# cares about", so none of those earn a receipt. An explicit --base always forfeits the
+# receipt, even --base origin/main matching the auto-resolved default exactly — a plain
+# no-flags/--fast run already resolves to the correct base, so there's no legitimate
+# reason to pass --base and still expect one.
 # ---------------------------------------------------------------------------
 FULL_SET_SORTED="$(printf '%s\n' build test owasp docs-links grader correctness security docs-drift | sort | tr '\n' ' ')"
+FAST_SET_SORTED="$(printf '%s\n' build test owasp docs-links | sort | tr '\n' ' ')"
 SELECTED_SORTED="$(printf '%s\n' "${SELECTED[@]}" | sort -u | tr '\n' ' ')"
+IS_FAST_RUN=false
+[ "$SELECTED_SORTED" = "$FAST_SET_SORTED" ] && IS_FAST_RUN=true
 NO_RECEIPT_REASON=""
 if $BASE_EXPLICIT; then
   NO_RECEIPT_REASON="--base was explicitly given ('${BASE_REF}') — run with no --base to use the auto-resolved default and earn a receipt"
-elif [ "$SELECTED_SORTED" != "$FULL_SET_SORTED" ]; then
-  NO_RECEIPT_REASON="partial gate selection (${SELECTED[*]})"
+elif [ "$SELECTED_SORTED" != "$FULL_SET_SORTED" ] && ! $IS_FAST_RUN; then
+  NO_RECEIPT_REASON="partial gate selection (${SELECTED[*]}) — run --fast or the full default set to earn a receipt"
 elif [ -n "${ACCEPT_RISK// /}" ]; then
   # A gate that BLOCKed and was overridden locally still lands in PASSED (see
   # run_ai_gate's "risk accepted locally" branch), so FAILED stays empty and this
@@ -461,8 +484,12 @@ if [ -z "$NO_RECEIPT_REASON" ]; then
   # "(all gates)" would overstate this: a gate applies() ruled inapplicable (e.g.
   # security when security-gate-scope.sh returns required=false) is neither PASSED nor
   # FAILED, so it's real and correct for it to be absent from PASSED — but the label
-  # should say so plainly rather than implying every gate ran.
-  RECEIPT_SUMMARY="run-gates.sh (full applicable gate set for this diff) passed at $(git rev-parse --short HEAD) against base ${BASE_REF}. Passed: $(IFS=,; echo "${PASSED[*]:-none}"). Skipped (not applicable to this diff): $(IFS=,; echo "${SKIPPED[*]:-none}")."
+  # should say so plainly rather than implying every gate ran. A --fast run is labelled
+  # as such explicitly, so the receipt never implies the AI gates ran when they didn't —
+  # CI's required correctness-review/security-review are what actually cover that ground.
+  RUN_KIND_LABEL="full applicable gate set for this diff"
+  $IS_FAST_RUN && RUN_KIND_LABEL="--fast (build/test/owasp/docs-links only — correctness/security/grader deferred to CI's required checks)"
+  RECEIPT_SUMMARY="run-gates.sh (${RUN_KIND_LABEL}) passed at $(git rev-parse --short HEAD) against base ${BASE_REF}. Passed: $(IFS=,; echo "${PASSED[*]:-none}"). Skipped (not applicable to this diff): $(IFS=,; echo "${SKIPPED[*]:-none}")."
   if command -v pwsh >/dev/null 2>&1; then
     if printf '%s\n' "$RECEIPT_SUMMARY" | pwsh -NoProfile -File .claude/hooks/save-review-receipt.ps1 -Kind run-gates >"$RECEIPT_OUT" 2>&1; then
       cat "$RECEIPT_OUT"
