@@ -218,12 +218,12 @@ public class DockerSandboxExecutorTests
     }
 
     /// <summary>
-    /// #434: <see cref="DockerSandboxExecutor"/> is resolved exclusively via the <c>Container</c>
-    /// keyed-DI slot, so it no longer consults <c>PermissionProfile.MinimumIsolation</c> at all —
-    /// the hard-refusal, attested outcome is unconditional. This deliberately constructs a
-    /// request whose <c>MinimumIsolation</c> claims <c>Process</c> (a value that would never occur
-    /// via real DI resolution) to prove the executor no longer trusts that caller-controlled field
-    /// for a fact its own registration already guarantees.
+    /// #434: <see cref="DockerSandboxExecutor"/> no longer consults
+    /// <c>PermissionProfile.MinimumIsolation</c> at all — the hard-refusal, attested outcome is
+    /// unconditional. This deliberately constructs a request whose <c>MinimumIsolation</c> claims
+    /// <c>Process</c> (a value that would never occur via the <c>Container</c> keyed-DI slot every
+    /// first-party caller resolves this class through) to prove the executor no longer trusts that
+    /// caller-controlled field for a fact keyed resolution already guarantees on those paths.
     /// </summary>
     [Fact]
     public async Task ExecuteAsync_DockerUnavailable_IgnoresPermissionProfileMinimumIsolation_AlwaysRefusesWithAttestation()

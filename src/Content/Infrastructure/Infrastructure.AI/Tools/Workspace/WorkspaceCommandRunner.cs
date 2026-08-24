@@ -171,6 +171,16 @@ public static class WorkspaceCommandRunner
 
         var sandboxResult = await executor.ExecuteAsync(request, cancellationToken).ConfigureAwait(false);
 
+        // Same #425-class guard as IacSandboxRunner.RunAsync (this runner's own remarks above note the
+        // two independently copy-pasted the same resolve-then-select sequence): a custom ISandboxExecutor
+        // violating its non-nullable contract used to dereference sandboxResult.ExitCode/.Success below
+        // as an unguarded NullReferenceException instead of the specific, stable-error-code failure every
+        // other dispatch-time fault in this method already returns via the catch in RunAsync.
+        if (sandboxResult is null)
+            throw new InvalidOperationException(
+                $"ISandboxExecutor.ExecuteAsync returned null in violation of its non-nullable contract " +
+                $"(executor: {executor.GetType().Name}).");
+
         var summary =
             $"exit={sandboxResult.ExitCode?.ToString() ?? "n/a"} success={sandboxResult.Success}\n" +
             (sandboxResult.Output ?? string.Empty);

@@ -42,9 +42,9 @@ public static class SandboxIsolationLevelExtensions
     /// own <c>PermissionProfile.MinimumIsolation</c> — an un-elevated profile signs a stale, misleading
     /// isolation tier into the audit record even though the run itself executed at the elevated tier
     /// (#420). As of #434, a Docker outage is always a hard, attested refusal regardless of this
-    /// field — <c>DockerSandboxExecutor</c>/<c>DockerSandboxSessionFactory</c> are resolved exclusively
-    /// under the <c>Container</c> keyed-DI slot, so container isolation is already guaranteed by the
-    /// time either reads it, and neither branches on it anymore.
+    /// field — neither <c>DockerSandboxExecutor</c> nor <c>DockerSandboxSessionFactory</c> branches
+    /// on it anymore, since every first-party caller already reaches both exclusively through the
+    /// <c>Container</c> keyed-DI slot.
     /// </remarks>
     public static ToolPermissionProfile WithMinimumIsolationAtLeast(
         this ToolPermissionProfile profile, SandboxIsolationLevel floor)

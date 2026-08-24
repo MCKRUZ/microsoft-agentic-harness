@@ -75,11 +75,9 @@ public sealed class DockerSandboxSessionFactory(
     /// </summary>
     /// <remarks>
     /// #434: always the hard-refusal, attested outcome — matches
-    /// <see cref="DockerSandboxExecutor"/>'s identical fix. This factory is registered exclusively
-    /// under the <c>Container</c> keyed-DI slot, so container isolation was already required to
-    /// reach it; re-deriving that from <c>request.PermissionProfile.MinimumIsolation</c> re-trusted
-    /// a caller-controlled field for something the DI key already guarantees structurally, and the
-    /// soft-fallback branch that field used to select was unreachable from any first-party caller.
+    /// <see cref="DockerSandboxExecutor"/>'s identical fix, including that fix's remarks on the
+    /// unkeyed <c>AddScoped</c> registration that also exists in DI alongside the keyed slot every
+    /// first-party caller actually uses.
     /// </remarks>
     private async Task<Result<ISandboxSession>> HandleDockerUnavailableAsync(
         SandboxSessionRequest request, string? egressDigest, CancellationToken ct)

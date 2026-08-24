@@ -140,6 +140,29 @@ public sealed class ToolUseStepExecutorTests
         Assert.Equal(PlanStepErrors.ToolFailed, result.ErrorMessage);
     }
 
+    /// <summary>
+    /// Regression test, found by /code-review on the #425/#434 PR: a custom
+    /// <see cref="ISandboxExecutor"/> (a template extensibility seam) violating its own
+    /// non-nullable <c>ExecuteAsync</c> contract used to force-unwrap the null result into
+    /// <c>VerifyAttestationAsync</c> — an unhandled <see cref="NullReferenceException"/> on the main
+    /// plan-execution path, unlike the graceful, stable-error-code failure every other sandbox fault
+    /// here already produces.
+    /// </summary>
+    [Fact]
+    public async Task ExecuteAsync_ExecutorReturnsNull_ReturnsFailedInsteadOfThrowing()
+    {
+        var config = new ToolUseConfig { ToolName = "file_system" };
+        var step = CreateStep(config);
+
+        _sandboxExecutor.Setup(s => s.ExecuteAsync(It.IsAny<SandboxExecutionRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((SandboxExecutionResult)null!);
+
+        var result = await _sut.ExecuteAsync(step, new Dictionary<PlanStepId, string>(), CancellationToken.None);
+
+        Assert.Equal(StepExecutionStatus.Failed, result.Status);
+        Assert.Equal(PlanStepErrors.SandboxFailed, result.ErrorMessage);
+    }
+
     [Fact]
     public async Task ExecuteAsync_FailedExecution_DoesNotLeakSandboxErrorText()
     {

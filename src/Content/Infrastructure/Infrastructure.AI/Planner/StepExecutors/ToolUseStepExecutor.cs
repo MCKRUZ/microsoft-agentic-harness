@@ -140,7 +140,23 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
         var executor = _serviceProvider.GetRequiredKeyedService<ISandboxExecutor>(isolationLevel);
         try
         {
-            return (await executor.ExecuteAsync(request, ct), null);
+            var result = await executor.ExecuteAsync(request, ct);
+
+            // #425-class guard, this call site found by /code-review on that fix: ISandboxExecutor's
+            // non-nullable return is a compile-time contract only — a custom executor (a template
+            // extensibility seam) can still violate it at runtime. Without this check a null flowed
+            // straight past the sandboxFailure-null check in ExecuteStepAsync and into
+            // VerifyAttestationAsync's forced `sandboxResult!` unwrap, an unhandled
+            // NullReferenceException on the main plan-execution path. Throwing routes it through this
+            // method's own catch below instead, which already reports EscalationExecutionStatus.Failed
+            // with the stable PlanStepErrors.SandboxFailed code — the same graceful-degradation path
+            // every other sandbox fault here takes.
+            if (result is null)
+                throw new InvalidOperationException(
+                    $"ISandboxExecutor.ExecuteAsync returned null in violation of its non-nullable contract " +
+                    $"(executor: {executor.GetType().Name}).");
+
+            return (result, null);
         }
         catch (OperationCanceledException)
         {

@@ -188,14 +188,20 @@ public sealed class DockerSandboxExecutor : ISandboxExecutor
     /// </summary>
     /// <remarks>
     /// #434: always the hard-refusal, attested outcome, never the softer "caller may fall back"
-    /// suggestion. This class is registered exclusively under the <c>Container</c> keyed-DI slot
-    /// (see <c>RegisterSandboxServices</c>), so by the time this method runs, container isolation
-    /// was already required to reach it — re-deriving that fact from
+    /// suggestion. Every first-party caller reaches this class only through the <c>Container</c>
+    /// keyed-DI slot (see <c>RegisterSandboxServices</c>), so by the time this method runs on any of
+    /// those paths, container isolation was already required to reach it — re-deriving that fact from
     /// <c>request.PermissionProfile.MinimumIsolation</c> re-trusted a caller-controlled field for
-    /// something the DI key already guarantees structurally, and the soft-fallback branch that field
-    /// used to select was unreachable from any first-party caller as of #420. A template consumer
-    /// wanting a genuine process-isolation fallback should resolve <see cref="ProcessSandboxExecutor"/>
-    /// directly rather than relying on this executor to downgrade itself.
+    /// something the keyed resolution path already guarantees, and the soft-fallback branch that field
+    /// used to select was unreachable from any first-party caller as of #420.
+    /// <c>RegisterSandboxServices</c> also registers this class unkeyed
+    /// (<c>services.AddScoped&lt;DockerSandboxExecutor&gt;()</c>, needed internally by the keyed
+    /// factory lambda itself) — nothing in DI stops a future consumer from injecting the concrete
+    /// type directly and reaching this now-unconditional refusal with an un-elevated profile, so the
+    /// keyed slot is a strong convention this codebase follows, not a compile-time guarantee. A
+    /// template consumer wanting a genuine process-isolation fallback should resolve
+    /// <see cref="ProcessSandboxExecutor"/> directly rather than relying on this executor to downgrade
+    /// itself.
     /// </remarks>
     private async Task<SandboxExecutionResult> HandleDockerUnavailableAsync(
         SandboxExecutionRequest request, CancellationToken ct)

@@ -218,6 +218,35 @@ public sealed class WorkspaceRunCommandsToolTests
     }
 
     /// <summary>
+    /// Regression test, found by /code-review on the #425/#434 PR: a custom
+    /// <see cref="ISandboxExecutor"/> (a template extensibility seam) violating its own
+    /// non-nullable <c>ExecuteAsync</c> contract used to reach
+    /// <c>WorkspaceCommandRunner.DispatchAsync</c>'s unguarded <c>sandboxResult.ExitCode</c>
+    /// dereference as an unhandled <see cref="NullReferenceException"/>, caught only by
+    /// <c>RunAsync</c>'s outer catch and degraded to a generic message rather than the specific,
+    /// stable failure this tool's own dispatch-time faults otherwise avoid leaking.
+    /// </summary>
+    [Fact]
+    public async Task RunTests_ExecutorReturnsNull_ReturnsFailureInsteadOfThrowing()
+    {
+        using var fx = new WorkspaceTestFixture(testCommand: "dotnet test");
+        var sut = new WorkspaceRunTestsTool(
+            fx.Accessor, TestScopeFactory.ForSandbox(new NullReturningSandbox()), NullLogger<WorkspaceRunTestsTool>.Instance);
+
+        var result = await sut.ExecuteAsync("run", new Dictionary<string, object?>());
+
+        result.Success.Should().BeFalse(
+            "a sandbox executor violating its non-nullable contract must not throw out of ExecuteAsync uncaught");
+    }
+
+    /// <summary>Fake <see cref="ISandboxExecutor"/> that violates its own non-nullable return contract.</summary>
+    private sealed class NullReturningSandbox : ISandboxExecutor
+    {
+        public Task<SandboxExecutionResult> ExecuteAsync(SandboxExecutionRequest request, CancellationToken ct)
+            => Task.FromResult<SandboxExecutionResult>(null!);
+    }
+
+    /// <summary>
     /// Recording fake <see cref="ISandboxExecutor"/>. Captures every
     /// <see cref="SandboxExecutionRequest"/> for assertion and returns a
     /// preconfigured result. No actual process is spawned.
