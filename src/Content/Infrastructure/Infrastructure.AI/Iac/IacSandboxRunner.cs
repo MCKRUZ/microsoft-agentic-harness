@@ -1,3 +1,4 @@
+using Application.AI.Common.Extensions;
 using Application.AI.Common.Interfaces.Sandbox;
 using Application.AI.Common.Services.Sandbox;
 using Domain.AI.Sandbox;
@@ -203,22 +204,14 @@ public static class IacSandboxRunner
             EgressPrecheckTargets = BuildEgressPrecheckTargets(registryAllowlist)
         };
 
-        var executionResult = await executor.ExecuteAsync(request, cancellationToken).ConfigureAwait(false);
-
-        // #425: ISandboxExecutor.ExecuteAsync's non-nullable return type is a compile-time contract
-        // only — a template consumer's own executor implementation, or an unconfigured test double,
-        // can still violate it at runtime. Result<T>.Success has no null-guard (by design: several
-        // legitimate call sites elsewhere wrap a nullable-by-design T), so without this explicit check
-        // a violated contract here would silently become Result<SandboxExecutionResult>.Success(null)
-        // — a confidently "successful" result that defers the failure to whatever caller eventually
-        // dereferences .Value!, far from where the null actually originated. Throwing routes it through
-        // this method's own catch block instead, producing the same stable-failure-code Result.Fail
+        // #425: Result<T>.Success has no null-guard (by design: several legitimate call sites
+        // elsewhere wrap a nullable-by-design T), so a violated ISandboxExecutor contract here would
+        // silently become Result<SandboxExecutionResult>.Success(null) — a confidently "successful"
+        // result that defers the failure to whatever caller eventually dereferences .Value!, far from
+        // where the null actually originated. ExecuteNonNullAsync throws instead, routing it through
+        // this method's own catch block, which produces the same stable-failure-code Result.Fail
         // every other dispatch-time fault in this method already returns.
-        if (executionResult is null)
-            throw new InvalidOperationException(
-                $"ISandboxExecutor.ExecuteAsync returned null in violation of its non-nullable contract " +
-                $"(executor: {executor.GetType().Name}).");
-
+        var executionResult = await executor.ExecuteNonNullAsync(request, cancellationToken).ConfigureAwait(false);
         return Result<SandboxExecutionResult>.Success(executionResult);
     }
 

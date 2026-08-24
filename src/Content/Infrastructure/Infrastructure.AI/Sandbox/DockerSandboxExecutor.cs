@@ -187,21 +187,12 @@ public sealed class DockerSandboxExecutor : ISandboxExecutor
     /// Refuses execution when the Docker daemon is unavailable.
     /// </summary>
     /// <remarks>
-    /// #434: always the hard-refusal, attested outcome, never the softer "caller may fall back"
-    /// suggestion. Every first-party caller reaches this class only through the <c>Container</c>
-    /// keyed-DI slot (see <c>RegisterSandboxServices</c>), so by the time this method runs on any of
-    /// those paths, container isolation was already required to reach it — re-deriving that fact from
-    /// <c>request.PermissionProfile.MinimumIsolation</c> re-trusted a caller-controlled field for
-    /// something the keyed resolution path already guarantees, and the soft-fallback branch that field
-    /// used to select was unreachable from any first-party caller as of #420.
-    /// <c>RegisterSandboxServices</c> also registers this class unkeyed
-    /// (<c>services.AddScoped&lt;DockerSandboxExecutor&gt;()</c>, needed internally by the keyed
-    /// factory lambda itself) — nothing in DI stops a future consumer from injecting the concrete
-    /// type directly and reaching this now-unconditional refusal with an un-elevated profile, so the
-    /// keyed slot is a strong convention this codebase follows, not a compile-time guarantee. A
-    /// template consumer wanting a genuine process-isolation fallback should resolve
-    /// <see cref="ProcessSandboxExecutor"/> directly rather than relying on this executor to downgrade
-    /// itself.
+    /// #434: always the hard-refusal, attested outcome. <c>request.PermissionProfile.MinimumIsolation</c>
+    /// is deliberately not consulted — every first-party caller already reaches this class through the
+    /// <c>Container</c> keyed-DI slot, so container isolation was already required to get here. Note DI
+    /// also registers this type unkeyed (needed by the keyed factory lambda itself), so the keyed slot
+    /// is convention, not a compile-time guarantee — a consumer wanting a genuine process-isolation
+    /// fallback should resolve <see cref="ProcessSandboxExecutor"/> directly.
     /// </remarks>
     private async Task<SandboxExecutionResult> HandleDockerUnavailableAsync(
         SandboxExecutionRequest request, CancellationToken ct)
@@ -212,14 +203,13 @@ public sealed class DockerSandboxExecutor : ISandboxExecutor
 
         var attestation = await _attestationService.SignAsync(
             Domain.AI.Attestation.AttestationRequest.Failure(
-                request.ToolName, request.Input,
-                "Container isolation required but Docker is unavailable"),
+                request.ToolName, request.Input, DockerUnavailableRefusal.Message),
             ct);
 
         return new SandboxExecutionResult
         {
             Success = false,
-            ErrorMessage = "Container isolation required but Docker is unavailable. Cannot downgrade to process isolation.",
+            ErrorMessage = DockerUnavailableRefusal.Message,
             Attestation = attestation
         };
     }

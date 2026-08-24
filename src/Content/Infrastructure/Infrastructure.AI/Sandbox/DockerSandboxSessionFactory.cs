@@ -65,26 +65,16 @@ public sealed class DockerSandboxSessionFactory(
             return await attestationSigner.RejectAsync(request, egress.ErrorMessage!, ct, egress.Digest);
 
         if (!await dockerAvailableTask)
-            return await HandleDockerUnavailableAsync(request, egress.Digest, ct);
+        {
+            // #434: always the hard-refusal, attested outcome — matches DockerSandboxExecutor's
+            // identical fix, including its remarks on the unkeyed AddScoped registration that also
+            // exists in DI alongside the keyed slot every first-party caller actually uses.
+            // request.PermissionProfile.MinimumIsolation is deliberately not consulted.
+            return await attestationSigner.RejectAsync(request, DockerUnavailableRefusal.Message, ct, egress.Digest);
+        }
 
         return await StartContainerSessionAsync(request, egress.Digest, ct);
     }
-
-    /// <summary>
-    /// Refuses session start when the Docker daemon is unavailable.
-    /// </summary>
-    /// <remarks>
-    /// #434: always the hard-refusal, attested outcome — matches
-    /// <see cref="DockerSandboxExecutor"/>'s identical fix, including that fix's remarks on the
-    /// unkeyed <c>AddScoped</c> registration that also exists in DI alongside the keyed slot every
-    /// first-party caller actually uses.
-    /// </remarks>
-    private async Task<Result<ISandboxSession>> HandleDockerUnavailableAsync(
-        SandboxSessionRequest request, string? egressDigest, CancellationToken ct)
-        => await attestationSigner.RejectAsync(
-            request,
-            "Container isolation required but Docker is unavailable. Cannot downgrade to process isolation.",
-            ct, egressDigest);
 
     private async Task<Result<ISandboxSession>> StartContainerSessionAsync(
         SandboxSessionRequest request, string? egressDigest, CancellationToken ct)

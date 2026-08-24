@@ -1,3 +1,4 @@
+using Application.AI.Common.Extensions;
 using Application.AI.Common.Interfaces.Sandbox;
 using Application.AI.Common.Services.Sandbox;
 using Domain.AI.Models;
@@ -169,17 +170,11 @@ public static class WorkspaceCommandRunner
             Timeout = timeout ?? TimeSpan.FromMinutes(5)
         };
 
-        var sandboxResult = await executor.ExecuteAsync(request, cancellationToken).ConfigureAwait(false);
-
-        // Same #425-class guard as IacSandboxRunner.RunAsync (this runner's own remarks above note the
-        // two independently copy-pasted the same resolve-then-select sequence): a custom ISandboxExecutor
-        // violating its non-nullable contract used to dereference sandboxResult.ExitCode/.Success below
-        // as an unguarded NullReferenceException instead of the specific, stable-error-code failure every
-        // other dispatch-time fault in this method already returns via the catch in RunAsync.
-        if (sandboxResult is null)
-            throw new InvalidOperationException(
-                $"ISandboxExecutor.ExecuteAsync returned null in violation of its non-nullable contract " +
-                $"(executor: {executor.GetType().Name}).");
+        // ExecuteNonNullAsync guards a custom ISandboxExecutor violating its non-nullable contract —
+        // without it, sandboxResult.ExitCode/.Success below was an unguarded NullReferenceException
+        // caught only by RunAsync's outer catch, degrading to a generic message instead of the
+        // specific, stable-error-code failure every other dispatch-time fault in this method returns.
+        var sandboxResult = await executor.ExecuteNonNullAsync(request, cancellationToken).ConfigureAwait(false);
 
         var summary =
             $"exit={sandboxResult.ExitCode?.ToString() ?? "n/a"} success={sandboxResult.Success}\n" +
