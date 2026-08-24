@@ -34,6 +34,10 @@ public sealed class HarnessAgentInvoker : IAgentInvoker
     private const string DeploymentKey = "deployment";
     private const string TemperatureKey = "temperature";
 
+    /// <inheritdoc />
+    public IReadOnlySet<string> RecognizedOverrideKeys { get; } =
+        new HashSet<string> { AgentNameKey, SystemPromptKey, DeploymentKey, TemperatureKey };
+
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly ILogger<HarnessAgentInvoker> _logger;
 

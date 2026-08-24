@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using Application.AI.Common.Evaluation.Interfaces;
 using Application.AI.Common.Evaluation.Models;
 using Domain.AI.Evaluation;
@@ -268,5 +269,61 @@ public sealed class EvalRunnerTests
         invoker = new Mock<IAgentInvoker>(MockBehavior.Strict);
         metrics = [new Infrastructure.AI.Evaluation.Metrics.ExactMatchMetric()];
         return new EvalRunner(invoker.Object, metrics, NullLogger<EvalRunner>.Instance);
+    }
+
+    /// <summary>
+    /// #437: EvalRunner now validates every case's declared parameter/override keys against the
+    /// resolved metric's/invoker's own declared recognized sets, surfacing a mismatch as a
+    /// report-level Warning — the same protection MetricSpecParameterKeyValidationTests gives the
+    /// repo's own checked-in eval-datasets, but for any dataset a real run actually processes.
+    /// </summary>
+    [Fact]
+    public async Task RunAsync_UnrecognizedMetricParameterKey_AddsReportWarning()
+    {
+        var sut = BuildSut(out var invoker, out _);
+        invoker.Setup(i => i.InvokeAsync(It.IsAny<EvalCase>(), It.IsAny<IReadOnlyDictionary<string, string>?>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+               .ReturnsAsync(new AgentInvocationResult { Success = true, Output = "match" });
+
+        // ExactMatchMetric only recognizes "case_sensitive" (see ExactMatchMetric.RecognizedParameterKeys).
+        var @case = new EvalCase
+        {
+            Id = "c1",
+            Input = "in",
+            ExpectedOutput = "match",
+            MetricSpecs = [new MetricSpec { MetricKey = "exact_match", Parameters = new Dictionary<string, string> { ["case_insensitive"] = "true" } }]
+        };
+
+        var report = await sut.RunAsync([DatasetWith(@case)], new EvalRunOptions(), CancellationToken.None);
+
+        report.Warnings.Should().ContainSingle(w =>
+            w.Contains("c1") && w.Contains("exact_match") && w.Contains("case_insensitive"));
+    }
+
+    /// <summary>#437: same protection, for a case's InvocationOverrides against the resolved invoker's RecognizedOverrideKeys.</summary>
+    [Fact]
+    public async Task RunAsync_UnrecognizedInvocationOverrideKey_AddsReportWarning()
+    {
+        var sut = BuildSut(out var invoker, out _);
+        invoker.Setup(i => i.InvokeAsync(It.IsAny<EvalCase>(), It.IsAny<IReadOnlyDictionary<string, string>?>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+               .ReturnsAsync(new AgentInvocationResult { Success = true, Output = "match" });
+        // Strict mode throws on ANY unconfigured member access, including a C# default-interface-
+        // implementation property — Moq does not fall back to the interface's own default body for a
+        // Strict mock. Every prior EvalRunnerTests case with an empty (default) InvocationOverrides
+        // never actually exercised this property (LINQ's Where short-circuits on an empty source
+        // without invoking the predicate), which is why this only surfaces here.
+        invoker.Setup(i => i.RecognizedOverrideKeys).Returns(ImmutableHashSet<string>.Empty);
+
+        var @case = new EvalCase
+        {
+            Id = "c1",
+            Input = "in",
+            ExpectedOutput = "match",
+            InvocationOverrides = new Dictionary<string, string> { ["scenario"] = "typo" },
+            MetricSpecs = [new MetricSpec { MetricKey = "exact_match" }]
+        };
+
+        var report = await sut.RunAsync([DatasetWith(@case)], new EvalRunOptions(), CancellationToken.None);
+
+        report.Warnings.Should().ContainSingle(w => w.Contains("c1") && w.Contains("scenario"));
     }
 }

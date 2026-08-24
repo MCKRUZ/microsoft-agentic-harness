@@ -64,6 +64,8 @@ public sealed class EvalRunner : IEvalRunner
             .Where(pair => MatchesTagFilter(pair.Case, options.TagFilter))
             .ToList();
 
+        var warnings = ValidateRecognizedKeys(allCases.Select(pair => pair.Case).ToList(), options);
+
         _logger.LogInformation(
             "Eval run {RunId} starting — {DatasetCount} dataset(s), {CaseCount} case(s) after filter, repeats={Repeats}, parallelism={Parallelism}",
             runId, datasets.Count, allCases.Count, options.Repeats, options.Parallelism);
@@ -102,8 +104,78 @@ public sealed class EvalRunner : IEvalRunner
             ErroredCount = errored,
             TotalCostUsd = totalCost,
             Repeats = options.Repeats,
-            OverallVerdict = overallVerdict
+            OverallVerdict = overallVerdict,
+            Warnings = warnings
         };
+    }
+
+    /// <summary>
+    /// Compares every case's declared <see cref="MetricSpec.Parameters"/> and
+    /// <see cref="EvalCase.InvocationOverrides"/> keys against the resolved metric's/invoker's own
+    /// declared <see cref="IEvalMetric.RecognizedParameterKeys"/>/<see cref="IAgentInvoker.RecognizedOverrideKeys"/>,
+    /// surfacing anything unrecognized as a report-level warning.
+    /// </summary>
+    /// <remarks>
+    /// #437: <c>MetricSpecParameterKeyValidationTests</c> (#423) runs this same comparison at build
+    /// time, but only against the repo's own checked-in <c>eval-datasets/**</c> corpus — a template
+    /// consumer's own dataset, loaded and run through <see cref="RunAsync"/> at runtime, got none of
+    /// that protection. This closes the gap for every dataset a real run actually processes, not just
+    /// the ones checked into this repo. Deliberately fail-soft, matching
+    /// <see cref="IEvalMetric.RecognizedParameterKeys"/>'s own documented contract: a typo'd key still
+    /// scores (falling back to whatever default the accessor picks), it just no longer does so
+    /// silently.
+    /// </remarks>
+    private List<string> ValidateRecognizedKeys(IReadOnlyList<EvalCase> cases, EvalRunOptions options)
+    {
+        var warnings = new List<string>();
+
+        var unrecognizedRunLevelOverrides = (options.InvocationOverrides?.Keys ?? [])
+            .Where(k => !_invoker.RecognizedOverrideKeys.Contains(k))
+            .ToList();
+        if (unrecognizedRunLevelOverrides.Count > 0)
+        {
+            var warning =
+                $"Run-level invocation override key(s) {string.Join(", ", unrecognizedRunLevelOverrides.Select(k => $"'{k}'"))} " +
+                $"not recognized by {_invoker.GetType().Name} (recognized: {string.Join(", ", _invoker.RecognizedOverrideKeys)}).";
+            warnings.Add(warning);
+            _logger.LogWarning("{Warning}", warning);
+        }
+
+        foreach (var @case in cases)
+        {
+            var unrecognizedOverrides = @case.InvocationOverrides.Keys
+                .Where(k => !_invoker.RecognizedOverrideKeys.Contains(k))
+                .ToList();
+            if (unrecognizedOverrides.Count > 0)
+            {
+                var warning =
+                    $"Case '{@case.Id}': invocation override key(s) {string.Join(", ", unrecognizedOverrides.Select(k => $"'{k}'"))} " +
+                    $"not recognized by {_invoker.GetType().Name} (recognized: {string.Join(", ", _invoker.RecognizedOverrideKeys)}).";
+                warnings.Add(warning);
+                _logger.LogWarning("{Warning}", warning);
+            }
+
+            foreach (var spec in @case.MetricSpecs)
+            {
+                if (!_metricsByKey.TryGetValue(spec.MetricKey, out var metric))
+                    continue; // Reported separately when the case is actually scored.
+
+                var unrecognizedParams = spec.Parameters.Keys
+                    .Where(k => !metric.RecognizedParameterKeys.Contains(k))
+                    .ToList();
+                if (unrecognizedParams.Count == 0)
+                    continue;
+
+                var warning =
+                    $"Case '{@case.Id}', metric '{spec.MetricKey}': parameter key(s) " +
+                    $"{string.Join(", ", unrecognizedParams.Select(k => $"'{k}'"))} not recognized " +
+                    $"(recognized: {string.Join(", ", metric.RecognizedParameterKeys)}).";
+                warnings.Add(warning);
+                _logger.LogWarning("{Warning}", warning);
+            }
+        }
+
+        return warnings;
     }
 
     private async Task<IReadOnlyList<EvalResult>> RunSequentialAsync(

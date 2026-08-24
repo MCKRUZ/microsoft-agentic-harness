@@ -29,6 +29,9 @@ public sealed class TaskComplexityRouterProbe : IRouterEvalProbe
 {
     private const string ToolCountParameter = "tool_count";
 
+    /// <inheritdoc />
+    public IReadOnlySet<string> RecognizedOverrideKeys { get; } = new HashSet<string> { ToolCountParameter };
+
     private readonly ITaskComplexityClassifier _classifier;
 
     /// <summary>
