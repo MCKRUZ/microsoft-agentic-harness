@@ -36,10 +36,15 @@ public static class SandboxIsolationLevelExtensions
     /// </summary>
     /// <remarks>
     /// Callers that embed the result in a sandbox execution request should raise the floor before
-    /// dispatch, not after: <c>DockerSandboxExecutor.HandleDockerUnavailableAsync</c> (Infrastructure
-    /// layer) reads a request's own <c>PermissionProfile.MinimumIsolation</c> to decide whether a
-    /// Docker outage is a hard, attested refusal or a soft, unattested fallback — an un-elevated
-    /// profile can misroute an autonomy-elevated call into the unattested branch (#420).
+    /// dispatch, not after: the attestation signed for every successful or failed run
+    /// (<c>SandboxSessionAttestationSigner</c>, and <c>DockerSandboxExecutor</c>'s equivalent inline
+    /// signing) reads <c>isolation</c> and <c>capabilitiesEnforcedBy</c> straight from the request's
+    /// own <c>PermissionProfile.MinimumIsolation</c> — an un-elevated profile signs a stale, misleading
+    /// isolation tier into the audit record even though the run itself executed at the elevated tier
+    /// (#420). As of #434, a Docker outage is always a hard, attested refusal regardless of this
+    /// field — <c>DockerSandboxExecutor</c>/<c>DockerSandboxSessionFactory</c> are resolved exclusively
+    /// under the <c>Container</c> keyed-DI slot, so container isolation is already guaranteed by the
+    /// time either reads it, and neither branches on it anymore.
     /// </remarks>
     public static ToolPermissionProfile WithMinimumIsolationAtLeast(
         this ToolPermissionProfile profile, SandboxIsolationLevel floor)
