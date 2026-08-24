@@ -204,6 +204,21 @@ public static class IacSandboxRunner
         };
 
         var executionResult = await executor.ExecuteAsync(request, cancellationToken).ConfigureAwait(false);
+
+        // #425: ISandboxExecutor.ExecuteAsync's non-nullable return type is a compile-time contract
+        // only — a template consumer's own executor implementation, or an unconfigured test double,
+        // can still violate it at runtime. Result<T>.Success has no null-guard (by design: several
+        // legitimate call sites elsewhere wrap a nullable-by-design T), so without this explicit check
+        // a violated contract here would silently become Result<SandboxExecutionResult>.Success(null)
+        // — a confidently "successful" result that defers the failure to whatever caller eventually
+        // dereferences .Value!, far from where the null actually originated. Throwing routes it through
+        // this method's own catch block instead, producing the same stable-failure-code Result.Fail
+        // every other dispatch-time fault in this method already returns.
+        if (executionResult is null)
+            throw new InvalidOperationException(
+                $"ISandboxExecutor.ExecuteAsync returned null in violation of its non-nullable contract " +
+                $"(executor: {executor.GetType().Name}).");
+
         return Result<SandboxExecutionResult>.Success(executionResult);
     }
 

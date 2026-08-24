@@ -70,22 +70,23 @@ public sealed class DockerSandboxSessionFactory(
         return await StartContainerSessionAsync(request, egress.Digest, ct);
     }
 
+    /// <summary>
+    /// Refuses session start when the Docker daemon is unavailable.
+    /// </summary>
+    /// <remarks>
+    /// #434: always the hard-refusal, attested outcome — matches
+    /// <see cref="DockerSandboxExecutor"/>'s identical fix. This factory is registered exclusively
+    /// under the <c>Container</c> keyed-DI slot, so container isolation was already required to
+    /// reach it; re-deriving that from <c>request.PermissionProfile.MinimumIsolation</c> re-trusted
+    /// a caller-controlled field for something the DI key already guarantees structurally, and the
+    /// soft-fallback branch that field used to select was unreachable from any first-party caller.
+    /// </remarks>
     private async Task<Result<ISandboxSession>> HandleDockerUnavailableAsync(
         SandboxSessionRequest request, string? egressDigest, CancellationToken ct)
-    {
-        var isRequired = request.PermissionProfile.MinimumIsolation == SandboxIsolationLevel.Container;
-        if (isRequired)
-        {
-            // Matches DockerSandboxExecutor: only the "required" branch is attested — the softer
-            // fallback-suggestion branch below is a hint to the caller, not a security refusal.
-            return await attestationSigner.RejectAsync(
-                request,
-                "Container isolation required but Docker is unavailable. Cannot downgrade to process isolation.",
-                ct, egressDigest);
-        }
-
-        return Result<ISandboxSession>.Fail("Docker unavailable. Consider fallback to process isolation.");
-    }
+        => await attestationSigner.RejectAsync(
+            request,
+            "Container isolation required but Docker is unavailable. Cannot downgrade to process isolation.",
+            ct, egressDigest);
 
     private async Task<Result<ISandboxSession>> StartContainerSessionAsync(
         SandboxSessionRequest request, string? egressDigest, CancellationToken ct)
