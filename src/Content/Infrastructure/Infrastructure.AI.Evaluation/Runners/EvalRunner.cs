@@ -138,9 +138,10 @@ public sealed class EvalRunner : IEvalRunner
     /// not checking at all for exactly the class of bug this validation exists to catch.
     /// </para>
     /// </remarks>
-    private List<string> ValidateRecognizedKeys(IEnumerable<EvalCase> cases)
+    private IReadOnlyList<string> ValidateRecognizedKeys(IEnumerable<EvalCase> cases)
     {
         var warnings = new List<string>();
+        var invokerName = _invoker.GetType().Name;
 
         foreach (var @case in cases)
         {
@@ -148,7 +149,8 @@ public sealed class EvalRunner : IEvalRunner
                 warnings,
                 @case.InvocationOverrides.Keys,
                 _invoker.RecognizedOverrideKeys,
-                $"Case '{@case.Id}': invocation override key(s) {{0}} not recognized by {_invoker.GetType().Name} (recognized: {{1}}).");
+                $"Case '{@case.Id}': invocation override",
+                invokerName);
 
             foreach (var spec in @case.MetricSpecs)
             {
@@ -159,7 +161,8 @@ public sealed class EvalRunner : IEvalRunner
                     warnings,
                     spec.Parameters.Keys,
                     metric.RecognizedParameterKeys,
-                    $"Case '{@case.Id}', metric '{spec.MetricKey}': parameter key(s) {{0}} not recognized (recognized: {{1}}).");
+                    $"Case '{@case.Id}', metric '{spec.MetricKey}': parameter",
+                    spec.MetricKey);
             }
         }
 
@@ -168,24 +171,40 @@ public sealed class EvalRunner : IEvalRunner
 
     /// <summary>
     /// Shared by every <see cref="ValidateRecognizedKeys"/> comparison: if any of
-    /// <paramref name="declaredKeys"/> is absent from <paramref name="recognizedKeys"/>, formats
-    /// <paramref name="messageTemplate"/> (with <c>{0}</c> the quoted unrecognized keys and
-    /// <c>{1}</c> the quoted recognized keys) and adds it to <paramref name="warnings"/> and the log.
+    /// <paramref name="declaredKeys"/> is absent from <paramref name="recognizedKeys"/>, adds a
+    /// warning naming the unrecognized key(s) to <paramref name="warnings"/> and the log.
     /// </summary>
+    /// <param name="subject">The already-formatted lead-in, e.g. <c>"Case 'c1': invocation override"</c>.</param>
+    /// <param name="owner">The name of the thing that declares <paramref name="recognizedKeys"/> (an invoker type name or a metric key), reported so the warning is actionable.</param>
+    /// <remarks>
+    /// Builds no string at all when nothing is unrecognized — the common case for a clean dataset —
+    /// and never round-trips through <see cref="string.Format(string, object?, object?)"/> on a
+    /// caller-supplied template: <paramref name="subject"/> already carries interpolated,
+    /// YAML-author-supplied text (a case ID, a metric key) that could itself contain <c>{</c>/<c>}</c>,
+    /// which a <c>string.Format</c> template built from it would throw on (found by /simplify —
+    /// independently, by both the efficiency and simplification angles) — exactly the kind of crash
+    /// this fail-soft validation path must never cause.
+    /// </remarks>
     private void AddUnrecognizedKeyWarning(
         List<string> warnings,
         IEnumerable<string> declaredKeys,
         IReadOnlySet<string> recognizedKeys,
-        string messageTemplate)
+        string subject,
+        string owner)
     {
-        var unrecognized = declaredKeys.Where(k => !recognizedKeys.Contains(k)).ToList();
-        if (unrecognized.Count == 0)
+        List<string>? unrecognized = null;
+        foreach (var key in declaredKeys)
+        {
+            if (!recognizedKeys.Contains(key))
+                (unrecognized ??= []).Add(key);
+        }
+
+        if (unrecognized is null)
             return;
 
-        var warning = string.Format(
-            messageTemplate,
-            string.Join(", ", unrecognized.Select(k => $"'{k}'")),
-            string.Join(", ", recognizedKeys));
+        var warning =
+            $"{subject} key(s) {string.Join(", ", unrecognized.Select(k => $"'{k}'"))} " +
+            $"not recognized by {owner} (recognized: {string.Join(", ", recognizedKeys)}).";
         warnings.Add(warning);
         _logger.LogWarning("{Warning}", warning);
     }
