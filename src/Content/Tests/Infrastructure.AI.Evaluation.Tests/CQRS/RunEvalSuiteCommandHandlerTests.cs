@@ -313,6 +313,39 @@ public sealed class RunEvalSuiteCommandHandlerTests : IDisposable
             .Which.Should().Contain("Repeats=25");
     }
 
+    /// <summary>
+    /// Regression test, found by /code-review on the #437 PR: every prior test's <c>MakeReport()</c>
+    /// left <c>Warnings</c> empty, so none of them exercised the branch where the handler's own
+    /// collected warnings (e.g. the repeats-cost warning) AND the runner's own emitted warnings
+    /// (e.g. #437's recognized-key validation) are both non-empty at once. A regression that
+    /// reordered the merge, reverted to overwriting instead of appending, or accidentally
+    /// deduplicated would have passed every other test silently.
+    /// </summary>
+    [Fact]
+    public async Task Preserves_both_handler_and_runner_warnings_when_both_are_present()
+    {
+        var path = CreateFile("a.yaml");
+        var loader = Loader("yaml");
+        var runner = new Mock<IEvalRunner>();
+        runner.Setup(r => r.RunAsync(It.IsAny<IReadOnlyList<EvalDataset>>(), It.IsAny<EvalRunOptions>(), It.IsAny<CancellationToken>()))
+              .ReturnsAsync(MakeReport() with { Warnings = ["runner-emitted warning"] });
+
+        var sut = MakeSut([loader.Object], runner.Object);
+
+        var result = await sut.Handle(
+            new RunEvalSuiteCommand
+            {
+                DatasetPaths = [path],
+                Options = new EvalRunOptions { Repeats = 25 }
+            },
+            CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value!.Warnings.Should().HaveCount(2);
+        result.Value!.Warnings.Should().Contain(w => w.Contains("Repeats=25"));
+        result.Value!.Warnings.Should().Contain("runner-emitted warning");
+    }
+
     [Fact]
     public async Task Does_not_attach_warning_when_repeats_at_or_below_threshold()
     {

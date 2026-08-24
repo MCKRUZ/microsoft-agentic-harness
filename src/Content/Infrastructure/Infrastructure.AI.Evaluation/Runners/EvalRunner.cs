@@ -64,7 +64,7 @@ public sealed class EvalRunner : IEvalRunner
             .Where(pair => MatchesTagFilter(pair.Case, options.TagFilter))
             .ToList();
 
-        var warnings = ValidateRecognizedKeys(allCases.Select(pair => pair.Case).ToList(), options);
+        var warnings = ValidateRecognizedKeys(allCases.Select(pair => pair.Case));
 
         _logger.LogInformation(
             "Eval run {RunId} starting — {DatasetCount} dataset(s), {CaseCount} case(s) after filter, repeats={Repeats}, parallelism={Parallelism}",
@@ -116,6 +116,7 @@ public sealed class EvalRunner : IEvalRunner
     /// surfacing anything unrecognized as a report-level warning.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// #437: <c>MetricSpecParameterKeyValidationTests</c> (#423) runs this same comparison at build
     /// time, but only against the repo's own checked-in <c>eval-datasets/**</c> corpus — a template
     /// consumer's own dataset, loaded and run through <see cref="RunAsync"/> at runtime, got none of
@@ -124,58 +125,69 @@ public sealed class EvalRunner : IEvalRunner
     /// <see cref="IEvalMetric.RecognizedParameterKeys"/>'s own documented contract: a typo'd key still
     /// scores (falling back to whatever default the accessor picks), it just no longer does so
     /// silently.
+    /// </para>
+    /// <para>
+    /// Deliberately does NOT validate <see cref="EvalRunOptions.InvocationOverrides"/> (run-level
+    /// overrides) — correctness-review finding on this PR: <c>RecognizedOverrideKeys</c> describes
+    /// what an invoker/probe reads from a CASE's overrides, not what actually gets merged from
+    /// run-level ones. Only <c>HarnessAgentInvoker.Resolve</c> merges run-level under case-level (its
+    /// own 4 keys); <c>RouterEvalInvoker</c>'s <c>target</c> resolution and every probe's tuning-key
+    /// read look at <c>EvalCase.InvocationOverrides</c> only. Validating run-level overrides against
+    /// the full <c>RecognizedOverrideKeys</c> union would have reported a run-level <c>target</c> or
+    /// probe key as "recognized" while it was actually silently inert — a false negative, worse than
+    /// not checking at all for exactly the class of bug this validation exists to catch.
+    /// </para>
     /// </remarks>
-    private List<string> ValidateRecognizedKeys(IReadOnlyList<EvalCase> cases, EvalRunOptions options)
+    private List<string> ValidateRecognizedKeys(IEnumerable<EvalCase> cases)
     {
         var warnings = new List<string>();
 
-        var unrecognizedRunLevelOverrides = (options.InvocationOverrides?.Keys ?? [])
-            .Where(k => !_invoker.RecognizedOverrideKeys.Contains(k))
-            .ToList();
-        if (unrecognizedRunLevelOverrides.Count > 0)
-        {
-            var warning =
-                $"Run-level invocation override key(s) {string.Join(", ", unrecognizedRunLevelOverrides.Select(k => $"'{k}'"))} " +
-                $"not recognized by {_invoker.GetType().Name} (recognized: {string.Join(", ", _invoker.RecognizedOverrideKeys)}).";
-            warnings.Add(warning);
-            _logger.LogWarning("{Warning}", warning);
-        }
-
         foreach (var @case in cases)
         {
-            var unrecognizedOverrides = @case.InvocationOverrides.Keys
-                .Where(k => !_invoker.RecognizedOverrideKeys.Contains(k))
-                .ToList();
-            if (unrecognizedOverrides.Count > 0)
-            {
-                var warning =
-                    $"Case '{@case.Id}': invocation override key(s) {string.Join(", ", unrecognizedOverrides.Select(k => $"'{k}'"))} " +
-                    $"not recognized by {_invoker.GetType().Name} (recognized: {string.Join(", ", _invoker.RecognizedOverrideKeys)}).";
-                warnings.Add(warning);
-                _logger.LogWarning("{Warning}", warning);
-            }
+            AddUnrecognizedKeyWarning(
+                warnings,
+                @case.InvocationOverrides.Keys,
+                _invoker.RecognizedOverrideKeys,
+                $"Case '{@case.Id}': invocation override key(s) {{0}} not recognized by {_invoker.GetType().Name} (recognized: {{1}}).");
 
             foreach (var spec in @case.MetricSpecs)
             {
                 if (!_metricsByKey.TryGetValue(spec.MetricKey, out var metric))
                     continue; // Reported separately when the case is actually scored.
 
-                var unrecognizedParams = spec.Parameters.Keys
-                    .Where(k => !metric.RecognizedParameterKeys.Contains(k))
-                    .ToList();
-                if (unrecognizedParams.Count == 0)
-                    continue;
-
-                var warning =
-                    $"Case '{@case.Id}', metric '{spec.MetricKey}': parameter key(s) " +
-                    $"{string.Join(", ", unrecognizedParams.Select(k => $"'{k}'"))} not recognized " +
-                    $"(recognized: {string.Join(", ", metric.RecognizedParameterKeys)}).";
-                warnings.Add(warning);
-                _logger.LogWarning("{Warning}", warning);
+                AddUnrecognizedKeyWarning(
+                    warnings,
+                    spec.Parameters.Keys,
+                    metric.RecognizedParameterKeys,
+                    $"Case '{@case.Id}', metric '{spec.MetricKey}': parameter key(s) {{0}} not recognized (recognized: {{1}}).");
             }
         }
 
         return warnings;
+    }
+
+    /// <summary>
+    /// Shared by every <see cref="ValidateRecognizedKeys"/> comparison: if any of
+    /// <paramref name="declaredKeys"/> is absent from <paramref name="recognizedKeys"/>, formats
+    /// <paramref name="messageTemplate"/> (with <c>{0}</c> the quoted unrecognized keys and
+    /// <c>{1}</c> the quoted recognized keys) and adds it to <paramref name="warnings"/> and the log.
+    /// </summary>
+    private void AddUnrecognizedKeyWarning(
+        List<string> warnings,
+        IEnumerable<string> declaredKeys,
+        IReadOnlySet<string> recognizedKeys,
+        string messageTemplate)
+    {
+        var unrecognized = declaredKeys.Where(k => !recognizedKeys.Contains(k)).ToList();
+        if (unrecognized.Count == 0)
+            return;
+
+        var warning = string.Format(
+            messageTemplate,
+            string.Join(", ", unrecognized.Select(k => $"'{k}'")),
+            string.Join(", ", recognizedKeys));
+        warnings.Add(warning);
+        _logger.LogWarning("{Warning}", warning);
     }
 
     private async Task<IReadOnlyList<EvalResult>> RunSequentialAsync(
