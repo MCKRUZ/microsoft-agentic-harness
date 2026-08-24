@@ -1,3 +1,4 @@
+using Application.AI.Common.Extensions;
 using Application.AI.Common.Interfaces.Sandbox;
 using Application.AI.Common.Services.Sandbox;
 using Application.AI.Common.Services.Tools;
@@ -293,5 +294,39 @@ public sealed class IacSandboxRunnerSolutionReviewFixTests
         mapped.Should().NotBeNull();
         mapped!.FailureType.Should().Be(ResultFailureType.Forbidden);
         mapped.Errors.Should().Contain("iac.plan.sandbox_denied");
+    }
+
+    /// <summary>
+    /// Regression test, found by /code-review on the #425/#434 PR: a custom
+    /// <see cref="ISandboxExecutor"/> (a template extensibility seam) violating its own
+    /// non-nullable <c>ExecuteAsync</c> contract used to flow straight into
+    /// <c>Result&lt;SandboxExecutionResult&gt;.Success(null)</c>, a confidently "successful" result
+    /// masking a contract violation until some later, unrelated caller dereferenced <c>.Value!</c>.
+    /// <c>IacSandboxRunner.RunAsync</c> now rejects a null executor result explicitly via
+    /// <see cref="SandboxExecutorExtensions.ExecuteNonNullAsync"/>, turning it into the same stable
+    /// <see cref="Result{T}.Fail"/> outcome every other dispatch-time fault in that method already
+    /// produces.
+    /// </summary>
+    [Fact]
+    public async Task RunAsync_ExecutorReturnsNull_ReturnsFailInsteadOfSuccessWithNullValue()
+    {
+        var result = await IacSandboxRunner.RunAsync(
+            program: "terraform",
+            arguments: ["init"],
+            moduleDirectory: ModuleDir,
+            registryAllowlist: [],
+            scopeFactory: TestScopeFactory.ForSandbox(new NullReturningSandboxExecutor()),
+            defaultIsolationLevel: SandboxIsolationLevel.Process,
+            toolName: "terraform_plan",
+            requiredCapabilities: IacPlanTool.RequiredSandboxCapabilities,
+            logger: NullLogger.Instance,
+            backendLabel: "Terraform");
+
+        // Old behavior: this was IsSuccess = true with Value = null — a confidently "successful"
+        // Result masking the contract violation. RunAsync's catch-all deliberately reports only the
+        // exception type name (never ex.Message, which can embed internal detail) — matching every
+        // other dispatch-time fault this method already returns via Result.Fail.
+        result.IsSuccess.Should().BeFalse();
+        result.Errors.Should().ContainSingle(e => e.Contains(nameof(InvalidOperationException)));
     }
 }

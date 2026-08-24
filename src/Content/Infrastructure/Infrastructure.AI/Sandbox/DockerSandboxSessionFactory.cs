@@ -65,26 +65,15 @@ public sealed class DockerSandboxSessionFactory(
             return await attestationSigner.RejectAsync(request, egress.ErrorMessage!, ct, egress.Digest);
 
         if (!await dockerAvailableTask)
-            return await HandleDockerUnavailableAsync(request, egress.Digest, ct);
-
-        return await StartContainerSessionAsync(request, egress.Digest, ct);
-    }
-
-    private async Task<Result<ISandboxSession>> HandleDockerUnavailableAsync(
-        SandboxSessionRequest request, string? egressDigest, CancellationToken ct)
-    {
-        var isRequired = request.PermissionProfile.MinimumIsolation == SandboxIsolationLevel.Container;
-        if (isRequired)
         {
-            // Matches DockerSandboxExecutor: only the "required" branch is attested — the softer
-            // fallback-suggestion branch below is a hint to the caller, not a security refusal.
-            return await attestationSigner.RejectAsync(
-                request,
-                "Container isolation required but Docker is unavailable. Cannot downgrade to process isolation.",
-                ct, egressDigest);
+            // #434: always the hard-refusal, attested outcome — matches DockerSandboxExecutor's
+            // identical fix, including its remarks on the unkeyed AddScoped registration that also
+            // exists in DI alongside the keyed slot every first-party caller actually uses.
+            // request.PermissionProfile.MinimumIsolation is deliberately not consulted.
+            return await attestationSigner.RejectAsync(request, DockerUnavailableRefusal.Message, ct, egress.Digest);
         }
 
-        return Result<ISandboxSession>.Fail("Docker unavailable. Consider fallback to process isolation.");
+        return await StartContainerSessionAsync(request, egress.Digest, ct);
     }
 
     private async Task<Result<ISandboxSession>> StartContainerSessionAsync(

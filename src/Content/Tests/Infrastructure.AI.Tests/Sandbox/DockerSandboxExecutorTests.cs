@@ -217,8 +217,16 @@ public class DockerSandboxExecutorTests
             It.IsAny<CreateContainerParameters>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
+    /// <summary>
+    /// #434: <see cref="DockerSandboxExecutor"/> no longer consults
+    /// <c>PermissionProfile.MinimumIsolation</c> at all — the hard-refusal, attested outcome is
+    /// unconditional. This deliberately constructs a request whose <c>MinimumIsolation</c> claims
+    /// <c>Process</c> (a value that would never occur via the <c>Container</c> keyed-DI slot every
+    /// first-party caller resolves this class through) to prove the executor no longer trusts that
+    /// caller-controlled field for a fact keyed resolution already guarantees on those paths.
+    /// </summary>
     [Fact]
-    public async Task ExecuteAsync_DockerUnavailable_NoMinIsolation_ReturnsUnavailable()
+    public async Task ExecuteAsync_DockerUnavailable_IgnoresPermissionProfileMinimumIsolation_AlwaysRefusesWithAttestation()
     {
         _system.Setup(x => x.PingAsync(It.IsAny<CancellationToken>()))
             .ThrowsAsync(new HttpRequestException("Connection refused"));
@@ -228,8 +236,9 @@ public class DockerSandboxExecutorTests
         var result = await _sut.ExecuteAsync(request, CancellationToken.None);
 
         result.Success.Should().BeFalse();
-        result.ErrorMessage.Should().Contain("Docker unavailable");
-        result.Attestation.Should().BeNull();
+        result.ErrorMessage.Should().Contain("Container isolation required");
+        result.Attestation.Should().NotBeNull();
+        result.Attestation!.IsFailureAttestation.Should().BeTrue();
     }
 
     [Fact]

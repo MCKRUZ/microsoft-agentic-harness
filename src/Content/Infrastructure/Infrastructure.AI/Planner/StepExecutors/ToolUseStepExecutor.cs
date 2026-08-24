@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text.Json;
+using Application.AI.Common.Extensions;
 using Application.AI.Common.Interfaces.Attestation;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Planner;
@@ -140,7 +141,15 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
         var executor = _serviceProvider.GetRequiredKeyedService<ISandboxExecutor>(isolationLevel);
         try
         {
-            return (await executor.ExecuteAsync(request, ct), null);
+            // ExecuteNonNullAsync guards a custom executor (a template extensibility seam) violating
+            // its non-nullable contract, found on this call site by /code-review on the #425 fix:
+            // without it a null flowed past the sandboxFailure-null check below and into
+            // VerifyAttestationAsync's forced `sandboxResult!` unwrap — an unhandled
+            // NullReferenceException on the main plan-execution path. A thrown guard instead routes
+            // into this method's own catch below, which already reports
+            // EscalationExecutionStatus.Failed with the stable PlanStepErrors.SandboxFailed code — the
+            // same graceful-degradation path every other sandbox fault here takes.
+            return (await executor.ExecuteNonNullAsync(request, ct), null);
         }
         catch (OperationCanceledException)
         {

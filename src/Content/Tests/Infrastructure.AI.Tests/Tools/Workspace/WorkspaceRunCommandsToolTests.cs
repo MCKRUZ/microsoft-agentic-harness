@@ -1,4 +1,5 @@
 using Application.AI.Common.Interfaces.Sandbox;
+using Domain.AI.Models;
 using Domain.AI.Sandbox;
 using Domain.Common.Config.AI.Sandbox;
 using FluentAssertions;
@@ -215,6 +216,39 @@ public sealed class WorkspaceRunCommandsToolTests
         result.Success.Should().BeFalse(
             "a DI-resolution failure for ToolPermissionProfileResolver is a sandbox-level error — it " +
             "must not throw out of ExecuteAsync uncaught");
+    }
+
+    /// <summary>
+    /// Regression test, found by /code-review on the #425/#434 PR: a custom
+    /// <see cref="ISandboxExecutor"/> (a template extensibility seam) violating its own
+    /// non-nullable <c>ExecuteAsync</c> contract used to reach
+    /// <c>WorkspaceCommandRunner.DispatchAsync</c>'s unguarded <c>sandboxResult.ExitCode</c>
+    /// dereference as an unhandled <see cref="NullReferenceException"/>, caught only by
+    /// <c>RunAsync</c>'s outer catch and degraded to a generic message rather than the specific,
+    /// stable failure this tool's own dispatch-time faults otherwise avoid leaking.
+    /// </summary>
+    /// <remarks>
+    /// Asserts on the exception type name in <see cref="ToolResult.Error"/>, not just
+    /// <c>Success == false</c> — /simplify's altitude pass on this same PR found the weaker
+    /// assertion would pass identically even with the guard reverted, since
+    /// <c>WorkspaceCommandRunner.RunAsync</c>'s pre-existing outer catch already converts a bare
+    /// <see cref="NullReferenceException"/> into a failed <see cref="ToolResult"/> too. Asserting
+    /// the specific exception name proves the guard, not just the pre-existing catch-all.
+    /// </remarks>
+    [Fact]
+    public async Task RunTests_ExecutorReturnsNull_ReturnsFailureInsteadOfThrowing()
+    {
+        using var fx = new WorkspaceTestFixture(testCommand: "dotnet test");
+        var sut = new WorkspaceRunTestsTool(
+            fx.Accessor, TestScopeFactory.ForSandbox(new NullReturningSandboxExecutor()), NullLogger<WorkspaceRunTestsTool>.Instance);
+
+        var result = await sut.ExecuteAsync("run", new Dictionary<string, object?>());
+
+        result.Success.Should().BeFalse(
+            "a sandbox executor violating its non-nullable contract must not throw out of ExecuteAsync uncaught");
+        result.Error.Should().Contain(nameof(InvalidOperationException),
+            "the guard's thrown exception type must reach the caller-visible failure, not just any exception " +
+            "the pre-existing outer catch happened to also handle");
     }
 
     /// <summary>

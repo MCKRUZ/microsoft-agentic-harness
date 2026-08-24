@@ -107,10 +107,11 @@ public sealed class ToolUseStepExecutorSolutionReviewFixTests
         // tool's own profile only declares Process — but the elevated tier must also reach the
         // *embedded* PermissionProfile.MinimumIsolation on the dispatched request, not just select
         // the right keyed executor. SandboxSessionAttestationSigner signs both `isolation` and
-        // `capabilitiesEnforcedBy` from that embedded field on every successful run, and
-        // DockerSandboxExecutor.HandleDockerUnavailableAsync reads the same field to decide whether a
-        // Docker outage is a hard, attested refusal or a soft fallback hint — both misread a stale,
-        // un-elevated profile.
+        // `capabilitiesEnforcedBy` from that embedded field on every successful run, so a stale,
+        // un-elevated profile signs a misleading isolation tier into the audit record even though the
+        // run executed at the elevated tier. (As of #434, DockerSandboxExecutor.HandleDockerUnavailableAsync
+        // no longer reads this field at all — a Docker outage is always a hard, attested refusal,
+        // since the executor is resolved exclusively under the Container keyed-DI slot.)
         _capabilityEnforcer.Setup(c => c.ResolveProfileAsync("shell_tool", It.IsAny<CancellationToken>()))
             .ReturnsAsync(new ToolPermissionProfile
             {

@@ -1,3 +1,4 @@
+using Application.AI.Common.Extensions;
 using Application.AI.Common.Interfaces.Sandbox;
 using Application.AI.Common.Services.Sandbox;
 using Domain.AI.Sandbox;
@@ -203,7 +204,14 @@ public static class IacSandboxRunner
             EgressPrecheckTargets = BuildEgressPrecheckTargets(registryAllowlist)
         };
 
-        var executionResult = await executor.ExecuteAsync(request, cancellationToken).ConfigureAwait(false);
+        // #425: Result<T>.Success has no null-guard (by design: several legitimate call sites
+        // elsewhere wrap a nullable-by-design T), so a violated ISandboxExecutor contract here would
+        // silently become Result<SandboxExecutionResult>.Success(null) — a confidently "successful"
+        // result that defers the failure to whatever caller eventually dereferences .Value!, far from
+        // where the null actually originated. ExecuteNonNullAsync throws instead, routing it through
+        // this method's own catch block, which produces the same stable-failure-code Result.Fail
+        // every other dispatch-time fault in this method already returns.
+        var executionResult = await executor.ExecuteNonNullAsync(request, cancellationToken).ConfigureAwait(false);
         return Result<SandboxExecutionResult>.Success(executionResult);
     }
 

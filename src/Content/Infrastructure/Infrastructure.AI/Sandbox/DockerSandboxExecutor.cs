@@ -183,44 +183,32 @@ public sealed class DockerSandboxExecutor : ISandboxExecutor
         };
     }
 
+    /// <summary>
+    /// Refuses execution when the Docker daemon is unavailable.
+    /// </summary>
+    /// <remarks>
+    /// #434: always the hard-refusal, attested outcome. <c>request.PermissionProfile.MinimumIsolation</c>
+    /// is deliberately not consulted — every first-party caller already reaches this class through the
+    /// <c>Container</c> keyed-DI slot, so container isolation was already required to get here. Note DI
+    /// also registers this type unkeyed (needed by the keyed factory lambda itself), so the keyed slot
+    /// is convention, not a compile-time guarantee — a consumer wanting a genuine process-isolation
+    /// fallback should resolve <see cref="ProcessSandboxExecutor"/> directly.
+    /// </remarks>
     private async Task<SandboxExecutionResult> HandleDockerUnavailableAsync(
         SandboxExecutionRequest request, CancellationToken ct)
     {
-        var isRequired = request.PermissionProfile.MinimumIsolation == SandboxIsolationLevel.Container;
+        _logger.LogError(
+            "Docker unavailable but tool {ToolName} requires container isolation. Refusing execution",
+            request.ToolName);
 
-        if (isRequired)
-        {
-            _logger.LogError(
-                "Docker unavailable but tool {ToolName} requires container isolation. Refusing execution",
-                request.ToolName);
-
-            var attestation = await _attestationService.SignAsync(
-                Domain.AI.Attestation.AttestationRequest.Failure(
-                    request.ToolName, request.Input,
-                    "Container isolation required but Docker is unavailable"),
-                ct);
-
-            return new SandboxExecutionResult
-            {
-                Success = false,
-                ErrorMessage = "Container isolation required but Docker is unavailable. Cannot downgrade to process isolation.",
-                Attestation = attestation
-            };
-        }
-
-        // Unreachable from any first-party caller as of #420: this class is registered exclusively
-        // under the Container keyed-DI slot, so isRequired above is re-deriving from a caller-supplied
-        // field a fact the DI key already proves structurally — every first-party caller now also
-        // syncs an elevated tier into PermissionProfile.MinimumIsolation before embedding it, so
-        // isRequired is always true in practice. #434 tracks removing this branch (and its identical
-        // twin in DockerSandboxSessionFactory) rather than continuing to trust a caller-controlled
-        // field for something the DI key already guarantees.
-        _logger.LogWarning("Docker unavailable for tool {ToolName}. Caller may fall back to process isolation", request.ToolName);
+        var attestation = await SignFailureAsync(
+            request.ToolName, request.Input, DockerUnavailableRefusal.Message, egressDigest: null, ct);
 
         return new SandboxExecutionResult
         {
             Success = false,
-            ErrorMessage = "Docker unavailable. Consider fallback to process isolation."
+            ErrorMessage = DockerUnavailableRefusal.Message,
+            Attestation = attestation
         };
     }
 

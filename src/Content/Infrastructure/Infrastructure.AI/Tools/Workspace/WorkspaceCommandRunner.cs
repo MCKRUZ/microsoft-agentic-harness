@@ -1,3 +1,4 @@
+using Application.AI.Common.Extensions;
 using Application.AI.Common.Interfaces.Sandbox;
 using Application.AI.Common.Services.Sandbox;
 using Domain.AI.Models;
@@ -169,7 +170,14 @@ public static class WorkspaceCommandRunner
             Timeout = timeout ?? TimeSpan.FromMinutes(5)
         };
 
-        var sandboxResult = await executor.ExecuteAsync(request, cancellationToken).ConfigureAwait(false);
+        // ExecuteNonNullAsync guards a custom ISandboxExecutor violating its non-nullable contract.
+        // Both the guarded and unguarded paths reach the same generic message shape via RunAsync's
+        // outer catch (correctness-review finding: an earlier version of this comment overstated the
+        // difference) — what actually improves is which exception type name lands in that message:
+        // InvalidOperationException, naming the real defect (a broken executor contract), instead of
+        // NullReferenceException, which reads as a coding bug in this method rather than in a plugged-in
+        // executor.
+        var sandboxResult = await executor.ExecuteNonNullAsync(request, cancellationToken).ConfigureAwait(false);
 
         var summary =
             $"exit={sandboxResult.ExitCode?.ToString() ?? "n/a"} success={sandboxResult.Success}\n" +
