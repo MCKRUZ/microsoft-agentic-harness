@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using Application.AI.Common.Evaluation.Interfaces;
 using Application.AI.Common.Evaluation.Models;
 using Domain.AI.Evaluation;
@@ -174,10 +175,7 @@ public sealed class EvalRunnerTests
             .ReturnsAsync(JudgedScore(0.5, "repeat-2-clause"))
             .ReturnsAsync(JudgedScore(0.9, "repeat-3-clause"));
 
-        var invoker = new Mock<IAgentInvoker>(MockBehavior.Strict);
-        invoker.Setup(i => i.InvokeAsync(It.IsAny<EvalCase>(), It.IsAny<IReadOnlyDictionary<string, string>?>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new AgentInvocationResult { Success = true, Output = "out" });
-        var sut = new EvalRunner(invoker.Object, [metric.Object], NullLogger<EvalRunner>.Instance);
+        var sut = new EvalRunner(StrictInvokerReturning("out").Object, [metric.Object], NullLogger<EvalRunner>.Instance);
         var dataset = DatasetWith(JudgedCase("c1"));
 
         var report = await sut.RunAsync([dataset], new EvalRunOptions { Repeats = 3 }, CancellationToken.None);
@@ -194,10 +192,7 @@ public sealed class EvalRunnerTests
                 It.IsAny<EvalCase>(), It.IsAny<AgentInvocationResult>(), It.IsAny<MetricSpec>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(JudgedScore(0.8, "clause", ConsensusBucket.Split, spread: 0.3));
 
-        var invoker = new Mock<IAgentInvoker>(MockBehavior.Strict);
-        invoker.Setup(i => i.InvokeAsync(It.IsAny<EvalCase>(), It.IsAny<IReadOnlyDictionary<string, string>?>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new AgentInvocationResult { Success = true, Output = "out" });
-        var sut = new EvalRunner(invoker.Object, [metric.Object], NullLogger<EvalRunner>.Instance);
+        var sut = new EvalRunner(StrictInvokerReturning("out").Object, [metric.Object], NullLogger<EvalRunner>.Instance);
         var dataset = DatasetWith(JudgedCase("c1"));
 
         var report = await sut.RunAsync([dataset], new EvalRunOptions { Repeats = 3 }, CancellationToken.None);
@@ -218,10 +213,7 @@ public sealed class EvalRunnerTests
                 It.IsAny<EvalCase>(), It.IsAny<AgentInvocationResult>(), It.IsAny<MetricSpec>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(JudgedScore(0.8, "clause"));
 
-        var invoker = new Mock<IAgentInvoker>(MockBehavior.Strict);
-        invoker.Setup(i => i.InvokeAsync(It.IsAny<EvalCase>(), It.IsAny<IReadOnlyDictionary<string, string>?>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new AgentInvocationResult { Success = true, Output = "out" });
-        var sut = new EvalRunner(invoker.Object, [metric.Object], NullLogger<EvalRunner>.Instance);
+        var sut = new EvalRunner(StrictInvokerReturning("out").Object, [metric.Object], NullLogger<EvalRunner>.Instance);
         var dataset = DatasetWith(JudgedCase("c1"));
 
         var report = await sut.RunAsync([dataset], new EvalRunOptions { Repeats = 3 }, CancellationToken.None);
@@ -266,7 +258,107 @@ public sealed class EvalRunnerTests
     private static EvalRunner BuildSut(out Mock<IAgentInvoker> invoker, out IReadOnlyList<IEvalMetric> metrics)
     {
         invoker = new Mock<IAgentInvoker>(MockBehavior.Strict);
+        invoker.Setup(i => i.RecognizedOverrideKeys).Returns(ImmutableHashSet<string>.Empty);
         metrics = [new Infrastructure.AI.Evaluation.Metrics.ExactMatchMetric()];
         return new EvalRunner(invoker.Object, metrics, NullLogger<EvalRunner>.Instance);
+    }
+
+    /// <summary>
+    /// A Strict <see cref="IAgentInvoker"/> mock configured with a canned
+    /// <see cref="IAgentInvoker.InvokeAsync"/> response and an empty
+    /// <see cref="IAgentInvoker.RecognizedOverrideKeys"/> — the two members
+    /// every <see cref="EvalRunner.RunAsync"/> call now touches unconditionally (#437's
+    /// <c>ValidateRecognizedKeys</c> reads the latter for every case, not only when
+    /// <see cref="EvalCase.InvocationOverrides"/> is non-empty; Strict mode throws on any
+    /// unconfigured member access, including a C# default-interface-implementation property).
+    /// Shared by every test that needs a custom <see cref="IEvalMetric"/> mock and so cannot use
+    /// <see cref="BuildSut"/> as-is.
+    /// </summary>
+    private static Mock<IAgentInvoker> StrictInvokerReturning(string output)
+    {
+        var invoker = new Mock<IAgentInvoker>(MockBehavior.Strict);
+        invoker.Setup(i => i.InvokeAsync(It.IsAny<EvalCase>(), It.IsAny<IReadOnlyDictionary<string, string>?>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new AgentInvocationResult { Success = true, Output = output });
+        invoker.Setup(i => i.RecognizedOverrideKeys).Returns(ImmutableHashSet<string>.Empty);
+        return invoker;
+    }
+
+    /// <summary>
+    /// #437: EvalRunner now validates every case's declared parameter/override keys against the
+    /// resolved metric's/invoker's own declared recognized sets, surfacing a mismatch as a
+    /// report-level Warning — the same protection MetricSpecParameterKeyValidationTests gives the
+    /// repo's own checked-in eval-datasets, but for any dataset a real run actually processes.
+    /// </summary>
+    [Fact]
+    public async Task RunAsync_UnrecognizedMetricParameterKey_AddsReportWarning()
+    {
+        var sut = BuildSut(out var invoker, out _);
+        invoker.Setup(i => i.InvokeAsync(It.IsAny<EvalCase>(), It.IsAny<IReadOnlyDictionary<string, string>?>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+               .ReturnsAsync(new AgentInvocationResult { Success = true, Output = "match" });
+
+        // ExactMatchMetric only recognizes "case_sensitive" (see ExactMatchMetric.RecognizedParameterKeys).
+        var @case = new EvalCase
+        {
+            Id = "c1",
+            Input = "in",
+            ExpectedOutput = "match",
+            MetricSpecs = [new MetricSpec { MetricKey = "exact_match", Parameters = new Dictionary<string, string> { ["case_insensitive"] = "true" } }]
+        };
+
+        var report = await sut.RunAsync([DatasetWith(@case)], new EvalRunOptions(), CancellationToken.None);
+
+        report.Warnings.Should().ContainSingle(w =>
+            w.Contains("c1") && w.Contains("exact_match") && w.Contains("case_insensitive"));
+    }
+
+    /// <summary>
+    /// Regression test, found by /simplify (efficiency and simplification angles, independently) on
+    /// the #437 PR: the warning builder used to route the case ID through a <c>string.Format</c>
+    /// template built from interpolated, YAML-author-supplied text — a case ID or metric key
+    /// containing a literal <c>{</c> or <c>}</c> would throw <see cref="FormatException"/> from a
+    /// path whose entire purpose is being fail-soft, taking the whole eval run down instead of
+    /// warning.
+    /// </summary>
+    [Fact]
+    public async Task RunAsync_UnrecognizedParameterKey_CaseIdContainsBraces_DoesNotThrow()
+    {
+        var sut = BuildSut(out var invoker, out _);
+        invoker.Setup(i => i.InvokeAsync(It.IsAny<EvalCase>(), It.IsAny<IReadOnlyDictionary<string, string>?>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+               .ReturnsAsync(new AgentInvocationResult { Success = true, Output = "match" });
+
+        var @case = new EvalCase
+        {
+            Id = "c1-{template}",
+            Input = "in",
+            ExpectedOutput = "match",
+            MetricSpecs = [new MetricSpec { MetricKey = "exact_match", Parameters = new Dictionary<string, string> { ["case_insensitive"] = "true" } }]
+        };
+
+        var report = await sut.RunAsync([DatasetWith(@case)], new EvalRunOptions(), CancellationToken.None);
+
+        report.Warnings.Should().ContainSingle(w => w.Contains("c1-{template}"));
+    }
+
+    /// <summary>#437: same protection, for a case's InvocationOverrides against the resolved invoker's RecognizedOverrideKeys.</summary>
+    [Fact]
+    public async Task RunAsync_UnrecognizedInvocationOverrideKey_AddsReportWarning()
+    {
+        var sut = BuildSut(out var invoker, out _);
+        invoker.Setup(i => i.InvokeAsync(It.IsAny<EvalCase>(), It.IsAny<IReadOnlyDictionary<string, string>?>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+               .ReturnsAsync(new AgentInvocationResult { Success = true, Output = "match" });
+
+        // BuildSut's default RecognizedOverrideKeys (empty) is exactly what this test needs.
+        var @case = new EvalCase
+        {
+            Id = "c1",
+            Input = "in",
+            ExpectedOutput = "match",
+            InvocationOverrides = new Dictionary<string, string> { ["scenario"] = "typo" },
+            MetricSpecs = [new MetricSpec { MetricKey = "exact_match" }]
+        };
+
+        var report = await sut.RunAsync([DatasetWith(@case)], new EvalRunOptions(), CancellationToken.None);
+
+        report.Warnings.Should().ContainSingle(w => w.Contains("c1") && w.Contains("scenario"));
     }
 }

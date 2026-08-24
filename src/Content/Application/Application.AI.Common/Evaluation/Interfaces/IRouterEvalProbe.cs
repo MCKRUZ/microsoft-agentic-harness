@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using Application.AI.Common.Evaluation.Models;
 
 namespace Application.AI.Common.Evaluation.Interfaces;
@@ -30,12 +31,26 @@ public interface IRouterEvalProbe
     string Key { get; }
 
     /// <summary>
+    /// The <see cref="Domain.AI.Evaluation.EvalCase.InvocationOverrides"/> tuning keys this probe
+    /// actually reads from <see cref="ClassifyAsync"/>'s <c>parameters</c>. Empty by default — only a
+    /// probe that reads case-author-supplied tuning keys needs to override this.
+    /// </summary>
+    /// <remarks>
+    /// Mirrors <see cref="IEvalMetric.RecognizedParameterKeys"/>/<see cref="IAgentInvoker.RecognizedOverrideKeys"/>
+    /// (#437). <c>RouterEvalInvoker</c> (Infrastructure) unions every registered probe's declared set
+    /// into its own <c>RecognizedOverrideKeys</c>, since which probe a given case's <c>parameters</c>
+    /// actually reach depends on that case's own <c>target</c> override.
+    /// </remarks>
+    IReadOnlySet<string> RecognizedOverrideKeys => ImmutableHashSet<string>.Empty;
+
+    /// <summary>
     /// Runs the wrapped router for one input and returns its decision.
     /// </summary>
     /// <param name="input">The case input — typically the user query or task description.</param>
     /// <param name="parameters">
     /// The case's invocation overrides, passed through verbatim. Probes may read optional tuning
-    /// keys (e.g. <c>tool_count</c> for a router that needs turn context); unknown keys are ignored.
+    /// keys declared via <see cref="RecognizedOverrideKeys"/> (e.g. <c>tool_count</c> for a router
+    /// that needs turn context); unknown keys are ignored.
     /// </param>
     /// <param name="cancellationToken">The cancellation token.</param>
     /// <returns>The router's normalized decision. Implementations should fall back to the router's

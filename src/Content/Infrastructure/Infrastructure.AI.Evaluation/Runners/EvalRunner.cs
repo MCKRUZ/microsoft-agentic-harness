@@ -64,6 +64,8 @@ public sealed class EvalRunner : IEvalRunner
             .Where(pair => MatchesTagFilter(pair.Case, options.TagFilter))
             .ToList();
 
+        var warnings = ValidateRecognizedKeys(allCases.Select(pair => pair.Case));
+
         _logger.LogInformation(
             "Eval run {RunId} starting — {DatasetCount} dataset(s), {CaseCount} case(s) after filter, repeats={Repeats}, parallelism={Parallelism}",
             runId, datasets.Count, allCases.Count, options.Repeats, options.Parallelism);
@@ -102,8 +104,109 @@ public sealed class EvalRunner : IEvalRunner
             ErroredCount = errored,
             TotalCostUsd = totalCost,
             Repeats = options.Repeats,
-            OverallVerdict = overallVerdict
+            OverallVerdict = overallVerdict,
+            Warnings = warnings
         };
+    }
+
+    /// <summary>
+    /// Compares every case's declared <see cref="MetricSpec.Parameters"/> and
+    /// <see cref="EvalCase.InvocationOverrides"/> keys against the resolved metric's/invoker's own
+    /// declared <see cref="IEvalMetric.RecognizedParameterKeys"/>/<see cref="IAgentInvoker.RecognizedOverrideKeys"/>,
+    /// surfacing anything unrecognized as a report-level warning.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// #437: <c>MetricSpecParameterKeyValidationTests</c> (#423) runs this same comparison at build
+    /// time, but only against the repo's own checked-in <c>eval-datasets/**</c> corpus — a template
+    /// consumer's own dataset, loaded and run through <see cref="RunAsync"/> at runtime, got none of
+    /// that protection. This closes the gap for every dataset a real run actually processes, not just
+    /// the ones checked into this repo. Deliberately fail-soft, matching
+    /// <see cref="IEvalMetric.RecognizedParameterKeys"/>'s own documented contract: a typo'd key still
+    /// scores (falling back to whatever default the accessor picks), it just no longer does so
+    /// silently.
+    /// </para>
+    /// <para>
+    /// Deliberately does NOT validate <see cref="EvalRunOptions.InvocationOverrides"/> (run-level
+    /// overrides) — correctness-review finding on this PR: <c>RecognizedOverrideKeys</c> describes
+    /// what an invoker/probe reads from a CASE's overrides, not what actually gets merged from
+    /// run-level ones. Only <c>HarnessAgentInvoker.Resolve</c> merges run-level under case-level (its
+    /// own 4 keys); <c>RouterEvalInvoker</c>'s <c>target</c> resolution and every probe's tuning-key
+    /// read look at <c>EvalCase.InvocationOverrides</c> only. Validating run-level overrides against
+    /// the full <c>RecognizedOverrideKeys</c> union would have reported a run-level <c>target</c> or
+    /// probe key as "recognized" while it was actually silently inert — a false negative, worse than
+    /// not checking at all for exactly the class of bug this validation exists to catch.
+    /// </para>
+    /// </remarks>
+    private IReadOnlyList<string> ValidateRecognizedKeys(IEnumerable<EvalCase> cases)
+    {
+        var warnings = new List<string>();
+        var invokerName = _invoker.GetType().Name;
+
+        foreach (var @case in cases)
+        {
+            AddUnrecognizedKeyWarning(
+                warnings,
+                @case.InvocationOverrides.Keys,
+                _invoker.RecognizedOverrideKeys,
+                $"Case '{@case.Id}': invocation override",
+                invokerName);
+
+            foreach (var spec in @case.MetricSpecs)
+            {
+                if (!_metricsByKey.TryGetValue(spec.MetricKey, out var metric))
+                    continue; // Reported separately when the case is actually scored.
+
+                AddUnrecognizedKeyWarning(
+                    warnings,
+                    spec.Parameters.Keys,
+                    metric.RecognizedParameterKeys,
+                    $"Case '{@case.Id}', metric '{spec.MetricKey}': parameter",
+                    spec.MetricKey);
+            }
+        }
+
+        return warnings;
+    }
+
+    /// <summary>
+    /// Shared by every <see cref="ValidateRecognizedKeys"/> comparison: if any of
+    /// <paramref name="declaredKeys"/> is absent from <paramref name="recognizedKeys"/>, adds a
+    /// warning naming the unrecognized key(s) to <paramref name="warnings"/> and the log.
+    /// </summary>
+    /// <param name="subject">The already-formatted lead-in, e.g. <c>"Case 'c1': invocation override"</c>.</param>
+    /// <param name="owner">The name of the thing that declares <paramref name="recognizedKeys"/> (an invoker type name or a metric key), reported so the warning is actionable.</param>
+    /// <remarks>
+    /// Builds no string at all when nothing is unrecognized — the common case for a clean dataset —
+    /// and never round-trips through <see cref="string.Format(string, object?, object?)"/> on a
+    /// caller-supplied template: <paramref name="subject"/> already carries interpolated,
+    /// YAML-author-supplied text (a case ID, a metric key) that could itself contain <c>{</c>/<c>}</c>,
+    /// which a <c>string.Format</c> template built from it would throw on (found by /simplify —
+    /// independently, by both the efficiency and simplification angles) — exactly the kind of crash
+    /// this fail-soft validation path must never cause.
+    /// </remarks>
+    private void AddUnrecognizedKeyWarning(
+        List<string> warnings,
+        IEnumerable<string> declaredKeys,
+        IReadOnlySet<string> recognizedKeys,
+        string subject,
+        string owner)
+    {
+        List<string>? unrecognized = null;
+        foreach (var key in declaredKeys)
+        {
+            if (!recognizedKeys.Contains(key))
+                (unrecognized ??= []).Add(key);
+        }
+
+        if (unrecognized is null)
+            return;
+
+        var warning =
+            $"{subject} key(s) {string.Join(", ", unrecognized.Select(k => $"'{k}'"))} " +
+            $"not recognized by {owner} (recognized: {string.Join(", ", recognizedKeys)}).";
+        warnings.Add(warning);
+        _logger.LogWarning("{Warning}", warning);
     }
 
     private async Task<IReadOnlyList<EvalResult>> RunSequentialAsync(

@@ -223,11 +223,12 @@ public sealed class RunEvalSuiteCommandHandler : IRequestHandler<RunEvalSuiteCom
 
         var report = await _runner.RunAsync(datasets, request.Options, cancellationToken).ConfigureAwait(false);
 
-        // Attach handler-collected warnings to the report so they survive the dispatch
-        // boundary; runner-emitted reports may not carry their own Warnings list.
+        // Prepend handler-collected warnings ahead of the runner's own (#437: EvalRunner now emits
+        // its own Warnings — recognized-key validation — so this must append rather than overwrite,
+        // or the runner's warnings would be silently discarded).
         if (warnings.Count > 0)
         {
-            report = report with { Warnings = warnings };
+            report = report with { Warnings = [.. warnings, .. report.Warnings] };
         }
 
         return Result<EvalRunReport>.Success(report);

@@ -9,7 +9,9 @@ namespace Presentation.EvalRunner.Tests.Composition;
 
 /// <summary>
 /// Validates every <c>eval-datasets/**/*.yaml</c> case's <c>MetricSpec.Parameters</c> keys against
-/// the resolved metric's own declared <see cref="IEvalMetric.RecognizedParameterKeys"/> (#423).
+/// the resolved metric's own declared <see cref="IEvalMetric.RecognizedParameterKeys"/> (#423), and
+/// each case's <c>InvocationOverrides</c> keys against the resolved invoker's own declared
+/// <see cref="IAgentInvoker.RecognizedOverrideKeys"/> (#437).
 /// </summary>
 /// <remarks>
 /// <see cref="Application.AI.Common.Evaluation.MetricSpecExtensions"/>'s accessors are deliberately
@@ -18,12 +20,15 @@ namespace Presentation.EvalRunner.Tests.Composition;
 /// silently no-op'd or scored inverted for an unknown period, caught only when someone happened to
 /// read the metric source by hand during an unrelated PR review — <c>Verdict.Warn</c> does
 /// not gate CI (per its own doc comment), so nothing automated caught it. This test closes that gap
-/// at build time: every dataset's declared parameters are checked against the metric's own declared
-/// set before any case ever runs.
+/// at build time — for the repo's own checked-in datasets only; <c>EvalRunner</c>'s own
+/// <c>ValidateRecognizedKeys</c> closes the same gap at runtime for any dataset a consumer actually
+/// runs (#437) — checking every dataset's declared keys against the resolved metric's/invoker's own
+/// declared set before any case ever runs.
 /// </remarks>
 public sealed class MetricSpecParameterKeyValidationTests
 {
     private static readonly Lazy<IReadOnlyDictionary<string, IEvalMetric>> MetricsByKey = new(BuildMetricsByKey);
+    private static readonly Lazy<IReadOnlySet<string>> RecognizedOverrideKeys = new(BuildInvoker);
 
     private static IReadOnlyDictionary<string, IEvalMetric> BuildMetricsByKey()
     {
@@ -39,6 +44,19 @@ public sealed class MetricSpecParameterKeyValidationTests
 
         return provider.GetServices<IEvalMetric>()
             .ToDictionary(m => m.Key, StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static IReadOnlySet<string> BuildInvoker()
+    {
+        // The real registered IAgentInvoker (RouterEvalInvoker wrapping HarnessAgentInvoker) — not a
+        // fake — so RecognizedOverrideKeys reflects the actual union every production run checks
+        // InvocationOverrides against (#437). Copied into a plain set before the provider is disposed
+        // (correctness-review finding on the #437 PR: returning the live instance itself would be a
+        // use-after-dispose — harmless while the property is a pre-populated field, but a latent bug
+        // waiting for whichever future change makes it provider-backed instead).
+        var services = EvalRunnerTestComposition.BuildServices();
+        using var provider = services.BuildServiceProvider();
+        return provider.GetRequiredService<IAgentInvoker>().RecognizedOverrideKeys.ToHashSet();
     }
 
     public static IEnumerable<object[]> DatasetFiles()
@@ -98,4 +116,38 @@ public sealed class MetricSpecParameterKeyValidationTests
             "instead of failing the build (#423)");
     }
 
+    /// <summary>
+    /// #437: the same check as <see cref="Every_case_parameter_key_is_recognized_by_its_metric"/>,
+    /// generalized to <see cref="Domain.AI.Evaluation.EvalCase.InvocationOverrides"/> — the same
+    /// free-form, hand-authored, fail-soft-accessed key/value bag <c>MetricSpec.Parameters</c> is,
+    /// parsed from the same YAML files, carrying the identical typo risk.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(DatasetFiles))]
+    public async Task Every_case_invocation_override_key_is_recognized_by_the_invoker(string path)
+    {
+        var recognizedOverrideKeys = RecognizedOverrideKeys.Value;
+        var loader = new YamlEvalDatasetLoader();
+        var dataset = await loader.LoadAsync(path, CancellationToken.None);
+
+        var problems = new List<string>();
+        foreach (var @case in dataset.Cases)
+        {
+            var unrecognized = @case.InvocationOverrides.Keys
+                .Where(k => !recognizedOverrideKeys.Contains(k))
+                .ToList();
+            if (unrecognized.Count > 0)
+            {
+                problems.Add(
+                    $"case '{@case.Id}': unrecognized invocation override key(s) " +
+                    $"{string.Join(", ", unrecognized.Select(k => $"'{k}'"))} " +
+                    $"(recognized: {string.Join(", ", recognizedOverrideKeys)})");
+            }
+        }
+
+        problems.Should().BeEmpty(
+            $"{Path.GetFileName(path)} has case(s) whose InvocationOverrides key the resolved " +
+            "invoker doesn't read — almost certainly a typo that would otherwise silently no-op " +
+            "instead of failing the build (#437)");
+    }
 }

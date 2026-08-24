@@ -114,6 +114,26 @@ public sealed class RouterEvalInvokerTests
         await act.Should().ThrowAsync<OperationCanceledException>();
     }
 
+    /// <summary>
+    /// Regression test, found by correctness-review on the #437 PR: <see cref="RouterEvalInvoker.RecognizedOverrideKeys"/>
+    /// used to union its inner invoker's keys with <c>StringComparer.OrdinalIgnoreCase</c>, but every
+    /// real read of <see cref="EvalCase.InvocationOverrides"/> — this class's own <c>TargetKey</c>
+    /// lookup, and <c>HarnessAgentInvoker.Resolve</c>'s lookups — hits a plain, case-sensitive
+    /// <c>Dictionary&lt;string,string&gt;</c>. A case-insensitive recognized set would report a
+    /// wrong-case key (e.g. <c>Agent_Name</c>) as recognized while the real lookup still silently
+    /// treated it as absent — the exact fail-soft-typo class #437 exists to catch.
+    /// </summary>
+    [Fact]
+    public void RecognizedOverrideKeys_IsCaseSensitive()
+    {
+        var sut = MakeSut(MediatorReturning("x"), new FakeProbe("query_type", _ => Decision("MultiHop")));
+
+        sut.RecognizedOverrideKeys.Should().Contain("agent_name");
+        sut.RecognizedOverrideKeys.Should().NotContain("Agent_Name",
+            "the real lookup HarnessAgentInvoker.Resolve performs is case-sensitive — reporting a " +
+            "wrong-case key as recognized would let a real typo pass validation undetected");
+    }
+
     private static RouterEvalInvoker MakeSut(Mock<IMediator> mediator, params IRouterEvalProbe[] probes)
     {
         var inner = new HarnessAgentInvoker(ScopeFactoryFor(mediator.Object), NullLogger<HarnessAgentInvoker>.Instance);
