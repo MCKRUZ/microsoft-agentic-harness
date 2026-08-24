@@ -61,6 +61,14 @@ public sealed class ToolDiagnosticsMiddleware : DelegatingChatClient
         // observability page, and (when a trace writer is wired) append trace records.
         // AppendFunctionResultTracesAsync null-checks the writer internally, so this
         // must run unconditionally — otherwise RecordToolResult never fires.
+        //
+        // Scans the INBOUND messages, not the response — this middleware sits inside
+        // FunctionInvokingChatClient (confirmed empirically: the first-registered .Use() in
+        // AgentFactory.BuildMiddlewarePipeline is outermost), so a tool this turn actually invoked
+        // has its FunctionResultContent appended to the NEXT round's inbound messages by
+        // FunctionInvokingChatClient's own loop, not to this middleware's own outbound response.
+        // Scanning the response would miss real tool activity entirely — see #249 item 6's PR2 for
+        // the incident this comment exists to prevent repeating.
         await AppendFunctionResultTracesAsync(messages, cancellationToken);
 
         try
@@ -78,6 +86,17 @@ public sealed class ToolDiagnosticsMiddleware : DelegatingChatClient
         }
     }
 
+    /// <remarks>
+    /// Scans the caller's <em>inbound</em> messages, not the response — this is correct given where
+    /// this middleware sits in the pipeline (see the call site's comment), but it means a resumed
+    /// conversation that replays an earlier turn's tool result as history would have that result
+    /// re-recorded here as if it had just happened again. Nothing in this codebase populates tool
+    /// content in replayed conversation history today, so this is currently a dormant defect, not a
+    /// live one. It becomes live the moment #249 item 6 ships replayed tool history, and the fix
+    /// belongs in that work — deduping "genuinely new this turn" from "replayed from an earlier
+    /// turn" needs a signal only that feature's design can provide (this middleware alone cannot
+    /// tell the two apart from message content). Tracked there deliberately, not solved here.
+    /// </remarks>
     private async Task AppendFunctionResultTracesAsync(IEnumerable<ChatMessage> messages, CancellationToken ct)
     {
         var functionResults = messages
