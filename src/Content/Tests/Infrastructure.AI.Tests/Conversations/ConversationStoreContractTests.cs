@@ -660,7 +660,9 @@ public abstract class ConversationStoreContractTests
             "search",
             JsonDocument.Parse("""{"query":"weather"}""").RootElement,
             JsonDocument.Parse("""{"result":["sunny"]}""").RootElement,
-            DurationMs: 42);
+            DurationMs: 42,
+            CallId: "call-1",
+            RoundOrdinal: 0);
         var widget = new WidgetSpec("render_table", JsonDocument.Parse("""{"rows":[1,2]}""").RootElement);
 
         await Store.AppendMessageAsync(
@@ -675,6 +677,8 @@ public abstract class ConversationStoreContractTests
         message.ToolCalls![0].ToolName.Should().Be("search");
         message.ToolCalls[0].DurationMs.Should().Be(42);
         message.ToolCalls[0].Input.GetRawText().Should().Contain("weather");
+        message.ToolCalls[0].CallId.Should().Be("call-1");
+        message.ToolCalls[0].RoundOrdinal.Should().Be(0);
         message.Widget.Should().NotBeNull();
         message.Widget!.Type.Should().Be("render_table");
         message.Widget.Args.GetRawText().Should().Contain("rows");

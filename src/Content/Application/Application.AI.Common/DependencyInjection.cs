@@ -258,6 +258,12 @@ public static class DependencyInjection
         services.AddMemoryCache();
         services.AddSingleton<IAgentConversationCache, Services.AgentConversationCache>();
 
+        // Sanitize/redact/size-tier treatment for tool-call arguments and results persisted for
+        // conversation replay — depends on ICompositeResponseSanitizer/IContentRedactionFilter,
+        // registered by Infrastructure.AI.Governance's own DI setup; resolution is lazy, so
+        // registration order between the two does not matter.
+        services.AddSingleton<Interfaces.IToolCallReplayTreatment, Services.ToolCallReplayTreatment>();
+
         // Ambient bridge so singleton-cached agents' context providers can resolve the current
         // request's scoped services (e.g. tenant-aware IKnowledgeMemory) per invocation.
         services.AddSingleton<Interfaces.IAmbientRequestScope, Services.AmbientRequestScope>();
