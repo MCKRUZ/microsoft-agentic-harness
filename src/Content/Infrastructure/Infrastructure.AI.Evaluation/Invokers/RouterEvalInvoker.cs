@@ -69,7 +69,14 @@ public sealed class RouterEvalInvoker : IAgentInvoker
         _logger = logger;
         _probesByKey = probes.ToDictionary(p => p.Key, StringComparer.OrdinalIgnoreCase);
 
-        var recognized = new HashSet<string>(_inner.RecognizedOverrideKeys, StringComparer.OrdinalIgnoreCase) { TargetKey };
+        // Ordinal (case-sensitive), not OrdinalIgnoreCase: every real read of InvocationOverrides —
+        // this class's own TryGetValue(TargetKey, ...) above, and HarnessAgentInvoker.Resolve's
+        // TryGetValue calls — hits a plain Dictionary<string,string> from YamlEvalDatasetLoader with
+        // the default (ordinal, case-sensitive) comparer. A case-insensitive recognized-set here would
+        // pass a wrong-case key (e.g. "Agent_Name") as recognized while the real case-sensitive lookup
+        // still silently treats it as absent — exactly the fail-soft-typo class #437 exists to catch,
+        // just moved one layer up (correctness-review finding on the #437 PR).
+        var recognized = new HashSet<string>(_inner.RecognizedOverrideKeys, StringComparer.Ordinal) { TargetKey };
         foreach (var probe in _probesByKey.Values)
             recognized.UnionWith(probe.RecognizedOverrideKeys);
         RecognizedOverrideKeys = recognized;

@@ -28,7 +28,7 @@ namespace Presentation.EvalRunner.Tests.Composition;
 public sealed class MetricSpecParameterKeyValidationTests
 {
     private static readonly Lazy<IReadOnlyDictionary<string, IEvalMetric>> MetricsByKey = new(BuildMetricsByKey);
-    private static readonly Lazy<IAgentInvoker> Invoker = new(BuildInvoker);
+    private static readonly Lazy<IReadOnlySet<string>> RecognizedOverrideKeys = new(BuildInvoker);
 
     private static IReadOnlyDictionary<string, IEvalMetric> BuildMetricsByKey()
     {
@@ -46,14 +46,17 @@ public sealed class MetricSpecParameterKeyValidationTests
             .ToDictionary(m => m.Key, StringComparer.OrdinalIgnoreCase);
     }
 
-    private static IAgentInvoker BuildInvoker()
+    private static IReadOnlySet<string> BuildInvoker()
     {
         // The real registered IAgentInvoker (RouterEvalInvoker wrapping HarnessAgentInvoker) — not a
         // fake — so RecognizedOverrideKeys reflects the actual union every production run checks
-        // InvocationOverrides against (#437).
+        // InvocationOverrides against (#437). Copied into a plain set before the provider is disposed
+        // (correctness-review finding on the #437 PR: returning the live instance itself would be a
+        // use-after-dispose — harmless while the property is a pre-populated field, but a latent bug
+        // waiting for whichever future change makes it provider-backed instead).
         var services = EvalRunnerTestComposition.BuildServices();
         using var provider = services.BuildServiceProvider();
-        return provider.GetRequiredService<IAgentInvoker>();
+        return provider.GetRequiredService<IAgentInvoker>().RecognizedOverrideKeys.ToHashSet();
     }
 
     public static IEnumerable<object[]> DatasetFiles()
@@ -123,7 +126,7 @@ public sealed class MetricSpecParameterKeyValidationTests
     [MemberData(nameof(DatasetFiles))]
     public async Task Every_case_invocation_override_key_is_recognized_by_the_invoker(string path)
     {
-        var invoker = Invoker.Value;
+        var recognizedOverrideKeys = RecognizedOverrideKeys.Value;
         var loader = new YamlEvalDatasetLoader();
         var dataset = await loader.LoadAsync(path, CancellationToken.None);
 
@@ -131,14 +134,14 @@ public sealed class MetricSpecParameterKeyValidationTests
         foreach (var @case in dataset.Cases)
         {
             var unrecognized = @case.InvocationOverrides.Keys
-                .Where(k => !invoker.RecognizedOverrideKeys.Contains(k))
+                .Where(k => !recognizedOverrideKeys.Contains(k))
                 .ToList();
             if (unrecognized.Count > 0)
             {
                 problems.Add(
                     $"case '{@case.Id}': unrecognized invocation override key(s) " +
                     $"{string.Join(", ", unrecognized.Select(k => $"'{k}'"))} " +
-                    $"(recognized: {string.Join(", ", invoker.RecognizedOverrideKeys)})");
+                    $"(recognized: {string.Join(", ", recognizedOverrideKeys)})");
             }
         }
 
