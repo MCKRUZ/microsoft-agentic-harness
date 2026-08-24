@@ -201,10 +201,8 @@ public sealed class DockerSandboxExecutor : ISandboxExecutor
             "Docker unavailable but tool {ToolName} requires container isolation. Refusing execution",
             request.ToolName);
 
-        var attestation = await _attestationService.SignAsync(
-            Domain.AI.Attestation.AttestationRequest.Failure(
-                request.ToolName, request.Input, DockerUnavailableRefusal.Message),
-            ct);
+        var attestation = await SignFailureAsync(
+            request.ToolName, request.Input, DockerUnavailableRefusal.Message, egressDigest: null, ct);
 
         return new SandboxExecutionResult
         {

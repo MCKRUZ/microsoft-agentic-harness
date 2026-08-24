@@ -180,12 +180,14 @@ public sealed class ToolPermissionProfileResolver
     /// the right sandbox executor selected — the caller computes
     /// <c>defaultIsolationLevel.AtLeast(profile.MinimumIsolation)</c> for that — but a profile whose
     /// own <see cref="ToolPermissionProfile.MinimumIsolation"/> still read the un-elevated value.
-    /// <c>SandboxSessionAttestationSigner</c>'s <c>capabilitiesEnforcedBy</c> field and
-    /// <c>DockerSandboxExecutor</c>'s Docker-unavailable fallback gate both read that field, so a
-    /// caller with an elevated floor got the correct executor but a signed record and a fallback
-    /// decision both based on the wrong tier. Unreachable today — every shipped call site's floor
-    /// defaults to <see cref="SandboxIsolationLevel.Process"/> — but latent for the first consumer
-    /// that isn't. Now that this method receives the floor directly, the caller no longer needs its
+    /// <c>SandboxSessionAttestationSigner</c>'s <c>capabilitiesEnforcedBy</c> field read that field, so
+    /// a caller with an elevated floor got the correct executor but a signed record based on the wrong
+    /// tier. Unreachable today — every shipped call site's floor defaults to
+    /// <see cref="SandboxIsolationLevel.Process"/> — but latent for the first consumer that isn't.
+    /// (<c>DockerSandboxExecutor</c> used to have an equivalent Docker-unavailable fallback gate keyed
+    /// off this same field; #434 removed it — that class's Docker-unavailable path no longer branches
+    /// on <see cref="ToolPermissionProfile.MinimumIsolation"/> at all, so this specific staleness risk
+    /// no longer applies there.) Now that this method receives the floor directly, the caller no longer needs its
     /// own outer <see cref="SandboxIsolationLevelExtensions.AtLeast"/> call against the returned
     /// profile — <see cref="ToolPermissionProfile.MinimumIsolation"/> already reflects it.
     /// </para>
