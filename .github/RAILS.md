@@ -62,12 +62,19 @@ Note that the reviewers diff **committed** state (`<base>...HEAD`), exactly as C
 Running the gate with work still in the working tree reviews the previous commit and will
 happily report on code you have already changed — commit first, then run.
 
-Two reasons to use it. **Cost:** the remote reviewers re-trigger on *every* push to the PR
-branch, so a fix-then-push rhythm pays for the expensive Opus reviewers two or three times per
-PR. Both now bill the same Claude subscription, so this is a question of how much of your
-subscription allowance a PR consumes rather than which pot it comes from. Clear the gates
-locally, push once, pay for one remote cycle. **Latency:** a local BLOCK arrives in minutes
-without burning a PR cycle.
+**`--fast` is the expected default (2026-08 change).** `security-review` and
+`correctness-review` are REQUIRED, blocking checks on every PR already — they run
+remotely regardless of what happened locally first, so they are the real enforcement
+boundary either way. Running the equivalent AI reviewers again locally, ahead of that,
+duplicates coverage that's going to happen anyway: it doesn't raise the bar (the remote
+gates re-derive their own verdict server-side, unaffected by any local run), and unlike
+CI it has no `--max-turns` ceiling, so it can run arbitrarily long — measured once at
+2.5+ hours against a mid-size diff, an order of magnitude slower than the CI round trip
+it was meant to save. `--fast` (build/test/owasp/docs-links, plain dotnet/node, no local
+`claude` subprocess) catches the cheap, obvious failures — won't build, fails a test —
+in minutes, without competing with anything else running on the developer's machine
+while it runs. `--all` still exists and is still worth it for a diff small enough that
+the AI gates finish quickly; it's no longer the default expectation.
 
 It is a pre-flight, **not** a replacement. It runs on a developer's machine with
 their credentials, so the remote gates remain the enforcement boundary regardless —
@@ -76,22 +83,23 @@ CI (no PR comment, no turn ceiling, local-only `--accept-risk`) are documented i
 the script header.
 
 One more thing is now gated on it running, though not cryptographically verified: a
-full, default-base, all-gates-passed run writes its own `run-gates` receipt
-(`.claude/.review-receipts/<fingerprint>.run-gates`), and `.claude/hooks/review-gate.ps1`
-blocks `git push`/`gh pr create` through Claude Code until that receipt exists for the
-exact diff being pushed — the same mechanism already used for the `/code-review` and
-`/simplify` receipts (see review-cadence.md). Unlike those two, the run-gates receipt is
-written by the script itself, not typed from memory, so the intended path to producing
-it is an actual passing run. That is a convention this hook makes the path of least
-resistance, not a technical guarantee: an agent with shell access can still call the
-underlying writer by hand and skip the run entirely, exactly as it could type a fake
-`/code-review` summary. What it does achieve is making the honest path (run the gates,
-get the receipt for free) easier than the dishonest one, which stops a fix-then-push
-rhythm from skipping the local pre-flight *by default* and paying for a fresh remote
-correctness-review/grader cycle on every small fix. It does not, and can't, guarantee
-any given fix is actually correct or complete, or that the receipt wasn't hand-written —
-that's still on the reviewer (locally) and on the remote gates re-deriving their own
-verdict (the actual enforcement boundary).
+clean run — `--fast` or the full applicable set, at the default base — writes its own
+`run-gates` receipt (`.claude/.review-receipts/<fingerprint>.run-gates`), and
+`.claude/hooks/review-gate.ps1` blocks `git push`/`gh pr create` through Claude Code
+until that receipt exists for the exact diff being pushed — the same mechanism already
+used for the `/code-review` and `/simplify` receipts (see review-cadence.md). Unlike
+those two, the run-gates receipt is written by the script itself, not typed from memory,
+so the intended path to producing it is an actual passing run. That is a convention this
+hook makes the path of least resistance, not a technical guarantee: an agent with shell
+access can still call the underlying writer by hand and skip the run entirely, exactly
+as it could type a fake `/code-review` summary. What it does achieve is making the
+honest path (run the gates, get the receipt for free) easier than the dishonest one,
+which stops a fix-then-push rhythm from skipping even the cheap local pre-flight *by
+default* and reaching CI with something that was never going to build. It does not, and
+can't, guarantee any given fix is actually correct or complete, or that the receipt
+wasn't hand-written — that's still on the reviewer (locally, and via `/code-review`/
+`/simplify`) and on the remote gates re-deriving their own verdict (the actual
+enforcement boundary for correctness and security).
 
 ## Go-live — what a human must do (not automatable from here)
 

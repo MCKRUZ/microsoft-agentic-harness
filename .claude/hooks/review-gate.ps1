@@ -4,15 +4,22 @@
 #
 # Fires on the Claude Code `PreToolUse` event for Bash. Before the agent is allowed
 # to `git push` or `gh pr create` a change that touches compilable source, this proves
-# that `/code-review`, `/simplify`, AND a full local `scripts/rails/run-gates.sh` pass
-# were actually run against the EXACT code being pushed — not the agent's recollection
-# that it did them. A missing receipt blocks the push and tells the agent what to run.
+# that `/code-review`, `/simplify`, AND a local `scripts/rails/run-gates.sh` pass (--fast
+# by default, or --all) were actually run against the EXACT code being pushed — not the
+# agent's recollection that it did them. A missing receipt blocks the push and tells the
+# agent what to run.
 #
 # The run-gates receipt closes a specific gap: without it, nothing stopped a
-# fix-then-push rhythm where each small fix pays for a fresh remote correctness-review /
-# grader cycle (real subscription spend and ~7 minutes of CI, every time). Requiring the
-# receipt forces fixes to be batched and cleared locally before the one remote cycle that
-# actually matters. See .github/RAILS.md and scripts/rails/run-gates.sh's own header.
+# fix-then-push rhythm where a push with an obvious local failure (won't build, fails a
+# test) reaches CI anyway. --fast (build/test/owasp/docs-links — minutes, no local AI
+# reviewer) is the expected way to earn this receipt (2026-08 change): correctness-review
+# and security-review are REQUIRED, blocking checks on every PR regardless of what ran
+# locally first, so re-running the equivalent AI gates locally too only duplicates that
+# coverage — at a cost (2.5+ hours measured once, unbounded turns, a local `claude`
+# subprocess competing with everything else on the developer's machine) that this hook
+# no longer asks for by default. --all still works and still earns a receipt, for
+# whoever wants the full local pass on a diff small enough to make that worthwhile. See
+# .github/RAILS.md and scripts/rails/run-gates.sh's own header.
 #
 # Why a gate and not a reminder: a written instruction to "run code-review before
 # pushing" is the same class of thing the agent forgets. The only reliable enforcement
@@ -168,9 +175,14 @@ if ($missing.Count -gt 0) {
       "-NoProfile -File .claude/hooks/save-review-receipt.ps1 -Kind code-review``)"
   }
   if ($missing -contains 'run-gates') {
-    $parts += "run ``scripts/rails/run-gates.sh`` with no flags (default: all gates, base " +
-      "origin/main, falling back to main) — a clean pass records the run-gates receipt " +
-      "automatically, you do not write it by hand; if this machine lacks the `claude` CLI or " +
+    $parts += "run ``scripts/rails/run-gates.sh --fast`` (build/test/owasp/docs-links against " +
+      "base origin/main, falling back to main) — a clean pass records the run-gates receipt " +
+      "automatically, you do not write it by hand. --fast is the expected default: it's minutes " +
+      "not hours and runs no local AI reviewer, since correctness-review and security-review are " +
+      "required, blocking CI checks on every PR regardless of what ran here first — running them " +
+      "again locally only duplicates that coverage at a much higher cost in time and machine load. " +
+      "``run-gates.sh`` with no flags (the full AI-gated set) still works and still earns a " +
+      "receipt, for a diff small enough that's worth it. If this machine lacks the `claude` CLI or " +
       "`pwsh`, set RAILS_SKIP_RUN_GATES_RECEIPT=1 instead of the global bypass below"
   }
   Deny("Review gate: src/ changed but [$($missing -join ', ')] " +
