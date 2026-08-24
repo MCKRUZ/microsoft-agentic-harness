@@ -141,6 +141,20 @@ public partial class AgentFactory
         var captureSensitive = ShouldEnableSensitiveData(
             _serviceProvider.GetService<IContentCapturePolicy>());
 
+        // Optional by design (a template consumer may not register Infrastructure.AI's redactor),
+        // but a missing registration means every tool argument and result this middleware captures
+        // reaches the observability store unscrubbed — the exact failure mode a null redactor here
+        // silently produced before this logging was added. Log loudly rather than degrade silently.
+        var redactor = _serviceProvider.GetService<ISecretRedactor>();
+        if (redactor is null)
+        {
+            _logger.LogWarning(
+                "No ISecretRedactor is registered — tool arguments and results captured for agent " +
+                "{AgentName} will reach the observability store unredacted. Register one " +
+                "(Infrastructure.AI's AddInfrastructureAIDependencies does).",
+                agentContext.Name);
+        }
+
         var chatClientBuilder = chatClient.AsBuilder()
             // OpenTelemetry MUST sit below UseFunctionInvocation: FunctionInvokingChatClient
             // resolves its ActivitySource via innerClient.GetService<ActivitySource>() (exposed
@@ -161,7 +175,9 @@ public partial class AgentFactory
                 inner,
                 _loggerFactory.CreateLogger<Middleware.ObservabilityMiddleware>()))
             .Use(inner => new Middleware.ToolDiagnosticsMiddleware(
-                inner, _loggerFactory.CreateLogger<Middleware.ToolDiagnosticsMiddleware>()));
+                inner,
+                _loggerFactory.CreateLogger<Middleware.ToolDiagnosticsMiddleware>(),
+                redactor: redactor));
 
         // Per-turn context compaction — only when enabled in config AND a compaction service is
         // registered. Summarizes conversation history before the model call once its estimated
