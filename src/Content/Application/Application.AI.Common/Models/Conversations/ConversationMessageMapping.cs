@@ -82,6 +82,16 @@ public static class ConversationMessageMapping
 
         var result = new List<ChatMessage>();
 
+        // Scoped to the WHOLE window, not to one row: ToolCallTranscriptExtractor dedupes call ids
+        // within a turn, but nothing dedupes across turns, and some provider connectors number call
+        // ids per-turn and reset (call_0, call_1, call_0 again next turn — ToolCallOrderingSink's own
+        // remarks document this as real, which is why that type must be built fresh per turn). Two
+        // turns can therefore each have persisted "call_0", and replaying both here would put two
+        // tool_calls entries carrying one id into a single request — which providers reject. Because
+        // the window is rebuilt from PERSISTED rows every turn, that rejection would recur forever,
+        // with no recovery short of deleting the conversation.
+        var usedCallIds = new HashSet<string>(StringComparer.Ordinal);
+
         foreach (var message in messages)
         {
             if (!replayToolCalls
@@ -92,7 +102,7 @@ public static class ConversationMessageMapping
                 continue;
             }
 
-            AppendToolCallRounds(result, toolCalls);
+            AppendToolCallRounds(result, toolCalls, usedCallIds);
 
             if (!string.IsNullOrEmpty(message.Content))
             {
@@ -107,7 +117,10 @@ public static class ConversationMessageMapping
     /// Appends one assistant/tool message pair per call, oldest <see cref="ToolCallRecord.RoundOrdinal"/>
     /// first, so a resumed conversation replays tool activity in the sequence it actually happened.
     /// </summary>
-    private static void AppendToolCallRounds(List<ChatMessage> result, IReadOnlyList<ToolCallRecord> toolCalls)
+    private static void AppendToolCallRounds(
+        List<ChatMessage> result,
+        IReadOnlyList<ToolCallRecord> toolCalls,
+        HashSet<string> usedCallIds)
     {
         // Defensive sort, not a no-op: ToolCallTranscriptExtractor always builds this list in
         // ascending-ordinal order, but a persisted record read back from storage is data this code
@@ -118,13 +131,7 @@ public static class ConversationMessageMapping
 
         foreach (var (call, _) in ordered)
         {
-            // A synthesized id only ever fires for a hypothetical pre-#249-item-6 record
-            // deserialized without a CallId — production writers always populate it (see
-            // ToolCallTranscriptExtractor). Guid-based rather than a per-row counter so it stays
-            // unique across the whole window, not just within one row.
-            var callId = string.IsNullOrEmpty(call.CallId)
-                ? $"replayed-{Guid.NewGuid():N}"
-                : call.CallId;
+            var callId = ResolveUniqueCallId(call.CallId, usedCallIds);
 
             result.Add(new ChatMessage(
                 ChatRole.Assistant,
@@ -133,6 +140,40 @@ public static class ConversationMessageMapping
                 ChatRole.Tool,
                 [new FunctionResultContent(callId, call.Output)]));
         }
+    }
+
+    /// <summary>
+    /// Returns a call id unique across the whole replayed window, registering it in
+    /// <paramref name="usedCallIds"/>, and synthesizing a replacement when the persisted id is absent
+    /// or already taken.
+    /// </summary>
+    /// <remarks>
+    /// Two distinct inputs need a synthesized id, for one shared reason. An <em>absent</em> id comes
+    /// from a record persisted before this field existed. A <em>colliding</em> id comes from a provider
+    /// that numbers call ids per-turn and resets them, so two turns each persisted <c>call_0</c>. Either
+    /// way, emitting the id as-is would put two tool-call entries carrying one id into a single request,
+    /// which providers reject — permanently, since the window is rebuilt from persisted rows on every
+    /// later turn. The caller uses the returned id for <em>both</em> the call and its matching result,
+    /// so the pair stays correlated whichever branch produced it.
+    /// </remarks>
+    private static string ResolveUniqueCallId(string? persistedCallId, HashSet<string> usedCallIds)
+    {
+        if (!string.IsNullOrEmpty(persistedCallId) && usedCallIds.Add(persistedCallId))
+        {
+            return persistedCallId;
+        }
+
+        // Loops on the same Add that registers it, so "unique" is a guarantee rather than a
+        // near-certainty — the retry is free and costs two lines, where reasoning about Guid
+        // collision odds at a correctness boundary costs a reader more.
+        string synthesized;
+        do
+        {
+            synthesized = $"replayed-{Guid.NewGuid():N}";
+        }
+        while (!usedCallIds.Add(synthesized));
+
+        return synthesized;
     }
 
     /// <summary>

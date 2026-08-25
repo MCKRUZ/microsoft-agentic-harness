@@ -121,23 +121,6 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 			// Clear stale usage data before the agent turn
 			_usageCapture.TakeSnapshot();
 
-			// Set ambient capture so the singleton-scoped ObservabilityMiddleware
-			// records to this handler's scoped ILlmUsageCapture instance.
-			LlmUsageCapture.Current = _usageCapture;
-
-			// Snapshot which tool-call ids are already present in the seed history — a replayed
-			// conversation's FunctionResultContent is indistinguishable, by content alone, from one
-			// this turn is about to produce for real. ToolDiagnosticsMiddleware consults this ambient
-			// scope to skip re-recording the former while still recording the latter. Taken once,
-			// before dispatch: see ReplayedToolCallScope's remarks for why a snapshot rather than a
-			// live recheck is correct here.
-			ReplayedToolCallScope.Current = messages
-				.SelectMany(m => m.Contents)
-				.OfType<FunctionResultContent>()
-				.Select(r => r.CallId)
-				.Where(id => !string.IsNullOrEmpty(id))
-				.ToHashSet();
-
 			// Same bridge for tool admission: the agent (and its cached tool functions) outlive this
 			// scope, so expose this turn's scoped admission chain ambiently for the governed tool
 			// wrapper to consult at invocation time. Reset first: nested MediatR sends within a
@@ -145,7 +128,31 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 			// loop-guard call history so this turn reflects only this turn — mirrors the _usageCapture
 			// clear above. One reset covers every stateful stage; there is no longer a second one to
 			// forget.
+			//
+			// Ordered BEFORE the two ambient assignments below, and that ordering is load-bearing:
+			// only the try/finally further down clears them, so anything that can throw between an
+			// assignment and that try would leave a stale scope armed on this async flow — applying
+			// one turn's state to a later, unrelated turn. Reset() is the only throwing statement in
+			// that window, so hoisting it above the assignments closes the window rather than
+			// narrowing it.
 			_admissionPipeline.Reset();
+
+			// Set ambient capture so the singleton-scoped ObservabilityMiddleware
+			// records to this handler's scoped ILlmUsageCapture instance.
+			LlmUsageCapture.Current = _usageCapture;
+
+			// Snapshot which tool-call ids are already present in the seed history — a replayed
+			// conversation's FunctionResultContent is indistinguishable, by content alone, from one
+			// this turn is about to produce for real. ToolDiagnosticsMiddleware consults this ambient
+			// scope to skip re-recording the former while still recording the latter. Seeded once,
+			// before dispatch, then grown in place by that middleware: see ReplayedToolCallScope's
+			// remarks for why the seed is taken here rather than re-derived mid-turn.
+			ReplayedToolCallScope.Current = messages
+				.SelectMany(m => m.Contents)
+				.OfType<FunctionResultContent>()
+				.Select(r => r.CallId)
+				.Where(id => !string.IsNullOrEmpty(id))
+				.ToHashSet();
 
 			object? response;
 			IReadOnlyList<ToolExchange> toolExchanges;

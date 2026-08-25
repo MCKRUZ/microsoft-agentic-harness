@@ -163,6 +163,77 @@ public sealed class ConversationMessageMappingTests
     }
 
     [Fact]
+    public void ToChatMessages_SameCallIdPersistedOnTwoTurns_ReplaysWithDistinctIds()
+    {
+        // Security-gate finding: some provider connectors number call ids per-turn and reset them
+        // (call_0, call_1, then call_0 again next turn — ToolCallOrderingSink documents this as real).
+        // Two turns can therefore each persist "call_0". Replaying both with that shared id puts two
+        // tool_calls entries carrying one id into a single request, which providers reject — and since
+        // the window is rebuilt from persisted rows every turn, that rejection would recur forever.
+        var turnOneCall = new ToolCallRecord("search", null, "first", 1, "call_0", RoundOrdinal: 0);
+        var turnTwoCall = new ToolCallRecord("search", null, "second", 1, "call_0", RoundOrdinal: 0);
+
+        var transcript = new List<ConversationMessage>
+        {
+            new(Guid.NewGuid(), MessageRole.Assistant, "turn one", DateTimeOffset.UtcNow, ToolCalls: [turnOneCall]),
+            new(Guid.NewGuid(), MessageRole.Assistant, "turn two", DateTimeOffset.UtcNow, ToolCalls: [turnTwoCall]),
+        };
+
+        var replayed = ConversationMessageMapping.ToChatMessages(transcript);
+
+        var callIds = replayed.SelectMany(m => m.Contents).OfType<FunctionCallContent>()
+            .Select(c => c.CallId).ToList();
+        callIds.Should().HaveCount(2);
+        callIds.Should().OnlyHaveUniqueItems(
+            "two tool calls in one replayed window must never share an id, whatever was persisted");
+
+        // Each result must still pair with its own call, or the conversation is malformed a different way.
+        var resultIds = replayed.SelectMany(m => m.Contents).OfType<FunctionResultContent>()
+            .Select(r => r.CallId).ToList();
+        resultIds.Should().BeEquivalentTo(callIds,
+            "the synthesized id must be applied to the call AND its matching result, keeping them paired");
+    }
+
+    [Fact]
+    public void ToChatMessages_DistinctCallIdsAcrossTurns_ArePreservedVerbatim()
+    {
+        // Control for the test above: without it, that assertion would pass just as well against an
+        // implementation that synthesized a fresh id for every call and discarded the real ones.
+        var turnOneCall = new ToolCallRecord("search", null, "first", 1, "call_a", RoundOrdinal: 0);
+        var turnTwoCall = new ToolCallRecord("search", null, "second", 1, "call_b", RoundOrdinal: 0);
+
+        var transcript = new List<ConversationMessage>
+        {
+            new(Guid.NewGuid(), MessageRole.Assistant, "turn one", DateTimeOffset.UtcNow, ToolCalls: [turnOneCall]),
+            new(Guid.NewGuid(), MessageRole.Assistant, "turn two", DateTimeOffset.UtcNow, ToolCalls: [turnTwoCall]),
+        };
+
+        var replayed = ConversationMessageMapping.ToChatMessages(transcript);
+
+        replayed.SelectMany(m => m.Contents).OfType<FunctionCallContent>()
+            .Select(c => c.CallId).Should().Equal("call_a", "call_b");
+    }
+
+    [Fact]
+    public void ToChatMessages_ReplayDisabled_SkipsToolCallExpansionAndKeepsTextOnly()
+    {
+        // The operator kill switch, at the mapping layer: an already-persisted tool call must not
+        // replay when the deployment has turned the feature off.
+        var toolCall = new ToolCallRecord("search", null, "sunny", 1, "call-1", RoundOrdinal: 0);
+
+        var transcript = new List<ConversationMessage>
+        {
+            new(Guid.NewGuid(), MessageRole.Assistant, "it's sunny", DateTimeOffset.UtcNow, ToolCalls: [toolCall]),
+        };
+
+        var replayed = ConversationMessageMapping.ToChatMessages(transcript, replayToolCalls: false);
+
+        replayed.Should().ContainSingle();
+        replayed[0].Text.Should().Be("it's sunny");
+        replayed.SelectMany(m => m.Contents).OfType<FunctionCallContent>().Should().BeEmpty();
+    }
+
+    [Fact]
     public void ToChatMessages_NonAssistantRowOrNoToolCalls_ProjectsTextOnlyAsBefore()
     {
         var transcript = new List<ConversationMessage>

@@ -252,4 +252,52 @@ public sealed class ToolCallReplayTreatmentTests
             "a JSON-quoted secret key must be redacted before this content is persisted and replayed " +
             "to the model on every later turn");
     }
+
+    /// <summary>
+    /// Security-gate finding: the 64KB ceiling was checked only against the RAW input, but sanitize
+    /// and redact can GROW text. A sub-ceiling payload that expands past the ceiling would then be
+    /// handed to <see cref="PatternSecretRedactor"/>, which silently skips its structural JSON walk
+    /// above that same size and degrades to a regex-only scan — losing exactly the protection the
+    /// structural pass was added to provide, on durable model-facing content. The ceiling is now
+    /// re-checked after treatment, and an expanded payload is withheld rather than under-redacted.
+    /// </summary>
+    [Fact]
+    public void Treat_TreatmentExpandsPayloadPastCeiling_WithholdsRatherThanUnderRedacting()
+    {
+        // A sanitizer that expands its input, standing in for real redaction replacing a short secret
+        // with a longer placeholder. Input sits just under the ceiling; output crosses it.
+        var expandingSanitizer = new Mock<ICompositeResponseSanitizer>();
+        expandingSanitizer
+            .Setup(s => s.Sanitize(It.IsAny<string>(), It.IsAny<string?>()))
+            .Returns((string content, string? _) => SanitizationResult.Clean(content + new string('x', 4096)));
+
+        var treatment = CreateTreatment(expandingSanitizer.Object, IdentityFilter().Object);
+
+        var justUnderCeiling = new string('a', ToolCallReplayTreatment.WithholdCeilingChars - 1024);
+
+        var result = treatment.Treat(justUnderCeiling, "search");
+
+        result.Should().NotContain("aaaa",
+            "a payload that crosses the structural-redaction ceiling DURING treatment must be withheld, " +
+            "not passed to a redactor that silently stops doing structural redaction above that size");
+        result.Length.Should().BeLessThan(ToolCallReplayTreatment.WithholdCeilingChars);
+    }
+
+    [Fact]
+    public void Treat_TreatmentKeepsPayloadUnderCeiling_StillReturnsTreatedContent()
+    {
+        // The control for the test above: the same expanding sanitizer on a small input stays under
+        // the ceiling, so treatment proceeds normally. Without this, the assertion above would pass
+        // just as well against a method that withheld everything.
+        var expandingSanitizer = new Mock<ICompositeResponseSanitizer>();
+        expandingSanitizer
+            .Setup(s => s.Sanitize(It.IsAny<string>(), It.IsAny<string?>()))
+            .Returns((string content, string? _) => SanitizationResult.Clean(content + new string('x', 4096)));
+
+        var treatment = CreateTreatment(expandingSanitizer.Object, IdentityFilter().Object);
+
+        var result = treatment.Treat("small payload", "search");
+
+        result.Should().Contain("small payload");
+    }
 }

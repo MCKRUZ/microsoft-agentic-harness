@@ -106,6 +106,27 @@ public sealed class ToolCallReplayTreatment : IToolCallReplayTreatment
                 rawText, _sanitizer, _redactionFilter, RedactionCategories.All, toolName,
                 onSanitizedEmpty: _ => WithheldEmptyAfterSanitizationPlaceholder);
 
+            // RE-CHECK the ceiling, on the treated text, before the structural pass below — the check
+            // above was against the RAW input and does not carry over. Sanitizing and redacting can
+            // GROW text (a matched secret is replaced by a longer placeholder; the injection scrubber
+            // can expand too), so a sub-ceiling input can cross the ceiling right here. That matters
+            // because PatternSecretRedactor silently SKIPS its structural JSON walk above this same
+            // size (PatternSecretRedactor.MaxStructuralRedactionLength) and degrades to a regex-only
+            // scan — which is precisely the pass that cannot see an escaped-nested-JSON secret (#391),
+            // and precisely the protection the third pass below exists to add. Checking only the raw
+            // length would hand an expanded payload to a redactor that quietly stopped doing the one
+            // thing it was called for, and persist the result durably. Same "check, act, re-check"
+            // shape ToolPayloadRedactor.RedactWithCeiling already applies on the streaming paths.
+            if (treated.Length > WithholdCeilingChars)
+            {
+                _logger.LogWarning(
+                    "[ToolCallReplayTreatment] Withholding {Tool} payload: treatment expanded it from " +
+                    "{RawLength} to {TreatedLength} chars, crossing the {Ceiling}-char structural-redaction " +
+                    "ceiling.",
+                    toolName, rawText.Length, treated.Length, WithholdCeilingChars);
+                return WithheldOversizedPlaceholder;
+            }
+
             // A third pass, not a substitute for the two above: ICompositeResponseSanitizer and
             // IContentRedactionFilter are value-shape regex scanners with no JSON-key-name awareness —
             // neither matches a quote-terminated key like "token": or "x-api-key": (the `key\s*[=:]`
