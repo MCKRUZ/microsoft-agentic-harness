@@ -180,6 +180,24 @@ public sealed class AgentExecutionContextFactoryProgressiveDisclosureTests : IDi
     }
 
     [Fact]
+    public async Task MapToAgentContext_SkillCoveredByProvider_RecordsThatItsBodyWasHeldBack()
+    {
+        // The producer half of #507's fix. The test above proves the body is not in the prompt; this
+        // proves the context SAYS SO, which is a separate thing and the one anything downstream can
+        // act on. The instruction is one opaque string — nothing in it distinguishes a body that was
+        // folded in from one that was held back — so a consumer sizing the prompt has to be told.
+        //
+        // Without this, deleting the assignment in the factory leaves every test in the suite green
+        // while the context bar silently returns to charging the skills lane for text the model never
+        // received and deflating the system lane to match: the exact symptom #507 was filed about.
+        var context = await CreateFactory().MapToAgentContextAsync([MakeSkill()], new SkillAgentOptions());
+
+        context.DisclosedOnDemandSkillIds.Should().NotBeNull()
+            .And.Contain(SkillName,
+                "a skill whose body the provider serves on demand must be reported as held back");
+    }
+
+    [Fact]
     public async Task MapToAgentContext_SkillCoveredByProvider_StillAdvertisesSkillAsIndexCard()
     {
         var context = await CreateFactory().MapToAgentContextAsync([MakeSkill()], new SkillAgentOptions());

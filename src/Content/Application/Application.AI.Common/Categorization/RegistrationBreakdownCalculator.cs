@@ -78,10 +78,28 @@ public static class RegistrationBreakdownCalculator
     /// symptom inside its fix: a real system prompt reported as zero.
     /// </para>
     /// <para>
-    /// With both terms drawn from the same set, <c>System + Skills</c> equals the instruction exactly
-    /// and the clamp becomes unreachable rather than merely unlikely. It is kept because
-    /// <see cref="RegistrationSnapshot"/> is data this code does not construct: a producer that
-    /// mislabels a held-back body as inlined should give a flat lane, not a negative one.
+    /// With both terms drawn from the same set, each inlined body is a literal substring of the
+    /// instruction, so on the default merge path <c>System + Skills</c> reconciles to it and the clamp
+    /// does not fire. Two cases keep it necessary rather than defensive:
+    /// </para>
+    /// <list type="bullet">
+    ///   <item><description>
+    ///     <strong>Prompt composition.</strong> When that opt-in feature is on, the merged text is
+    ///     handed to a composer that reassembles it section-by-section within a token budget and drops
+    ///     low-priority sections. The result is a rewrite, not a superset — it can be shorter than the
+    ///     bodies it nominally contains.
+    ///   </description></item>
+    ///   <item><description>
+    ///     <strong>A producer this code does not control.</strong> <see cref="RegistrationSnapshot"/>
+    ///     is handed in; a caller that mislabels a held-back body as inlined should get a flat lane,
+    ///     not a negative one.
+    ///   </description></item>
+    /// </list>
+    /// <para>
+    /// In both, the clamp trades a wrong-and-visible number for a wrong-and-quiet one, which is a
+    /// limitation rather than a fix — reconciling it needs the per-turn prompt measurement deferred to
+    /// #517. Saying so is the point: an earlier draft called the clamp unreachable, and that confidence
+    /// is exactly what let the original defect hide.
     /// </para>
     /// </remarks>
     private static int SystemPromptTokens(RegistrationSnapshot snapshot, int skillTokens) =>
@@ -98,8 +116,14 @@ public static class RegistrationBreakdownCalculator
     /// occupying the context window and must not be charged as though it were. Counting it would
     /// inflate the skills lane with text the model never received and — because the system lane is the
     /// instruction minus this figure — deflate the system lane by the same amount, which is how a real
-    /// system prompt came to read as zero in the first place (#507). The body starts costing when the
-    /// skill is actually loaded, at which point it lands in the transcript like any other tool result.
+    /// system prompt came to read as zero in the first place (#507).
+    /// <para>
+    /// What happens to that body once the skill IS loaded is not settled here, and is worth knowing
+    /// before trusting the lane: it arrives as a tool result mid-turn, and whether it later shows up in
+    /// the transcript estimate depends on the durable tool-call replay path putting tool messages back
+    /// into the dispatched history on a subsequent turn. Not traced to a conclusion, so this comment
+    /// does not claim it.
+    /// </para>
     /// </remarks>
     public static int TokensFor(SkillRegistration skill)
     {

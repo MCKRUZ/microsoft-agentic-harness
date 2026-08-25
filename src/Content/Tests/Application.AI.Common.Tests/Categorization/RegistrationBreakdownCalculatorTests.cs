@@ -118,7 +118,7 @@ public sealed class RegistrationBreakdownCalculatorTests
     public void From_ToolWithoutASerializedSchema_StillCostsSomething()
     {
         // A non-AIFunction tool has no schema text but still occupies context. Reporting zero would
-        // understate the lane and quietly widen the unaccounted gap.
+        // understate the lane and hide real consumption behind an empty segment.
         var breakdown = RegistrationBreakdownCalculator.From(Snapshot(
             nativeTools: [new ToolRegistration("calculator", "Does arithmetic", SchemaText: null)]));
 
@@ -155,9 +155,11 @@ public sealed class RegistrationBreakdownCalculatorTests
     [Fact]
     public void From_SkillsLargerThanTheInstruction_ClampsSystemWithoutGoingNegative()
     {
-        // Only reachable when a registered skill's text is not actually embedded in the instruction.
-        // The clamp keeps the lane sane; ContextSnapshot.UnaccountedTokens is where the inconsistency
-        // shows up rather than being silently absorbed.
+        // Reachable only when a producer mislabels a held-back body as inlined, or when prompt
+        // composition rewrites the instruction to something shorter than the bodies it inlined. The
+        // clamp keeps the lane flat rather than negative — but it does silently absorb the
+        // inconsistency, which is a known limitation, not a resolved one (#517 is where a reader would
+        // eventually see it).
         var breakdown = RegistrationBreakdownCalculator.From(Snapshot(
             systemPrompt: "tiny",
             skills: [new SkillRegistration("s1", "Skill", new string('s', 4_000))]));

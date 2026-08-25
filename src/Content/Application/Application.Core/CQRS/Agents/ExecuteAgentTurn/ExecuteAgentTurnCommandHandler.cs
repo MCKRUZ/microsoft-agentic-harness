@@ -600,9 +600,10 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 		// disagree about the turn they are both describing — they answer different questions
 		// (running state vs. what changed) from one measurement.
 		//
-		// Empty when no agent context is resolvable: nothing is known to be registered, so nothing is
-		// claimed. The whole prompt then lands in ContextSnapshot.UnaccountedTokens, which is the
-		// honest reading — unattributed, not absent.
+		// Empty when no agent context is resolvable: nothing is KNOWN to be registered, so nothing is
+		// claimed. The bar then reads empty rather than inventing a figure — which is a real gap, not a
+		// resolved one: a reader cannot currently tell "nothing was loaded" from "we could not see what
+		// was loaded". Surfacing that distinction needs the reconciliation deferred to #517.
 		var registrations = CategoryBreakdown.Empty;
 
 		var ctx = _agentCache.TryGetContext(conversationId);
@@ -706,8 +707,9 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 	/// <summary>
 	/// Emits one <see cref="LoadedItem"/> per registration delta entry into <paramref name="items"/>
 	/// and, in lockstep, one <see cref="LoadedItemBody"/> per item into <paramref name="bodies"/>.
-	/// System tokens = est(instruction) − Σ est(skill.Instructions) so the lane totals add up
-	/// to what the model actually receives without double-counting skill content.
+	/// Per-item sizing goes through <see cref="RegistrationBreakdownCalculator"/> — the same methods the
+	/// context bar sums — so the drawer and the bar cannot quote different numbers for one turn. That
+	/// includes charging nothing for a skill body the prompt does not contain (#507).
 	/// Body capture pairs each LoadedItem with its actual text (composed system prompt, skill
 	/// instructions, tool JSON schema, MCP descriptor, sub-agent description) so the dashboard
 	/// drawer can render the real content via the lazy
