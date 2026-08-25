@@ -1040,6 +1040,33 @@ public abstract class ConversationStoreContractTests
         history[1].ToolCalls.Should().ContainSingle().Which.CallId.Should().Be("call-1");
     }
 
+    [Fact]
+    public async Task GetHistoryForDispatch_ExcludesEmptyContentRowWithAnEmptyToolCallList()
+    {
+        // #510. An empty-but-non-null tool-call list is not tool activity — it is a widget-only row
+        // wearing the wrong shape. ConversationMessage normalizes an empty list to null however it
+        // arrives, so the DTO should never carry one here; this pins the behaviour at the STORE, which
+        // is what actually decides model-relevance, and which for the EF-backed store reads a
+        // serialized "[]" column rather than the DTO. Both stores must agree, or a conversation's
+        // replayed window differs by which backend a deployment happens to run.
+        var record = await Store.CreateAsync("agent", Owner);
+        await Store.AppendMessageAsync(record.Id, Owner, UserMessage("real question"));
+        await Store.AppendMessageAsync(
+            record.Id,
+            Owner,
+            new ConversationMessage(
+                Guid.NewGuid(), MessageRole.Assistant, string.Empty, DateTimeOffset.UtcNow,
+                ToolCalls: [],
+                Widget: new WidgetSpec("render_table", JsonDocument.Parse("{}").RootElement)));
+        await Store.AppendMessageAsync(record.Id, Owner, AssistantMessage("real answer"));
+
+        var history = await Store.GetHistoryForDispatch(record.Id, Owner, maxMessages: 10);
+
+        history!.Select(m => m.Content).Should().Equal(
+            ["real question", "real answer"],
+            "a row with no text and no actual tool calls carries nothing the model can read");
+    }
+
     // -- Helpers --
 
     /// <summary>Builds a user message with a fresh id and the current timestamp.</summary>

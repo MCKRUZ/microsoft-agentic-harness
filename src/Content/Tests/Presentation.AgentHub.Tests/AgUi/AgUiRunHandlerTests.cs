@@ -444,7 +444,10 @@ public sealed class AgUiRunHandlerTests
             turnLease ?? new InProcessConversationTurnLease(),
             new AgUiEventWriterAccessor(),
             budget.Object,
-            Mock.Of<IToolCallReplayTreatment>(t => t.Enabled == true),
+            // The two limits are stubbed explicitly: an unconfigured Moq int property returns 0, and a
+            // zero limit drops every replayed tool call rather than meaning "unlimited".
+            Mock.Of<IToolCallReplayTreatment>(t =>
+                t.Enabled == true && t.MaxCallsPerTurn == 32 && t.MaxReplayedChars == 65536),
             environment.Object,
             logger ?? NullLogger<AgUiRunHandler>.Instance);
     }

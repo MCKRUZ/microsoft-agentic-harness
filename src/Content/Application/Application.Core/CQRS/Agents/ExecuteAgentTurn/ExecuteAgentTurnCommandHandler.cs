@@ -147,12 +147,11 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 			// scope to skip re-recording the former while still recording the latter. Seeded once,
 			// before dispatch, then grown in place by that middleware: see ReplayedToolCallScope's
 			// remarks for why the seed is taken here rather than re-derived mid-turn.
-			ReplayedToolCallScope.Current = messages
-				.SelectMany(m => m.Contents)
-				.OfType<FunctionResultContent>()
-				.Select(r => r.CallId)
-				.Where(id => !string.IsNullOrEmpty(id))
-				.ToHashSet();
+			ReplayedToolCallScope.Current = new ReplayedToolCallSet(
+				messages
+					.SelectMany(m => m.Contents)
+					.OfType<FunctionResultContent>()
+					.Select(r => r.CallId));
 
 			object? response;
 			IReadOnlyList<ToolExchange> toolExchanges;
@@ -811,14 +810,43 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 	/// this method exists to gate, and would leave a caller-visible difference between "opted out" and
 	/// "genuinely made no tool calls" only in the log, never in what gets persisted.
 	/// </para>
+	/// <para>
+	/// Caps the turn at <see cref="IToolCallReplayTreatment.MaxCallsPerTurn"/> records for the same
+	/// before-any-work reason, and logs how many it dropped. This is the write-side half of the bound;
+	/// it cannot be the whole of it, because it does nothing for rows persisted before the cap existed
+	/// — <c>ConversationMessageMapping.ToChatMessages</c> enforces the read-side character budget that
+	/// covers those.
+	/// </para>
 	/// </remarks>
 	private IReadOnlyList<ToolCallRecord> BuildTreatedToolCallRecords(IReadOnlyList<ToolExchange> exchanges)
 	{
 		if (exchanges.Count == 0 || !_toolCallReplayTreatment.Enabled)
 			return [];
 
-		var records = new List<ToolCallRecord>(exchanges.Count);
-		foreach (var exchange in exchanges)
+		// Bound what one turn persists before treating anything, for the same reason the Enabled check
+		// above comes first: treating a payload and then discarding it would still have run the
+		// sanitize/redact pass this cap exists to avoid paying for. Nothing upstream bounds this — the
+		// framework's per-request iteration limit caps tool-calling ROUNDS, while the chat client is
+		// built with concurrent invocation allowed, so one round's parallel calls are unbounded.
+		// Earliest-first: the turn's own prose refers back to what it did first, so truncating the tail
+		// keeps the record coherent where truncating the head would not.
+		var admitted = exchanges;
+		if (exchanges.Count > _toolCallReplayTreatment.MaxCallsPerTurn)
+		{
+			var dropped = exchanges.Count - _toolCallReplayTreatment.MaxCallsPerTurn;
+			_logger.LogWarning(
+				"[ToolCallReplay] Turn produced {Total} tool calls, above the {Cap} persisted per turn; " +
+				"dropping the {Dropped} latest from replay history.",
+				exchanges.Count, _toolCallReplayTreatment.MaxCallsPerTurn, dropped);
+
+			admitted = exchanges
+				.OrderBy(e => e.RoundOrdinal)
+				.Take(_toolCallReplayTreatment.MaxCallsPerTurn)
+				.ToList();
+		}
+
+		var records = new List<ToolCallRecord>(admitted.Count);
+		foreach (var exchange in admitted)
 		{
 			var treatedInput = string.IsNullOrEmpty(exchange.ArgsJson)
 				? null

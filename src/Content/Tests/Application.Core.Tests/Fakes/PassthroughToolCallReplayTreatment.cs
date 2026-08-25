@@ -12,6 +12,18 @@ internal sealed class PassthroughToolCallReplayTreatment : IToolCallReplayTreatm
 {
     public bool Enabled => true;
 
+    /// <summary>
+    /// Settable so a test about the per-turn cap can tighten it. Defaults to the same 32 the real
+    /// config does, so every test that is not about the cap sees production behaviour.
+    /// </summary>
+    public int MaxCallsPerTurn { get; set; } = 32;
+
+    /// <summary>
+    /// Settable for the same reason as <see cref="MaxCallsPerTurn"/>, defaulting to the config's own
+    /// 65536.
+    /// </summary>
+    public int MaxReplayedChars { get; set; } = 65536;
+
     public string NoResultPlaceholder => "[no result recorded]";
 
     public string Treat(string rawText, string? toolName) => rawText;

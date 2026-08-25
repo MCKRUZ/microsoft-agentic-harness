@@ -1,10 +1,11 @@
 namespace Application.AI.Common.Services;
 
 /// <summary>
-/// Ambient (<see cref="AsyncLocal{T}"/>), mutable set of tool-call ids already known to
-/// <c>ToolDiagnosticsMiddleware.AppendFunctionResultTracesAsync</c> for the current turn — seeded with
-/// ids replayed from earlier conversation history, then grown as the middleware itself records each
-/// genuinely new result.
+/// Ambient (<see cref="AsyncLocal{T}"/>) holder for the current turn's
+/// <see cref="ReplayedToolCallSet"/> — the mutable set of tool-call ids already known to
+/// <c>ToolDiagnosticsMiddleware.AppendFunctionResultTracesAsync</c>, seeded with ids replayed from
+/// earlier conversation history, then grown as the middleware itself records each genuinely new
+/// result.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -34,10 +35,18 @@ namespace Application.AI.Common.Services;
 /// <c>finally</c> block, for the same reason: leaving a stale value armed would apply one turn's seed
 /// set to a later, unrelated turn sharing the same async-local flow.
 /// </para>
+/// <para>
+/// The value is a <see cref="ReplayedToolCallSet"/> rather than a bare <see cref="HashSet{T}"/>
+/// because an ambient value is not guaranteed to be reached by one thread at a time: a tool that
+/// drives an <see cref="Microsoft.Extensions.AI.IChatClient"/> through the same middleware without
+/// going through the turn handler inherits its parent flow's instance by reference instead of
+/// rebinding its own. See that type for the concurrency contract and why the operation it exposes is
+/// a single claim rather than a separate test and add.
+/// </para>
 /// </remarks>
 public static class ReplayedToolCallScope
 {
-    private static readonly AsyncLocal<HashSet<string>?> s_current = new();
+    private static readonly AsyncLocal<ReplayedToolCallSet?> s_current = new();
 
     /// <summary>
     /// The current turn's known-call-id set — seeded with replayed history, then grown in place as
@@ -45,7 +54,7 @@ public static class ReplayedToolCallScope
     /// test constructing the middleware directly). Callers must treat a <see langword="null"/> scope
     /// as "nothing is known yet," not as an error.
     /// </summary>
-    public static HashSet<string>? Current
+    public static ReplayedToolCallSet? Current
     {
         get => s_current.Value;
         set => s_current.Value = value;

@@ -148,7 +148,12 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 			cancellationToken, lease.LeaseLost);
 
 		var transcript = new DurableTranscript(
-			_conversationStore, request.ConversationId, ownerId, _toolCallReplayTreatment.Enabled);
+			_conversationStore,
+			request.ConversationId,
+			ownerId,
+			_toolCallReplayTreatment.Enabled,
+			_toolCallReplayTreatment.MaxReplayedChars,
+			_logger);
 
 		return await RunAsync(request, transcript, turnCts.Token);
 	}

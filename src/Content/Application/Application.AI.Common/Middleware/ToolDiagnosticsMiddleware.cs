@@ -104,22 +104,34 @@ public sealed class ToolDiagnosticsMiddleware : DelegatingChatClient
     private async Task AppendFunctionResultTracesAsync(IEnumerable<ChatMessage> messages, CancellationToken ct)
     {
         var alreadyReplayed = Services.ReplayedToolCallScope.Current;
-        var functionResults = messages
-            .SelectMany(m => m.Contents)
-            .OfType<FunctionResultContent>()
-            .Where(r => alreadyReplayed is null || string.IsNullOrEmpty(r.CallId) || !alreadyReplayed.Contains(r.CallId))
-            .ToList();
+
+        // Claim-as-you-select, in one pass, rather than filtering the list and then marking the
+        // survivors: the question is never "is this id known?" on its own but "is it known, and if
+        // not, take it," and splitting those into two steps leaves a gap two concurrent callers can
+        // both pass through — producing exactly the duplicate trace record this scope exists to
+        // prevent. ReplayedToolCallSet.TryClaim tests and takes under one lock, so the id is marked
+        // known the moment it is picked up for recording rather than after the trace write succeeds;
+        // a later round's scan of the same (still-growing) inbound message list therefore skips it
+        // even if the write below fails. See ReplayedToolCallScope's remarks: this is what closes the
+        // intra-turn duplicate-recording case a read-only, dispatch-time snapshot alone cannot.
+        //
+        // A result with no CallId cannot be deduplicated at all, and a null scope means no turn armed
+        // one (a test constructing this middleware directly) — both are recorded rather than dropped.
+        var functionResults = new List<FunctionResultContent>();
+        foreach (var candidate in messages.SelectMany(m => m.Contents).OfType<FunctionResultContent>())
+        {
+            if (alreadyReplayed is not null
+                && !string.IsNullOrEmpty(candidate.CallId)
+                && !alreadyReplayed.TryClaim(candidate.CallId))
+            {
+                continue;
+            }
+
+            functionResults.Add(candidate);
+        }
 
         foreach (var result in functionResults)
         {
-            // Mark this call id known the moment it's picked up for recording — not after the trace
-            // write succeeds — so a later round's scan of the same (still-growing) inbound message
-            // list skips it even if the trace write below fails. See ReplayedToolCallScope's remarks:
-            // this is what closes the intra-turn duplicate-recording case a read-only, dispatch-time
-            // snapshot alone cannot.
-            if (!string.IsNullOrEmpty(result.CallId))
-                alreadyReplayed?.Add(result.CallId);
-
             // A failed call's Result already carries the raw exception message baked in by
             // IncludeDetailedErrors (see ExecuteAgentTurnCommandHandler.RedactedResultForStreaming) — this
             // trace record feeds the dashboard's per-invocation page via ToolInvocationDetailDto,

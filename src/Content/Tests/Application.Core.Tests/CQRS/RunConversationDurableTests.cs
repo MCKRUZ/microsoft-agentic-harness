@@ -81,7 +81,10 @@ public sealed class RunConversationDurableTests
             _store,
             _lease,
             Options.Create(new ConversationsConfig { MaxHistoryMessages = maxHistoryMessages }),
-            Mock.Of<IToolCallReplayTreatment>(t => t.Enabled == true),
+            // The two limits are stubbed explicitly: an unconfigured Moq int property returns 0, and a
+            // zero limit drops every replayed tool call rather than meaning "unlimited".
+            Mock.Of<IToolCallReplayTreatment>(t =>
+                t.Enabled == true && t.MaxCallsPerTurn == 32 && t.MaxReplayedChars == 65536),
             NullLogger<RunConversationCommandHandler>.Instance);
 
     private static RunConversationCommand SelfContained(params string[] messages) => new()

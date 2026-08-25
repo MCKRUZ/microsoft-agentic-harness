@@ -28,5 +28,17 @@ public sealed class ToolCallReplayConfigValidator : AbstractValidator<ToolCallRe
                 $"MaxVerbatimChars must be between 0 and {ToolCallReplayTreatment.WithholdCeilingChars} " +
                 "(the size above which the structural secret-redaction pass falls back to a regex-only " +
                 "scan and cannot be trusted to replay verbatim).");
+
+        // Non-negative only, with no upper bound: unlike MaxVerbatimChars these are cost ceilings, not
+        // security ones — every payload they count has already been sanitized, redacted and size-capped
+        // individually. A deployment on a very large context window raising either one is a legitimate
+        // trade it can make for itself; a negative value is just nonsense that would disable the bound.
+        RuleFor(x => x.MaxCallsPerTurn)
+            .GreaterThanOrEqualTo(0)
+            .WithMessage("MaxCallsPerTurn must be zero or greater.");
+
+        RuleFor(x => x.MaxReplayedChars)
+            .GreaterThanOrEqualTo(0)
+            .WithMessage("MaxReplayedChars must be zero or greater.");
     }
 }

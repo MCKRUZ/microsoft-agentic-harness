@@ -38,6 +38,23 @@ public sealed class ToolCallReplayTreatment : IToolCallReplayTreatment
     public bool Enabled => _appConfig.CurrentValue.AI.Conversations.ToolCallReplay.Enabled;
 
     /// <inheritdoc />
+    /// <remarks>
+    /// Floored at 0 for the same reason <see cref="ResolveMaxVerbatimChars"/> clamps: an
+    /// <see cref="IOptionsMonitor{TOptions}"/> value can change at runtime from a reloaded config file
+    /// without going back through <c>ToolCallReplayConfigValidator</c>, and a negative limit read by a
+    /// caller taking "the first N" would disable the bound rather than tighten it. Unlike that method
+    /// this needs no upper clamp and logs nothing — it is a cost ceiling, not a security one, so a
+    /// large value is a deployment's own trade to make and not worth a warning on every turn.
+    /// </remarks>
+    public int MaxCallsPerTurn =>
+        Math.Max(0, _appConfig.CurrentValue.AI.Conversations.ToolCallReplay.MaxCallsPerTurn);
+
+    /// <inheritdoc />
+    /// <remarks>Floored at 0 for the same reason as <see cref="MaxCallsPerTurn"/>.</remarks>
+    public int MaxReplayedChars =>
+        Math.Max(0, _appConfig.CurrentValue.AI.Conversations.ToolCallReplay.MaxReplayedChars);
+
+    /// <inheritdoc />
     public string NoResultPlaceholder =>
         "[no result recorded: this tool call did not complete.]";
 

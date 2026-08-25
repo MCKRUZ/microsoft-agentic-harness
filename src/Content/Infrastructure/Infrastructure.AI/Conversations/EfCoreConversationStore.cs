@@ -530,9 +530,19 @@ public sealed class EfCoreConversationStore : IConversationStore
         // reads a negative LIMIT as no limit at all — so passing the value through would answer a
         // request for no messages with the entire transcript, unbounded, straight into the model's
         // context. The file-backed store returns nothing for the same input.
+        //
+        // Testing the column for non-null is not sufficient on its own: an empty tool-call list
+        // serializes to a non-null "[]", which this filter would read as "this row is model-relevant"
+        // and admit an empty-content widget row into the prompt window — the row the file-backed
+        // store's DTO-level `ToolCalls is { Count: > 0 }` filter correctly drops. ConversationMessage
+        // now normalizes an empty list to null however it arrives, so nothing should write "[]" any
+        // more; excluding it here as well keeps this query correct for rows persisted before that
+        // normalization covered the `with`-expression path, and for any future producer that writes
+        // this column without going through the DTO.
         var tail = await context.ConversationMessages
             .AsNoTracking()
-            .Where(m => m.ConversationId == conversationId && (m.Content != "" || m.ToolCallsJson != null))
+            .Where(m => m.ConversationId == conversationId
+                && (m.Content != "" || (m.ToolCallsJson != null && m.ToolCallsJson != "[]")))
             .OrderByDescending(m => m.Ordinal)
             .Take(Math.Max(0, maxMessages))
             .ToListAsync(ct);
