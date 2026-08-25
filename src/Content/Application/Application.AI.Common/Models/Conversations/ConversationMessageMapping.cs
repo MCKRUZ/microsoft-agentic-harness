@@ -171,10 +171,13 @@ public static class ConversationMessageMapping
     /// replays either way.
     /// </para>
     /// <para>
-    /// Cost is measured on <see cref="ToolCallRecord.Input"/> plus <see cref="ToolCallRecord.Output"/>
-    /// — the treated text that actually reaches the model. The tool name and the synthesized call id
-    /// ride along uncounted; both are tens of characters against a budget in the tens of thousands, and
-    /// including them would imply a precision this is not trying to claim.
+    /// Cost counts every part of a record that actually reaches the model:
+    /// <see cref="ToolCallRecord.Input"/>, <see cref="ToolCallRecord.Output"/>,
+    /// <see cref="ToolCallRecord.ToolName"/> and <see cref="ToolCallRecord.CallId"/>. The last two are
+    /// normally tens of characters and were originally left out on those grounds — but both are
+    /// model-supplied strings that no treatment pass bounds, so "normally small" is an assumption about
+    /// untrusted input rather than a property of it. Counting them costs one addition and removes a way
+    /// for a budget to be quietly exceeded.
     /// </para>
     /// </remarks>
     private static (IReadOnlyList<ToolCallRecord>[] AdmittedByRow, int AdmittedCalls) SelectCallsWithinBudget(
@@ -224,7 +227,7 @@ public static class ConversationMessageMapping
             var cut = ordered.Count;
             while (cut > 0)
             {
-                var cost = (ordered[cut - 1].Input?.Length ?? 0) + (ordered[cut - 1].Output?.Length ?? 0);
+                var cost = CostOf(ordered[cut - 1]);
 
                 if (spent + cost > maxReplayedChars)
                 {
@@ -251,6 +254,21 @@ public static class ConversationMessageMapping
 
         return (admittedByRow, admittedCalls);
     }
+
+    /// <summary>
+    /// What one record costs against the window budget: every part of it that reaches the model.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="ToolCallRecord.ToolName"/> and <see cref="ToolCallRecord.CallId"/> are counted even
+    /// though they are normally short, because neither is bounded by
+    /// <c>IToolCallReplayTreatment.Treat</c> — they come from the model or an MCP server and are
+    /// persisted verbatim, so their size is not this code's to assume.
+    /// </remarks>
+    private static int CostOf(ToolCallRecord call) =>
+        (call.Input?.Length ?? 0)
+        + (call.Output?.Length ?? 0)
+        + (call.ToolName?.Length ?? 0)
+        + (call.CallId?.Length ?? 0);
 
     /// <summary>
     /// Appends one assistant/tool message pair per call, so a resumed conversation replays tool

@@ -219,6 +219,21 @@ public static class IServiceCollectionExtensions
             .ValidateFluentValidation<ContentCaptureConfig, ContentCaptureConfigValidator>()
             .ValidateOnStart();
 
+        // Tool-call replay bounds. ToolCallReplayConfigValidator existed and was fully tested but was
+        // never bound here, so none of its rules ran at startup and three XML doc comments asserted a
+        // control that did not exist — the sixth instance of this codebase's "a security control has a
+        // caller" pattern. Two rules depend on this registration: MaxVerbatimChars must not exceed the
+        // size above which structural secret redaction stops being trustworthy (a confidentiality
+        // bound, previously defended only by the runtime clamp in ToolCallReplayTreatment), and
+        // MaxReplayedChars must be at least twice MaxVerbatimChars, without which one oversized tool
+        // result silently empties a conversation's entire replayed tool history.
+        services.AddOptions<Domain.Common.Config.AI.Conversations.ToolCallReplayConfig>()
+            .Bind(configuration.GetSection("AppConfig:AI:Conversations:ToolCallReplay"))
+            .ValidateFluentValidation<
+                Domain.Common.Config.AI.Conversations.ToolCallReplayConfig,
+                ToolCallReplayConfigValidator>()
+            .ValidateOnStart();
+
         services.AddOptions<Domain.Common.Config.AI.ContextManagement.PromptCompositionConfig>()
             .Bind(configuration.GetSection("AppConfig:AI:ContextManagement:PromptComposition"))
             .ValidateFluentValidation<

@@ -31,15 +31,26 @@ namespace Application.Core.Tests.CQRS;
 public sealed class ToolCallReplayTrimDirectionCompositionTests
 {
     private const int CostPerCall = 100;
+    private const string ToolName = "search";
 
-    private static ToolCallRecord Call(int ordinal) =>
-        new(
-            "search",
-            new string('i', CostPerCall / 2),
-            new string('o', CostPerCall / 2),
+    /// <summary>
+    /// A call whose <em>total</em> budget cost is exactly <see cref="CostPerCall"/>, so the budgets
+    /// below can be expressed as a plain multiple of it. The payload is sized down by the tool name and
+    /// call id, which count against the budget too.
+    /// </summary>
+    private static ToolCallRecord Call(int ordinal)
+    {
+        var callId = $"call-{ordinal}";
+        var payload = CostPerCall - ToolName.Length - callId.Length;
+
+        return new ToolCallRecord(
+            ToolName,
+            new string('i', payload / 2),
+            new string('o', payload - (payload / 2)),
             DurationMs: 0,
-            CallId: $"call-{ordinal}",
+            CallId: callId,
             RoundOrdinal: ordinal);
+    }
 
     /// <summary>Mirrors <c>BuildTreatedToolCallRecords</c>' cap: keep the newest N by round ordinal.</summary>
     private static IReadOnlyList<ToolCallRecord> ApplyWriteSideCap(

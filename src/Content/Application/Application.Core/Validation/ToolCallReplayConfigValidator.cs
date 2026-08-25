@@ -52,11 +52,15 @@ public sealed class ToolCallReplayConfigValidator : AbstractValidator<ToolCallRe
         // fit); reachable the moment an operator raises the per-payload ceiling for a large-context
         // model and leaves the window budget alone, which is exactly the plausible mistake. Validating
         // the relationship is what makes that a startup error instead of silent amnesia.
+        // (long) rather than int arithmetic: MaxVerbatimChars is range-checked above, but rules are
+        // evaluated independently, so a nonsense value still reaches this one. At int width the
+        // doubling overflows negative above ~1.07 billion, which would make this rule pass vacuously
+        // and report a negative threshold in its own failure message.
         RuleFor(x => x.MaxReplayedChars)
-            .GreaterThanOrEqualTo(x => x.MaxVerbatimChars * 2)
+            .Must((config, maxReplayedChars) => maxReplayedChars >= (long)config.MaxVerbatimChars * 2)
             .WithMessage(x =>
                 $"MaxReplayedChars ({x.MaxReplayedChars}) must be at least twice MaxVerbatimChars " +
-                $"({x.MaxVerbatimChars}), i.e. {x.MaxVerbatimChars * 2}, so at least one " +
+                $"({x.MaxVerbatimChars}), i.e. {(long)x.MaxVerbatimChars * 2}, so at least one " +
                 "maximum-size tool call always fits in a replayed window. A smaller budget silently " +
                 "drops every replayed tool call rather than just the oversized one.");
     }

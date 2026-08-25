@@ -22,15 +22,31 @@ namespace Application.AI.Common.Tests.Models.Conversations;
 /// </remarks>
 public sealed class ConversationMessageMappingBudgetTests
 {
-    /// <summary>A call whose Input + Output cost exactly <paramref name="cost"/> characters.</summary>
-    private static ToolCallRecord Call(string id, int ordinal, int cost) =>
-        new(
-            "search",
-            new string('i', cost / 2),
-            new string('o', cost - (cost / 2)),
+    private const string ToolName = "search";
+
+    /// <summary>
+    /// A call whose <em>total</em> budget cost is exactly <paramref name="cost"/> characters.
+    /// </summary>
+    /// <remarks>
+    /// The payload is sized down by the tool name and call id, because those count against the budget
+    /// too — they reach the model and no treatment pass bounds them. Sizing the payload alone would
+    /// leave every arithmetic assertion below quietly off by the length of two strings, which is
+    /// exactly the kind of drift that makes a budget test stop testing the budget.
+    /// </remarks>
+    private static ToolCallRecord Call(string id, int ordinal, int cost)
+    {
+        var payload = cost - ToolName.Length - id.Length;
+        if (payload < 0)
+            throw new ArgumentOutOfRangeException(nameof(cost), cost, "Cost must cover the name and id.");
+
+        return new ToolCallRecord(
+            ToolName,
+            new string('i', payload / 2),
+            new string('o', payload - (payload / 2)),
             DurationMs: 0,
             CallId: id,
             RoundOrdinal: ordinal);
+    }
 
     private static ConversationMessage AssistantRow(string text, params ToolCallRecord[] calls) =>
         new(Guid.NewGuid(), MessageRole.Assistant, text, DateTimeOffset.UtcNow, ToolCalls: calls);
@@ -145,12 +161,12 @@ public sealed class ConversationMessageMappingBudgetTests
     {
         var transcript = new List<ConversationMessage>
         {
-            AssistantRow("tiny and old", Call("call-1", 0, 10)),
+            AssistantRow("tiny and old", Call("call-1", 0, 20)),
             AssistantRow("huge", Call("call-2", 0, 400)),
             AssistantRow("newest", Call("call-3", 0, 100)),
         };
 
-        // call-3 (100) fits. call-2 (400) does not. call-1 (10) would fit in what remains, but
+        // call-3 (100) fits. call-2 (400) does not. call-1 (20) would fit in the 100 that remains, but
         // admitting it would replay a sequence that never happened — call-1 then call-3, with the
         // call-2 that came between them silently gone.
         var replayed = ConversationMessageMapping.ToChatMessages(transcript, replayToolCalls: true, maxReplayedChars: 200);

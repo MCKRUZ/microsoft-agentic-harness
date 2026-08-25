@@ -50,9 +50,31 @@ public sealed class ToolCallReplayTreatment : IToolCallReplayTreatment
         Math.Max(0, _appConfig.CurrentValue.AI.Conversations.ToolCallReplay.MaxCallsPerTurn);
 
     /// <inheritdoc />
-    /// <remarks>Floored at 0 for the same reason as <see cref="MaxCallsPerTurn"/>.</remarks>
-    public int MaxReplayedChars =>
-        Math.Max(0, _appConfig.CurrentValue.AI.Conversations.ToolCallReplay.MaxReplayedChars);
+    /// <remarks>
+    /// <para>Floored at 0 for the same reason as <see cref="MaxCallsPerTurn"/>.</para>
+    /// <para>
+    /// Also floored at twice the effective per-payload ceiling, which is the invariant
+    /// <c>ToolCallReplayConfigValidator</c> enforces at startup — repeated here because startup is not
+    /// the only way this value changes. A reloaded config file reaches
+    /// <see cref="IOptionsMonitor{TOptions}"/> without going back through validation, and below that
+    /// floor the window budget cannot fit even one maximum-size call: admission latches shut at the
+    /// first call that does not fit, so every older call goes too and the conversation loses its whole
+    /// replayed tool history rather than just the oversized entry. Raising the value silently is the
+    /// safe direction here — the alternative is honouring a budget that empties the window — and it is
+    /// the same defense-in-depth shape <see cref="ResolveMaxVerbatimChars"/> already applies where a
+    /// reload could otherwise cross a bound that matters.
+    /// </para>
+    /// </remarks>
+    public int MaxReplayedChars
+    {
+        get
+        {
+            var configured = Math.Max(0, _appConfig.CurrentValue.AI.Conversations.ToolCallReplay.MaxReplayedChars);
+            var floor = Math.Min(int.MaxValue, (long)ResolveMaxVerbatimChars() * 2);
+
+            return configured >= floor ? configured : (int)floor;
+        }
+    }
 
     /// <inheritdoc />
     public string NoResultPlaceholder =>
