@@ -2,6 +2,7 @@ using Application.AI.Common.Categorization;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Notifications;
 using Application.Core.CQRS.Agents.ExecuteAgentTurn;
+using Application.Core.Tests.Fakes;
 using Application.Core.Tests.Helpers;
 using Domain.AI.Agents;
 using Domain.AI.Skills;
@@ -42,7 +43,8 @@ public class ExecuteAgentTurnCommandHandler_RegistryTests
             new DefaultContextSnapshotComputer(),
             new NullContextSnapshotNotifier(),
             TimeProvider.System,
-            NullLogger<ExecuteAgentTurnCommandHandler>.Instance);
+            NullLogger<ExecuteAgentTurnCommandHandler>.Instance,
+            new PassthroughToolCallReplayTreatment());
     }
 
     [Fact]

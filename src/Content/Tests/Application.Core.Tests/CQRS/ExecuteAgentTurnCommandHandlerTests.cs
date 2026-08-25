@@ -4,6 +4,7 @@ using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Context;
 using Application.AI.Common.Notifications;
 using Application.Core.CQRS.Agents.ExecuteAgentTurn;
+using Application.Core.Tests.Fakes;
 using Application.Core.Tests.Helpers;
 using Domain.AI.Skills;
 using FluentAssertions;
@@ -45,7 +46,8 @@ public class ExecuteAgentTurnCommandHandlerTests
             new DefaultContextSnapshotComputer(),
             new NullContextSnapshotNotifier(),
             TimeProvider.System,
-            NullLogger<ExecuteAgentTurnCommandHandler>.Instance);
+            NullLogger<ExecuteAgentTurnCommandHandler>.Instance,
+            new PassthroughToolCallReplayTreatment());
     }
 
     private static ExecuteAgentTurnCommand CreateCommand(
@@ -84,6 +86,159 @@ public class ExecuteAgentTurnCommandHandlerTests
         result.Success.Should().BeTrue();
         result.Response.Should().Be("Agent response text");
         result.Error.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Handle_BlockingRunWithToolCall_PopulatesTreatedToolCallsOnResult()
+    {
+        // Arrange — the non-streaming path: AgentResponse.Messages carries the call/result pair
+        // exactly as ToolCallCaptureFeasibilityTests proved it survives to this layer.
+        var agent = new TestableAIAgent(_ => new AgentResponse(
+        [
+            new ChatMessage(ChatRole.Assistant,
+                [new FunctionCallContent("call-1", "search", new Dictionary<string, object?> { ["q"] = "weather" })]),
+            new ChatMessage(ChatRole.Tool, [new FunctionResultContent("call-1", "sunny")]),
+            new ChatMessage(ChatRole.Assistant, "it's sunny"),
+        ]));
+        _agentCache
+            .Setup(c => c.GetOrCreateAsync(
+                It.IsAny<string>(),
+                It.IsAny<IReadOnlyList<string>>(),
+                It.IsAny<SkillAgentOptions>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(agent);
+
+        // Act
+        var result = await _handler.Handle(CreateCommand(), CancellationToken.None);
+
+        // Assert — #249 item 6: the turn's tool activity is captured on the result, not just
+        // narrated away into Response text.
+        result.Success.Should().BeTrue();
+        result.ToolCalls.Should().ContainSingle();
+        var call = result.ToolCalls[0];
+        call.ToolName.Should().Be("search");
+        call.CallId.Should().Be("call-1");
+        call.RoundOrdinal.Should().Be(0);
+        call.Input.Should().Contain("weather");
+        call.Output.Should().Be("sunny");
+    }
+
+    [Fact]
+    public async Task Handle_StreamingRunWithToolCall_PopulatesTreatedToolCallsOnResult()
+    {
+        // Arrange — the streaming path never produces an AgentResponse to extract from, so this
+        // proves RunStreamingTurnAsync's own accumulate-then-extract path works too.
+        var agent = TestableAIAgent.StreamingContent(
+            [new FunctionCallContent("call-1", "search", new Dictionary<string, object?> { ["q"] = "weather" })],
+            [new FunctionResultContent("call-1", "sunny")]);
+        _agentCache
+            .Setup(c => c.GetOrCreateAsync(
+                It.IsAny<string>(),
+                It.IsAny<IReadOnlyList<string>>(),
+                It.IsAny<SkillAgentOptions>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(agent);
+
+        Application.AI.Common.Services.AgentTurnStreamSink.Current =
+            new Application.AI.Common.Services.AgentTurnStreamSink(
+                onDelta: (_, _) => Task.CompletedTask,
+                onToolCall: (_, _, _, _) => Task.CompletedTask,
+                onToolCallResult: (_, _, _) => Task.CompletedTask);
+
+        try
+        {
+            // Act
+            var result = await _handler.Handle(CreateCommand(), CancellationToken.None);
+
+            // Assert
+            result.Success.Should().BeTrue();
+            result.ToolCalls.Should().ContainSingle();
+            var call = result.ToolCalls[0];
+            call.ToolName.Should().Be("search");
+            call.CallId.Should().Be("call-1");
+            call.Output.Should().Be("sunny");
+        }
+        finally
+        {
+            Application.AI.Common.Services.AgentTurnStreamSink.Current = null;
+        }
+    }
+
+    [Fact]
+    public async Task Handle_BlockingRunWithOrphanedToolCall_UsesNoResultPlaceholder()
+    {
+        // Arrange — a call with no matching FunctionResultContent (unknown-call termination,
+        // iteration-limit exhaustion). The severity-one invariant: this must never persist as a
+        // call with a null Output.
+        var agent = new TestableAIAgent(_ => new AgentResponse(
+        [
+            new ChatMessage(ChatRole.Assistant,
+                [new FunctionCallContent("call-1", "search", new Dictionary<string, object?> { ["q"] = "weather" })]),
+            new ChatMessage(ChatRole.Assistant, "still thinking"),
+        ]));
+        _agentCache
+            .Setup(c => c.GetOrCreateAsync(
+                It.IsAny<string>(),
+                It.IsAny<IReadOnlyList<string>>(),
+                It.IsAny<SkillAgentOptions>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(agent);
+
+        // Act
+        var result = await _handler.Handle(CreateCommand(), CancellationToken.None);
+
+        // Assert
+        result.ToolCalls.Should().ContainSingle();
+        result.ToolCalls[0].Output.Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task Handle_ToolCallReplayDisabled_ToolCallsStaysEmptyEvenThoughATurnCalledATool()
+    {
+        // Arrange — an operator opting a deployment out of tool-call replay (cost/compliance) via
+        // AI:Conversations:ToolCallReplay:Enabled=false must see nothing persisted, not treated-then-
+        // discarded: the disabled check has to gate BEFORE extraction/treatment runs.
+        var agent = new TestableAIAgent(_ => new AgentResponse(
+        [
+            new ChatMessage(ChatRole.Assistant,
+                [new FunctionCallContent("call-1", "search", new Dictionary<string, object?> { ["q"] = "weather" })]),
+            new ChatMessage(ChatRole.Tool, [new FunctionResultContent("call-1", "sunny")]),
+            new ChatMessage(ChatRole.Assistant, "it's sunny"),
+        ]));
+        _agentCache
+            .Setup(c => c.GetOrCreateAsync(
+                It.IsAny<string>(),
+                It.IsAny<IReadOnlyList<string>>(),
+                It.IsAny<SkillAgentOptions>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(agent);
+
+        var disabledTreatment = new Mock<Application.AI.Common.Interfaces.IToolCallReplayTreatment>();
+        disabledTreatment.Setup(t => t.Enabled).Returns(false);
+        var handlerWithDisabledReplay = new ExecuteAgentTurnCommandHandler(
+            _agentCache.Object,
+            Mock.Of<Application.AI.Common.Interfaces.Governance.IToolCallAdmissionPipeline>(
+                p => p.GetTrace() == Domain.AI.Governance.GovernanceTrace.Empty),
+            _agentRegistry.Object,
+            new Mock<ISkillMetadataRegistry>().Object,
+            new Application.AI.Common.Services.Context.ConversationRegistrationTracker(),
+            new Mock<IObservabilityStore>().Object,
+            Mock.Of<ILlmUsageCapture>(c => c.TakeSnapshot() == new LlmUsageSnapshot(0, 0, 0, 0, null, 0m, 0m, Array.Empty<string>())),
+            new DefaultContextSnapshotComputer(),
+            new NullContextSnapshotNotifier(),
+            TimeProvider.System,
+            NullLogger<ExecuteAgentTurnCommandHandler>.Instance,
+            disabledTreatment.Object);
+
+        // Act
+        var result = await handlerWithDisabledReplay.Handle(CreateCommand(), CancellationToken.None);
+
+        // Assert — the turn still succeeds and still narrates the text answer; only the structured
+        // tool-call memory is withheld.
+        result.Success.Should().BeTrue();
+        result.Response.Should().Be("it's sunny");
+        result.ToolCalls.Should().BeEmpty();
+        disabledTreatment.Verify(t => t.Treat(It.IsAny<string>(), It.IsAny<string?>()), Times.Never);
     }
 
     [Fact]
@@ -555,6 +710,7 @@ public class ExecuteAgentTurnCommandHandlerTests
             new NullContextSnapshotNotifier(),
             TimeProvider.System,
             NullLogger<ExecuteAgentTurnCommandHandler>.Instance,
+            new PassthroughToolCallReplayTreatment(),
             redactor.Object);
 
         var args = string.Empty;

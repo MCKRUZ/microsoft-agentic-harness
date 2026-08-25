@@ -141,6 +141,8 @@ public partial class AgentFactory
         var captureSensitive = ShouldEnableSensitiveData(
             _serviceProvider.GetService<IContentCapturePolicy>());
 
+        var redactor = ResolveRedactorAndWarnIfMissing(agentContext);
+
         var chatClientBuilder = chatClient.AsBuilder()
             // OpenTelemetry MUST sit below UseFunctionInvocation: FunctionInvokingChatClient
             // resolves its ActivitySource via innerClient.GetService<ActivitySource>() (exposed
@@ -161,7 +163,9 @@ public partial class AgentFactory
                 inner,
                 _loggerFactory.CreateLogger<Middleware.ObservabilityMiddleware>()))
             .Use(inner => new Middleware.ToolDiagnosticsMiddleware(
-                inner, _loggerFactory.CreateLogger<Middleware.ToolDiagnosticsMiddleware>()));
+                inner,
+                _loggerFactory.CreateLogger<Middleware.ToolDiagnosticsMiddleware>(),
+                redactor: redactor));
 
         // Per-turn context compaction — only when enabled in config AND a compaction service is
         // registered. Summarizes conversation history before the model call once its estimated
@@ -218,6 +222,31 @@ public partial class AgentFactory
     }
 
     /// <summary>
+    /// Resolves the registered <see cref="ISecretRedactor"/> for wiring into
+    /// <see cref="Middleware.ToolDiagnosticsMiddleware"/>, warning loudly when none is registered.
+    /// </summary>
+    /// <remarks>
+    /// Optional by design (a template consumer may not register Infrastructure.AI's redactor), but a
+    /// missing registration means every tool argument and result that middleware captures reaches
+    /// the observability store unscrubbed — the exact failure mode a null redactor here silently
+    /// produced before this logging was added. Log loudly rather than degrade silently.
+    /// </remarks>
+    private ISecretRedactor? ResolveRedactorAndWarnIfMissing(AgentExecutionContext agentContext)
+    {
+        var redactor = _serviceProvider.GetService<ISecretRedactor>();
+        if (redactor is null)
+        {
+            _logger.LogWarning(
+                "No ISecretRedactor is registered — tool arguments and results captured for agent " +
+                "{AgentName} will reach the observability store unredacted. Register one " +
+                "(Infrastructure.AI's AddInfrastructureAIDependencies does).",
+                agentContext.Name);
+        }
+
+        return redactor;
+    }
+
+    /// <summary>
     /// Computes whether the OpenTelemetry chat/agent instrumentation may attach sensitive GenAI
     /// content — prompts, completions, and tool-call arguments/results — to spans. Returns
     /// <see langword="true"/> only when the configured <see cref="IContentCapturePolicy"/> permits
@@ -259,9 +288,13 @@ public partial class AgentFactory
     /// A synthetic per-build identifier is deliberately NOT generated here: it would silently reset
     /// unlock state every time the cached agent is rebuilt (e.g. on sliding-expiration eviction) and
     /// would leak tracker entries keyed by throwaway identifiers that no eviction path can ever clear.
-    /// Missing wiring is therefore treated as a construction-time error and surfaced loudly — matching
-    /// how this factory already rejects every other construction-time misconfiguration — rather than
-    /// degrading the prerequisite-gating feature into a subtly-broken state.
+    /// Missing wiring is therefore treated as a construction-time error and surfaced loudly, unlike
+    /// this factory's other optional collaborators (e.g. <see cref="ResolveRedactorAndWarnIfMissing"/>):
+    /// those degrade safely to a documented no-op when absent, so warning and continuing is the
+    /// correct response. There is no equivalent safe degraded mode for a missing conversation scope
+    /// — every candidate default actively corrupts unlock state rather than merely omitting an
+    /// enhancement — so throwing is what this specific gap requires, not a house-wide "reject every
+    /// misconfiguration" convention.
     /// </remarks>
     /// <exception cref="InvalidOperationException">
     /// Thrown when no non-empty conversation scope is present in the context's additional properties.

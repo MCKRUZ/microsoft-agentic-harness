@@ -1,6 +1,7 @@
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Traces;
 using Application.AI.Common.Middleware;
+using Application.AI.Common.Services;
 using Domain.Common.MetaHarness;
 using FluentAssertions;
 using Microsoft.Extensions.AI;
@@ -218,6 +219,101 @@ public sealed class ToolDiagnosticsMiddlewareTests
 
         var act = () => middleware.GetResponseAsync(messages, null, CancellationToken.None);
         await act.Should().NotThrowAsync();
+    }
+
+    [Fact]
+    public async Task InvokeNext_ResultCallIdInReplayedScope_DoesNotCallAppendTrace()
+    {
+        var innerClient = MakeChatClient();
+        var (writerMock, middleware) = MakeMiddlewareWithWriter(innerClient);
+
+        var messages = new ChatMessage[]
+        {
+            new(ChatRole.Tool, [new FunctionResultContent("call-1", "42 results")])
+        };
+
+        ReplayedToolCallScope.Current = new HashSet<string> { "call-1" };
+        try
+        {
+            await middleware.GetResponseAsync(messages, null, CancellationToken.None);
+        }
+        finally
+        {
+            ReplayedToolCallScope.Current = null;
+        }
+
+        writerMock.Verify(
+            w => w.AppendTraceAsync(It.IsAny<ExecutionTraceRecord>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    [Fact]
+    public async Task InvokeNext_ResultCallIdNotInReplayedScope_StillCallsAppendTrace()
+    {
+        var innerClient = MakeChatClient();
+        var (writerMock, middleware) = MakeMiddlewareWithWriter(innerClient);
+
+        var messages = new ChatMessage[]
+        {
+            new(ChatRole.Tool, [new FunctionResultContent("call-2", "42 results")])
+        };
+
+        ReplayedToolCallScope.Current = new HashSet<string> { "call-1" };
+        try
+        {
+            await middleware.GetResponseAsync(messages, null, CancellationToken.None);
+        }
+        finally
+        {
+            ReplayedToolCallScope.Current = null;
+        }
+
+        writerMock.Verify(
+            w => w.AppendTraceAsync(It.IsAny<ExecutionTraceRecord>(), It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task InvokeNext_SecondRoundOfSameTurnRescansFirstRoundsResult_DoesNotReRecordIt()
+    {
+        // Simulates how FunctionInvokingChatClient actually calls this middleware: once per model
+        // round-trip, each time with the full, growing inbound message list — round 2 still contains
+        // round 1's result. Both rounds share one ReplayedToolCallScope.Current instance, the same way
+        // ExecuteAgentTurnCommandHandler seeds it once per turn, not once per round.
+        var innerClient = MakeChatClient();
+        var (writerMock, middleware) = MakeMiddlewareWithWriter(innerClient);
+
+        var roundOneMessages = new ChatMessage[]
+        {
+            new(ChatRole.Tool, [new FunctionResultContent("call-1", "first result")])
+        };
+        var roundTwoMessages = new ChatMessage[]
+        {
+            new(ChatRole.Tool, [new FunctionResultContent("call-1", "first result")]),
+            new(ChatRole.Tool, [new FunctionResultContent("call-2", "second result")])
+        };
+
+        ReplayedToolCallScope.Current = [];
+        try
+        {
+            await middleware.GetResponseAsync(roundOneMessages, null, CancellationToken.None);
+            await middleware.GetResponseAsync(roundTwoMessages, null, CancellationToken.None);
+        }
+        finally
+        {
+            ReplayedToolCallScope.Current = null;
+        }
+
+        // call-1 recorded once (round 1), not again when round 2's scan re-encounters it; call-2
+        // recorded once (round 2, genuinely new).
+        writerMock.Verify(
+            w => w.AppendTraceAsync(
+                It.Is<ExecutionTraceRecord>(r => r.TurnId == "call-1"), It.IsAny<CancellationToken>()),
+            Times.Once);
+        writerMock.Verify(
+            w => w.AppendTraceAsync(
+                It.Is<ExecutionTraceRecord>(r => r.TurnId == "call-2"), It.IsAny<CancellationToken>()),
+            Times.Once);
     }
 
     // --- Tool deduplication ---

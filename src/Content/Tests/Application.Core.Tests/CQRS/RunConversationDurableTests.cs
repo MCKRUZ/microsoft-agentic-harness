@@ -81,6 +81,7 @@ public sealed class RunConversationDurableTests
             _store,
             _lease,
             Options.Create(new ConversationsConfig { MaxHistoryMessages = maxHistoryMessages }),
+            Mock.Of<IToolCallReplayTreatment>(t => t.Enabled == true),
             NullLogger<RunConversationCommandHandler>.Instance);
 
     private static RunConversationCommand SelfContained(params string[] messages) => new()

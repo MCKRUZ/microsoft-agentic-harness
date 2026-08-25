@@ -1,4 +1,5 @@
 using Application.AI.Common.Interfaces.MediatR;
+using Application.AI.Common.Models.Conversations;
 using Application.Common.Interfaces.MediatR;
 using Domain.AI.Models;
 using MediatR;
@@ -85,6 +86,15 @@ public record AgentTurnResult : IAgentTurnResult
 	public required string Response { get; init; }
 	public required IReadOnlyList<ChatMessage> UpdatedHistory { get; init; }
 	public IReadOnlyList<string> ToolsInvoked { get; init; } = [];
+
+	/// <summary>
+	/// This turn's tool calls, extracted and treated for durable, model-facing replay (#249 item 6),
+	/// in call order. Empty when the turn made no tool calls. Every entry is guaranteed to carry a
+	/// result — including an orphaned call — see <c>IToolCallReplayTreatment.NoResultPlaceholder</c>;
+	/// a caller persisting these must never drop that guarantee by re-filtering the list.
+	/// </summary>
+	public IReadOnlyList<ToolCallRecord> ToolCalls { get; init; } = [];
+
 	public string? Error { get; init; }
 
 	/// <summary>

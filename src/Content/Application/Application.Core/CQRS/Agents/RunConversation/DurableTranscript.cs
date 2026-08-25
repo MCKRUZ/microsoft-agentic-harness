@@ -27,12 +27,18 @@ internal sealed class DurableTranscript
     private readonly IConversationStore _store;
     private readonly string _conversationId;
     private readonly string _ownerId;
+    private readonly bool _replayToolCalls;
 
     /// <summary>Binds a transcript to the conversation and caller a run is executing for.</summary>
     /// <param name="store">The transcript store. Enforces ownership on every call made here.</param>
     /// <param name="conversationId">The conversation being continued.</param>
     /// <param name="ownerId">The authenticated caller. Must be non-blank.</param>
-    public DurableTranscript(IConversationStore store, string conversationId, string ownerId)
+    /// <param name="replayToolCalls">
+    /// The deployment's live <c>IToolCallReplayTreatment.Enabled</c> value at the moment this transcript
+    /// was opened — see <see cref="LoadHistoryAsync"/>. Read once, at construction, deliberately: it
+    /// gates one run's dispatch, not a value re-checked mid-run.
+    /// </param>
+    public DurableTranscript(IConversationStore store, string conversationId, string ownerId, bool replayToolCalls)
     {
         ArgumentNullException.ThrowIfNull(store);
         ArgumentException.ThrowIfNullOrWhiteSpace(conversationId);
@@ -41,6 +47,7 @@ internal sealed class DurableTranscript
         _store = store;
         _conversationId = conversationId;
         _ownerId = ownerId;
+        _replayToolCalls = replayToolCalls;
     }
 
     /// <summary>
@@ -105,7 +112,7 @@ internal sealed class DurableTranscript
         if (messages is null || messages.Count == 0)
             return [];
 
-        return ConversationMessageMapping.ToChatMessages(messages);
+        return ConversationMessageMapping.ToChatMessages(messages, _replayToolCalls);
     }
 
     /// <summary>
@@ -113,6 +120,10 @@ internal sealed class DurableTranscript
     /// </summary>
     /// <param name="userMessage">The user's message that opened the turn.</param>
     /// <param name="agentResponse">The agent's reply that closed it.</param>
+    /// <param name="toolCalls">
+    /// This turn's tool calls, treated for durable replay (#249 item 6). Null or empty for a turn that
+    /// made none.
+    /// </param>
     /// <param name="ct">Cancellation token.</param>
     /// <remarks>
     /// <para>
@@ -129,13 +140,17 @@ internal sealed class DurableTranscript
     /// file-backed store, whose appends rewrite the entire transcript.
     /// </para>
     /// </remarks>
-    public Task AppendTurnAsync(string userMessage, string agentResponse, CancellationToken ct) =>
+    public Task AppendTurnAsync(
+        string userMessage,
+        string agentResponse,
+        IReadOnlyList<ToolCallRecord>? toolCalls,
+        CancellationToken ct) =>
         _store.AppendMessagesAsync(
             _conversationId,
             _ownerId,
             [
                 NewMessage(MessageRole.User, userMessage),
-                NewMessage(MessageRole.Assistant, agentResponse),
+                NewMessage(MessageRole.Assistant, agentResponse, toolCalls),
             ],
             ct);
 
@@ -145,6 +160,7 @@ internal sealed class DurableTranscript
     /// resolve it; a bundle run has no such client and no such bubble, so minting the id here keeps the
     /// store's "ids are unique within a conversation" rule without inventing a protocol to carry one.
     /// </remarks>
-    private static ConversationMessage NewMessage(MessageRole role, string content) =>
-        new(Guid.NewGuid(), role, content, DateTimeOffset.UtcNow);
+    private static ConversationMessage NewMessage(
+        MessageRole role, string content, IReadOnlyList<ToolCallRecord>? toolCalls = null) =>
+        new(Guid.NewGuid(), role, content, DateTimeOffset.UtcNow, ToolCalls: toolCalls);
 }

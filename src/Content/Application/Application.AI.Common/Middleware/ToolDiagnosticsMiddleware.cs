@@ -61,6 +61,14 @@ public sealed class ToolDiagnosticsMiddleware : DelegatingChatClient
         // observability page, and (when a trace writer is wired) append trace records.
         // AppendFunctionResultTracesAsync null-checks the writer internally, so this
         // must run unconditionally — otherwise RecordToolResult never fires.
+        //
+        // Scans the INBOUND messages, not the response — this middleware sits inside
+        // FunctionInvokingChatClient (confirmed empirically: the first-registered .Use() in
+        // AgentFactory.BuildMiddlewarePipeline is outermost), so a tool this turn actually invoked
+        // has its FunctionResultContent appended to the NEXT round's inbound messages by
+        // FunctionInvokingChatClient's own loop, not to this middleware's own outbound response.
+        // Scanning the response would miss real tool activity entirely — see #249 item 6's PR2 for
+        // the incident this comment exists to prevent repeating.
         await AppendFunctionResultTracesAsync(messages, cancellationToken);
 
         try
@@ -78,15 +86,40 @@ public sealed class ToolDiagnosticsMiddleware : DelegatingChatClient
         }
     }
 
+    /// <remarks>
+    /// Scans the caller's <em>inbound</em> messages, not the response — correct given where this
+    /// middleware sits in the pipeline (see the call site's comment): a genuinely new result from
+    /// this turn's own tool-execution rounds arrives here as inbound content on the next round, not
+    /// as this middleware's own outbound response. That same inbound scan would just as readily match
+    /// a result already sitting in <em>replayed</em> conversation history (#249 item 6), or a result
+    /// this same turn already recorded on an earlier round — content this middleware cannot tell apart
+    /// from a genuinely new result by looking at it alone, since all three are an ordinary
+    /// <see cref="FunctionResultContent"/> in the (cumulative, ever-growing) inbound list. Excluding
+    /// any result whose <c>CallId</c> is present in <see cref="Services.ReplayedToolCallScope.Current"/>
+    /// is what supplies that missing signal: the turn handler seeds it with the pre-dispatch history's
+    /// call ids, and this method grows it in place as it records each result, so both the
+    /// cross-turn (replayed history) and intra-turn (an earlier round of this same turn) duplicate
+    /// cases are covered by one check.
+    /// </remarks>
     private async Task AppendFunctionResultTracesAsync(IEnumerable<ChatMessage> messages, CancellationToken ct)
     {
+        var alreadyReplayed = Services.ReplayedToolCallScope.Current;
         var functionResults = messages
             .SelectMany(m => m.Contents)
             .OfType<FunctionResultContent>()
+            .Where(r => alreadyReplayed is null || string.IsNullOrEmpty(r.CallId) || !alreadyReplayed.Contains(r.CallId))
             .ToList();
 
         foreach (var result in functionResults)
         {
+            // Mark this call id known the moment it's picked up for recording — not after the trace
+            // write succeeds — so a later round's scan of the same (still-growing) inbound message
+            // list skips it even if the trace write below fails. See ReplayedToolCallScope's remarks:
+            // this is what closes the intra-turn duplicate-recording case a read-only, dispatch-time
+            // snapshot alone cannot.
+            if (!string.IsNullOrEmpty(result.CallId))
+                alreadyReplayed?.Add(result.CallId);
+
             // A failed call's Result already carries the raw exception message baked in by
             // IncludeDetailedErrors (see ExecuteAgentTurnCommandHandler.RedactedResultForStreaming) — this
             // trace record feeds the dashboard's per-invocation page via ToolInvocationDetailDto,

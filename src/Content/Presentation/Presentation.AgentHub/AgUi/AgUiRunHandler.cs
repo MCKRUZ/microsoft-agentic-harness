@@ -34,6 +34,7 @@ public sealed class AgUiRunHandler
     private readonly IConversationTurnLease _turnLease;
     private readonly IAgUiEventWriterAccessor _writerAccessor;
     private readonly IConversationBudgetTracker _conversationBudget;
+    private readonly IToolCallReplayTreatment _toolCallReplayTreatment;
     private readonly IHostEnvironment _environment;
     private readonly ILogger<AgUiRunHandler> _logger;
 
@@ -48,6 +49,7 @@ public sealed class AgUiRunHandler
         IConversationTurnLease turnLease,
         IAgUiEventWriterAccessor writerAccessor,
         IConversationBudgetTracker conversationBudget,
+        IToolCallReplayTreatment toolCallReplayTreatment,
         IHostEnvironment environment,
         ILogger<AgUiRunHandler> logger)
     {
@@ -58,6 +60,7 @@ public sealed class AgUiRunHandler
         _turnLease = turnLease;
         _writerAccessor = writerAccessor;
         _conversationBudget = conversationBudget;
+        _toolCallReplayTreatment = toolCallReplayTreatment;
         _environment = environment;
         _logger = logger;
     }
@@ -410,7 +413,8 @@ public sealed class AgUiRunHandler
             assistantId,
             MessageRole.Assistant,
             response,
-            DateTimeOffset.UtcNow);
+            DateTimeOffset.UtcNow,
+            ToolCalls: result.ToolCalls);
         await _conversationStore.AppendMessageAsync(input.ThreadId, callerId, assistantMsg, ct);
 
         await writer.WriteAsync(new RunFinishedEvent(input.ThreadId, input.RunId), ct);
@@ -469,9 +473,11 @@ public sealed class AgUiRunHandler
 
     // Delegates to the shared projection rather than repeating the role switch. This file, the SignalR
     // orchestrator and the durable multi-turn loop each carried a byte-identical copy; a role added to
-    // one of three copies does not fail, it silently replays as the fallback.
-    private static IReadOnlyList<ChatMessage> ToMeaiHistory(IReadOnlyList<ConversationMessage> messages) =>
-        ConversationMessageMapping.ToChatMessages(messages);
+    // one of three copies does not fail, it silently replays as the fallback. Not static: gates
+    // tool-call expansion on the live IToolCallReplayTreatment.Enabled value so an operator's kill
+    // switch stops replaying already-persisted tool payloads, not just stop writing new ones.
+    private IReadOnlyList<ChatMessage> ToMeaiHistory(IReadOnlyList<ConversationMessage> messages) =>
+        ConversationMessageMapping.ToChatMessages(messages, _toolCallReplayTreatment.Enabled);
 
     private static async Task TryWriteErrorAsync(IAgUiEventWriter writer, string message, CancellationToken ct)
     {

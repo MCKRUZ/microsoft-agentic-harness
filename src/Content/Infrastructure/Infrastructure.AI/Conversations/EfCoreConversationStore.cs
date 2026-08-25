@@ -515,10 +515,13 @@ public sealed class EfCoreConversationStore : IConversationStore
 
         RequireOwner(conversationId, callerId, owner);
 
-        // Empty-content messages are excluded before the window is applied: an inline-widget message
-        // carries its payload in the widget spec, not in text, so it is not model-relevant. Filtering
-        // after the window would let widgets consume slots and then be dropped, silently starving the
-        // model of context in a widget-heavy conversation.
+        // Empty-content messages are excluded before the window is applied — unless the row carries
+        // tool calls: an inline-widget message carries its payload in the widget spec, not in text,
+        // so it is not model-relevant, but a turn that ended in tool activity with no final prose
+        // (ToolCallsJson set, Content empty) genuinely is — dropping it would silently discard the
+        // tool call/result pair #249 item 6 exists to replay, from exactly the turn shape it exists
+        // to cover. Filtering after the window would let widgets consume slots and then be dropped,
+        // silently starving the model of context in a widget-heavy conversation.
         //
         // The take-then-reverse is what keeps this bounded: the database returns at most maxMessages
         // rows instead of the whole transcript, which is the point of dispatching from a window.
@@ -529,7 +532,7 @@ public sealed class EfCoreConversationStore : IConversationStore
         // context. The file-backed store returns nothing for the same input.
         var tail = await context.ConversationMessages
             .AsNoTracking()
-            .Where(m => m.ConversationId == conversationId && m.Content != "")
+            .Where(m => m.ConversationId == conversationId && (m.Content != "" || m.ToolCallsJson != null))
             .OrderByDescending(m => m.Ordinal)
             .Take(Math.Max(0, maxMessages))
             .ToListAsync(ct);

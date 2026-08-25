@@ -60,6 +60,9 @@ public class RunConversationCommandHandlerSolutionReviewFixTests
             strictStore,
             new Mock<IConversationTurnLease>(MockBehavior.Strict).Object,
             Options.Create(new ConversationsConfig()),
+            // Never read: these tests run only the self-contained path, which never opens a
+            // DurableTranscript (the only consumer of Enabled).
+            new Mock<IToolCallReplayTreatment>().Object,
             NullLogger<RunConversationCommandHandler>.Instance);
     }
 

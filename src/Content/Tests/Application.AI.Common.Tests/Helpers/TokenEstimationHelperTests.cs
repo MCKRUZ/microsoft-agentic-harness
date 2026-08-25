@@ -93,6 +93,153 @@ public class TokenEstimationHelperTests
     }
 
     [Fact]
+    public void EstimateTokens_MessageWithFunctionCall_CountsCallNameAndArguments()
+    {
+        // Regression guard: ChatMessage.Text concatenates only TextContent, so a message that is
+        // purely a tool call previously estimated as 0 tokens — the context-budget dashboard would
+        // report a conversation's largest cost category as free. Name "search" (6 chars => 2) +
+        // serialized args {"query":"weather"} (19 chars => 5) = 7.
+        var messages = new List<ChatMessage>
+        {
+            new(ChatRole.Assistant,
+            [
+                new FunctionCallContent("call-1", "search", new Dictionary<string, object?> { ["query"] = "weather" })
+            ])
+        };
+
+        var result = TokenEstimationHelper.EstimateTokens(messages);
+
+        result.Should().Be(7);
+    }
+
+    [Fact]
+    public void EstimateTokens_MessageWithFunctionResult_CountsResultText()
+    {
+        // "forecast: sunny" = 15 chars => ceil(15/4) = 4
+        var messages = new List<ChatMessage>
+        {
+            new(ChatRole.Tool, [new FunctionResultContent("call-1", "forecast: sunny")])
+        };
+
+        var result = TokenEstimationHelper.EstimateTokens(messages);
+
+        result.Should().Be(4);
+    }
+
+    [Fact]
+    public void EstimateTokens_MessageWithFunctionCallNoArguments_CountsOnlyName()
+    {
+        var messages = new List<ChatMessage>
+        {
+            new(ChatRole.Assistant, [new FunctionCallContent("call-1", "ping")])
+        };
+
+        var result = TokenEstimationHelper.EstimateTokens(messages);
+
+        // "ping" = 4 chars => 1
+        result.Should().Be(1);
+    }
+
+    [Fact]
+    public void EstimateTokens_MessageWithMultipleTextContentFragments_DoesNotOvercountVersusOneConcatenatedString()
+    {
+        // Regression guard: a naive per-content-item estimate would ceiling-round each fragment
+        // separately (e.g. "ab" => 1, "cd" => 1, summing to 2), overcounting purely because a
+        // provider happened to stream one logical reply back as several TextContent blocks.
+        // ChatMessage.Text concatenates them first ("abcd" = 4 chars => 1), matching what a single
+        // plain-text message with the same content would estimate.
+        var fragmented = new List<ChatMessage>
+        {
+            new(ChatRole.Assistant, [new TextContent("ab"), new TextContent("cd")])
+        };
+        var single = new List<ChatMessage> { new(ChatRole.Assistant, "abcd") };
+
+        TokenEstimationHelper.EstimateTokens(fragmented).Should().Be(TokenEstimationHelper.EstimateTokens(single));
+    }
+
+    [Fact]
+    public void EstimateTokens_MessageWithReasoningContent_CountsReasoningText()
+    {
+        // Regression guard: TextReasoningContent (Claude extended thinking, OpenAI o-series) is
+        // real, separately-billed text ChatMessage.Text does NOT include — leaving it uncounted
+        // repeats the "costliest category is free" bug for a different content type.
+        var messages = new List<ChatMessage>
+        {
+            new(ChatRole.Assistant, [new TextReasoningContent("thinking about the weather")])
+        };
+
+        var result = TokenEstimationHelper.EstimateTokens(messages);
+
+        // "thinking about the weather" = 26 chars => ceil(26/4) = 7
+        result.Should().Be(7);
+    }
+
+    [Fact]
+    public void EstimateTokens_MessageWithNonStringFunctionResult_SerializesRatherThanCallingToString()
+    {
+        // Regression guard: a structured (non-string) Result's .ToString() reflects the CLR type
+        // name, not the payload — silently undercounting a large tool result returned as a raw
+        // object rather than pre-serialized JSON text.
+        var messages = new List<ChatMessage>
+        {
+            new(ChatRole.Tool,
+            [
+                new FunctionResultContent("call-1", new Dictionary<string, object?> { ["forecast"] = "sunny" })
+            ])
+        };
+
+        var result = TokenEstimationHelper.EstimateTokens(messages);
+
+        // Serialized {"forecast":"sunny"} = 20 chars => 20/4 = 5
+        result.Should().Be(5);
+    }
+
+    [Fact]
+    public void EstimateTokens_MessageWithMcpToolResult_CountsTextOutputs()
+    {
+        // Regression guard: every ToolResultContent subtype the SDK ships (McpServerToolResultContent,
+        // WebSearchToolResultContent, CodeInterpreterToolResultContent), not just FunctionResultContent,
+        // carries a text-representable Outputs payload — leaving the others at 0 would repeat the
+        // "costliest category is free" bug for any consumer that wires up a hosted MCP tool.
+        var messages = new List<ChatMessage>
+        {
+            new(ChatRole.Tool,
+            [
+                new McpServerToolResultContent("call-1")
+                {
+                    Outputs = [new TextContent("forecast: sunny")]
+                }
+            ])
+        };
+
+        var result = TokenEstimationHelper.EstimateTokens(messages);
+
+        // "forecast: sunny" = 15 chars => ceil(15/4) = 4
+        result.Should().Be(4);
+    }
+
+    [Fact]
+    public void EstimateTokens_MessageWithNestedMultiFragmentToolOutputs_DoesNotOvercount()
+    {
+        // The concatenate-before-estimate treatment applies at every recursion depth, not just the
+        // top-level message — a tool result's own Outputs list can just as plausibly be chunked into
+        // several TextContent fragments as a top-level assistant reply can.
+        var messages = new List<ChatMessage>
+        {
+            new(ChatRole.Tool,
+            [
+                new McpServerToolResultContent("call-1")
+                {
+                    Outputs = [new TextContent("ab"), new TextContent("cd")]
+                }
+            ])
+        };
+        var flat = new List<ChatMessage> { new(ChatRole.Tool, "abcd") };
+
+        TokenEstimationHelper.EstimateTokens(messages).Should().Be(TokenEstimationHelper.EstimateTokens(flat));
+    }
+
+    [Fact]
     public void FitsWithinBudget_UnderBudget_ReturnsTrue()
     {
         // "test" = 4 chars => 1 token

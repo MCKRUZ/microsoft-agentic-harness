@@ -79,4 +79,10 @@ public sealed class ConversationsConfig
     /// is the one that breaks it — see <c>Infrastructure.AI.Conversations.FileSystemConversationStore</c>.
     /// </remarks>
     public string ConversationsPath { get; set; } = "./conversations";
+
+    /// <summary>
+    /// Governs how much of a replayed tool call's arguments/result text is sent to the model
+    /// verbatim versus truncated or withheld. See <see cref="ToolCallReplayConfig"/>.
+    /// </summary>
+    public ToolCallReplayConfig ToolCallReplay { get; set; } = new();
 }

@@ -658,9 +658,11 @@ public abstract class ConversationStoreContractTests
         var record = await Store.CreateAsync("agent", Owner);
         var toolCall = new ToolCallRecord(
             "search",
-            JsonDocument.Parse("""{"query":"weather"}""").RootElement,
-            JsonDocument.Parse("""{"result":["sunny"]}""").RootElement,
-            DurationMs: 42);
+            """{"query":"weather"}""",
+            """{"result":["sunny"]}""",
+            DurationMs: 42,
+            CallId: "call-1",
+            RoundOrdinal: 0);
         var widget = new WidgetSpec("render_table", JsonDocument.Parse("""{"rows":[1,2]}""").RootElement);
 
         await Store.AppendMessageAsync(
@@ -674,7 +676,9 @@ public abstract class ConversationStoreContractTests
         message.ToolCalls.Should().ContainSingle();
         message.ToolCalls![0].ToolName.Should().Be("search");
         message.ToolCalls[0].DurationMs.Should().Be(42);
-        message.ToolCalls[0].Input.GetRawText().Should().Contain("weather");
+        message.ToolCalls[0].Input.Should().Contain("weather");
+        message.ToolCalls[0].CallId.Should().Be("call-1");
+        message.ToolCalls[0].RoundOrdinal.Should().Be(0);
         message.Widget.Should().NotBeNull();
         message.Widget!.Type.Should().Be("render_table");
         message.Widget.Args.GetRawText().Should().Contain("rows");
@@ -1010,6 +1014,30 @@ public abstract class ConversationStoreContractTests
         var history = await Store.GetHistoryForDispatch(record.Id, Owner, maxMessages: 10);
 
         history!.Select(m => m.Content).Should().Equal("real question", "real answer");
+    }
+
+    [Fact]
+    public async Task GetHistoryForDispatch_KeepsToolOnlyRowWithEmptyContent()
+    {
+        // #249 item 6: a turn that ends in tool activity with no final prose (empty Content, non-null
+        // ToolCalls) is model-relevant — unlike a widget-only row — so it must survive the same filter
+        // that drops widget rows, or the tool call/result pair this feature exists to replay silently
+        // disappears from every replayed window.
+        var record = await Store.CreateAsync("agent", Owner);
+        var toolCall = new ToolCallRecord("search", null, "sunny", DurationMs: 1, CallId: "call-1", RoundOrdinal: 0);
+        await Store.AppendMessageAsync(record.Id, Owner, UserMessage("what's the weather?"));
+        await Store.AppendMessageAsync(
+            record.Id,
+            Owner,
+            new ConversationMessage(
+                Guid.NewGuid(), MessageRole.Assistant, string.Empty, DateTimeOffset.UtcNow,
+                ToolCalls: [toolCall]));
+
+        var history = await Store.GetHistoryForDispatch(record.Id, Owner, maxMessages: 10);
+
+        history.Should().HaveCount(2);
+        history![1].Content.Should().BeEmpty();
+        history[1].ToolCalls.Should().ContainSingle().Which.CallId.Should().Be("call-1");
     }
 
     // -- Helpers --

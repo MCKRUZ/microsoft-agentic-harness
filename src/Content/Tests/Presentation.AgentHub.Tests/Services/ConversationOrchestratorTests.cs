@@ -37,6 +37,7 @@ public class ConversationOrchestratorTests
     private readonly Mock<IObservabilityStore> _obsStore = new();
     private readonly Mock<IConnectionTracker> _connectionTracker = new();
     private readonly Mock<IConversationBudgetTracker> _budget = new();
+    private readonly Mock<IToolCallReplayTreatment> _toolCallReplayTreatment = new();
     // The real in-process lease rather than a mock: a mocked lease would hand back a null handle and
     // every test here would then be exercising a turn that never took one. Replaced per-test where a
     // lost lease has to be simulated, which the in-process one never does.
@@ -49,6 +50,9 @@ public class ConversationOrchestratorTests
         _budget
             .Setup(b => b.GetStatusAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(ConversationBudgetStatus.Disabled);
+
+        // Enabled by default — most tests don't exercise the tool-call replay kill switch.
+        _toolCallReplayTreatment.Setup(t => t.Enabled).Returns(true);
     }
 
     private ConversationOrchestrator CreateOrchestrator(string environmentName = "Development")
@@ -68,6 +72,7 @@ public class ConversationOrchestratorTests
                 _obsStore.Object, _store.Object, NullLogger<ConversationTelemetryRecorder>.Instance),
             _connectionTracker.Object,
             _budget.Object,
+            _toolCallReplayTreatment.Object,
             Options.Create(_config),
             environment.Object,
             NullLogger<ConversationOrchestrator>.Instance);

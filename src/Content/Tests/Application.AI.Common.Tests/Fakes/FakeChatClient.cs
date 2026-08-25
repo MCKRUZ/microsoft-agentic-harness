@@ -44,11 +44,18 @@ public sealed class FakeChatClient : IChatClient
     /// <summary>
     /// Enqueues a response whose assistant message carries a tool call, for tool-capture tests.
     /// </summary>
-    public FakeChatClient EnqueueResponseWithToolCall(string toolName, string callId)
+    /// <param name="toolName">The tool name the call targets.</param>
+    /// <param name="callId">The provider-assigned call id.</param>
+    /// <param name="arguments">
+    /// The call's arguments. Defaults to empty — pass a populated dictionary when a test needs to
+    /// prove arguments specifically survive a round trip (an empty dictionary never exercises that).
+    /// </param>
+    public FakeChatClient EnqueueResponseWithToolCall(
+        string toolName, string callId, IDictionary<string, object?>? arguments = null)
     {
         var message = new ChatMessage(ChatRole.Assistant, new List<AIContent>
         {
-            new FunctionCallContent(callId, toolName, new Dictionary<string, object?>())
+            new FunctionCallContent(callId, toolName, arguments ?? new Dictionary<string, object?>())
         });
         _responses.Enqueue(new ChatResponse(message));
         return this;

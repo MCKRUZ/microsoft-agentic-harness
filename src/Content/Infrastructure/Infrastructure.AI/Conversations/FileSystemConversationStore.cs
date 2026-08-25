@@ -515,11 +515,15 @@ public sealed class FileSystemConversationStore : IConversationStore
         if (record is null)
             return null;
 
-        // Exclude empty-content messages (an inline-widget message carries its payload in WidgetSpec, not
-        // text, so it is not model-relevant). Filtering before the window keeps the cap counting real
-        // conversational turns — otherwise widget-heavy conversations would silently starve the model of
-        // context as the widgets consume window slots then get dropped at mapping time.
-        var messages = record.Messages.Where(m => !string.IsNullOrEmpty(m.Content)).ToList();
+        // Exclude empty-content messages — unless the row carries tool calls (an inline-widget message
+        // carries its payload in WidgetSpec, not text, so it is not model-relevant, but a turn that ended
+        // in tool activity with no final prose genuinely is: dropping it would silently discard the tool
+        // call/result pair #249 item 6 exists to replay). Filtering before the window keeps the cap
+        // counting real conversational turns — otherwise widget-heavy conversations would silently starve
+        // the model of context as the widgets consume window slots then get dropped at mapping time.
+        var messages = record.Messages
+            .Where(m => !string.IsNullOrEmpty(m.Content) || m.ToolCalls is { Count: > 0 })
+            .ToList();
         if (messages.Count <= maxMessages)
             return messages;
 
