@@ -312,6 +312,33 @@ docker run -d --name jaeger \
                         <code>ResponseBlockThreshold</code> block the response entirely.
                     </p>
 
+                    <h3>7b · Tool-call replay treatment</h3>
+                    <p>
+                        Layer 7 guards a tool response on its way into <em>the current turn</em>. When a
+                        conversation is later <strong>resumed</strong>, the harness replays that turn's real tool
+                        calls and results back to the model as its own memory — and that is a different trust
+                        boundary: the content is <strong>durable</strong> (persisted in the conversation store
+                        indefinitely, not a transient in-flight message) and <strong>model-facing</strong> (read back
+                        as fact on every subsequent turn).
+                    </p>
+                    <p>
+                        <code>IToolCallReplayTreatment</code> is the layer for that boundary. Before anything is
+                        persisted it runs sanitize → redact → <em>structural</em> secret redaction, then size-tiers the
+                        result: replayed verbatim under <code>MaxVerbatimChars</code>, truncated with a visible marker
+                        above it, and withheld outright above the ceiling where redaction stops being trustworthy. The
+                        structural pass is what distinguishes it from layer 7's — a secret sitting in a JSON field
+                        named <code>"token"</code> is invisible to a plain value-shape scan, so a durable path
+                        protected only by layer 7's patterns would be <em>weaker</em> than the transient one it sits
+                        behind.
+                    </p>
+                    <p>
+                        Operators can disable replay entirely with
+                        <code>AI:Conversations:ToolCallReplay:Enabled</code>. That switch gates both writing new tool
+                        payloads <em>and</em> replaying already-persisted ones — but note it does not
+                        <em>un-persist</em> anything already stored, so containment after a leak needs a store-side
+                        purge as well.
+                    </p>
+
                     <h3>8 · Human escalation</h3>
                     <p>
                         When the governance engine decides a decision exceeds the agent's authority, it raises an
