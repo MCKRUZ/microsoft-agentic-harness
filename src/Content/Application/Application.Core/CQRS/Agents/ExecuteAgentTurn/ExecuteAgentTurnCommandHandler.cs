@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Diagnostics.Metrics;
 using System.Text;
 using System.Text.Json;
+using Application.AI.Common.Categorization;
 using Application.AI.Common.Exceptions;
 using Application.AI.Common.Helpers;
 using Application.AI.Common.Interfaces;
@@ -266,7 +267,7 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 			// (compute, persist, notify) can never fail the turn.
 			try
 			{
-				var (turnLoaded, turnLoadedBodies) = BuildTurnLoadedItems(
+				var (turnLoaded, turnLoadedBodies, registrations) = BuildTurnLoadedItems(
 					request.ConversationId,
 					agentDef,
 					request.UserMessage,
@@ -278,6 +279,7 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 					turnId: $"t-{request.TurnNumber:D2}",
 					inputTokens: usage.InputTokens,
 					history: updatedHistory,
+					registrations: registrations,
 					turnLoaded: turnLoaded,
 					capturedAtUtc: _timeProvider.GetUtcNow());
 
@@ -579,7 +581,8 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 	///   floor of <c>est(name + description)</c> so a schemaless tool still has signal.</item>
 	/// </list>
 	/// </remarks>
-	private (IReadOnlyList<LoadedItem> Items, IReadOnlyList<LoadedItemBody> Bodies) BuildTurnLoadedItems(
+	private (IReadOnlyList<LoadedItem> Items, IReadOnlyList<LoadedItemBody> Bodies, CategoryBreakdown Registrations)
+		BuildTurnLoadedItems(
 		string conversationId,
 		AgentDefinition? agentDef,
 		string userMessage,
@@ -592,10 +595,22 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 		// the separate /messages/:messageId endpoint, so they're skipped here.
 		var bodies = new List<LoadedItemBody>(8);
 
+		// Cumulative registration totals for the context bar, alongside the per-turn delta items for
+		// the inspector drawer. Both are derived from the same RegistrationSnapshot and the same
+		// per-item arithmetic (RegistrationBreakdownCalculator), so the bar and the drawer cannot
+		// disagree about the turn they are both describing — they answer different questions
+		// (running state vs. what changed) from one measurement.
+		//
+		// Empty when no agent context is resolvable: nothing is known to be registered, so nothing is
+		// claimed. The whole prompt then lands in ContextSnapshot.UnaccountedTokens, which is the
+		// honest reading — unattributed, not absent.
+		var registrations = CategoryBreakdown.Empty;
+
 		var ctx = _agentCache.TryGetContext(conversationId);
 		if (ctx is not null)
 		{
 			var snapshot = BuildRegistrationSnapshot(ctx, agentDef);
+			registrations = RegistrationBreakdownCalculator.From(snapshot);
 			var delta = _registrationTracker.DiffAndUpdate(conversationId, snapshot);
 			AppendRegistrationItems(items, bodies, snapshot, delta);
 		}
@@ -621,7 +636,7 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 				Reference: toolName));
 		}
 
-		return (items, bodies);
+		return (items, bodies, registrations);
 	}
 
 	/// <summary>

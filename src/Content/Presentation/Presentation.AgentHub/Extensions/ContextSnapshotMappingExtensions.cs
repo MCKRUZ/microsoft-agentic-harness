@@ -45,6 +45,8 @@ public static class ContextSnapshotMappingExtensions
             snapshot.TurnId,
             snapshot.CtxAfter.ToDto(),
             [.. snapshot.Loaded.Select(ToDto)],
-            snapshot.CapturedAtUtc);
+            snapshot.CapturedAtUtc,
+            snapshot.MeasuredInputTokens,
+            snapshot.UnaccountedTokens);
     }
 }

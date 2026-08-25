@@ -89,6 +89,30 @@ export interface ContextSnapshotEvent {
   ctxAfter: CategoryBreakdown;
   loaded: LoadedItem[];
   capturedAtUtc: string;
+
+  /**
+   * What the provider actually billed for this turn's prompt, or 0 when it reported nothing.
+   * Ground truth to reconcile `ctxAfter` against.
+   *
+   * Optional because snapshots stored before this field existed do not carry it.
+   */
+  measuredInputTokens?: number;
+
+  /**
+   * `measuredInputTokens` minus the sum of `ctxAfter` — the part of the real prompt no category
+   * accounts for.
+   *
+   * **Signed.** Positive means context reached the model that the harness never attributed.
+   * Negative means the breakdown's estimates overshot what was billed: `ctxAfter.messages` is
+   * estimated at roughly four characters per token, which runs long on JSON-shaped tool payloads.
+   * That is why this is its own number rather than a seventh category — a category is an additive
+   * token count and cannot express an overshoot.
+   *
+   * Every category in `ctxAfter` is now measured from what was actually loaded. Previously `system`
+   * was computed as `billed - estimated messages`, so an overshoot silently floored the whole
+   * system-prompt segment to zero, indistinguishable from a turn with no system prompt at all.
+   */
+  unaccountedTokens?: number;
 }
 
 export interface SessionRecord {
