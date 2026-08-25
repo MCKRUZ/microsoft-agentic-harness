@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Diagnostics.Metrics;
 using System.Text;
 using System.Text.Json;
+using Application.AI.Common.Categorization;
 using Application.AI.Common.Exceptions;
 using Application.AI.Common.Helpers;
 using Application.AI.Common.Interfaces;
@@ -266,7 +267,7 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 			// (compute, persist, notify) can never fail the turn.
 			try
 			{
-				var (turnLoaded, turnLoadedBodies) = BuildTurnLoadedItems(
+				var (turnLoaded, turnLoadedBodies, registrations) = BuildTurnLoadedItems(
 					request.ConversationId,
 					agentDef,
 					request.UserMessage,
@@ -276,8 +277,8 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 					conversationId: request.ConversationId,
 					turnIndex: request.TurnNumber,
 					turnId: $"t-{request.TurnNumber:D2}",
-					inputTokens: usage.InputTokens,
 					history: updatedHistory,
+					registrations: registrations,
 					turnLoaded: turnLoaded,
 					capturedAtUtc: _timeProvider.GetUtcNow());
 
@@ -579,7 +580,8 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 	///   floor of <c>est(name + description)</c> so a schemaless tool still has signal.</item>
 	/// </list>
 	/// </remarks>
-	private (IReadOnlyList<LoadedItem> Items, IReadOnlyList<LoadedItemBody> Bodies) BuildTurnLoadedItems(
+	private (IReadOnlyList<LoadedItem> Items, IReadOnlyList<LoadedItemBody> Bodies, CategoryBreakdown Registrations)
+		BuildTurnLoadedItems(
 		string conversationId,
 		AgentDefinition? agentDef,
 		string userMessage,
@@ -592,10 +594,23 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 		// the separate /messages/:messageId endpoint, so they're skipped here.
 		var bodies = new List<LoadedItemBody>(8);
 
+		// Cumulative registration totals for the context bar, alongside the per-turn delta items for
+		// the inspector drawer. Both are derived from the same RegistrationSnapshot and the same
+		// per-item arithmetic (RegistrationBreakdownCalculator), so the bar and the drawer cannot
+		// disagree about the turn they are both describing — they answer different questions
+		// (running state vs. what changed) from one measurement.
+		//
+		// Empty when no agent context is resolvable: nothing is KNOWN to be registered, so nothing is
+		// claimed. The bar then reads empty rather than inventing a figure — which is a real gap, not a
+		// resolved one: a reader cannot currently tell "nothing was loaded" from "we could not see what
+		// was loaded". Surfacing that distinction needs the reconciliation deferred to #517.
+		var registrations = CategoryBreakdown.Empty;
+
 		var ctx = _agentCache.TryGetContext(conversationId);
 		if (ctx is not null)
 		{
 			var snapshot = BuildRegistrationSnapshot(ctx, agentDef);
+			registrations = RegistrationBreakdownCalculator.From(snapshot);
 			var delta = _registrationTracker.DiffAndUpdate(conversationId, snapshot);
 			AppendRegistrationItems(items, bodies, snapshot, delta);
 		}
@@ -621,7 +636,7 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 				Reference: toolName));
 		}
 
-		return (items, bodies);
+		return (items, bodies, registrations);
 	}
 
 	/// <summary>
@@ -634,6 +649,11 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 		AgentExecutionContext ctx,
 		AgentDefinition? agentDef)
 	{
+		// A skill being in scope does not mean its body is in the prompt: the framework serves Tier-2
+		// bodies on demand by default, and the merge that built ctx.Instruction deliberately omits them.
+		// Carrying that distinction is what stops the context bar sizing the system prompt as
+		// "instruction minus every registered skill" and subtracting text that was never there (#507).
+		var disclosedOnDemand = ctx.DisclosedOnDemandSkillIds;
 		var skills = new List<SkillRegistration>();
 		if (ctx.SkillIds is not null)
 		{
@@ -641,7 +661,11 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 			{
 				var skill = _skillRegistry.TryGet(id);
 				if (skill is null) continue;
-				skills.Add(new SkillRegistration(skill.Id, skill.Name, skill.Instructions));
+				skills.Add(new SkillRegistration(
+					skill.Id,
+					skill.Name,
+					skill.Instructions,
+					InlinedInPrompt: disclosedOnDemand?.Contains(skill.Id) != true));
 			}
 		}
 
@@ -683,8 +707,9 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 	/// <summary>
 	/// Emits one <see cref="LoadedItem"/> per registration delta entry into <paramref name="items"/>
 	/// and, in lockstep, one <see cref="LoadedItemBody"/> per item into <paramref name="bodies"/>.
-	/// System tokens = est(instruction) − Σ est(skill.Instructions) so the lane totals add up
-	/// to what the model actually receives without double-counting skill content.
+	/// Per-item sizing goes through <see cref="RegistrationBreakdownCalculator"/> — the same methods the
+	/// context bar sums — so the drawer and the bar cannot quote different numbers for one turn. That
+	/// includes charging nothing for a skill body the prompt does not contain (#507).
 	/// Body capture pairs each LoadedItem with its actual text (composed system prompt, skill
 	/// instructions, tool JSON schema, MCP descriptor, sub-agent description) so the dashboard
 	/// drawer can render the real content via the lazy
@@ -698,12 +723,9 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 	{
 		if (delta.SystemPromptIsNew && !string.IsNullOrEmpty(snapshot.SystemPromptText))
 		{
-			var instructionTokens = TokenEstimationHelper.EstimateTokens(snapshot.SystemPromptText);
-			var skillTokens = snapshot.Skills.Sum(s =>
-				string.IsNullOrEmpty(s.InstructionsText) ? 0 : TokenEstimationHelper.EstimateTokens(s.InstructionsText));
 			items.Add(new LoadedItem(
 				What: "System prompt",
-				Tokens: Math.Max(0, instructionTokens - skillTokens),
+				Tokens: RegistrationBreakdownCalculator.SystemPromptTokens(snapshot),
 				Category: ContextCategory.System,
 				Reference: null));
 			bodies.Add(new LoadedItemBody(items.Count - 1, snapshot.SystemPromptText));
@@ -711,12 +733,9 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 
 		foreach (var skill in delta.NewSkills)
 		{
-			var tokens = string.IsNullOrEmpty(skill.InstructionsText)
-				? 0
-				: TokenEstimationHelper.EstimateTokens(skill.InstructionsText);
 			items.Add(new LoadedItem(
 				What: $"Skill: {skill.Name}",
-				Tokens: tokens,
+				Tokens: RegistrationBreakdownCalculator.TokensFor(skill),
 				Category: ContextCategory.Skills,
 				Reference: skill.Id));
 			if (!string.IsNullOrEmpty(skill.InstructionsText))
@@ -727,7 +746,7 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 		{
 			items.Add(new LoadedItem(
 				What: $"Tool: {tool.Name}",
-				Tokens: EstimateToolTokens(tool),
+				Tokens: RegistrationBreakdownCalculator.TokensFor(tool),
 				Category: ContextCategory.Tools,
 				Reference: tool.Name));
 			var body = BuildToolBody(tool);
@@ -739,7 +758,7 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 		{
 			items.Add(new LoadedItem(
 				What: $"MCP: {tool.Name}",
-				Tokens: EstimateToolTokens(tool),
+				Tokens: RegistrationBreakdownCalculator.TokensFor(tool),
 				Category: ContextCategory.Mcp,
 				Reference: tool.Name));
 			var body = BuildToolBody(tool);
@@ -749,12 +768,9 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 
 		foreach (var peer in delta.NewSubAgents)
 		{
-			var tokens = string.IsNullOrEmpty(peer.Description)
-				? 0
-				: TokenEstimationHelper.EstimateTokens(peer.Description);
 			items.Add(new LoadedItem(
 				What: $"Agent: {peer.Name}",
-				Tokens: tokens,
+				Tokens: RegistrationBreakdownCalculator.TokensFor(peer),
 				Category: ContextCategory.Agents,
 				Reference: peer.Id));
 			if (!string.IsNullOrEmpty(peer.Description))
@@ -773,17 +789,6 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 		if (!string.IsNullOrEmpty(tool.SchemaText)) return tool.SchemaText;
 		if (!string.IsNullOrEmpty(tool.Description)) return $"{tool.Name} — {tool.Description}";
 		return tool.Name;
-	}
-
-	private static int EstimateToolTokens(ToolRegistration tool)
-	{
-		// Schema text dominates when present; fall back to name + description so a
-		// tool without a serialised schema (e.g. a non-AIFunction tool) still
-		// reports a non-zero footprint.
-		if (!string.IsNullOrEmpty(tool.SchemaText))
-			return TokenEstimationHelper.EstimateTokens(tool.SchemaText);
-		var fallback = (tool.Name ?? string.Empty) + " " + (tool.Description ?? string.Empty);
-		return TokenEstimationHelper.EstimateTokens(fallback);
 	}
 
 	/// <summary>
