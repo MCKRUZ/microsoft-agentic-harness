@@ -53,6 +53,10 @@ public class ConversationOrchestratorTests
 
         // Enabled by default — most tests don't exercise the tool-call replay kill switch.
         _toolCallReplayTreatment.Setup(t => t.Enabled).Returns(true);
+        // Explicit, because an unconfigured Moq int property returns 0 — and a zero limit is not "no
+        // limit", it drops every replayed tool call.
+        _toolCallReplayTreatment.Setup(t => t.MaxCallsPerTurn).Returns(32);
+        _toolCallReplayTreatment.Setup(t => t.MaxReplayedChars).Returns(65536);
     }
 
     private ConversationOrchestrator CreateOrchestrator(string environmentName = "Development")

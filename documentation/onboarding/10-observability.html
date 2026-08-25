@@ -332,6 +332,21 @@ docker run -d --name jaeger \
                         behind.
                     </p>
                     <p>
+                        Two further settings bound growth the size-tier alone does not reach, because it caps each
+                        payload individually and nothing caps how many of them accumulate.
+                        <code>MaxCallsPerTurn</code> (default 32) limits how many tool calls a single turn persists —
+                        nothing upstream does, since the framework's per-request iteration limit caps tool-calling
+                        <em>rounds</em>, not the calls issued in parallel within one round.
+                        <code>MaxReplayedChars</code> (default 65536, roughly 16k tokens) limits the total treated text
+                        one replayed window sends back to the model, and is the only real ceiling on a resumed
+                        conversation's per-turn prompt cost: the store's dispatch window is capped in <em>rows</em>, and
+                        each row expands into two chat messages per tool call it carries, so a row cap stops bounding
+                        the prompt once turns are tool-heavy. Both trim from the same end — newest kept, oldest
+                        dropped — so they compose into one coherent policy rather than a slice from the middle of a
+                        turn. The two are validated against each other at startup: a window budget smaller than a
+                        single maximum-size call would drop not just that call but every older one behind it.
+                    </p>
+                    <p>
                         Operators can disable replay entirely with
                         <code>AI:Conversations:ToolCallReplay:Enabled</code>. That switch gates both writing new tool
                         payloads <em>and</em> replaying already-persisted ones — but note it does not

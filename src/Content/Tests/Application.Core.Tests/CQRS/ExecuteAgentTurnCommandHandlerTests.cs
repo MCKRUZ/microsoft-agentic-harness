@@ -242,6 +242,64 @@ public class ExecuteAgentTurnCommandHandlerTests
     }
 
     [Fact]
+    public async Task Handle_TurnExceedsMaxCallsPerTurn_PersistsOnlyTheNewestAndTreatsNoMore()
+    {
+        // Arrange — #508's write side. Nothing upstream bounds how many tool calls one turn can make:
+        // the framework's per-request iteration limit caps tool-calling ROUNDS, while the chat client
+        // permits concurrent invocation, so a single round's parallel calls are unbounded. Six calls
+        // against a cap of two.
+        var messages = new List<ChatMessage>();
+        for (var i = 0; i < 6; i++)
+        {
+            messages.Add(new ChatMessage(ChatRole.Assistant,
+                [new FunctionCallContent($"call-{i}", "search",
+                    new Dictionary<string, object?> { ["q"] = $"query-{i}" })]));
+            messages.Add(new ChatMessage(ChatRole.Tool,
+                [new FunctionResultContent($"call-{i}", $"result-{i}")]));
+        }
+        messages.Add(new ChatMessage(ChatRole.Assistant, "done"));
+
+        var agent = new TestableAIAgent(_ => new AgentResponse(messages));
+        _agentCache
+            .Setup(c => c.GetOrCreateAsync(
+                It.IsAny<string>(),
+                It.IsAny<IReadOnlyList<string>>(),
+                It.IsAny<SkillAgentOptions>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(agent);
+
+        var cappedTreatment = new PassthroughToolCallReplayTreatment { MaxCallsPerTurn = 2 };
+        var handler = new ExecuteAgentTurnCommandHandler(
+            _agentCache.Object,
+            Mock.Of<Application.AI.Common.Interfaces.Governance.IToolCallAdmissionPipeline>(
+                p => p.GetTrace() == Domain.AI.Governance.GovernanceTrace.Empty),
+            _agentRegistry.Object,
+            new Mock<ISkillMetadataRegistry>().Object,
+            new Application.AI.Common.Services.Context.ConversationRegistrationTracker(),
+            new Mock<IObservabilityStore>().Object,
+            Mock.Of<ILlmUsageCapture>(c => c.TakeSnapshot() == new LlmUsageSnapshot(0, 0, 0, 0, null, 0m, 0m, Array.Empty<string>())),
+            new DefaultContextSnapshotComputer(),
+            new NullContextSnapshotNotifier(),
+            TimeProvider.System,
+            NullLogger<ExecuteAgentTurnCommandHandler>.Instance,
+            cappedTreatment);
+
+        // Act
+        var result = await handler.Handle(CreateCommand(), CancellationToken.None);
+
+        // Assert — the turn still succeeds and still narrates its answer; only the surplus structured
+        // tool-call memory is dropped. NEWEST kept, matching the direction ConversationMessageMapping's
+        // read-side budget trims from: the two halves of one policy must cut from the same end, or they
+        // compose into a middle slice that is neither the turn's opening reasoning nor its conclusions.
+        // Newest is the shared direction because this is a memory rather than an audit log — the prose
+        // persisted beside these records summarizes what the agent last found.
+        result.Success.Should().BeTrue();
+        result.Response.Should().Be("done");
+        result.ToolCalls.Should().HaveCount(2);
+        result.ToolCalls.Select(c => c.CallId).Should().Equal(["call-4", "call-5"]);
+    }
+
+    [Fact]
     public async Task Handle_ActiveStreamSink_StreamsDeltasAndReturnsConcatenatedText()
     {
         // Arrange — multi-chunk streaming agent + an attached sink.

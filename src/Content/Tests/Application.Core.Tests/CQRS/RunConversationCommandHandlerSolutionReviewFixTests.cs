@@ -62,7 +62,10 @@ public class RunConversationCommandHandlerSolutionReviewFixTests
             Options.Create(new ConversationsConfig()),
             // Never read: these tests run only the self-contained path, which never opens a
             // DurableTranscript (the only consumer of Enabled).
-            new Mock<IToolCallReplayTreatment>().Object,
+            // See RunConversationCommandHandlerTests: the limits are stubbed even though replay is off
+            // here, so an unconfigured Moq zero can never masquerade as "unlimited".
+            Mock.Of<IToolCallReplayTreatment>(t =>
+                t.MaxCallsPerTurn == 32 && t.MaxReplayedChars == 65536),
             NullLogger<RunConversationCommandHandler>.Instance);
     }
 

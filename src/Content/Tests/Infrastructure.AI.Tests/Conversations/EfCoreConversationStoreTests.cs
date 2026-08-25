@@ -1,7 +1,9 @@
 using Application.AI.Common.Interfaces.AI;
+using Application.AI.Common.Models.Conversations;
 using FluentAssertions;
 using Infrastructure.AI.Conversations;
 using Infrastructure.AI.Persistence;
+using Infrastructure.AI.Persistence.Entities;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Time.Testing;
@@ -142,6 +144,43 @@ public sealed class EfCoreConversationStoreTests : ConversationStoreContractTest
 
         Convert.ToString(command.ExecuteScalar())
             .Should().BeEquivalentTo("wal");
+    }
+
+    [Fact]
+    public async Task GetHistoryForDispatch_LegacyRowWithLiteralEmptyToolCallsJson_IsExcluded()
+    {
+        // #510's other half, and the only test that actually exercises it. ConversationMessage now
+        // normalizes an empty tool-call list to null however it arrives, so nothing writes "[]" through
+        // the DTO any more — which means a DTO-level test cannot reach this filter at all. The rows
+        // that matter are ones persisted while the `with`-expression hole was open, so this writes the
+        // column directly, the way those rows exist in a real deployment's database today.
+        //
+        // Without the != "[]" clause this row reads as model-relevant, and an empty-content widget row
+        // is admitted into the prompt window — the row the file-backed store's DTO-level filter drops,
+        // making a conversation's replayed history differ by which backend a deployment happens to run.
+        var record = await Store.CreateAsync("agent", Owner);
+        await Store.AppendMessageAsync(record.Id, Owner, UserMessage("real question"));
+        await Store.AppendMessageAsync(record.Id, Owner, AssistantMessage("real answer"));
+
+        await using (var context = _contextFactory.CreateDbContext())
+        {
+            context.ConversationMessages.Add(new ConversationMessageEntity
+            {
+                ConversationId = record.Id,
+                MessageId = Guid.NewGuid(),
+                Role = MessageRole.Assistant,
+                Content = string.Empty,
+                Timestamp = Clock.GetUtcNow(),
+                ToolCallsJson = "[]",
+            });
+            await context.SaveChangesAsync();
+        }
+
+        var history = await Store.GetHistoryForDispatch(record.Id, Owner, maxMessages: 10);
+
+        history!.Select(m => m.Content).Should().Equal(
+            ["real question", "real answer"],
+            "a literal \"[]\" column is an empty list, not tool activity");
     }
 
     private EfCoreConversationStore BuildStore() =>

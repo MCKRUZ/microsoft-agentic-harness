@@ -126,6 +126,10 @@ public class AgentPipelineIntegrationTests
             .Setup(t => t.Treat(It.IsAny<string>(), It.IsAny<string?>()))
             .Returns((string rawText, string? _) => rawText);
         toolCallReplayTreatmentMock.Setup(t => t.NoResultPlaceholder).Returns("[no result recorded]");
+        // Explicit, because an unconfigured Moq int property returns 0 — and a zero limit here is not
+        // "no limit", it drops every tool call.
+        toolCallReplayTreatmentMock.Setup(t => t.MaxCallsPerTurn).Returns(32);
+        toolCallReplayTreatmentMock.Setup(t => t.MaxReplayedChars).Returns(65536);
         services.AddScoped(_ => toolCallReplayTreatmentMock.Object);
 
         // The REAL admission chain over the five permissive gates above, not a mock of it, built the

@@ -530,9 +530,27 @@ public sealed class EfCoreConversationStore : IConversationStore
         // reads a negative LIMIT as no limit at all — so passing the value through would answer a
         // request for no messages with the entire transcript, unbounded, straight into the model's
         // context. The file-backed store returns nothing for the same input.
+        //
+        // Testing the column for non-null is not sufficient on its own: an empty tool-call list
+        // serializes to a non-null "[]", which this filter would read as "this row is model-relevant"
+        // and admit an empty-content widget row into the prompt window — the row the file-backed
+        // store's DTO-level `ToolCalls is { Count: > 0 }` filter correctly drops. ConversationMessage
+        // now normalizes an empty list to null however it arrives, so nothing should write "[]" any
+        // more; excluding it here as well keeps this query correct for rows persisted before that
+        // normalization covered the `with`-expression path, and for any future producer that writes
+        // this column without going through the DTO.
+        //
+        // RETIREMENT CONDITION, so this does not become permanent by default: the record type is the
+        // real seam, and this clause exists only for already-written rows. Once a backfill has run
+        // (`UPDATE ConversationMessages SET ToolCallsJson = NULL WHERE ToolCallsJson = '[]'`) across
+        // every deployment that could hold them, drop the `!= "[]"` and the test that pins it. Until
+        // then it stays, with the caveat that the literal encodes a System.Text.Json rendering detail —
+        // it would silently stop matching if the serializer emitted whitespace or the column moved to
+        // a native JSON type, which is another reason not to leave it here indefinitely.
         var tail = await context.ConversationMessages
             .AsNoTracking()
-            .Where(m => m.ConversationId == conversationId && (m.Content != "" || m.ToolCallsJson != null))
+            .Where(m => m.ConversationId == conversationId
+                && (m.Content != "" || (m.ToolCallsJson != null && m.ToolCallsJson != "[]")))
             .OrderByDescending(m => m.Ordinal)
             .Take(Math.Max(0, maxMessages))
             .ToListAsync(ct);

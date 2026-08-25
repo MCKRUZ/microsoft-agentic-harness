@@ -245,6 +245,150 @@ public sealed class SecurityControlHasACallerTests
     }
 
     /// <summary>
+    /// Every <c>*ConfigValidator</c> must be bound into the options pipeline, because a validator that
+    /// nothing binds runs nowhere and enforces nothing.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>The defect this exists to catch, in the shape it actually shipped.</strong>
+    /// <c>ToolCallReplayConfigValidator</c> was written, fully unit-tested, and documented in three
+    /// separate XML comments as the startup enforcement for two bounds — one of them the
+    /// confidentiality ceiling above which structural secret redaction stops being trustworthy. It was
+    /// never added to <c>RegisterValidatedConfigSections</c>, so none of its rules ever ran in any
+    /// host. Its own doc comment said "auto-discovered via <c>AddValidatorsFromAssembly</c> — no manual
+    /// registration required", which is true of the DI registration and irrelevant to whether anything
+    /// resolves it: nothing validates a config POCO unless an <c>AddOptions</c> chain asks it to.
+    /// </para>
+    /// <para>
+    /// <strong>Why the existing guards missed it.</strong> The validator's own tests pass — they
+    /// construct it directly. <c>ValidateOnBuildSweepTests</c> passes — an unregistered validator
+    /// breaks no service graph. The interface scan above passes — a validator implements no guarded
+    /// contract. Every signal available said the control was fine, because each one measured something
+    /// other than "does this ever run in a host".
+    /// </para>
+    /// <para>
+    /// Written over every validator rather than the one that broke, so the next config class cannot
+    /// land unregistered either — the specific fix would have left the mechanism just as forgettable.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void EveryConfigValidator_IsBoundIntoTheOptionsPipeline()
+    {
+        var contentRoot = Path.Combine(RepoRoot.Path, "src", "Content");
+
+        // Only FluentValidation validators. A name ending in ConfigValidator is not enough: the repo
+        // also validates config from IHostedService implementations, which self-register through
+        // AddHostedService in their own subsystem and need no options binding at all. Matching on the
+        // name alone reported two live controls (ToolAuthorizationConfigValidator,
+        // AutonomyConfigValidator) as unbound debt — a guard against inert machinery that was itself
+        // producing false alarms, which is the fastest way to make one get ignored.
+        var validatorNames = Directory
+            .EnumerateFiles(contentRoot, "*ConfigValidator.cs", SearchOption.AllDirectories)
+            .Where(f => !SourceScan.IsExcluded(f, contentRoot))
+            .Where(f => !f.Contains(Path.DirectorySeparatorChar + "Tests" + Path.DirectorySeparatorChar,
+                StringComparison.OrdinalIgnoreCase))
+            .Where(f => Regex.IsMatch(
+                SourceScan.StripCommentsAndStrings(File.ReadAllText(f)),
+                @":\s*AbstractValidator\s*<"))
+            .Select(Path.GetFileNameWithoutExtension)
+            .Where(n => !string.IsNullOrEmpty(n))
+            .Select(n => n!)
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+
+        // Control: a scan that found no validators would pass while reading nothing — the blind-guard
+        // failure this file's own remarks warn about.
+        validatorNames.Should().NotBeEmpty("the validators this reads must exist for its verdict to mean anything");
+
+        // Control: the AbstractValidator filter must actually exclude the other shape, or it is doing
+        // nothing and the false alarms come straight back.
+        validatorNames.Should().NotContain("ToolAuthorizationConfigValidator",
+            "control: an IHostedService validator must not be treated as needing an options binding");
+
+        // Every DI file, not just the composition root: a binding is equally real in a subsystem's own
+        // DependencyInjection partial, and reading one file reported anything registered elsewhere as
+        // unbound. Source text rather than a resolved container, because an unbound validator is still
+        // perfectly resolvable — that is exactly what made the original defect invisible.
+        var wiringFiles = Directory
+            .EnumerateFiles(contentRoot, "*.cs", SearchOption.AllDirectories)
+            .Where(f => !SourceScan.IsExcluded(f, contentRoot))
+            .Where(f => !f.Contains(Path.DirectorySeparatorChar + "Tests" + Path.DirectorySeparatorChar,
+                StringComparison.OrdinalIgnoreCase))
+            .Where(f => Path.GetFileName(f).StartsWith("DependencyInjection", StringComparison.Ordinal)
+                || Path.GetFileName(f).Equals("IServiceCollectionExtensions.cs", StringComparison.Ordinal))
+            .ToArray();
+
+        wiringFiles.Should().NotBeEmpty("the wiring files this reads must exist for its verdict to mean anything");
+
+        var wiring = string.Join(
+            "\n",
+            wiringFiles.Select(f => SourceScan.StripCommentsAndStrings(File.ReadAllText(f))));
+
+        // Control: the needle must match a binding known to be present, or "no offenders" would be
+        // satisfied by a scan that cannot see any binding at all.
+        wiring.Should().Contain("GovernanceConfigValidator",
+            "control: a known-bound validator must be visible to this scan");
+
+        var unbound = validatorNames
+            .Where(name => !wiring.Contains(name, StringComparison.Ordinal))
+            .OrderBy(name => name, StringComparer.Ordinal)
+            .ToArray();
+
+        var unexpected = unbound.Except(KnownUnboundConfigValidators, StringComparer.Ordinal).ToArray();
+
+        unexpected.Should().BeEmpty(
+            "a config validator that no AddOptions chain binds never runs, however thoroughly it is "
+            + "tested and however confidently its doc comment says otherwise — AddValidatorsFromAssembly "
+            + "registers it for resolution, it does not cause anything to resolve it. Either bind it in "
+            + "RegisterValidatedConfigSections or delete it with the documentation claiming it enforces. "
+            + "Unbound: " + string.Join(", ", unexpected));
+
+        // The ratchet half: the allowlist may only ever shrink. Without this, working an entry off the
+        // list leaves a stale name that would silently re-admit a regression under the same type name.
+        KnownUnboundConfigValidators
+            .Except(unbound, StringComparer.Ordinal)
+            .Should().BeEmpty(
+                "these validators are now bound — remove them from KnownUnboundConfigValidators so the "
+                + "list keeps meaning 'known debt' rather than 'permanently excused'");
+    }
+
+    /// <summary>
+    /// Config validators that exist, are tested, and are bound nowhere — pre-existing debt this guard
+    /// found rather than caused. Tracked so the list can only shrink.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// These are <strong>not</strong> exemptions in the sense this file's remarks forbid. Each is a
+    /// real instance of the same defect the test above describes. They are listed rather than fixed
+    /// here because binding a validator changes host behaviour: a deployment whose configuration is
+    /// already invalid stops booting. That is the correct outcome and it is a per-subsystem change with
+    /// its own verification, not something to bundle into an unrelated PR. Tracked as #514.
+    /// </para>
+    /// <para>
+    /// All five are the planner's step-config validators, and it is worth confirming per validator
+    /// whether each is meant to be bound directly or invoked as a child validator from a parent's
+    /// <c>SetValidator</c> — nothing references them at all today, so they are inert either way, but
+    /// the fix differs.
+    /// </para>
+    /// <para>
+    /// The entry that motivated this guard — <c>ToolCallReplayConfigValidator</c> — is deliberately
+    /// absent: it was bound in the same change. Two names that appeared in this list on its first
+    /// draft, <c>ToolAuthorizationConfigValidator</c> and <c>AutonomyConfigValidator</c>, are absent
+    /// for a different reason: they are <see cref="Microsoft.Extensions.Hosting.IHostedService"/>
+    /// startup validators registered in their own subsystems and were never in scope for this check.
+    /// The scan above now excludes that shape rather than relying on this list to remember it.
+    /// </para>
+    /// </remarks>
+    private static readonly string[] KnownUnboundConfigValidators =
+    [
+        "ConditionalBranchConfigValidator",
+        "HumanGateConfigValidator",
+        "LlmCallConfigValidator",
+        "SubPlanConfigValidator",
+        "ToolUseConfigValidator",
+    ];
+
+    /// <summary>
     /// Finds every public interface declared under a guarded folder, returning its name and the file
     /// that declares it.
     /// </summary>

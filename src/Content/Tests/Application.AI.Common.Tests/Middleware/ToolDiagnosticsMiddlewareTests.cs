@@ -232,7 +232,7 @@ public sealed class ToolDiagnosticsMiddlewareTests
             new(ChatRole.Tool, [new FunctionResultContent("call-1", "42 results")])
         };
 
-        ReplayedToolCallScope.Current = new HashSet<string> { "call-1" };
+        ReplayedToolCallScope.Current = new ReplayedToolCallSet(["call-1"]);
         try
         {
             await middleware.GetResponseAsync(messages, null, CancellationToken.None);
@@ -258,7 +258,7 @@ public sealed class ToolDiagnosticsMiddlewareTests
             new(ChatRole.Tool, [new FunctionResultContent("call-2", "42 results")])
         };
 
-        ReplayedToolCallScope.Current = new HashSet<string> { "call-1" };
+        ReplayedToolCallScope.Current = new ReplayedToolCallSet(["call-1"]);
         try
         {
             await middleware.GetResponseAsync(messages, null, CancellationToken.None);
@@ -293,7 +293,7 @@ public sealed class ToolDiagnosticsMiddlewareTests
             new(ChatRole.Tool, [new FunctionResultContent("call-2", "second result")])
         };
 
-        ReplayedToolCallScope.Current = [];
+        ReplayedToolCallScope.Current = new ReplayedToolCallSet();
         try
         {
             await middleware.GetResponseAsync(roundOneMessages, null, CancellationToken.None);

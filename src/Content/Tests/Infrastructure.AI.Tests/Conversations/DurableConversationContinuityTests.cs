@@ -335,6 +335,11 @@ public sealed class DurableConversationContinuityTests : IDisposable
 
         var toolCallReplayTreatment = new Mock<IToolCallReplayTreatment>();
         toolCallReplayTreatment.Setup(t => t.Enabled).Returns(replayToolCallsEnabled);
+        // Both limits must be stubbed explicitly. An unconfigured Moq int property returns 0, and a
+        // zero budget drops every replayed tool call — which would silently turn this whole file's
+        // subject off while every assertion about it still looked like it was being exercised.
+        toolCallReplayTreatment.Setup(t => t.MaxCallsPerTurn).Returns(32);
+        toolCallReplayTreatment.Setup(t => t.MaxReplayedChars).Returns(65536);
 
         return new RunConversationCommandHandler(
             mediator.Object,

@@ -25,6 +25,44 @@ public interface IToolCallReplayTreatment
     bool Enabled { get; }
 
     /// <summary>
+    /// The most tool calls one turn may persist for replay
+    /// (<c>AppConfig:AI:Conversations:ToolCallReplay:MaxCallsPerTurn</c>). A caller building a turn's
+    /// records keeps the <strong>newest</strong> this many by round ordinal and drops the rest, logging
+    /// how many — the same end <see cref="MaxReplayedChars"/> trims from on replay. The shared direction
+    /// is load-bearing: trimming opposite ends would compose into a middle slice that is neither the
+    /// turn's opening reasoning nor its conclusions.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Bounds storage growth driven by model output. Nothing else does: the framework's per-request
+    /// iteration limit caps tool-calling rounds, not the calls issued in parallel inside one round.
+    /// </para>
+    /// <para>
+    /// <strong>Stub this explicitly when mocking this interface.</strong> Zero is a meaningful value
+    /// here — it drops every tool call, it does not mean "unlimited" — and a mocking framework leaves
+    /// an unconfigured <see langword="int"/> member at zero. A test that stubs only
+    /// <see cref="Enabled"/> therefore turns the whole feature off while still appearing to exercise
+    /// it, which is exactly how this member's introduction broke an end-to-end replay test that had
+    /// been passing.
+    /// </para>
+    /// </remarks>
+    int MaxCallsPerTurn { get; }
+
+    /// <summary>
+    /// The most treated tool-call text, in characters, one replayed window may send back to the model
+    /// across every row in it (<c>AppConfig:AI:Conversations:ToolCallReplay:MaxReplayedChars</c>).
+    /// </summary>
+    /// <remarks>
+    /// The read-side counterpart to <see cref="MaxCallsPerTurn"/>, and the only one of the two that
+    /// bounds per-turn prompt cost. It applies to rows already in the store, so it also bounds
+    /// conversations persisted before any write-side cap existed — which a write-side cap alone, by
+    /// construction, never can. The same
+    /// <strong>stub this explicitly when mocking</strong> warning on <see cref="MaxCallsPerTurn"/>
+    /// applies here, and bites harder: a zero read budget silently empties every replayed window.
+    /// </remarks>
+    int MaxReplayedChars { get; }
+
+    /// <summary>
     /// Treats raw text — a tool call's arguments or a tool result — for safe, bounded, model-facing
     /// replay: sanitize, then redact, then size-tier the result (verbatim under the configured
     /// ceiling, truncated with a visible marker above it, withheld outright above the hard

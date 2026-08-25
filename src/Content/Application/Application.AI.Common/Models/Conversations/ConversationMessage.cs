@@ -21,12 +21,39 @@ public sealed record ConversationMessage(
     WidgetSpec? Widget = null)
 {
     /// <summary>
-    /// This turn's tool calls, or <see langword="null"/> when it made none. Normalized to
-    /// <see langword="null"/> for an empty (but non-null) list at construction, so every producer of a
-    /// <see cref="ConversationMessage"/> gets the same guarantee for free instead of each one having to
-    /// remember the ternary itself — an empty non-null list would otherwise serialize to a non-null
-    /// <c>"[]"</c> JSON column, which <c>EfCoreConversationStore</c>'s dispatch-window filter reads as
-    /// "this row has tool calls" (it tests the column for non-null, not for non-empty).
+    /// Backing field for <see cref="ToolCalls"/>. The initializer normalizes the primary constructor's
+    /// argument; the property's <c>init</c> accessor normalizes every other way a value can arrive.
     /// </summary>
-    public IReadOnlyList<ToolCallRecord>? ToolCalls { get; init; } = ToolCalls is { Count: > 0 } ? ToolCalls : null;
+    /// <remarks>
+    /// Both are needed, and neither is redundant. A field/property <em>initializer</em> runs only in the
+    /// primary constructor — a record's compiler-generated copy constructor copies backing fields
+    /// directly and does not re-run it — so an initializer alone leaves <c>with { ToolCalls = [] }</c>
+    /// holding a non-null empty list. An <c>init</c> accessor alone would not compile the positional
+    /// parameter away (the compiler does not auto-assign a positional parameter to a member the type
+    /// declares itself; that is what <c>CS8907</c> reports), so the initializer is what consumes it.
+    /// </remarks>
+    private readonly IReadOnlyList<ToolCallRecord>? _toolCalls = ToolCalls is { Count: > 0 } ? ToolCalls : null;
+
+    /// <summary>
+    /// This turn's tool calls, or <see langword="null"/> when it made none. An empty (but non-null)
+    /// list normalizes to <see langword="null"/> however it arrives — the primary constructor, an
+    /// object initializer, or a <c>with</c> expression — so every producer of a
+    /// <see cref="ConversationMessage"/> gets the same guarantee for free instead of each one having to
+    /// remember the ternary itself.
+    /// </summary>
+    /// <remarks>
+    /// The guarantee is load-bearing rather than cosmetic, and two call sites cite it as their reason
+    /// for not normalizing themselves (<c>ConversationEntityMapper.ToEntity</c> and the store's own
+    /// dispatch-window filter). An empty non-null list serializes to a non-null <c>"[]"</c> JSON column,
+    /// which <c>EfCoreConversationStore</c>'s filter would read as "this row is model-relevant" — that
+    /// filter tests the column for non-null — admitting an empty-content widget row into the prompt
+    /// window that <c>FileSystemConversationStore</c>'s DTO-level filter correctly drops. That store
+    /// filter now also excludes <c>"[]"</c> explicitly, so the two are belt and braces: this closes the
+    /// hole at the source, and the filter stays correct for any row persisted while it was open.
+    /// </remarks>
+    public IReadOnlyList<ToolCallRecord>? ToolCalls
+    {
+        get => _toolCalls;
+        init => _toolCalls = value is { Count: > 0 } ? value : null;
+    }
 }

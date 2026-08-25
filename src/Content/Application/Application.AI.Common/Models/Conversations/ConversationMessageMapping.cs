@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Logging;
 
 namespace Application.AI.Common.Models.Conversations;
 
@@ -46,14 +47,13 @@ public static class ConversationMessageMapping
     /// <param name="replayToolCalls">
     /// Whether an assistant row's <see cref="ConversationMessage.ToolCalls"/> should expand into real
     /// call/result content (see the remarks below) or be skipped in favor of the row's narrated text
-    /// only. Callers must source this from <c>IToolCallReplayTreatment.Enabled</c>, not default it —
-    /// an operator's kill switch for this feature (<c>AppConfig:AI:Conversations:ToolCallReplay:Enabled</c>)
-    /// has to stop replaying <em>already-persisted</em> tool payloads, not just stop writing new ones:
-    /// gating only the write side (as <c>ExecuteAgentTurnCommandHandler.BuildTreatedToolCallRecords</c>
-    /// already does) would leave every conversation with tool history from before the flag was flipped
-    /// still shipping that content to the model on every later turn. Defaults to
-    /// <see langword="true"/> only so this method's own unit tests, which are about expansion
-    /// correctness and not about the gate, don't have to pass it.
+    /// only. Source it from <c>IToolCallReplayTreatment.Enabled</c> — an operator's kill switch for this
+    /// feature (<c>AppConfig:AI:Conversations:ToolCallReplay:Enabled</c>) has to stop replaying
+    /// <em>already-persisted</em> tool payloads, not just stop writing new ones: gating only the write
+    /// side (as <c>ExecuteAgentTurnCommandHandler.BuildTreatedToolCallRecords</c> already does) would
+    /// leave every conversation with tool history from before the flag was flipped still shipping that
+    /// content to the model on every later turn. Deliberately has no default, for the same reason as
+    /// <paramref name="maxReplayedChars"/>.
     /// </param>
     /// <remarks>
     /// <para>
@@ -75,12 +75,45 @@ public static class ConversationMessageMapping
     /// deliberately not built ahead of a case nothing today produces.
     /// </para>
     /// </remarks>
+    /// <param name="maxReplayedChars">
+    /// Total budget, in characters of treated tool-call text, for the whole window. Source it from
+    /// <c>IToolCallReplayTreatment.MaxReplayedChars</c>: this is the only bound on what a resumed
+    /// conversation costs per turn. The store's dispatch window is capped in <em>rows</em>, and one row
+    /// expands here into two chat messages per tool call it carries, so once turns are tool-heavy that
+    /// row cap stops bounding the prompt at all. Deliberately has no default — an omitted budget would
+    /// mean an unbounded prompt on every resumed turn, with nothing failing to say so, and a required
+    /// parameter is the only form of that rule the compiler can enforce.
+    /// </param>
+    /// <param name="logger">
+    /// Optional, for reporting what the budget dropped. Matching <c>ToolCallTranscriptExtractor.Extract</c>,
+    /// which takes a logger the same way and for the same reason — silently shrinking a model's memory
+    /// is exactly the kind of change that must leave a trace.
+    /// </param>
     public static IReadOnlyList<ChatMessage> ToChatMessages(
-        IReadOnlyList<ConversationMessage> messages, bool replayToolCalls = true)
+        IReadOnlyList<ConversationMessage> messages,
+        bool replayToolCalls,
+        int maxReplayedChars,
+        ILogger? logger = null)
     {
         ArgumentNullException.ThrowIfNull(messages);
 
-        var result = new List<ChatMessage>();
+        // Handled up front rather than as a clause inside the loop below. Keeping it here means the
+        // budget array is never null, so the loop needs no null-forgiving index and no second check of
+        // this same flag twelve lines apart — a coupling that was safe only by inspection.
+        if (!replayToolCalls)
+        {
+            return [.. messages.Select(m => new ChatMessage(ToChatRole(m.Role), m.Content))];
+        }
+
+        // Computed up front, over the whole window, because the budget is a property of the window and
+        // not of any one row: which of a row's calls survive depends on how much every LATER row
+        // already spent, which a single forward pass cannot know when it reaches that row.
+        var (admittedByRow, admittedCalls) = SelectCallsWithinBudget(messages, maxReplayedChars, logger);
+
+        // Sized exactly: one message per row, plus the call/result pair each admitted call expands into.
+        // The count is already in hand from the pass above, so this costs nothing and saves the handful
+        // of doubling reallocations a tool-heavy window would otherwise walk through.
+        var result = new List<ChatMessage>(messages.Count + (2 * admittedCalls));
 
         // Scoped to the WHOLE window, not to one row: ToolCallTranscriptExtractor dedupes call ids
         // within a turn, but nothing dedupes across turns, and some provider connectors number call
@@ -92,17 +125,21 @@ public static class ConversationMessageMapping
         // with no recovery short of deleting the conversation.
         var usedCallIds = new HashSet<string>(StringComparer.Ordinal);
 
-        foreach (var message in messages)
+        for (var i = 0; i < messages.Count; i++)
         {
-            if (!replayToolCalls
-                || message.Role != MessageRole.Assistant
-                || message.ToolCalls is not { Count: > 0 } toolCalls)
+            var message = messages[i];
+
+            if (message.Role != MessageRole.Assistant || message.ToolCalls is not { Count: > 0 })
             {
                 result.Add(new ChatMessage(ToChatRole(message.Role), message.Content));
                 continue;
             }
 
-            AppendToolCallRounds(result, toolCalls, usedCallIds);
+            // May be empty when the budget dropped every one of this row's calls. The row then behaves
+            // exactly like a tool-only turn whose calls were never persisted: its narrated text (if any)
+            // still replays below, so the model keeps the prose account of what happened even where it
+            // has lost the literal call/result pairs.
+            AppendToolCallRounds(result, admittedByRow![i], usedCallIds);
 
             if (!string.IsNullOrEmpty(message.Content))
             {
@@ -114,22 +151,142 @@ public static class ConversationMessageMapping
     }
 
     /// <summary>
-    /// Appends one assistant/tool message pair per call, oldest <see cref="ToolCallRecord.RoundOrdinal"/>
-    /// first, so a resumed conversation replays tool activity in the sequence it actually happened.
+    /// Decides, for every row in the window, which of its tool calls fit inside
+    /// <paramref name="maxReplayedChars"/> — newest first, dropping the oldest until the remainder
+    /// fits — and returns them per row in ascending <see cref="ToolCallRecord.RoundOrdinal"/> order.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Newest-first is the admission order because a replayed window is context, not an audit log: the
+    /// tool activity the current turn is most likely to reason about is the most recent. Admission
+    /// <em>latches</em> shut at the first call that does not fit rather than continuing to look for a
+    /// smaller one further back — that keeps the surviving set a contiguous newest tail, where
+    /// skip-and-continue would punch holes through the middle of the history and replay a sequence
+    /// that never happened.
+    /// </para>
+    /// <para>
+    /// A budget smaller than the single newest call admits nothing. That is the honest reading of a
+    /// ceiling rather than an oversight: the alternative — always keeping one call — would mean the
+    /// bound can be exceeded by an unbounded amount, which is not a bound. The rows' own text still
+    /// replays either way.
+    /// </para>
+    /// <para>
+    /// Cost counts every part of a record that actually reaches the model:
+    /// <see cref="ToolCallRecord.Input"/>, <see cref="ToolCallRecord.Output"/>,
+    /// <see cref="ToolCallRecord.ToolName"/> and <see cref="ToolCallRecord.CallId"/>. The last two are
+    /// normally tens of characters and were originally left out on those grounds — but both are
+    /// model-supplied strings that no treatment pass bounds, so "normally small" is an assumption about
+    /// untrusted input rather than a property of it. Counting them costs one addition and removes a way
+    /// for a budget to be quietly exceeded.
+    /// </para>
+    /// </remarks>
+    private static (IReadOnlyList<ToolCallRecord>[] AdmittedByRow, int AdmittedCalls) SelectCallsWithinBudget(
+        IReadOnlyList<ConversationMessage> messages,
+        int maxReplayedChars,
+        ILogger? logger)
+    {
+        var admittedByRow = new IReadOnlyList<ToolCallRecord>[messages.Count];
+        var spent = 0;
+        var dropped = 0;
+        var admittedCalls = 0;
+        var budgetExhausted = false;
+
+        for (var i = messages.Count - 1; i >= 0; i--)
+        {
+            var message = messages[i];
+            if (message.Role != MessageRole.Assistant || message.ToolCalls is not { Count: > 0 } calls)
+            {
+                admittedByRow[i] = [];
+                continue;
+            }
+
+            // Once the budget has latched shut, every older row is dropped wholesale — no sort, no
+            // per-call arithmetic, since nothing behind the latch can be admitted by definition.
+            if (budgetExhausted)
+            {
+                dropped += calls.Count;
+                admittedByRow[i] = [];
+                continue;
+            }
+
+            // Defensive sort, not a no-op: ToolCallTranscriptExtractor always builds this list in
+            // ascending-ordinal order, but a persisted record read back from storage is data this code
+            // doesn't control the shape of. Done here rather than at append time so the budget walks
+            // the calls in the same order the model will see them.
+            var ordered = calls
+                .Select((call, index) => (call, ordinal: call.RoundOrdinal ?? index))
+                .OrderBy(x => x.ordinal)
+                .Select(x => x.call)
+                .ToList();
+
+            // What survives is a suffix of `ordered`, so the result is one index rather than a second
+            // list built backwards and reversed: `cut` walks down from the end while calls still fit and
+            // ends as the position of the oldest admitted call. That makes the contiguous-newest-tail
+            // guarantee structural — it is what a suffix IS — instead of something that has to be
+            // inferred from a latch, a reverse walk and a final Reverse() agreeing with each other.
+            var cut = ordered.Count;
+            while (cut > 0)
+            {
+                var cost = CostOf(ordered[cut - 1]);
+
+                if (spent + cost > maxReplayedChars)
+                {
+                    budgetExhausted = true;
+                    break;
+                }
+
+                spent += cost;
+                cut--;
+            }
+
+            dropped += cut;
+            admittedCalls += ordered.Count - cut;
+            admittedByRow[i] = cut == 0 ? ordered : ordered.GetRange(cut, ordered.Count - cut);
+        }
+
+        if (dropped > 0)
+        {
+            logger?.LogWarning(
+                "[ToolCallReplay] Replayed tool-call history exceeded the {Budget}-char window budget; " +
+                "dropped the {Dropped} oldest call(s), replaying {Spent} chars.",
+                maxReplayedChars, dropped, spent);
+        }
+
+        return (admittedByRow, admittedCalls);
+    }
+
+    /// <summary>
+    /// What one record costs against the window budget: every part of it that reaches the model.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="ToolCallRecord.ToolName"/> and <see cref="ToolCallRecord.CallId"/> are counted even
+    /// though they are normally short, because neither is bounded by
+    /// <c>IToolCallReplayTreatment.Treat</c> — they come from the model or an MCP server and are
+    /// persisted verbatim, so their size is not this code's to assume.
+    /// </remarks>
+    private static int CostOf(ToolCallRecord call) =>
+        (call.Input?.Length ?? 0)
+        + (call.Output?.Length ?? 0)
+        + (call.ToolName?.Length ?? 0)
+        + (call.CallId?.Length ?? 0);
+
+    /// <summary>
+    /// Appends one assistant/tool message pair per call, so a resumed conversation replays tool
+    /// activity in the sequence it actually happened.
+    /// </summary>
+    /// <param name="result">The projection being built.</param>
+    /// <param name="toolCalls">
+    /// This row's admitted calls, already sorted by <see cref="ToolCallRecord.RoundOrdinal"/> and
+    /// already filtered against the window budget by <see cref="SelectCallsWithinBudget"/>. Empty when
+    /// the budget dropped all of them, in which case this appends nothing.
+    /// </param>
+    /// <param name="usedCallIds">Call ids already emitted anywhere in this window.</param>
     private static void AppendToolCallRounds(
         List<ChatMessage> result,
         IReadOnlyList<ToolCallRecord> toolCalls,
         HashSet<string> usedCallIds)
     {
-        // Defensive sort, not a no-op: ToolCallTranscriptExtractor always builds this list in
-        // ascending-ordinal order, but a persisted record read back from storage is data this code
-        // doesn't control the shape of.
-        var ordered = toolCalls
-            .Select((call, index) => (call, ordinal: call.RoundOrdinal ?? index))
-            .OrderBy(x => x.ordinal);
-
-        foreach (var (call, _) in ordered)
+        foreach (var call in toolCalls)
         {
             var callId = ResolveUniqueCallId(call.CallId, usedCallIds);
 

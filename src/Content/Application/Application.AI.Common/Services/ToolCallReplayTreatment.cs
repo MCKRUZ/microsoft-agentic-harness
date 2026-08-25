@@ -38,6 +38,61 @@ public sealed class ToolCallReplayTreatment : IToolCallReplayTreatment
     public bool Enabled => _appConfig.CurrentValue.AI.Conversations.ToolCallReplay.Enabled;
 
     /// <inheritdoc />
+    /// <remarks>
+    /// Floored at 0 for the same reason <see cref="ResolveMaxVerbatimChars"/> clamps: an
+    /// <see cref="IOptionsMonitor{TOptions}"/> value can change at runtime from a reloaded config file
+    /// without going back through <c>ToolCallReplayConfigValidator</c>, and a negative limit read by a
+    /// caller taking "the first N" would disable the bound rather than tighten it. Unlike that method
+    /// this needs no upper clamp and logs nothing — it is a cost ceiling, not a security one, so a
+    /// large value is a deployment's own trade to make and not worth a warning on every turn.
+    /// </remarks>
+    public int MaxCallsPerTurn =>
+        Math.Max(0, _appConfig.CurrentValue.AI.Conversations.ToolCallReplay.MaxCallsPerTurn);
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// <para>Floored at 0 for the same reason as <see cref="MaxCallsPerTurn"/>.</para>
+    /// <para>
+    /// Also floored at twice the effective per-payload ceiling, which is the invariant
+    /// <c>ToolCallReplayConfigValidator</c> enforces at startup — repeated here because startup is not
+    /// the only way this value changes. A reloaded config file reaches
+    /// <see cref="IOptionsMonitor{TOptions}"/> without going back through validation, and below that
+    /// floor the window budget cannot fit even one maximum-size call: admission latches shut at the
+    /// first call that does not fit, so every older call goes too and the conversation loses its whole
+    /// replayed tool history rather than just the oversized entry. Raising the value silently is the
+    /// safe direction here — the alternative is honouring a budget that empties the window — and it is
+    /// the same defense-in-depth shape <see cref="ResolveMaxVerbatimChars"/> already applies where a
+    /// reload could otherwise cross a bound that matters.
+    /// </para>
+    /// </remarks>
+    public int MaxReplayedChars
+    {
+        get
+        {
+            var configured = Math.Max(0, _appConfig.CurrentValue.AI.Conversations.ToolCallReplay.MaxReplayedChars);
+            var floor = (int)Math.Min(int.MaxValue, (long)ResolveMaxVerbatimChars() * 2);
+
+            if (configured >= floor)
+                return configured;
+
+            // Logged, not silent, because this raise moves a cost ceiling UPWARD past what an operator
+            // asked for — the one direction that deserves to be noticed. An operator lowering this as a
+            // deliberate mitigation would otherwise get a larger budget than they set with nothing to
+            // tell them. (The honest kill switch remains Enabled=false, which the read path also
+            // honours, so this is a floor on a cost knob rather than a way around an off switch.)
+            // Same clamp-and-say-so shape ResolveMaxVerbatimChars uses.
+            _logger.LogWarning(
+                "[ToolCallReplayTreatment] Configured MaxReplayedChars={Configured} is below the " +
+                "{Floor}-char floor (twice MaxVerbatimChars) and was raised to it. Below that floor a " +
+                "single maximum-size tool call cannot fit, and admission latches shut — every replayed " +
+                "tool call would be dropped, not just the oversized one.",
+                configured, floor);
+
+            return floor;
+        }
+    }
+
+    /// <inheritdoc />
     public string NoResultPlaceholder =>
         "[no result recorded: this tool call did not complete.]";
 

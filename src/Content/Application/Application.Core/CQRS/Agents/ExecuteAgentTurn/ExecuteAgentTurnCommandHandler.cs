@@ -147,12 +147,11 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 			// scope to skip re-recording the former while still recording the latter. Seeded once,
 			// before dispatch, then grown in place by that middleware: see ReplayedToolCallScope's
 			// remarks for why the seed is taken here rather than re-derived mid-turn.
-			ReplayedToolCallScope.Current = messages
-				.SelectMany(m => m.Contents)
-				.OfType<FunctionResultContent>()
-				.Select(r => r.CallId)
-				.Where(id => !string.IsNullOrEmpty(id))
-				.ToHashSet();
+			ReplayedToolCallScope.Current = new ReplayedToolCallSet(
+				messages
+					.SelectMany(m => m.Contents)
+					.OfType<FunctionResultContent>()
+					.Select(r => r.CallId));
 
 			object? response;
 			IReadOnlyList<ToolExchange> toolExchanges;
@@ -811,14 +810,57 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 	/// this method exists to gate, and would leave a caller-visible difference between "opted out" and
 	/// "genuinely made no tool calls" only in the log, never in what gets persisted.
 	/// </para>
+	/// <para>
+	/// Caps the turn at <see cref="IToolCallReplayTreatment.MaxCallsPerTurn"/> records for the same
+	/// before-any-work reason, keeping the newest and logging how many it dropped. This is the
+	/// write-side half of the bound; it cannot be the whole of it, because it does nothing for rows
+	/// persisted before the cap existed — <c>ConversationMessageMapping.ToChatMessages</c> enforces the
+	/// read-side character budget that covers those, and trims from the same end so the two compose
+	/// into one coherent policy rather than a middle slice.
+	/// </para>
 	/// </remarks>
 	private IReadOnlyList<ToolCallRecord> BuildTreatedToolCallRecords(IReadOnlyList<ToolExchange> exchanges)
 	{
 		if (exchanges.Count == 0 || !_toolCallReplayTreatment.Enabled)
 			return [];
 
-		var records = new List<ToolCallRecord>(exchanges.Count);
-		foreach (var exchange in exchanges)
+		// Read once into a local, not four times off IOptionsMonitor.CurrentValue: a hot config reload
+		// between the comparison and the Take would apply one limit while reporting another, or skip the
+		// cap entirely. Same reason DurableTranscript snapshots its own budget at construction — half a
+		// policy applied mid-decision is worse than either whole one.
+		var maxCallsPerTurn = _toolCallReplayTreatment.MaxCallsPerTurn;
+
+		// Bound what one turn persists before treating anything, for the same reason the Enabled check
+		// above comes first: treating a payload and then discarding it would still have run the
+		// sanitize/redact pass this cap exists to avoid paying for. Nothing upstream bounds this — the
+		// framework's per-request iteration limit caps tool-calling ROUNDS, while the chat client is
+		// built with concurrent invocation allowed, so one round's parallel calls are unbounded.
+		//
+		// Newest-first, matching ConversationMessageMapping's read-side budget exactly. The two halves
+		// of one policy must trim from the same end: keeping the earliest here and the newest there
+		// would compose into a middle slice — neither the beginning of the turn's reasoning nor its
+		// conclusions — and would make the read side's contiguous-newest-tail guarantee false of the
+		// system even though it holds of that method. Newest is the right shared direction because this
+		// is a memory, not an audit log: a later turn reasons about what the agent last found, and the
+		// assistant prose persisted beside these records summarizes the outcome rather than the opening
+		// moves.
+		var admitted = exchanges;
+		if (exchanges.Count > maxCallsPerTurn)
+		{
+			var dropped = exchanges.Count - maxCallsPerTurn;
+			_logger.LogWarning(
+				"[ToolCallReplay] Turn produced {Total} tool calls, above the {Cap} persisted per turn; " +
+				"dropping the {Dropped} earliest from replay history.",
+				exchanges.Count, maxCallsPerTurn, dropped);
+
+			admitted = exchanges
+				.OrderBy(e => e.RoundOrdinal)
+				.TakeLast(maxCallsPerTurn)
+				.ToList();
+		}
+
+		var records = new List<ToolCallRecord>(admitted.Count);
+		foreach (var exchange in admitted)
 		{
 			var treatedInput = string.IsNullOrEmpty(exchange.ArgsJson)
 				? null

@@ -477,7 +477,11 @@ public sealed class AgUiRunHandler
     // tool-call expansion on the live IToolCallReplayTreatment.Enabled value so an operator's kill
     // switch stops replaying already-persisted tool payloads, not just stop writing new ones.
     private IReadOnlyList<ChatMessage> ToMeaiHistory(IReadOnlyList<ConversationMessage> messages) =>
-        ConversationMessageMapping.ToChatMessages(messages, _toolCallReplayTreatment.Enabled);
+        ConversationMessageMapping.ToChatMessages(
+            messages,
+            _toolCallReplayTreatment.Enabled,
+            _toolCallReplayTreatment.MaxReplayedChars,
+            _logger);
 
     private static async Task TryWriteErrorAsync(IAgUiEventWriter writer, string message, CancellationToken ct)
     {
