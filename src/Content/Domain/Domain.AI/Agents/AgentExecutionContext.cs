@@ -76,6 +76,28 @@ public class AgentExecutionContext
     public IReadOnlyList<string>? SkillIds { get; set; }
 
     /// <summary>
+    /// Ids of the skills in <see cref="SkillIds"/> whose instruction bodies were deliberately
+    /// <em>left out</em> of <see cref="Instruction"/> because the framework serves them on demand
+    /// (Tier 2 progressive disclosure). Null or empty means every skill's body was inlined.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Recorded for the same reason as <see cref="McpToolNames"/>: downstream code has to attribute
+    /// content to its origin and cannot recover that fact by inspecting the result. The instruction is
+    /// one opaque string — nothing in it says which skill bodies were folded in and which were held
+    /// back — so a consumer that assumes "every registered skill's text is in here" is wrong by exactly
+    /// the bodies listed here, with no way to detect it.
+    /// </para>
+    /// <para>
+    /// That mistake is not hypothetical: the context bar sized its system-prompt lane as the
+    /// instruction minus <em>every</em> registered skill, which on the default path subtracts text the
+    /// instruction never contained — reporting the system prompt as smaller than it is, and charging
+    /// the skills lane for bodies the model never received (#507). Both lanes read from this instead.
+    /// </para>
+    /// </remarks>
+    public IReadOnlySet<string>? DisclosedOnDemandSkillIds { get; set; }
+
+    /// <summary>
     /// Middleware types to apply to the agent's chat client pipeline.
     /// </summary>
     public IList<Type>? MiddlewareTypes { get; set; }

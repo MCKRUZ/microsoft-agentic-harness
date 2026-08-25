@@ -72,6 +72,49 @@ public sealed class RegistrationBreakdownCalculatorTests
     }
 
     [Fact]
+    public void From_SkillServedOnDemand_IsChargedToNoLaneAndNotSubtractedFromTheSystemPrompt()
+    {
+        // The defect this guards, which shipped inside #507's own first fix. This harness serves
+        // Tier-2 skill bodies on demand BY DEFAULT — the merge that builds the instruction
+        // deliberately leaves them out. Charging them anyway inflates the skills lane with text the
+        // model never received and, because the system lane is the instruction minus that figure,
+        // deflates the system lane by the same amount — reproducing the exact "system prompt reads
+        // zero" symptom #507 was filed about, on the ordinary path rather than an edge case.
+        var heldBackBody = new string('s', 8_000);
+        var instruction = new string('i', 1_200);
+
+        var breakdown = RegistrationBreakdownCalculator.From(Snapshot(
+            systemPrompt: instruction,
+            skills: [new SkillRegistration("s1", "Disclosed", heldBackBody, InlinedInPrompt: false)]));
+
+        breakdown.Skills.Should().Be(0,
+            "a body the prompt does not contain is not occupying the context window");
+        breakdown.System.Should().Be(Est(instruction),
+            "and it must not be subtracted from the lane that measures what the prompt DOES contain");
+    }
+
+    [Fact]
+    public void From_MixedInlinedAndOnDemandSkills_ChargesOnlyWhatThePromptContains()
+    {
+        var inlined = new string('a', 400);
+        var heldBack = new string('b', 4_000);
+        var instruction = "preamble " + inlined;
+
+        var breakdown = RegistrationBreakdownCalculator.From(Snapshot(
+            systemPrompt: instruction,
+            skills:
+            [
+                new SkillRegistration("s1", "Inlined", inlined),
+                new SkillRegistration("s2", "OnDemand", heldBack, InlinedInPrompt: false),
+            ]));
+
+        breakdown.Skills.Should().Be(Est(inlined));
+        (breakdown.System + breakdown.Skills).Should().Be(Est(instruction),
+            "the lanes still reconcile to the instruction actually sent, with the held-back body "
+            + "counted in neither");
+    }
+
+    [Fact]
     public void From_ToolWithoutASerializedSchema_StillCostsSomething()
     {
         // A non-AIFunction tool has no schema text but still occupies context. Reporting zero would
@@ -80,7 +123,6 @@ public sealed class RegistrationBreakdownCalculatorTests
             nativeTools: [new ToolRegistration("calculator", "Does arithmetic", SchemaText: null)]));
 
         breakdown.Tools.Should().Be(Est("calculator Does arithmetic"));
-        breakdown.Tools.Should().BeGreaterThan(0);
     }
 
     [Fact]
@@ -121,7 +163,6 @@ public sealed class RegistrationBreakdownCalculatorTests
             skills: [new SkillRegistration("s1", "Skill", new string('s', 4_000))]));
 
         breakdown.System.Should().Be(0);
-        breakdown.Total.Should().BeGreaterThan(0);
     }
 
     [Fact]

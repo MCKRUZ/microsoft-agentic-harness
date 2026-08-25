@@ -9,8 +9,8 @@ namespace Application.AI.Common.Tests.Categorization;
 
 /// <summary>
 /// Pins the measured derivation (#507): registration categories pass through from what was actually
-/// loaded, <c>messages</c> is estimated from the post-turn history, and the provider's reported total
-/// is recorded for reconciliation rather than subtracted from to invent a category.
+/// loaded, and <c>messages</c> is estimated from the post-turn history. Nothing is derived by
+/// subtracting from the provider's reported usage.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -45,7 +45,6 @@ public sealed class DefaultContextSnapshotComputerTests
             conversationId: "conv-1",
             turnIndex: 0,
             turnId: "t-00",
-            inputTokens: 8_200,
             history: history,
             registrations: Registrations(system: 1_200, agents: 90, skills: 400, tools: 650, mcp: 120),
             turnLoaded: [],
@@ -61,20 +60,19 @@ public sealed class DefaultContextSnapshotComputerTests
     }
 
     [Fact]
-    public void Compute_EstimateOvershootsBilledTotal_KeepsSystemAndReportsANegativeGap()
+    public void Compute_LargeTranscriptEstimate_CannotErodeTheMeasuredSystemPrompt()
     {
-        // The #507 scenario, asserted the other way round. A tool-heavy turn makes the
-        // ~4-chars-per-token transcript estimate exceed what the provider actually billed. The old
-        // implementation subtracted one from the other and clamped, reporting NO system prompt — here
-        // the system prompt survives untouched because nothing subtracts from it, and the overshoot
-        // surfaces as a negative gap instead of being absorbed into a category.
-        var history = new List<ChatMessage> { new(ChatRole.User, new string('a', 400)) };
+        // The #507 scenario, asserted the other way round. The old implementation derived the system
+        // lane by subtracting the transcript estimate from the provider's billed total and clamping —
+        // so an estimate that ran long (the ~4-chars-per-token rule does, on JSON-shaped tool payloads)
+        // reported NO system prompt at all. Here the two quantities never meet: the system lane is
+        // measured, and nothing about the transcript can touch it.
+        var history = new List<ChatMessage> { new(ChatRole.User, new string('a', 4_000)) };
 
         var snapshot = _sut.Compute(
             conversationId: "conv-1",
             turnIndex: 0,
             turnId: "t-00",
-            inputTokens: 20,
             history: history,
             registrations: Registrations(system: 750),
             turnLoaded: [],
@@ -82,11 +80,7 @@ public sealed class DefaultContextSnapshotComputerTests
 
         snapshot.CtxAfter.System.Should().Be(750,
             "a measured system prompt cannot be erased by a disagreement about the transcript");
-        snapshot.CtxAfter.Messages.Should().Be(100);
-        snapshot.MeasuredInputTokens.Should().Be(20);
-        snapshot.UnaccountedTokens.Should().Be(20 - 850,
-            "an estimate that ran long is reported as a negative gap, which is why this is a derived "
-            + "difference and not a seventh category — a category cannot hold it");
+        snapshot.CtxAfter.Messages.Should().Be(1_000);
     }
 
     [Fact]
@@ -101,7 +95,6 @@ public sealed class DefaultContextSnapshotComputerTests
             conversationId: "conv-1",
             turnIndex: 0,
             turnId: "t-00",
-            inputTokens: 1_000,
             history: history,
             registrations: new CategoryBreakdown(100, 0, 0, 0, 0, Messages: 9_999),
             turnLoaded: [],
@@ -111,41 +104,21 @@ public sealed class DefaultContextSnapshotComputerTests
     }
 
     [Fact]
-    public void Compute_NoUsageReported_LeavesTheGapAtZeroRatherThanClaimingEverythingIsUnaccounted()
+    public void Compute_NothingRegistered_ClaimsNothingRatherThanInventingASystemPrompt()
     {
-        // inputTokens == 0 means "no usage was reported", not "the prompt was empty". Reporting the
-        // whole attributed total as an unaccounted deficit would be a large, confident, wrong number.
+        // Under the old derivation this turn reported the entire billed total as "System", because
+        // that lane was defined as whatever was left over. An empty registration state means nothing
+        // is KNOWN to be in the prompt, and an honest breakdown says so rather than filling the gap.
         var snapshot = _sut.Compute(
             conversationId: "conv-1",
             turnIndex: 0,
             turnId: "t-00",
-            inputTokens: 0,
             history: [],
-            registrations: Registrations(system: 500),
+            registrations: CategoryBreakdown.Empty,
             turnLoaded: [],
             capturedAtUtc: _now);
 
-        snapshot.MeasuredInputTokens.Should().Be(0);
-        snapshot.UnaccountedTokens.Should().Be(0);
-        snapshot.CtxAfter.System.Should().Be(500, "the breakdown stands on its own measurements");
-    }
-
-    [Fact]
-    public void Compute_ContextReachedTheModelThatNoCategoryExplains_ShowsAPositiveGap()
-    {
-        var snapshot = _sut.Compute(
-            conversationId: "conv-1",
-            turnIndex: 0,
-            turnId: "t-00",
-            inputTokens: 5_000,
-            history: [],
-            registrations: Registrations(system: 1_000, tools: 500),
-            turnLoaded: [],
-            capturedAtUtc: _now);
-
-        snapshot.CtxAfter.Total.Should().Be(1_500);
-        snapshot.UnaccountedTokens.Should().Be(3_500,
-            "provider-side framing and anything the harness never registered is surfaced, not hidden");
+        snapshot.CtxAfter.Total.Should().Be(0);
     }
 
     [Fact]
@@ -161,7 +134,6 @@ public sealed class DefaultContextSnapshotComputerTests
             conversationId: "conv-1",
             turnIndex: 4,
             turnId: "t-04",
-            inputTokens: 1_000,
             history: [],
             registrations: CategoryBreakdown.Empty,
             turnLoaded: loaded,
@@ -181,7 +153,6 @@ public sealed class DefaultContextSnapshotComputerTests
             conversationId: "conv-1",
             turnIndex: 0,
             turnId: "t-00",
-            inputTokens: 500,
             history: [],
             registrations: CategoryBreakdown.Empty,
             turnLoaded: [],
@@ -191,7 +162,6 @@ public sealed class DefaultContextSnapshotComputerTests
         snapshot.CtxAfter.Total.Should().Be(0,
             "nothing was registered and nothing was said — the bar claims nothing rather than "
             + "inventing a system-prompt figure from the billed total");
-        snapshot.UnaccountedTokens.Should().Be(500);
     }
 
     [Fact]
@@ -201,7 +171,6 @@ public sealed class DefaultContextSnapshotComputerTests
             conversationId: "",
             turnIndex: 0,
             turnId: "t-00",
-            inputTokens: 0,
             history: [],
             registrations: CategoryBreakdown.Empty,
             turnLoaded: [],
@@ -217,7 +186,6 @@ public sealed class DefaultContextSnapshotComputerTests
             conversationId: "conv-1",
             turnIndex: 0,
             turnId: "t-00",
-            inputTokens: 0,
             history: [],
             registrations: null!,
             turnLoaded: [],

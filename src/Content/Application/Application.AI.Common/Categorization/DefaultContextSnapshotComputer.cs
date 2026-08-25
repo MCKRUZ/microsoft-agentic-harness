@@ -30,10 +30,11 @@ namespace Application.AI.Common.Categorization;
 /// has always shown two of its six lanes.
 /// </para>
 /// <para>
-/// The provider's reported total is now recorded rather than subtracted from, as
-/// <see cref="ContextSnapshot.MeasuredInputTokens"/>. The difference against the attributed total is
-/// <see cref="ContextSnapshot.UnaccountedTokens"/> — a number a reader can use to judge how far to
-/// trust the bar, instead of an error silently redistributed into a category.
+/// The provider's reported total is no longer consulted at all. Reconciling against it would need a
+/// measurement of this turn's <em>prompt</em>, and what the harness records is input tokens
+/// accumulated across every model call in the turn — see <see cref="ContextSnapshot"/>'s remarks. The
+/// breakdown now stands on its own measurements rather than on a subtraction from a number that means
+/// something else.
 /// </para>
 /// </remarks>
 public sealed class DefaultContextSnapshotComputer : IContextSnapshotComputer
@@ -43,7 +44,6 @@ public sealed class DefaultContextSnapshotComputer : IContextSnapshotComputer
         string conversationId,
         int turnIndex,
         string turnId,
-        int inputTokens,
         IReadOnlyList<ChatMessage> history,
         CategoryBreakdown registrations,
         IReadOnlyList<LoadedItem> turnLoaded,
@@ -70,7 +70,6 @@ public sealed class DefaultContextSnapshotComputer : IContextSnapshotComputer
             TurnId: turnId,
             CtxAfter: ctxAfter,
             Loaded: turnLoaded,
-            CapturedAtUtc: capturedAtUtc,
-            MeasuredInputTokens: Math.Max(0, inputTokens));
+            CapturedAtUtc: capturedAtUtc);
     }
 }

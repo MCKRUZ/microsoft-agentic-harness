@@ -16,7 +16,8 @@ namespace Application.AI.Common.Categorization;
 /// a bar and a drawer describing the same turn with different numbers is worse than either being
 /// slightly wrong, because there is then no way to tell which one to believe. The drawer itemizes the
 /// per-turn <em>delta</em> while this sums the <em>cumulative</em> state, so they answer different
-/// questions — but from identical per-item measurements.
+/// questions — but through these same methods, not a copy of them. An earlier draft asserted exactly
+/// this while the handler kept its own hand-copied estimators; the claim is now structural.
 /// </para>
 /// <para>
 /// Every figure comes from text that was actually loaded into the agent, so this works the same
@@ -52,21 +53,35 @@ public static class RegistrationBreakdownCalculator
     }
 
     /// <summary>
+    /// The system-prompt lane for one snapshot: the agent's whole instruction minus the skill
+    /// instructions embedded within it.
+    /// </summary>
+    /// <param name="snapshot">The registration state to size.</param>
+    public static int SystemPromptTokens(RegistrationSnapshot snapshot)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+        return SystemPromptTokens(snapshot, snapshot.Skills.Sum(TokensFor));
+    }
+
+    /// <summary>
     /// The system-prompt lane: the agent's whole instruction minus the skill instructions embedded
     /// within it.
     /// </summary>
     /// <remarks>
-    /// This subtraction is deliberate and is not the defect #507 was about, though it shares a shape.
-    /// The agent's instruction text <em>contains</em> its skills' instructions, so charging both in
-    /// full would count that text twice and inflate the bar past what the model receives. Both terms
-    /// are the same estimator over real loaded text, so the difference is meaningful — unlike the old
-    /// <c>System = billed − estimated-messages</c>, which subtracted an estimate of one thing from a
-    /// measurement of another and floored to zero whenever the estimate ran long.
     /// <para>
-    /// The clamp is still a real (if narrow) blind spot: it fires only when a registered skill's text
-    /// is <em>not</em> embedded in the instruction, and reports the system prompt as smaller than it is
-    /// rather than reporting the inconsistency. <see cref="ContextSnapshot.UnaccountedTokens"/> is
-    /// where that surfaces — a turn losing tokens here widens the gap rather than hiding it.
+    /// The subtrahend is the <em>inlined</em> skill total, not every registered skill, and that
+    /// distinction is the whole point. The instruction contains the bodies it inlined, so charging
+    /// those to both lanes would count the same text twice; it does <em>not</em> contain the bodies the
+    /// framework serves on demand, so subtracting those removes text that was never there. An earlier
+    /// draft subtracted all of them and described the resulting clamp as a narrow edge case — the
+    /// reverse of the truth, since on-demand disclosure is the default path. That reproduced #507's own
+    /// symptom inside its fix: a real system prompt reported as zero.
+    /// </para>
+    /// <para>
+    /// With both terms drawn from the same set, <c>System + Skills</c> equals the instruction exactly
+    /// and the clamp becomes unreachable rather than merely unlikely. It is kept because
+    /// <see cref="RegistrationSnapshot"/> is data this code does not construct: a producer that
+    /// mislabels a held-back body as inlined should give a flat lane, not a negative one.
     /// </para>
     /// </remarks>
     private static int SystemPromptTokens(RegistrationSnapshot snapshot, int skillTokens) =>
@@ -74,21 +89,39 @@ public static class RegistrationBreakdownCalculator
             ? 0
             : Math.Max(0, TokenEstimationHelper.EstimateTokens(snapshot.SystemPromptText) - skillTokens);
 
-    private static int TokensFor(SkillRegistration skill) =>
-        TokenEstimationHelper.EstimateTokens(skill.InstructionsText);
+    /// <summary>
+    /// What one skill costs in the prompt: its instruction body when that body was inlined, otherwise
+    /// nothing.
+    /// </summary>
+    /// <remarks>
+    /// A skill served on demand has its body held out of the system prompt deliberately, so it is not
+    /// occupying the context window and must not be charged as though it were. Counting it would
+    /// inflate the skills lane with text the model never received and — because the system lane is the
+    /// instruction minus this figure — deflate the system lane by the same amount, which is how a real
+    /// system prompt came to read as zero in the first place (#507). The body starts costing when the
+    /// skill is actually loaded, at which point it lands in the transcript like any other tool result.
+    /// </remarks>
+    public static int TokensFor(SkillRegistration skill)
+    {
+        ArgumentNullException.ThrowIfNull(skill);
 
-    private static int TokensFor(AgentRegistration agent) =>
+        return skill.InlinedInPrompt
+            ? TokenEstimationHelper.EstimateTokens(skill.InstructionsText)
+            : 0;
+    }
+
+    /// <summary>One delegatable peer agent's description.</summary>
+    public static int TokensFor(AgentRegistration agent) =>
         TokenEstimationHelper.EstimateTokens(agent.Description);
 
     /// <summary>
     /// A tool's footprint: its serialized schema when it has one, else its name and description.
     /// </summary>
     /// <remarks>
-    /// Mirrors <c>ExecuteAgentTurnCommandHandler.EstimateToolTokens</c> exactly. A tool without a
-    /// serialized schema (a non-<c>AIFunction</c> tool) still occupies context, so it falls back to
-    /// the text that does reach the model rather than reporting zero.
+    /// A tool without a serialized schema (a non-<c>AIFunction</c> tool) still occupies context, so it
+    /// falls back to the text that does reach the model rather than reporting zero.
     /// </remarks>
-    private static int TokensFor(ToolRegistration tool) =>
+    public static int TokensFor(ToolRegistration tool) =>
         !string.IsNullOrEmpty(tool.SchemaText)
             ? TokenEstimationHelper.EstimateTokens(tool.SchemaText)
             : TokenEstimationHelper.EstimateTokens(

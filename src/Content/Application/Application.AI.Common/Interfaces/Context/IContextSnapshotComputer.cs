@@ -20,11 +20,10 @@ namespace Application.AI.Common.Interfaces.Context;
 /// <strong>Every category is measured; none is a residual.</strong> The registration categories
 /// (system prompt, skills, tools, MCP, peer agents) arrive already summed in
 /// <c>registrations</c>, computed from the text actually loaded into the agent;
-/// <see cref="ContextCategory.Messages"/> is estimated from the transcript. <c>inputTokens</c> is
-/// recorded as ground truth for reconciliation via
-/// <see cref="ContextSnapshot.UnaccountedTokens"/> — it is no longer subtracted from to invent a
-/// category, which is what let one overshooting estimate floor the whole system-prompt segment to
-/// zero (#507).
+/// <see cref="ContextCategory.Messages"/> is estimated from the transcript. Nothing is derived by
+/// subtracting from the provider's reported usage, which is what let one overshooting estimate floor
+/// the whole system-prompt segment to zero (#507) — and is why this contract no longer takes that
+/// figure at all.
 /// </para>
 /// </remarks>
 public interface IContextSnapshotComputer
@@ -35,11 +34,6 @@ public interface IContextSnapshotComputer
     /// <param name="conversationId">Stable conversation identifier (matches the SignalR group).</param>
     /// <param name="turnIndex">Zero-based turn index within the conversation.</param>
     /// <param name="turnId">Stable turn identifier (e.g. <c>t-04</c>).</param>
-    /// <param name="inputTokens">
-    /// Tokens the provider reported for this turn's prompt (from <c>ILlmUsageCapture</c>), or 0 when
-    /// none was reported. Recorded as <see cref="ContextSnapshot.MeasuredInputTokens"/> so the gap
-    /// against the attributed total stays visible; never used to derive a category.
-    /// </param>
     /// <param name="history">The full message history including the user message and assistant response that landed this turn.</param>
     /// <param name="registrations">
     /// Cumulative, measured token totals for everything registered into the agent's context — the
@@ -56,7 +50,6 @@ public interface IContextSnapshotComputer
         string conversationId,
         int turnIndex,
         string turnId,
-        int inputTokens,
         IReadOnlyList<ChatMessage> history,
         CategoryBreakdown registrations,
         IReadOnlyList<LoadedItem> turnLoaded,

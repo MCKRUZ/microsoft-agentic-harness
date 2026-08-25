@@ -217,6 +217,11 @@ public partial class AgentExecutionContextFactory
             Tools = tools,
             McpToolNames = mergedToolChain.McpToolNames,
             SkillIds = skills.Select(s => s.Id).ToList(),
+            // Recorded from the same set the merge above consulted, so what the context reports as
+            // held-back is by construction what the instruction actually omitted. Anything that sizes
+            // the prompt has to know this: the instruction is one opaque string, and a consumer
+            // assuming every registered skill's body is inside it is wrong by exactly these ids.
+            DisclosedOnDemandSkillIds = disclosedOnDemand,
             AIContextProviders = aiContextProviders,
             MiddlewareTypes = middlewareTypes,
             TraceScope = traceScope,

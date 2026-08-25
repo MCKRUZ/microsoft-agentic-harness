@@ -56,7 +56,7 @@ public sealed class SignalRContextSnapshotNotifierTests
             ],
             new DateTimeOffset(2026, 6, 1, 12, 0, 0, TimeSpan.Zero));
 
-    private async Task<JsonElement> CaptureBroadcastPayloadAsync(ContextSnapshot? snapshot = null)
+    private async Task<JsonElement> CaptureBroadcastPayloadAsync()
     {
         object[]? capturedArgs = null;
         _client.Setup(c => c.SendCoreAsync(
@@ -66,7 +66,7 @@ public sealed class SignalRContextSnapshotNotifierTests
             .Callback<string, object[], CancellationToken>((_, args, _) => capturedArgs = args)
             .Returns(Task.CompletedTask);
 
-        await _sut.NotifyAsync(snapshot ?? NewSnapshot(), CancellationToken.None);
+        await _sut.NotifyAsync(NewSnapshot(), CancellationToken.None);
 
         capturedArgs.Should().NotBeNull();
         capturedArgs!.Should().HaveCount(1);
@@ -86,14 +86,6 @@ public sealed class SignalRContextSnapshotNotifierTests
             It.IsAny<CancellationToken>()), Times.Once);
     }
 
-    /// <remarks>
-    /// The two reconciliation fields were added by #507 and are deliberately <em>additive</em>: a JS
-    /// client that does not know about them renders exactly as it did before. They exist because every
-    /// category in <c>ctxAfter</c> is now measured from what was actually loaded rather than one of
-    /// them being a leftover subtraction — so the difference against what the provider billed has
-    /// somewhere honest to go instead of being absorbed into the system-prompt lane and clamped to
-    /// zero.
-    /// </remarks>
     [Fact]
     public async Task Payload_top_level_property_names_pinned_for_JS_client_contract()
     {
@@ -107,32 +99,7 @@ public sealed class SignalRContextSnapshotNotifierTests
             "ctxAfter",
             "loaded",
             "capturedAtUtc",
-            "measuredInputTokens",
-            "unaccountedTokens",
         ]);
-    }
-
-    [Fact]
-    public async Task Unaccounted_tokens_travel_signed_so_an_overshooting_estimate_is_representable()
-    {
-        // The reason this is a top-level signed number rather than a seventh entry in ctxAfter: the
-        // breakdown's message estimate can exceed what the provider actually billed on a tool-heavy
-        // turn, and a category — an additive token count — has no way to express that. The old code
-        // subtracted its way to the same place and clamped, which is how a real system prompt came to
-        // report as zero (#507).
-        var snapshot = new ContextSnapshot(
-            ConversationId: "conv-1",
-            TurnIndex: 0,
-            TurnId: "t-00",
-            CtxAfter: new CategoryBreakdown(500, 0, 0, 0, 0, 400),
-            Loaded: [],
-            CapturedAtUtc: DateTimeOffset.UnixEpoch,
-            MeasuredInputTokens: 300);
-
-        var payload = await CaptureBroadcastPayloadAsync(snapshot);
-
-        payload.GetProperty("unaccountedTokens").GetInt32().Should().Be(300 - 900);
-        payload.GetProperty("measuredInputTokens").GetInt32().Should().Be(300);
     }
 
     [Fact]
