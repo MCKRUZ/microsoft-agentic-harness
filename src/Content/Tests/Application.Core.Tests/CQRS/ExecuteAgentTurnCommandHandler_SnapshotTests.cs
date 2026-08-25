@@ -3,6 +3,7 @@ using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Context;
 using Application.AI.Common.Notifications;
 using Application.Core.CQRS.Agents.ExecuteAgentTurn;
+using Application.Core.Tests.Fakes;
 using Application.Core.Tests.Helpers;
 using Domain.AI.Context;
 using Domain.AI.Skills;
@@ -57,7 +58,8 @@ public class ExecuteAgentTurnCommandHandler_SnapshotTests
             new DefaultContextSnapshotComputer(),
             notifier,
             TimeProvider.System,
-            NullLogger<ExecuteAgentTurnCommandHandler>.Instance);
+            NullLogger<ExecuteAgentTurnCommandHandler>.Instance,
+            new PassthroughToolCallReplayTreatment());
     }
 
     private void SetupAgent(string response = "ok")

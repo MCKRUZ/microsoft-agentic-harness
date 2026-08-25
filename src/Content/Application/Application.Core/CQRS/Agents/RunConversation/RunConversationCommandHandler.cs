@@ -44,6 +44,7 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 	private readonly IConversationStore _conversationStore;
 	private readonly IConversationTurnLease _turnLease;
 	private readonly IOptions<ConversationsConfig> _conversationsConfig;
+	private readonly IToolCallReplayTreatment _toolCallReplayTreatment;
 	private readonly ILogger<RunConversationCommandHandler> _logger;
 
 	/// <summary>Initializes a new <see cref="RunConversationCommandHandler"/>.</summary>
@@ -75,6 +76,7 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 		IConversationStore conversationStore,
 		IConversationTurnLease turnLease,
 		IOptions<ConversationsConfig> conversationsConfig,
+		IToolCallReplayTreatment toolCallReplayTreatment,
 		ILogger<RunConversationCommandHandler> logger)
 	{
 		ArgumentNullException.ThrowIfNull(mediator);
@@ -85,6 +87,7 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 		ArgumentNullException.ThrowIfNull(conversationStore);
 		ArgumentNullException.ThrowIfNull(turnLease);
 		ArgumentNullException.ThrowIfNull(conversationsConfig);
+		ArgumentNullException.ThrowIfNull(toolCallReplayTreatment);
 		ArgumentNullException.ThrowIfNull(logger);
 
 		_mediator = mediator;
@@ -93,6 +96,7 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 		_observabilityStore = observabilityStore;
 		_telemetryRecorder = telemetryRecorder;
 		_conversationStore = conversationStore;
+		_toolCallReplayTreatment = toolCallReplayTreatment;
 		_turnLease = turnLease;
 		_conversationsConfig = conversationsConfig;
 		_logger = logger;
@@ -143,7 +147,8 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 		using var turnCts = CancellationTokenSource.CreateLinkedTokenSource(
 			cancellationToken, lease.LeaseLost);
 
-		var transcript = new DurableTranscript(_conversationStore, request.ConversationId, ownerId);
+		var transcript = new DurableTranscript(
+			_conversationStore, request.ConversationId, ownerId, _toolCallReplayTreatment.Enabled);
 
 		return await RunAsync(request, transcript, turnCts.Token);
 	}
@@ -349,26 +354,28 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 				// already cancelled, so the pair would be split precisely when the lease was taken —
 				// the one moment the transcript must not be half-written.
 				//
-				// A turn that succeeds with NO text is not a complete exchange either, and storing it
-				// would produce the very half-turn described above by a longer route: both stores drop
-				// empty-content messages from the dispatch window (that is how widget messages are kept
-				// out of prompts), so the answer would be written, filtered out on the next read, and
-				// leave the question standing alone. A turn can end this way legitimately — a model
-				// replying with tool calls and no prose — so this is skipped rather than treated as a
-				// failure, and logged so it is visible rather than silent.
+				// A turn that succeeds with NO text and NO tool calls is not a complete exchange, and
+				// storing it would produce the very half-turn described above by a longer route: both
+				// stores drop a message with neither (that is how widget messages are kept out of
+				// prompts), so the answer would be written, filtered out on the next read, and leave the
+				// question standing alone. A turn that ends in tool calls with no prose IS a complete,
+				// storable exchange — both stores now keep a row with tool calls even when Content is
+				// empty (#249 item 6) specifically so this case persists rather than silently losing the
+				// tool activity along with the missing text.
 				if (transcript is not null)
 				{
-					if (string.IsNullOrWhiteSpace(lastResult.Response))
+					if (string.IsNullOrWhiteSpace(lastResult.Response) && lastResult.ToolCalls.Count == 0)
 					{
 						_logger.LogWarning(
-							"Turn {Turn} of conversation {ConversationId} produced no text; not persisted, "
-							+ "because an empty answer is filtered from the replay window and would leave "
-							+ "the question unanswered.",
+							"Turn {Turn} of conversation {ConversationId} produced no text and no tool calls; "
+							+ "not persisted, because an empty answer is filtered from the replay window and "
+							+ "would leave the question unanswered.",
 							index + 1, request.ConversationId);
 					}
 					else
 					{
-						await transcript.AppendTurnAsync(userMessage, lastResult.Response, cancellationToken);
+						await transcript.AppendTurnAsync(
+							userMessage, lastResult.Response, lastResult.ToolCalls, cancellationToken);
 					}
 				}
 

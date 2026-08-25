@@ -34,6 +34,7 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
     private readonly IConversationTelemetryRecorder _telemetryRecorder;
     private readonly IConnectionTracker _connectionTracker;
     private readonly IConversationBudgetTracker _conversationBudget;
+    private readonly IToolCallReplayTreatment _toolCallReplayTreatment;
     private readonly AgentHubConfig _config;
     private readonly IHostEnvironment _environment;
     private readonly ILogger<ConversationOrchestrator> _logger;
@@ -47,6 +48,7 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
         IConversationTelemetryRecorder telemetryRecorder,
         IConnectionTracker connectionTracker,
         IConversationBudgetTracker conversationBudget,
+        IToolCallReplayTreatment toolCallReplayTreatment,
         IOptions<AgentHubConfig> config,
         IHostEnvironment environment,
         ILogger<ConversationOrchestrator> logger)
@@ -59,6 +61,7 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
         _telemetryRecorder = telemetryRecorder;
         _connectionTracker = connectionTracker;
         _conversationBudget = conversationBudget;
+        _toolCallReplayTreatment = toolCallReplayTreatment;
         _config = config.Value;
         _environment = environment;
         _logger = logger;
@@ -477,7 +480,8 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
         // ambient AgentTurnStreamSink. The final authoritative text rides TurnComplete.
         var assistantMessageId = Guid.NewGuid();
         var assistantMsg = new ConversationMessage(
-            assistantMessageId, MessageRole.Assistant, result.Response, DateTimeOffset.UtcNow);
+            assistantMessageId, MessageRole.Assistant, result.Response, DateTimeOffset.UtcNow,
+            ToolCalls: result.ToolCalls);
         await _conversationStore.AppendMessageAsync(conversationId, callerId, assistantMsg, ct);
 
         var finalRecord = await _conversationStore.GetAsync(conversationId, callerId, ct);
@@ -680,7 +684,9 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
     }
 
     // Delegates to the shared projection rather than repeating the role switch — see
-    // ConversationMessageMapping for why three copies of one mapping was a latent bug.
-    private static IReadOnlyList<ChatMessage> ToMeaiHistory(IReadOnlyList<ConversationMessage> messages) =>
-        ConversationMessageMapping.ToChatMessages(messages);
+    // ConversationMessageMapping for why three copies of one mapping was a latent bug. Not static:
+    // gates tool-call expansion on the live IToolCallReplayTreatment.Enabled value so an operator's
+    // kill switch stops replaying already-persisted tool payloads, not just stop writing new ones.
+    private IReadOnlyList<ChatMessage> ToMeaiHistory(IReadOnlyList<ConversationMessage> messages) =>
+        ConversationMessageMapping.ToChatMessages(messages, _toolCallReplayTreatment.Enabled);
 }

@@ -151,4 +151,27 @@ public sealed class ToolCallTranscriptExtractorTests
 
         exchanges[0].ResultText.Should().Be("second");
     }
+
+    [Fact]
+    public void Extract_DuplicateCallsForSameCallId_FirstOneWins_NeverProducesTwoExchanges()
+    {
+        // A provider connector surfacing the same call twice (ToolCallOrderingSink's own doc comment
+        // names this as a real failure mode) must never persist as two exchanges sharing one CallId —
+        // that pair would replay as an invalid duplicate tool_call id most providers reject.
+        var messages = new List<ChatMessage>
+        {
+            new(ChatRole.Assistant,
+            [
+                new FunctionCallContent("call-1", "search", new Dictionary<string, object?> { ["q"] = "first" }),
+                new FunctionCallContent("call-1", "search", new Dictionary<string, object?> { ["q"] = "duplicate" }),
+            ]),
+            new(ChatRole.Tool, [new FunctionResultContent("call-1", "sunny")]),
+        };
+
+        var exchanges = ToolCallTranscriptExtractor.Extract(messages, Logger);
+
+        exchanges.Should().ContainSingle();
+        exchanges[0].ArgsJson.Should().Contain("first");
+        exchanges[0].ResultText.Should().Be("sunny");
+    }
 }

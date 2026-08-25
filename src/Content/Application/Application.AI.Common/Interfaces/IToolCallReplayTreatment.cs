@@ -16,6 +16,15 @@ namespace Application.AI.Common.Interfaces;
 public interface IToolCallReplayTreatment
 {
     /// <summary>
+    /// Whether tool-call replay memory is turned on for this deployment
+    /// (<c>AppConfig:AI:Conversations:ToolCallReplay:Enabled</c>). A caller extracting and persisting a
+    /// turn's tool calls must check this <em>before</em> doing that work — not skip persistence after
+    /// treating anyway — so a deployment that opts out for cost or compliance reasons never has tool
+    /// payloads written to the conversation store in the first place.
+    /// </summary>
+    bool Enabled { get; }
+
+    /// <summary>
     /// Treats raw text — a tool call's arguments or a tool result — for safe, bounded, model-facing
     /// replay: sanitize, then redact, then size-tier the result (verbatim under the configured
     /// ceiling, truncated with a visible marker above it, withheld outright above the hard

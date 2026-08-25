@@ -1,11 +1,20 @@
-using System.Text.Json;
-
 namespace Application.AI.Common.Models.Conversations;
 
 /// <summary>Captures a single tool invocation within an assistant turn.</summary>
 /// <param name="ToolName">The invoked tool's name.</param>
-/// <param name="Input">The tool's arguments, as sent to it.</param>
-/// <param name="Output">The tool's result, as returned from it.</param>
+/// <param name="Input">
+/// The tool's arguments, treated for durable/model-facing replay (see
+/// <c>IToolCallReplayTreatment</c>) — JSON-serialized when the treated text is still valid JSON, but
+/// not guaranteed to be: a truncated-with-marker or withheld-placeholder value is not parseable JSON.
+/// A plain <see langword="string"/>, not <see cref="System.Text.Json.JsonElement"/>, precisely
+/// because it cannot promise that guarantee. <see langword="null"/> when the call had no arguments.
+/// </param>
+/// <param name="Output">
+/// The tool's result, treated the same way as <paramref name="Input"/> and carrying the identical
+/// not-guaranteed-to-be-JSON caveat. <see langword="null"/> when the call has no recorded result —
+/// see <c>ToolExchange.HasResult</c>; a caller persisting an orphaned call must still emit a
+/// placeholder here, never leave the row silently missing a result.
+/// </param>
 /// <param name="DurationMs">Wall-clock time the invocation took.</param>
 /// <param name="CallId">
 /// The provider-assigned id pairing this record to its <c>FunctionCallContent</c>/
@@ -23,8 +32,8 @@ namespace Application.AI.Common.Models.Conversations;
 /// </param>
 public sealed record ToolCallRecord(
     string ToolName,
-    JsonElement Input,
-    JsonElement Output,
+    string? Input,
+    string? Output,
     long DurationMs,
     string? CallId = null,
     int? RoundOrdinal = null);

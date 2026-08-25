@@ -57,6 +57,11 @@ internal static class ConversationEntityMapper
             Role = message.Role,
             Content = message.Content,
             Timestamp = message.Timestamp,
+            // No empty-vs-null normalization needed here: ConversationMessage.ToolCalls already
+            // guarantees an empty list can't reach this point as anything but null (see its own
+            // remarks) — the guarantee that matters for EfCoreConversationStore.GetHistoryForDispatch's
+            // ToolCallsJson != null dispatch-window filter is enforced once, on the type, not repeated
+            // at every write site including this one.
             ToolCallsJson = Serialize(message.ToolCalls),
             WidgetJson = Serialize(message.Widget),
         };

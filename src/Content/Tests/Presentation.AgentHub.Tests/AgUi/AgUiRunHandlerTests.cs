@@ -444,6 +444,7 @@ public sealed class AgUiRunHandlerTests
             turnLease ?? new InProcessConversationTurnLease(),
             new AgUiEventWriterAccessor(),
             budget.Object,
+            Mock.Of<IToolCallReplayTreatment>(t => t.Enabled == true),
             environment.Object,
             logger ?? NullLogger<AgUiRunHandler>.Instance);
     }

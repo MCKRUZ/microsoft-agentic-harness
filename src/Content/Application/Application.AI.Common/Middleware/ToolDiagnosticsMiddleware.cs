@@ -87,25 +87,39 @@ public sealed class ToolDiagnosticsMiddleware : DelegatingChatClient
     }
 
     /// <remarks>
-    /// Scans the caller's <em>inbound</em> messages, not the response — this is correct given where
-    /// this middleware sits in the pipeline (see the call site's comment), but it means a resumed
-    /// conversation that replays an earlier turn's tool result as history would have that result
-    /// re-recorded here as if it had just happened again. Nothing in this codebase populates tool
-    /// content in replayed conversation history today, so this is currently a dormant defect, not a
-    /// live one. It becomes live the moment #249 item 6 ships replayed tool history, and the fix
-    /// belongs in that work — deduping "genuinely new this turn" from "replayed from an earlier
-    /// turn" needs a signal only that feature's design can provide (this middleware alone cannot
-    /// tell the two apart from message content). Tracked there deliberately, not solved here.
+    /// Scans the caller's <em>inbound</em> messages, not the response — correct given where this
+    /// middleware sits in the pipeline (see the call site's comment): a genuinely new result from
+    /// this turn's own tool-execution rounds arrives here as inbound content on the next round, not
+    /// as this middleware's own outbound response. That same inbound scan would just as readily match
+    /// a result already sitting in <em>replayed</em> conversation history (#249 item 6), or a result
+    /// this same turn already recorded on an earlier round — content this middleware cannot tell apart
+    /// from a genuinely new result by looking at it alone, since all three are an ordinary
+    /// <see cref="FunctionResultContent"/> in the (cumulative, ever-growing) inbound list. Excluding
+    /// any result whose <c>CallId</c> is present in <see cref="Services.ReplayedToolCallScope.Current"/>
+    /// is what supplies that missing signal: the turn handler seeds it with the pre-dispatch history's
+    /// call ids, and this method grows it in place as it records each result, so both the
+    /// cross-turn (replayed history) and intra-turn (an earlier round of this same turn) duplicate
+    /// cases are covered by one check.
     /// </remarks>
     private async Task AppendFunctionResultTracesAsync(IEnumerable<ChatMessage> messages, CancellationToken ct)
     {
+        var alreadyReplayed = Services.ReplayedToolCallScope.Current;
         var functionResults = messages
             .SelectMany(m => m.Contents)
             .OfType<FunctionResultContent>()
+            .Where(r => alreadyReplayed is null || string.IsNullOrEmpty(r.CallId) || !alreadyReplayed.Contains(r.CallId))
             .ToList();
 
         foreach (var result in functionResults)
         {
+            // Mark this call id known the moment it's picked up for recording — not after the trace
+            // write succeeds — so a later round's scan of the same (still-growing) inbound message
+            // list skips it even if the trace write below fails. See ReplayedToolCallScope's remarks:
+            // this is what closes the intra-turn duplicate-recording case a read-only, dispatch-time
+            // snapshot alone cannot.
+            if (!string.IsNullOrEmpty(result.CallId))
+                alreadyReplayed?.Add(result.CallId);
+
             // A failed call's Result already carries the raw exception message baked in by
             // IncludeDetailedErrors (see ExecuteAgentTurnCommandHandler.RedactedResultForStreaming) — this
             // trace record feeds the dashboard's per-invocation page via ToolInvocationDetailDto,

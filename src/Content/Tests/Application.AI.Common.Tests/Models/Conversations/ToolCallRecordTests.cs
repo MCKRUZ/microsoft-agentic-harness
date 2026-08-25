@@ -20,8 +20,8 @@ public sealed class ToolCallRecordTests
         const string oldShapeJson = """
             {
                 "ToolName": "search",
-                "Input": {"query":"weather"},
-                "Output": {"result":["sunny"]},
+                "Input": "{\"query\":\"weather\"}",
+                "Output": "{\"result\":[\"sunny\"]}",
                 "DurationMs": 42
             }
             """;
@@ -40,8 +40,8 @@ public sealed class ToolCallRecordTests
     {
         var original = new ToolCallRecord(
             "search",
-            JsonDocument.Parse("""{"query":"weather"}""").RootElement,
-            JsonDocument.Parse("""{"result":["sunny"]}""").RootElement,
+            """{"query":"weather"}""",
+            """{"result":["sunny"]}""",
             DurationMs: 42,
             CallId: "call-1",
             RoundOrdinal: 2);
@@ -52,5 +52,19 @@ public sealed class ToolCallRecordTests
         roundTripped.Should().NotBeNull();
         roundTripped!.CallId.Should().Be("call-1");
         roundTripped.RoundOrdinal.Should().Be(2);
+    }
+
+    [Fact]
+    public void RoundTrip_NullInputAndOutput_PreservesNull()
+    {
+        // A call with no arguments (Input) or no recorded result (Output) — both must round-trip as
+        // null, not as an empty string or a JSON "null" literal that fails to parse back.
+        var original = new ToolCallRecord("ping", Input: null, Output: null, DurationMs: 1);
+
+        var json = JsonSerializer.Serialize(original);
+        var roundTripped = JsonSerializer.Deserialize<ToolCallRecord>(json);
+
+        roundTripped!.Input.Should().BeNull();
+        roundTripped.Output.Should().BeNull();
     }
 }

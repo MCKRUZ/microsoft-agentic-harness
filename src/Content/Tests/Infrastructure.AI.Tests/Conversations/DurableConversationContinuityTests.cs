@@ -1,5 +1,6 @@
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.AI;
+using Application.AI.Common.Models.Conversations;
 using Application.Common.Exceptions.ExceptionTypes;
 using Application.Core.CQRS.Agents.ExecuteAgentTurn;
 using Application.Core.CQRS.Agents.RunConversation;
@@ -99,6 +100,68 @@ public sealed class DurableConversationContinuityTests : IDisposable
 
         dispatched[1].ConversationHistory.Select(m => m.Text).Should().Equal(
             "my name is Sam", "answer 1");
+    }
+
+    [Fact]
+    public async Task ASecondRun_SeesTheFirstRunsToolCallAsRealContent()
+    {
+        // #249 item 6, end to end against the real store: a tool called in run one must come back in
+        // run two's replayed window as the real call/result the model actually produced, not text
+        // narrating that it happened.
+        var conversationId = $"conv-{Guid.NewGuid():N}";
+        var dispatched = new List<ExecuteAgentTurnCommand>();
+        var toolCall = new ToolCallRecord(
+            "search", """{"query":"weather"}""", """{"result":"sunny"}""",
+            DurationMs: 10, CallId: "call-1", RoundOrdinal: 0);
+        var handler = BuildHandler(dispatched, toolCallsOnFirstTurn: [toolCall]);
+
+        await handler.Handle(Durable(conversationId, "what's the weather?"), CancellationToken.None);
+        await handler.Handle(Durable(conversationId, "and tomorrow?"), CancellationToken.None);
+
+        dispatched.Should().HaveCount(2);
+        var replayed = dispatched[1].ConversationHistory;
+
+        var call = replayed.SelectMany(m => m.Contents).OfType<FunctionCallContent>().Should()
+            .ContainSingle().Subject;
+        call.CallId.Should().Be("call-1");
+        call.Name.Should().Be("search");
+
+        var result = replayed.SelectMany(m => m.Contents).OfType<FunctionResultContent>().Should()
+            .ContainSingle().Subject;
+        result.CallId.Should().Be("call-1");
+        result.Result.Should().Be("""{"result":"sunny"}""");
+    }
+
+    [Fact]
+    public async Task DisablingReplayMidConversation_StopsReplayingAlreadyPersistedToolCalls()
+    {
+        // Security-review finding M-1: an operator's kill switch (AI:Conversations:ToolCallReplay:Enabled)
+        // must stop replaying tool payloads ALREADY persisted from before it was flipped, not just stop
+        // writing new ones — an incident-response control that only closes the write side leaves every
+        // existing conversation's stored tool content shipping to the model on every later turn regardless.
+        var conversationId = $"conv-{Guid.NewGuid():N}";
+        var dispatched = new List<ExecuteAgentTurnCommand>();
+        var toolCall = new ToolCallRecord(
+            "search", """{"query":"weather"}""", """{"result":"sunny"}""",
+            DurationMs: 10, CallId: "call-1", RoundOrdinal: 0);
+
+        // Run one persists the tool call with replay enabled (today's default).
+        var enabledHandler = BuildHandler(dispatched, toolCallsOnFirstTurn: [toolCall]);
+        await enabledHandler.Handle(Durable(conversationId, "what's the weather?"), CancellationToken.None);
+
+        // Run two — a fresh handler with the operator's kill switch flipped — must not replay the
+        // already-persisted tool content, even though the record is still sitting in the store.
+        var disabledHandler = BuildHandler(dispatched, replayToolCallsEnabled: false);
+        await disabledHandler.Handle(Durable(conversationId, "and tomorrow?"), CancellationToken.None);
+
+        dispatched.Should().HaveCount(2);
+        var replayed = dispatched[1].ConversationHistory;
+
+        replayed.SelectMany(m => m.Contents).OfType<FunctionCallContent>().Should().BeEmpty(
+            "the kill switch must stop replaying already-persisted tool calls, not just stop writing new ones");
+        replayed.SelectMany(m => m.Contents).OfType<FunctionResultContent>().Should().BeEmpty();
+        replayed.Select(m => m.Text).Should().Contain("answer 1",
+            "the narrated text answer must still replay — only the structured tool-call content is gated");
     }
 
     [Fact]
@@ -233,7 +296,9 @@ public sealed class DurableConversationContinuityTests : IDisposable
     private RunConversationCommandHandler BuildHandler(
         List<ExecuteAgentTurnCommand> dispatched,
         int maxHistoryMessages = 50,
-        Func<Task>? onTurn = null)
+        Func<Task>? onTurn = null,
+        IReadOnlyList<ToolCallRecord>? toolCallsOnFirstTurn = null,
+        bool replayToolCallsEnabled = true)
     {
         var mediator = new Mock<IMediator>();
         mediator
@@ -256,7 +321,8 @@ public sealed class DurableConversationContinuityTests : IDisposable
                         .. cmd.ConversationHistory,
                         new ChatMessage(ChatRole.User, cmd.UserMessage),
                         new ChatMessage(ChatRole.Assistant, response)
-                    ]
+                    ],
+                    ToolCalls = cmd.TurnNumber == 1 ? toolCallsOnFirstTurn ?? [] : []
                 };
             });
 
@@ -266,6 +332,9 @@ public sealed class DurableConversationContinuityTests : IDisposable
             .ReturnsAsync(ConversationBudgetStatus.Disabled);
 
         var observability = new Mock<IObservabilityStore>().Object;
+
+        var toolCallReplayTreatment = new Mock<IToolCallReplayTreatment>();
+        toolCallReplayTreatment.Setup(t => t.Enabled).Returns(replayToolCallsEnabled);
 
         return new RunConversationCommandHandler(
             mediator.Object,
@@ -279,6 +348,7 @@ public sealed class DurableConversationContinuityTests : IDisposable
             _store,
             _lease,
             Options.Create(new ConversationsConfig { MaxHistoryMessages = maxHistoryMessages }),
+            toolCallReplayTreatment.Object,
             NullLogger<RunConversationCommandHandler>.Instance);
     }
 

@@ -117,6 +117,17 @@ public class AgentPipelineIntegrationTests
             .Returns((string content, IReadOnlyList<Domain.AI.Telemetry.Redaction.RedactionCategory> _) => content);
         services.AddScoped(_ => redactionFilterMock.Object);
 
+        // #249 item 6: ExecuteAgentTurnCommandHandler now depends on IToolCallReplayTreatment to
+        // treat a turn's tool calls for durable replay — not under test here, so a permissive
+        // pass-through mock, matching the pattern above, so DI resolution of the handler succeeds.
+        var toolCallReplayTreatmentMock = new Mock<Application.AI.Common.Interfaces.IToolCallReplayTreatment>();
+        toolCallReplayTreatmentMock.Setup(t => t.Enabled).Returns(true);
+        toolCallReplayTreatmentMock
+            .Setup(t => t.Treat(It.IsAny<string>(), It.IsAny<string?>()))
+            .Returns((string rawText, string? _) => rawText);
+        toolCallReplayTreatmentMock.Setup(t => t.NoResultPlaceholder).Returns("[no result recorded]");
+        services.AddScoped(_ => toolCallReplayTreatmentMock.Object);
+
         // The REAL admission chain over the five permissive gates above, not a mock of it, built the
         // same way the production root builds it. The handler depends only on the chain now, and
         // registering the real one keeps this an end-to-end proof that the five gates are reachable

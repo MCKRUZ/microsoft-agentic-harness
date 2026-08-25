@@ -71,8 +71,17 @@ public static class ToolCallTranscriptExtractor
         // Two passes: first establish call order and identity, then attach results by CallId. A
         // single pass can't do this correctly — a result can be interleaved with, or even precede
         // (a defensively-ordered response), the call it answers.
+        //
+        // Deduplicated by CallId, first occurrence wins — a CallId should be unique per turn, but a
+        // provider connector surfacing the same call twice (ToolCallOrderingSink's own doc comment
+        // names this as a real, guarded-against failure mode on the streaming path; that guard only
+        // gates what reaches the live SSE sink, not what this extractor sees) would otherwise produce
+        // two ToolExchange records sharing one CallId, which then persist as two assistant/tool
+        // message pairs with the same id on replay — most providers reject that as an invalid
+        // duplicate tool_call id, permanently breaking the conversation on every later turn.
+        var seenCallIds = new HashSet<string>(StringComparer.Ordinal);
         var calls = contents.OfType<FunctionCallContent>()
-            .Where(c => !string.IsNullOrEmpty(c.CallId) && !string.IsNullOrEmpty(c.Name))
+            .Where(c => !string.IsNullOrEmpty(c.CallId) && !string.IsNullOrEmpty(c.Name) && seenCallIds.Add(c.CallId))
             .ToList();
 
         var resultsByCallId = contents.OfType<FunctionResultContent>()

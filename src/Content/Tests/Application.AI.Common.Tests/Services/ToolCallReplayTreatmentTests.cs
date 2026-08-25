@@ -8,6 +8,7 @@ using Domain.Common.Config.AI;
 using Domain.Common.Config.AI.Conversations;
 using FluentAssertions;
 using Infrastructure.AI.Governance.Adapters;
+using Infrastructure.AI.Security;
 using Infrastructure.AI.Telemetry.Redaction;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -34,10 +35,19 @@ public sealed class ToolCallReplayTreatmentTests
         return mock;
     }
 
+    private static Mock<Application.AI.Common.Interfaces.ISecretRedactor> IdentitySecretRedactor()
+    {
+        var mock = new Mock<Application.AI.Common.Interfaces.ISecretRedactor>();
+        mock.Setup(r => r.Redact(It.IsAny<string>())).Returns((string s) => s);
+        return mock;
+    }
+
     private static ToolCallReplayTreatment CreateTreatment(
         ICompositeResponseSanitizer sanitizer,
         IContentRedactionFilter redactionFilter,
-        int maxVerbatimChars = 8192)
+        int maxVerbatimChars = 8192,
+        bool enabled = true,
+        Application.AI.Common.Interfaces.ISecretRedactor? secretRedactor = null)
     {
         var appConfig = new AppConfig
         {
@@ -45,14 +55,28 @@ public sealed class ToolCallReplayTreatmentTests
             {
                 Conversations = new ConversationsConfig
                 {
-                    ToolCallReplay = new ToolCallReplayConfig { MaxVerbatimChars = maxVerbatimChars }
+                    ToolCallReplay = new ToolCallReplayConfig
+                    {
+                        MaxVerbatimChars = maxVerbatimChars,
+                        Enabled = enabled
+                    }
                 }
             }
         };
         var monitor = Mock.Of<IOptionsMonitor<AppConfig>>(m => m.CurrentValue == appConfig);
 
         return new ToolCallReplayTreatment(
-            sanitizer, redactionFilter, monitor, NullLogger<ToolCallReplayTreatment>.Instance);
+            sanitizer, redactionFilter, secretRedactor ?? IdentitySecretRedactor().Object, monitor,
+            NullLogger<ToolCallReplayTreatment>.Instance);
+    }
+
+    [Fact]
+    public void Enabled_ReflectsConfiguredValue()
+    {
+        CreateTreatment(PassthroughSanitizer().Object, IdentityFilter().Object, enabled: true)
+            .Enabled.Should().BeTrue();
+        CreateTreatment(PassthroughSanitizer().Object, IdentityFilter().Object, enabled: false)
+            .Enabled.Should().BeFalse();
     }
 
     [Fact]
@@ -197,5 +221,35 @@ public sealed class ToolCallReplayTreatmentTests
 
         var act = () => System.Text.Json.JsonDocument.Parse(result);
         act.Should().NotThrow("sanitizing a JSON payload must never produce structurally invalid JSON");
+    }
+
+    /// <summary>
+    /// Security-review finding H-1: <see cref="ICompositeResponseSanitizer"/> and
+    /// <see cref="IContentRedactionFilter"/> are value-shape regex scanners with no JSON-key-name
+    /// awareness — neither matches a quote-terminated key like <c>"token":</c>. Uses the REAL
+    /// <see cref="PatternSecretRedactor"/> (the same structural, key-name-aware redactor that already
+    /// protects the transient SSE stream and trace store for identical content) to prove the durable,
+    /// model-facing replay path is now at least as strong as those, not weaker.
+    /// </summary>
+    [Fact]
+    public void Treat_JsonWithQuotedSecretKey_RedactsTheValue()
+    {
+        var realSanitizer = new CompositeResponseSanitizer(
+        [
+            new CredentialRedactor(),
+            new ResponseInjectionScrubber(),
+            new ExfiltrationUrlDetector(),
+        ]);
+        var realFilter = new DefaultContentRedactionFilter();
+        var realSecretRedactor = new PatternSecretRedactor([]);
+        var treatment = CreateTreatment(realSanitizer, realFilter, secretRedactor: realSecretRedactor);
+
+        var json = """{"token":"abcdef1234567890zzzz"}""";
+
+        var result = treatment.Treat(json, "http_request");
+
+        result.Should().NotContain("abcdef1234567890zzzz",
+            "a JSON-quoted secret key must be redacted before this content is persisted and replayed " +
+            "to the model on every later turn");
     }
 }
