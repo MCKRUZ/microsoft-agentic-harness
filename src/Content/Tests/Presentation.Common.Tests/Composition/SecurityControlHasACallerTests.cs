@@ -276,11 +276,20 @@ public sealed class SecurityControlHasACallerTests
     {
         var contentRoot = Path.Combine(RepoRoot.Path, "src", "Content");
 
+        // Only FluentValidation validators. A name ending in ConfigValidator is not enough: the repo
+        // also validates config from IHostedService implementations, which self-register through
+        // AddHostedService in their own subsystem and need no options binding at all. Matching on the
+        // name alone reported two live controls (ToolAuthorizationConfigValidator,
+        // AutonomyConfigValidator) as unbound debt — a guard against inert machinery that was itself
+        // producing false alarms, which is the fastest way to make one get ignored.
         var validatorNames = Directory
             .EnumerateFiles(contentRoot, "*ConfigValidator.cs", SearchOption.AllDirectories)
             .Where(f => !SourceScan.IsExcluded(f, contentRoot))
             .Where(f => !f.Contains(Path.DirectorySeparatorChar + "Tests" + Path.DirectorySeparatorChar,
                 StringComparison.OrdinalIgnoreCase))
+            .Where(f => Regex.IsMatch(
+                SourceScan.StripCommentsAndStrings(File.ReadAllText(f)),
+                @":\s*AbstractValidator\s*<"))
             .Select(Path.GetFileNameWithoutExtension)
             .Where(n => !string.IsNullOrEmpty(n))
             .Select(n => n!)
@@ -291,12 +300,29 @@ public sealed class SecurityControlHasACallerTests
         // failure this file's own remarks warn about.
         validatorNames.Should().NotBeEmpty("the validators this reads must exist for its verdict to mean anything");
 
-        // The composition root is the only place an options binding can live, so its text is the
-        // authority on what actually runs. Read as source rather than resolved through DI because an
-        // unbound validator is still perfectly resolvable — that is precisely what made it invisible.
-        var compositionRoot = File.ReadAllText(Path.Combine(
-            contentRoot, "Presentation", "Presentation.Common", "Extensions", "IServiceCollectionExtensions.cs"));
-        var wiring = SourceScan.StripCommentsAndStrings(compositionRoot);
+        // Control: the AbstractValidator filter must actually exclude the other shape, or it is doing
+        // nothing and the false alarms come straight back.
+        validatorNames.Should().NotContain("ToolAuthorizationConfigValidator",
+            "control: an IHostedService validator must not be treated as needing an options binding");
+
+        // Every DI file, not just the composition root: a binding is equally real in a subsystem's own
+        // DependencyInjection partial, and reading one file reported anything registered elsewhere as
+        // unbound. Source text rather than a resolved container, because an unbound validator is still
+        // perfectly resolvable — that is exactly what made the original defect invisible.
+        var wiringFiles = Directory
+            .EnumerateFiles(contentRoot, "*.cs", SearchOption.AllDirectories)
+            .Where(f => !SourceScan.IsExcluded(f, contentRoot))
+            .Where(f => !f.Contains(Path.DirectorySeparatorChar + "Tests" + Path.DirectorySeparatorChar,
+                StringComparison.OrdinalIgnoreCase))
+            .Where(f => Path.GetFileName(f).StartsWith("DependencyInjection", StringComparison.Ordinal)
+                || Path.GetFileName(f).Equals("IServiceCollectionExtensions.cs", StringComparison.Ordinal))
+            .ToArray();
+
+        wiringFiles.Should().NotBeEmpty("the wiring files this reads must exist for its verdict to mean anything");
+
+        var wiring = string.Join(
+            "\n",
+            wiringFiles.Select(f => SourceScan.StripCommentsAndStrings(File.ReadAllText(f))));
 
         // Control: the needle must match a binding known to be present, or "no offenders" would be
         // satisfied by a scan that cannot see any binding at all.
@@ -333,25 +359,32 @@ public sealed class SecurityControlHasACallerTests
     /// <remarks>
     /// <para>
     /// These are <strong>not</strong> exemptions in the sense this file's remarks forbid. Each is a
-    /// real instance of the same defect the test above describes, several with doc comments asserting
-    /// they refuse to boot on invalid config — which they do not, because nothing binds them. They are
-    /// listed rather than fixed here because binding a validator changes host behaviour: a deployment
-    /// whose configuration is already invalid stops booting. That is the correct outcome and it is a
-    /// per-subsystem change with its own verification, not something to bundle into an unrelated PR.
+    /// real instance of the same defect the test above describes. They are listed rather than fixed
+    /// here because binding a validator changes host behaviour: a deployment whose configuration is
+    /// already invalid stops booting. That is the correct outcome and it is a per-subsystem change with
+    /// its own verification, not something to bundle into an unrelated PR. Tracked as #514.
+    /// </para>
+    /// <para>
+    /// All five are the planner's step-config validators, and it is worth confirming per validator
+    /// whether each is meant to be bound directly or invoked as a child validator from a parent's
+    /// <c>SetValidator</c> — nothing references them at all today, so they are inert either way, but
+    /// the fix differs.
     /// </para>
     /// <para>
     /// The entry that motivated this guard — <c>ToolCallReplayConfigValidator</c> — is deliberately
-    /// absent: it was bound in the same change, which is why the list is seven names and not eight.
+    /// absent: it was bound in the same change. Two names that appeared in this list on its first
+    /// draft, <c>ToolAuthorizationConfigValidator</c> and <c>AutonomyConfigValidator</c>, are absent
+    /// for a different reason: they are <see cref="Microsoft.Extensions.Hosting.IHostedService"/>
+    /// startup validators registered in their own subsystems and were never in scope for this check.
+    /// The scan above now excludes that shape rather than relying on this list to remember it.
     /// </para>
     /// </remarks>
     private static readonly string[] KnownUnboundConfigValidators =
     [
-        "AutonomyConfigValidator",
         "ConditionalBranchConfigValidator",
         "HumanGateConfigValidator",
         "LlmCallConfigValidator",
         "SubPlanConfigValidator",
-        "ToolAuthorizationConfigValidator",
         "ToolUseConfigValidator",
     ];
 

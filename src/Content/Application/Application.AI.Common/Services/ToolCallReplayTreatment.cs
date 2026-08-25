@@ -70,9 +70,25 @@ public sealed class ToolCallReplayTreatment : IToolCallReplayTreatment
         get
         {
             var configured = Math.Max(0, _appConfig.CurrentValue.AI.Conversations.ToolCallReplay.MaxReplayedChars);
-            var floor = Math.Min(int.MaxValue, (long)ResolveMaxVerbatimChars() * 2);
+            var floor = (int)Math.Min(int.MaxValue, (long)ResolveMaxVerbatimChars() * 2);
 
-            return configured >= floor ? configured : (int)floor;
+            if (configured >= floor)
+                return configured;
+
+            // Logged, not silent, because this raise moves a cost ceiling UPWARD past what an operator
+            // asked for — the one direction that deserves to be noticed. An operator lowering this as a
+            // deliberate mitigation would otherwise get a larger budget than they set with nothing to
+            // tell them. (The honest kill switch remains Enabled=false, which the read path also
+            // honours, so this is a floor on a cost knob rather than a way around an off switch.)
+            // Same clamp-and-say-so shape ResolveMaxVerbatimChars uses.
+            _logger.LogWarning(
+                "[ToolCallReplayTreatment] Configured MaxReplayedChars={Configured} is below the " +
+                "{Floor}-char floor (twice MaxVerbatimChars) and was raised to it. Below that floor a " +
+                "single maximum-size tool call cannot fit, and admission latches shut — every replayed " +
+                "tool call would be dropped, not just the oversized one.",
+                configured, floor);
+
+            return floor;
         }
     }
 
