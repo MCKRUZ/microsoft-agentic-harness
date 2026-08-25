@@ -539,6 +539,14 @@ public sealed class EfCoreConversationStore : IConversationStore
         // more; excluding it here as well keeps this query correct for rows persisted before that
         // normalization covered the `with`-expression path, and for any future producer that writes
         // this column without going through the DTO.
+        //
+        // RETIREMENT CONDITION, so this does not become permanent by default: the record type is the
+        // real seam, and this clause exists only for already-written rows. Once a backfill has run
+        // (`UPDATE ConversationMessages SET ToolCallsJson = NULL WHERE ToolCallsJson = '[]'`) across
+        // every deployment that could hold them, drop the `!= "[]"` and the test that pins it. Until
+        // then it stays, with the caveat that the literal encodes a System.Text.Json rendering detail —
+        // it would silently stop matching if the serializer emitted whitespace or the column moved to
+        // a native JSON type, which is another reason not to leave it here indefinitely.
         var tail = await context.ConversationMessages
             .AsNoTracking()
             .Where(m => m.ConversationId == conversationId

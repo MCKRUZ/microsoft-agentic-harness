@@ -35,8 +35,45 @@ public sealed class ToolCallReplayConfigValidatorTests
     [Fact]
     public async Task Validate_MaxVerbatimCharsAtWithholdCeiling_IsValid()
     {
-        var result = await _validator.ValidateAsync(
-            new ToolCallReplayConfig { MaxVerbatimChars = ToolCallReplayTreatment.WithholdCeilingChars });
+        // MaxReplayedChars has to move with it. A per-payload ceiling this high means one call can cost
+        // twice it, and a window budget smaller than a single call empties the entire replayed history
+        // rather than dropping just that call — which is what the cross-field rule below refuses.
+        var result = await _validator.ValidateAsync(new ToolCallReplayConfig
+        {
+            MaxVerbatimChars = ToolCallReplayTreatment.WithholdCeilingChars,
+            MaxReplayedChars = ToolCallReplayTreatment.WithholdCeilingChars * 2,
+        });
+
+        result.IsValid.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Validate_WindowBudgetSmallerThanOneMaximumSizeCall_HasError()
+    {
+        // The plausible operator mistake this rule exists for: raise the per-payload ceiling for a
+        // large-context model, leave the window budget at its default. One 40k-char tool result then
+        // silently drops EVERY replayed tool call behind it — the budget admits newest-first and
+        // latches shut at the first call that does not fit — so the conversation loses its whole tool
+        // memory with only a per-turn warning. A startup error beats silent amnesia.
+        var result = await _validator.ValidateAsync(new ToolCallReplayConfig
+        {
+            MaxVerbatimChars = 40000,
+            MaxReplayedChars = 65536,
+        });
+
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.PropertyName == "MaxReplayedChars");
+    }
+
+    [Fact]
+    public async Task Validate_WindowBudgetExactlyOneMaximumSizeCall_IsValid()
+    {
+        // The boundary the rule draws: exactly one full-size call must fit, and does.
+        var result = await _validator.ValidateAsync(new ToolCallReplayConfig
+        {
+            MaxVerbatimChars = 20000,
+            MaxReplayedChars = 40000,
+        });
 
         result.IsValid.Should().BeTrue();
     }

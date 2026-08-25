@@ -242,7 +242,7 @@ public class ExecuteAgentTurnCommandHandlerTests
     }
 
     [Fact]
-    public async Task Handle_TurnExceedsMaxCallsPerTurn_PersistsOnlyTheEarliestAndTreatsNoMore()
+    public async Task Handle_TurnExceedsMaxCallsPerTurn_PersistsOnlyTheNewestAndTreatsNoMore()
     {
         // Arrange — #508's write side. Nothing upstream bounds how many tool calls one turn can make:
         // the framework's per-request iteration limit caps tool-calling ROUNDS, while the chat client
@@ -288,12 +288,15 @@ public class ExecuteAgentTurnCommandHandlerTests
         var result = await handler.Handle(CreateCommand(), CancellationToken.None);
 
         // Assert — the turn still succeeds and still narrates its answer; only the surplus structured
-        // tool-call memory is dropped, earliest kept, so the turn's own prose still refers to records
-        // that are present.
+        // tool-call memory is dropped. NEWEST kept, matching the direction ConversationMessageMapping's
+        // read-side budget trims from: the two halves of one policy must cut from the same end, or they
+        // compose into a middle slice that is neither the turn's opening reasoning nor its conclusions.
+        // Newest is the shared direction because this is a memory rather than an audit log — the prose
+        // persisted beside these records summarizes what the agent last found.
         result.Success.Should().BeTrue();
         result.Response.Should().Be("done");
         result.ToolCalls.Should().HaveCount(2);
-        result.ToolCalls.Select(c => c.CallId).Should().Equal(["call-0", "call-1"]);
+        result.ToolCalls.Select(c => c.CallId).Should().Equal(["call-4", "call-5"]);
     }
 
     [Fact]

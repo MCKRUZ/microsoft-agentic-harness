@@ -47,14 +47,13 @@ public static class ConversationMessageMapping
     /// <param name="replayToolCalls">
     /// Whether an assistant row's <see cref="ConversationMessage.ToolCalls"/> should expand into real
     /// call/result content (see the remarks below) or be skipped in favor of the row's narrated text
-    /// only. Callers must source this from <c>IToolCallReplayTreatment.Enabled</c>, not default it —
-    /// an operator's kill switch for this feature (<c>AppConfig:AI:Conversations:ToolCallReplay:Enabled</c>)
-    /// has to stop replaying <em>already-persisted</em> tool payloads, not just stop writing new ones:
-    /// gating only the write side (as <c>ExecuteAgentTurnCommandHandler.BuildTreatedToolCallRecords</c>
-    /// already does) would leave every conversation with tool history from before the flag was flipped
-    /// still shipping that content to the model on every later turn. Defaults to
-    /// <see langword="true"/> only so this method's own unit tests, which are about expansion
-    /// correctness and not about the gate, don't have to pass it.
+    /// only. Source it from <c>IToolCallReplayTreatment.Enabled</c> — an operator's kill switch for this
+    /// feature (<c>AppConfig:AI:Conversations:ToolCallReplay:Enabled</c>) has to stop replaying
+    /// <em>already-persisted</em> tool payloads, not just stop writing new ones: gating only the write
+    /// side (as <c>ExecuteAgentTurnCommandHandler.BuildTreatedToolCallRecords</c> already does) would
+    /// leave every conversation with tool history from before the flag was flipped still shipping that
+    /// content to the model on every later turn. Deliberately has no default, for the same reason as
+    /// <paramref name="maxReplayedChars"/>.
     /// </param>
     /// <remarks>
     /// <para>
@@ -77,14 +76,13 @@ public static class ConversationMessageMapping
     /// </para>
     /// </remarks>
     /// <param name="maxReplayedChars">
-    /// Total budget, in characters of treated tool-call text, for the whole window. Callers must source
-    /// this from <c>IToolCallReplayTreatment.MaxReplayedChars</c> rather than default it, for the same
-    /// reason as <paramref name="replayToolCalls"/>: this is the only bound on what a resumed
+    /// Total budget, in characters of treated tool-call text, for the whole window. Source it from
+    /// <c>IToolCallReplayTreatment.MaxReplayedChars</c>: this is the only bound on what a resumed
     /// conversation costs per turn. The store's dispatch window is capped in <em>rows</em>, and one row
     /// expands here into two chat messages per tool call it carries, so once turns are tool-heavy that
-    /// row cap stops bounding the prompt at all. Defaults to <see cref="int.MaxValue"/> only so this
-    /// method's own unit tests, which are about expansion correctness and not about the budget, don't
-    /// have to pass it.
+    /// row cap stops bounding the prompt at all. Deliberately has no default — an omitted budget would
+    /// mean an unbounded prompt on every resumed turn, with nothing failing to say so, and a required
+    /// parameter is the only form of that rule the compiler can enforce.
     /// </param>
     /// <param name="logger">
     /// Optional, for reporting what the budget dropped. Matching <c>ToolCallTranscriptExtractor.Extract</c>,
@@ -93,20 +91,29 @@ public static class ConversationMessageMapping
     /// </param>
     public static IReadOnlyList<ChatMessage> ToChatMessages(
         IReadOnlyList<ConversationMessage> messages,
-        bool replayToolCalls = true,
-        int maxReplayedChars = int.MaxValue,
+        bool replayToolCalls,
+        int maxReplayedChars,
         ILogger? logger = null)
     {
         ArgumentNullException.ThrowIfNull(messages);
 
+        // Handled up front rather than as a clause inside the loop below. Keeping it here means the
+        // budget array is never null, so the loop needs no null-forgiving index and no second check of
+        // this same flag twelve lines apart — a coupling that was safe only by inspection.
+        if (!replayToolCalls)
+        {
+            return [.. messages.Select(m => new ChatMessage(ToChatRole(m.Role), m.Content))];
+        }
+
         // Computed up front, over the whole window, because the budget is a property of the window and
         // not of any one row: which of a row's calls survive depends on how much every LATER row
         // already spent, which a single forward pass cannot know when it reaches that row.
-        var admittedByRow = replayToolCalls
-            ? SelectCallsWithinBudget(messages, maxReplayedChars, logger)
-            : null;
+        var (admittedByRow, admittedCalls) = SelectCallsWithinBudget(messages, maxReplayedChars, logger);
 
-        var result = new List<ChatMessage>();
+        // Sized exactly: one message per row, plus the call/result pair each admitted call expands into.
+        // The count is already in hand from the pass above, so this costs nothing and saves the handful
+        // of doubling reallocations a tool-heavy window would otherwise walk through.
+        var result = new List<ChatMessage>(messages.Count + (2 * admittedCalls));
 
         // Scoped to the WHOLE window, not to one row: ToolCallTranscriptExtractor dedupes call ids
         // within a turn, but nothing dedupes across turns, and some provider connectors number call
@@ -122,9 +129,7 @@ public static class ConversationMessageMapping
         {
             var message = messages[i];
 
-            if (!replayToolCalls
-                || message.Role != MessageRole.Assistant
-                || message.ToolCalls is not { Count: > 0 })
+            if (message.Role != MessageRole.Assistant || message.ToolCalls is not { Count: > 0 })
             {
                 result.Add(new ChatMessage(ToChatRole(message.Role), message.Content));
                 continue;
@@ -172,7 +177,7 @@ public static class ConversationMessageMapping
     /// including them would imply a precision this is not trying to claim.
     /// </para>
     /// </remarks>
-    private static IReadOnlyList<ToolCallRecord>[] SelectCallsWithinBudget(
+    private static (IReadOnlyList<ToolCallRecord>[] AdmittedByRow, int AdmittedCalls) SelectCallsWithinBudget(
         IReadOnlyList<ConversationMessage> messages,
         int maxReplayedChars,
         ILogger? logger)
@@ -180,6 +185,7 @@ public static class ConversationMessageMapping
         var admittedByRow = new IReadOnlyList<ToolCallRecord>[messages.Count];
         var spent = 0;
         var dropped = 0;
+        var admittedCalls = 0;
         var budgetExhausted = false;
 
         for (var i = messages.Count - 1; i >= 0; i--)
@@ -187,6 +193,15 @@ public static class ConversationMessageMapping
             var message = messages[i];
             if (message.Role != MessageRole.Assistant || message.ToolCalls is not { Count: > 0 } calls)
             {
+                admittedByRow[i] = [];
+                continue;
+            }
+
+            // Once the budget has latched shut, every older row is dropped wholesale — no sort, no
+            // per-call arithmetic, since nothing behind the latch can be admitted by definition.
+            if (budgetExhausted)
+            {
+                dropped += calls.Count;
                 admittedByRow[i] = [];
                 continue;
             }
@@ -201,24 +216,29 @@ public static class ConversationMessageMapping
                 .Select(x => x.call)
                 .ToList();
 
-            var admitted = new List<ToolCallRecord>(ordered.Count);
-            for (var j = ordered.Count - 1; j >= 0; j--)
+            // What survives is a suffix of `ordered`, so the result is one index rather than a second
+            // list built backwards and reversed: `cut` walks down from the end while calls still fit and
+            // ends as the position of the oldest admitted call. That makes the contiguous-newest-tail
+            // guarantee structural — it is what a suffix IS — instead of something that has to be
+            // inferred from a latch, a reverse walk and a final Reverse() agreeing with each other.
+            var cut = ordered.Count;
+            while (cut > 0)
             {
-                var cost = (ordered[j].Input?.Length ?? 0) + (ordered[j].Output?.Length ?? 0);
+                var cost = (ordered[cut - 1].Input?.Length ?? 0) + (ordered[cut - 1].Output?.Length ?? 0);
 
-                if (budgetExhausted || spent + cost > maxReplayedChars)
+                if (spent + cost > maxReplayedChars)
                 {
                     budgetExhausted = true;
-                    dropped++;
-                    continue;
+                    break;
                 }
 
                 spent += cost;
-                admitted.Add(ordered[j]);
+                cut--;
             }
 
-            admitted.Reverse();
-            admittedByRow[i] = admitted;
+            dropped += cut;
+            admittedCalls += ordered.Count - cut;
+            admittedByRow[i] = cut == 0 ? ordered : ordered.GetRange(cut, ordered.Count - cut);
         }
 
         if (dropped > 0)
@@ -229,7 +249,7 @@ public static class ConversationMessageMapping
                 maxReplayedChars, dropped, spent);
         }
 
-        return admittedByRow;
+        return (admittedByRow, admittedCalls);
     }
 
     /// <summary>

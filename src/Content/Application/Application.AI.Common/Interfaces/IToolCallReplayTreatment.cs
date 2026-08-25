@@ -27,7 +27,10 @@ public interface IToolCallReplayTreatment
     /// <summary>
     /// The most tool calls one turn may persist for replay
     /// (<c>AppConfig:AI:Conversations:ToolCallReplay:MaxCallsPerTurn</c>). A caller building a turn's
-    /// records keeps the earliest this many by round ordinal and drops the rest, logging how many.
+    /// records keeps the <strong>newest</strong> this many by round ordinal and drops the rest, logging
+    /// how many — the same end <see cref="MaxReplayedChars"/> trims from on replay. The shared direction
+    /// is load-bearing: trimming opposite ends would compose into a middle slice that is neither the
+    /// turn's opening reasoning nor its conclusions.
     /// </summary>
     /// <remarks>
     /// <para>

@@ -43,10 +43,11 @@ public sealed class ToolCallReplayConfig
     public int MaxVerbatimChars { get; set; } = 8192;
 
     /// <summary>
-    /// The most tool calls a single turn persists for replay. Calls beyond this many are dropped, with
-    /// a warning naming how many. Defaults to 32.
+    /// The most tool calls a single turn persists for replay. The <strong>newest</strong> this many are
+    /// kept and the rest dropped, with a warning naming how many. Defaults to 32.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Bounds model-output-driven storage growth, which nothing else does: the agent framework's
     /// per-request iteration limit caps tool-calling <em>rounds</em>, not the calls issued in parallel
     /// within one round, and the chat client permits concurrent invocation. 32 is generous against real
@@ -54,6 +55,14 @@ public sealed class ToolCallReplayConfig
     /// than legitimate work — while staying well clear of the point where one turn's history would
     /// dominate a resumed conversation. Set to 0 to persist no tool calls at all, though
     /// <see cref="Enabled"/> is the honest way to express that.
+    /// </para>
+    /// <para>
+    /// Newest-kept is the same end <see cref="MaxReplayedChars"/> trims from on replay, and that
+    /// agreement is load-bearing rather than incidental: the two settings are one policy enforced at two
+    /// points, so trimming opposite ends would compose into a middle slice — neither the turn's opening
+    /// reasoning nor its conclusions — and would break the contiguous-newest-tail property each half
+    /// otherwise guarantees on its own.
+    /// </para>
     /// </remarks>
     public int MaxCallsPerTurn { get; set; } = 32;
 
@@ -74,6 +83,15 @@ public sealed class ToolCallReplayConfig
     /// <c>tool_calls</c> entry with no matching result message is a malformed conversation a provider
     /// rejects outright, and because the window is rebuilt from persisted rows every turn, that
     /// rejection would recur permanently.
+    /// </para>
+    /// <para>
+    /// <strong>Must be at least twice <see cref="MaxVerbatimChars"/>, and startup validation enforces
+    /// that.</strong> One call costs up to two full payloads (arguments and result are capped
+    /// separately), and admission latches shut at the first call that does not fit — so a window budget
+    /// smaller than a single maximum-size call drops not merely that call but every older one behind
+    /// it, emptying the conversation's whole replayed tool history for as long as the oversized call
+    /// stays in the window. Raising <see cref="MaxVerbatimChars"/> for a large-context model without
+    /// raising this in step is the mistake that rule exists to catch.
     /// </para>
     /// </remarks>
     public int MaxReplayedChars { get; set; } = 65536;

@@ -38,7 +38,7 @@ public sealed class ConversationMessageMappingTests
                 ToolCalls: [toolCall]),
         };
 
-        var replayed = ConversationMessageMapping.ToChatMessages(transcript);
+        var replayed = ConversationMessageMapping.ToChatMessages(transcript, replayToolCalls: true, maxReplayedChars: int.MaxValue);
 
         replayed.Should().HaveCount(4);
         replayed[0].Role.Should().Be(ChatRole.User);
@@ -72,7 +72,7 @@ public sealed class ConversationMessageMappingTests
                 ToolCalls: [second, first]),
         };
 
-        var replayed = ConversationMessageMapping.ToChatMessages(transcript);
+        var replayed = ConversationMessageMapping.ToChatMessages(transcript, replayToolCalls: true, maxReplayedChars: int.MaxValue);
 
         replayed.Should().HaveCount(5);
         ((FunctionCallContent)replayed[0].Contents.Single()).CallId.Should().Be("call-1");
@@ -92,7 +92,7 @@ public sealed class ConversationMessageMappingTests
             new(Guid.NewGuid(), MessageRole.Assistant, string.Empty, DateTimeOffset.UtcNow, ToolCalls: [toolCall]),
         };
 
-        var replayed = ConversationMessageMapping.ToChatMessages(transcript);
+        var replayed = ConversationMessageMapping.ToChatMessages(transcript, replayToolCalls: true, maxReplayedChars: int.MaxValue);
 
         replayed.Should().HaveCount(2, "an empty final Content must not produce a trailing empty assistant message");
     }
@@ -107,7 +107,7 @@ public sealed class ConversationMessageMappingTests
             new(Guid.NewGuid(), MessageRole.Assistant, "done", DateTimeOffset.UtcNow, ToolCalls: [toolCall]),
         };
 
-        var replayed = ConversationMessageMapping.ToChatMessages(transcript);
+        var replayed = ConversationMessageMapping.ToChatMessages(transcript, replayToolCalls: true, maxReplayedChars: int.MaxValue);
 
         ((FunctionCallContent)replayed[0].Contents.Single()).Arguments.Should().BeNull();
     }
@@ -123,7 +123,7 @@ public sealed class ConversationMessageMappingTests
             new(Guid.NewGuid(), MessageRole.Assistant, "done", DateTimeOffset.UtcNow, ToolCalls: [toolCall]),
         };
 
-        var replayed = ConversationMessageMapping.ToChatMessages(transcript);
+        var replayed = ConversationMessageMapping.ToChatMessages(transcript, replayToolCalls: true, maxReplayedChars: int.MaxValue);
 
         var call = (FunctionCallContent)replayed[0].Contents.Single();
         call.Arguments.Should().ContainKey("_raw").WhoseValue.Should()
@@ -140,7 +140,7 @@ public sealed class ConversationMessageMappingTests
             new(Guid.NewGuid(), MessageRole.Assistant, "done", DateTimeOffset.UtcNow, ToolCalls: [toolCall]),
         };
 
-        var replayed = ConversationMessageMapping.ToChatMessages(transcript);
+        var replayed = ConversationMessageMapping.ToChatMessages(transcript, replayToolCalls: true, maxReplayedChars: int.MaxValue);
 
         ((FunctionResultContent)replayed[1].Contents.Single()).Result.Should().BeNull();
     }
@@ -155,7 +155,7 @@ public sealed class ConversationMessageMappingTests
             new(Guid.NewGuid(), MessageRole.Assistant, "done", DateTimeOffset.UtcNow, ToolCalls: [toolCall]),
         };
 
-        var replayed = ConversationMessageMapping.ToChatMessages(transcript);
+        var replayed = ConversationMessageMapping.ToChatMessages(transcript, replayToolCalls: true, maxReplayedChars: int.MaxValue);
 
         var callId = ((FunctionCallContent)replayed[0].Contents.Single()).CallId;
         callId.Should().NotBeNullOrEmpty();
@@ -179,7 +179,7 @@ public sealed class ConversationMessageMappingTests
             new(Guid.NewGuid(), MessageRole.Assistant, "turn two", DateTimeOffset.UtcNow, ToolCalls: [turnTwoCall]),
         };
 
-        var replayed = ConversationMessageMapping.ToChatMessages(transcript);
+        var replayed = ConversationMessageMapping.ToChatMessages(transcript, replayToolCalls: true, maxReplayedChars: int.MaxValue);
 
         var callIds = replayed.SelectMany(m => m.Contents).OfType<FunctionCallContent>()
             .Select(c => c.CallId).ToList();
@@ -208,7 +208,7 @@ public sealed class ConversationMessageMappingTests
             new(Guid.NewGuid(), MessageRole.Assistant, "turn two", DateTimeOffset.UtcNow, ToolCalls: [turnTwoCall]),
         };
 
-        var replayed = ConversationMessageMapping.ToChatMessages(transcript);
+        var replayed = ConversationMessageMapping.ToChatMessages(transcript, replayToolCalls: true, maxReplayedChars: int.MaxValue);
 
         replayed.SelectMany(m => m.Contents).OfType<FunctionCallContent>()
             .Select(c => c.CallId).Should().Equal("call_a", "call_b");
@@ -226,7 +226,7 @@ public sealed class ConversationMessageMappingTests
             new(Guid.NewGuid(), MessageRole.Assistant, "it's sunny", DateTimeOffset.UtcNow, ToolCalls: [toolCall]),
         };
 
-        var replayed = ConversationMessageMapping.ToChatMessages(transcript, replayToolCalls: false);
+        var replayed = ConversationMessageMapping.ToChatMessages(transcript, replayToolCalls: false, maxReplayedChars: int.MaxValue);
 
         replayed.Should().ContainSingle();
         replayed[0].Text.Should().Be("it's sunny");
@@ -243,7 +243,7 @@ public sealed class ConversationMessageMappingTests
             new(Guid.NewGuid(), MessageRole.System, "be nice", DateTimeOffset.UtcNow),
         };
 
-        var replayed = ConversationMessageMapping.ToChatMessages(transcript);
+        var replayed = ConversationMessageMapping.ToChatMessages(transcript, replayToolCalls: true, maxReplayedChars: int.MaxValue);
 
         replayed.Should().HaveCount(3);
         replayed.SelectMany(m => m.Contents).Should().AllBeOfType<TextContent>();

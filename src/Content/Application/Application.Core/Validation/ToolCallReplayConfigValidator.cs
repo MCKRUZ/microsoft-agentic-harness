@@ -40,5 +40,24 @@ public sealed class ToolCallReplayConfigValidator : AbstractValidator<ToolCallRe
         RuleFor(x => x.MaxReplayedChars)
             .GreaterThanOrEqualTo(0)
             .WithMessage("MaxReplayedChars must be zero or greater.");
+
+        // Cross-field, because these two settings are not independent even though each is individually
+        // sensible. One replayed call costs up to 2 * MaxVerbatimChars (arguments and result are capped
+        // separately), and the window budget admits newest-first and then latches shut at the first
+        // call that does not fit — so a window budget smaller than one maximum-size call drops not just
+        // that call but EVERY older one behind it, emptying the whole conversation's replayed tool
+        // history for as long as that one oversized call stays in the window.
+        //
+        // Unreachable at the shipped defaults (8192 and 65536, where at least four full-size calls
+        // fit); reachable the moment an operator raises the per-payload ceiling for a large-context
+        // model and leaves the window budget alone, which is exactly the plausible mistake. Validating
+        // the relationship is what makes that a startup error instead of silent amnesia.
+        RuleFor(x => x.MaxReplayedChars)
+            .GreaterThanOrEqualTo(x => x.MaxVerbatimChars * 2)
+            .WithMessage(x =>
+                $"MaxReplayedChars ({x.MaxReplayedChars}) must be at least twice MaxVerbatimChars " +
+                $"({x.MaxVerbatimChars}), i.e. {x.MaxVerbatimChars * 2}, so at least one " +
+                "maximum-size tool call always fits in a replayed window. A smaller budget silently " +
+                "drops every replayed tool call rather than just the oversized one.");
     }
 }

@@ -51,7 +51,7 @@ public sealed class ConversationMessageMappingBudgetTests
             AssistantRow("second", Call("call-2", 0, 100)),
         };
 
-        var replayed = ConversationMessageMapping.ToChatMessages(transcript, maxReplayedChars: 1000);
+        var replayed = ConversationMessageMapping.ToChatMessages(transcript, replayToolCalls: true, maxReplayedChars: 1000);
 
         ReplayedCallIds(replayed).Should().Equal("call-1", "call-2");
     }
@@ -67,7 +67,7 @@ public sealed class ConversationMessageMappingBudgetTests
         };
 
         // Room for two of the three.
-        var replayed = ConversationMessageMapping.ToChatMessages(transcript, maxReplayedChars: 250);
+        var replayed = ConversationMessageMapping.ToChatMessages(transcript, replayToolCalls: true, maxReplayedChars: 250);
 
         ReplayedCallIds(replayed).Should().Equal(
             ["call-2", "call-3"],
@@ -84,7 +84,7 @@ public sealed class ConversationMessageMappingBudgetTests
             AssistantRow("second", Call("call-2", 0, 100)),
         };
 
-        var replayed = ConversationMessageMapping.ToChatMessages(transcript, maxReplayedChars: 100);
+        var replayed = ConversationMessageMapping.ToChatMessages(transcript, replayToolCalls: true, maxReplayedChars: 100);
 
         ReplayedCallIds(replayed).Should().Equal("call-2");
         replayed.Select(m => m.Text).Should().Contain("I searched and found nothing",
@@ -99,7 +99,7 @@ public sealed class ConversationMessageMappingBudgetTests
             AssistantRow("only", Call("call-1", 0, 100)),
         };
 
-        var replayed = ConversationMessageMapping.ToChatMessages(transcript, maxReplayedChars: 10);
+        var replayed = ConversationMessageMapping.ToChatMessages(transcript, replayToolCalls: true, maxReplayedChars: 10);
 
         ReplayedCallIds(replayed).Should().BeEmpty(
             "always keeping one call would mean the bound can be exceeded by an unbounded amount, " +
@@ -115,7 +115,7 @@ public sealed class ConversationMessageMappingBudgetTests
             AssistantRow("narration", Call("call-1", 0, 100)),
         };
 
-        var replayed = ConversationMessageMapping.ToChatMessages(transcript, maxReplayedChars: 0);
+        var replayed = ConversationMessageMapping.ToChatMessages(transcript, replayToolCalls: true, maxReplayedChars: 0);
 
         ReplayedCallIds(replayed).Should().BeEmpty();
         replayed.Should().ContainSingle().Which.Text.Should().Be("narration");
@@ -133,7 +133,7 @@ public sealed class ConversationMessageMappingBudgetTests
                 Call("call-3", 2, 100)),
         };
 
-        var replayed = ConversationMessageMapping.ToChatMessages(transcript, maxReplayedChars: 250);
+        var replayed = ConversationMessageMapping.ToChatMessages(transcript, replayToolCalls: true, maxReplayedChars: 250);
 
         ReplayedCallIds(replayed).Should().Equal(
             ["call-2", "call-3"],
@@ -153,7 +153,7 @@ public sealed class ConversationMessageMappingBudgetTests
         // call-3 (100) fits. call-2 (400) does not. call-1 (10) would fit in what remains, but
         // admitting it would replay a sequence that never happened — call-1 then call-3, with the
         // call-2 that came between them silently gone.
-        var replayed = ConversationMessageMapping.ToChatMessages(transcript, maxReplayedChars: 200);
+        var replayed = ConversationMessageMapping.ToChatMessages(transcript, replayToolCalls: true, maxReplayedChars: 200);
 
         ReplayedCallIds(replayed).Should().Equal(
             ["call-3"],
@@ -169,7 +169,7 @@ public sealed class ConversationMessageMappingBudgetTests
             AssistantRow("second", Call("call-2", 0, 100)),
         };
 
-        var replayed = ConversationMessageMapping.ToChatMessages(transcript, maxReplayedChars: 100);
+        var replayed = ConversationMessageMapping.ToChatMessages(transcript, replayToolCalls: true, maxReplayedChars: 100);
 
         var results = replayed
             .SelectMany(m => m.Contents)
