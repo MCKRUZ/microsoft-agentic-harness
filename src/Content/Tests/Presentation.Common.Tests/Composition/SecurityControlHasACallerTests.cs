@@ -12,7 +12,7 @@ namespace Presentation.Common.Tests.Composition;
 /// <remarks>
 /// <para>
 /// <strong>The defect this exists to catch.</strong> The harness has now shipped a security control
-/// that existed, looked correct, had thorough unit tests, and was never invoked, four separate
+/// that existed, looked correct, had thorough unit tests, and was never invoked, five separate
 /// times: <c>ToolPermissionFilter</c>, <c>GoverningToolContextProvider</c>, both recall providers,
 /// and <c>IAgentIdentityValidator</c> — whose <c>CanInvoke</c> was a complete fail-closed RBAC
 /// implementation with fifteen passing tests and, until #311, no production caller at all. Three
@@ -28,8 +28,8 @@ namespace Presentation.Common.Tests.Composition;
 /// </para>
 /// <para>
 /// <strong>What this file does and does not cover.</strong> The consumer scan reads
-/// <em>interfaces</em> declared under the guarded folders, so of the four defects named above it could
-/// only ever have caught the last. The other three are concrete classes implementing no guarded
+/// <em>interfaces</em> declared under the guarded folders, so of the five defects named above it could
+/// only ever have caught the last. The other four are concrete classes implementing no guarded
 /// contract, and no exemption list can be curated into covering them without becoming the very smell
 /// this test warns about. <see cref="NoFactoryDecidesAPerRunFactAtConstructionTime"/> covers the
 /// second failure mode those three shared — a control wired correctly but decided at the wrong moment
@@ -270,6 +270,40 @@ public sealed class SecurityControlHasACallerTests
     /// Written over every validator rather than the one that broke, so the next config class cannot
     /// land unregistered either — the specific fix would have left the mechanism just as forgettable.
     /// </para>
+    /// <para>
+    /// <strong>Scope: every validator, minus a stated exemption.</strong> There are two ways a
+    /// validator runs. An <c>AddOptions</c> chain binds it to a configuration section — that is what
+    /// this test checks for. Or a consumer resolves <c>IValidator&lt;T&gt;</c> itself and applies it,
+    /// in which case the validator's own name appears in no wiring file while it runs on every call.
+    /// The five planner step-config validators are the second shape:
+    /// <c>PlanValidator.ValidateStepConfigurations</c> resolves and applies each one against every
+    /// step of every plan. <c>PlanValidatorTests</c> proves the dispatch for three
+    /// (<c>LlmCall</c>, <c>ToolUse</c>, <c>HumanGate</c> — each has an invalid-config test) and
+    /// real-container resolution for two (<c>ToolUse</c>, <c>LlmCall</c>). <c>ConditionalBranch</c>
+    /// and <c>SubPlan</c> have no invalid-config test of their own, so their dispatch is guarded
+    /// only by <see cref="ConsumerResolvedExemptions_AreStillDispatched"/> below — which does fail
+    /// if either arm is deleted. A per-type invalid-config test would additionally prove the
+    /// validator is registered, not merely dispatched; that half is #528.
+    /// </para>
+    /// <para>
+    /// That second set is named explicitly in <see cref="ConsumerResolvedValidatedTypes"/> rather
+    /// than inferred, because the dispatch is generic and there is no concrete
+    /// <c>IValidator&lt;SomeConfig&gt;</c> anywhere to detect. Everything not on that list is in
+    /// scope, so a new validator over any type in any namespace must be bound or reported.
+    /// </para>
+    /// <para>
+    /// <strong>Five false alarms, and what each one taught.</strong> Matching on filename swept in
+    /// two live <c>IHostedService</c> validators. Reading a single wiring file reported anything
+    /// registered in a subsystem partial as unbound. Treating an options binding as the only
+    /// invocation mechanism reported the five planner validators as dead debt (#514) when a prior
+    /// audit had already proved they run. Then two attempts to <em>infer</em> the exemption failed in
+    /// the opposite and more dangerous direction — a namespace rule that was simply false
+    /// (<c>JudgeOptions</c> and friends are bound from <c>Application.AI.Common.Evaluation.Models</c>),
+    /// and a scan that accepted any config-shaped identifier sharing a file with any
+    /// <c>IValidator&lt;</c>. Both would have exempted a real unbound validator silently. The lesson
+    /// this file kept relearning: when the mechanism cannot be detected, state it and check the
+    /// statement, rather than approximating it with something that correlates.
+    /// </para>
     /// </remarks>
     [Fact]
     public void EveryConfigValidator_IsBoundIntoTheOptionsPipeline()
@@ -282,28 +316,53 @@ public sealed class SecurityControlHasACallerTests
         // name alone reported two live controls (ToolAuthorizationConfigValidator,
         // AutonomyConfigValidator) as unbound debt — a guard against inert machinery that was itself
         // producing false alarms, which is the fastest way to make one get ignored.
-        var validatorNames = Directory
+        var consumerResolvedTypes = ConsumerResolvedValidatedTypes.ToHashSet(StringComparer.Ordinal);
+
+        var candidates = Directory
             .EnumerateFiles(contentRoot, "*ConfigValidator.cs", SearchOption.AllDirectories)
             .Where(f => !SourceScan.IsExcluded(f, contentRoot))
-            .Where(f => !f.Contains(Path.DirectorySeparatorChar + "Tests" + Path.DirectorySeparatorChar,
-                StringComparison.OrdinalIgnoreCase))
-            .Where(f => Regex.IsMatch(
-                SourceScan.StripCommentsAndStrings(File.ReadAllText(f)),
-                @":\s*AbstractValidator\s*<"))
-            .Select(Path.GetFileNameWithoutExtension)
-            .Where(n => !string.IsNullOrEmpty(n))
-            .Select(n => n!)
-            .Distinct(StringComparer.Ordinal)
+            // Candidacy stays on the BROAD predicate. Narrowing it to "files whose type argument I
+            // could parse" would silently exempt every validator whose base names a qualified or
+            // generic argument — dropping it from the scan entirely rather than reporting it. That
+            // is the one direction this guard must never fail in, and it is not hypothetical:
+            // EscalationConfig is declared in two namespaces, so the natural disambiguation
+            // `AbstractValidator<Governance.EscalationConfig>` would make EscalationConfigValidator
+            // vanish and let #516's defect land again unseen.
+            .Select(f => (Name: Path.GetFileNameWithoutExtension(f),
+                          Code: SourceScan.StripCommentsAndStrings(File.ReadAllText(f))))
+            .Where(c => Regex.IsMatch(c.Code, @":\s*AbstractValidator\s*<"))
+            .Select(c => (c.Name, Validated: ValidatedTypeName(c.Code)))
             .ToArray();
 
         // Control: a scan that found no validators would pass while reading nothing — the blind-guard
         // failure this file's own remarks warn about.
-        validatorNames.Should().NotBeEmpty("the validators this reads must exist for its verdict to mean anything");
+        candidates.Should().NotBeEmpty("the validators this reads must exist for its verdict to mean anything");
 
         // Control: the AbstractValidator filter must actually exclude the other shape, or it is doing
         // nothing and the false alarms come straight back.
-        validatorNames.Should().NotContain("ToolAuthorizationConfigValidator",
+        candidates.Should().NotContain(c => c.Name == "ToolAuthorizationConfigValidator",
             "control: an IHostedService validator must not be treated as needing an options binding");
+
+        // In scope unless a consumer is PROVEN to resolve it. An unparsable or unrecognised type
+        // argument therefore stays in scope: unknown means "must be bound", so it surfaces as a
+        // named failure to review instead of a silent exemption.
+        var validatorNames = candidates
+            .Where(c => c.Validated is null || !consumerResolvedTypes.Contains(c.Validated))
+            .Select(c => c.Name!)
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(n => n, StringComparer.Ordinal)
+            .ToArray();
+
+        // Control: the exemption must not swallow a config validator, or the guard passes by
+        // scoping itself down to nothing — the same blind-guard failure one level further in.
+        validatorNames.Should().Contain("GovernanceConfigValidator",
+            "control: a validator over a bound configuration section must stay in scope");
+
+        // Control: and it must exclude the runtime-payload shape, or #514's false alarm returns.
+        // PlanValidator resolves these as IValidator<T>; PlanValidatorTests proves the dispatch for
+        // three of the five and real-container resolution for two (see the remarks above).
+        validatorNames.Should().NotContain("ToolUseConfigValidator",
+            "control: a validator over a runtime plan payload does not need an options binding");
 
         // Every DI file, not just the composition root: a binding is equally real in a subsystem's own
         // DependencyInjection partial, and reading one file reported anything registered elsewhere as
@@ -312,8 +371,6 @@ public sealed class SecurityControlHasACallerTests
         var wiringFiles = Directory
             .EnumerateFiles(contentRoot, "*.cs", SearchOption.AllDirectories)
             .Where(f => !SourceScan.IsExcluded(f, contentRoot))
-            .Where(f => !f.Contains(Path.DirectorySeparatorChar + "Tests" + Path.DirectorySeparatorChar,
-                StringComparison.OrdinalIgnoreCase))
             .Where(f => Path.GetFileName(f).StartsWith("DependencyInjection", StringComparison.Ordinal)
                 || Path.GetFileName(f).Equals("IServiceCollectionExtensions.cs", StringComparison.Ordinal))
             .ToArray();
@@ -331,62 +388,134 @@ public sealed class SecurityControlHasACallerTests
 
         var unbound = validatorNames
             .Where(name => !wiring.Contains(name, StringComparison.Ordinal))
-            .OrderBy(name => name, StringComparer.Ordinal)
             .ToArray();
 
-        var unexpected = unbound.Except(KnownUnboundConfigValidators, StringComparer.Ordinal).ToArray();
-
-        unexpected.Should().BeEmpty(
+        unbound.Should().BeEmpty(
             "a config validator that no AddOptions chain binds never runs, however thoroughly it is "
             + "tested and however confidently its doc comment says otherwise — AddValidatorsFromAssembly "
             + "registers it for resolution, it does not cause anything to resolve it. Either bind it in "
             + "RegisterValidatedConfigSections or delete it with the documentation claiming it enforces. "
-            + "Unbound: " + string.Join(", ", unexpected));
-
-        // The ratchet half: the allowlist may only ever shrink. Without this, working an entry off the
-        // list leaves a stale name that would silently re-admit a regression under the same type name.
-        KnownUnboundConfigValidators
-            .Except(unbound, StringComparer.Ordinal)
-            .Should().BeEmpty(
-                "these validators are now bound — remove them from KnownUnboundConfigValidators so the "
-                + "list keeps meaning 'known debt' rather than 'permanently excused'");
+            + "Unbound: " + string.Join(", ", unbound));
     }
 
     /// <summary>
-    /// Config validators that exist, are tested, and are bound nowhere — pre-existing debt this guard
-    /// found rather than caused. Tracked so the list can only shrink.
+    /// The single type argument of a validator's <c>AbstractValidator&lt;T&gt;</c> base, or
+    /// <see langword="null"/> when the file declares no such base, declares more than one, or names
+    /// a type argument this scan cannot parse (qualified or generic).
     /// </summary>
     /// <remarks>
     /// <para>
-    /// These are <strong>not</strong> exemptions in the sense this file's remarks forbid. Each is a
-    /// real instance of the same defect the test above describes. They are listed rather than fixed
-    /// here because binding a validator changes host behaviour: a deployment whose configuration is
-    /// already invalid stops booting. That is the correct outcome and it is a per-subsystem change with
-    /// its own verification, not something to bundle into an unrelated PR. Tracked as #514.
+    /// <see langword="null"/> means <strong>unknown, therefore in scope</strong> — never excluded.
+    /// Candidacy is decided upstream by the broad <c>: AbstractValidator&lt;</c> predicate, which is
+    /// also what filters out the <c>IHostedService</c> startup validators; nothing is dropped here.
+    /// A maintainer who "fixed" this to exclude on null would convert every unparsable type argument
+    /// into a silent exemption, which is the one direction this guard must not fail in.
     /// </para>
     /// <para>
-    /// All five are the planner's step-config validators, and it is worth confirming per validator
-    /// whether each is meant to be bound directly or invoked as a child validator from a parent's
-    /// <c>SetValidator</c> — nothing references them at all today, so they are inert either way, but
-    /// the fix differs.
-    /// </para>
-    /// <para>
-    /// The entry that motivated this guard — <c>ToolCallReplayConfigValidator</c> — is deliberately
-    /// absent: it was bound in the same change. Two names that appeared in this list on its first
-    /// draft, <c>ToolAuthorizationConfigValidator</c> and <c>AutonomyConfigValidator</c>, are absent
-    /// for a different reason: they are <see cref="Microsoft.Extensions.Hosting.IHostedService"/>
-    /// startup validators registered in their own subsystems and were never in scope for this check.
-    /// The scan above now excludes that shape rather than relying on this list to remember it.
+    /// More than one declaration in a file also yields <see langword="null"/> rather than the first
+    /// match. No <c>*ConfigValidator.cs</c> candidate has two today, but the convention exists in
+    /// this repo (<c>EgressManifestValidator.cs</c> declares a parent and a child), so taking the
+    /// first would attribute the file-named validator's verdict to somebody else's type.
     /// </para>
     /// </remarks>
-    private static readonly string[] KnownUnboundConfigValidators =
+    private static string? ValidatedTypeName(string strippedValidatorSource)
+    {
+        var matches = Regex.Matches(
+            strippedValidatorSource, @":\s*AbstractValidator\s*<\s*([A-Za-z0-9_]+)\s*>");
+        return matches.Count == 1 ? matches[0].Groups[1].Value : null;
+    }
+
+    /// <summary>
+    /// Validated types a production consumer resolves and runs itself, so no options binding is
+    /// required. Kept honest by <see cref="ConsumerResolvedExemptions_AreStillDispatched"/>; read
+    /// the remarks for what that does and does not cover.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// An explicit list, not a scan, because the dispatch it describes is generic and therefore
+    /// unmatchable. <c>PlanValidator.ValidateConfig&lt;T&gt;</c> resolves
+    /// <c>IValidator&lt;T&gt;</c> with an open type parameter; the concrete types appear only as
+    /// switch patterns in <c>ValidateStepConfigurations</c>. There is no
+    /// <c>IValidator&lt;ToolUseConfig&gt;</c> anywhere to anchor a scan to.
+    /// </para>
+    /// <para>
+    /// <strong>What this guarantees.</strong> Membership is the only exemption, so any new validator
+    /// — over any type, in any namespace, parsable or not — is in scope until someone adds it here
+    /// and says who runs it. That is the fail-closed direction, and it holds by construction.
+    /// </para>
+    /// <para>
+    /// <strong>Staleness is enforced by <see cref="ConsumerResolvedExemptions_AreStillDispatched"/>,
+    /// and the history of that check is instructive.</strong> Its first version matched the bare
+    /// type name anywhere in <c>PlanValidator.cs</c>. That was blind for <c>SubPlanConfig</c>,
+    /// which also appears in an unrelated method — and for the other four it worked. It was then
+    /// withdrawn on the claim that it "could not fail", which was false: withdrawing it removed
+    /// real detection for four of five, including <c>ConditionalBranchConfig</c>, which no other
+    /// test guards. The restored check anchors on the dispatch-arm shape
+    /// (<c>{Type} config =&gt; await ValidateConfig(</c>), which matches exactly the five arms and
+    /// nothing else — verified — and its mutation test deletes the <c>SubPlanConfig</c> arm
+    /// specifically, because that is the type with a second mention. The rest of the limits are
+    /// tracked as #528.
+    /// </para>
+    /// <para>
+    /// What the exemption does not prove is that the five are <em>registered</em>.
+    /// <c>PlanValidator.ValidateConfig</c>
+    /// fails open when no <c>IValidator&lt;T&gt;</c> resolves (#526), and their only registration
+    /// is <c>AddValidatorsFromAssembly</c> on Application.Core; real-container resolution is tested
+    /// for two of the five. The exemption says a consumer <em>would call</em> each one — not that
+    /// one exists to be called.
+    /// </para>
+    /// <para>
+    /// Two further limits, both tracked in #528. Candidacy is decided by the
+    /// <c>*ConfigValidator.cs</c> filename, so a validator in a differently-named file is never
+    /// scanned — and that is not hypothetical: four <c>Drift*Validator</c> classes under
+    /// <c>Application.AI.Common/Interfaces/DriftDetection</c> are registered by assembly scan
+    /// and consumed by nothing (#529). And entries are unqualified type names, so a second <c>SubPlanConfig</c> in another
+    /// namespace would inherit this exemption.
+    /// </para>
+    /// </remarks>
+    private static readonly string[] ConsumerResolvedValidatedTypes =
     [
-        "ConditionalBranchConfigValidator",
-        "HumanGateConfigValidator",
-        "LlmCallConfigValidator",
-        "SubPlanConfigValidator",
-        "ToolUseConfigValidator",
+        // All five: PlanValidator.ValidateStepConfigurations dispatches each to ValidateConfig<T>.
+        "LlmCallConfig",
+        "ToolUseConfig",
+        "HumanGateConfig",
+        "ConditionalBranchConfig",
+        "SubPlanConfig"
     ];
+
+    /// <summary>
+    /// Every exemption on <see cref="ConsumerResolvedValidatedTypes"/> must still be a dispatch arm
+    /// in <c>PlanValidator.ValidateStepConfigurations</c>, and every arm must be on the list.
+    /// </summary>
+    /// <remarks>
+    /// Anchored on the arm shape, not the type name, so a mention elsewhere in the file cannot
+    /// satisfy it (see the remarks on the list for why the first version was blind to exactly
+    /// that). Checked both ways: a listed type with no arm is a stale exemption that would excuse
+    /// an inert validator; an arm with no list entry is a validator the guard would wrongly
+    /// report as unbound — #514's false alarm returning through the back door.
+    /// </remarks>
+    [Fact]
+    public void ConsumerResolvedExemptions_AreStillDispatched()
+    {
+        var planValidator = Path.Combine(
+            RepoRoot.Path, "src", "Content", "Infrastructure", "Infrastructure.AI", "Planner", "PlanValidator.cs");
+        File.Exists(planValidator).Should().BeTrue("the consumer that justifies every exemption must exist");
+
+        var source = SourceScan.StripCommentsAndStrings(File.ReadAllText(planValidator));
+        var dispatched = Regex.Matches(source, @"\b(\w+Config)\s+\w+\s*=>\s*await\s+ValidateConfig\(")
+            .Select(m => m.Groups[1].Value)
+            .ToHashSet(StringComparer.Ordinal);
+
+        // Control: the anchor must find the arms, or an emptied dispatch would read as "nothing
+        // stale" while every exemption had in fact gone dead.
+        dispatched.Should().NotBeEmpty("the dispatch-arm anchor must match PlanValidator's switch");
+
+        dispatched.Should().BeEquivalentTo(
+            ConsumerResolvedValidatedTypes,
+            "the exemption list and PlanValidator's dispatch arms must name the same types — a listed "
+            + "type with no arm is a stale exemption excusing an inert validator; an arm with no entry "
+            + "is a validator this guard would wrongly report as unbound");
+    }
 
     /// <summary>
     /// Finds every public interface declared under a guarded folder, returning its name and the file
