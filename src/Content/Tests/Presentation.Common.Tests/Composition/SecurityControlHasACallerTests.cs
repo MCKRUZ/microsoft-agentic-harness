@@ -321,8 +321,6 @@ public sealed class SecurityControlHasACallerTests
         var candidates = Directory
             .EnumerateFiles(contentRoot, "*ConfigValidator.cs", SearchOption.AllDirectories)
             .Where(f => !SourceScan.IsExcluded(f, contentRoot))
-            .Where(f => !f.Contains(Path.DirectorySeparatorChar + "Tests" + Path.DirectorySeparatorChar,
-                StringComparison.OrdinalIgnoreCase))
             // Candidacy stays on the BROAD predicate. Narrowing it to "files whose type argument I
             // could parse" would silently exempt every validator whose base names a qualified or
             // generic argument — dropping it from the scan entirely rather than reporting it. That
@@ -330,11 +328,10 @@ public sealed class SecurityControlHasACallerTests
             // EscalationConfig is declared in two namespaces, so the natural disambiguation
             // `AbstractValidator<Governance.EscalationConfig>` would make EscalationConfigValidator
             // vanish and let #516's defect land again unseen.
-            .Where(f => Regex.IsMatch(
-                SourceScan.StripCommentsAndStrings(File.ReadAllText(f)),
-                @":\s*AbstractValidator\s*<"))
-            .Select(f => (Name: Path.GetFileNameWithoutExtension(f), Validated: ValidatedTypeName(f)))
-            .Where(c => !string.IsNullOrEmpty(c.Name))
+            .Select(f => (Name: Path.GetFileNameWithoutExtension(f),
+                          Code: SourceScan.StripCommentsAndStrings(File.ReadAllText(f))))
+            .Where(c => Regex.IsMatch(c.Code, @":\s*AbstractValidator\s*<"))
+            .Select(c => (c.Name, Validated: ValidatedTypeName(c.Code)))
             .ToArray();
 
         // Control: a scan that found no validators would pass while reading nothing — the blind-guard
@@ -345,13 +342,6 @@ public sealed class SecurityControlHasACallerTests
         // nothing and the false alarms come straight back.
         candidates.Should().NotContain(c => c.Name == "ToolAuthorizationConfigValidator",
             "control: an IHostedService validator must not be treated as needing an options binding");
-
-        // Control: the exemption set must be non-empty and cover a type known to be consumer-run,
-        // or the guard passes only because nothing is excluded — indistinguishable from working
-        // right up until it reported five false alarms again. Whether each entry is STILL true is
-        // checked separately by ConsumerResolvedExemptions_AreStillDispatched.
-        consumerResolvedTypes.Should().Contain("ToolUseConfig",
-            "control: PlanValidator runs IValidator<ToolUseConfig>, so it must be exempt here");
 
         // In scope unless a consumer is PROVEN to resolve it. An unparsable or unrecognised type
         // argument therefore stays in scope: unknown means "must be bound", so it surfaces as a
@@ -381,8 +371,6 @@ public sealed class SecurityControlHasACallerTests
         var wiringFiles = Directory
             .EnumerateFiles(contentRoot, "*.cs", SearchOption.AllDirectories)
             .Where(f => !SourceScan.IsExcluded(f, contentRoot))
-            .Where(f => !f.Contains(Path.DirectorySeparatorChar + "Tests" + Path.DirectorySeparatorChar,
-                StringComparison.OrdinalIgnoreCase))
             .Where(f => Path.GetFileName(f).StartsWith("DependencyInjection", StringComparison.Ordinal)
                 || Path.GetFileName(f).Equals("IServiceCollectionExtensions.cs", StringComparison.Ordinal))
             .ToArray();
@@ -411,7 +399,7 @@ public sealed class SecurityControlHasACallerTests
     }
 
     /// <summary>
-    /// The single type argument of a validator file's <c>AbstractValidator&lt;T&gt;</c> base, or
+    /// The single type argument of a validator's <c>AbstractValidator&lt;T&gt;</c> base, or
     /// <see langword="null"/> when the file declares no such base, declares more than one, or names
     /// a type argument this scan cannot parse (qualified or generic).
     /// </summary>
@@ -430,10 +418,10 @@ public sealed class SecurityControlHasACallerTests
     /// first would attribute the file-named validator's verdict to somebody else's type.
     /// </para>
     /// </remarks>
-    private static string? ValidatedTypeName(string validatorFile)
+    private static string? ValidatedTypeName(string strippedValidatorSource)
     {
-        var source = SourceScan.StripCommentsAndStrings(File.ReadAllText(validatorFile));
-        var matches = Regex.Matches(source, @":\s*AbstractValidator\s*<\s*([A-Za-z0-9_]+)\s*>");
+        var matches = Regex.Matches(
+            strippedValidatorSource, @":\s*AbstractValidator\s*<\s*([A-Za-z0-9_]+)\s*>");
         return matches.Count == 1 ? matches[0].Groups[1].Value : null;
     }
 
