@@ -297,7 +297,7 @@ public sealed class SecurityControlHasACallerTests
     /// and a scan that accepted any config-shaped identifier sharing a file with any
     /// <c>IValidator&lt;</c>. Both would have exempted a real unbound validator silently. The lesson
     /// this file kept relearning: when the mechanism cannot be detected, state it and check the
-    /// statement, rather than approximating it with something that correlates
+    /// statement, rather than approximating it with something that correlates.
     /// </para>
     /// </remarks>
     [Fact]
