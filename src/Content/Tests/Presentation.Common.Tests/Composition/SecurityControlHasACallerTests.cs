@@ -12,7 +12,7 @@ namespace Presentation.Common.Tests.Composition;
 /// <remarks>
 /// <para>
 /// <strong>The defect this exists to catch.</strong> The harness has now shipped a security control
-/// that existed, looked correct, had thorough unit tests, and was never invoked, four separate
+/// that existed, looked correct, had thorough unit tests, and was never invoked, five separate
 /// times: <c>ToolPermissionFilter</c>, <c>GoverningToolContextProvider</c>, both recall providers,
 /// and <c>IAgentIdentityValidator</c> — whose <c>CanInvoke</c> was a complete fail-closed RBAC
 /// implementation with fifteen passing tests and, until #311, no production caller at all. Three
@@ -453,17 +453,17 @@ public sealed class SecurityControlHasACallerTests
     /// and says who runs it. That is the fail-closed direction, and it holds by construction.
     /// </para>
     /// <para>
-    /// <strong>What this does not guarantee.</strong> That the five entries are still true. A
-    /// staleness check was written and shipped alongside this list, then withdrawn in the same
-    /// branch: it matched the type name anywhere in <c>PlanValidator.cs</c>, and
-    /// <c>SubPlanConfig</c> also appears in an unrelated method, so deleting its dispatch arm
-    /// passed the check. A check that cannot fail is worse than an acknowledged gap, because it
-    /// invites trust it cannot support. The gap is tracked as #528, not papered over: a planner
-    /// refactor that stopped running these validators would leave five excused names behind, and
-    /// only a reviewer reading this comment would notice. If you touch
-    /// <c>ValidateStepConfigurations</c>, re-check this list by hand. #528 also records the shape
-    /// a correct check must match (the dispatch arm) and the adversarial probe its mutation test
-    /// must use.
+    /// <strong>Staleness is enforced by <see cref="ConsumerResolvedExemptions_AreStillDispatched"/>,
+    /// and the history of that check is instructive.</strong> Its first version matched the bare
+    /// type name anywhere in <c>PlanValidator.cs</c>. That was blind for <c>SubPlanConfig</c>,
+    /// which also appears in an unrelated method — and for the other four it worked. It was then
+    /// withdrawn on the claim that it "could not fail", which was false: withdrawing it removed
+    /// real detection for four of five, including <c>ConditionalBranchConfig</c>, which no other
+    /// test guards. The restored check anchors on the dispatch-arm shape
+    /// (<c>{Type} config =&gt; await ValidateConfig(</c>), which matches exactly the five arms and
+    /// nothing else — verified — and its mutation test deletes the <c>SubPlanConfig</c> arm
+    /// specifically, because that is the type with a second mention. The rest of the limits are
+    /// tracked as #528.
     /// </para>
     /// <para>
     /// Nor does it prove the five are <em>registered</em>. <c>PlanValidator.ValidateConfig</c>
@@ -475,7 +475,9 @@ public sealed class SecurityControlHasACallerTests
     /// <para>
     /// Two further limits, both tracked in #528. Candidacy is decided by the
     /// <c>*ConfigValidator.cs</c> filename, so a validator in a differently-named file is never
-    /// scanned. And entries are unqualified type names, so a second <c>SubPlanConfig</c> in another
+    /// scanned — and that is not hypothetical: four <c>Drift*Validator</c> classes under
+    /// <c>Application.AI.Common/Interfaces/DriftDetection</c> are registered by assembly scan
+    /// and consumed by nothing (#529). And entries are unqualified type names, so a second <c>SubPlanConfig</c> in another
     /// namespace would inherit this exemption.
     /// </para>
     /// </remarks>
@@ -488,6 +490,40 @@ public sealed class SecurityControlHasACallerTests
         "ConditionalBranchConfig",
         "SubPlanConfig"
     ];
+
+    /// <summary>
+    /// Every exemption on <see cref="ConsumerResolvedValidatedTypes"/> must still be a dispatch arm
+    /// in <c>PlanValidator.ValidateStepConfigurations</c>, and every arm must be on the list.
+    /// </summary>
+    /// <remarks>
+    /// Anchored on the arm shape, not the type name, so a mention elsewhere in the file cannot
+    /// satisfy it (see the remarks on the list for why the first version was blind to exactly
+    /// that). Checked both ways: a listed type with no arm is a stale exemption that would excuse
+    /// an inert validator; an arm with no list entry is a validator the guard would wrongly
+    /// report as unbound — #514's false alarm returning through the back door.
+    /// </remarks>
+    [Fact]
+    public void ConsumerResolvedExemptions_AreStillDispatched()
+    {
+        var planValidator = Path.Combine(
+            RepoRoot.Path, "src", "Content", "Infrastructure", "Infrastructure.AI", "Planner", "PlanValidator.cs");
+        File.Exists(planValidator).Should().BeTrue("the consumer that justifies every exemption must exist");
+
+        var source = SourceScan.StripCommentsAndStrings(File.ReadAllText(planValidator));
+        var dispatched = Regex.Matches(source, @"\b(\w+Config)\s+\w+\s*=>\s*await\s+ValidateConfig\(")
+            .Select(m => m.Groups[1].Value)
+            .ToHashSet(StringComparer.Ordinal);
+
+        // Control: the anchor must find the arms, or an emptied dispatch would read as "nothing
+        // stale" while every exemption had in fact gone dead.
+        dispatched.Should().NotBeEmpty("the dispatch-arm anchor must match PlanValidator's switch");
+
+        dispatched.Should().BeEquivalentTo(
+            ConsumerResolvedValidatedTypes,
+            "the exemption list and PlanValidator's dispatch arms must name the same types — a listed "
+            + "type with no arm is a stale exemption excusing an inert validator; an arm with no entry "
+            + "is a validator this guard would wrongly report as unbound");
+    }
 
     /// <summary>
     /// Finds every public interface declared under a guarded folder, returning its name and the file
