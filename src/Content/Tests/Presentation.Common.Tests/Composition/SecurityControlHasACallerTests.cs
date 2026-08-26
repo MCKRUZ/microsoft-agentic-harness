@@ -277,7 +277,8 @@ public sealed class SecurityControlHasACallerTests
     /// in which case the validator's own name appears in no wiring file while it runs on every call.
     /// The five planner step-config validators are the second shape:
     /// <c>PlanValidator.ValidateStepConfigurations</c> resolves and applies each one against every
-    /// step of every plan, and <c>PlanValidatorTests</c>'s real-container tests prove it.
+    /// step of every plan. <c>PlanValidatorTests</c> proves the dispatch for all five and the
+    /// real-container resolution for two of them (<c>ToolUseConfig</c>, <c>LlmCallConfig</c>).
     /// </para>
     /// <para>
     /// That second set is named explicitly in <see cref="ConsumerResolvedValidatedTypes"/> rather
@@ -310,9 +311,7 @@ public sealed class SecurityControlHasACallerTests
         // name alone reported two live controls (ToolAuthorizationConfigValidator,
         // AutonomyConfigValidator) as unbound debt — a guard against inert machinery that was itself
         // producing false alarms, which is the fastest way to make one get ignored.
-        var consumerResolvedTypes = ConsumerResolvedValidatedTypes
-            .Select(e => e.ValidatedType)
-            .ToHashSet(StringComparer.Ordinal);
+        var consumerResolvedTypes = ConsumerResolvedValidatedTypes.ToHashSet(StringComparer.Ordinal);
 
         var candidates = Directory
             .EnumerateFiles(contentRoot, "*ConfigValidator.cs", SearchOption.AllDirectories)
@@ -344,8 +343,8 @@ public sealed class SecurityControlHasACallerTests
 
         // Control: the exemption set must be non-empty and cover a type known to be consumer-run,
         // or the guard passes only because nothing is excluded — indistinguishable from working
-        // right up until it reported five false alarms again. That each entry is STILL resolved is
-        // checked by ConsumerResolvedExemptions_AreStillActuallyResolved.
+        // right up until it reported five false alarms again. Whether each entry is STILL true is
+        // not checked; see the remarks on ConsumerResolvedValidatedTypes for why.
         consumerResolvedTypes.Should().Contain("ToolUseConfig",
             "control: PlanValidator runs IValidator<ToolUseConfig>, so it must be exempt here");
 
@@ -434,69 +433,48 @@ public sealed class SecurityControlHasACallerTests
 
     /// <summary>
     /// Validated types a production consumer resolves and runs itself, so no options binding is
-    /// required — paired with the file that does it, so the exemption can be re-checked rather than
-    /// trusted.
+    /// required. <strong>Asserted, not enforced</strong> — see remarks before trusting it.
     /// </summary>
     /// <remarks>
     /// <para>
     /// An explicit list, not a scan, because the dispatch it describes is generic and therefore
     /// unmatchable. <c>PlanValidator.ValidateConfig&lt;T&gt;</c> resolves
     /// <c>IValidator&lt;T&gt;</c> with an open type parameter; the concrete types appear only as
-    /// switch patterns. There is no <c>IValidator&lt;ToolUseConfig&gt;</c> anywhere to anchor to.
+    /// switch patterns in <c>ValidateStepConfigurations</c>. There is no
+    /// <c>IValidator&lt;ToolUseConfig&gt;</c> anywhere to anchor a scan to.
     /// </para>
     /// <para>
-    /// The previous attempt papered over that by treating "any <c>*Config</c>/<c>*Options</c>
-    /// identifier in any file mentioning <c>IValidator&lt;</c>" as proof of a consumer. That is a
-    /// different rule from the one its own name claimed, and a future resolver file mentioning an
-    /// unrelated config type would have silently exempted it — the one direction this guard must not
-    /// fail in, reached for the second time in two commits by trying to infer the answer instead of
-    /// stating it. A short list that must be justified is the honest shape.
+    /// <strong>What this guarantees.</strong> Membership is the only exemption, so any new validator
+    /// — over any type, in any namespace, parsable or not — is in scope until someone adds it here
+    /// and says who runs it. That is the fail-closed direction, and it holds by construction.
     /// </para>
     /// <para>
-    /// <strong>Fail-closed by construction.</strong> Membership is the only exemption, so any new
-    /// validator — over any type, in any namespace, parsable or not — is in scope until someone adds
-    /// it here and says who runs it. <see cref="ConsumerResolvedExemptions_AreStillActuallyResolved"/>
-    /// re-derives the justification on every run, so an entry whose consumer disappears fails rather
-    /// than quietly keeping its exemption.
+    /// <strong>What this does not guarantee.</strong> That the five entries are still true. A
+    /// staleness check was written and shipped alongside this list, then withdrawn in the same
+    /// branch: it matched the type name anywhere in <c>PlanValidator.cs</c>, and
+    /// <c>SubPlanConfig</c> also appears in an unrelated method, so deleting its dispatch arm
+    /// passed the check. A check that cannot fail is worse than an acknowledged gap, because it
+    /// invites trust it cannot support. The gap is tracked, not papered over: a planner refactor
+    /// that stopped running these validators would leave five excused names behind, and only a
+    /// reviewer reading this comment would notice. If you touch
+    /// <c>ValidateStepConfigurations</c>, re-check this list by hand.
+    /// </para>
+    /// <para>
+    /// Two further limits, both tracked with that one. Candidacy is decided by the
+    /// <c>*ConfigValidator.cs</c> filename, so a validator in a differently-named file is never
+    /// scanned. And entries are unqualified type names, so a second <c>SubPlanConfig</c> in another
+    /// namespace would inherit this exemption.
     /// </para>
     /// </remarks>
-    private static readonly (string ValidatedType, string ResolvedBy)[] ConsumerResolvedValidatedTypes =
+    private static readonly string[] ConsumerResolvedValidatedTypes =
     [
-        ("LlmCallConfig", "Infrastructure/Infrastructure.AI/Planner/PlanValidator.cs"),
-        ("ToolUseConfig", "Infrastructure/Infrastructure.AI/Planner/PlanValidator.cs"),
-        ("HumanGateConfig", "Infrastructure/Infrastructure.AI/Planner/PlanValidator.cs"),
-        ("ConditionalBranchConfig", "Infrastructure/Infrastructure.AI/Planner/PlanValidator.cs"),
-        ("SubPlanConfig", "Infrastructure/Infrastructure.AI/Planner/PlanValidator.cs")
+        // All five: PlanValidator.ValidateStepConfigurations dispatches each to ValidateConfig<T>.
+        "LlmCallConfig",
+        "ToolUseConfig",
+        "HumanGateConfig",
+        "ConditionalBranchConfig",
+        "SubPlanConfig"
     ];
-
-    /// <summary>
-    /// Every exemption above must still be resolved by the file it names, or it is stale.
-    /// </summary>
-    /// <remarks>
-    /// Without this, the list is an assertion that decays: a planner refactor that stopped running
-    /// these validators would leave five permanently excused names behind, which is exactly the
-    /// stale-allowlist failure the deleted <c>KnownUnboundConfigValidators</c> ratchet existed to
-    /// prevent. This restores that property against the corrected premise.
-    /// </remarks>
-    [Fact]
-    public void ConsumerResolvedExemptions_AreStillActuallyResolved()
-    {
-        var contentRoot = Path.Combine(RepoRoot.Path, "src", "Content");
-
-        foreach (var (validatedType, resolvedBy) in ConsumerResolvedValidatedTypes)
-        {
-            var path = Path.Combine(contentRoot, resolvedBy.Replace('/', Path.DirectorySeparatorChar));
-            File.Exists(path).Should().BeTrue($"{resolvedBy} must exist to justify exempting {validatedType}");
-
-            var source = SourceScan.StripCommentsAndStrings(File.ReadAllText(path));
-
-            source.Should().Contain("IValidator<",
-                $"{resolvedBy} must still resolve a validator, or {validatedType}'s exemption is stale");
-            Regex.IsMatch(source, $@"\b{Regex.Escape(validatedType)}\b").Should().BeTrue(
-                $"{resolvedBy} must still dispatch on {validatedType}, or its exemption is stale");
-        }
-    }
-
 
     /// <summary>
     /// Finds every public interface declared under a guarded folder, returning its name and the file
