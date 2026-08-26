@@ -6,7 +6,9 @@ using Application.AI.Common.Interfaces.Telemetry;
 using Application.AI.Common.Services.Tools;
 using Domain.AI.Escalation;
 using Domain.AI.Governance;
+using Domain.Common.Config;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace Application.AI.Common.Services.Governance;
 
@@ -57,6 +59,7 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
     private readonly IApprovalExecutionReporter _executionReporter;
     private readonly ICompositeResponseSanitizer _sanitizer;
     private readonly IContentRedactionFilter _redactionFilter;
+    private readonly IOptionsMonitor<AppConfig> _options;
     private readonly ILogger<ToolCallAdmissionPipeline> _logger;
 
     /// <summary>Initializes a new instance of the <see cref="ToolCallAdmissionPipeline"/> class.</summary>
@@ -79,6 +82,12 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
     /// <param name="callOnceGate">
     /// Stage 6 — durable call-once enforcement, after the loop guard for the same reason: it too
     /// only makes sense to ask about a call that has cleared every access question already.
+    /// </param>
+    /// <param name="options">
+    /// Supplies the tool-output ceiling — see <see cref="OutputCeiling"/> for why it reuses the
+    /// existing per-result limit rather than adding a setting of its own. Read per call through
+    /// <see cref="IOptionsMonitor{TOptions}.CurrentValue"/> rather than captured, so a hot-reloaded
+    /// ceiling takes effect on the next tool result instead of at the next process start.
     /// </param>
     /// <param name="trace">The turn's governance trail, which the stages write to and this type snapshots.</param>
     /// <param name="executionReporter">
@@ -105,8 +114,11 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
         IApprovalExecutionReporter executionReporter,
         ICompositeResponseSanitizer sanitizer,
         IContentRedactionFilter redactionFilter,
+        IOptionsMonitor<AppConfig> options,
         ILogger<ToolCallAdmissionPipeline> logger)
     {
+        ArgumentNullException.ThrowIfNull(options);
+        _options = options;
         ArgumentNullException.ThrowIfNull(authorizationGate);
         ArgumentNullException.ThrowIfNull(governor);
         ArgumentNullException.ThrowIfNull(classificationGate);
@@ -246,6 +258,32 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
         return decision.ApprovedCall is { } call ? admission.WithApproval(call) : admission;
     }
 
+    /// <summary>
+    /// Appended where a tool result is cut to <see cref="OutputCeiling"/>, so a truncation is visible
+    /// to the model rather than reading as the tool having returned exactly that much.
+    /// </summary>
+    public const string OutputTruncationMarker = "\n[tool output truncated]";
+
+    /// <summary>
+    /// The maximum characters of free text a single tool result may contribute to the context window.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Reuses <c>AI.ContextManagement.ToolResultStorage.PerResultCharLimit</c> rather than introducing
+    /// a second number. That setting already means "the size above which a single tool result is too
+    /// large to keep inline", which is the same question asked here; two settings for one question is
+    /// how the values drift apart and one of them silently stops matching what anyone believes.
+    /// </para>
+    /// <para>
+    /// Deliberately <strong>not</strong> gated on <c>GovernanceConfig.Enabled</c>. Bounding is
+    /// resource management, not a policy verdict — an unbounded tool result exhausts the context
+    /// window whether or not a consumer has armed governance, exactly as the unconditional sanitize
+    /// beside it applies regardless of any gate's verdict (#469).
+    /// </para>
+    /// </remarks>
+    private int OutputCeiling =>
+        _options.CurrentValue.AI.ContextManagement.ToolResultStorage.PerResultCharLimit;
+
     /// <inheritdoc />
     public object? ApplyOutputPolicy(ToolCallAdmission admission, string toolName, object? result)
     {
@@ -253,9 +291,16 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
 
         // #469: the sanitize pass below is unconditional — see the interface remarks for why. It stays
         // in shape-preserving lockstep with RedactResult below via the shared ToolResultText.Sanitize.
-        return admission.RedactsOutput
+        var treated = admission.RedactsOutput
             ? _classificationGate.RedactResult(toolName, result)
             : ToolResultText.Sanitize(result, _sanitizer, toolName);
+
+        // #532: bound AFTER sanitize and redact, never before. Cutting first would hand the scrubbers
+        // a truncated string — a secret split across the cut survives, and an injection payload whose
+        // tail was removed can still carry its head. It also mirrors ReportExecutionAsync, which has
+        // always sanitized, redacted, and THEN bounded tool failure text at this same pipeline (#460);
+        // success output simply never got the third step.
+        return ToolResultText.Bound(treated, OutputCeiling, OutputTruncationMarker);
     }
 
     /// <inheritdoc />
@@ -282,7 +327,10 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
 
         if (processed is string text)
         {
-            result = text;
+            // #532: bound after sanitize/redact — see ApplyOutputPolicy for why the order is fixed.
+            // This is the plan path's only cut. The Execution API's DirectToolInvoker pre-cuts before
+            // calling in and cuts again after, so it is unaffected while its ceiling is no larger.
+            result = BoundedText.Cap(text, OutputCeiling, OutputTruncationMarker).Text;
             return true;
         }
 

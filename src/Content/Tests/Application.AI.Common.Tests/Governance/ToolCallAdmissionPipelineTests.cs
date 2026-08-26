@@ -6,6 +6,7 @@ using Application.AI.Common.Services.Governance;
 using Domain.AI.Changes;
 using Domain.AI.Escalation;
 using Domain.AI.Governance;
+using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging.Abstractions;
 using FluentAssertions;
 using Moq;
@@ -334,6 +335,79 @@ public sealed class ToolCallAdmissionPipelineTests
         result.Should().BeNull();
     }
 
+    // ===== #532: tool output is bounded, not just sanitized =====
+    //
+    // The asymmetry these close: tool FAILURE text is already bounded — ReportExecutionAsync
+    // "sanitizes, redacts, and bounds it exactly once, at the one chokepoint every reporting path
+    // funnels through" (#460), and GovernedAIFunction's remarks depend on that. Tool SUCCESS output
+    // was not bounded at the sibling methods beside it, on either path that reaches them:
+    // GovernedAIFunction hands ApplyOutputPolicy's value straight to the model, and
+    // ToolUseStepExecutor.HandleSuccessAsync puts TryApplyTextOutputPolicy's value into the step
+    // result. A tool's error message was capped; the same tool's 20 MB payload was not.
+    //
+    // The Execution API path is deliberately NOT covered here — DirectToolInvoker already bounds
+    // with PreCutForScrub before this call and ScrubAndBound/FinalCut after it.
+
+    [Fact]
+    public void ApplyOutputPolicy_OversizedText_IsBoundedAndMarked()
+    {
+        var pipeline = AdmissionHarness.Pipeline(outputCeiling: 100);
+
+        var result = pipeline.ApplyOutputPolicy(ToolCallAdmission.Allow(), Tool, new string('x', 5000));
+
+        result.Should().BeOfType<string>().Which.Length.Should().BeLessThanOrEqualTo(100,
+            "the ceiling is the promise a caller sizing the context window relies on — the marker "
+            + "counts against it rather than overshooting it");
+        result.As<string>().Should().EndWith(ToolCallAdmissionPipeline.OutputTruncationMarker,
+            "a silent cut reads to the model as the tool having returned exactly this much");
+    }
+
+    [Fact]
+    public void TryApplyTextOutputPolicy_OversizedText_IsBoundedAndMarked()
+    {
+        var pipeline = AdmissionHarness.Pipeline(outputCeiling: 100);
+
+        var ok = pipeline.TryApplyTextOutputPolicy(
+            ToolCallAdmission.Allow(), Tool, new string('x', 5000), out var result);
+
+        ok.Should().BeTrue("bounding is not a policy denial — the result is admitted, just cut");
+        result!.Length.Should().BeLessThanOrEqualTo(100);
+        result.Should().EndWith(ToolCallAdmissionPipeline.OutputTruncationMarker);
+    }
+
+    [Fact]
+    public void ApplyOutputPolicy_TextWithinTheCeiling_IsReturnedWhole()
+    {
+        // Control. Without this, a bound that cut EVERYTHING would satisfy the two tests above while
+        // destroying every tool result in the harness.
+        var pipeline = AdmissionHarness.Pipeline(outputCeiling: 100);
+
+        pipeline.ApplyOutputPolicy(ToolCallAdmission.Allow(), Tool, "a short result")
+            .Should().Be("a short result", "text under the ceiling must not be touched or marked");
+    }
+
+    [Fact]
+    public void ApplyOutputPolicy_MultipleTextBlocks_BoundsTheTOTALNotEachBlock()
+    {
+        // The one that is easy to get wrong. Capping each block at N yields N x blockCount, which
+        // bounds nothing on a result with many blocks — exactly the shape an MCP tool returns.
+        var pipeline = AdmissionHarness.Pipeline(outputCeiling: 100);
+
+        var blocks = new AIContent[]
+        {
+            new TextContent(new string('a', 500)),
+            new TextContent(new string('b', 500)),
+            new TextContent(new string('c', 500))
+        };
+
+        var result = pipeline.ApplyOutputPolicy(ToolCallAdmission.Allow(), Tool, blocks);
+
+        result.Should().BeOfType<AIContent[]>()
+            .Which.OfType<TextContent>().Sum(b => b.Text.Length)
+            .Should().BeLessThanOrEqualTo(100,
+                "the budget spans the blocks — a per-block cap would admit 300 characters here");
+    }
+
     [Fact]
     public void TryApplyTextOutputPolicy_PlainAllow_NullContent_PassesThroughWithoutSanitizing()
     {
@@ -518,6 +592,7 @@ public sealed class ToolCallAdmissionPipelineTests
             progress.Object, callOnceGate.Object, AdmissionHarness.TraceRecorder(),
             new Mock<IApprovalExecutionReporter>().Object,
             AdmissionHarness.PermissiveSanitizer(), AdmissionHarness.PermissiveRedactionFilter(),
+            AdmissionHarness.Config(),
             NullLogger<ToolCallAdmissionPipeline>.Instance);
     }
 
@@ -531,7 +606,8 @@ public sealed class ToolCallAdmissionPipelineTests
         Mock.Of<IToolClassificationGate>(), Mock.Of<IToolCallObserverChain>(), Mock.Of<IProgressEvaluator>(),
         Mock.Of<ICallOnceGate>(), AdmissionHarness.TraceRecorder(), reporter.Object,
         sanitizer ?? AdmissionHarness.PermissiveSanitizer(), redactionFilter ?? AdmissionHarness.PermissiveRedactionFilter(),
-        NullLogger<ToolCallAdmissionPipeline>.Instance);
+        AdmissionHarness.Config(),
+            NullLogger<ToolCallAdmissionPipeline>.Instance);
 
     private static ApprovedCall Call() =>
         new(Guid.NewGuid(), new ApprovalFailureKey("conv-1", "agent-1", Tool));

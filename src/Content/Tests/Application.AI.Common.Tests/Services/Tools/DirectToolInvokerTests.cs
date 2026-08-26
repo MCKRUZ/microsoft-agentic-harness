@@ -841,6 +841,16 @@ public sealed class DirectToolInvokerTests
         services.AddSingleton(AdmissionHarness.PermissiveSanitizer());
         services.AddSingleton<IContentRedactionFilter>(TestRedactionFilter.Instance);
 
+        // #532: the chain now bounds tool output and reads its ceiling from AppConfig, so it requires
+        // one — registered here for the same reason as every gate above, and stated the same way: an
+        // absent registration is a composition that cannot exist in production. Shipped defaults, so
+        // the pipeline's 50,000-character ceiling sits far above the small per-test ceilings this
+        // fixture gives DirectToolInvoker itself; the invoker's own cut is what these tests observe,
+        // and the pipeline's is a no-op at this size. That separation is deliberate: if the two ever
+        // interfered, the truncation tests below would be asserting against the wrong cut.
+        services.AddSingleton<IOptionsMonitor<Domain.Common.Config.AppConfig>>(
+            new StaticOptionsMonitor<Domain.Common.Config.AppConfig>(new Domain.Common.Config.AppConfig()));
+
         // The real chain, not a mock of it, built the same way the production root builds it. This
         // suite's whole subject is what the Execution API does before, during and after a tool call,
         // and that is now the chain's behaviour plus this type's response shaping — mocking the chain

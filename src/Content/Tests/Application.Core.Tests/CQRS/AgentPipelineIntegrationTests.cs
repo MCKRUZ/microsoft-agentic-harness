@@ -22,6 +22,8 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using Xunit;
 
+using Microsoft.Extensions.Options;
+
 namespace Application.Core.Tests.CQRS;
 
 /// <summary>
@@ -136,6 +138,14 @@ public class AgentPipelineIntegrationTests
         // same way the production root builds it. The handler depends only on the chain now, and
         // registering the real one keeps this an end-to-end proof that the five gates are reachable
         // from the turn — a mocked chain would prove nothing about whether they are wired at all.
+        // #532: the admission chain bounds tool output and reads its ceiling from AppConfig,
+        // so it requires one. Registered rather than defaulted inside AddToolCallAdmissionChain:
+        // a host that forgets to bind AppConfig should fail loudly at container build, which is
+        // what ValidateOnBuildSweepTests exists to catch — a TryAdd default there would make that
+        // guard structurally unable to see it.
+        services.AddSingleton<IOptionsMonitor<Domain.Common.Config.AppConfig>>(
+            Mock.Of<IOptionsMonitor<Domain.Common.Config.AppConfig>>(
+                m => m.CurrentValue == new Domain.Common.Config.AppConfig()));
         services.AddToolCallAdmissionChain();
 
         // Conversation-lifetime budget — not under test here; permissive mock (disabled) so the
