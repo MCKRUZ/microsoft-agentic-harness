@@ -277,8 +277,11 @@ public sealed class SecurityControlHasACallerTests
     /// in which case the validator's own name appears in no wiring file while it runs on every call.
     /// The five planner step-config validators are the second shape:
     /// <c>PlanValidator.ValidateStepConfigurations</c> resolves and applies each one against every
-    /// step of every plan. <c>PlanValidatorTests</c> proves the dispatch for all five and the
-    /// real-container resolution for two of them (<c>ToolUseConfig</c>, <c>LlmCallConfig</c>).
+    /// step of every plan. <c>PlanValidatorTests</c> proves the dispatch for three
+    /// (<c>LlmCall</c>, <c>ToolUse</c>, <c>HumanGate</c> — each has an invalid-config test) and
+    /// real-container resolution for two (<c>ToolUse</c>, <c>LlmCall</c>). <c>ConditionalBranch</c>
+    /// and <c>SubPlan</c> are dispatched by the same switch but no test would fail if their arms
+    /// were deleted — see #528.
     /// </para>
     /// <para>
     /// That second set is named explicitly in <see cref="ConsumerResolvedValidatedTypes"/> rather
@@ -358,13 +361,14 @@ public sealed class SecurityControlHasACallerTests
             .OrderBy(n => n, StringComparer.Ordinal)
             .ToArray();
 
-        // Control: the namespace filter must keep the config validators, or the guard passes by
+        // Control: the exemption must not swallow a config validator, or the guard passes by
         // scoping itself down to nothing — the same blind-guard failure one level further in.
         validatorNames.Should().Contain("GovernanceConfigValidator",
             "control: a validator over a bound configuration section must stay in scope");
 
         // Control: and it must exclude the runtime-payload shape, or #514's false alarm returns.
-        // PlanValidator resolves these as IValidator<T>; PlanValidatorTests proves they run.
+        // PlanValidator resolves these as IValidator<T>; PlanValidatorTests proves the dispatch for
+        // three of the five and real-container resolution for two (see the remarks above).
         validatorNames.Should().NotContain("ToolUseConfigValidator",
             "control: a validator over a runtime plan payload does not need an options binding");
 
@@ -419,9 +423,9 @@ public sealed class SecurityControlHasACallerTests
     /// </para>
     /// <para>
     /// More than one declaration in a file also yields <see langword="null"/> rather than the first
-    /// match. No production file has two today, but a child validator declared beside its parent is
-    /// ordinary FluentValidation, and taking the first would attribute the file-named validator's
-    /// verdict to somebody else's type.
+    /// match. No <c>*ConfigValidator.cs</c> candidate has two today, but the convention exists in
+    /// this repo (<c>EgressManifestValidator.cs</c> declares a parent and a child), so taking the
+    /// first would attribute the file-named validator's verdict to somebody else's type.
     /// </para>
     /// </remarks>
     private static string? ValidatedTypeName(string validatorFile)
@@ -454,13 +458,22 @@ public sealed class SecurityControlHasACallerTests
     /// branch: it matched the type name anywhere in <c>PlanValidator.cs</c>, and
     /// <c>SubPlanConfig</c> also appears in an unrelated method, so deleting its dispatch arm
     /// passed the check. A check that cannot fail is worse than an acknowledged gap, because it
-    /// invites trust it cannot support. The gap is tracked, not papered over: a planner refactor
-    /// that stopped running these validators would leave five excused names behind, and only a
-    /// reviewer reading this comment would notice. If you touch
-    /// <c>ValidateStepConfigurations</c>, re-check this list by hand.
+    /// invites trust it cannot support. The gap is tracked as #528, not papered over: a planner
+    /// refactor that stopped running these validators would leave five excused names behind, and
+    /// only a reviewer reading this comment would notice. If you touch
+    /// <c>ValidateStepConfigurations</c>, re-check this list by hand. #528 also records the shape
+    /// a correct check must match (the dispatch arm) and the adversarial probe its mutation test
+    /// must use.
     /// </para>
     /// <para>
-    /// Two further limits, both tracked with that one. Candidacy is decided by the
+    /// Nor does it prove the five are <em>registered</em>. <c>PlanValidator.ValidateConfig</c>
+    /// fails open when no <c>IValidator&lt;T&gt;</c> resolves (#526), and their only registration
+    /// is <c>AddValidatorsFromAssembly</c> on Application.Core; real-container resolution is tested
+    /// for two of the five. The exemption says a consumer <em>would call</em> each one — not that
+    /// one exists to be called.
+    /// </para>
+    /// <para>
+    /// Two further limits, both tracked in #528. Candidacy is decided by the
     /// <c>*ConfigValidator.cs</c> filename, so a validator in a differently-named file is never
     /// scanned. And entries are unqualified type names, so a second <c>SubPlanConfig</c> in another
     /// namespace would inherit this exemption.
