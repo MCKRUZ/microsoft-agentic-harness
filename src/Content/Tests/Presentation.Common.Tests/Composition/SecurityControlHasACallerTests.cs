@@ -28,8 +28,8 @@ namespace Presentation.Common.Tests.Composition;
 /// </para>
 /// <para>
 /// <strong>What this file does and does not cover.</strong> The consumer scan reads
-/// <em>interfaces</em> declared under the guarded folders, so of the four defects named above it could
-/// only ever have caught the last. The other three are concrete classes implementing no guarded
+/// <em>interfaces</em> declared under the guarded folders, so of the five defects named above it could
+/// only ever have caught the last. The other four are concrete classes implementing no guarded
 /// contract, and no exemption list can be curated into covering them without becoming the very smell
 /// this test warns about. <see cref="NoFactoryDecidesAPerRunFactAtConstructionTime"/> covers the
 /// second failure mode those three shared — a control wired correctly but decided at the wrong moment
@@ -280,8 +280,10 @@ public sealed class SecurityControlHasACallerTests
     /// step of every plan. <c>PlanValidatorTests</c> proves the dispatch for three
     /// (<c>LlmCall</c>, <c>ToolUse</c>, <c>HumanGate</c> — each has an invalid-config test) and
     /// real-container resolution for two (<c>ToolUse</c>, <c>LlmCall</c>). <c>ConditionalBranch</c>
-    /// and <c>SubPlan</c> are dispatched by the same switch but no test would fail if their arms
-    /// were deleted — see #528.
+    /// and <c>SubPlan</c> have no invalid-config test of their own, so their dispatch is guarded
+    /// only by <see cref="ConsumerResolvedExemptions_AreStillDispatched"/> below — which does fail
+    /// if either arm is deleted. A per-type invalid-config test would additionally prove the
+    /// validator is registered, not merely dispatched; that half is #528.
     /// </para>
     /// <para>
     /// That second set is named explicitly in <see cref="ConsumerResolvedValidatedTypes"/> rather
@@ -347,7 +349,7 @@ public sealed class SecurityControlHasACallerTests
         // Control: the exemption set must be non-empty and cover a type known to be consumer-run,
         // or the guard passes only because nothing is excluded — indistinguishable from working
         // right up until it reported five false alarms again. Whether each entry is STILL true is
-        // not checked; see the remarks on ConsumerResolvedValidatedTypes for why.
+        // checked separately by ConsumerResolvedExemptions_AreStillDispatched.
         consumerResolvedTypes.Should().Contain("ToolUseConfig",
             "control: PlanValidator runs IValidator<ToolUseConfig>, so it must be exempt here");
 
@@ -437,7 +439,8 @@ public sealed class SecurityControlHasACallerTests
 
     /// <summary>
     /// Validated types a production consumer resolves and runs itself, so no options binding is
-    /// required. <strong>Asserted, not enforced</strong> — see remarks before trusting it.
+    /// required. Kept honest by <see cref="ConsumerResolvedExemptions_AreStillDispatched"/>; read
+    /// the remarks for what that does and does not cover.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -466,7 +469,8 @@ public sealed class SecurityControlHasACallerTests
     /// tracked as #528.
     /// </para>
     /// <para>
-    /// Nor does it prove the five are <em>registered</em>. <c>PlanValidator.ValidateConfig</c>
+    /// What the exemption does not prove is that the five are <em>registered</em>.
+    /// <c>PlanValidator.ValidateConfig</c>
     /// fails open when no <c>IValidator&lt;T&gt;</c> resolves (#526), and their only registration
     /// is <c>AddValidatorsFromAssembly</c> on Application.Core; real-container resolution is tested
     /// for two of the five. The exemption says a consumer <em>would call</em> each one — not that
