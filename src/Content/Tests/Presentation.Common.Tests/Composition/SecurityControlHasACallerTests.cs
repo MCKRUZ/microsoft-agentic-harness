@@ -271,26 +271,32 @@ public sealed class SecurityControlHasACallerTests
     /// land unregistered either — the specific fix would have left the mechanism just as forgettable.
     /// </para>
     /// <para>
-    /// <strong>Scope: configuration validators only, decided by what a validator validates.</strong>
-    /// A validator needs an <c>AddOptions</c> chain only when the type it validates is a configuration
-    /// section bound from <c>appsettings</c> — every one of those lives under
-    /// <c>Domain.Common.Config</c>. A validator over a <em>runtime payload</em> is invoked a different
-    /// way: a consumer resolves <c>IValidator&lt;T&gt;</c> for the concrete type, so the validator's own
-    /// name appears in no wiring file while it runs on every call. The five planner step-config
-    /// validators are exactly that shape — <c>PlanValidator.ValidateStepConfigurations</c> resolves and
-    /// applies each one against every step of every plan, and
-    /// <c>PlanValidatorTests</c>'s real-container tests prove it. Scoping by the validated type's
-    /// namespace separates the two mechanisms cleanly, with no exceptions in either direction.
+    /// <strong>Scope: every validator, minus a stated exemption.</strong> There are two ways a
+    /// validator runs. An <c>AddOptions</c> chain binds it to a configuration section — that is what
+    /// this test checks for. Or a consumer resolves <c>IValidator&lt;T&gt;</c> itself and applies it,
+    /// in which case the validator's own name appears in no wiring file while it runs on every call.
+    /// The five planner step-config validators are the second shape:
+    /// <c>PlanValidator.ValidateStepConfigurations</c> resolves and applies each one against every
+    /// step of every plan, and <c>PlanValidatorTests</c>'s real-container tests prove it.
     /// </para>
     /// <para>
-    /// <strong>This is the third false alarm this guard has produced, and the reason it is scoped
-    /// rather than allowlisted.</strong> Matching on filename swept in two live <c>IHostedService</c>
-    /// validators; reading a single wiring file reported anything registered in a subsystem partial as
-    /// unbound; and treating an options binding as the only invocation mechanism reported the five
-    /// planner validators as dead debt (#514) when a prior audit had already proved they run. Each
-    /// fix narrowed the question the guard asks toward the one it actually means: <em>is there
-    /// something that causes this validator to run?</em> An allowlist would have recorded the wrong
-    /// answer permanently instead.
+    /// That second set is named explicitly in <see cref="ConsumerResolvedValidatedTypes"/> rather
+    /// than inferred, because the dispatch is generic and there is no concrete
+    /// <c>IValidator&lt;SomeConfig&gt;</c> anywhere to detect. Everything not on that list is in
+    /// scope, so a new validator over any type in any namespace must be bound or reported.
+    /// </para>
+    /// <para>
+    /// <strong>Four false alarms, and what each one taught.</strong> Matching on filename swept in
+    /// two live <c>IHostedService</c> validators. Reading a single wiring file reported anything
+    /// registered in a subsystem partial as unbound. Treating an options binding as the only
+    /// invocation mechanism reported the five planner validators as dead debt (#514) when a prior
+    /// audit had already proved they run. Then two attempts to <em>infer</em> the exemption failed in
+    /// the opposite and more dangerous direction — a namespace rule that was simply false
+    /// (<c>JudgeOptions</c> and friends are bound from <c>Application.AI.Common.Evaluation.Models</c>),
+    /// and a scan that accepted any config-shaped identifier sharing a file with any
+    /// <c>IValidator&lt;</c>. Both would have exempted a real unbound validator silently. The lesson
+    /// this file kept relearning: when the mechanism cannot be detected, state it and check the
+    /// statement, rather than approximating it with something that correlates
     /// </para>
     /// </remarks>
     [Fact]
