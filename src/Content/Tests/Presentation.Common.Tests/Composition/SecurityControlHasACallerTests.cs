@@ -357,7 +357,15 @@ public sealed class SecurityControlHasACallerTests
 
         candidates.Should().NotBeEmpty("the validators this reads must exist for its verdict to mean anything");
 
-        // Control: the IHostedService shape must still be excluded, or the original false alarm returns.
+        // Control: the IHostedService shape must still be excluded, or the original false alarm
+        // returns. A NotContain alone passes vacuously once the class is renamed or deleted — the
+        // exclusion property would silently stop being proven with nothing failing — so assert the
+        // subject still exists first. The two Contain controls below need no such companion.
+        sources.Should().Contain(
+            s => Regex.IsMatch(s.Code, @"\bclass\s+ToolAuthorizationConfigValidator\b"),
+            "control subject: the IHostedService validator this control excludes must still exist, or "
+            + "the NotContain below proves nothing");
+
         candidates.Should().NotContain(c => c.Validator == "ToolAuthorizationConfigValidator",
             "control: an IHostedService validator must not be treated as needing an options binding");
 
@@ -412,9 +420,16 @@ public sealed class SecurityControlHasACallerTests
         // DependencyInjection partial, and reading one file reported anything registered elsewhere as
         // unbound. Source text rather than a resolved container, because an unbound validator is still
         // perfectly resolvable — that is exactly what made the original defect invisible.
+        // Both matched by PREFIX. IServiceCollectionExtensions was previously matched by exact
+        // filename, which was harmless while any mention of a validator anywhere counted as a
+        // binding, and is not any more: all twenty real bindings live in that one file, so this
+        // predicate is now the sole load-bearing path to them. This repo's own convention is to split
+        // registration files into partials (DependencyInjection.Governance.cs, .Identity.cs, ...), so
+        // an IServiceCollectionExtensions.Validation.cs is a natural refactor that would have dropped
+        // all twenty bindings at once and failed the guard with twenty names.
         var wiringFiles = sources
             .Where(s => Path.GetFileName(s.Path).StartsWith("DependencyInjection", StringComparison.Ordinal)
-                || Path.GetFileName(s.Path).Equals("IServiceCollectionExtensions.cs", StringComparison.Ordinal))
+                || Path.GetFileName(s.Path).StartsWith("IServiceCollectionExtensions", StringComparison.Ordinal))
             .ToArray();
 
         wiringFiles.Should().NotBeEmpty("the wiring files this reads must exist for its verdict to mean anything");
@@ -520,12 +535,19 @@ public sealed class SecurityControlHasACallerTests
         // The broad predicate decides candidacy; the precise one only decides whether the type
         // argument is known. A declaration matching the first but not the second is kept, with a null
         // type, and therefore stays in scope.
+        //
+        // The optional (?:[\w.]+\.)? qualifier is load-bearing, exactly as it is in IsRegistrationOnly
+        // below. Without it, `class FooValidator : FluentValidation.AbstractValidator<FooConfig>` —
+        // which is how anyone disambiguates a name clash, or writes it with no using directive —
+        // matches neither pattern and is never a candidate at all. Not reported, not exempted,
+        // invisible: the same silent-invisibility failure as the *ConfigValidator.cs filename rule
+        // this replaced (#529). Latent today, since no base type in src/Content is qualified.
         foreach (Match declaration in Regex.Matches(
-            strippedSource, @"\bclass\s+(\w+)\s*(?:<[^>]*>)?\s*:\s*AbstractValidator\s*<"))
+            strippedSource, @"\bclass\s+(\w+)\s*(?:<[^>]*>)?\s*:\s*(?:[\w.]+\.)?AbstractValidator\s*<"))
         {
             var parsed = Regex.Match(
                 strippedSource[declaration.Index..],
-                @"^class\s+\w+\s*(?:<[^>]*>)?\s*:\s*AbstractValidator\s*<\s*([A-Za-z0-9_]+)\s*>");
+                @"^class\s+\w+\s*(?:<[^>]*>)?\s*:\s*(?:[\w.]+\.)?AbstractValidator\s*<\s*([A-Za-z0-9_]+)\s*>");
 
             found.Add((declaration.Groups[1].Value, parsed.Success ? parsed.Groups[1].Value : null));
         }
@@ -554,6 +576,18 @@ public sealed class SecurityControlHasACallerTests
     /// silently exempted a validator that genuinely never runs — #516's defect, introduced by the
     /// guard written to catch it. Latent today (the repo declares no production <c>INotification</c>),
     /// which is exactly why it needed catching before it was not.
+    /// </para>
+    /// <para>
+    /// <strong>What this exemption does NOT prove.</strong> It says the type is <em>dispatchable</em>
+    /// through MediatR, so a <c>Send</c> would run its validator. It does not prove every caller uses
+    /// <c>Send</c>. A caller that constructs a handler and invokes <c>Handle</c> directly bypasses the
+    /// pipeline entirely, and that is not hypothetical — <c>SkillTrainingExample</c> does exactly this
+    /// with <c>TrainSkillCommand</c>, so <c>TrainSkillCommandValidator</c> is certified here while
+    /// that particular path runs none of its rules. Harmless there (the example's config is
+    /// hardcoded valid) but a pattern a template consumer could copy. Detecting it needs call-graph
+    /// analysis rather than a source scan, so it is stated rather than checked — the same honesty this
+    /// file demands of the consumer-resolved exemption, which likewise proves a consumer <em>would</em>
+    /// call each validator, not that one exists to be called.
     /// </para>
     /// <para>
     /// The base list is cut at <c>where</c> before matching. The capture runs to the end of the line,
@@ -602,20 +636,58 @@ public sealed class SecurityControlHasACallerTests
     /// looseness applies to, so it is tightened here rather than left as-is.
     /// </para>
     /// <para>
-    /// <strong>The negated character class is load-bearing and must not become <c>.</c>-based.</strong>
-    /// These calls wrap: four of the twenty in-scope validators are bound by a
-    /// <c>ValidateFluentValidation&lt;</c> whose type arguments sit on the following two lines.
-    /// <c>[^&lt;&gt;]</c> crosses newlines, so both the single-line and wrapped forms match. A
-    /// line-anchored pattern silently misses the wrapped four and reports them as unbound — that
-    /// mistake was made while verifying this very finding.
+    /// <strong>Must span newlines.</strong> These calls wrap: four of the twenty in-scope validators
+    /// are bound by a <c>ValidateFluentValidation&lt;</c> whose type arguments sit on the following
+    /// two lines. A line-anchored pattern silently misses those four and reports them as unbound —
+    /// that mistake was made while verifying this very finding, and briefly led to rejecting it.
+    /// </para>
+    /// <para>
+    /// <strong>Why depth-scanning rather than a regex.</strong> A first cut matched
+    /// <c>&lt;[^&lt;&gt;]*,\s*([A-Za-z0-9_]+)&gt;</c>, which fails toward a false alarm in two real
+    /// shapes: a namespace-qualified validator (<c>Governance.EscalationConfigValidator</c> — and this
+    /// repo already qualifies the *config* argument for precisely that reason, because
+    /// <c>EscalationConfig</c> exists in two namespaces) and a generic config argument
+    /// (<c>Options&lt;FooConfig&gt;</c>), which <c>[^&lt;&gt;]</c> cannot cross. Reporting a correctly
+    /// bound validator as unbound is how a guard gets ignored — this file's remarks say so in three
+    /// places, and it is a regression tightening the check introduced. Counting bracket depth handles
+    /// both without pretending a regex can balance brackets.
     /// </para>
     /// </remarks>
     private static HashSet<string> FindOptionsBoundValidators(string wiring)
     {
-        return Regex
-            .Matches(wiring, @"ValidateFluentValidation\s*<[^<>]*,\s*([A-Za-z0-9_]+)\s*>")
-            .Select(m => m.Groups[1].Value)
-            .ToHashSet(StringComparer.Ordinal);
+        const string Call = "ValidateFluentValidation";
+        var bound = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (Match call in Regex.Matches(wiring, $@"\b{Call}\s*<"))
+        {
+            var open = wiring.IndexOf('<', call.Index);
+            var depth = 0;
+            var lastTopLevelComma = -1;
+            int i;
+
+            for (i = open; i < wiring.Length; i++)
+            {
+                if (wiring[i] == '<') depth++;
+                else if (wiring[i] == '>' && --depth == 0) break;
+                else if (wiring[i] == ',' && depth == 1) lastTopLevelComma = i;
+            }
+
+            // An unbalanced call means the scan lost its place; skip it rather than guess, so the
+            // validator stays in scope and surfaces as a named failure.
+            if (i >= wiring.Length || lastTopLevelComma < 0)
+                continue;
+
+            // The last top-level argument is TValidator. Strip any namespace qualifier.
+            var validator = wiring[(lastTopLevelComma + 1)..i].Trim();
+            var lastDot = validator.LastIndexOf('.');
+            if (lastDot >= 0)
+                validator = validator[(lastDot + 1)..];
+
+            if (validator.Length > 0)
+                bound.Add(validator);
+        }
+
+        return bound;
     }
 
     /// <summary>
