@@ -420,22 +420,31 @@ public sealed class SecurityControlHasACallerTests
         wiringFiles.Should().NotBeEmpty("the wiring files this reads must exist for its verdict to mean anything");
 
         var wiring = string.Join("\n", wiringFiles.Select(s => s.Code));
+        var bound = FindOptionsBoundValidators(wiring);
 
         // Control: the needle must match a binding known to be present, or "no offenders" would be
         // satisfied by a scan that cannot see any binding at all.
-        wiring.Should().Contain("GovernanceConfigValidator",
+        bound.Should().Contain("GovernanceConfigValidator",
             "control: a known-bound validator must be visible to this scan");
 
+        // Control: the wrapped call form must parse too. DriftDetectionConfigValidator is bound by a
+        // ValidateFluentValidation< whose type arguments sit on the next two lines; a line-anchored
+        // pattern sees only the single-line form and reports the wrapped ones as unbound.
+        bound.Should().Contain("DriftDetectionConfigValidator",
+            "control: a binding whose type arguments wrap across lines must still be credited");
+
         var unbound = needsBinding
-            .Where(name => !wiring.Contains(name, StringComparison.Ordinal))
+            .Where(name => !bound.Contains(name))
             .ToArray();
 
         unbound.Should().BeEmpty(
             "a validator that no AddOptions chain binds, no MediatR request carries, and no consumer "
             + "resolves never runs, however thoroughly it is tested and however confidently its doc "
             + "comment says otherwise — AddValidatorsFromAssembly registers it for resolution, it does "
-            + "not cause anything to resolve it. Either bind it in RegisterValidatedConfigSections, give "
-            + "it a consumer, or delete it along with the documentation claiming it enforces. "
+            + "not cause anything to resolve it, and neither does adding an AddSingleton<IValidator<T>> "
+            + "of your own: only a ValidateFluentValidation<TConfig, TValidator> chain counts here. "
+            + "Either bind it in RegisterValidatedConfigSections, give it a consumer and record which "
+            + "one, or delete it along with the documentation claiming it enforces. "
             + "Unbound: " + string.Join(", ", unbound));
     }
 
@@ -529,11 +538,31 @@ public sealed class SecurityControlHasACallerTests
     /// which is therefore validated by <c>RequestValidationBehavior</c> with no binding of its own.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Detected, not assumed. The repo derives its commands and queries directly from
     /// <c>IRequest</c>/<c>IRequest&lt;T&gt;</c> rather than through a local alias interface, so this
     /// matches the real shape. If an alias is ever introduced, the validators over it fall through to
     /// "must be bound" and surface as named failures rather than silent exemptions — the fail-closed
     /// direction. A type this cannot find at all is likewise treated as not-a-request.
+    /// </para>
+    /// <para>
+    /// <strong><c>INotification</c> is deliberately NOT here.</strong> A first cut included it, which
+    /// was wrong in the one direction this file must never fail in.
+    /// <c>RequestValidationBehavior</c> is an <c>IPipelineBehavior</c>, and MediatR runs pipeline
+    /// behaviors only on <c>Send</c>; <c>Publish</c> dispatches straight to
+    /// <c>INotificationHandler</c> with no pipeline at all. Crediting a notification type would have
+    /// silently exempted a validator that genuinely never runs — #516's defect, introduced by the
+    /// guard written to catch it. Latent today (the repo declares no production <c>INotification</c>),
+    /// which is exactly why it needed catching before it was not.
+    /// </para>
+    /// <para>
+    /// The base list is cut at <c>where</c> before matching. The capture runs to the end of the line,
+    /// and a generic constraint sits on that same line — provable in this repo, where
+    /// <c>RequestValidationBehavior</c>'s own declaration ends
+    /// <c>: IPipelineBehavior&lt;TRequest, TResponse&gt; where TRequest : notnull</c>. Without the
+    /// cut, <c>class Envelope&lt;T&gt; : Base&lt;T&gt; where T : IRequest</c> would register
+    /// <c>Envelope</c> as a MediatR request and silently exempt any validator over it.
+    /// </para>
     /// </remarks>
     private static HashSet<string> FindMediatRRequestTypes(
         IReadOnlyList<(string Path, string Code)> sources)
@@ -546,16 +575,47 @@ public sealed class SecurityControlHasACallerTests
                 code,
                 @"\b(?:record|class|struct)\s+(\w+)\s*(?:<[^>]*>)?\s*(?:\([^)]*\))?\s*:\s*([^{\r\n]+)"))
             {
-                if (Regex.IsMatch(
-                        declaration.Groups[2].Value,
-                        @"\bIRequest\b|\bIBaseRequest\b|\bINotification\b"))
-                {
+                // Constraints are not base types. Everything from `where` onward describes what a
+                // type parameter must satisfy, not what this type derives from.
+                var baseList = Regex.Split(declaration.Groups[2].Value, @"\bwhere\b")[0];
+
+                if (Regex.IsMatch(baseList, @"\bIRequest\b|\bIBaseRequest\b"))
                     requests.Add(declaration.Groups[1].Value);
-                }
             }
         }
 
         return requests;
+    }
+
+    /// <summary>
+    /// Validator names an <c>AddOptions</c> chain actually binds, read from the
+    /// <c>ValidateFluentValidation&lt;TConfig, TValidator&gt;</c> calls themselves.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A bare mention is not a binding. The previous check credited any occurrence of the validator's
+    /// name anywhere in a DI file, so
+    /// <c>services.AddSingleton&lt;IValidator&lt;FooConfig&gt;, FooConfigValidator&gt;()</c> — a
+    /// registration that causes nothing to resolve it — satisfied a guard whose failure message tells
+    /// you to add an options binding. That is #516's exact defect passing the check written to catch
+    /// it. Candidacy widening from a filename match to all 85 validators grew the surface that
+    /// looseness applies to, so it is tightened here rather than left as-is.
+    /// </para>
+    /// <para>
+    /// <strong>The negated character class is load-bearing and must not become <c>.</c>-based.</strong>
+    /// These calls wrap: four of the twenty in-scope validators are bound by a
+    /// <c>ValidateFluentValidation&lt;</c> whose type arguments sit on the following two lines.
+    /// <c>[^&lt;&gt;]</c> crosses newlines, so both the single-line and wrapped forms match. A
+    /// line-anchored pattern silently misses the wrapped four and reports them as unbound — that
+    /// mistake was made while verifying this very finding.
+    /// </para>
+    /// </remarks>
+    private static HashSet<string> FindOptionsBoundValidators(string wiring)
+    {
+        return Regex
+            .Matches(wiring, @"ValidateFluentValidation\s*<[^<>]*,\s*([A-Za-z0-9_]+)\s*>")
+            .Select(m => m.Groups[1].Value)
+            .ToHashSet(StringComparer.Ordinal);
     }
 
     /// <summary>
