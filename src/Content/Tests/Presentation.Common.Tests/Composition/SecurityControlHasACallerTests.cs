@@ -290,7 +290,7 @@ public sealed class SecurityControlHasACallerTests
     /// scope, so a new validator over any type in any namespace must be bound or reported.
     /// </para>
     /// <para>
-    /// <strong>Four false alarms, and what each one taught.</strong> Matching on filename swept in
+    /// <strong>Five false alarms, and what each one taught.</strong> Matching on filename swept in
     /// two live <c>IHostedService</c> validators. Reading a single wiring file reported anything
     /// registered in a subsystem partial as unbound. Treating an options binding as the only
     /// invocation mechanism reported the five planner validators as dead debt (#514) when a prior
