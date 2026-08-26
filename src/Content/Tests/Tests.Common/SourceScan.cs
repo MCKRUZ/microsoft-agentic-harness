@@ -32,6 +32,37 @@ public static class SourceScan
     }
 
     /// <summary>
+    /// Every production source file under <paramref name="contentRoot"/>, comment- and
+    /// string-stripped, as (path, code).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The enumerate + <see cref="IsExcluded"/> + <see cref="StripCommentsAndStrings"/> triple is the
+    /// predicate that decides <strong>which files a guard test can see at all</strong>. That is
+    /// exactly the thing that must not drift between guards: a scan which silently narrows reports
+    /// nothing and looks identical to a scan which found nothing. It had reached three verbatim
+    /// copies inside <c>SecurityControlHasACallerTests</c> alone, which is the same threshold at
+    /// which this class was itself extracted.
+    /// </para>
+    /// <para>
+    /// <strong>Deliberately not cached.</strong> Each call re-reads the tree — about 3,900 files and
+    /// 19 MB, roughly two seconds. Memoizing it would save a few seconds per test class but hold
+    /// ~38 MB of stripped UTF-16 source resident for the lifetime of the test assembly, where today
+    /// each pass is collectable as soon as its fact ends. Inside a suite that runs for minutes that
+    /// trade is not worth making silently; if a future caller needs it, add the cache here with a
+    /// measurement rather than in one caller.
+    /// </para>
+    /// </remarks>
+    public static (string Path, string Code)[] ReadProductionSources(string contentRoot)
+    {
+        return Directory
+            .EnumerateFiles(contentRoot, "*.cs", SearchOption.AllDirectories)
+            .Where(f => !IsExcluded(f, contentRoot))
+            .Select(f => (Path: f, Code: StripCommentsAndStrings(File.ReadAllText(f))))
+            .ToArray();
+    }
+
+    /// <summary>
     /// Removes comments and string literals so only compiled code is matched — a doc comment naming
     /// a contract, or a string literal that happens to contain a matched token, must not count as a
     /// live reference.

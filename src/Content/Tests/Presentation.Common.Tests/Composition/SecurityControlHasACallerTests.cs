@@ -98,11 +98,7 @@ public sealed class SecurityControlHasACallerTests
         contracts.Should().NotBeEmpty(
             "a scan that discovered no contracts would pass vacuously — the folders it reads must exist");
 
-        var productionFiles = Directory
-            .EnumerateFiles(contentRoot, "*.cs", SearchOption.AllDirectories)
-            .Where(f => !SourceScan.IsExcluded(f, contentRoot))
-            .Select(f => (Path: f, Code: SourceScan.StripCommentsAndStrings(File.ReadAllText(f))))
-            .ToArray();
+        var productionFiles = SourceScan.ReadProductionSources(contentRoot);
 
         var uncalled = new List<string>();
 
@@ -337,11 +333,7 @@ public sealed class SecurityControlHasACallerTests
     {
         var contentRoot = Path.Combine(RepoRoot.Path, "src", "Content");
 
-        var sources = Directory
-            .EnumerateFiles(contentRoot, "*.cs", SearchOption.AllDirectories)
-            .Where(f => !SourceScan.IsExcluded(f, contentRoot))
-            .Select(f => (Path: f, Code: SourceScan.StripCommentsAndStrings(File.ReadAllText(f))))
-            .ToArray();
+        var sources = SourceScan.ReadProductionSources(contentRoot);
 
         sources.Should().NotBeEmpty("the production source this reads must exist for its verdict to mean anything");
 
@@ -369,15 +361,20 @@ public sealed class SecurityControlHasACallerTests
         candidates.Should().NotContain(c => c.Validator == "ToolAuthorizationConfigValidator",
             "control: an IHostedService validator must not be treated as needing an options binding");
 
-        // Control: shape-based candidacy must see what the filename rule could not. EgressManifestValidator
-        // lives in a file the old scan never opened; if this fails, candidacy has narrowed back.
-        candidates.Should().Contain(c => c.Validator == "EgressManifestValidator",
-            "control: a validator outside the *ConfigValidator.cs naming convention must be in scope");
-
-        // Control: a file declaring two validators must yield two candidates. EgressManifestValidator.cs
-        // declares a parent and a child; per-file attribution would silently drop one of them.
-        candidates.Count(c => c.Validator is "EgressManifestValidator" or "EgressAllowlistEntryValidator")
-            .Should().Be(2, "control: both declarations in a two-validator file must be attributed separately");
+        // Control, covering two properties at once. EgressManifestValidator.cs sits outside the old
+        // *ConfigValidator.cs naming convention, so seeing it at all proves candidacy is shape-based;
+        // and it declares BOTH a parent and a child validator, so seeing both proves attribution is
+        // per-declaration rather than per-file.
+        //
+        // Deliberately BeEquivalentTo rather than a Contain plus a Count of two: that pair is
+        // satisfiable by counting one name twice while the other is missing, which is the same
+        // vacuous-control shape this file just had to fix in the NotContain above.
+        candidates.Select(c => c.Validator)
+            .Where(n => n is "EgressManifestValidator" or "EgressAllowlistEntryValidator")
+            .Should().BeEquivalentTo(
+                ["EgressManifestValidator", "EgressAllowlistEntryValidator"],
+                "control: a validator outside the *ConfigValidator.cs naming convention must be in "
+                + "scope, and both declarations in a two-validator file must be attributed separately");
 
         var mediatrRequests = FindMediatRRequestTypes(sources);
 
@@ -503,6 +500,32 @@ public sealed class SecurityControlHasACallerTests
         SourceScan.StripCommentsAndStrings(File.ReadAllText(behavior))
             .Should().Contain("IEnumerable<IValidator<TRequest>>",
                 "the behavior must still resolve the validators this exemption credits it with running");
+
+        // And resolving them is not enough either: the collection the behavior injects is populated
+        // solely by AddValidatorsFromAssembly. Delete one of these and every validator in that
+        // assembly silently stops running — the MediatR exemptions here AND the consumer-resolved
+        // ones, since PlanValidator.ValidateConfig fails open when nothing resolves (#526). Nothing
+        // throws; the tests all still pass. Apply this file's own standing question — which single
+        // line, if deleted, restores the unguarded behaviour, and does a test fail when it is gone? —
+        // and without this assertion the answer for the registration half was: no test fails.
+        string[] validatorRegistrations =
+        [
+            Path.Combine("Application", "Application.Common", "DependencyInjection.cs"),
+            Path.Combine("Application", "Application.AI.Common", "DependencyInjection.cs"),
+            Path.Combine("Application", "Application.Core", "DependencyInjection.cs")
+        ];
+
+        foreach (var relative in validatorRegistrations)
+        {
+            var path = Path.Combine(RepoRoot.Path, "src", "Content", relative);
+            File.Exists(path).Should().BeTrue($"{relative} must exist to register its assembly's validators");
+
+            SourceScan.StripCommentsAndStrings(File.ReadAllText(path))
+                .Should().Contain("AddValidatorsFromAssembly",
+                    $"{relative} is what puts its assembly's IValidator<T> registrations in the "
+                    + "container. Without it, RequestValidationBehavior resolves an empty collection "
+                    + "and every exemption this guard grants over that assembly becomes a silent lie.");
+        }
     }
 
     /// <summary>
@@ -532,24 +555,32 @@ public sealed class SecurityControlHasACallerTests
     {
         var found = new List<(string, string?)>();
 
-        // The broad predicate decides candidacy; the precise one only decides whether the type
-        // argument is known. A declaration matching the first but not the second is kept, with a null
-        // type, and therefore stays in scope.
+        // ONE pattern, with the type argument in an optional trailing group. Candidacy is everything
+        // up to the opening angle bracket; attribution is the optional group. A first cut used two
+        // separate regexes — a broad one for candidacy, a precise one re-matched against a substring
+        // — which meant editing one and not the other would let candidacy and attribution disagree
+        // silently, the exact failure this method's remarks warn about.
         //
-        // The optional (?:[\w.]+\.)? qualifier is load-bearing, exactly as it is in IsRegistrationOnly
-        // below. Without it, `class FooValidator : FluentValidation.AbstractValidator<FooConfig>` —
-        // which is how anyone disambiguates a name clash, or writes it with no using directive —
-        // matches neither pattern and is never a candidate at all. Not reported, not exempted,
-        // invisible: the same silent-invisibility failure as the *ConfigValidator.cs filename rule
-        // this replaced (#529). Latent today, since no base type in src/Content is qualified.
-        foreach (Match declaration in Regex.Matches(
-            strippedSource, @"\bclass\s+(\w+)\s*(?:<[^>]*>)?\s*:\s*(?:[\w.]+\.)?AbstractValidator\s*<"))
-        {
-            var parsed = Regex.Match(
-                strippedSource[declaration.Index..],
-                @"^class\s+\w+\s*(?:<[^>]*>)?\s*:\s*(?:[\w.]+\.)?AbstractValidator\s*<\s*([A-Za-z0-9_]+)\s*>");
+        // The fail-closed property is unchanged and is worth restating: the optional group can only
+        // match a BARE identifier followed by '>', so a qualified argument (Governance.EscalationConfig)
+        // or a generic one (Options<FooConfig>) leaves it unsuccessful, yields null, and the
+        // declaration stays a candidate and stays IN scope. Unknown means "must be bound".
+        //
+        // The optional (?:[\w.]+\.)? qualifier before AbstractValidator is load-bearing, exactly as it
+        // is in IsRegistrationOnly below. Without it,
+        // `class FooValidator : FluentValidation.AbstractValidator<FooConfig>` — how anyone
+        // disambiguates a name clash, or writes it with no using directive — matches nothing and is
+        // never a candidate at all. Not reported, not exempted, invisible: the same silent-invisibility
+        // failure as the *ConfigValidator.cs filename rule this replaced (#529).
+        var declarations = Regex.Matches(
+            strippedSource,
+            @"\bclass\s+(\w+)\s*(?:<[^>]*>)?\s*:\s*(?:[\w.]+\.)?AbstractValidator\s*<(?:\s*([A-Za-z0-9_]+)\s*>)?");
 
-            found.Add((declaration.Groups[1].Value, parsed.Success ? parsed.Groups[1].Value : null));
+        foreach (Match declaration in declarations)
+        {
+            found.Add((
+                declaration.Groups[1].Value,
+                declaration.Groups[2].Success ? declaration.Groups[2].Value : null));
         }
 
         return found;
@@ -655,12 +686,13 @@ public sealed class SecurityControlHasACallerTests
     /// </remarks>
     private static HashSet<string> FindOptionsBoundValidators(string wiring)
     {
-        const string Call = "ValidateFluentValidation";
         var bound = new HashSet<string>(StringComparer.Ordinal);
 
-        foreach (Match call in Regex.Matches(wiring, $@"\b{Call}\s*<"))
+        foreach (Match call in Regex.Matches(wiring, @"\bValidateFluentValidation\s*<"))
         {
-            var open = wiring.IndexOf('<', call.Index);
+            // The pattern ends in '<' and can contain no other, so the match's own end IS the opening
+            // bracket — no second scan for it.
+            var open = call.Index + call.Length - 1;
             var depth = 0;
             var lastTopLevelComma = -1;
             int i;
@@ -677,11 +709,10 @@ public sealed class SecurityControlHasACallerTests
             if (i >= wiring.Length || lastTopLevelComma < 0)
                 continue;
 
-            // The last top-level argument is TValidator. Strip any namespace qualifier.
+            // The last top-level argument is TValidator. Strip any namespace qualifier — LastIndexOf
+            // returns -1 when there is none, so the +1 leaves the whole string intact.
             var validator = wiring[(lastTopLevelComma + 1)..i].Trim();
-            var lastDot = validator.LastIndexOf('.');
-            if (lastDot >= 0)
-                validator = validator[(lastDot + 1)..];
+            validator = validator[(validator.LastIndexOf('.') + 1)..];
 
             if (validator.Length > 0)
                 bound.Add(validator);
@@ -827,11 +858,7 @@ public sealed class SecurityControlHasACallerTests
     {
         var contentRoot = Path.Combine(RepoRoot.Path, "src", "Content");
 
-        var production = Directory
-            .EnumerateFiles(contentRoot, "*.cs", SearchOption.AllDirectories)
-            .Where(f => !SourceScan.IsExcluded(f, contentRoot))
-            .Select(f => (Path: f, Code: SourceScan.StripCommentsAndStrings(File.ReadAllText(f))))
-            .ToArray();
+        var production = SourceScan.ReadProductionSources(contentRoot);
 
         production.Should().NotBeEmpty("the production source this reads must exist for its verdict to mean anything");
 
