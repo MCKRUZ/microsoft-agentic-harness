@@ -132,12 +132,25 @@ public sealed partial class DirectToolInvoker : IDirectToolInvoker
         RunArmedCoreAsync(
             toolName, agentId, request.Envelope,
             request.RequestedTimeout ?? config.InvocationTimeout,
-            "Direct invocation", cancellationToken,
+            TimeoutLogTemplate, FaultLogTemplate, cancellationToken,
             (admissionPipeline, scope, sw) =>
             {
                 var armed = new ArmedInvocation(request, toolName, admissionPipeline, scope, config);
                 return AuthorizeAndRunAsync(armed, sw, cancellationToken);
             });
+
+    /// <summary>
+    /// Kept as full message templates, not assembled from a shared prefix + suffix, so the rendered
+    /// text AND the structured log's message-template string (what Application Insights groups and
+    /// alerts by) are both byte-identical to what this surface has always logged — found in review on
+    /// #494: an earlier version of this refactor collapsed both surfaces onto one shared template with
+    /// the surface name demoted to a property, which keeps the rendered text but silently breaks any
+    /// saved query or alert keyed on the old, now-vanished template string.
+    /// </summary>
+    private const string TimeoutLogTemplate = "Direct invocation of {ToolName} exceeded its {Timeout} deadline";
+
+    /// <summary>See <see cref="TimeoutLogTemplate"/>'s remarks — the fault-branch counterpart.</summary>
+    private const string FaultLogTemplate = "Direct invocation of {ToolName} threw";
 
     /// <summary>
     /// The arm/authorize/catch skeleton every direct-invocation surface runs, whatever kind of tool
@@ -156,11 +169,13 @@ public sealed partial class DirectToolInvoker : IDirectToolInvoker
     /// <paramref name="body"/>'s own concern, since only it knows where the linked deadline token
     /// needs to reach.
     /// </param>
-    /// <param name="logPrefix">
-    /// Distinguishes the keyed-DI and MCP surfaces in the log ("Direct invocation" vs "Direct MCP
-    /// invocation") — the one difference between the two catch ladders previously required two
-    /// hand-copied blocks to express.
+    /// <param name="timeoutLogTemplate">
+    /// The caller's own full message template for the deadline-timeout warning, e.g.
+    /// <see cref="TimeoutLogTemplate"/> — a complete template, not a prefix this method assembles
+    /// into a shared one, so the structured log's message-template string (what a log backend groups
+    /// and alerts by) stays exactly what each surface has always emitted.
     /// </param>
+    /// <param name="faultLogTemplate">The caller's own full message template for the fault-branch error, e.g. <see cref="FaultLogTemplate"/>.</param>
     /// <param name="cancellationToken">The caller's own token — see the first catch arm for why it
     /// alone distinguishes "the caller went away" from "the deadline elapsed".</param>
     /// <param name="body">
@@ -173,7 +188,8 @@ public sealed partial class DirectToolInvoker : IDirectToolInvoker
         string agentId,
         Domain.AI.Bundles.CapabilityEnvelope envelope,
         TimeSpan effectiveTimeout,
-        string logPrefix,
+        string timeoutLogTemplate,
+        string faultLogTemplate,
         CancellationToken cancellationToken,
         Func<IToolCallAdmissionPipeline, AsyncServiceScope, Stopwatch, Task<DirectToolInvocationOutcome>> body)
     {
@@ -211,9 +227,7 @@ public sealed partial class DirectToolInvoker : IDirectToolInvoker
         catch (OperationCanceledException)
         {
             sw.Stop();
-            _logger.LogWarning(
-                "{LogPrefix} of {ToolName} exceeded its {Timeout} deadline",
-                logPrefix, toolName, effectiveTimeout);
+            _logger.LogWarning(timeoutLogTemplate, toolName, effectiveTimeout);
             return DirectToolInvocationOutcome.Refused(
                 DirectToolInvocationStatus.TimedOut, "The tool did not complete within its deadline.", sw.Elapsed);
         }
@@ -223,7 +237,7 @@ public sealed partial class DirectToolInvoker : IDirectToolInvoker
             // Full detail stays in the structured log. Tool and infrastructure exceptions carry host
             // paths, connection strings and container internals, and this response crosses a trust
             // boundary — so the caller gets a stable code and nothing derived from the exception.
-            _logger.LogError(ex, "{LogPrefix} of {ToolName} threw", logPrefix, toolName);
+            _logger.LogError(ex, faultLogTemplate, toolName);
             return DirectToolInvocationOutcome.Refused(
                 DirectToolInvocationStatus.Faulted, DirectToolInvocationErrors.Failed, sw.Elapsed);
         }

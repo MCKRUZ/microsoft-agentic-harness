@@ -141,6 +141,17 @@ public sealed partial class DirectToolInvoker
         return null;
     }
 
+    /// <summary>
+    /// The full message templates this surface has always logged — kept distinct from the keyed-DI
+    /// path's own <c>TimeoutLogTemplate</c>/<c>FaultLogTemplate</c> rather than assembled from a
+    /// shared prefix, so a log backend grouping by message template still sees two surfaces, not one
+    /// with a property tacked on. See <c>DirectToolInvoker.TimeoutLogTemplate</c>'s remarks.
+    /// </summary>
+    private const string McpTimeoutLogTemplate = "Direct MCP invocation of {ToolName} exceeded its {Timeout} deadline";
+
+    /// <summary>See <see cref="McpTimeoutLogTemplate"/>'s remarks — the fault-branch counterpart.</summary>
+    private const string McpFaultLogTemplate = "Direct MCP invocation of {ToolName} threw";
+
     /// <summary>Arms the invocation and runs it, sharing <see cref="DirectToolInvoker.RunArmedCoreAsync"/>
     /// with the keyed-DI path (#494) rather than mirroring it by hand.</summary>
     private Task<DirectToolInvocationOutcome> RunMcpArmedAsync(
@@ -152,7 +163,7 @@ public sealed partial class DirectToolInvoker
         RunArmedCoreAsync(
             request.ToolName, agentId, request.Envelope,
             request.RequestedTimeout ?? config.InvocationTimeout,
-            "Direct MCP invocation", cancellationToken,
+            McpTimeoutLogTemplate, McpFaultLogTemplate, cancellationToken,
             (admissionPipeline, _, sw) =>
                 AuthorizeAndRunMcpAsync(request, tool, admissionPipeline, config, sw, cancellationToken));
 
