@@ -278,7 +278,7 @@ public sealed class SecurityControlHasACallerTests
     /// assumed but asserted by <see cref="MediatRValidationBehavior_IsRegisteredAsAnOpenGenericPipelineBehavior"/>,
     /// because it is the claim 58 exemptions rest on. Third, a consumer resolves
     /// <c>IValidator&lt;T&gt;</c> itself and applies it, in which case the validator's own name appears
-    /// in no wiring file while it runs on every call. The five planner step-config validators are the
+    /// in no wiring file while it runs on every call. The six planner step-config validators are the
     /// third shape:
     /// <c>PlanValidator.ValidateStepConfigurations</c> resolves and applies each one against every
     /// step of every plan. <c>PlanValidatorTests</c> proves the dispatch for three
@@ -747,18 +747,22 @@ public sealed class SecurityControlHasACallerTests
     /// withdrawn on the claim that it "could not fail", which was false: withdrawing it removed
     /// real detection for four of five, including <c>ConditionalBranchConfig</c>, which no other
     /// test guards. The restored check anchors on the dispatch-arm shape
-    /// (<c>{Type} config =&gt; await ValidateConfig(</c>), which matches exactly the five arms and
-    /// nothing else — verified — and its mutation test deletes the <c>SubPlanConfig</c> arm
-    /// specifically, because that is the type with a second mention. The rest of the limits are
+    /// (<c>{Type} config =&gt; await ValidateConfig(</c>) rather than on the type's name, which
+    /// currently matches exactly six arms and nothing else — verified — and its mutation test
+    /// deletes the <c>SubPlanConfig</c> arm specifically, because that is the type with a second
+    /// mention. The regex originally required its captured type name to end in "Config"; #526
+    /// dropped that requirement after finding it blind to <c>RetrievalStepConfiguration</c>, whose
+    /// name ends in "Configuration" — a live blind spot in the same family this file's history is
+    /// otherwise all about, found by adding a type rather than by review. The rest of the limits are
     /// tracked as #528.
     /// </para>
     /// <para>
-    /// What the exemption does not prove is that the five are <em>registered</em>.
-    /// <c>PlanValidator.ValidateConfig</c>
-    /// fails open when no <c>IValidator&lt;T&gt;</c> resolves (#526), and their only registration
-    /// is <c>AddValidatorsFromAssembly</c> on Application.Core; real-container resolution is tested
-    /// for two of the five. The exemption says a consumer <em>would call</em> each one — not that
-    /// one exists to be called.
+    /// <c>PlanValidator.ValidateConfig</c> used to fail open when no <c>IValidator&lt;T&gt;</c>
+    /// resolved; #526 made that fail closed, and
+    /// <c>PlannerStepConfigValidatorWiringTests.RealContainer_ResolvesAValidatorForEveryKnownStepConfigurationType</c>
+    /// now resolves all six from a real container built the way the composition root builds it — not
+    /// mocked, not partial — so this exemption list and that test together prove both halves: a
+    /// consumer would call each one, and each one exists to be called.
     /// </para>
     /// <para>
     /// One limit remains, tracked in #528: entries are unqualified type names, so a second
@@ -770,12 +774,15 @@ public sealed class SecurityControlHasACallerTests
     /// </remarks>
     private static readonly string[] ConsumerResolvedValidatedTypes =
     [
-        // All five: PlanValidator.ValidateStepConfigurations dispatches each to ValidateConfig<T>.
+        // All six: PlanValidator.ValidateStepConfigurations dispatches each to ValidateConfig<T>.
+        // RetrievalStepConfiguration added by #526 — it had no switch arm and no validator at all
+        // before that fix, which is the reason the anchor below no longer requires a "Config" suffix.
         "LlmCallConfig",
         "ToolUseConfig",
         "HumanGateConfig",
         "ConditionalBranchConfig",
-        "SubPlanConfig"
+        "SubPlanConfig",
+        "RetrievalStepConfiguration"
     ];
 
     /// <summary>
@@ -797,7 +804,15 @@ public sealed class SecurityControlHasACallerTests
         File.Exists(planValidator).Should().BeTrue("the consumer that justifies every exemption must exist");
 
         var source = SourceScan.StripCommentsAndStrings(File.ReadAllText(planValidator));
-        var dispatched = Regex.Matches(source, @"\b(\w+Config)\s+\w+\s*=>\s*await\s+ValidateConfig\(")
+
+        // Deliberately NOT anchored on a "Config" type-name suffix. #526 added
+        // RetrievalStepConfiguration, whose name ends in "Configuration" — a suffix-anchored version
+        // of this pattern would have been silently blind to it in exactly the way the file's own
+        // remarks describe for the pre-2026-08-26 candidacy rule elsewhere in this suite: the guard
+        // would report nothing wrong while a real arm went unwatched. The dispatch SHAPE
+        // ({Type} config => await ValidateConfig() is what identifies an arm; the type's name is not
+        // load-bearing and must never be part of the anchor again.
+        var dispatched = Regex.Matches(source, @"\b(\w+)\s+\w+\s*=>\s*await\s+ValidateConfig\(")
             .Select(m => m.Groups[1].Value)
             .ToHashSet(StringComparer.Ordinal);
 

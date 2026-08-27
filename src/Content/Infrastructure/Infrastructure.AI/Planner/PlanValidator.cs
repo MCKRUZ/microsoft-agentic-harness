@@ -218,6 +218,7 @@ public sealed class PlanValidator : IPlanValidator
                 HumanGateConfig config => await ValidateConfig(config, ct),
                 ConditionalBranchConfig config => await ValidateConfig(config, ct),
                 SubPlanConfig config => await ValidateConfig(config, ct),
+                RetrievalStepConfiguration config => await ValidateConfig(config, ct),
                 _ => LogUnknownConfigType(step)
             };
 
@@ -226,14 +227,60 @@ public sealed class PlanValidator : IPlanValidator
         }
     }
 
+    /// <summary>
+    /// A <see cref="StepConfiguration"/> subtype this switch does not recognize. Fails closed (#526).
+    /// </summary>
+    /// <remarks>
+    /// Until this fix, this branch was NOT purely theoretical — it was live for every retrieval step.
+    /// <see cref="StepConfiguration"/> has six <c>[JsonDerivedType]</c> subtypes, and this switch had
+    /// arms for only five; <see cref="RetrievalStepConfiguration"/> fell through to here for as long
+    /// as <see cref="Domain.AI.Planner.StepType.Retrieval"/> has existed, with no validator anywhere
+    /// in the codebase to catch it even if it hadn't. Failing closed on the general "unrecognized
+    /// subtype" case without first giving that type a switch arm and a validator would have turned
+    /// every retrieval-step plan into a rejection instead of closing the actual gap — so both were
+    /// added in the same change (<see cref="Application.Core.Validation.Planner.RetrievalStepConfigValidator"/>).
+    /// What reaches this branch
+    /// now is only a subtype genuinely absent from the switch — a composition gap from a future
+    /// <see cref="StepConfiguration"/> subtype added without a matching arm, exactly the shape
+    /// <see cref="ValidateConfig{T}"/>'s remarks describe for a missing validator registration.
+    /// </remarks>
     private List<string> LogUnknownConfigType(PlanStep step)
     {
         _logger.LogWarning(
             "No validator registered for StepConfiguration type '{ConfigType}' on step '{StepName}' ({StepId})",
             step.Configuration.GetType().Name, step.Name, step.Id.Value);
-        return [];
+        return [
+            $"No validator is registered for step configuration type '{step.Configuration.GetType().Name}' " +
+            "— this step cannot be validated and the plan is rejected rather than accepted unchecked."
+        ];
     }
 
+    /// <summary>
+    /// Resolves and runs the FluentValidation validator for one step's configuration.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>Fails closed when no validator is registered (#526).</strong> All five step-config
+    /// validators reach this method's caller through one mechanism — <c>AddValidatorsFromAssembly</c>
+    /// on the <c>Application.Core</c> assembly, unconditional in every DI composition this repo ships
+    /// (verified: no <c>if</c>/feature flag guards any of the three <c>AddValidatorsFromAssembly</c>
+    /// call sites) — so an unresolvable validator for a known step type is not a host that legitimately
+    /// runs without checking; it is that mechanism having broken. An assembly split, a trimmed publish,
+    /// a refactor that moves the validators' folder out of the scanned assembly, or a consumer who
+    /// composes their own container without this registration would all reach this branch, silently,
+    /// with no test failing.
+    /// </para>
+    /// <para>
+    /// The prior behaviour returned an empty error list on a missing validator — indistinguishable
+    /// from "validated, and clean" to <see cref="ValidateStepConfigurations"/>, which only ever sees
+    /// the returned list, never whether a validator ran. Returning one error instead makes that gap
+    /// visible in exactly the channel a caller is already watching, rather than adding a second
+    /// channel (a distinct result type) that every caller would additionally have to check. Complemented
+    /// by <c>PlannerStepConfigValidatorWiringTests</c>, which resolves all five step-config validators
+    /// from the real composition root so the scan breaking fails CI directly rather than only at the
+    /// point some future plan happens to exercise this fallback.
+    /// </para>
+    /// </remarks>
     private async Task<List<string>> ValidateConfig<T>(T config, CancellationToken ct)
         where T : StepConfiguration
     {
@@ -241,9 +288,13 @@ public sealed class PlanValidator : IPlanValidator
         if (validator is null)
         {
             _logger.LogWarning(
-                "No validator registered for StepConfiguration type '{ConfigType}'; step configurations of this type will pass validation without checking",
+                "No validator registered for StepConfiguration type '{ConfigType}'; the plan is being " +
+                "rejected rather than accepted unchecked",
                 typeof(T).Name);
-            return [];
+            return [
+                $"No validator is registered for step configuration type '{typeof(T).Name}' " +
+                "— this step cannot be validated and the plan is rejected rather than accepted unchecked."
+            ];
         }
 
         var result = await validator.ValidateAsync(config, ct);
