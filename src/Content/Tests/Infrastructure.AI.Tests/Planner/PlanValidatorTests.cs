@@ -13,6 +13,17 @@ namespace Infrastructure.AI.Tests.Planner;
 
 public sealed class PlanValidatorTests
 {
+    /// <summary>
+    /// A validator whose service provider resolves nothing — every <c>IValidator&lt;T&gt;</c> lookup
+    /// returns null. Since #526 made <c>ValidateConfig&lt;T&gt;</c> fail closed, this now genuinely
+    /// rejects every step it validates; it is the right factory only for tests asserting a plan is
+    /// invalid for a reason that has nothing to do with step-config content (an empty plan, a cycle,
+    /// a dangling edge reference) where that structural check runs, and fails the plan, before step
+    /// config validation would ever matter. A test asserting <c>IsSuccess</c> should be
+    /// <see langword="true"/> needs <see cref="CreateValidatorWithConfigValidators"/> instead — four
+    /// tests here used to reach <c>IsSuccess: true</c> through this factory by relying on the
+    /// pre-#526 fail-open bug rather than through anything that actually validated their steps.
+    /// </summary>
     private static PlanValidator CreateValidator(IServiceProvider? serviceProvider = null)
     {
         return new PlanValidator(
@@ -90,9 +101,59 @@ public sealed class PlanValidatorTests
     }
 
     [Fact]
+    public async Task Validate_StepConfigValidatorCannotBeResolved_RejectsThePlan()
+    {
+        // #526's actual regression coverage. The four tests below prove ValidateConfig<T> works
+        // WHEN a validator resolves; this proves what it does when one does not. Before the fix, a
+        // missing validator returned an empty error list — indistinguishable from "validated, clean"
+        // — and every one of the four tests below would have kept passing regardless, because none
+        // of them exercised this branch. CreateValidator() with no service provider gives the loosest
+        // possible mock: every IValidator<T> lookup returns null, which is the shape a broken
+        // AddValidatorsFromAssembly scan actually produces.
+        var sut = CreateValidator();
+        var step = CreateStep(name: "OnlyStep");
+        var graph = CreateGraph([step]);
+
+        var result = await sut.ValidateAsync(graph, CancellationToken.None);
+
+        result.IsSuccess.Should().BeFalse(
+            "a step whose configuration could not be checked must never be reported the same way as " +
+            "one that was checked and passed");
+        result.Errors.Should().Contain(e => e.Contains("No validator is registered"));
+    }
+
+    [Fact]
+    public async Task Validate_UnrecognizedConfigSubtype_RejectsThePlan()
+    {
+        // The second fail-open path #526 closed — LogUnknownConfigType, reached when a
+        // StepConfiguration subtype has no arm in ValidateStepConfigurations' switch at all (not
+        // just no registered validator for a known one). RetrievalStepConfiguration lived here for
+        // real, silently, before this fix added it a switch arm and a validator; this test proves the
+        // fallback for whatever the NEXT unlisted subtype turns out to be.
+        var sut = CreateValidatorWithConfigValidators();
+        var step = CreateStep(name: "OnlyStep", config: new UnrecognizedTestConfig());
+        var graph = CreateGraph([step]);
+
+        var result = await sut.ValidateAsync(graph, CancellationToken.None);
+
+        result.IsSuccess.Should().BeFalse(
+            "a step configuration type this switch does not recognize must never be reported the " +
+            "same way as one that was checked and passed");
+        result.Errors.Should().Contain(e => e.Contains("No validator is registered"));
+    }
+
+    /// <summary>
+    /// A <see cref="StepConfiguration"/> subtype deliberately absent from
+    /// <c>PlanValidator.ValidateStepConfigurations</c>'s switch, so a test can exercise the
+    /// <c>_ =&gt; LogUnknownConfigType(step)</c> fallback without depending on a real subtype someday
+    /// gaining an arm and silently retiring the coverage.
+    /// </summary>
+    private sealed record UnrecognizedTestConfig : StepConfiguration;
+
+    [Fact]
     public async Task Validate_SingleStepGraph_ReturnsSuccess()
     {
-        var sut = CreateValidator();
+        var sut = CreateValidatorWithConfigValidators();
         var step = CreateStep(name: "OnlyStep");
         var graph = CreateGraph([step]);
 
@@ -105,7 +166,7 @@ public sealed class PlanValidatorTests
     [Fact]
     public async Task Validate_AcyclicGraph_ReturnsSuccess()
     {
-        var sut = CreateValidator();
+        var sut = CreateValidatorWithConfigValidators();
         var a = CreateStep(name: "A");
         var b = CreateStep(name: "B");
         var c = CreateStep(name: "C");
@@ -270,7 +331,7 @@ public sealed class PlanValidatorTests
     [Fact]
     public async Task Validate_ConditionalBranch_BothEdgesPresent_ReturnsSuccess()
     {
-        var sut = CreateValidator();
+        var sut = CreateValidatorWithConfigValidators();
         var root = CreateStep(name: "Root");
         var trueTarget = CreateStep(name: "TrueTarget");
         var falseTarget = CreateStep(name: "FalseTarget");
@@ -443,12 +504,37 @@ public sealed class PlanValidatorTests
         result.Errors.Should().Contain(e => e.Contains("ModelDeploymentKey"));
     }
 
+    [Fact]
+    public async Task Validate_InvalidRetrievalStepConfig_WithRealDiContainer_ReturnsFail()
+    {
+        // Same shape as Validate_InvalidLlmCallConfig_WithRealDiContainer_ReturnsFail, for the
+        // validator #526 added. Proves the real container resolves RetrievalStepConfigValidator AND
+        // that its rule actually fires — PlannerStepConfigValidatorWiringTests only proves resolution.
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddApplicationCoreDependencies();
+        using var provider = services.BuildServiceProvider();
+        using var scope = provider.CreateScope();
+
+        var sut = new PlanValidator(scope.ServiceProvider, NullLogger<PlanValidator>.Instance);
+        var step = CreateStep(
+            name: "BadRetrieval",
+            type: StepType.Retrieval,
+            config: new RetrievalStepConfiguration { Query = "   " });
+        var graph = CreateGraph([step]);
+
+        var result = await sut.ValidateAsync(graph, CancellationToken.None);
+
+        result.IsSuccess.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.Contains("Query"));
+    }
+
     // --- Resource Estimation ---
 
     [Fact]
     public async Task Validate_ResourceEstimation_ReturnsCriticalPathDuration()
     {
-        var sut = CreateValidator();
+        var sut = CreateValidatorWithConfigValidators();
         var a = CreateStep(name: "A", timeout: TimeSpan.FromSeconds(10));
         var b = CreateStep(name: "B", timeout: TimeSpan.FromSeconds(20));
         var c = CreateStep(name: "C", timeout: TimeSpan.FromSeconds(5));
