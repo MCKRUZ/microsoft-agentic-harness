@@ -4,6 +4,7 @@ using Application.AI.Common.Interfaces.Telemetry;
 using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Services.Governance;
 using Domain.AI.Governance;
+using Domain.Common.Config;
 using Domain.Common.Config.AI;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -32,7 +33,8 @@ internal static class AdmissionHarness
         IAgentToolAuthorizationGate? authorizationGate = null,
         ICallOnceGate? callOnceGate = null,
         IGovernanceTraceRecorder? trace = null,
-        ICompositeResponseSanitizer? sanitizer = null) =>
+        ICompositeResponseSanitizer? sanitizer = null,
+        int? outputCeiling = null) =>
         new(authorizationGate ?? PermissiveAuthorizationGate(),
             governor ?? PermissiveGovernor(),
             classificationGate ?? PermissiveClassificationGate(),
@@ -43,7 +45,27 @@ internal static class AdmissionHarness
             Mock.Of<IApprovalExecutionReporter>(),
             sanitizer ?? PermissiveSanitizer(),
             PermissiveRedactionFilter(),
+            Config(outputCeiling),
             NullLogger<ToolCallAdmissionPipeline>.Instance);
+
+    /// <summary>
+    /// Config carrying the tool-output ceiling (#532), defaulting to the shipped
+    /// <c>PerResultCharLimit</c> so a test that does not care about bounding is unaffected by it.
+    /// </summary>
+    /// <remarks>
+    /// A test that DOES care passes a small ceiling rather than building a 50,000-character result:
+    /// the property under test is that the budget is enforced, not the size of the default.
+    /// </remarks>
+    public static IOptionsMonitor<AppConfig> Config(int? outputCeiling = null)
+    {
+        var config = new AppConfig();
+        if (outputCeiling is { } ceiling)
+            config.AI.ContextManagement.ToolResultStorage.PerResultCharLimit = ceiling;
+
+        var monitor = new Mock<IOptionsMonitor<AppConfig>>();
+        monitor.SetupGet(m => m.CurrentValue).Returns(config);
+        return monitor.Object;
+    }
 
     /// <summary>A sanitizer that returns content unchanged — the answer a real one gives to clean text.</summary>
     public static ICompositeResponseSanitizer PermissiveSanitizer()

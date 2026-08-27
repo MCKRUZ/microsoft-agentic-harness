@@ -277,7 +277,10 @@ public sealed partial class DirectToolInvoker
         if (failureText is not null)
         {
             var (preCutError, _) = PreCutForScrub(failureText, ceiling);
-            if (!admissionPipeline.TryApplyTextOutputPolicy(admission, toolName, preCutError, out var admittedError))
+            // Truncation discarded: the outcome carries no ErrorTruncated field to report it on,
+            // exactly as the ScrubAndBound below discards its own.
+            if (!admissionPipeline.TryApplyTextOutputPolicy(
+                    admission, toolName, preCutError, out var admittedError, out _))
             {
                 return DirectToolInvocationOutcome.Refused(
                     DirectToolInvocationStatus.Denied, GovernanceDenials.NotPermitted(toolName), duration);
@@ -295,14 +298,18 @@ public sealed partial class DirectToolInvoker
         var raw = ToolResultText.ExtractText(rawResult);
         var (preCut, droppedByPreCut) = PreCutForScrub(raw, ceiling);
 
-        if (!admissionPipeline.TryApplyTextOutputPolicy(admission, toolName, preCut, out var admitted))
+        if (!admissionPipeline.TryApplyTextOutputPolicy(
+                admission, toolName, preCut, out var admitted, out var truncatedByPipeline))
         {
             return DirectToolInvocationOutcome.Refused(
                 DirectToolInvocationStatus.Denied, GovernanceDenials.NotPermitted(toolName), duration);
         }
 
         var (output, truncatedByOwnScrub) = ScrubAndBound(admitted ?? string.Empty, ceiling, toolName);
-        var truncated = droppedByPreCut || truncatedByOwnScrub;
+
+        // truncatedByPipeline is the third term - see the sibling in DirectToolInvoker.Response.cs
+        // for why the other two cannot see the admission pipeline's own, smaller cut (#532).
+        var truncated = droppedByPreCut || truncatedByPipeline || truncatedByOwnScrub;
 
         return new DirectToolInvocationOutcome
         {

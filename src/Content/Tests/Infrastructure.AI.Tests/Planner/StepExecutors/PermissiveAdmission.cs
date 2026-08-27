@@ -59,6 +59,8 @@ internal static class PermissiveAdmission
             Mock.Of<IApprovalExecutionReporter>(),
             PermissiveSanitizer(),
             PermissiveRedactionFilter(),
+            Mock.Of<IOptionsMonitor<Domain.Common.Config.AppConfig>>(
+                m => m.CurrentValue == new Domain.Common.Config.AppConfig()),
             NullLogger<ToolCallAdmissionPipeline>.Instance);
 
     /// <summary>A sanitizer that returns content unchanged — the answer a real one gives to clean text.</summary>

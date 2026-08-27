@@ -13,6 +13,7 @@ using Domain.AI.Sandbox;
 using Infrastructure.AI.Planner.StepExecutors;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using Moq;
 using Xunit;
 
@@ -510,6 +511,8 @@ public sealed class ToolUseStepExecutorTests
             _executionReporter.Object,
             _responseSanitizer.Object,
             PermissiveAdmission.PermissiveRedactionFilter(),
+            Mock.Of<IOptionsMonitor<Domain.Common.Config.AppConfig>>(
+                m => m.CurrentValue == new Domain.Common.Config.AppConfig()),
             NullLogger<ToolCallAdmissionPipeline>.Instance);
 
     /// <summary>

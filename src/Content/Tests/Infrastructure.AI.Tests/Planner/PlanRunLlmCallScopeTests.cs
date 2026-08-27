@@ -164,6 +164,14 @@ public sealed class PlanRunLlmCallScopeTests
         // composition which forgets it fails at resolution instead of running unguarded. The real
         // chain over the gates above, built the same way the production root builds it — a mock of
         // the chain would not exercise the code an enveloped run actually goes through.
+        // #532: the admission chain bounds tool output and reads its ceiling from AppConfig,
+        // so it requires one. Registered rather than defaulted inside AddToolCallAdmissionChain:
+        // a host that forgets to bind AppConfig should fail loudly at container build, which is
+        // what ValidateOnBuildSweepTests exists to catch — a TryAdd default there would make that
+        // guard structurally unable to see it.
+        services.AddSingleton<IOptionsMonitor<Domain.Common.Config.AppConfig>>(
+            Mock.Of<IOptionsMonitor<Domain.Common.Config.AppConfig>>(
+                m => m.CurrentValue == new Domain.Common.Config.AppConfig()));
         services.AddToolCallAdmissionChain();
         services.AddSingleton(Mock.Of<IPlanProgressNotifier>());
         services.AddScoped(_ => new PlanExecutionContext());

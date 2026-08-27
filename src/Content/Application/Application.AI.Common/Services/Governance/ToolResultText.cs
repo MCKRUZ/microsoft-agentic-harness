@@ -75,6 +75,54 @@ internal static class ToolResultText
         Transform(result, text => redactionFilter.Redact(SanitizeText(text, sanitizer, toolName), RedactionCategories.All));
 
     /// <summary>
+    /// Cuts the free text carried by <paramref name="result"/> so that its <strong>total</strong>
+    /// across every text-carrying block is at most <paramref name="ceiling"/> characters, preserving
+    /// shape exactly as <see cref="Sanitize"/> does.
+    /// </summary>
+    /// <param name="result">The tool result to bound.</param>
+    /// <param name="ceiling">Maximum total characters of free text, inclusive of the marker.</param>
+    /// <param name="marker">Appended where the cut lands, so the cut is visible to the model.</param>
+    /// <remarks>
+    /// <para>
+    /// <strong>The budget spans blocks; it is not applied per block.</strong> A multi-content-block
+    /// result — what an MCP tool returns — would otherwise admit <c>ceiling x blockCount</c>
+    /// characters, which bounds nothing on the shape that most needs bounding. Blocks are walked in
+    /// order and each takes what remains; once the budget is spent, later blocks come back empty. The
+    /// marker sits at the cut, so the model is told the output was truncated exactly once rather than
+    /// once per block.
+    /// </para>
+    /// <para>
+    /// Delegates to <see cref="BoundedText.Cap"/> rather than slicing, so this inherits the
+    /// surrogate-pair guarantee every other trust-boundary truncation site in the repo relies on
+    /// (#467/#470) — a cut that would land inside a surrogate pair backs off by one instead.
+    /// </para>
+    /// <para>
+    /// Structured values are untouched for the same reason <see cref="Sanitize"/> leaves them alone:
+    /// a serialized result's <c>structuredContent</c> is typed JSON, not free text, and cutting it
+    /// mid-value produces something the model mis-parses rather than something it reads as truncated.
+    /// Bounding a result whose size lives entirely in structured content is therefore out of scope
+    /// here and belongs to whatever budgets a whole turn (#522).
+    /// </para>
+    /// </remarks>
+    public static object? Bound(object? result, int ceiling, string marker)
+    {
+        var remaining = ceiling;
+
+        return Transform(result, text =>
+        {
+            if (text.Length <= remaining)
+            {
+                remaining -= text.Length;
+                return text;
+            }
+
+            var (bounded, _) = BoundedText.Cap(text, remaining, marker);
+            remaining = 0;
+            return bounded;
+        });
+    }
+
+    /// <summary>
     /// Applies <paramref name="transform"/> to the free text carried by <paramref name="result"/>,
     /// preserving whichever of the five recognized shapes it arrived in, and returns
     /// <paramref name="result"/> itself — not a reconstructed equivalent — whenever the transform left

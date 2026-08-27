@@ -151,8 +151,28 @@ public interface IToolCallAdmissionPipeline
     /// calling this method — caller discipline standing in for a guarantee that now lives here instead
     /// (#479).
     /// </remarks>
+    /// <param name="wasTruncated">
+    /// <see langword="true"/> when this method <em>itself</em> cut <paramref name="content"/> to fit
+    /// the tool-output ceiling (#532). Callers that publish a "was this cut short?" signal across a
+    /// boundary must OR this into it.
+    /// <para>
+    /// It is an out-parameter rather than something a caller can infer, because inferring it requires
+    /// the caller to already know this pipeline's ceiling and to assume its own is not larger. The
+    /// Execution API assumed exactly that and was wrong on shipped defaults: its ceiling is 262,144
+    /// characters, the pipeline's is 50,000, so for every output between those two numbers its own
+    /// before-and-after measurements both saw nothing to cut while the middle step had already
+    /// removed four fifths of the body — and it answered <c>OutputTruncated = false</c> on a prefix.
+    /// A caller that cannot tell a complete result from a prefix parses the prefix as complete.
+    /// Reporting the fact alongside the value is what makes that unrepresentable; two components
+    /// agreeing on a number is not, because either can change its number alone.
+    /// </para>
+    /// </param>
     bool TryApplyTextOutputPolicy(
-        ToolCallAdmission admission, string toolName, string? content, out string? result);
+        ToolCallAdmission admission,
+        string toolName,
+        string? content,
+        out string? result,
+        out bool wasTruncated);
 
     /// <summary>
     /// Reports what happened when a call this pipeline approved was actually carried out, closing

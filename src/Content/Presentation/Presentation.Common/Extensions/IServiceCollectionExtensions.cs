@@ -241,6 +241,16 @@ public static class IServiceCollectionExtensions
                 PromptCompositionConfigValidator>()
             .ValidateOnStart();
 
+        // PerResultCharLimit is now the ceiling every tool result is cut to before the model sees it
+        // (#532), not just the spill-to-disk threshold it used to be. At zero or below that cut takes
+        // everything, so every tool would return an empty string to the model with nothing logged.
+        services.AddOptions<Domain.Common.Config.AI.ContextManagement.ToolResultStorageConfig>()
+            .Bind(configuration.GetSection("AppConfig:AI:ContextManagement:ToolResultStorage"))
+            .ValidateFluentValidation<
+                Domain.Common.Config.AI.ContextManagement.ToolResultStorageConfig,
+                ToolResultStorageConfigValidator>()
+            .ValidateOnStart();
+
         // Bundle-execution knobs (archive limits, handle/run/stream TTLs, cleanup interval, per-caller
         // stream cap). All rules are unconditional positivity checks and the class defaults are all
         // positive, so hosts that omit the section (every host except the bundle API) keep booting on

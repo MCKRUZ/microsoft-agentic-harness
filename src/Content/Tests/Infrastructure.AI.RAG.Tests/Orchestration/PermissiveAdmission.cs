@@ -88,6 +88,10 @@ internal static class PermissiveAdmission
             Mock.Of<IApprovalExecutionReporter>(),
             sanitizer.Object,
             redactionFilter.Object,
+            // #532: the shipped PerResultCharLimit, so these orchestration tests see the real default
+            // ceiling rather than an artificial one.
+            Mock.Of<IOptionsMonitor<Domain.Common.Config.AppConfig>>(
+                m => m.CurrentValue == new Domain.Common.Config.AppConfig()),
             NullLogger<ToolCallAdmissionPipeline>.Instance);
     }
 }
