@@ -421,6 +421,89 @@ public sealed class ToolDiagnosticsMiddlewareTests
             "new claim — a process-lived instance must not refuse the second recording forever");
     }
 
+    [Fact]
+    public async Task InvokeNext_UnarmedWithNoTraceWriter_UsageCaptureIsNeverGatedByTheFallbackSet()
+    {
+        // The exact hole the local grader gate found on the previous version of this fix: the
+        // fallback dedup, meant to protect trace-write eligibility, was accidentally gating
+        // LlmUsageCapture too — a per-request AsyncLocal capture that this fix had no reason to
+        // touch at all. Before #505, an unarmed caller with no trace writer recorded every
+        // candidate into usage-capture unconditionally, every round; this proves that is still
+        // true after the fix, not merely for one round but across the repeated-id shape a real
+        // multi-round turn produces.
+        var innerClient = MakeChatClient();
+        var middleware = new ToolDiagnosticsMiddleware(
+            innerClient.Object, NullLogger<ToolDiagnosticsMiddleware>.Instance);
+        // No traceWriter, matching an unarmed host with ExecutionTracingEnabled off — the shipped
+        // default this claim is specifically about.
+
+        var usageCapture = new Mock<ILlmUsageCapture>();
+        LlmUsageCapture.Current = usageCapture.Object;
+        try
+        {
+            ReplayedToolCallScope.Current.Should().BeNull("this test is only meaningful unarmed");
+
+            var roundOne = new ChatMessage[]
+            {
+                new(ChatRole.Tool, [new FunctionResultContent("call-1", "first result")])
+            };
+            var roundTwo = new ChatMessage[]
+            {
+                new(ChatRole.Tool, [new FunctionResultContent("call-1", "first result")]),
+                new(ChatRole.Tool, [new FunctionResultContent("call-2", "second result")])
+            };
+
+            await middleware.GetResponseAsync(roundOne, null, CancellationToken.None);
+            await middleware.GetResponseAsync(roundTwo, null, CancellationToken.None);
+
+            usageCapture.Verify(
+                c => c.RecordToolResult("call-1", It.IsAny<string>()),
+                Times.Exactly(2),
+                "call-1 appears in both rounds' cumulative inbound list, and usage-capture must see " +
+                "it both times — the trace-only fallback dedup must never suppress this, unarmed or " +
+                "not, tracing on or off");
+            usageCapture.Verify(
+                c => c.RecordToolResult("call-2", It.IsAny<string>()),
+                Times.Once);
+        }
+        finally
+        {
+            LlmUsageCapture.Current = null;
+        }
+    }
+
+    [Fact]
+    public async Task InvokeNext_UnarmedWithNoTraceWriter_NeverConsumesTheFallbackClaimSet()
+    {
+        // The other half of the same fix, and what makes the "#541 is dormant unless
+        // ExecutionTracingEnabled is on" claim true by construction rather than merely asserted: a
+        // host with tracing off must never touch _intraRunToolCallClaims at all.
+        //
+        // Asserted directly on FallbackClaimCount rather than inferred from an absence of effect.
+        // Nothing downstream ever reads a claim this set makes on an untraced instance — the
+        // `_traceWriter is null` check that already gates every trace-append would suppress output
+        // regardless of whether the set were consulted first, so a correctness-only assertion (every
+        // id still reaches usage-capture) cannot distinguish "consumed but harmless" from "never
+        // touched": both look identical from outside. Confirmed by measurement, not assumed — the
+        // first version of this test asserted only the correctness-only shape and passed unchanged
+        // when the `_traceWriter is not null &&` short-circuit was removed from the claim step.
+        var innerClient = MakeChatClient();
+        var middleware = new ToolDiagnosticsMiddleware(
+            innerClient.Object, NullLogger<ToolDiagnosticsMiddleware>.Instance);
+
+        var manyRounds = Enumerable.Range(0, ToolDiagnosticsMiddleware.MaxFallbackClaimEntries + 10)
+            .Select(i => new ChatMessage(ChatRole.Tool, [new FunctionResultContent($"call-{i}", "result")]))
+            .ToArray();
+
+        await middleware.GetResponseAsync(manyRounds, null, CancellationToken.None);
+
+        middleware.FallbackClaimCount.Should().Be(0,
+            "an untraced instance must never touch its own fallback claim set — there is nothing " +
+            "downstream that would ever consult a claim made here, so any consumption is pure waste " +
+            "at best and, on a process-lived FoundryHost instance, unnecessary lock contention with " +
+            "every other concurrent request at worst");
+    }
+
     // --- Tool deduplication ---
 
     [Fact]

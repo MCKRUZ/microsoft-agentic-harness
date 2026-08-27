@@ -82,6 +82,15 @@ public sealed class ToolDiagnosticsMiddleware : DelegatingChatClient
         new([], MaxFallbackClaimEntries);
 
     /// <summary>
+    /// How many ids the fallback set currently holds. Test-only: proves the set genuinely stays
+    /// empty when this instance has no trace writer, rather than merely inferring it from the
+    /// absence of an externally-observable effect — nothing downstream ever consults a claim this
+    /// set makes on an untraced instance, so a correctness-only test cannot distinguish "consumed but
+    /// harmless" from "never touched."
+    /// </summary>
+    internal int FallbackClaimCount => _intraRunToolCallClaims.Count;
+
+    /// <summary>
     /// Initializes a new instance of the <see cref="ToolDiagnosticsMiddleware"/> class.
     /// </summary>
     /// <param name="innerClient">The inner chat client to wrap with diagnostics.</param>
@@ -192,20 +201,47 @@ public sealed class ToolDiagnosticsMiddleware : DelegatingChatClient
         // to remember, which is what produced the gap — FoundryHost's request loop lives inside the
         // Foundry SDK, with no seam in this codebase to arm the scope around even if that had been
         // chosen instead.
-        var claims = alreadyReplayed ?? _intraRunToolCallClaims;
-
-        var functionResults = new List<FunctionResultContent>();
+        //
+        // The fallback is consulted for TRACE eligibility only, and only when a writer actually
+        // exists (#541's disclosed scope, found false by the local grader gate and corrected here
+        // rather than in the doc comment alone). LlmUsageCapture.Current is itself a genuinely
+        // per-request AsyncLocal — the same guarantee ReplayedToolCallScope relies on — so recording
+        // every unarmed candidate into it unconditionally, exactly as this method did before #505,
+        // carries no cross-request risk and was never this fix's concern. Gating that path on the
+        // process-lived fallback set too would have been the actual defect the grader caught: a
+        // dashboard-capture drop live on every unarmed caller regardless of whether tracing was even
+        // on. Skipping the fallback set entirely when _traceWriter is null is also what makes the
+        // "dormant unless ExecutionTracingEnabled is on" claim true by construction instead of merely
+        // asserted — an unarmed host with tracing off now never touches _intraRunToolCallClaims at all.
+        var functionResults = new List<(FunctionResultContent Result, bool ShouldTrace)>();
         foreach (var candidate in messages.SelectMany(m => m.Contents).OfType<FunctionResultContent>())
         {
-            if (!string.IsNullOrEmpty(candidate.CallId) && !claims.TryClaim(candidate.CallId))
+            if (string.IsNullOrEmpty(candidate.CallId))
             {
+                // Cannot be deduplicated at all — always eligible for both outputs, as before.
+                functionResults.Add((candidate, ShouldTrace: true));
                 continue;
             }
 
-            functionResults.Add(candidate);
+            if (alreadyReplayed is not null)
+            {
+                // Armed: a single claim decides both outputs together, exactly as it always has.
+                // This scope is per-request (AsyncLocal, seeded by ExecuteAgentTurnCommandHandler),
+                // so sharing one decision here introduces none of the cross-request risk the
+                // unarmed fallback carries.
+                if (alreadyReplayed.TryClaim(candidate.CallId))
+                    functionResults.Add((candidate, ShouldTrace: true));
+                continue;
+            }
+
+            // Unarmed. Usage-capture always records (see remarks above); trace eligibility is its
+            // own decision, against the fallback set, and only made at all when there is a writer
+            // to write to.
+            var shouldTrace = _traceWriter is not null && _intraRunToolCallClaims.TryClaim(candidate.CallId);
+            functionResults.Add((candidate, shouldTrace));
         }
 
-        foreach (var result in functionResults)
+        foreach (var (result, shouldTrace) in functionResults)
         {
             // A failed call's Result already carries the raw exception message baked in by
             // IncludeDetailedErrors (see ExecuteAgentTurnCommandHandler.RedactedResultForStreaming) — this
@@ -241,7 +277,7 @@ public sealed class ToolDiagnosticsMiddleware : DelegatingChatClient
             // even when trace writer isn't wired.
             LlmUsageCapture.Current?.RecordToolResult(result.CallId, trimmedPayload);
 
-            if (_traceWriter is null)
+            if (!shouldTrace || _traceWriter is null)
                 continue;
 
             try
