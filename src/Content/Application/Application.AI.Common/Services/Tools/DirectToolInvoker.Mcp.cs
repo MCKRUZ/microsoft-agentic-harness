@@ -270,7 +270,10 @@ public sealed partial class DirectToolInvoker
         TimeSpan duration) =>
         ShapeText(
             failureText,
-            ToolResultText.ExtractText(rawResult),
+            // ShapeText never reads successText on the failure branch, and ExtractText's own default
+            // case does a full JsonSerializer.Serialize of the raw result — not worth paying on every
+            // MCP failure just to build a value that gets thrown away.
+            failureText is null ? ToolResultText.ExtractText(rawResult) : string.Empty,
             toolName,
             admissionPipeline,
             admission,

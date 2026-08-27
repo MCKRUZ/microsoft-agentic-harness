@@ -98,6 +98,16 @@ public sealed partial class DirectToolInvoker
         if (!admissionPipeline.TryApplyTextOutputPolicy(
                 admission, toolName, successText, out var admitted, out var truncatedByPipeline))
         {
+            // #491, same gap as the failure branch above and for the identical reason: the tool DID
+            // run and DID succeed, with whatever side effects that entailed — only the redaction of its
+            // output couldn't be applied. Without this line a withheld-but-executed success is
+            // indistinguishable in the audit trail from a call refused before it ever ran. Caught by
+            // code review noticing the failure branch got this treatment and the success branch didn't,
+            // in the same method, same commit.
+            logger.LogWarning(
+                "Direct invocation of {ToolName} executed and succeeded, but its output could not be "
+                + "redacted; the result is withheld rather than returned unredacted.",
+                toolName);
             return DirectToolInvocationOutcome.Refused(
                 DirectToolInvocationStatus.Denied,
                 GovernanceDenials.NotPermitted(toolName),
