@@ -37,6 +37,13 @@ public class MetaHarnessConfig
     /// path created, so the branch that writes tool records never executed. Wiring that up is what
     /// turned an empty directory into a growing log, and what makes an explicit switch necessary.
     /// </para>
+    /// <para>
+    /// <strong>On a concurrent host (Presentation.FoundryHost), enabling this has a known, tracked
+    /// gap: #541.</strong> Two unrelated concurrent requests whose first tool call happens to reuse
+    /// the same provider-issued call id can have the second request's real tool result silently
+    /// dropped from its trace. Scoped to observability only — tool execution and the model response
+    /// are unaffected — but real for that host once this is on.
+    /// </para>
     /// </remarks>
     /// <value>Default: <see langword="false"/>.</value>
     public bool ExecutionTracingEnabled { get; set; }

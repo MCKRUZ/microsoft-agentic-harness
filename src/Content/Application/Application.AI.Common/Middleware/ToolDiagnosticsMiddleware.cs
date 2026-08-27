@@ -65,6 +65,18 @@ public sealed class ToolDiagnosticsMiddleware : DelegatingChatClient
     /// <see cref="Services.ReplayedToolCallSet.TryClaim"/>'s contract was always "is this known
     /// <em>right now</em>," never "was this ever claimed."
     /// </para>
+    /// <para>
+    /// <strong>Known residual gap, tracked in #541, found by the local grader gate reviewing this
+    /// very fix.</strong> Boundedness fixes growth, not sharing: this set is still one per
+    /// <em>instance</em>, and FoundryHost's instance serves genuinely concurrent HTTP requests (a
+    /// <c>WebApplication</c>). Two unrelated concurrent requests whose first tool call happens to
+    /// reuse the same provider-issued call id will have the second request's real result silently
+    /// dropped from its trace. Scoped to observability only — the shared state here does not reach
+    /// tool execution or the model response, only <c>traces.jsonl</c> — and dormant unless
+    /// <c>ExecutionTracingEnabled</c> is on, but real for the consumer that turns it on. Left open
+    /// rather than fixed here because no per-request hook exists in this codebase to key a claim set
+    /// on: <c>MapFoundryResponses()</c>'s request loop lives inside the Foundry SDK.
+    /// </para>
     /// </remarks>
     private readonly Services.ReplayedToolCallSet _intraRunToolCallClaims =
         new([], MaxFallbackClaimEntries);
