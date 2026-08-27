@@ -220,7 +220,6 @@ public sealed class DirectToolInvokerTests
         // in int arithmetic, so a wrapping add yields a negative slice length and turns EVERY successful
         // tool call into a 500. Saturating instead costs one comparison.
         _config.MaxOutputCharacters = int.MaxValue;
-        _sanitizer.PassThrough = true;
         var tool = Tool("alpha", result: ToolResult.Ok("fine"));
 
         var outcome = await Invoke(Request("alpha"), tool);
@@ -236,7 +235,6 @@ public sealed class DirectToolInvokerTests
         // set the ceiling to satisfy a downstream size contract would otherwise get a payload just
         // over the limit — the one thing such a ceiling exists to prevent.
         _config.MaxOutputCharacters = 40;
-        _sanitizer.PassThrough = true;
         var tool = Tool("alpha", result: ToolResult.Ok(new string('x', 500)));
 
         var outcome = await Invoke(Request("alpha"), tool);
@@ -380,7 +378,11 @@ public sealed class DirectToolInvokerTests
     public async Task Sanitizes_the_tools_output()
     {
         // Unconditional, because this crosses a trust boundary. Tool output routinely carries paths,
-        // tokens and connection strings picked up from the host's own environment.
+        // tokens and connection strings picked up from the host's own environment. Scrubbing itself now
+        // happens entirely on the admission pipeline's own sanitizer (#487/#489), which this fixture
+        // registers as _sanitizer — ScrubEverything opts it into the blunt "replace everything" mode
+        // the real chain never takes but this test needs to observe "was Sanitize called at all".
+        _sanitizer.ScrubEverything = true;
         var tool = Tool("alpha", result: ToolResult.Ok("secret=hunter2"));
 
         var outcome = await Invoke(Request("alpha"), tool);
@@ -394,6 +396,7 @@ public sealed class DirectToolInvokerTests
         // The likeliest place a path or a connection string surfaces is a failure message, and it
         // crosses the same boundary the output does. Scrubbing only the success half would leave the
         // more dangerous half in the clear.
+        _sanitizer.ScrubEverything = true;
         var tool = Tool("alpha", result: ToolResult.Fail("could not open C:\\keys\\prod.pem"));
 
         var outcome = await Invoke(Request("alpha"), tool);
@@ -432,7 +435,6 @@ public sealed class DirectToolInvokerTests
     {
         _config.MaxOutputCharacters = 10;
         var tool = Tool("alpha", result: ToolResult.Ok(new string('x', 500)));
-        _sanitizer.PassThrough = true;
 
         var outcome = await Invoke(Request("alpha"), tool);
 
@@ -446,7 +448,6 @@ public sealed class DirectToolInvokerTests
         // A caller who cannot distinguish a complete result from a prefix of one will parse the prefix
         // as complete — which is worse than being refused the result altogether.
         _config.MaxOutputCharacters = 10;
-        _sanitizer.PassThrough = true;
         var tool = Tool("alpha", result: ToolResult.Ok(new string('x', 500)));
 
         var outcome = await Invoke(Request("alpha"), tool);
@@ -461,7 +462,12 @@ public sealed class DirectToolInvokerTests
         // a remote caller can demand at will. The overlap margin is what keeps that safe — a secret
         // spanning the cut must still be inside the scanned region. Get this wrong and the surface
         // emits the first half of a key.
-        _config.MaxOutputCharacters = 10;
+        //
+        // #487: this pre-cut now lives on ToolCallAdmissionPipeline, the one place that owns the
+        // ceiling it is bounding scan cost against — so it is _pipelineOutputCeiling that must be
+        // small to exercise it, not _config.MaxOutputCharacters (the invoker's own, now-unrelated,
+        // final length cut applied on top of whatever the pipeline already sanitized).
+        _pipelineOutputCeiling = 10;
         _sanitizer.ScrubTarget = "SECRET";
         var tool = Tool("alpha", result: ToolResult.Ok(new string('x', 10) + "SECRET" + new string('y', 20)));
 
@@ -479,7 +485,11 @@ public sealed class DirectToolInvokerTests
         // fire — and a flag derived from that alone would tell the caller nothing was lost, when in
         // fact most of the result was. This is also the only test that reaches the pre-cut branch at
         // all: everything else is small enough to fit inside the overlap margin.
-        _config.MaxOutputCharacters = 10;
+        //
+        // #487: see the sibling test above for why this sets _pipelineOutputCeiling, not
+        // _config.MaxOutputCharacters — ScrubOverlapMargin (8 KiB) is the same constant value it
+        // always was, just relocated to ToolCallAdmissionPipeline alongside the ceiling it protects.
+        _pipelineOutputCeiling = 10;
         _sanitizer.ScrubTarget = new string('z', 8197);
         var tool = Tool("alpha", result: ToolResult.Ok(new string('a', 5) + new string('z', 20_000)));
 
@@ -508,7 +518,6 @@ public sealed class DirectToolInvokerTests
     public async Task Does_not_claim_truncation_for_output_that_fits()
     {
         _config.MaxOutputCharacters = 1000;
-        _sanitizer.PassThrough = true;
         var tool = Tool("alpha", result: ToolResult.Ok("short"));
 
         var outcome = await Invoke(Request("alpha"), tool);
@@ -529,7 +538,6 @@ public sealed class DirectToolInvokerTests
         // a prefix.
         _config.MaxOutputCharacters = 1000;
         _pipelineOutputCeiling = 100;
-        _sanitizer.PassThrough = true;
         var tool = Tool("alpha", result: ToolResult.Ok(new string('a', 500)));
 
         var outcome = await Invoke(Request("alpha"), tool);
@@ -576,7 +584,6 @@ public sealed class DirectToolInvokerTests
     {
         _classificationGate = new FakeClassificationGate(
             ClassificationVerdict.RedactOutput());
-        _sanitizer.PassThrough = true;
         var tool = Tool("alpha", result: ToolResult.Ok("classified"));
 
         var outcome = await Invoke(Request("alpha"), tool);
@@ -596,7 +603,6 @@ public sealed class DirectToolInvokerTests
         {
             RedactionResult = 42
         };
-        _sanitizer.PassThrough = true;
         var tool = Tool("alpha", result: ToolResult.Ok("classified"));
 
         var outcome = await Invoke(Request("alpha"), tool);
@@ -615,7 +621,6 @@ public sealed class DirectToolInvokerTests
         // the identical scenario on the success path was already covered by
         // A_redact_verdict_scrubs_the_output_before_it_leaves.
         _classificationGate = new FakeClassificationGate(ClassificationVerdict.RedactOutput());
-        _sanitizer.PassThrough = true;
         var tool = Tool("alpha", result: ToolResult.Fail("classified failure detail"));
 
         var outcome = await Invoke(Request("alpha"), tool);
@@ -633,7 +638,6 @@ public sealed class DirectToolInvokerTests
         {
             RedactionResult = 42
         };
-        _sanitizer.PassThrough = true;
         var tool = Tool("alpha", result: ToolResult.Fail("classified failure detail"));
 
         var outcome = await Invoke(Request("alpha"), tool);
@@ -649,7 +653,6 @@ public sealed class DirectToolInvokerTests
         // input back in its failure message, say. Bounding only the success half would leave the
         // ceiling trivially bypassable through the path a caller can trigger by sending bad input.
         _config.MaxOutputCharacters = 50;
-        _sanitizer.PassThrough = true;
         var tool = Tool("alpha", result: ToolResult.Fail(new string('e', 100_000)));
 
         var outcome = await Invoke(Request("alpha"), tool);
@@ -858,15 +861,15 @@ public sealed class DirectToolInvokerTests
         // no-op one must never be confusable at runtime.
         services.AddSingleton(_executionReporter.Object);
 
-        // #460: ToolCallAdmissionPipeline.ReportExecutionAsync now sanitizes and redacts the reported
-        // copy itself — this fixture's own _sanitizer (RecordingSanitizer) is deliberately NOT reused
-        // here. It defaults to replacing content with the fixed "[scrubbed]" marker unless a test opts
-        // into PassThrough, which exists to observe DirectToolInvoker's OWN caller-facing scrub — reusing
-        // it for the reporting path would blank the reported copy in every test that doesn't set
-        // PassThrough, breaking the redaction assertion below for reasons unrelated to what it tests. A
-        // real IContentRedactionFilter is used, not a pass-through, because
-        // ToolReturnsFailure_WithASecretInTheErrorText_ReportedCopyIsRedacted asserts real redaction.
-        services.AddSingleton(AdmissionHarness.PermissiveSanitizer());
+        // #487/#489: DirectToolInvoker no longer owns a private sanitizer at all — every sanitize pass,
+        // on every path (the caller-facing output/error AND ToolCallAdmissionPipeline.ReportExecutionAsync's
+        // reported copy), now runs through the ONE sanitizer registered here. That is safe to be this
+        // fixture's own _sanitizer specifically because RecordingSanitizer defaults to pass-through
+        // (see its own remarks) — the old default of blanking everything is what used to force two
+        // separate instances; a real IContentRedactionFilter is still used, not a pass-through, because
+        // ToolReturnsFailure_WithASecretInTheErrorText_ReportedCopyIsRedacted asserts real redaction on
+        // the reported copy independent of whatever the sanitizer did.
+        services.AddSingleton<ICompositeResponseSanitizer>(_sanitizer);
         services.AddSingleton<IContentRedactionFilter>(TestRedactionFilter.Instance);
 
         // #532: the chain now bounds tool output and reads its ceiling from AppConfig, so it requires
@@ -899,7 +902,6 @@ public sealed class DirectToolInvokerTests
         var sut = new DirectToolInvoker(
             provider.GetRequiredService<IServiceScopeFactory>(),
             new ToolCatalog(provider, [tool.Name], NullLogger<ToolCatalog>.Instance),
-            _sanitizer,
             new StaticOptionsMonitor<DirectToolInvocationConfig>(_config),
             NullLogger<DirectToolInvoker>.Instance);
 
@@ -976,13 +978,20 @@ public sealed class DirectToolInvokerTests
         public void Deny(string reason) => Decision = ToolInvocationDecision.Deny(reason);
     }
 
-    /// <summary>A sanitizer that reports having scrubbed, so "was it called" is directly observable.</summary>
+    /// <summary>
+    /// A sanitizer that passes content through unchanged by default, so registering it as BOTH the
+    /// admission pipeline's sanitizer and (implicitly, via <c>ReportExecutionAsync</c>'s own use of the
+    /// same registered singleton) the reporting-path sanitizer is safe without a test opting in — the
+    /// two roles used to need two different fixture instances specifically because the old default
+    /// blanked everything (see #487/#489: this fixture's own sanitizer is now the ONLY one, since
+    /// <c>DirectToolInvoker</c> no longer owns a private one of its own).
+    /// </summary>
     private sealed class RecordingSanitizer : ICompositeResponseSanitizer
     {
         public const string Scrubbed = "[scrubbed]";
 
-        /// <summary>When true, returns content unchanged so length-based assertions stay meaningful.</summary>
-        public bool PassThrough { get; set; }
+        /// <summary>When set, replaces all content with <see cref="Scrubbed"/> — "was Sanitize called at all", the blunt case a real sanitizer never takes.</summary>
+        public bool ScrubEverything { get; set; }
 
         /// <summary>
         /// When set, behaves like a real sanitizer instead of a blunt one: removes just this substring
@@ -1001,9 +1010,9 @@ public sealed class DirectToolInvokerTests
                     : SanitizationResult.WithFindings(cleaned, content, []);
             }
 
-            return PassThrough
-                ? SanitizationResult.Clean(content)
-                : SanitizationResult.WithFindings(Scrubbed, content, []);
+            return ScrubEverything
+                ? SanitizationResult.WithFindings(Scrubbed, content, [])
+                : SanitizationResult.Clean(content);
         }
     }
 
@@ -1032,6 +1041,17 @@ public sealed class DirectToolInvokerTests
         public object? RedactionResult { get; set; }
 
         public object? RedactResult(string toolName, object? result) => RedactionResult ?? Redacted;
+
+        /// <summary>
+        /// The string-typed overload <see cref="Application.AI.Common.Services.Governance.ToolCallAdmissionPipeline.TryApplyTextOutputPolicy"/>
+        /// actually calls. <see cref="RedactionResult"/> being set to anything other than a string
+        /// (e.g. a boxed <see langword="int"/>) simulates a consumer gate breaking the
+        /// non-null-in/non-null-out contract <see cref="IToolClassificationGate.RedactResult(string, string?)"/>
+        /// documents — returning null here for non-null <paramref name="content"/> is exactly that
+        /// violation, and is what the pipeline's fail-closed branch (#490) exists to catch.
+        /// </summary>
+        public string? RedactResult(string toolName, string? content) =>
+            content is null ? null : RedactionResult switch { null => Redacted, string s => s, _ => null };
     }
 
     private sealed class StaticOptionsMonitor<T>(T value) : IOptionsMonitor<T>

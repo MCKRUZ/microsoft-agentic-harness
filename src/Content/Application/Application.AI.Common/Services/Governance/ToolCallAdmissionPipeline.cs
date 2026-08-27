@@ -265,6 +265,22 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
     public const string OutputTruncationMarker = "\n[tool output truncated]";
 
     /// <summary>
+    /// How much beyond <see cref="OutputCeiling"/> is kept while sanitizing and redacting, so a secret
+    /// or an injection pattern straddling the ceiling stays inside the scanned region rather than being
+    /// sliced in half — removed again by the final cut. See <see cref="ToolResultText.PreCutForScan(object?, int, int)"/>
+    /// for the full rationale and the residual risk it accepts.
+    /// </summary>
+    /// <remarks>
+    /// Sized generously against the longest thing the sanitizers look for — connection strings and
+    /// PEM-armoured keys run to a few kilobytes — because the cost of being wrong in one direction is a
+    /// few spare kilobytes scanned, and in the other it is an unredacted secret on the wire. This value,
+    /// and the pre-cut it sizes, used to live privately on <c>DirectToolInvoker</c> alone; every path
+    /// that reaches a tool needs the same protection against scanning an unbounded result, so it moved
+    /// here — the one place that already owns <see cref="OutputCeiling"/> (#487).
+    /// </remarks>
+    internal const int ScrubOverlapMargin = 8 * 1024;
+
+    /// <summary>
     /// The maximum characters of free text a single tool result may contribute to the context window.
     /// </summary>
     /// <remarks>
@@ -289,17 +305,23 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
     {
         ArgumentNullException.ThrowIfNull(admission);
 
+        // #487: cut to a scan-cost-bounded region BEFORE sanitizing or redacting — the opposite order
+        // from the final cut below, and safe only because of the overlap margin: see PreCutForScan's
+        // remarks for the trade this accepts. Every caller of this method funnels through it, so this
+        // is also what protects the agent-turn path (GovernedAIFunction), which used to have no bound
+        // on scan cost at all.
+        var (preCut, _) = ToolResultText.PreCutForScan(result, OutputCeiling, ScrubOverlapMargin);
+
         // #469: the sanitize pass below is unconditional — see the interface remarks for why. It stays
         // in shape-preserving lockstep with RedactResult below via the shared ToolResultText.Sanitize.
         var treated = admission.RedactsOutput
-            ? _classificationGate.RedactResult(toolName, result)
-            : ToolResultText.Sanitize(result, _sanitizer, toolName);
+            ? _classificationGate.RedactResult(toolName, preCut)
+            : ToolResultText.Sanitize(preCut, _sanitizer, toolName);
 
-        // #532: bound AFTER sanitize and redact, never before. Cutting first would hand the scrubbers
-        // a truncated string — a secret split across the cut survives, and an injection payload whose
-        // tail was removed can still carry its head. It also mirrors ReportExecutionAsync, which has
-        // always sanitized, redacted, and THEN bounded tool failure text at this same pipeline (#460);
-        // success output simply never got the third step.
+        // #532: bound AFTER sanitize and redact, never before the FINAL cut — the pre-cut above is a
+        // different, wider, scan-cost-only bound, not a substitute for this one. It also mirrors
+        // ReportExecutionAsync, which has always sanitized, redacted, and THEN bounded tool failure
+        // text at this same pipeline (#460); success output simply never got the third step.
         return ToolResultText.Bound(treated, OutputCeiling, OutputTruncationMarker);
     }
 
@@ -313,67 +335,72 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
     {
         ArgumentNullException.ThrowIfNull(admission);
 
-        // Every early return below leaves nothing to report; only the one branch that actually cuts
-        // overwrites this. Set once here so no future branch can forget it and silently answer "not
-        // truncated" — which is the exact failure this out-parameter exists to make impossible.
-        wasTruncated = false;
+        // #487: the same scan-cost pre-cut ApplyOutputPolicy applies, for the same reason — this is the
+        // method the plan step executor (a sandboxed tool's output, unbounded upstream) and the
+        // Execution API both call, and neither used to bound scan cost on this side of the boundary.
+        var (preCut, droppedByPreCut) = ToolResultText.PreCutForScan(content, OutputCeiling, ScrubOverlapMargin);
 
         // #479: sanitize unconditionally on both branches, the same guarantee ApplyOutputPolicy carries
         // (#469) — this method used to sanitize only when a redaction was required, leaving the
         // invariant enforced by caller discipline (both current callers ran their own unconditional
         // scrub immediately after) rather than by this interface itself.
         //
-        // Null content is deliberately NOT special-cased ahead of this branch: ToolResultText.Sanitize
-        // already answers null with null on the non-redact path (its default, unrecognized-shape case),
-        // and on the redact path _classificationGate.RedactResult answers null with null too — which
-        // then correctly fails the `is string text` check below and fails closed, exactly as it did
-        // before #479. A short-circuit here that returned true for null unconditionally would silently
-        // skip that fail-closed check for a redact-required call that happens to have no content yet,
-        // turning a denial into a reported success — caught by code review on the PR that introduced it.
+        // Null content is deliberately NOT special-cased ahead of this branch — same reason as before
+        // #490: on the non-redact branch, Sanitize's null-in/null-out guarantee (now structural, not
+        // re-derived from Transform's switch on every read) means a null preCut reaches the null branch
+        // below cleanly. On the REDACT branch it is deliberately NOT short-circuited the same way: a
+        // redact-required call answering with null is treated identically whether preCut was null (the
+        // well-behaved gate correctly echoing "nothing to redact") or the gate broke its contract on
+        // real input — see the fail-closed branch below for why collapsing that distinction is the
+        // point, not an oversight (#479's original regression).
         var processed = admission.RedactsOutput
-            ? _classificationGate.RedactResult(toolName, content)
-            : ToolResultText.Sanitize(content, _sanitizer, toolName);
+            ? _classificationGate.RedactResult(toolName, preCut)
+            : ToolResultText.Sanitize(preCut, _sanitizer, toolName);
 
-        if (processed is string text)
+        if (processed is null)
         {
-            // #532: bound after sanitize/redact — see ApplyOutputPolicy for why the order is fixed.
-            // This is the plan path's only cut. It is NOT the Execution API's only cut, and an earlier
-            // version of this comment claimed the API was "unaffected while its ceiling is no larger"
-            // — a precondition that does not hold on shipped defaults (its 262,144 against this
-            // 50,000), so its own before-and-after checks both saw an unchanged string while this step
-            // had already removed most of the body. Rather than restore that assumption by aligning
-            // the two numbers, the cut now reports itself and the caller ORs it into whatever
-            // truncation signal it publishes: a fact that travels with the value cannot drift apart
-            // the way two independently-owned ceilings can.
-            var (bounded, truncated) = BoundedText.Cap(text, OutputCeiling, OutputTruncationMarker);
-            result = bounded;
-            wasTruncated = truncated;
-            return true;
-        }
+            if (!admission.RedactsOutput)
+            {
+                // Non-redact branch: Sanitize's null-in/null-out guarantee (#490) means reaching here
+                // can only mean preCut was null — nothing to sanitize.
+                result = null;
+                wasTruncated = false;
+                return true;
+            }
 
-        if (!admission.RedactsOutput)
-        {
-            // Reaching here on the non-redact branch means content was null: ToolResultText.Sanitize's
-            // only non-string outcome for a string? input is null-in -> null-out (its default,
-            // unrecognized-shape case), and every non-null string always comes back as a string from
-            // its `case string content:` branch — so `processed is string text` above already ruled
-            // out every other possibility on this branch.
+            // Fail closed, deliberately without asking whether preCut was itself null. A redact-required
+            // call that produced nothing to redact and a redact-required call whose gate broke the
+            // non-null-in/non-null-out contract on real input are indistinguishable from outside the
+            // gate, and #479's regression was exactly a refactor that treated "no content yet" as safe
+            // to short-circuit past this branch — turning a denial into a reported success with no
+            // fail-closed signal at all. Falling back to the original would be the harmless-looking
+            // default that defeats the control; the shipped gate always honors the contract, so this
+            // guards against a consumer-supplied one, same as it always has.
+            _logger.LogWarning(
+                "Classification gate returned null when redacting output of {ToolName}; the result is "
+                + "withheld rather than returned unredacted.",
+                toolName);
             result = null;
-            return true;
+            wasTruncated = false;
+            return false;
         }
 
-        // Fail closed. The gate decided this asset must not be emitted as-is, so falling back to the
-        // original is precisely the harmless-looking default that would defeat the control — which is
-        // what `RedactResult(...) as string ?? content` would have done. The shipped gate always
-        // answers with a string here, so this guards against a consumer-supplied one.
-        _logger.LogWarning(
-            "Classification gate returned a {ResultType} rather than a string when redacting output of "
-            + "{ToolName}; the result is withheld rather than returned unredacted.",
-            processed?.GetType().Name ?? "null",
-            toolName);
-
-        result = null;
-        return false;
+        // #532: bound after sanitize/redact — see ApplyOutputPolicy for why the order is fixed. This is
+        // the plan path's only cut. It is NOT the Execution API's only cut, and an earlier version of
+        // this comment claimed the API was "unaffected while its ceiling is no larger" — a
+        // precondition that does not hold on shipped defaults (its 262,144 against this 50,000), so its
+        // own before-and-after checks both saw an unchanged string while this step had already removed
+        // most of the body. Rather than restore that assumption by aligning the two numbers, the cut
+        // now reports itself and the caller ORs it into whatever truncation signal it publishes: a fact
+        // that travels with the value cannot drift apart the way two independently-owned ceilings can.
+        var (bounded, cutAfterProcessing) = BoundedText.Cap(processed, OutputCeiling, OutputTruncationMarker);
+        result = bounded;
+        // droppedByPreCut is carried forward, not discarded: content the pre-cut dropped can still
+        // leave this final cut with nothing further to drop once sanitizing/redacting has shrunk what
+        // remains — this cut's own flag alone would under-report what was actually lost (#487/#493,
+        // the same reasoning DirectToolInvoker's now-retired ScrubAndBound used to carry by hand).
+        wasTruncated = droppedByPreCut || cutAfterProcessing;
+        return true;
     }
 
     /// <inheritdoc />

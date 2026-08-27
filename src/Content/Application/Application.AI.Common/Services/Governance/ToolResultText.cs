@@ -34,7 +34,7 @@ internal static class ToolResultText
     /// <summary>
     /// Substituted when a sanitizer reports it changed something but returns no text to show for it — a
     /// runtime contract break <see cref="ICompositeResponseSanitizer"/> doesn't enforce against a
-    /// consumer-supplied implementation. Every caller of <see cref="Sanitize"/> relies on a must-not-throw
+    /// consumer-supplied implementation. Every caller of <see cref="Sanitize(object?, ICompositeResponseSanitizer, string)"/> relies on a must-not-throw
     /// contract (see <c>GovernedAIFunction</c>'s and <c>DirectToolInvoker</c>'s own remarks); degrading to
     /// a visible placeholder here, the same way <c>ReportedFailureText</c> does for its own sanitizer
     /// dependency, keeps that contract rather than propagating an exception out of nearly every tool call
@@ -55,11 +55,28 @@ internal static class ToolResultText
         Transform(result, text => SanitizeText(text, sanitizer, toolName));
 
     /// <summary>
+    /// String-typed overload of <see cref="Sanitize(object?, ICompositeResponseSanitizer, string)"/> for a
+    /// caller that already knows its content is plain text, not a shape needing preservation — the
+    /// <c>ToolCallAdmissionPipeline.TryApplyTextOutputPolicy</c> boundary.
+    /// </summary>
+    /// <remarks>
+    /// <strong>Non-null input always produces non-null output.</strong> <c>Transform</c>'s <c>case
+    /// string</c> arm can only return <paramref name="content"/> itself or a sanitized string — never
+    /// null, never a different type — so this overload's return type makes that guarantee structural
+    /// rather than something a caller re-derives from <see cref="Transform"/>'s switch, which is the
+    /// third instance of the <c>object?</c>-conflation shape this repo's CLAUDE.md already tracks twice
+    /// (#490).
+    /// </remarks>
+    public static string? Sanitize(string? content, ICompositeResponseSanitizer sanitizer, string toolName) =>
+        content is null ? null : SanitizeText(content, sanitizer, toolName);
+
+    /// <summary>
     /// Runs <paramref name="result"/>'s text through <paramref name="sanitizer"/> and then
-    /// <paramref name="redactionFilter"/>, in that order, preserving shape exactly as <see cref="Sanitize"/>
-    /// does. Used only by <see cref="DefaultToolClassificationGate.RedactResult"/> — the path a
-    /// classification policy's <c>Redact</c> verdict takes, which must do strictly more than the baseline
-    /// sanitize every other tool result already gets (#484), not the same thing under a different name.
+    /// <paramref name="redactionFilter"/>, in that order, preserving shape exactly as <see cref="Sanitize(object?, ICompositeResponseSanitizer, string)"/>
+    /// does. Used only by <see cref="DefaultToolClassificationGate.RedactResult(string, object?)"/> — the
+    /// path a classification policy's <c>Redact</c> verdict takes, which must do strictly more than the
+    /// baseline sanitize every other tool result already gets (#484), not the same thing under a
+    /// different name.
     /// </summary>
     /// <remarks>
     /// Sanitize before redact, mirroring <see cref="Tools.ReportedFailureText.PrepareForReporting"/>'s
@@ -75,9 +92,27 @@ internal static class ToolResultText
         Transform(result, text => redactionFilter.Redact(SanitizeText(text, sanitizer, toolName), RedactionCategories.All));
 
     /// <summary>
+    /// String-typed overload of <see cref="SanitizeAndRedact(object?, ICompositeResponseSanitizer, IContentRedactionFilter, string)"/>
+    /// for a caller that already knows its content is plain text — the <c>RedactResult(string, string?)</c>
+    /// boundary <see cref="IToolClassificationGate"/> exposes for exactly this case.
+    /// </summary>
+    /// <remarks>
+    /// <strong>Non-null input always produces non-null output.</strong> <see cref="IContentRedactionFilter.Redact"/>
+    /// never returns null (its own contract: null/empty/no-match input is returned unchanged), so this
+    /// overload carries the same guarantee as the sibling <see cref="Sanitize(string?, ICompositeResponseSanitizer, string)"/>
+    /// overload — see its remarks for why that guarantee matters (#490).
+    /// </remarks>
+    public static string? SanitizeAndRedact(
+        string? content,
+        ICompositeResponseSanitizer sanitizer,
+        IContentRedactionFilter redactionFilter,
+        string toolName) =>
+        content is null ? null : redactionFilter.Redact(SanitizeText(content, sanitizer, toolName), RedactionCategories.All);
+
+    /// <summary>
     /// Cuts the free text carried by <paramref name="result"/> so that its <strong>total</strong>
     /// across every text-carrying block is at most <paramref name="ceiling"/> characters, preserving
-    /// shape exactly as <see cref="Sanitize"/> does.
+    /// shape exactly as <see cref="Sanitize(object?, ICompositeResponseSanitizer, string)"/> does.
     /// </summary>
     /// <param name="result">The tool result to bound.</param>
     /// <param name="ceiling">Maximum total characters of free text, inclusive of the marker.</param>
@@ -97,7 +132,7 @@ internal static class ToolResultText
     /// (#467/#470) — a cut that would land inside a surrogate pair backs off by one instead.
     /// </para>
     /// <para>
-    /// Structured values are untouched for the same reason <see cref="Sanitize"/> leaves them alone:
+    /// Structured values are untouched for the same reason <see cref="Sanitize(object?, ICompositeResponseSanitizer, string)"/> leaves them alone:
     /// a serialized result's <c>structuredContent</c> is typed JSON, not free text, and cutting it
     /// mid-value produces something the model mis-parses rather than something it reads as truncated.
     /// Bounding a result whose size lives entirely in structured content is therefore out of scope
@@ -120,6 +155,80 @@ internal static class ToolResultText
             remaining = 0;
             return bounded;
         });
+    }
+
+    /// <summary>
+    /// Cuts the free text carried by <paramref name="result"/> to a scan-cost-bounded region — the total
+    /// budget across every text-carrying block is <paramref name="ceiling"/> plus
+    /// <paramref name="overlapMargin"/> — before any sanitizer or redaction filter sees it, so a result
+    /// far larger than <paramref name="ceiling"/> does not pay to be scanned in full to return a
+    /// fraction (#487).
+    /// </summary>
+    /// <param name="result">The tool result to pre-cut.</param>
+    /// <param name="ceiling">The ceiling the eventual <see cref="Bound"/> call will cut to.</param>
+    /// <param name="overlapMargin">
+    /// How much beyond <paramref name="ceiling"/> is kept while scanning, so a secret or an injection
+    /// pattern straddling the ceiling is still inside the scanned region and is still caught by the
+    /// sanitizer/redaction pass that follows, rather than being sliced in half and emitted. Removed
+    /// again by the later <see cref="Bound"/> call.
+    /// </param>
+    /// <returns>The (possibly cut) result, and whether anything was dropped.</returns>
+    /// <remarks>
+    /// <para>
+    /// The budget spans blocks, exactly as <see cref="Bound"/>'s does — a multi-content-block MCP
+    /// result would otherwise admit <c>(ceiling + overlapMargin) x blockCount</c> characters of scan
+    /// cost, which bounds nothing on the shape that most needs bounding.
+    /// </para>
+    /// <para>
+    /// <strong>Known residual, stated rather than papered over.</strong> The pre-cut can bisect a match
+    /// at the scan ceiling, leaving a prefix the sanitizer/redaction pass cannot match. That prefix
+    /// normally sits beyond <paramref name="ceiling"/> and is discarded by the later <see cref="Bound"/>
+    /// call — but sanitizing and redacting shrink text, so if net shrinkage across the scanned region
+    /// exceeds <paramref name="overlapMargin"/>, the prefix can migrate below the ceiling and be
+    /// returned. No cheap check distinguishes a migrated prefix from ordinary content; the honest
+    /// mitigation is the margin being large relative to plausible shrinkage. Removing this pre-cut
+    /// entirely means paying for a full sanitizer/redaction pass over an arbitrarily large tool result
+    /// on paths a remote caller or a sandboxed tool can trigger — the trade this method exists to make.
+    /// </para>
+    /// </remarks>
+    public static (object? Result, bool Dropped) PreCutForScan(object? result, int ceiling, int overlapMargin)
+    {
+        // Saturating rather than wrapping: the arithmetic should not depend on a check in another
+        // assembly (the config validator bounds the ceiling) to stay correct on this path.
+        var scanCeiling = ceiling <= int.MaxValue - overlapMargin ? ceiling + overlapMargin : int.MaxValue;
+        var remaining = scanCeiling;
+        var dropped = false;
+
+        var transformed = Transform(result, text =>
+        {
+            if (text.Length <= remaining)
+            {
+                remaining -= text.Length;
+                return text;
+            }
+
+            dropped = true;
+            // Empty marker: the pre-cut is invisible in the payload, and only the returned flag records
+            // it — the marker the model actually sees comes from the later Bound call.
+            var (cut, _) = BoundedText.Cap(text, remaining, string.Empty);
+            remaining = 0;
+            return cut;
+        });
+
+        return (transformed, dropped);
+    }
+
+    /// <summary>
+    /// String-typed overload of <see cref="PreCutForScan(object?, int, int)"/> for a caller that already
+    /// knows its content is plain text — see that overload's remarks for the pre-cut rationale. Carries
+    /// the same non-null-in/non-null-out guarantee as <see cref="Sanitize(string?, ICompositeResponseSanitizer, string)"/>,
+    /// for the identical reason: a <see langword="string"/>-typed input can only produce a
+    /// <see langword="string"/>-typed output through <see cref="Transform"/>'s <c>case string</c> arm.
+    /// </summary>
+    public static (string? Text, bool Dropped) PreCutForScan(string? content, int ceiling, int overlapMargin)
+    {
+        var (transformed, dropped) = PreCutForScan((object?)content, ceiling, overlapMargin);
+        return ((string?)transformed, dropped);
     }
 
     /// <summary>
@@ -257,7 +366,7 @@ internal static class ToolResultText
     /// Every other property (<c>isError</c>, <c>structuredContent</c>, <c>_meta</c>, non-text-carrying
     /// blocks) is carried through unchanged — <c>structuredContent</c> is typed JSON, not free text, and
     /// rewriting it risks producing a malformed result the model then mis-parses (tracked separately,
-    /// see <see cref="IToolClassificationGate.RedactResult"/>'s remarks on the Redact verdict's coverage
+    /// see <see cref="IToolClassificationGate.RedactResult(string, object?)"/>'s remarks on the Redact verdict's coverage
     /// there). Returns <see langword="null"/> when no block's content changed, so the caller can keep
     /// the original <see cref="JsonElement"/> instead of an equivalent reconstruction.
     /// </summary>

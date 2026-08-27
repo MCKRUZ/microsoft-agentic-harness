@@ -32,7 +32,7 @@ public interface IToolClassificationGate
     /// <returns>
     /// <see cref="ClassificationVerdict.Allow"/> to proceed, <see cref="ClassificationVerdict.Block"/> to
     /// deny with a model-facing message, or <see cref="ClassificationVerdict.RedactOutput"/> to proceed but
-    /// scrub the result via <see cref="RedactResult"/>. Always <see cref="ClassificationVerdict.Allow"/>
+    /// scrub the result via <see cref="RedactResult(string, object?)"/>. Always <see cref="ClassificationVerdict.Allow"/>
     /// when the gate is off or in audit mode.
     /// </returns>
     ValueTask<ClassificationVerdict> EvaluateAsync(
@@ -55,6 +55,27 @@ public interface IToolClassificationGate
     /// shape-preserving scrub to, for the exact set of shapes recognized as text.
     /// </returns>
     object? RedactResult(string toolName, object? result);
+
+    /// <summary>
+    /// String-typed overload of <see cref="RedactResult(string, object?)"/> for a caller that already
+    /// knows its content is plain text and needs to leave as text — the
+    /// <c>ToolCallAdmissionPipeline.TryApplyTextOutputPolicy</c> boundary (the plan step executor and
+    /// the Execution API, neither of which replays structured content back to a model).
+    /// </summary>
+    /// <param name="toolName">The tool whose result is being redacted (passed to the sanitizers as context).</param>
+    /// <param name="content">The tool's raw text.</param>
+    /// <returns>
+    /// The redacted text. <strong>Contract: non-null <paramref name="content"/> must produce a non-null
+    /// result.</strong> <see cref="RedactResult(string, object?)"/>'s general <c>object?</c> signature
+    /// legitimately returns a structured, non-string value unchanged — but a string in, string out
+    /// call site has no structured shape to preserve, so a non-null-input/null-output response here can
+    /// only mean this implementation broke that contract, and the caller
+    /// (<c>ToolCallAdmissionPipeline</c>) treats it as one: it withholds the result and fails the call
+    /// closed rather than falling back to the untreated original. This is the fix for the third instance
+    /// of the <c>object?</c>-conflation defect shape this repo's CLAUDE.md already tracks twice (#490) —
+    /// the return type states the guarantee instead of a caller re-deriving it from a runtime check.
+    /// </returns>
+    string? RedactResult(string toolName, string? content);
 }
 
 /// <summary>The action the classification gate takes for a tool call.</summary>
@@ -66,7 +87,7 @@ public enum ClassificationGateOutcome
     /// <summary>The call is denied; the model receives <see cref="ClassificationVerdict.BlockedMessage"/>.</summary>
     Block,
 
-    /// <summary>The call proceeds, but its result is scrubbed via <see cref="IToolClassificationGate.RedactResult"/>.</summary>
+    /// <summary>The call proceeds, but its result is scrubbed via <see cref="IToolClassificationGate.RedactResult(string, object?)"/>.</summary>
     RedactOutput
 }
 

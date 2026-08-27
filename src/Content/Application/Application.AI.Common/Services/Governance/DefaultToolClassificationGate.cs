@@ -126,14 +126,24 @@ public sealed class DefaultToolClassificationGate : IToolClassificationGate
     /// #484: a <c>Redact</c> verdict must do strictly more than the unconditional sanitize every other
     /// tool result already gets (<see cref="ToolCallAdmissionPipeline.ApplyOutputPolicy"/>) — otherwise
     /// an operator-configured classification policy is a control with no distinct effect. Routes through
-    /// <see cref="ToolResultText.SanitizeAndRedact"/> rather than <see cref="ToolResultText.Sanitize"/>,
+    /// <see cref="ToolResultText.SanitizeAndRedact(object?, ICompositeResponseSanitizer, IContentRedactionFilter, string)"/>
+    /// rather than <see cref="ToolResultText.Sanitize(object?, ICompositeResponseSanitizer, string)"/>,
     /// which also applies <see cref="_redactionFilter"/>'s known-secret-pattern scrub. See
-    /// <see cref="ToolResultText.Sanitize"/> for why the result's shape (raw string vs. serialized JSON
+    /// <see cref="ToolResultText.Sanitize(object?, ICompositeResponseSanitizer, string)"/> for why the result's shape (raw string vs. serialized JSON
     /// string element) must survive the round trip, and why a structured result is left unchanged — such
     /// cases are better handled by a Block policy.
     /// </remarks>
     public object? RedactResult(string toolName, object? result) =>
         ToolResultText.SanitizeAndRedact(result, _sanitizer, _redactionFilter, toolName);
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// Same treatment as the general overload, through the string-typed
+    /// <see cref="ToolResultText.SanitizeAndRedact(string?, ICompositeResponseSanitizer, IContentRedactionFilter, string)"/>
+    /// overload, which carries the non-null-in/non-null-out guarantee the interface's remarks describe.
+    /// </remarks>
+    public string? RedactResult(string toolName, string? content) =>
+        ToolResultText.SanitizeAndRedact(content, _sanitizer, _redactionFilter, toolName);
 
     private AssetReference Resolve(string toolName, IReadOnlyDictionary<string, object?> arguments)
     {

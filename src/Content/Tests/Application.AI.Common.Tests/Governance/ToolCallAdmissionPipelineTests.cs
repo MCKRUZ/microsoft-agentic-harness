@@ -324,8 +324,13 @@ public sealed class ToolCallAdmissionPipelineTests
         // Preserved from before #479: a consumer-supplied IToolClassificationGate that violates the
         // "redact always answers with a string" contract must withhold, not fall back to the original —
         // see the pipeline's own remarks on why `RedactResult(...) as string ?? content` would be a trap.
+        //
+        // #490: the string-typed RedactResult(string, string?) overload this call site now resolves to
+        // makes "answers with a non-string" unrepresentable at the type level — the only way left to
+        // simulate a gate breaking its non-null-in/non-null-out contract is a null return for non-null
+        // input, which is exactly what this now sets up.
         var gate = new Mock<IToolClassificationGate>();
-        gate.Setup(g => g.RedactResult(Tool, "raw text")).Returns(new { Rows = 3 });
+        gate.Setup(g => g.RedactResult(Tool, "raw text")).Returns((string?)null);
         var pipeline = AdmissionHarness.Pipeline(classificationGate: gate.Object);
 
         var ok = pipeline.TryApplyTextOutputPolicy(
@@ -430,7 +435,7 @@ public sealed class ToolCallAdmissionPipelineTests
         // answers any non-string result: not a string, so this must fail closed exactly like
         // TryApplyTextOutputPolicy_RedactVerdict_ClassificationGateReturnsNonString_FailsClosed.
         var gate = new Mock<IToolClassificationGate>();
-        gate.Setup(g => g.RedactResult(Tool, null)).Returns((object?)null);
+        gate.Setup(g => g.RedactResult(Tool, (string?)null)).Returns((string?)null);
         var pipeline = AdmissionHarness.Pipeline(classificationGate: gate.Object);
 
         var ok = pipeline.TryApplyTextOutputPolicy(
