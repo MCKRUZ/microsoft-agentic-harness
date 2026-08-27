@@ -28,12 +28,46 @@ public sealed class ToolDiagnosticsMiddleware : DelegatingChatClient
     private readonly ISecretRedactor? _redactor;
 
     /// <summary>
-    /// Claim set used when no turn armed an ambient <see cref="Services.ReplayedToolCallScope"/>.
-    /// One instance of this middleware is built per chat client per agent construction, so its
-    /// lifetime is exactly one run — the right scope for suppressing the same tool result being
-    /// re-recorded on each of <c>FunctionInvokingChatClient</c>'s iterations.
+    /// The largest number of ids <see cref="_intraRunToolCallClaims"/> retains at once. See that
+    /// field's remarks for why a bound is required at all.
     /// </summary>
-    private readonly Services.ReplayedToolCallSet _intraRunToolCallClaims = new();
+    /// <remarks>
+    /// Sized well above any realistic single turn's tool-call count (#512's own scenario is a handful
+    /// of calls per turn), so the only way to actually reach eviction is the accumulation this bound
+    /// exists to cap — a process handling many turns over a long lifetime. No measurement backs this
+    /// exact number; it is a conservative ceiling chosen to make eviction rare in ordinary operation
+    /// while still bounding worst-case memory, not a tuned value.
+    /// </remarks>
+    internal const int MaxFallbackClaimEntries = 10_000;
+
+    /// <summary>
+    /// Claim set used when no turn armed an ambient <see cref="Services.ReplayedToolCallScope"/>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>This instance's lifetime is NOT always one run — a prior version of this comment
+    /// claimed it was, and that was false for the specific callers this fallback exists to serve
+    /// (#505).</strong> One middleware instance is built per chat client per agent
+    /// <em>construction</em>, and how often that happens depends entirely on the caller:
+    /// <c>ExecuteAgentTurnCommandHandler</c> — the only production armer of the ambient scope, so the
+    /// only caller that never touches this fallback — does construct one per turn. But
+    /// <c>Presentation.FoundryHost</c> builds exactly <strong>one</strong> agent for the entire
+    /// process (see <c>Program.cs</c>'s remarks on why the composition root is held for process
+    /// lifetime), and it is one of the three unarmed callers this fallback exists for. Its middleware
+    /// instance, and this field, live as long as the container does.
+    /// </para>
+    /// <para>
+    /// Bounded rather than unbounded for exactly that reason: an unbounded set behind a process-lived
+    /// instance grows for the container's lifetime and, once full, permanently refuses to re-record
+    /// any call id a long-running deployment happens to see twice — silently and with no signal to an
+    /// operator. Bounding trades that permanent failure for a narrow one: an id evicted long ago can
+    /// be legitimately re-claimed, which is correct, not merely tolerated —
+    /// <see cref="Services.ReplayedToolCallSet.TryClaim"/>'s contract was always "is this known
+    /// <em>right now</em>," never "was this ever claimed."
+    /// </para>
+    /// </remarks>
+    private readonly Services.ReplayedToolCallSet _intraRunToolCallClaims =
+        new([], MaxFallbackClaimEntries);
 
     /// <summary>
     /// Initializes a new instance of the <see cref="ToolDiagnosticsMiddleware"/> class.
@@ -135,12 +169,17 @@ public sealed class ToolDiagnosticsMiddleware : DelegatingChatClient
         // traces.jsonl to one with tool counts inflated up to MaximumIterationsPerRequest-fold: worse
         // than the empty file #505 set out to fix, and silently so.
         //
-        // A per-instance set is the right lifetime for that: one middleware instance is built per
-        // chat client per agent construction, so it spans exactly one run. It deliberately does not
-        // replace the ambient scope, which is seeded from replayed history and therefore also covers
-        // the cross-turn case a fresh instance cannot see. Arming the scope in the three unarmed
-        // callers was the alternative; this was preferred because it removes the requirement to
-        // remember, which is what produced the gap.
+        // Not always one run: FoundryHost builds one middleware instance for the whole process,
+        // so this fallback can span every turn a deployment ever serves rather than a single one —
+        // see _intraRunToolCallClaims' remarks, corrected there after the local correctness gate
+        // caught the earlier claim that its lifetime "is exactly one run" was false for exactly the
+        // caller this fallback exists to serve. Bounded there for that reason. It deliberately does
+        // not replace the ambient scope, which is seeded from replayed history and therefore also
+        // covers the cross-turn case a fresh instance cannot see. Arming the scope in the three
+        // unarmed callers was the alternative; this was preferred because it removes the requirement
+        // to remember, which is what produced the gap — FoundryHost's request loop lives inside the
+        // Foundry SDK, with no seam in this codebase to arm the scope around even if that had been
+        // chosen instead.
         var claims = alreadyReplayed ?? _intraRunToolCallClaims;
 
         var functionResults = new List<FunctionResultContent>();

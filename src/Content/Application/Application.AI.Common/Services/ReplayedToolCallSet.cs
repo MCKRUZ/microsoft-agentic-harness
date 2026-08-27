@@ -30,16 +30,18 @@ namespace Application.AI.Common.Services;
 public sealed class ReplayedToolCallSet
 {
     private readonly HashSet<string> _callIds;
+    private readonly Queue<string>? _insertionOrder;
+    private readonly int? _maxEntries;
     private readonly Lock _lock = new();
 
-    /// <summary>Initializes an empty set.</summary>
+    /// <summary>Initializes an empty, unbounded set.</summary>
     public ReplayedToolCallSet()
         : this([])
     {
     }
 
     /// <summary>
-    /// Initializes the set with the call ids already known before this turn dispatched.
+    /// Initializes an unbounded set with the call ids already known before this turn dispatched.
     /// </summary>
     /// <param name="seedCallIds">
     /// The replayed history's call ids. Empty and duplicate entries are absorbed rather than rejected —
@@ -52,12 +54,60 @@ public sealed class ReplayedToolCallSet
     /// case-insensitive matching would collapse two genuinely distinct ids.
     /// </remarks>
     public ReplayedToolCallSet(IEnumerable<string> seedCallIds)
+        : this(seedCallIds, maxEntries: null)
+    {
+    }
+
+    /// <summary>
+    /// Initializes a set that discards its oldest claimed id once <paramref name="maxEntries"/> is
+    /// exceeded, so long-lived usage cannot grow this instance without bound (#505).
+    /// </summary>
+    /// <param name="seedCallIds">Same as <see cref="ReplayedToolCallSet(IEnumerable{string})"/>.</param>
+    /// <param name="maxEntries">
+    /// The largest number of ids this instance retains at once, or <see langword="null"/> for no
+    /// limit — the turn-scoped seed usage this type was built for is unbounded on purpose, since a
+    /// turn's own lifetime already bounds it. A bound exists for the one other place this type is
+    /// used: <c>ToolDiagnosticsMiddleware</c>'s per-instance fallback, whose instance can outlive any
+    /// single turn (a process-lived agent in <c>Presentation.FoundryHost</c>, or one cached for up to
+    /// 30 minutes by <c>AgentConversationCache</c>). Seed ids count toward the bound and are eligible
+    /// for eviction like any other claimed id — they carry no special protection once past
+    /// construction, matching how a genuinely new id is treated the moment after it is claimed.
+    /// </param>
+    /// <remarks>
+    /// FIFO, not LRU: the oldest <em>claim</em> is dropped, not the oldest <em>use</em>. A call id is
+    /// claimed exactly once and never re-claimed while known (<see cref="TryClaim"/> refuses a repeat
+    /// outright), so there is no "used again recently" signal an LRU could act on that FIFO does not
+    /// already capture — the two are equivalent here, and FIFO is the one that needs no extra
+    /// bookkeeping beyond the insertion queue this constructor already needs for eviction order.
+    /// </remarks>
+    public ReplayedToolCallSet(IEnumerable<string> seedCallIds, int? maxEntries)
     {
         ArgumentNullException.ThrowIfNull(seedCallIds);
+        if (maxEntries is <= 0)
+            throw new ArgumentOutOfRangeException(nameof(maxEntries), maxEntries, "Must be positive when specified.");
 
-        _callIds = new HashSet<string>(
-            seedCallIds.Where(id => !string.IsNullOrEmpty(id)),
-            StringComparer.Ordinal);
+        var seeded = new List<string>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var id in seedCallIds)
+        {
+            if (string.IsNullOrEmpty(id) || !seen.Add(id))
+                continue;
+            seeded.Add(id);
+        }
+
+        _maxEntries = maxEntries;
+        _callIds = new HashSet<string>(seeded, StringComparer.Ordinal);
+        _insertionOrder = maxEntries is null ? null : new Queue<string>(seeded);
+
+        // The seed itself can already exceed the bound (a long replayed history). Trim to the bound
+        // before the first TryClaim rather than waiting for ClaimCore's own eviction, which only
+        // fires on an ADD and would otherwise let the seed sit oversized indefinitely if nothing new
+        // is ever claimed.
+        if (_insertionOrder is not null)
+        {
+            while (_callIds.Count > _maxEntries)
+                EvictOldestUnlocked();
+        }
     }
 
     /// <summary>
@@ -108,7 +158,27 @@ public sealed class ReplayedToolCallSet
     {
         lock (_lock)
         {
-            return _callIds.Add(callId);
+            if (!_callIds.Add(callId))
+                return false;
+
+            _insertionOrder?.Enqueue(callId);
+            if (_insertionOrder is not null && _callIds.Count > _maxEntries)
+                EvictOldestUnlocked();
+
+            return true;
         }
+    }
+
+    /// <summary>
+    /// Removes the single oldest-claimed id. Caller must hold <see cref="_lock"/>.
+    /// </summary>
+    /// <remarks>
+    /// A dequeued id is always still a member of <see cref="_callIds"/>: nothing else ever removes
+    /// from either collection, so the queue and the set can never disagree about what is present.
+    /// </remarks>
+    private void EvictOldestUnlocked()
+    {
+        var oldest = _insertionOrder!.Dequeue();
+        _callIds.Remove(oldest);
     }
 }

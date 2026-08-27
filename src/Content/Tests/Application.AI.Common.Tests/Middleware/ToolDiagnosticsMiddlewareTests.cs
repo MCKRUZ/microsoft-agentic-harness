@@ -383,6 +383,44 @@ public sealed class ToolDiagnosticsMiddlewareTests
             Times.Once);
     }
 
+    [Fact]
+    public async Task InvokeNext_ProcessLivedInstanceExceedsTheFallbackBound_OldestClaimBecomesReclaimable()
+    {
+        // The correctness gate's own failing case, driven through the public surface rather than
+        // ReplayedToolCallSet's own tests: Presentation.FoundryHost builds one middleware instance for
+        // the whole process, unarmed (it never runs through ExecuteAgentTurnCommandHandler), so this is
+        // the exact shape a long-lived deployment produces. Before the bound existed, "call-0" here
+        // would be refused forever once claimed once. 10,001 rather than 10,000 specifically to force
+        // one eviction, not merely fill the set to capacity.
+        const int overCapacityBy = 1;
+        var innerClient = MakeChatClient();
+        var (writerMock, middleware) = MakeMiddlewareWithWriter(innerClient);
+
+        ReplayedToolCallScope.Current.Should().BeNull("this test is only meaningful unarmed");
+
+        var firstRound = Enumerable.Range(0, ToolDiagnosticsMiddleware.MaxFallbackClaimEntries + overCapacityBy)
+            .Select(i => new ChatMessage(ChatRole.Tool, [new FunctionResultContent($"call-{i}", "result")]))
+            .ToArray();
+        await middleware.GetResponseAsync(firstRound, null, CancellationToken.None);
+
+        // call-0 is the oldest claim and must have fallen out of the bounded window; every id from
+        // this same round is recorded once regardless (a first claim never checks the bound, only
+        // eviction after does), so this is not yet observable from round one's call count alone.
+        var secondRound = new ChatMessage[]
+        {
+            new(ChatRole.Tool, [new FunctionResultContent("call-0", "reclaimed after eviction")])
+        };
+        await middleware.GetResponseAsync(secondRound, null, CancellationToken.None);
+
+        writerMock.Verify(
+            w => w.AppendTraceAsync(
+                It.Is<ExecutionTraceRecord>(r => r.TurnId == "call-0"), It.IsAny<CancellationToken>()),
+            Times.Exactly(2),
+            "call-0 was recorded once in round one as a genuinely new claim, then evicted by the " +
+            "10,001st claim in that same round, then recorded again in round two as a legitimately " +
+            "new claim — a process-lived instance must not refuse the second recording forever");
+    }
+
     // --- Tool deduplication ---
 
     [Fact]

@@ -153,4 +153,97 @@ public sealed class ReplayedToolCallSetTests
         winners.Should().Be(racers);
         set.Count.Should().Be(racers);
     }
+
+    // ===== Bounded construction (#505) =====
+    //
+    // ToolDiagnosticsMiddleware's per-instance fallback can be process-lived (Presentation.FoundryHost
+    // builds one agent, and one middleware instance, for the whole container) — the fresh local
+    // correctness gate caught this default-constructor set growing forever and permanently refusing
+    // to re-record any repeated call id. These tests are on the type the fix landed in, not the
+    // middleware, because the invariant ("never exceeds the bound, oldest claim falls out first") is
+    // this type's to keep regardless of who constructs it that way.
+
+    [Fact]
+    public void BoundedConstructor_ClaimingBeyondTheBound_EvictsTheOldestClaim()
+    {
+        var set = new ReplayedToolCallSet([], maxEntries: 2);
+
+        set.TryClaim("call-1").Should().BeTrue();
+        set.TryClaim("call-2").Should().BeTrue();
+        set.TryClaim("call-3").Should().BeTrue();
+
+        set.Count.Should().Be(2, "the bound must never be exceeded, however many ids are claimed");
+        set.Contains("call-1").Should().BeFalse("the oldest claim is the one that falls out first");
+        set.Contains("call-2").Should().BeTrue();
+        set.Contains("call-3").Should().BeTrue();
+    }
+
+    [Fact]
+    public void BoundedConstructor_AnEvictedId_CanBeLegitimatelyReclaimed()
+    {
+        // The whole point of bounding rather than leaving the set unbounded: a very old id falling
+        // out of the window is not an error state, it is what makes the type usable at all behind a
+        // process-lived caller. Before this fix, a process-lived set's answer to "is this known" was
+        // permanent once true; after, it is "known within the retained window."
+        var set = new ReplayedToolCallSet([], maxEntries: 1);
+
+        set.TryClaim("call-1").Should().BeTrue();
+        set.TryClaim("call-2").Should().BeTrue(); // evicts call-1
+
+        set.TryClaim("call-1").Should().BeTrue(
+            "an id that fell out of the bounded window is, correctly, claimable again — TryClaim's " +
+            "contract is 'known right now', never 'was ever claimed'");
+    }
+
+    [Fact]
+    public void BoundedConstructor_SeedLargerThanTheBound_IsTrimmedBeforeAnyClaim()
+    {
+        // A long replayed history can already exceed the bound on its own. Without trimming at
+        // construction, an oversized seed would sit above the bound indefinitely if the caller never
+        // claims anything new — ClaimCore's eviction only runs on an ADD.
+        var set = new ReplayedToolCallSet(["call-1", "call-2", "call-3"], maxEntries: 2);
+
+        set.Count.Should().Be(2);
+        set.Contains("call-1").Should().BeFalse("the earliest seed entries are trimmed first, FIFO");
+        set.Contains("call-3").Should().BeTrue();
+    }
+
+    [Fact]
+    public void BoundedConstructor_SeedWithDuplicatesAtTheBound_CountsEachIdOnce()
+    {
+        // The seed-trimming loop counts _callIds (deduplicated), not the raw seed enumerable. A seed
+        // with duplicates could otherwise be trimmed too aggressively or not enough depending on
+        // which count the eviction loop actually reads.
+        var set = new ReplayedToolCallSet(["call-1", "call-1", "call-2"], maxEntries: 2);
+
+        set.Count.Should().Be(2);
+        set.Contains("call-1").Should().BeTrue();
+        set.Contains("call-2").Should().BeTrue();
+    }
+
+    [Fact]
+    public void UnboundedConstructor_ClaimingManyIds_NeverEvicts()
+    {
+        // Control for the two constructors above: the turn-scoped seed usage this type was built for
+        // must stay genuinely unbounded — a turn's own lifetime already bounds it, and evicting there
+        // would silently reintroduce the intra-turn duplicate-recording bug ReplayedToolCallScope
+        // exists to prevent.
+        var set = new ReplayedToolCallSet();
+
+        for (var i = 0; i < 5_000; i++)
+            set.TryClaim($"call-{i}").Should().BeTrue();
+
+        set.Count.Should().Be(5_000);
+        set.Contains("call-0").Should().BeTrue("nothing evicts when no bound was requested");
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void BoundedConstructor_NonPositiveMaxEntries_Throws(int maxEntries)
+    {
+        var act = () => new ReplayedToolCallSet([], maxEntries);
+
+        act.Should().Throw<ArgumentOutOfRangeException>();
+    }
 }
