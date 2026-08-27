@@ -342,6 +342,14 @@ public partial class AgentExecutionContextFactory
         if (_traceStore is null)
             return;
 
+        // Opt-in, and checked here rather than at registration: the store is also used directly by
+        // the meta-harness evaluation loop, which must keep tracing regardless of what an ordinary
+        // turn does. Gating the registration would disable both; gating the production producer
+        // disables only the one whose disk growth a consumer did not ask for. See
+        // MetaHarnessConfig.ExecutionTracingEnabled.
+        if (!_appConfig.CurrentValue.MetaHarness.ExecutionTracingEnabled)
+            return;
+
         var metadata = new RunMetadata
         {
             AgentName = agentName,

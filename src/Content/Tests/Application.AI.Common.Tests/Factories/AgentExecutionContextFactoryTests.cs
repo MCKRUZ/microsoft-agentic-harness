@@ -41,10 +41,18 @@ public class AgentExecutionContextFactoryTests
         IContextBudgetTracker? budgetTracker = null,
         IMcpToolProvider? mcpToolProvider = null,
         IToolConverter? toolConverter = null,
-        IServiceProvider? serviceProvider = null)
+        IServiceProvider? serviceProvider = null,
+        bool executionTracingEnabled = true)
     {
         var appConfig = new AppConfig
         {
+            // Defaults to true here, unlike production, so the trace-scope tests below keep
+            // exercising scope wiring rather than silently becoming assertions about the gate.
+            // The gate itself has its own test, which passes false explicitly.
+            MetaHarness = new Domain.Common.Config.MetaHarness.MetaHarnessConfig
+            {
+                ExecutionTracingEnabled = executionTracingEnabled
+            },
             AI = new AIConfig
             {
                 AgentFramework = new AgentFrameworkConfig
@@ -576,6 +584,32 @@ public class AgentExecutionContextFactoryTests
         context.TraceScope!.ExecutionRunId.Should().NotBe(Guid.Empty);
         context.TraceScope.OptimizationRunId.Should().BeNull();
         context.TraceScope.CandidateId.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task CreateContext_ExecutionTracingDisabled_DoesNotStartARun()
+    {
+        // The shipped default. Every skill-built agent turn used to start a trace run purely
+        // because the store was registered, which is always. That left an empty directory and a
+        // manifest — harmless only while nothing read the writer. Once #505 wired the writer into
+        // ToolDiagnosticsMiddleware, the same code path began appending real tool-result text to
+        // traces.jsonl on every turn, with no retention and no way to turn it off. A template's
+        // consumers must opt into that, so the producer is gated and the gate defaults off.
+        var traceStore = new Mock<IExecutionTraceStore>();
+        traceStore
+            .Setup(s => s.StartRunAsync(
+                It.IsAny<TraceScope>(), It.IsAny<RunMetadata>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Mock.Of<ITraceWriter>());
+
+        var factory = CreateFactory(traceStore: traceStore.Object, executionTracingEnabled: false);
+
+        var context = await factory.MapToAgentContextAsync(SimpleSkill(), new SkillAgentOptions());
+
+        traceStore.Verify(s => s.StartRunAsync(
+            It.IsAny<TraceScope>(), It.IsAny<RunMetadata>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+        context.AdditionalProperties.Should().NotContainKey(ITraceWriter.AdditionalPropertiesKey,
+            "a disabled gate must leave nothing for the middleware to pick up");
     }
 
     [Fact]

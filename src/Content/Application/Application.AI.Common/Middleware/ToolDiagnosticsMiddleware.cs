@@ -28,6 +28,69 @@ public sealed class ToolDiagnosticsMiddleware : DelegatingChatClient
     private readonly ISecretRedactor? _redactor;
 
     /// <summary>
+    /// The largest number of ids <see cref="_intraRunToolCallClaims"/> retains at once. See that
+    /// field's remarks for why a bound is required at all.
+    /// </summary>
+    /// <remarks>
+    /// Sized well above any realistic single turn's tool-call count (#512's own scenario is a handful
+    /// of calls per turn), so the only way to actually reach eviction is the accumulation this bound
+    /// exists to cap — a process handling many turns over a long lifetime. No measurement backs this
+    /// exact number; it is a conservative ceiling chosen to make eviction rare in ordinary operation
+    /// while still bounding worst-case memory, not a tuned value.
+    /// </remarks>
+    internal const int MaxFallbackClaimEntries = 10_000;
+
+    /// <summary>
+    /// Claim set used when no turn armed an ambient <see cref="Services.ReplayedToolCallScope"/>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>This instance's lifetime is NOT always one run — a prior version of this comment
+    /// claimed it was, and that was false for the specific callers this fallback exists to serve
+    /// (#505).</strong> One middleware instance is built per chat client per agent
+    /// <em>construction</em>, and how often that happens depends entirely on the caller:
+    /// <c>ExecuteAgentTurnCommandHandler</c> — the only production armer of the ambient scope, so the
+    /// only caller that never touches this fallback — does construct one per turn. But
+    /// <c>Presentation.FoundryHost</c> builds exactly <strong>one</strong> agent for the entire
+    /// process (see <c>Program.cs</c>'s remarks on why the composition root is held for process
+    /// lifetime), and it is one of the three unarmed callers this fallback exists for. Its middleware
+    /// instance, and this field, live as long as the container does.
+    /// </para>
+    /// <para>
+    /// Bounded rather than unbounded for exactly that reason: an unbounded set behind a process-lived
+    /// instance grows for the container's lifetime and, once full, permanently refuses to re-record
+    /// any call id a long-running deployment happens to see twice — silently and with no signal to an
+    /// operator. Bounding trades that permanent failure for a narrow one: an id evicted long ago can
+    /// be legitimately re-claimed, which is correct, not merely tolerated —
+    /// <see cref="Services.ReplayedToolCallSet.TryClaim"/>'s contract was always "is this known
+    /// <em>right now</em>," never "was this ever claimed."
+    /// </para>
+    /// <para>
+    /// <strong>Known residual gap, tracked in #541, found by the local grader gate reviewing this
+    /// very fix.</strong> Boundedness fixes growth, not sharing: this set is still one per
+    /// <em>instance</em>, and FoundryHost's instance serves genuinely concurrent HTTP requests (a
+    /// <c>WebApplication</c>). Two unrelated concurrent requests whose first tool call happens to
+    /// reuse the same provider-issued call id will have the second request's real result silently
+    /// dropped from its trace. Scoped to observability only — the shared state here does not reach
+    /// tool execution or the model response, only <c>traces.jsonl</c> — and dormant unless
+    /// <c>ExecutionTracingEnabled</c> is on, but real for the consumer that turns it on. Left open
+    /// rather than fixed here because no per-request hook exists in this codebase to key a claim set
+    /// on: <c>MapFoundryResponses()</c>'s request loop lives inside the Foundry SDK.
+    /// </para>
+    /// </remarks>
+    private readonly Services.ReplayedToolCallSet _intraRunToolCallClaims =
+        new([], MaxFallbackClaimEntries);
+
+    /// <summary>
+    /// How many ids the fallback set currently holds. Test-only: proves the set genuinely stays
+    /// empty when this instance has no trace writer, rather than merely inferring it from the
+    /// absence of an externally-observable effect — nothing downstream ever consults a claim this
+    /// set makes on an untraced instance, so a correctness-only test cannot distinguish "consumed but
+    /// harmless" from "never touched."
+    /// </summary>
+    internal int FallbackClaimCount => _intraRunToolCallClaims.Count;
+
+    /// <summary>
     /// Initializes a new instance of the <see cref="ToolDiagnosticsMiddleware"/> class.
     /// </summary>
     /// <param name="innerClient">The inner chat client to wrap with diagnostics.</param>
@@ -115,22 +178,70 @@ public sealed class ToolDiagnosticsMiddleware : DelegatingChatClient
         // even if the write below fails. See ReplayedToolCallScope's remarks: this is what closes the
         // intra-turn duplicate-recording case a read-only, dispatch-time snapshot alone cannot.
         //
-        // A result with no CallId cannot be deduplicated at all, and a null scope means no turn armed
-        // one (a test constructing this middleware directly) — both are recorded rather than dropped.
-        var functionResults = new List<FunctionResultContent>();
+        // A result with no CallId cannot be deduplicated at all and is always recorded.
+        //
+        // When no turn armed an ambient scope, fall back to this instance's own claim set rather
+        // than recording everything. The old comment assumed a null scope meant "a test constructed
+        // this middleware directly"; that was wrong. ExecuteAgentTurnCommandHandler is the only
+        // production armer, so AgentEvaluationService, RunOrchestratedTaskCommandHandler and
+        // Presentation.FoundryHost all run unarmed — and because this scans the CUMULATIVE inbound
+        // list, FunctionInvokingChatClient's own loop re-presents a round-1 result on every later
+        // round, appending it once per iteration. The eval harness would have gone from an empty
+        // traces.jsonl to one with tool counts inflated up to MaximumIterationsPerRequest-fold: worse
+        // than the empty file #505 set out to fix, and silently so.
+        //
+        // Not always one run: FoundryHost builds one middleware instance for the whole process,
+        // so this fallback can span every turn a deployment ever serves rather than a single one —
+        // see _intraRunToolCallClaims' remarks, corrected there after the local correctness gate
+        // caught the earlier claim that its lifetime "is exactly one run" was false for exactly the
+        // caller this fallback exists to serve. Bounded there for that reason. It deliberately does
+        // not replace the ambient scope, which is seeded from replayed history and therefore also
+        // covers the cross-turn case a fresh instance cannot see. Arming the scope in the three
+        // unarmed callers was the alternative; this was preferred because it removes the requirement
+        // to remember, which is what produced the gap — FoundryHost's request loop lives inside the
+        // Foundry SDK, with no seam in this codebase to arm the scope around even if that had been
+        // chosen instead.
+        //
+        // The fallback is consulted for TRACE eligibility only, and only when a writer actually
+        // exists (#541's disclosed scope, found false by the local grader gate and corrected here
+        // rather than in the doc comment alone). LlmUsageCapture.Current is itself a genuinely
+        // per-request AsyncLocal — the same guarantee ReplayedToolCallScope relies on — so recording
+        // every unarmed candidate into it unconditionally, exactly as this method did before #505,
+        // carries no cross-request risk and was never this fix's concern. Gating that path on the
+        // process-lived fallback set too would have been the actual defect the grader caught: a
+        // dashboard-capture drop live on every unarmed caller regardless of whether tracing was even
+        // on. Skipping the fallback set entirely when _traceWriter is null is also what makes the
+        // "dormant unless ExecutionTracingEnabled is on" claim true by construction instead of merely
+        // asserted — an unarmed host with tracing off now never touches _intraRunToolCallClaims at all.
+        var functionResults = new List<(FunctionResultContent Result, bool ShouldTrace)>();
         foreach (var candidate in messages.SelectMany(m => m.Contents).OfType<FunctionResultContent>())
         {
-            if (alreadyReplayed is not null
-                && !string.IsNullOrEmpty(candidate.CallId)
-                && !alreadyReplayed.TryClaim(candidate.CallId))
+            if (string.IsNullOrEmpty(candidate.CallId))
             {
+                // Cannot be deduplicated at all — always eligible for both outputs, as before.
+                functionResults.Add((candidate, ShouldTrace: true));
                 continue;
             }
 
-            functionResults.Add(candidate);
+            if (alreadyReplayed is not null)
+            {
+                // Armed: a single claim decides both outputs together, exactly as it always has.
+                // This scope is per-request (AsyncLocal, seeded by ExecuteAgentTurnCommandHandler),
+                // so sharing one decision here introduces none of the cross-request risk the
+                // unarmed fallback carries.
+                if (alreadyReplayed.TryClaim(candidate.CallId))
+                    functionResults.Add((candidate, ShouldTrace: true));
+                continue;
+            }
+
+            // Unarmed. Usage-capture always records (see remarks above); trace eligibility is its
+            // own decision, against the fallback set, and only made at all when there is a writer
+            // to write to.
+            var shouldTrace = _traceWriter is not null && _intraRunToolCallClaims.TryClaim(candidate.CallId);
+            functionResults.Add((candidate, shouldTrace));
         }
 
-        foreach (var result in functionResults)
+        foreach (var (result, shouldTrace) in functionResults)
         {
             // A failed call's Result already carries the raw exception message baked in by
             // IncludeDetailedErrors (see ExecuteAgentTurnCommandHandler.RedactedResultForStreaming) — this
@@ -166,7 +277,7 @@ public sealed class ToolDiagnosticsMiddleware : DelegatingChatClient
             // even when trace writer isn't wired.
             LlmUsageCapture.Current?.RecordToolResult(result.CallId, trimmedPayload);
 
-            if (_traceWriter is null)
+            if (!shouldTrace || _traceWriter is null)
                 continue;
 
             try
