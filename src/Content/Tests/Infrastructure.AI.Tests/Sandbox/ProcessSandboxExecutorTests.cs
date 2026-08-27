@@ -64,7 +64,7 @@ public class ProcessSandboxExecutorTests : IDisposable
 
         var result = await _sut.ExecuteAsync(request, CancellationToken.None);
 
-        result.Success.Should().BeTrue();
+        result.Success.Should().BeTrue("the executor reported: {0}", result.ErrorMessage);
         result.Output.Should().NotBeNullOrEmpty();
         result.Attestation.Should().NotBeNull();
         result.ExitCode.Should().Be(0);
@@ -98,7 +98,7 @@ public class ProcessSandboxExecutorTests : IDisposable
         var result = await _sut.ExecuteAsync(request, CancellationToken.None);
 
         result.Success.Should().BeFalse();
-        result.ExitCode.Should().Be(1);
+        result.ExitCode.Should().Be(1, "the executor reported: {0}", result.ErrorMessage);
         result.Attestation.Should().NotBeNull();
         result.Attestation!.IsFailureAttestation.Should().BeTrue();
     }
@@ -116,7 +116,7 @@ public class ProcessSandboxExecutorTests : IDisposable
 
         var result = await _sut.ExecuteAsync(request, CancellationToken.None);
 
-        result.Success.Should().BeTrue();
+        result.Success.Should().BeTrue("the executor reported: {0}", result.ErrorMessage);
         result.Output.Should().Contain("key");
         result.Output.Should().Contain("value");
     }
@@ -160,7 +160,7 @@ public class ProcessSandboxExecutorTests : IDisposable
         },
         Command = command,
         ArgumentList = argumentList ?? ["/c", "echo", "test"],
-        Timeout = timeout ?? TimeSpan.FromSeconds(10)
+        Timeout = timeout ?? SandboxTestDeadlines.Generous
     };
 
     private static ToolExecutionAttestation CreateAttestation(

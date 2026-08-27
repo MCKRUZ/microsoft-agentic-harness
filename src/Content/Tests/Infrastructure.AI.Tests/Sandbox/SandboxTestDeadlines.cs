@@ -1,0 +1,66 @@
+namespace Infrastructure.AI.Tests.Sandbox;
+
+/// <summary>
+/// The deadline a sandbox test gives a real OS subprocess when the property under test is
+/// <em>what</em> the sandbox produced — an exit code, bound output, a signed attestation, a
+/// cleaned-up workspace — rather than how fast it produced it.
+/// </summary>
+/// <remarks>
+/// <para>
+/// <strong>Why this exists (#537).</strong> These tests spawn actual processes and then wait on
+/// them under a fixed wall-clock deadline. Every such deadline was written as a bare literal, and
+/// they had drifted to two different values (10s in the executor and isolation tests, 5s in the
+/// session-factory ones) for no stated reason. Each was comfortable in isolation — the whole
+/// sandbox suite finishes in about three seconds on an idle machine — and each was a race the test
+/// simply expected to win. Run alongside the other ~3,300 tests in this assembly, they lost it
+/// often enough that roughly one full-assembly run in seven failed, on a different member of the
+/// family each time. A run that fails for a reason unrelated to the code under test teaches
+/// whoever hits it to re-run until green, which is precisely the habit that lets a real regression
+/// through — and the local push gate will not write its receipt without a clean pass, so the
+/// flake intermittently blocked the whole review-and-push workflow.
+/// </para>
+/// <para>
+/// <strong>Why generous rather than tuned.</strong> Nothing here is asserting a duration, so there
+/// is no signal to preserve by keeping the number tight — a slow-but-correct subprocess is still
+/// correct, and this value only decides how long we wait before calling a genuinely hung process
+/// hung. It is deliberately far above the observed cost (sub-second) so that scheduling contention
+/// cannot reach it, and still bounded so a real hang fails the run rather than wedging it.
+/// </para>
+/// <para>
+/// <strong>Where the value lands, which is two different places — and why both had to move.</strong>
+/// Three of its seven call sites are a test-side <c>WaitAsync</c>: the suite's own patience, invisible
+/// to the code under test. The other four reach the code under test itself — <c>Timeout</c> on a
+/// <c>SandboxExecutionRequest</c> in the executor, isolation and attestation tests, and
+/// <c>MaxSessionDuration</c> on the session-factory request. Those are the sandbox's own kill budgets,
+/// so those tests now run a 60-second envelope rather than the 10 and 30 seconds they had.
+/// </para>
+/// <para>
+/// The session-factory case is the one worth understanding, because widening only the visible half of
+/// it does nothing. A test there waits on <c>ReadLineAsync</c> or <c>Completion</c>, but
+/// <c>ProcessSandboxSession</c> treats <c>MaxSessionDuration</c> as a hard ceiling and kills the
+/// process at it regardless of how patient the caller is. Raise the <c>WaitAsync</c> alone and the
+/// binding deadline is still the session's own 30 seconds — and the test then fails by reading a
+/// <see langword="null"/> line from a closed stream, which reads like a functional echo bug rather
+/// than the load problem it actually is. A worse diagnostic than the one it replaced. Both halves
+/// move together or neither should.
+/// </para>
+/// <para>
+/// Widening these weakens nothing, because every one of these tests asserts what the sandbox
+/// produced — environment isolation, an exit code, a signed attestation, a cleaned-up workspace —
+/// and none asserts how long it took.
+/// </para>
+/// <para>
+/// <strong>Do not use this for a test whose subject IS the deadline.</strong>
+/// <c>ProcessSandboxExecutorTests.ExecuteAsync_Timeout_KillsProcessAndReturnsFail</c> passes its
+/// own short timeout against a command that runs for a minute; widening that one would delete the
+/// behaviour it exists to prove. The distinction is the whole point: a timeout test asserts the
+/// deadline fires, and every other test here merely needs one that never does.
+/// </para>
+/// </remarks>
+internal static class SandboxTestDeadlines
+{
+    /// <summary>
+    /// Deadline for a subprocess whose duration is incidental to the assertion.
+    /// </summary>
+    public static readonly TimeSpan Generous = TimeSpan.FromSeconds(60);
+}

@@ -329,7 +329,7 @@ public sealed class DurableEscalationHardeningTests : IDisposable
 		var service = CreateService(store);
 		(await service.RehydratePendingEscalationsAsync(CancellationToken.None)).Should().Be(1);
 
-		using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+		using var cts = new CancellationTokenSource(EscalationTestDeadlines.BackgroundWork);
 		EscalationOutcome? outcome = null;
 		while (outcome is null)
 		{

@@ -245,7 +245,7 @@ public class ProcessSandboxEnvironmentIsolationTests
         },
         Command = "cmd.exe",
         ArgumentList = argumentList,
-        Timeout = TimeSpan.FromSeconds(10)
+        Timeout = SandboxTestDeadlines.Generous
     };
 
     private static ToolExecutionAttestation CreateAttestation(string toolName) => new()

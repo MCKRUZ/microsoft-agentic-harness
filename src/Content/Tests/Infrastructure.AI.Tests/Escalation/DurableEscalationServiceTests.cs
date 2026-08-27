@@ -139,10 +139,17 @@ public sealed class DurableEscalationServiceTests : IDisposable
 			.Setup(a => a.RecordOutcomeAsync(It.IsAny<EscalationOutcome>(), It.IsAny<CancellationToken>()))
 			.Returns(Task.CompletedTask);
 
+	/// <summary>
+	/// Waits for an outcome the service produces on a background continuation.
+	/// </summary>
+	/// <remarks>
+	/// Budgeted by <see cref="EscalationTestDeadlines.BackgroundWork"/>, which carries the reasoning
+	/// for the six loops in this folder that share it (#537).
+	/// </remarks>
 	private static async Task<EscalationOutcome> PollOutcomeAsync(
 		DefaultEscalationService service, Guid escalationId)
 	{
-		using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+		using var cts = new CancellationTokenSource(EscalationTestDeadlines.BackgroundWork);
 		while (true)
 		{
 			var outcome = await service.GetOutcomeAsync(escalationId, CancellationToken.None);
@@ -200,11 +207,19 @@ public sealed class DurableEscalationServiceTests : IDisposable
 	public async Task RehydratePendingEscalationsAsync_TimeoutExpiredDuringDowntime_TimesOutImmediately()
 	{
 		var request = CreateRequest(timeoutSeconds: 1);
-		var first = CreateService(CreateDurableStore());
-		await first.QueueEscalationAsync(request, CancellationToken.None);
-		first.Dispose(); // kills the in-process timeout task; the durable row stays Pending
 
-		await Task.Delay(TimeSpan.FromSeconds(1.5));
+		// A row left Pending by a host that died before its timeout could fire, created far enough
+		// back that its deadline has already passed. Seeded straight into the store rather than
+		// queued through a service and disposed (#537): that sequence armed a live one-second timer
+		// and then raced Dispose against it. Under suite load the few statements between the two
+		// took longer than the second, so the escalation timed out in-process, left nothing Pending,
+		// and rehydration restored 0. The setup still READS the clock, on the next line — what it no
+		// longer does is depend on time PASSING while the test runs, which is where the race lived.
+		// The only remaining wait is PollOutcomeAsync's, bounded by EscalationTestDeadlines. The
+		// queue-then-restart path this replaced is covered whole by
+		// RehydratePendingEscalationsAsync_AfterRestart_RestoresPendingEscalation above.
+		await CreateDurableStore().SavePendingAsync(
+			request, DateTimeOffset.UtcNow.AddSeconds(-10), CancellationToken.None);
 
 		var rebooted = CreateService(CreateDurableStore());
 		var restored = await rebooted.RehydratePendingEscalationsAsync(CancellationToken.None);

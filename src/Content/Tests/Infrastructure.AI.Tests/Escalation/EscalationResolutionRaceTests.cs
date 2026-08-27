@@ -166,7 +166,7 @@ public sealed class EscalationResolutionRaceTests : IDisposable
 	private async Task<EscalationOutcome> PollOutcomeDrivingClockAsync(
 		DefaultEscalationService service, Guid escalationId)
 	{
-		using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+		using var cts = new CancellationTokenSource(EscalationTestDeadlines.BackgroundWork);
 		while (true)
 		{
 			var outcome = await service.GetOutcomeAsync(escalationId, CancellationToken.None);
@@ -325,7 +325,7 @@ public sealed class EscalationResolutionRaceTests : IDisposable
 
 	private static async Task WaitForPendingAsync(DefaultEscalationService service, Guid escalationId)
 	{
-		using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+		using var cts = new CancellationTokenSource(EscalationTestDeadlines.BackgroundWork);
 		while (await service.GetPendingEscalationAsync(escalationId, CancellationToken.None) is null)
 		{
 			cts.Token.ThrowIfCancellationRequested();
