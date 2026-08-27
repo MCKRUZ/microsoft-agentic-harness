@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Collections.ObjectModel;
 using System.Text.RegularExpressions;
 
 namespace Tests.Common;
@@ -52,20 +53,27 @@ public static class SourceScan
     /// argument is not made again from the same incomplete cost model.
     /// </para>
     /// <para>
-    /// Returned as <see cref="IReadOnlyList{T}"/> rather than an array <strong>because the instance is
-    /// shared</strong>. Every caller in a run now receives the same object, so one caller sorting or
-    /// assigning into it in place would silently change what every other guard sees — and a guard
-    /// reading a mutated view of the source tree passes vacuously, which is the one failure mode this
-    /// whole class exists to prevent. All three callers are read-only LINQ projections today; this
-    /// makes that a property of the type instead of a property of the current callers.
+    /// <strong>Read-only because the instance is shared.</strong> Every caller in a run receives the
+    /// same object, so one caller sorting or assigning into it in place would silently change what
+    /// every other guard sees — and a guard reading a mutated view of the source tree passes
+    /// vacuously, which is the single failure mode this whole class exists to prevent.
+    /// </para>
+    /// <para>
+    /// The wrap is done <strong>once, at the cache boundary</strong>, and the cache stores the wrapper
+    /// rather than the array. Declaring the return type as <see cref="IReadOnlyList{T}"/> while still
+    /// handing back the array would be only a cast: a caller could cast it back and mutate the shared
+    /// instance, and the paragraph above would be asserting an enforcement the code did not provide —
+    /// which is precisely the defect this class is built to catch, committed in its own source. The
+    /// backing array is never reachable after construction, so the guarantee is structural rather than
+    /// a convention the current callers happen to honour.
     /// </para>
     /// </remarks>
     public static IReadOnlyList<(string Path, string Code)> ReadProductionSources(string contentRoot) =>
-        Cache.GetOrAdd(contentRoot, root => Directory
+        Cache.GetOrAdd(contentRoot, root => new ReadOnlyCollection<(string Path, string Code)>(Directory
             .EnumerateFiles(root, "*.cs", SearchOption.AllDirectories)
             .Where(f => !IsExcluded(f, root))
             .Select(f => (Path: f, Code: StripCommentsAndStrings(File.ReadAllText(f))))
-            .ToArray());
+            .ToArray()));
 
     /// <summary>
     /// One read of the tree per test assembly. The source is immutable for the lifetime of a run, so
@@ -93,7 +101,8 @@ public static class SourceScan
     /// committed state.
     /// </para>
     /// </remarks>
-    private static readonly ConcurrentDictionary<string, (string Path, string Code)[]> Cache = new(StringComparer.Ordinal);
+    private static readonly ConcurrentDictionary<string, ReadOnlyCollection<(string Path, string Code)>> Cache =
+        new(StringComparer.Ordinal);
 
     /// <summary>
     /// Removes comments and string literals so only compiled code is matched — a doc comment naming

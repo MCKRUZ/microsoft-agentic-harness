@@ -139,10 +139,20 @@ public sealed class DurableEscalationServiceTests : IDisposable
 			.Setup(a => a.RecordOutcomeAsync(It.IsAny<EscalationOutcome>(), It.IsAny<CancellationToken>()))
 			.Returns(Task.CompletedTask);
 
+	/// <summary>
+	/// Waits for an outcome the service produces on a background continuation.
+	/// </summary>
+	/// <remarks>
+	/// The budget is generous on purpose (#537). What it waits on is not a fixed amount of work: the
+	/// timeout continuation writes to a SQLite file the sibling store still holds open, then the audit
+	/// mock. Nothing here asserts how long that takes, so a tight budget would be pure race — the same
+	/// shape as the one-second window that made this class flaky in the first place, just further down.
+	/// It stays bounded so a genuinely stuck outcome fails the run instead of hanging it.
+	/// </remarks>
 	private static async Task<EscalationOutcome> PollOutcomeAsync(
 		DefaultEscalationService service, Guid escalationId)
 	{
-		using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+		using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
 		while (true)
 		{
 			var outcome = await service.GetOutcomeAsync(escalationId, CancellationToken.None);
@@ -206,8 +216,9 @@ public sealed class DurableEscalationServiceTests : IDisposable
 		// queued through a service and disposed (#537): that sequence armed a live one-second timer
 		// and then raced Dispose against it. Under suite load the few statements between the two
 		// took longer than the second, so the escalation timed out in-process, left nothing Pending,
-		// and rehydration restored 0. Nothing here reads the wall clock, so there is no race left
-		// to lose — and the queue-then-restart path this replaced is covered whole by
+		// and rehydration restored 0. The setup no longer reads the wall clock at all, so that race
+		// is gone; the one remaining wait is PollOutcomeAsync's, and its budget is generous for the
+		// reason given there. The queue-then-restart path this replaced is covered whole by
 		// RehydratePendingEscalationsAsync_AfterRestart_RestoresPendingEscalation above.
 		await CreateDurableStore().SavePendingAsync(
 			request, DateTimeOffset.UtcNow.AddSeconds(-10), CancellationToken.None);

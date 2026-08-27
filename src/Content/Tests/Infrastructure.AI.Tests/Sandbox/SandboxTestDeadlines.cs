@@ -27,16 +27,27 @@ namespace Infrastructure.AI.Tests.Sandbox;
 /// cannot reach it, and still bounded so a real hang fails the run rather than wedging it.
 /// </para>
 /// <para>
-/// <strong>Where the value actually lands, which is two different places.</strong> In the
-/// session-factory tests it is a test-side <c>WaitAsync</c> — the suite's own patience, invisible to
-/// the code under test. In the executor, isolation, and attestation tests it is assigned to
-/// <c>SandboxExecutionRequest.Timeout</c>, which is the sandbox's <em>production</em> kill budget:
-/// those tests now exercise a 60-second envelope rather than a 10-second one. That weakens nothing,
-/// because each of them asserts what the sandbox produced — environment isolation, an exit code, a
-/// signed attestation — and none asserts how long it took. It is stated here because a comment
-/// describing this purely as "how long the tests wait" would be false at three of its seven call
-/// sites (the other four are the <c>WaitAsync</c> kind), and a reader trusting that description
-/// would mis-size the next one.
+/// <strong>Where the value lands, which is two different places — and why both had to move.</strong>
+/// Three of its seven call sites are a test-side <c>WaitAsync</c>: the suite's own patience, invisible
+/// to the code under test. The other four reach the code under test itself — <c>Timeout</c> on a
+/// <c>SandboxExecutionRequest</c> in the executor, isolation and attestation tests, and
+/// <c>MaxSessionDuration</c> on the session-factory request. Those are the sandbox's own kill budgets,
+/// so those tests now run a 60-second envelope rather than the 10 and 30 seconds they had.
+/// </para>
+/// <para>
+/// The session-factory case is the one worth understanding, because widening only the visible half of
+/// it does nothing. A test there waits on <c>ReadLineAsync</c> or <c>Completion</c>, but
+/// <c>ProcessSandboxSession</c> treats <c>MaxSessionDuration</c> as a hard ceiling and kills the
+/// process at it regardless of how patient the caller is. Raise the <c>WaitAsync</c> alone and the
+/// binding deadline is still the session's own 30 seconds — and the test then fails by reading a
+/// <see langword="null"/> line from a closed stream, which reads like a functional echo bug rather
+/// than the load problem it actually is. A worse diagnostic than the one it replaced. Both halves
+/// move together or neither should.
+/// </para>
+/// <para>
+/// Widening these weakens nothing, because every one of these tests asserts what the sandbox
+/// produced — environment isolation, an exit code, a signed attestation, a cleaned-up workspace —
+/// and none asserts how long it took.
 /// </para>
 /// <para>
 /// <strong>Do not use this for a test whose subject IS the deadline.</strong>

@@ -327,6 +327,6 @@ public class ProcessSandboxSessionFactoryTests
         },
         Command = "cmd.exe",
         ArgumentList = ["/c", "more"],
-        MaxSessionDuration = TimeSpan.FromSeconds(30)
+        MaxSessionDuration = SandboxTestDeadlines.Generous
     };
 }
