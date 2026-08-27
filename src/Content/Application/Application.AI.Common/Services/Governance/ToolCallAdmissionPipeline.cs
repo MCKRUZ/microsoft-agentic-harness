@@ -316,7 +316,12 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
         // A real marker is passed, unlike TryApplyTextOutputPolicy's use of the same primitive: this
         // method has no out-parameter to report a drop through — see PreCutForScan's own marker doc,
         // and #487's security-review finding on this PR that this line closes.
-        var (preCut, _) = ToolResultText.PreCutForScan(result, OutputCeiling, ScrubOverlapMargin, OutputTruncationMarker);
+        //
+        // Ceiling captured once, not re-read from _options.CurrentValue at the pre-cut and again at the
+        // final cut: a hot reload between the two reads would otherwise let them disagree about what
+        // ceiling this one call is bounding to (run-gates' correctness gate, advisory).
+        var ceiling = OutputCeiling;
+        var (preCut, _) = ToolResultText.PreCutForScan(result, ceiling, ScrubOverlapMargin, OutputTruncationMarker);
 
         // #469: the sanitize pass below is unconditional — see the interface remarks for why. It stays
         // in shape-preserving lockstep with RedactResult below via the shared ToolResultText.Sanitize.
@@ -328,7 +333,7 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
         // different, wider, scan-cost-only bound, not a substitute for this one. It also mirrors
         // ReportExecutionAsync, which has always sanitized, redacted, and THEN bounded tool failure
         // text at this same pipeline (#460); success output simply never got the third step.
-        return ToolResultText.Bound(treated, OutputCeiling, OutputTruncationMarker);
+        return ToolResultText.Bound(treated, ceiling, OutputTruncationMarker);
     }
 
     /// <inheritdoc />
@@ -349,7 +354,21 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
         // #487: the same scan-cost pre-cut ApplyOutputPolicy applies, for the same reason — this is the
         // method the plan step executor (a sandboxed tool's output, unbounded upstream) and the
         // Execution API both call, and neither used to bound scan cost on this side of the boundary.
-        var (preCut, droppedByPreCut) = ToolResultText.PreCutForScan(content, OutputCeiling, ScrubOverlapMargin);
+        //
+        // A real marker is passed here too, not just at ApplyOutputPolicy's call site: this method DOES
+        // report a drop through wasTruncated below, but ToolUseStepExecutor.HandleSuccessAsync (the plan
+        // path) discards that out-parameter with `out _` and relies entirely on a marker embedded in
+        // the text — a premise that held before this PR (the final cut was the only cut, and it always
+        // left a marker when it fired) and stopped holding the moment this pre-cut could drop content
+        // with nothing to show for it whenever sanitizing/redacting then shrinks the survivor back under
+        // OutputCeiling. Caught by run-gates' correctness gate: the second caller of this same new
+        // primitive didn't get the fix #487's own security review already applied to the other one.
+        //
+        // Ceiling captured once, not re-read at the pre-cut and again at the final cut below — see
+        // ApplyOutputPolicy's identical capture for why (run-gates' correctness gate, advisory).
+        var ceiling = OutputCeiling;
+        var (preCut, droppedByPreCut) =
+            ToolResultText.PreCutForScan(content, ceiling, ScrubOverlapMargin, OutputTruncationMarker);
 
         // #479: sanitize unconditionally on both branches, the same guarantee ApplyOutputPolicy carries
         // (#469) — this method used to sanitize only when a redaction was required, leaving the
@@ -402,7 +421,7 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
         // most of the body. Rather than restore that assumption by aligning the two numbers, the cut
         // now reports itself and the caller ORs it into whatever truncation signal it publishes: a fact
         // that travels with the value cannot drift apart the way two independently-owned ceilings can.
-        var (bounded, cutAfterProcessing) = BoundedText.Cap(processed, OutputCeiling, OutputTruncationMarker);
+        var (bounded, cutAfterProcessing) = BoundedText.Cap(processed, ceiling, OutputTruncationMarker);
         result = bounded;
         // droppedByPreCut is carried forward, not discarded: content the pre-cut dropped can still
         // leave this final cut with nothing further to drop once sanitizing/redacting has shrunk what

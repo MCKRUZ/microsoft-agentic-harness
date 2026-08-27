@@ -381,6 +381,31 @@ public sealed class ToolCallAdmissionPipelineTests
     }
 
     [Fact]
+    public void TryApplyTextOutputPolicy_PreCutDropsContentThatSanitizingThenShrinksBelowTheCeiling_StillMarksTheResult()
+    {
+        // Found by run-gates' correctness gate: the sibling of ApplyOutputPolicy_...StillMarksTheResult
+        // below, on the OTHER caller of the same new pre-cut. This method DOES report a drop through
+        // wasTruncated -- but ToolUseStepExecutor.HandleSuccessAsync (the plan path) discards that
+        // out-parameter with `out _` and depends entirely on a marker embedded in the returned text, a
+        // premise that broke the moment this pre-cut could drop content silently.
+        var pipeline = AdmissionHarness.Pipeline(
+            outputCeiling: 10_000,
+            sanitizer: AdmissionHarness.SubstitutingSanitizer(new string('z', 1), string.Empty));
+
+        var ok = pipeline.TryApplyTextOutputPolicy(
+            ToolCallAdmission.Allow(), Tool, "HEADER" + new string('z', 50_000), out var result, out var wasTruncated);
+
+        ok.Should().BeTrue();
+        wasTruncated.Should().BeTrue("the pre-cut genuinely dropped content, regardless of whether a caller reads this flag");
+        // The property under test: a caller that ONLY reads the text (as ToolUseStepExecutor does) must
+        // still be able to tell this was cut, because the final BoundedText.Cap never fires here --
+        // sanitizing shrank the pre-cut's survivor to "HEADER" + marker, already under the 10,000 ceiling.
+        result.Should().Contain(ToolCallAdmissionPipeline.OutputTruncationMarker,
+            "a reader with no access to wasTruncated (ToolUseStepExecutor.HandleSuccessAsync discards it) "
+            + "must not conclude the result is complete just because the final cut never fired");
+    }
+
+    [Fact]
     public void ApplyOutputPolicy_PreCutDropsContentThatSanitizingThenShrinksBelowTheCeiling_StillMarksTheResult()
     {
         // #487 security-review finding on this PR: unlike TryApplyTextOutputPolicy, this method has no
