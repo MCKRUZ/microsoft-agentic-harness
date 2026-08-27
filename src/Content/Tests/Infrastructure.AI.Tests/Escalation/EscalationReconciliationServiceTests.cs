@@ -260,7 +260,7 @@ public sealed class EscalationReconciliationServiceTests
 
     private async Task WaitForAsync(Func<bool> condition)
     {
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        using var cts = new CancellationTokenSource(EscalationTestDeadlines.BackgroundWork);
         while (!condition())
         {
             cts.Token.ThrowIfCancellationRequested();

@@ -133,12 +133,14 @@ public sealed class DefaultEscalationServiceTests : IDisposable
 	/// <see cref="DefaultEscalationService.GetPendingEscalationAsync"/>. A bare
 	/// <c>Task.Delay</c> can lose the race under thread-pool starvation, after which
 	/// <c>SubmitDecisionAsync</c> silently drops the decision and the test stalls for the
-	/// full request timeout. Polling the registration signal removes that race and fails in
-	/// seconds (not minutes) if registration genuinely never happens.
+	/// full request timeout. Polling the registration signal removes that race and gives up well
+	/// before that timeout if registration genuinely never happens — see
+	/// <see cref="EscalationTestDeadlines.BackgroundWork"/> for why the budget is a minute rather
+	/// than the handful of seconds it used to be.
 	/// </remarks>
 	private async Task WaitForRegistrationAsync(Guid escalationId)
 	{
-		using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+		using var cts = new CancellationTokenSource(EscalationTestDeadlines.BackgroundWork);
 		while (true)
 		{
 			var pending = await _sut.GetPendingEscalationAsync(escalationId, CancellationToken.None);
