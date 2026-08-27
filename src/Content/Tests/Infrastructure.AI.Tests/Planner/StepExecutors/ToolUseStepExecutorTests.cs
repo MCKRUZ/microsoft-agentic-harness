@@ -375,7 +375,12 @@ public sealed class ToolUseStepExecutorTests
         _classificationGate.Setup(g => g.EvaluateAsync(
                 "file_system", It.IsAny<IReadOnlyDictionary<string, object?>>(), It.IsAny<CancellationToken>()))
             .Returns(ValueTask.FromResult(ClassificationVerdict.RedactOutput()));
-        _classificationGate.Setup(g => g.RedactResult("file_system", It.IsAny<object?>()))
+        // #490: the plan path calls TryApplyTextOutputPolicy, which resolves to the string-typed
+        // RedactResult(string, string?) overload — the object-typed one is what ApplyOutputPolicy
+        // (the agent-turn path) uses instead, and stubbing only that one leaves this call unstubbed,
+        // defaulting to null and failing closed for the wrong reason (an unstubbed Moq call, not a
+        // deliberate simulation of anything).
+        _classificationGate.Setup(g => g.RedactResult("file_system", It.IsAny<string?>()))
             .Returns("[redacted]");
 
         _sandboxExecutor.Setup(s => s.ExecuteAsync(It.IsAny<SandboxExecutionRequest>(), It.IsAny<CancellationToken>()))
@@ -399,11 +404,16 @@ public sealed class ToolUseStepExecutorTests
         // Fails closed. The gate decided this asset must not be emitted as-is and the redaction did
         // not produce usable text, so the one thing that must not happen is falling back to the
         // original — the harmless-looking default that silently defeats the control.
+        //
+        // #490: the string-typed RedactResult(string, string?) overload TryApplyTextOutputPolicy calls
+        // makes "answers with a non-string" unrepresentable at the type level — the only way left to
+        // simulate a gate breaking its non-null-in/non-null-out contract is a null return for non-null
+        // input.
         _classificationGate.Setup(g => g.EvaluateAsync(
                 "file_system", It.IsAny<IReadOnlyDictionary<string, object?>>(), It.IsAny<CancellationToken>()))
             .Returns(ValueTask.FromResult(ClassificationVerdict.RedactOutput()));
-        _classificationGate.Setup(g => g.RedactResult("file_system", It.IsAny<object?>()))
-            .Returns(new object());
+        _classificationGate.Setup(g => g.RedactResult("file_system", It.IsAny<string?>()))
+            .Returns((string?)null);
 
         _sandboxExecutor.Setup(s => s.ExecuteAsync(It.IsAny<SandboxExecutionRequest>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new SandboxExecutionResult

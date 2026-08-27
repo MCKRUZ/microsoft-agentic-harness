@@ -94,7 +94,7 @@ public interface IToolCallAdmissionPipeline
     /// <paramref name="result"/>'s text, run unconditionally through the general-purpose sanitizer
     /// (injection payloads, invisible characters, exfiltration URLs) regardless of whether the admission
     /// carried a redact verdict; a redact verdict additionally routes through
-    /// <see cref="IToolClassificationGate.RedactResult"/>'s known-secret-pattern scrub (#484) — a strict
+    /// <see cref="IToolClassificationGate.RedactResult(string, object?)"/>'s known-secret-pattern scrub (#484) — a strict
     /// superset of the baseline sanitize, not a substitute for it. A structured (non-text) result is
     /// returned unchanged — the sanitizer operates on free text, and every recognized text-carrying
     /// shape (a plain string, a serialized MCP <c>CallToolResult</c>'s text and embedded-resource content
@@ -131,7 +131,7 @@ public interface IToolCallAdmissionPipeline
     /// <param name="result">
     /// <paramref name="content"/>, run unconditionally through the general-purpose sanitizer — the same
     /// guarantee <see cref="ApplyOutputPolicy"/> carries (#469) — and additionally through
-    /// <see cref="IToolClassificationGate.RedactResult"/>'s known-secret-pattern scrub when a redaction
+    /// <see cref="IToolClassificationGate.RedactResult(string, string?)"/>'s known-secret-pattern scrub when a redaction
     /// was required (#479 closed the gap where this method sanitized only on that second path, unlike
     /// its sibling). Null content passes through as null: there is nothing to sanitize or redact. Null
     /// when the method returns <see langword="false"/>.

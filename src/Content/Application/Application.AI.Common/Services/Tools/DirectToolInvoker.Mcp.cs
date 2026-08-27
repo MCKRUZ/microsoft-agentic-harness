@@ -1,13 +1,11 @@
 using System.Diagnostics;
 using Application.AI.Common.Interfaces;
-using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Planner;
 using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Services.Governance;
 using Domain.AI.Bundles;
 using Domain.AI.Escalation;
-using Domain.AI.Governance;
 using Domain.Common.Config.AI.DirectToolInvocation;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
@@ -257,11 +255,10 @@ public sealed partial class DirectToolInvoker
     }
 
     /// <summary>
-    /// Redacts if the classification gate said to, sanitizes unconditionally, then bounds the length —
-    /// the MCP analogue of <c>DirectToolInvoker.Response.cs</c>'s <c>Shape</c>, reusing its scrub/bound
-    /// primitives (<c>ScrubAndBound</c>, <c>PreCutForScrub</c>) rather than re-deriving them, since an
-    /// MCP tool's raw result and a keyed-DI tool's <c>ToolResult.Output</c> need identical treatment
-    /// once both are reduced to text.
+    /// Reduces an MCP result to <see cref="ShapeText"/>'s shared shape — the MCP analogue of
+    /// <c>DirectToolInvoker.Response.cs</c>'s <c>Shape</c>, differing only in how the raw text is
+    /// obtained: a keyed-DI <c>ToolResult</c> already carries a string, an MCP result needs
+    /// <see cref="ToolResultText.ExtractText"/> first.
     /// </summary>
     private DirectToolInvocationOutcome ShapeMcp(
         string? failureText,
@@ -270,55 +267,19 @@ public sealed partial class DirectToolInvoker
         IToolCallAdmissionPipeline admissionPipeline,
         ToolCallAdmission admission,
         DirectToolInvocationConfig config,
-        TimeSpan duration)
-    {
-        var ceiling = config.MaxOutputCharacters;
-
-        if (failureText is not null)
-        {
-            var (preCutError, _) = PreCutForScrub(failureText, ceiling);
-            // Truncation discarded: the outcome carries no ErrorTruncated field to report it on,
-            // exactly as the ScrubAndBound below discards its own.
-            if (!admissionPipeline.TryApplyTextOutputPolicy(
-                    admission, toolName, preCutError, out var admittedError, out _))
-            {
-                return DirectToolInvocationOutcome.Refused(
-                    DirectToolInvocationStatus.Denied, GovernanceDenials.NotPermitted(toolName), duration);
-            }
-
-            var (error, _) = ScrubAndBound(admittedError ?? string.Empty, ceiling, toolName);
-            return new DirectToolInvocationOutcome
-            {
-                Status = DirectToolInvocationStatus.ToolFailed,
-                Error = error,
-                Duration = duration
-            };
-        }
-
-        var raw = ToolResultText.ExtractText(rawResult);
-        var (preCut, droppedByPreCut) = PreCutForScrub(raw, ceiling);
-
-        if (!admissionPipeline.TryApplyTextOutputPolicy(
-                admission, toolName, preCut, out var admitted, out var truncatedByPipeline))
-        {
-            return DirectToolInvocationOutcome.Refused(
-                DirectToolInvocationStatus.Denied, GovernanceDenials.NotPermitted(toolName), duration);
-        }
-
-        var (output, truncatedByOwnScrub) = ScrubAndBound(admitted ?? string.Empty, ceiling, toolName);
-
-        // truncatedByPipeline is the third term - see the sibling in DirectToolInvoker.Response.cs
-        // for why the other two cannot see the admission pipeline's own, smaller cut (#532).
-        var truncated = droppedByPreCut || truncatedByPipeline || truncatedByOwnScrub;
-
-        return new DirectToolInvocationOutcome
-        {
-            Status = DirectToolInvocationStatus.Succeeded,
-            Output = output,
-            OutputTruncated = truncated,
-            Duration = duration
-        };
-    }
+        TimeSpan duration) =>
+        ShapeText(
+            failureText,
+            // ShapeText never reads successText on the failure branch, and ExtractText's own default
+            // case does a full JsonSerializer.Serialize of the raw result — not worth paying on every
+            // MCP failure just to build a value that gets thrown away.
+            failureText is null ? ToolResultText.ExtractText(rawResult) : string.Empty,
+            toolName,
+            admissionPipeline,
+            admission,
+            config.MaxOutputCharacters,
+            duration,
+            _logger);
 
     /// <summary>
     /// The result of MCP pre-flight: either a refusal to return as-is, or the resolved tool and caller

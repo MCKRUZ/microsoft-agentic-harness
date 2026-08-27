@@ -21,68 +21,69 @@ public sealed partial class DirectToolInvoker
     private const string TruncationMarker = "\n…[output truncated]";
 
     /// <summary>
-    /// How much beyond the output ceiling is kept while scrubbing, so a secret straddling the cut is
-    /// still inside the scanned region and is still redacted. Removed again by the final cut.
+    /// Redacts if the classification gate said to and sanitizes unconditionally — both now owned
+    /// entirely by <see cref="IToolCallAdmissionPipeline.TryApplyTextOutputPolicy"/> (#487/#489/#490),
+    /// which pre-cuts, sanitizes, redacts, and bounds to its own ceiling in one place — then applies
+    /// this caller's own <paramref name="ceiling"/> on top, which may be stricter than the pipeline's.
     /// </summary>
     /// <remarks>
-    /// Sized generously against the longest thing the sanitizers look for — connection strings and
-    /// PEM-armoured keys run to a few kilobytes — because the cost of being wrong in one direction is
-    /// a few spare kilobytes scanned, and in the other it is an unredacted secret on the wire.
     /// <para>
-    /// <strong>Known residual, stated rather than papered over.</strong> The pre-cut can bisect a
-    /// secret at <c>ceiling + margin</c>, leaving a prefix the sanitizers cannot match. That prefix
-    /// normally sits beyond the ceiling and is discarded by the final cut — but redaction shrinks text,
-    /// so if net shrinkage across the scanned region exceeds this margin the prefix can migrate below
-    /// the ceiling and be returned. Re-scrubbing the result does not fix it (a partial pattern still
-    /// does not match), and no cheap check distinguishes a migrated prefix from ordinary content, so
-    /// the honest mitigation is the margin being large relative to plausible shrinkage. Removing the
-    /// class entirely means not pre-cutting at all, which costs a full sanitizer pass over an
-    /// arbitrarily large tool result on a remotely-triggered path — the trade this constant exists to
-    /// make. Revisit if a sanitizer is added whose replacements are much shorter than what they match.
+    /// Both halves of a <see cref="ToolResult"/> or MCP result go through the same treatment. A tool's
+    /// error text is the likeliest place for a path or a connection string to surface, and an error
+    /// string is as capable of being enormous as an output one — treating only success as sensitive, or
+    /// only success as large, would leave the more dangerous half unhandled on both counts.
+    /// </para>
+    /// <para>
+    /// This class used to run its own second sanitize pass and its own pre-cut/final-cut pair after the
+    /// pipeline's — <c>ScrubAndBound</c>/<c>PreCutForScrub</c>/<c>Scrub</c>/<c>FinalCut</c>, all retired
+    /// by this method. The second sanitize pass was pure duplicated cost (#489: the two sanitizer
+    /// instances are the same singleton in every real composition), and the second pre-cut/final-cut
+    /// pair duplicated exactly what the pipeline's own pre-cut/final-cut now does (#487/#493). What
+    /// remains here is the one thing the pipeline cannot do on this class's behalf: apply a
+    /// caller-specific ceiling that may be stricter than the pipeline's own. That final cut is a pure
+    /// length operation over text the pipeline already sanitized and redacted, never a re-scan, so it
+    /// does not reopen the unbounded-scan cost #487 fixed.
     /// </para>
     /// </remarks>
-    private const int ScrubOverlapMargin = 8 * 1024;
-
-    /// <summary>
-    /// Redacts if the classification gate said to, sanitizes unconditionally, then bounds the length.
-    /// </summary>
-    /// <remarks>
-    /// Both halves of a <see cref="ToolResult"/> go through the same treatment. A tool's error text is
-    /// the likeliest place for a path or a connection string to surface, and an error string is as
-    /// capable of being enormous as an output one — treating only success as sensitive, or only
-    /// success as large, would leave the more dangerous half unhandled on both counts.
-    /// </remarks>
-    private DirectToolInvocationOutcome Shape(
-        ToolResult result,
-        ArmedInvocation armed,
+    private static DirectToolInvocationOutcome ShapeText(
+        string? failureText,
+        string successText,
+        string toolName,
+        IToolCallAdmissionPipeline admissionPipeline,
         ToolCallAdmission admission,
-        TimeSpan duration)
+        int ceiling,
+        TimeSpan duration,
+        ILogger logger)
     {
-        var ceiling = armed.Config.MaxOutputCharacters;
-
-        if (!result.Success)
+        if (failureText is not null)
         {
-            var rawError = result.Error ?? "The tool reported a failure.";
-
             // Classification-gate redaction applies here too, not just to a success. A call the gate
             // flagged as touching sensitive data can fail with that data embedded in its own error
             // text (a connection string, a stack trace carrying an API key) exactly as easily as it
             // can succeed with it in its output — code review on the PR that added #479/#484's
-            // guarantees to the success path below caught that this branch never picked them up.
-            var (preCutError, _) = PreCutForScrub(rawError, ceiling);
-            // Truncation discarded here for the same reason the ScrubAndBound below discards its own:
-            // the outcome carries no ErrorTruncated field to report it on.
-            if (!armed.AdmissionPipeline.TryApplyTextOutputPolicy(
-                    admission, armed.ToolName, preCutError, out var admittedError, out _))
+            // guarantees to the success path caught that this branch never picked them up.
+            if (!admissionPipeline.TryApplyTextOutputPolicy(
+                    admission, toolName, failureText, out var admittedError, out _))
             {
+                // #491: this Denied is not a governance refusal in the usual sense — the tool DID run
+                // and DID produce failure text; only the redaction of that text couldn't be applied.
+                // Without this line the audit trail cannot tell "the tool never ran" (every other
+                // Denied outcome) from "the tool ran, had side effects, and its failure text was
+                // withheld" — an executed-vs-never-ran distinction the caller-facing status alone
+                // cannot carry, since GovernanceDenials.NotPermitted is deliberately the same generic
+                // text every gate returns.
+                logger.LogWarning(
+                    "Direct invocation of {ToolName} executed and failed, but its failure text could "
+                    + "not be redacted; the result is withheld rather than returned unredacted.",
+                    toolName);
                 return DirectToolInvocationOutcome.Refused(
                     DirectToolInvocationStatus.Denied,
-                    GovernanceDenials.NotPermitted(armed.ToolName),
+                    GovernanceDenials.NotPermitted(toolName),
                     duration);
             }
 
             // No ErrorTruncated outcome field exists to report a drop on, matching prior behavior.
-            var (error, _) = ScrubAndBound(admittedError ?? string.Empty, ceiling, armed.ToolName);
+            var (error, _) = Governance.BoundedText.Cap(admittedError ?? string.Empty, ceiling, TruncationMarker);
             return new DirectToolInvocationOutcome
             {
                 Status = DirectToolInvocationStatus.ToolFailed,
@@ -91,123 +92,52 @@ public sealed partial class DirectToolInvoker
             };
         }
 
-        var raw = result.Output ?? string.Empty;
-
-        // #479: TryApplyTextOutputPolicy now sanitizes unconditionally on both branches, via the
-        // admission pipeline's OWN sanitizer — a distinct instance from this class's _sanitizer field
-        // in general (they happen to be the same singleton in every real composition, but this class
-        // does not assume that). Pre-cutting here bounds what THAT sanitizer has to scan, for the same
-        // reason ScrubAndBound below always pre-cuts before ITS sanitizer scans: a tool returning 20 MB
-        // against a 256 KiB ceiling should not pay to scan all 20 MB twice over to return a fraction.
-        //
-        // droppedByPreCut is carried forward rather than discarded: content this pre-cut drops can
-        // still leave ScrubAndBound's own (second) pre-cut with nothing further to drop — the text it
-        // sees is already within the ceiling+margin — so its own flag alone would under-report what was
-        // actually lost.
-        var (preCut, droppedByPreCut) = PreCutForScrub(raw, ceiling);
-
         // Fails closed: when a redaction was required and could not be applied, the chain returns
         // false and the original must be withheld rather than emitted. See the chain's own remarks
         // for why falling back to the raw content is the trap.
-        if (!armed.AdmissionPipeline.TryApplyTextOutputPolicy(
-                admission, armed.ToolName, preCut, out var admitted, out var truncatedByPipeline))
+        if (!admissionPipeline.TryApplyTextOutputPolicy(
+                admission, toolName, successText, out var admitted, out var truncatedByPipeline))
         {
+            // #491, same gap as the failure branch above and for the identical reason: the tool DID
+            // run and DID succeed, with whatever side effects that entailed — only the redaction of its
+            // output couldn't be applied. Without this line a withheld-but-executed success is
+            // indistinguishable in the audit trail from a call refused before it ever ran. Caught by
+            // code review noticing the failure branch got this treatment and the success branch didn't,
+            // in the same method, same commit.
+            logger.LogWarning(
+                "Direct invocation of {ToolName} executed and succeeded, but its output could not be "
+                + "redacted; the result is withheld rather than returned unredacted.",
+                toolName);
             return DirectToolInvocationOutcome.Refused(
                 DirectToolInvocationStatus.Denied,
-                GovernanceDenials.NotPermitted(armed.ToolName),
+                GovernanceDenials.NotPermitted(toolName),
                 duration);
         }
 
-        // This class's own unconditional caller-facing scrub, via _sanitizer — the same treatment the
-        // failure branch above applies to result.Error, and independent of whatever the admission
-        // pipeline's sanitizer already did above.
-        var (output, truncatedByOwnScrub) = ScrubAndBound(admitted ?? string.Empty, ceiling, armed.ToolName);
-
-        // truncatedByPipeline is the third term, and without it the other two are not enough (#532).
-        // Both of them measure against THIS class's ceiling; the admission pipeline cuts to its own,
-        // which on shipped defaults is roughly five times smaller. For any output between the two,
-        // the pre-cut found nothing to drop, the pipeline removed most of the body, and the scrub
-        // then saw a string already well inside the ceiling and also found nothing to drop — so the
-        // response carried a prefix while reporting OutputTruncated = false. The DTO's own remarks
-        // name that harm exactly: a caller that cannot tell a complete result from a prefix parses
-        // the prefix as complete.
-        var truncated = droppedByPreCut || truncatedByPipeline || truncatedByOwnScrub;
+        var (output, truncatedByOwnCeiling) = Governance.BoundedText.Cap(admitted ?? string.Empty, ceiling, TruncationMarker);
 
         return new DirectToolInvocationOutcome
         {
             Status = DirectToolInvocationStatus.Succeeded,
             Output = output,
-            OutputTruncated = truncated,
+            OutputTruncated = truncatedByPipeline || truncatedByOwnCeiling,
             Duration = duration
         };
     }
 
-    /// <summary>
-    /// Redacts if the classification gate said to, sanitizes unconditionally, then bounds the length —
-    /// this class's own unconditional treatment, via <see cref="_sanitizer"/>. Used for both halves of
-    /// a <see cref="ToolResult"/>: an error string is as capable of being enormous, or of carrying a
-    /// secret, as an output one.
-    /// </summary>
-    /// <param name="text">The raw text from the tool.</param>
-    /// <param name="ceiling">The maximum number of characters to return, inclusive of any marker.</param>
-    /// <param name="toolName">Passed to the sanitizers as context.</param>
-    /// <returns>The safe text, and whether anything was dropped to produce it.</returns>
-    private (string Text, bool Truncated) ScrubAndBound(string text, int ceiling, string toolName)
-    {
-        var (preCut, droppedBeforeScrubbing) = PreCutForScrub(text, ceiling);
-        var scrubbed = Scrub(preCut, toolName);
-        return FinalCut(scrubbed, ceiling, droppedBeforeScrubbing);
-    }
-
-    /// <summary>
-    /// Cuts <paramref name="text"/> down to a scan-cost-bounded region before it reaches a sanitizer,
-    /// so a tool returning far more than <paramref name="ceiling"/> allows does not pay to scan all of
-    /// it to return a fraction. Extracted from <see cref="ScrubAndBound"/> so <see cref="Shape"/> can
-    /// apply the same pre-cut ahead of the admission pipeline's own
-    /// <see cref="Application.AI.Common.Interfaces.Governance.IToolCallAdmissionPipeline.TryApplyTextOutputPolicy"/>
-    /// call, which performs its own, separate sanitize/redact pass (#479).
-    /// </summary>
-    /// <returns>The (possibly cut) text, and whether anything was cut.</returns>
-    private static (string Text, bool Dropped) PreCutForScrub(string text, int ceiling)
-    {
-        // The margin is what makes cutting before scrubbing safe: a secret straddling the ceiling stays
-        // inside the scanned region, so it is still redacted rather than sliced in half and emitted.
-        // FinalCut removes the margin again.
-        //
-        // Saturating rather than wrapping. The validator bounds MaxOutputCharacters so this cannot
-        // overflow from configuration, but the arithmetic should not depend on a check in another
-        // assembly to stay correct — a negative slice length here turns a successful tool call into a
-        // 500 for every caller.
-        var scanCeiling = ceiling <= int.MaxValue - ScrubOverlapMargin
-            ? ceiling + ScrubOverlapMargin
-            : int.MaxValue;
-
-        var dropped = text.Length > scanCeiling;
-        // BoundedText.Cap, not a raw slice: guards the surrogate boundary the same way FinalCut's own
-        // cut does (found in independent security review — this was the one truncation site in this
-        // file that predated BoundedText and never migrated to it).
-        return dropped ? (Governance.BoundedText.Cap(text, scanCeiling, string.Empty).Text, true) : (text, false);
-    }
-
-    /// <summary>
-    /// Bounds already-sanitized text to <paramref name="ceiling"/> characters via the shared
-    /// <see cref="Governance.BoundedText.Cap"/> primitive (#467/#470), and folds in whether
-    /// <see cref="PreCutForScrub"/> already dropped anything ahead of sanitizing.
-    /// </summary>
-    private static (string Text, bool Truncated) FinalCut(string scrubbed, int ceiling, bool droppedBeforeScrubbing)
-    {
-        // Re-checked rather than inferred from the pre-cut: scrubbing changes length in both directions
-        // (a placeholder is rarely the width of what it replaced), so whether the ceiling is still
-        // exceeded is only knowable now.
-        var (bounded, cutAfterScrubbing) = Governance.BoundedText.Cap(scrubbed, ceiling, TruncationMarker);
-
-        // Reported from what was actually dropped, never from what the raw length suggested. A string
-        // barely over the ceiling that scrubbing shortened below it lost nothing, and claiming
-        // otherwise would send a caller looking for content that is all present.
-        return (bounded, droppedBeforeScrubbing || cutAfterScrubbing);
-    }
-
-    /// <summary>Runs text through the response-sanitizer chain. Empty text is returned untouched.</summary>
-    private string Scrub(string content, string toolName) =>
-        string.IsNullOrEmpty(content) ? content : _sanitizer.Sanitize(content, toolName).SanitizedContent;
+    /// <summary>Reduces a keyed-DI <see cref="ToolResult"/> to <see cref="ShapeText"/>'s shared shape.</summary>
+    private DirectToolInvocationOutcome Shape(
+        ToolResult result,
+        ArmedInvocation armed,
+        ToolCallAdmission admission,
+        TimeSpan duration) =>
+        ShapeText(
+            result.Success ? null : result.Error ?? "The tool reported a failure.",
+            result.Output ?? string.Empty,
+            armed.ToolName,
+            armed.AdmissionPipeline,
+            admission,
+            armed.Config.MaxOutputCharacters,
+            duration,
+            _logger);
 }

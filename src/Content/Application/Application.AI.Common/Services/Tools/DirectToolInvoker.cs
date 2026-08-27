@@ -60,7 +60,6 @@ public sealed partial class DirectToolInvoker : IDirectToolInvoker
 {
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly IToolCatalog _catalog;
-    private readonly ICompositeResponseSanitizer _sanitizer;
     private readonly IOptionsMonitor<DirectToolInvocationConfig> _config;
     private readonly IMcpToolProvider? _mcpToolProvider;
     private readonly ILogger<DirectToolInvoker> _logger;
@@ -68,7 +67,6 @@ public sealed partial class DirectToolInvoker : IDirectToolInvoker
     /// <summary>Initializes the invoker.</summary>
     /// <param name="scopeFactory">Creates the per-invocation DI scope holding the scoped governor and execution context.</param>
     /// <param name="catalog">Resolves the tool, filtered to the caller's grant.</param>
-    /// <param name="sanitizer">Scrubs everything leaving the trust boundary.</param>
     /// <param name="config">The host's direct-invocation settings, read per request.</param>
     /// <param name="mcpToolProvider">
     /// Resolves MCP-published tools for <see cref="InvokeMcpToolAsync"/> (#481). Optional, mirroring
@@ -80,20 +78,17 @@ public sealed partial class DirectToolInvoker : IDirectToolInvoker
     public DirectToolInvoker(
         IServiceScopeFactory scopeFactory,
         IToolCatalog catalog,
-        ICompositeResponseSanitizer sanitizer,
         IOptionsMonitor<DirectToolInvocationConfig> config,
         ILogger<DirectToolInvoker> logger,
         IMcpToolProvider? mcpToolProvider = null)
     {
         ArgumentNullException.ThrowIfNull(scopeFactory);
         ArgumentNullException.ThrowIfNull(catalog);
-        ArgumentNullException.ThrowIfNull(sanitizer);
         ArgumentNullException.ThrowIfNull(config);
         ArgumentNullException.ThrowIfNull(logger);
 
         _scopeFactory = scopeFactory;
         _catalog = catalog;
-        _sanitizer = sanitizer;
         _config = config;
         _mcpToolProvider = mcpToolProvider;
         _logger = logger;

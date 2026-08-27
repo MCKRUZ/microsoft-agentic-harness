@@ -324,8 +324,13 @@ public sealed class ToolCallAdmissionPipelineTests
         // Preserved from before #479: a consumer-supplied IToolClassificationGate that violates the
         // "redact always answers with a string" contract must withhold, not fall back to the original —
         // see the pipeline's own remarks on why `RedactResult(...) as string ?? content` would be a trap.
+        //
+        // #490: the string-typed RedactResult(string, string?) overload this call site now resolves to
+        // makes "answers with a non-string" unrepresentable at the type level — the only way left to
+        // simulate a gate breaking its non-null-in/non-null-out contract is a null return for non-null
+        // input, which is exactly what this now sets up.
         var gate = new Mock<IToolClassificationGate>();
-        gate.Setup(g => g.RedactResult(Tool, "raw text")).Returns(new { Rows = 3 });
+        gate.Setup(g => g.RedactResult(Tool, "raw text")).Returns((string?)null);
         var pipeline = AdmissionHarness.Pipeline(classificationGate: gate.Object);
 
         var ok = pipeline.TryApplyTextOutputPolicy(
@@ -373,6 +378,57 @@ public sealed class ToolCallAdmissionPipelineTests
         ok.Should().BeTrue("bounding is not a policy denial — the result is admitted, just cut");
         result!.Length.Should().BeLessThanOrEqualTo(100);
         result.Should().EndWith(ToolCallAdmissionPipeline.OutputTruncationMarker);
+    }
+
+    [Fact]
+    public void TryApplyTextOutputPolicy_PreCutDropsContentThatSanitizingThenShrinksBelowTheCeiling_StillMarksTheResult()
+    {
+        // Found by run-gates' correctness gate: the sibling of ApplyOutputPolicy_...StillMarksTheResult
+        // below, on the OTHER caller of the same new pre-cut. This method DOES report a drop through
+        // wasTruncated -- but ToolUseStepExecutor.HandleSuccessAsync (the plan path) discards that
+        // out-parameter with `out _` and depends entirely on a marker embedded in the returned text, a
+        // premise that broke the moment this pre-cut could drop content silently.
+        var pipeline = AdmissionHarness.Pipeline(
+            outputCeiling: 10_000,
+            sanitizer: AdmissionHarness.SubstitutingSanitizer(new string('z', 1), string.Empty));
+
+        var ok = pipeline.TryApplyTextOutputPolicy(
+            ToolCallAdmission.Allow(), Tool, "HEADER" + new string('z', 50_000), out var result, out var wasTruncated);
+
+        ok.Should().BeTrue();
+        wasTruncated.Should().BeTrue("the pre-cut genuinely dropped content, regardless of whether a caller reads this flag");
+        // The property under test: a caller that ONLY reads the text (as ToolUseStepExecutor does) must
+        // still be able to tell this was cut, because the final BoundedText.Cap never fires here --
+        // sanitizing shrank the pre-cut's survivor to "HEADER" + marker, already under the 10,000 ceiling.
+        result.Should().Contain(ToolCallAdmissionPipeline.OutputTruncationMarker,
+            "a reader with no access to wasTruncated (ToolUseStepExecutor.HandleSuccessAsync discards it) "
+            + "must not conclude the result is complete just because the final cut never fired");
+    }
+
+    [Fact]
+    public void ApplyOutputPolicy_PreCutDropsContentThatSanitizingThenShrinksBelowTheCeiling_StillMarksTheResult()
+    {
+        // #487 security-review finding on this PR: unlike TryApplyTextOutputPolicy, this method has no
+        // out-parameter to report a drop through, so a pre-cut drop must leave its OWN marker in the
+        // payload. If it doesn't, and sanitizing then shrinks the survivor back under the ceiling, the
+        // final Bound call never fires to leave a marker of its own -- the model reads a silently
+        // truncated prefix as the complete result. Reproduced with a sanitizer that collapses a large
+        // run the way a real one collapses a base64 blob, exactly the scenario security review named.
+        var pipeline = AdmissionHarness.Pipeline(
+            outputCeiling: 10_000,
+            sanitizer: AdmissionHarness.SubstitutingSanitizer(new string('z', 1), string.Empty));
+
+        var result = pipeline.ApplyOutputPolicy(
+            ToolCallAdmission.Allow(), Tool, "HEADER" + new string('z', 50_000));
+
+        // The pre-cut (ceiling + 8 KiB margin) fires on the 50,000-character blob long before
+        // sanitizing runs; sanitizing then deletes every 'z', leaving "HEADER" plus whatever the
+        // pre-cut's own marker appended -- far under the 10,000 ceiling, so the FINAL Bound call has
+        // nothing left to cut. The only place a marker can come from is the pre-cut itself.
+        result.Should().BeOfType<string>().Which
+            .Should().Contain(ToolCallAdmissionPipeline.OutputTruncationMarker,
+                "sanitizing collapsed the pre-cut's survivor below the ceiling, so a reader must not "
+                + "conclude the result is complete just because the final cut never fired");
     }
 
     [Fact]
@@ -430,7 +486,7 @@ public sealed class ToolCallAdmissionPipelineTests
         // answers any non-string result: not a string, so this must fail closed exactly like
         // TryApplyTextOutputPolicy_RedactVerdict_ClassificationGateReturnsNonString_FailsClosed.
         var gate = new Mock<IToolClassificationGate>();
-        gate.Setup(g => g.RedactResult(Tool, null)).Returns((object?)null);
+        gate.Setup(g => g.RedactResult(Tool, (string?)null)).Returns((string?)null);
         var pipeline = AdmissionHarness.Pipeline(classificationGate: gate.Object);
 
         var ok = pipeline.TryApplyTextOutputPolicy(

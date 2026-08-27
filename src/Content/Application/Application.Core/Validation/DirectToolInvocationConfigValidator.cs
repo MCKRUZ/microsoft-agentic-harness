@@ -27,16 +27,22 @@ namespace Application.Core.Validation;
 public sealed class DirectToolInvocationConfigValidator : AbstractValidator<DirectToolInvocationConfig>
 {
     /// <summary>
-    /// The largest usable output ceiling: <see cref="int.MaxValue"/> less headroom for the overlap
-    /// margin the invoker adds to it while scrubbing.
+    /// The largest usable output ceiling: <see cref="int.MaxValue"/> less a fixed margin.
     /// </summary>
     /// <remarks>
-    /// The margin is added in <c>int</c> arithmetic, so a ceiling near <see cref="int.MaxValue"/>
-    /// overflows to a negative slice length and turns every successful tool call into a <c>500</c>.
-    /// An operator writing <c>2147483647</c> to mean "no limit" is the realistic way to land there, and
-    /// a validator whose stated purpose is to name a bad setting at startup should catch it rather than
-    /// let the host boot into that state. A gigabyte of characters is already far past any use for this
-    /// surface, so the bound costs nothing real.
+    /// <para>
+    /// This value bounds <see cref="DirectToolInvocationConfig.MaxOutputCharacters"/> alone, which
+    /// <c>DirectToolInvoker</c> now applies as a plain final cut (<c>BoundedText.Cap</c>, no addition,
+    /// no overflow risk of its own — #487/#489/#493 retired the invoker's private overlap-margin
+    /// arithmetic that used to justify this bound; scan-cost bounding is now the admission pipeline's
+    /// own concern, sized off a different config value entirely).
+    /// </para>
+    /// <para>
+    /// Kept anyway as ordinary hygiene against a config typo: an operator writing
+    /// <c>2147483647</c> to mean "no limit" gets a validation failure naming the setting at startup
+    /// rather than a value so large it is meaningless for this surface. A gigabyte of characters is
+    /// already far past any use here, so the bound costs nothing real.
+    /// </para>
     /// </remarks>
     public const int MaxOutputCharactersCeiling = int.MaxValue - (64 * 1024);
 
@@ -71,7 +77,7 @@ public sealed class DirectToolInvocationConfigValidator : AbstractValidator<Dire
             .GreaterThan(0)
             .WithMessage("MaxOutputCharacters must be > 0 — a non-positive ceiling slices the output with a negative length, turning a successful tool call into a 500.")
             .LessThanOrEqualTo(MaxOutputCharactersCeiling)
-            .WithMessage($"MaxOutputCharacters must be <= {MaxOutputCharactersCeiling} — the invoker adds an overlap margin to it in int arithmetic, and a larger value overflows to a negative length, which turns every successful tool call into a 500. Use a large finite value rather than int.MaxValue to mean 'no limit'.");
+            .WithMessage($"MaxOutputCharacters must be <= {MaxOutputCharactersCeiling} — a value this large is meaningless for this surface and is the realistic shape of a typo (writing int.MaxValue to mean 'no limit'). Use a large finite value instead.");
 
         RuleFor(x => x.MaxParameterCount)
             .GreaterThan(0)
