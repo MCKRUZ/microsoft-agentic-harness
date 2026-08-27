@@ -8,7 +8,6 @@ using Domain.AI.Bundles;
 using Domain.AI.Escalation;
 using Domain.Common.Config.AI.DirectToolInvocation;
 using Microsoft.Extensions.AI;
-using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
 namespace Application.AI.Common.Services.Tools;
@@ -142,56 +141,20 @@ public sealed partial class DirectToolInvoker
         return null;
     }
 
-    /// <summary>Arms the invocation and runs it, mirroring <see cref="DirectToolInvoker.RunArmedAsync"/>.</summary>
-    private async Task<DirectToolInvocationOutcome> RunMcpArmedAsync(
+    /// <summary>Arms the invocation and runs it, sharing <see cref="DirectToolInvoker.RunArmedCoreAsync"/>
+    /// with the keyed-DI path (#494) rather than mirroring it by hand.</summary>
+    private Task<DirectToolInvocationOutcome> RunMcpArmedAsync(
         DirectMcpToolInvocationRequest request,
         AIFunction tool,
         string agentId,
         DirectToolInvocationConfig config,
-        CancellationToken cancellationToken)
-    {
-        var sw = Stopwatch.StartNew();
-
-        await using var scope = _scopeFactory.CreateAsyncScope();
-
-        try
-        {
-            var (admissionPipeline, grantedEnvelope, armedAdmission) =
-                ArmGovernance(scope.ServiceProvider, agentId, request.Envelope);
-            using var _grantedEnvelope = grantedEnvelope;
-            using var _armedAdmission = armedAdmission;
-
-            try
-            {
-                return await AuthorizeAndRunMcpAsync(request, tool, admissionPipeline, config, sw, cancellationToken)
-                    .ConfigureAwait(false);
-            }
-            finally
-            {
-                LogTrace(request.ToolName, agentId, admissionPipeline.GetTrace);
-            }
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch (OperationCanceledException)
-        {
-            sw.Stop();
-            _logger.LogWarning(
-                "Direct MCP invocation of {ToolName} exceeded its {Timeout} deadline",
-                request.ToolName, request.RequestedTimeout ?? config.InvocationTimeout);
-            return DirectToolInvocationOutcome.Refused(
-                DirectToolInvocationStatus.TimedOut, "The tool did not complete within its deadline.", sw.Elapsed);
-        }
-        catch (Exception ex)
-        {
-            sw.Stop();
-            _logger.LogError(ex, "Direct MCP invocation of {ToolName} threw", request.ToolName);
-            return DirectToolInvocationOutcome.Refused(
-                DirectToolInvocationStatus.Faulted, DirectToolInvocationErrors.Failed, sw.Elapsed);
-        }
-    }
+        CancellationToken cancellationToken) =>
+        RunArmedCoreAsync(
+            request.ToolName, agentId, request.Envelope,
+            request.RequestedTimeout ?? config.InvocationTimeout,
+            "Direct MCP invocation", cancellationToken,
+            (admissionPipeline, _, sw) =>
+                AuthorizeAndRunMcpAsync(request, tool, admissionPipeline, config, sw, cancellationToken));
 
     /// <summary>
     /// Runs the admission chain and then the MCP tool itself, mirroring
@@ -243,12 +206,13 @@ public sealed partial class DirectToolInvoker
 
         // #460: the raw failure text is passed through untreated — ShapeMcp sanitizes, redacts, and
         // bounds it exactly once, at the same chokepoint the keyed-DI path's Shape uses.
-        await admissionPipeline.ReportExecutionAsync(
+        await ReportExecutionAsync(
+            admissionPipeline,
             admission,
             failureText is null
                 ? new ToolExecutionReport(EscalationExecutionStatus.Succeeded, null, null)
                 : new ToolExecutionReport(EscalationExecutionStatus.Failed, failureText, null, ToolName: request.ToolName),
-            McpReportedBy, CancellationToken.None).ConfigureAwait(false);
+            McpReportedBy).ConfigureAwait(false);
 
         sw.Stop();
         return ShapeMcp(failureText, rawResult, request.ToolName, admissionPipeline, admission, config, sw.Elapsed);
