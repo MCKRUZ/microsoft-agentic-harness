@@ -1,6 +1,7 @@
 using Application.AI.Common.Factories;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Skills;
+using Application.AI.Common.Interfaces.Traces;
 using Application.AI.Common.Services;
 using Application.AI.Common.Services.Context;
 using Application.AI.Common.Services.Skills;
@@ -100,7 +101,8 @@ public sealed class AgentConversationCacheTests
             _completionTracker);
 
         _cache = new AgentConversationCache(
-            _memoryCache, factory, _registrationTracker, _completionTracker);
+            _memoryCache, factory, _registrationTracker, _completionTracker,
+            NullLogger<AgentConversationCache>.Instance);
     }
 
     [Fact]
@@ -180,5 +182,150 @@ public sealed class AgentConversationCacheTests
 
         // Assert — a re-created conversation with the same id starts clean.
         _completionTracker.IsCompleted("conv-evict", ValidateSkillId).Should().BeFalse();
+    }
+}
+
+/// <summary>
+/// Proves an execution-trace writer created for a conversation is finalized when that
+/// conversation's context leaves the cache (#505).
+/// </summary>
+/// <remarks>
+/// <para>
+/// <c>ITraceWriter.CompleteAsync</c> stamps <c>write_completed</c> into the run manifest and its
+/// disposal releases a semaphore and a file handle. Only the meta-harness evaluation loop did this;
+/// the conversation path created writers and abandoned them, so every production run stayed flagged
+/// incomplete to any reader honouring that flag. It went unnoticed because nothing wrote to those
+/// writers until #505 connected them to the middleware.
+/// </para>
+/// <para>
+/// The hook is the cache entry's own post-eviction callback rather than <c>Evict</c>, because the
+/// cache also drops entries on sliding expiry: a conversation that simply goes idle never calls
+/// <c>Evict</c>, and hanging cleanup off the explicit call alone would leak every abandoned one.
+/// The second test is what pins that distinction — delete the callback registration and it fails
+/// while an Evict-only implementation would still pass the first.
+/// </para>
+/// </remarks>
+public sealed class AgentConversationCacheTraceLifecycleTests
+{
+    private const string SkillId = "trace-skill";
+
+    private static (AgentConversationCache Cache, Mock<ITraceWriter> Writer, IMemoryCache Memory,
+        Task Finalized) Create()
+    {
+        var appConfig = new AppConfig
+        {
+            MetaHarness = new Domain.Common.Config.MetaHarness.MetaHarnessConfig
+            {
+                ExecutionTracingEnabled = true
+            },
+            AI = new AIConfig
+            {
+                AgentFramework = new AgentFrameworkConfig
+                {
+                    DefaultDeployment = "gpt-4o",
+                    ClientType = AIAgentFrameworkClientType.AzureOpenAI
+                }
+            }
+        };
+        var monitor = Mock.Of<IOptionsMonitor<AppConfig>>(m => m.CurrentValue == appConfig);
+        var services = new ServiceCollection().BuildServiceProvider();
+
+        // IMemoryCache queues post-eviction callbacks to the thread pool, so finalization does not
+        // happen before Remove/Evict returns. Signalling off the last call the callback makes lets
+        // each test await the work instead of racing it — without this the assertions pass or fail
+        // on timing, which is worse than not having them.
+        var finalized = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var writer = new Mock<ITraceWriter>();
+        writer.SetupGet(w => w.Scope)
+            .Returns(Domain.Common.MetaHarness.TraceScope.ForExecution(Guid.NewGuid()));
+        writer.Setup(w => w.CompleteAsync(It.IsAny<CancellationToken>())).Returns(Task.CompletedTask);
+        writer.Setup(w => w.DisposeAsync())
+            .Returns(ValueTask.CompletedTask)
+            .Callback(() => finalized.TrySetResult());
+
+        var traceStore = new Mock<Application.AI.Common.Interfaces.Traces.IExecutionTraceStore>();
+        traceStore
+            .Setup(s => s.StartRunAsync(
+                It.IsAny<Domain.Common.MetaHarness.TraceScope>(),
+                It.IsAny<Domain.Common.MetaHarness.RunMetadata>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(writer.Object);
+
+        var contextFactory = new AgentExecutionContextFactory(
+            NullLogger<AgentExecutionContextFactory>.Instance,
+            monitor,
+            services,
+            NullLoggerFactory.Instance,
+            new ToolChainBuilder(NullLogger<ToolChainBuilder>.Instance, services, null),
+            new SkillPrerequisiteResolver(),
+            new UnsandboxedSkillFileReader(),
+            Application.AI.Common.Tests.Governance.AdmissionHarness.PermissiveSanitizer(),
+            traceStore: traceStore.Object);
+
+        var registry = new Mock<ISkillMetadataRegistry>();
+        registry.Setup(r => r.TryGet(SkillId)).Returns(new SkillDefinition
+        {
+            Id = SkillId,
+            Name = SkillId,
+            Instructions = "Do the thing."
+        });
+
+        var completionTracker = new InMemorySkillCompletionTracker();
+        var memory = new MemoryCache(new MemoryCacheOptions());
+
+        var factory = new AgentFactory(
+            NullLogger<AgentFactory>.Instance,
+            monitor,
+            Mock.Of<IDistributedCache>(),
+            NullLoggerFactory.Instance,
+            contextFactory,
+            registry.Object,
+            new FakeChatClientFactory(),
+            services,
+            completionTracker);
+
+        var cache = new AgentConversationCache(
+            memory, factory, new ConversationRegistrationTracker(), completionTracker,
+            NullLogger<AgentConversationCache>.Instance);
+
+        return (cache, writer, memory, finalized.Task);
+    }
+
+    /// <summary>Awaits the eviction callback, failing loudly rather than hanging if it never runs.</summary>
+    private static async Task AwaitFinalization(Task finalized)
+    {
+        var completed = await Task.WhenAny(finalized, Task.Delay(TimeSpan.FromSeconds(5)));
+        completed.Should().BeSameAs(finalized,
+            "the post-eviction callback must run — a timeout here means nothing finalizes the writer");
+    }
+
+    [Fact]
+    public async Task Evict_CompletesAndDisposesTheConversationsTraceWriter()
+    {
+        var (cache, writer, _, finalized) = Create();
+        await cache.GetOrCreateAsync("conv-trace", [SkillId], new SkillAgentOptions());
+
+        cache.Evict("conv-trace");
+        await AwaitFinalization(finalized);
+
+        writer.Verify(w => w.CompleteAsync(It.IsAny<CancellationToken>()), Times.Once,
+            "an abandoned writer leaves the run manifest permanently marked incomplete");
+        writer.Verify(w => w.DisposeAsync(), Times.Once,
+            "the writer holds a semaphore and a file handle that must be released");
+    }
+
+    [Fact]
+    public async Task CacheEntryRemovedWithoutEvict_StillCompletesTheTraceWriter()
+    {
+        // The idle path: entries also leave on sliding expiry, which never routes through Evict.
+        var (cache, writer, memory, finalized) = Create();
+        await cache.GetOrCreateAsync("conv-idle", [SkillId], new SkillAgentOptions());
+
+        memory.Remove("conv-idle::context");
+        await AwaitFinalization(finalized);
+
+        writer.Verify(w => w.CompleteAsync(It.IsAny<CancellationToken>()), Times.Once,
+            "cleanup must hang off the cache entry, not off the explicit eviction call");
     }
 }

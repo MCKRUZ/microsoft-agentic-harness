@@ -142,6 +142,24 @@ public partial class AgentFactory
             _serviceProvider.GetService<IContentCapturePolicy>());
 
         var redactor = ResolveRedactorAndWarnIfMissing(agentContext);
+        var traceWriter = ResolveStashedTraceWriter(agentContext);
+
+        // Fail closed rather than fail warned. With no redactor registered, ToolPayloadRedactor
+        // returns tool payloads untouched — a documented degraded mode that used to reach only an
+        // in-process capture. Wiring the writer up makes the same mode write cleartext tool output
+        // to a durable file, which is a different exposure class than memory and not one a loud log
+        // line is an adequate answer to. Tracing is observability, so dropping it is the cheap side
+        // of this trade; writing unredacted secrets to disk is not.
+        if (traceWriter is not null && redactor is null)
+        {
+            _logger.LogWarning(
+                "Execution tracing is enabled for agent {AgentName} but no ISecretRedactor is "
+                + "registered — tracing is disabled for this agent rather than writing unredacted "
+                + "tool output to disk. Register one (Infrastructure.AI's "
+                + "AddInfrastructureAIDependencies does) to restore tracing.",
+                agentContext.Name);
+            traceWriter = null;
+        }
 
         var chatClientBuilder = chatClient.AsBuilder()
             // OpenTelemetry MUST sit below UseFunctionInvocation: FunctionInvokingChatClient
@@ -165,6 +183,7 @@ public partial class AgentFactory
             .Use(inner => new Middleware.ToolDiagnosticsMiddleware(
                 inner,
                 _loggerFactory.CreateLogger<Middleware.ToolDiagnosticsMiddleware>(),
+                traceWriter: traceWriter,
                 redactor: redactor));
 
         // Per-turn context compaction — only when enabled in config AND a compaction service is
@@ -219,6 +238,55 @@ public partial class AgentFactory
         chatClientBuilder = chatClientBuilder.UseDistributedCache(_distributedCache);
 
         return chatClientBuilder.Build();
+    }
+
+    /// <summary>
+    /// Returns the per-run <see cref="Interfaces.Traces.ITraceWriter"/> stashed in the execution
+    /// context under <see cref="Interfaces.Traces.ITraceWriter.AdditionalPropertiesKey"/>, or
+    /// <see langword="null"/> when no run is being traced.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Read here rather than resolved from DI because the writer is deliberately not a container
+    /// service: <see cref="Interfaces.Traces.IExecutionTraceStore.StartRunAsync"/> creates one per
+    /// run, bound to that run's scope. The stash is the channel, matching
+    /// <see cref="ResolveStashedResilientClient"/> and the skill prerequisite map.
+    /// </para>
+    /// <para>
+    /// Before #505 nothing read this key while two producers wrote it —
+    /// <see cref="AgentExecutionContextFactory"/> for production turns and
+    /// <c>AgentEvaluationService</c> for meta-harness runs — so
+    /// <see cref="Middleware.ToolDiagnosticsMiddleware"/>'s whole trace-writing branch was dead in
+    /// every host and every evaluation run wrote a manifest with an empty <c>traces.jsonl</c>.
+    /// Nothing failed, which is why it survived: an unread stash breaks no service graph and
+    /// resolves perfectly well in a container that never contained it.
+    /// </para>
+    /// <para>
+    /// A wrong-typed stash is ignored rather than thrown on. The dictionary is untyped, and a turn
+    /// must not die because an unrelated producer wrote a bad value under this key — tracing is
+    /// observability, never on the critical path.
+    /// </para>
+    /// </remarks>
+    private Interfaces.Traces.ITraceWriter? ResolveStashedTraceWriter(AgentExecutionContext agentContext)
+    {
+        if (agentContext.AdditionalProperties?.TryGetValue(
+                Interfaces.Traces.ITraceWriter.AdditionalPropertiesKey,
+                out var stashed) != true)
+        {
+            return null;
+        }
+
+        if (stashed is Interfaces.Traces.ITraceWriter writer)
+        {
+            return writer;
+        }
+
+        _logger.LogWarning(
+            "Agent {AgentName} carries a value under the trace-writer key that is not an "
+            + "ITraceWriter ({ActualType}) — tool results for this run will not be traced.",
+            agentContext.Name,
+            stashed?.GetType().Name ?? "null");
+        return null;
     }
 
     /// <summary>

@@ -28,6 +28,14 @@ public sealed class ToolDiagnosticsMiddleware : DelegatingChatClient
     private readonly ISecretRedactor? _redactor;
 
     /// <summary>
+    /// Claim set used when no turn armed an ambient <see cref="Services.ReplayedToolCallScope"/>.
+    /// One instance of this middleware is built per chat client per agent construction, so its
+    /// lifetime is exactly one run — the right scope for suppressing the same tool result being
+    /// re-recorded on each of <c>FunctionInvokingChatClient</c>'s iterations.
+    /// </summary>
+    private readonly Services.ReplayedToolCallSet _intraRunToolCallClaims = new();
+
+    /// <summary>
     /// Initializes a new instance of the <see cref="ToolDiagnosticsMiddleware"/> class.
     /// </summary>
     /// <param name="innerClient">The inner chat client to wrap with diagnostics.</param>
@@ -115,14 +123,30 @@ public sealed class ToolDiagnosticsMiddleware : DelegatingChatClient
         // even if the write below fails. See ReplayedToolCallScope's remarks: this is what closes the
         // intra-turn duplicate-recording case a read-only, dispatch-time snapshot alone cannot.
         //
-        // A result with no CallId cannot be deduplicated at all, and a null scope means no turn armed
-        // one (a test constructing this middleware directly) — both are recorded rather than dropped.
+        // A result with no CallId cannot be deduplicated at all and is always recorded.
+        //
+        // When no turn armed an ambient scope, fall back to this instance's own claim set rather
+        // than recording everything. The old comment assumed a null scope meant "a test constructed
+        // this middleware directly"; that was wrong. ExecuteAgentTurnCommandHandler is the only
+        // production armer, so AgentEvaluationService, RunOrchestratedTaskCommandHandler and
+        // Presentation.FoundryHost all run unarmed — and because this scans the CUMULATIVE inbound
+        // list, FunctionInvokingChatClient's own loop re-presents a round-1 result on every later
+        // round, appending it once per iteration. The eval harness would have gone from an empty
+        // traces.jsonl to one with tool counts inflated up to MaximumIterationsPerRequest-fold: worse
+        // than the empty file #505 set out to fix, and silently so.
+        //
+        // A per-instance set is the right lifetime for that: one middleware instance is built per
+        // chat client per agent construction, so it spans exactly one run. It deliberately does not
+        // replace the ambient scope, which is seeded from replayed history and therefore also covers
+        // the cross-turn case a fresh instance cannot see. Arming the scope in the three unarmed
+        // callers was the alternative; this was preferred because it removes the requirement to
+        // remember, which is what produced the gap.
+        var claims = alreadyReplayed ?? _intraRunToolCallClaims;
+
         var functionResults = new List<FunctionResultContent>();
         foreach (var candidate in messages.SelectMany(m => m.Contents).OfType<FunctionResultContent>())
         {
-            if (alreadyReplayed is not null
-                && !string.IsNullOrEmpty(candidate.CallId)
-                && !alreadyReplayed.TryClaim(candidate.CallId))
+            if (!string.IsNullOrEmpty(candidate.CallId) && !claims.TryClaim(candidate.CallId))
             {
                 continue;
             }

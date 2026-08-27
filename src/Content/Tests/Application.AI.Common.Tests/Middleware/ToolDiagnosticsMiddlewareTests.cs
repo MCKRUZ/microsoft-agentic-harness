@@ -316,6 +316,73 @@ public sealed class ToolDiagnosticsMiddlewareTests
             Times.Once);
     }
 
+    [Fact]
+    public async Task InvokeNext_SecondRoundWithNoAmbientScope_StillDoesNotReRecordFirstRoundsResult()
+    {
+        // The same shape as the test above, with the ambient scope deliberately absent. This is not
+        // a hypothetical configuration: ExecuteAgentTurnCommandHandler is the only production armer,
+        // so AgentEvaluationService, RunOrchestratedTaskCommandHandler and Presentation.FoundryHost
+        // all reach this middleware unarmed — and AgentEvaluationService is precisely the path #505's
+        // trace wiring exists to serve. Without the per-instance fallback the writer receives call-1
+        // twice, so switching that path on would have replaced an empty traces.jsonl with one whose
+        // tool counts are inflated once per model round: a worse failure than the one being fixed,
+        // and one that reads as real data.
+        var innerClient = MakeChatClient();
+        var (writerMock, middleware) = MakeMiddlewareWithWriter(innerClient);
+
+        var roundOneMessages = new ChatMessage[]
+        {
+            new(ChatRole.Tool, [new FunctionResultContent("call-1", "first result")])
+        };
+        var roundTwoMessages = new ChatMessage[]
+        {
+            new(ChatRole.Tool, [new FunctionResultContent("call-1", "first result")]),
+            new(ChatRole.Tool, [new FunctionResultContent("call-2", "second result")])
+        };
+
+        ReplayedToolCallScope.Current.Should().BeNull("this test is only meaningful unarmed");
+
+        await middleware.GetResponseAsync(roundOneMessages, null, CancellationToken.None);
+        await middleware.GetResponseAsync(roundTwoMessages, null, CancellationToken.None);
+
+        writerMock.Verify(
+            w => w.AppendTraceAsync(
+                It.Is<ExecutionTraceRecord>(r => r.TurnId == "call-1"), It.IsAny<CancellationToken>()),
+            Times.Once);
+        writerMock.Verify(
+            w => w.AppendTraceAsync(
+                It.Is<ExecutionTraceRecord>(r => r.TurnId == "call-2"), It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task InvokeNext_TwoMiddlewareInstances_DoNotShareClaims()
+    {
+        // The per-instance fallback must not become a process-wide filter. One instance is built per
+        // chat client per agent construction, so a second run legitimately re-records a call id the
+        // first run already saw — provider connectors that number call ids per-turn and reset them
+        // make that a real collision, not a contrived one (see #512).
+        var (firstWriter, firstMiddleware) = MakeMiddlewareWithWriter(MakeChatClient());
+        var (secondWriter, secondMiddleware) = MakeMiddlewareWithWriter(MakeChatClient());
+
+        var messages = new ChatMessage[]
+        {
+            new(ChatRole.Tool, [new FunctionResultContent("call-1", "result")])
+        };
+
+        await firstMiddleware.GetResponseAsync(messages, null, CancellationToken.None);
+        await secondMiddleware.GetResponseAsync(messages, null, CancellationToken.None);
+
+        firstWriter.Verify(
+            w => w.AppendTraceAsync(
+                It.Is<ExecutionTraceRecord>(r => r.TurnId == "call-1"), It.IsAny<CancellationToken>()),
+            Times.Once);
+        secondWriter.Verify(
+            w => w.AppendTraceAsync(
+                It.Is<ExecutionTraceRecord>(r => r.TurnId == "call-1"), It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
     // --- Tool deduplication ---
 
     [Fact]

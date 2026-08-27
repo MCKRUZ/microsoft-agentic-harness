@@ -18,6 +18,30 @@ namespace Domain.Common.Config.MetaHarness;
 public class MetaHarnessConfig
 {
     /// <summary>
+    /// Gets or sets whether ordinary agent turns write an execution trace to disk.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>Off by default, deliberately.</strong> When on, every skill-built agent turn appends
+    /// its tool results — redacted, but real payload text — to <c>traces.jsonl</c> under
+    /// <see cref="TraceDirectoryRoot"/>, and nothing prunes them. That is a data-at-rest and
+    /// disk-growth decision a consumer of this template must opt into, not inherit.
+    /// </para>
+    /// <para>
+    /// This gates the <em>production turn</em> path only. The meta-harness evaluation loop creates
+    /// its own writer directly through <c>IExecutionTraceStore.StartRunAsync</c> and is unaffected:
+    /// an optimization run still produces the traces it exists to produce, whatever this is set to.
+    /// </para>
+    /// <para>
+    /// Before #505 this flag would have made no difference — nothing read the writer the production
+    /// path created, so the branch that writes tool records never executed. Wiring that up is what
+    /// turned an empty directory into a growing log, and what makes an explicit switch necessary.
+    /// </para>
+    /// </remarks>
+    /// <value>Default: <see langword="false"/>.</value>
+    public bool ExecutionTracingEnabled { get; set; }
+
+    /// <summary>
     /// Gets or sets the root path for all trace output directories.
     /// Each optimization run and candidate evaluation writes trace files beneath this path.
     /// Relative paths are resolved against the working directory at runtime.

@@ -1012,6 +1012,11 @@
                                 <td>Where JSONL execution traces are written for the proposer to grep.</td>
                             </tr>
                             <tr>
+                                <td><code>ExecutionTracingEnabled</code></td>
+                                <td><code>false</code></td>
+                                <td>Whether <em>ordinary</em> agent turns also append their tool results to <code>traces.jsonl</code>. Off by default: this is a data-at-rest opt-in, not something a consumer should inherit. The meta-harness evaluation loop writes traces regardless of this flag. Tracing is also skipped when no <code>ISecretRedactor</code> is registered, so a host in that degraded mode cannot write unredacted tool output to disk.</td>
+                            </tr>
+                            <tr>
                                 <td><code>MaxIterations</code></td>
                                 <td><code>10</code></td>
                                 <td>Upper bound on the propose-evaluate-record loop per run.</td>
