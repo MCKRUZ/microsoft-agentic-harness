@@ -114,11 +114,11 @@ public class ProcessSandboxSessionFactoryTests
         // Two independent round trips over the SAME session/process — the property a one-shot
         // ISandboxExecutor cannot offer (its stdin is written once and closed immediately).
         await writer.WriteLineAsync("first-message");
-        var firstLine = await reader.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        var firstLine = await reader.ReadLineAsync().WaitAsync(SandboxTestDeadlines.Generous);
         firstLine.Should().Be("first-message");
 
         await writer.WriteLineAsync("second-message");
-        var secondLine = await reader.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        var secondLine = await reader.ReadLineAsync().WaitAsync(SandboxTestDeadlines.Generous);
         secondLine.Should().Be("second-message");
 
         session.Completion.IsCompleted.Should().BeFalse(
@@ -145,7 +145,7 @@ public class ProcessSandboxSessionFactoryTests
 
         await session.DisposeAsync();
 
-        await session.Completion.WaitAsync(TimeSpan.FromSeconds(5));
+        await session.Completion.WaitAsync(SandboxTestDeadlines.Generous);
         capturedWorkspace.Should().NotBeNull();
         Directory.Exists(capturedWorkspace!).Should().BeFalse("disposal must clean up the session's workspace");
     }

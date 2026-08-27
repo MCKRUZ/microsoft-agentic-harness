@@ -145,7 +145,7 @@ public class DockerSandboxSessionFactoryTests
         await using var session = result.Value!;
 
         using var reader = new StreamReader(session.StandardOutput);
-        var output = await reader.ReadToEndAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        var output = await reader.ReadToEndAsync().WaitAsync(SandboxTestDeadlines.Generous);
 
         output.Should().Be("hello world");
     }

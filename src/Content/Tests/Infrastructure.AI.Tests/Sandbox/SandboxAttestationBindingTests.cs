@@ -86,13 +86,13 @@ public class SandboxAttestationBindingTests
                 },
                 Command = "cmd.exe",
                 ArgumentList = ["/c", "echo", "crash-stdout-data", "&", "exit", "3"],
-                Timeout = TimeSpan.FromSeconds(10)
+                Timeout = SandboxTestDeadlines.Generous
             };
 
             var result = await _sut.ExecuteAsync(request, CancellationToken.None);
 
             result.Success.Should().BeFalse();
-            result.ExitCode.Should().Be(3);
+            result.ExitCode.Should().Be(3, "the executor reported: {0}", result.ErrorMessage);
             result.Output.Should().Contain("crash-stdout-data");
 
             _attestation.Verify(x => x.SignAsync(

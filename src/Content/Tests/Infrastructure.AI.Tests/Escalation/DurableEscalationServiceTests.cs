@@ -200,11 +200,17 @@ public sealed class DurableEscalationServiceTests : IDisposable
 	public async Task RehydratePendingEscalationsAsync_TimeoutExpiredDuringDowntime_TimesOutImmediately()
 	{
 		var request = CreateRequest(timeoutSeconds: 1);
-		var first = CreateService(CreateDurableStore());
-		await first.QueueEscalationAsync(request, CancellationToken.None);
-		first.Dispose(); // kills the in-process timeout task; the durable row stays Pending
 
-		await Task.Delay(TimeSpan.FromSeconds(1.5));
+		// A row left Pending by a host that died before its timeout could fire, created far enough
+		// back that its deadline has already passed. Seeded straight into the store rather than
+		// queued through a service and disposed (#537): that sequence armed a live one-second timer
+		// and then raced Dispose against it. Under suite load the few statements between the two
+		// took longer than the second, so the escalation timed out in-process, left nothing Pending,
+		// and rehydration restored 0. Nothing here reads the wall clock, so there is no race left
+		// to lose — and the queue-then-restart path this replaced is covered whole by
+		// RehydratePendingEscalationsAsync_AfterRestart_RestoresPendingEscalation above.
+		await CreateDurableStore().SavePendingAsync(
+			request, DateTimeOffset.UtcNow.AddSeconds(-10), CancellationToken.None);
 
 		var rebooted = CreateService(CreateDurableStore());
 		var restored = await rebooted.RehydratePendingEscalationsAsync(CancellationToken.None);
