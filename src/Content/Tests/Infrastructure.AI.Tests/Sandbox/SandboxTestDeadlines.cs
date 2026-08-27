@@ -22,10 +22,21 @@ namespace Infrastructure.AI.Tests.Sandbox;
 /// <para>
 /// <strong>Why generous rather than tuned.</strong> Nothing here is asserting a duration, so there
 /// is no signal to preserve by keeping the number tight — a slow-but-correct subprocess is still
-/// correct, and this value only decides how long the suite waits before calling a genuinely hung
-/// process hung. It is deliberately far above the observed cost (sub-second) so that scheduling
-/// contention cannot reach it, and still bounded so a real hang fails the run rather than
-/// wedging it.
+/// correct, and this value only decides how long we wait before calling a genuinely hung process
+/// hung. It is deliberately far above the observed cost (sub-second) so that scheduling contention
+/// cannot reach it, and still bounded so a real hang fails the run rather than wedging it.
+/// </para>
+/// <para>
+/// <strong>Where the value actually lands, which is two different places.</strong> In the
+/// session-factory tests it is a test-side <c>WaitAsync</c> — the suite's own patience, invisible to
+/// the code under test. In the executor, isolation, and attestation tests it is assigned to
+/// <c>SandboxExecutionRequest.Timeout</c>, which is the sandbox's <em>production</em> kill budget:
+/// those tests now exercise a 60-second envelope rather than a 10-second one. That weakens nothing,
+/// because each of them asserts what the sandbox produced — environment isolation, an exit code, a
+/// signed attestation — and none asserts how long it took. It is stated here because a comment
+/// describing this purely as "how long the tests wait" would be false at three of its seven call
+/// sites (the other four are the <c>WaitAsync</c> kind), and a reader trusting that description
+/// would mis-size the next one.
 /// </para>
 /// <para>
 /// <strong>Do not use this for a test whose subject IS the deadline.</strong>

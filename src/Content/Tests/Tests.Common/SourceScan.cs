@@ -51,8 +51,16 @@ public static class SourceScan
     /// wrong in a way that cost a measurably flaky suite; that history is recorded there so the
     /// argument is not made again from the same incomplete cost model.
     /// </para>
+    /// <para>
+    /// Returned as <see cref="IReadOnlyList{T}"/> rather than an array <strong>because the instance is
+    /// shared</strong>. Every caller in a run now receives the same object, so one caller sorting or
+    /// assigning into it in place would silently change what every other guard sees — and a guard
+    /// reading a mutated view of the source tree passes vacuously, which is the one failure mode this
+    /// whole class exists to prevent. All three callers are read-only LINQ projections today; this
+    /// makes that a property of the type instead of a property of the current callers.
+    /// </para>
     /// </remarks>
-    public static (string Path, string Code)[] ReadProductionSources(string contentRoot) =>
+    public static IReadOnlyList<(string Path, string Code)> ReadProductionSources(string contentRoot) =>
         Cache.GetOrAdd(contentRoot, root => Directory
             .EnumerateFiles(root, "*.cs", SearchOption.AllDirectories)
             .Where(f => !IsExcluded(f, root))
