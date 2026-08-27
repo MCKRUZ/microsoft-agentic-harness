@@ -159,13 +159,20 @@ public sealed partial class DirectToolInvoker
         AIFunction tool,
         string agentId,
         DirectToolInvocationConfig config,
-        CancellationToken cancellationToken) =>
-        RunArmedCoreAsync(
-            request.ToolName, agentId, request.Envelope,
-            request.RequestedTimeout ?? config.InvocationTimeout,
-            McpTimeoutLogTemplate, McpFaultLogTemplate, cancellationToken,
-            (admissionPipeline, _, sw) =>
-                AuthorizeAndRunMcpAsync(request, tool, admissionPipeline, config, sw, cancellationToken));
+        CancellationToken cancellationToken)
+    {
+        var effectiveTimeout = request.RequestedTimeout ?? config.InvocationTimeout;
+        return RunArmedCoreAsync(
+            toolName: request.ToolName,
+            agentId: agentId,
+            envelope: request.Envelope,
+            effectiveTimeout: effectiveTimeout,
+            timeoutLogTemplate: McpTimeoutLogTemplate,
+            faultLogTemplate: McpFaultLogTemplate,
+            cancellationToken: cancellationToken,
+            body: (admissionPipeline, _, sw) =>
+                AuthorizeAndRunMcpAsync(request, tool, admissionPipeline, config, effectiveTimeout, sw, cancellationToken));
+    }
 
     /// <summary>
     /// Runs the admission chain and then the MCP tool itself, mirroring
@@ -178,11 +185,12 @@ public sealed partial class DirectToolInvoker
         AIFunction tool,
         IToolCallAdmissionPipeline admissionPipeline,
         DirectToolInvocationConfig config,
+        TimeSpan effectiveTimeout,
         Stopwatch sw,
         CancellationToken cancellationToken)
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        deadline.CancelAfter(request.RequestedTimeout ?? config.InvocationTimeout);
+        deadline.CancelAfter(effectiveTimeout);
 
         var admission = await admissionPipeline
             .AdmitAsync(

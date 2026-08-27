@@ -1,11 +1,8 @@
 using System.Diagnostics;
 using Application.AI.Common.Interfaces;
-using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Tools;
-using Application.AI.Common.Services.Governance;
 using Domain.AI.Escalation;
-using Domain.AI.Governance;
 using Domain.AI.Models;
 using Domain.Common.Config.AI.DirectToolInvocation;
 using Microsoft.Extensions.DependencyInjection;
@@ -128,171 +125,22 @@ public sealed partial class DirectToolInvoker : IDirectToolInvoker
         string toolName,
         string agentId,
         DirectToolInvocationConfig config,
-        CancellationToken cancellationToken) =>
-        RunArmedCoreAsync(
-            toolName, agentId, request.Envelope,
-            request.RequestedTimeout ?? config.InvocationTimeout,
-            TimeoutLogTemplate, FaultLogTemplate, cancellationToken,
-            (admissionPipeline, scope, sw) =>
+        CancellationToken cancellationToken)
+    {
+        var effectiveTimeout = request.RequestedTimeout ?? config.InvocationTimeout;
+        return RunArmedCoreAsync(
+            toolName: toolName,
+            agentId: agentId,
+            envelope: request.Envelope,
+            effectiveTimeout: effectiveTimeout,
+            timeoutLogTemplate: TimeoutLogTemplate,
+            faultLogTemplate: FaultLogTemplate,
+            cancellationToken: cancellationToken,
+            body: (admissionPipeline, scope, sw) =>
             {
                 var armed = new ArmedInvocation(request, toolName, admissionPipeline, scope, config);
-                return AuthorizeAndRunAsync(armed, sw, cancellationToken);
+                return AuthorizeAndRunAsync(armed, effectiveTimeout, sw, cancellationToken);
             });
-
-    /// <summary>
-    /// Kept as full message templates, not assembled from a shared prefix + suffix, so the rendered
-    /// text AND the structured log's message-template string (what Application Insights groups and
-    /// alerts by) are both byte-identical to what this surface has always logged — found in review on
-    /// #494: an earlier version of this refactor collapsed both surfaces onto one shared template with
-    /// the surface name demoted to a property, which keeps the rendered text but silently breaks any
-    /// saved query or alert keyed on the old, now-vanished template string.
-    /// </summary>
-    private const string TimeoutLogTemplate = "Direct invocation of {ToolName} exceeded its {Timeout} deadline";
-
-    /// <summary>See <see cref="TimeoutLogTemplate"/>'s remarks — the fault-branch counterpart.</summary>
-    private const string FaultLogTemplate = "Direct invocation of {ToolName} threw";
-
-    /// <summary>
-    /// The arm/authorize/catch skeleton every direct-invocation surface runs, whatever kind of tool
-    /// it turns out to be (#481) — extracted so <see cref="RunArmedAsync"/> and
-    /// <c>DirectToolInvoker.Mcp.cs</c>'s <c>RunMcpArmedAsync</c> share the one implementation rather
-    /// than each re-deriving it by hand (#494). <see cref="ArmGovernance"/> was already extracted for
-    /// exactly this reason but stopped one level too shallow — the scope creation, the arm, the
-    /// three-arm catch ladder, and the trace log around all of it were still duplicated.
-    /// </summary>
-    /// <param name="toolName">The tool being invoked, for the trace log and the deadline/fault log messages.</param>
-    /// <param name="agentId">The caller's synthetic identity — see <see cref="ArmGovernance"/>'s remarks.</param>
-    /// <param name="envelope">The caller's capability envelope to arm around the call.</param>
-    /// <param name="effectiveTimeout">
-    /// The deadline this invocation runs under, already resolved from the caller's request and the
-    /// host's config — reported in the timeout log message, not enforced here; enforcement is
-    /// <paramref name="body"/>'s own concern, since only it knows where the linked deadline token
-    /// needs to reach.
-    /// </param>
-    /// <param name="timeoutLogTemplate">
-    /// The caller's own full message template for the deadline-timeout warning, e.g.
-    /// <see cref="TimeoutLogTemplate"/> — a complete template, not a prefix this method assembles
-    /// into a shared one, so the structured log's message-template string (what a log backend groups
-    /// and alerts by) stays exactly what each surface has always emitted.
-    /// </param>
-    /// <param name="faultLogTemplate">The caller's own full message template for the fault-branch error, e.g. <see cref="FaultLogTemplate"/>.</param>
-    /// <param name="cancellationToken">The caller's own token — see the first catch arm for why it
-    /// alone distinguishes "the caller went away" from "the deadline elapsed".</param>
-    /// <param name="body">
-    /// Authorizes and runs the tool itself, given the armed pipeline, the invocation's DI scope (used
-    /// by the keyed-DI path to resolve the tool; ignored by the MCP path, which already holds its
-    /// <c>AIFunction</c>), and the shared stopwatch every outcome's <c>Duration</c> is measured against.
-    /// </param>
-    private async Task<DirectToolInvocationOutcome> RunArmedCoreAsync(
-        string toolName,
-        string agentId,
-        Domain.AI.Bundles.CapabilityEnvelope envelope,
-        TimeSpan effectiveTimeout,
-        string timeoutLogTemplate,
-        string faultLogTemplate,
-        CancellationToken cancellationToken,
-        Func<IToolCallAdmissionPipeline, AsyncServiceScope, Stopwatch, Task<DirectToolInvocationOutcome>> body)
-    {
-        var sw = Stopwatch.StartNew();
-
-        await using var scope = _scopeFactory.CreateAsyncScope();
-
-        try
-        {
-            // Identity and envelope. Both must be in place before AuthorizeAsync — see the type
-            // remarks for what the governor reads, and when. The conversation-id and
-            // callOnceScopeId choices ArmGovernance makes are documented on ArmGovernance itself,
-            // not repeated here — this method only calls it (#494: the repeat was stale
-            // documentation left behind when ArmGovernance was first extracted).
-            var (admissionPipeline, grantedEnvelope, armedAdmission) =
-                ArmGovernance(scope.ServiceProvider, agentId, envelope);
-            using var _grantedEnvelope = grantedEnvelope;
-            using var _armedAdmission = armedAdmission;
-
-            try
-            {
-                return await body(admissionPipeline, scope, sw).ConfigureAwait(false);
-            }
-            finally
-            {
-                LogTrace(toolName, agentId, admissionPipeline.GetTrace);
-            }
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            // The caller went away or the host is shutting down. Distinct from the deadline below:
-            // nobody is waiting for an answer, so unwind rather than manufacture one.
-            throw;
-        }
-        catch (OperationCanceledException)
-        {
-            sw.Stop();
-            _logger.LogWarning(timeoutLogTemplate, toolName, effectiveTimeout);
-            return DirectToolInvocationOutcome.Refused(
-                DirectToolInvocationStatus.TimedOut, "The tool did not complete within its deadline.", sw.Elapsed);
-        }
-        catch (Exception ex)
-        {
-            sw.Stop();
-            // Full detail stays in the structured log. Tool and infrastructure exceptions carry host
-            // paths, connection strings and container internals, and this response crosses a trust
-            // boundary — so the caller gets a stable code and nothing derived from the exception.
-            _logger.LogError(ex, faultLogTemplate, toolName);
-            return DirectToolInvocationOutcome.Refused(
-                DirectToolInvocationStatus.Faulted, DirectToolInvocationErrors.Failed, sw.Elapsed);
-        }
-    }
-
-    /// <summary>
-    /// Establishes the caller's identity and capability envelope, then arms the ambient admission
-    /// chain — the fixed-order sequence every direct-invocation surface must run before its own
-    /// tool-specific resolution, whatever kind of tool that turns out to be (#481). Extracted so the
-    /// keyed-DI <see cref="ITool"/> path (<see cref="RunArmedAsync"/>) and the MCP path
-    /// (<c>DirectToolInvoker.Mcp.cs</c>) share the one implementation rather than each re-deriving this
-    /// order by hand — see this type's remarks for what goes wrong when that discipline is duplicated.
-    /// </summary>
-    /// <returns>
-    /// The scoped admission chain, reset and ready, plus the two restoring scopes the caller must
-    /// dispose (in either order — both restore independently) when the invocation ends.
-    /// </returns>
-    private (IToolCallAdmissionPipeline Pipeline, IDisposable EnvelopeScope, IDisposable AdmissionScope) ArmGovernance(
-        IServiceProvider scopedProvider, string agentId, Domain.AI.Bundles.CapabilityEnvelope envelope)
-    {
-        // Identity and envelope. Both must be in place before AdmitAsync — see the type remarks for
-        // what the governor reads, and when.
-        //
-        // The conversation id is deliberately NOT agentId. #325's retry-attribution memory is keyed on
-        // (conversation, agent, tool) precisely so it expires — but agentId here is the caller's stable
-        // synthetic identity, reused for every direct invocation that caller ever makes. Passing it as
-        // the conversation id too would give the failure-memory key no expiry at all. A direct
-        // invocation is a single, standalone call with no request-level session concept to key on, so
-        // each one mints its own one-shot id.
-        //
-        // callOnceScopeId is deliberately omitted (null), for the identical reason: a direct invocation
-        // has no request-level session to key a repeat-call check on either. A call-once tool reached
-        // through this surface is therefore not enforceable here — the call-once gate fails open on a
-        // null scope, which is the documented, correct answer, not a gap. See
-        // IAgentExecutionContext.CallOnceScopeId's remarks.
-        var executionContext = scopedProvider.GetRequiredService<IAgentExecutionContext>();
-        executionContext.Initialize(agentId, conversationId: Guid.NewGuid().ToString(), turnNumber: 1);
-
-        // Required, not GetService: the chain is registered unconditionally, and an absent one is
-        // indistinguishable at runtime from a host whose gates all happen to be off — so tolerating
-        // null here would let a broken composition run this path silently unguarded.
-        var admissionPipeline = scopedProvider.GetRequiredService<IToolCallAdmissionPipeline>();
-        admissionPipeline.Reset();
-
-        // Both ambient values are published with restoring scopes rather than assigned and nulled. The
-        // difference only shows under nesting, where it is the whole game: nulling on teardown disarms
-        // whatever an enclosing flow had armed, leaving the outer call ungoverned for the rest of its
-        // life. Restoring cannot do that.
-        //
-        // The chain is armed as well as called directly, because a tool that spawns an agent turn
-        // beneath it must reach the same chain rather than run unadmitted.
-        var grantedEnvelope = CapabilityEnvelopeAccessor.Begin(envelope);
-        var armedAdmission = ToolAdmissionAccessor.Begin(admissionPipeline);
-
-        return (admissionPipeline, grantedEnvelope, armedAdmission);
     }
 
     /// <summary>
@@ -309,10 +157,10 @@ public sealed partial class DirectToolInvoker : IDirectToolInvoker
     /// </para>
     /// </remarks>
     private async Task<DirectToolInvocationOutcome> AuthorizeAndRunAsync(
-        ArmedInvocation armed, Stopwatch sw, CancellationToken cancellationToken)
+        ArmedInvocation armed, TimeSpan effectiveTimeout, Stopwatch sw, CancellationToken cancellationToken)
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        deadline.CancelAfter(armed.Request.RequestedTimeout ?? armed.Config.InvocationTimeout);
+        deadline.CancelAfter(effectiveTimeout);
 
         // Parameters are passed for the same reason the agent path passes them: if a verdict is routed
         // to a human, approving a bare tool name tells them nothing. This is the surface most exposed
@@ -403,37 +251,6 @@ public sealed partial class DirectToolInvoker : IDirectToolInvoker
     private static ValueTask ReportExecutionAsync(
         IToolCallAdmissionPipeline pipeline, ToolCallAdmission admission, ToolExecutionReport report, string reportedBy) =>
         pipeline.ReportExecutionAsync(admission, report, reportedBy, CancellationToken.None);
-
-    /// <summary>
-    /// Builds a refusal and stops the clock. This method owns stopping it, so callers must not — a
-    /// second stop is harmless but splits ownership, and a caller that forgets is then
-    /// indistinguishable from one that did not need to.
-    /// </summary>
-    private static DirectToolInvocationOutcome Refused(
-        DirectToolInvocationStatus status, string error, Stopwatch sw)
-    {
-        sw.Stop();
-        return DirectToolInvocationOutcome.Refused(status, error, sw.Elapsed);
-    }
-
-    /// <summary>
-    /// Records what governance decided. The trace carries rule ids and policy reasons, so it is written
-    /// to the host's log and never returned to the caller.
-    /// </summary>
-    private void LogTrace(string toolName, string agentId, Func<GovernanceTrace> trace)
-    {
-        // Checked before calling the factory: GetTrace() snapshots the decision list under a lock, and
-        // a production host running at Warning would pay for that on every invocation to log nothing.
-        if (!_logger.IsEnabled(LogLevel.Information))
-            return;
-
-        foreach (var decision in trace().ToolDecisions)
-        {
-            _logger.LogInformation(
-                "Direct invocation governance: caller {AgentId} tool {ToolName} → {Outcome} ({Reason}); enforced={Enforced}",
-                agentId, toolName, decision.Outcome, decision.Reason, decision.Enforced);
-        }
-    }
 
     /// <summary>
     /// Everything an armed invocation needs, gathered once rather than threaded through each step as a
