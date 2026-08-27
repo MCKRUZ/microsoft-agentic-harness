@@ -163,14 +163,9 @@ public sealed partial class DirectToolInvoker
     {
         var effectiveTimeout = request.RequestedTimeout ?? config.InvocationTimeout;
         return RunArmedCoreAsync(
-            toolName: request.ToolName,
-            agentId: agentId,
-            envelope: request.Envelope,
-            effectiveTimeout: effectiveTimeout,
-            timeoutLogTemplate: McpTimeoutLogTemplate,
-            faultLogTemplate: McpFaultLogTemplate,
-            cancellationToken: cancellationToken,
-            body: (admissionPipeline, _, sw) =>
+            new ArmingRequest(request.ToolName, agentId, request.Envelope, effectiveTimeout, McpTimeoutLogTemplate, McpFaultLogTemplate),
+            cancellationToken,
+            (admissionPipeline, _, sw) =>
                 AuthorizeAndRunMcpAsync(request, tool, admissionPipeline, config, effectiveTimeout, sw, cancellationToken));
     }
 

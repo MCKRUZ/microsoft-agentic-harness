@@ -129,14 +129,9 @@ public sealed partial class DirectToolInvoker : IDirectToolInvoker
     {
         var effectiveTimeout = request.RequestedTimeout ?? config.InvocationTimeout;
         return RunArmedCoreAsync(
-            toolName: toolName,
-            agentId: agentId,
-            envelope: request.Envelope,
-            effectiveTimeout: effectiveTimeout,
-            timeoutLogTemplate: TimeoutLogTemplate,
-            faultLogTemplate: FaultLogTemplate,
-            cancellationToken: cancellationToken,
-            body: (admissionPipeline, scope, sw) =>
+            new ArmingRequest(toolName, agentId, request.Envelope, effectiveTimeout, TimeoutLogTemplate, FaultLogTemplate),
+            cancellationToken,
+            (admissionPipeline, scope, sw) =>
             {
                 var armed = new ArmedInvocation(request, toolName, admissionPipeline, scope, config);
                 return AuthorizeAndRunAsync(armed, effectiveTimeout, sw, cancellationToken);

@@ -31,6 +31,46 @@ public sealed partial class DirectToolInvoker
     private const string FaultLogTemplate = "Direct invocation of {ToolName} threw";
 
     /// <summary>
+    /// Everything <see cref="RunArmedCoreAsync"/> needs to arm one invocation, gathered into a single
+    /// value rather than six positional parameters — found in review on #494: both call sites already
+    /// needed named-argument syntax to stay readable, which is itself the signal that the list had
+    /// grown too long for positional passing.
+    /// </summary>
+    /// <param name="ToolName">The tool being invoked, for the trace log and the deadline/fault log messages.</param>
+    /// <param name="AgentId">The caller's synthetic identity — see <see cref="ArmGovernance"/>'s remarks.</param>
+    /// <param name="Envelope">The caller's capability envelope to arm around the call.</param>
+    /// <param name="EffectiveTimeout">
+    /// The deadline this invocation runs under, already resolved by the caller from its request and
+    /// the host's config — reported in the timeout log message, not enforced here; enforcement is the
+    /// arming body's own concern. Deliberately not re-derived here from a request/config pair: the
+    /// body needs the identical value for its own deadline token, and a second, independent derivation
+    /// of "requested timeout or config default" is exactly the shape of bug where the logged deadline
+    /// and the enforced one quietly drift apart after a future change to one derivation site and not
+    /// the other.
+    /// </param>
+    /// <param name="TimeoutLogTemplate">
+    /// The caller's own full message template for the deadline-timeout warning, e.g. this type's
+    /// <see cref="DirectToolInvoker.TimeoutLogTemplate"/> — a complete template, not a prefix this
+    /// method assembles into a shared one, so the structured log's message-template string (what a log
+    /// backend groups and alerts by) stays exactly what each surface has always emitted. Must accept
+    /// exactly the two placeholders <see cref="TimedOut"/> supplies (tool name, then timeout) in that
+    /// order — nothing enforces that shape, so a future invocation surface with a differently-shaped
+    /// template needs its own logging call, not a third template passed here.
+    /// </param>
+    /// <param name="FaultLogTemplate">
+    /// The caller's own full message template for the fault-branch error, e.g. this type's
+    /// <see cref="DirectToolInvoker.FaultLogTemplate"/> — same one-placeholder (tool name) constraint
+    /// as <see cref="TimeoutLogTemplate"/>, enforced the same way: by convention, not the type system.
+    /// </param>
+    private readonly record struct ArmingRequest(
+        string ToolName,
+        string AgentId,
+        Domain.AI.Bundles.CapabilityEnvelope Envelope,
+        TimeSpan EffectiveTimeout,
+        string TimeoutLogTemplate,
+        string FaultLogTemplate);
+
+    /// <summary>
     /// The arm/authorize/catch skeleton every direct-invocation surface runs, whatever kind of tool
     /// it turns out to be (#481) — extracted so <c>RunArmedAsync</c> and
     /// <c>DirectToolInvoker.Mcp.cs</c>'s <c>RunMcpArmedAsync</c> share the one implementation rather
@@ -38,32 +78,7 @@ public sealed partial class DirectToolInvoker
     /// exactly this reason but stopped one level too shallow — the scope creation, the arm, the
     /// three-arm catch ladder, and the trace log around all of it were still duplicated.
     /// </summary>
-    /// <param name="toolName">The tool being invoked, for the trace log and the deadline/fault log messages.</param>
-    /// <param name="agentId">The caller's synthetic identity — see <see cref="ArmGovernance"/>'s remarks.</param>
-    /// <param name="envelope">The caller's capability envelope to arm around the call.</param>
-    /// <param name="effectiveTimeout">
-    /// The deadline this invocation runs under, already resolved by the caller from its request and
-    /// the host's config — reported in the timeout log message, not enforced here; enforcement is
-    /// <paramref name="body"/>'s own concern. Deliberately not re-derived here from a request/config
-    /// pair: <paramref name="body"/> needs the identical value for its own deadline token, and a
-    /// second, independent derivation of "requested timeout or config default" is exactly the shape of
-    /// bug where the logged deadline and the enforced one quietly drift apart after a future change to
-    /// one derivation site and not the other.
-    /// </param>
-    /// <param name="timeoutLogTemplate">
-    /// The caller's own full message template for the deadline-timeout warning, e.g.
-    /// <see cref="TimeoutLogTemplate"/> — a complete template, not a prefix this method assembles
-    /// into a shared one, so the structured log's message-template string (what a log backend groups
-    /// and alerts by) stays exactly what each surface has always emitted. Must accept exactly the two
-    /// placeholders <see cref="TimedOut"/> supplies (tool name, then timeout) in that order — nothing
-    /// in this method's signature enforces that shape, so a future invocation surface with a
-    /// differently-shaped template needs its own logging call, not a third template passed here.
-    /// </param>
-    /// <param name="faultLogTemplate">
-    /// The caller's own full message template for the fault-branch error, e.g.
-    /// <see cref="FaultLogTemplate"/> — same one-placeholder (tool name) constraint as
-    /// <paramref name="timeoutLogTemplate"/>, enforced the same way: by convention, not the type system.
-    /// </param>
+    /// <param name="request">Everything this invocation needs to arm — see <see cref="ArmingRequest"/>.</param>
     /// <param name="cancellationToken">The caller's own token — see the first catch arm for why it
     /// alone distinguishes "the caller went away" from "the deadline elapsed".</param>
     /// <param name="body">
@@ -72,12 +87,7 @@ public sealed partial class DirectToolInvoker
     /// <c>AIFunction</c>), and the shared stopwatch every outcome's <c>Duration</c> is measured against.
     /// </param>
     private async Task<DirectToolInvocationOutcome> RunArmedCoreAsync(
-        string toolName,
-        string agentId,
-        Domain.AI.Bundles.CapabilityEnvelope envelope,
-        TimeSpan effectiveTimeout,
-        string timeoutLogTemplate,
-        string faultLogTemplate,
+        ArmingRequest request,
         CancellationToken cancellationToken,
         Func<IToolCallAdmissionPipeline, AsyncServiceScope, Stopwatch, Task<DirectToolInvocationOutcome>> body)
     {
@@ -93,7 +103,7 @@ public sealed partial class DirectToolInvoker
             // not repeated here — this method only calls it (#494: the repeat was stale
             // documentation left behind when ArmGovernance was first extracted).
             var (admissionPipeline, grantedEnvelope, armedAdmission) =
-                ArmGovernance(scope.ServiceProvider, agentId, envelope);
+                ArmGovernance(scope.ServiceProvider, request.AgentId, request.Envelope);
             using var _grantedEnvelope = grantedEnvelope;
             using var _armedAdmission = armedAdmission;
 
@@ -103,7 +113,7 @@ public sealed partial class DirectToolInvoker
             }
             finally
             {
-                LogTrace(toolName, agentId, admissionPipeline.GetTrace);
+                LogTrace(request.ToolName, request.AgentId, admissionPipeline.GetTrace);
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -114,11 +124,11 @@ public sealed partial class DirectToolInvoker
         }
         catch (OperationCanceledException)
         {
-            return TimedOut(sw, toolName, effectiveTimeout, timeoutLogTemplate);
+            return TimedOut(sw, request.ToolName, request.EffectiveTimeout, request.TimeoutLogTemplate);
         }
         catch (Exception ex)
         {
-            return Faulted(ex, sw, toolName, faultLogTemplate);
+            return Faulted(ex, sw, request.ToolName, request.FaultLogTemplate);
         }
     }
 
