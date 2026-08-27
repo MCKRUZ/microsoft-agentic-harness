@@ -246,21 +246,30 @@ public sealed class PlanValidator : IPlanValidator
     /// </remarks>
     private List<string> LogUnknownConfigType(PlanStep step)
     {
+        var typeName = step.Configuration.GetType().Name;
         _logger.LogWarning(
             "No validator registered for StepConfiguration type '{ConfigType}' on step '{StepName}' ({StepId})",
-            step.Configuration.GetType().Name, step.Name, step.Id.Value);
-        return [
-            $"No validator is registered for step configuration type '{step.Configuration.GetType().Name}' " +
-            "— this step cannot be validated and the plan is rejected rather than accepted unchecked."
-        ];
+            typeName, step.Name, step.Id.Value);
+        return [NoValidatorErrorMessage(typeName)];
     }
+
+    /// <summary>
+    /// The error both fail-closed branches return — <see cref="LogUnknownConfigType"/> for a subtype
+    /// this switch does not recognize, <see cref="ValidateConfig{T}"/> for a known subtype whose
+    /// validator did not resolve. Shared because the two branches report the same fact about the
+    /// caller (this step could not be checked) and a divergent wording between them would read as two
+    /// different situations rather than one.
+    /// </summary>
+    private static string NoValidatorErrorMessage(string configTypeName) =>
+        $"No validator is registered for step configuration type '{configTypeName}' " +
+        "— this step cannot be validated and the plan is rejected rather than accepted unchecked.";
 
     /// <summary>
     /// Resolves and runs the FluentValidation validator for one step's configuration.
     /// </summary>
     /// <remarks>
     /// <para>
-    /// <strong>Fails closed when no validator is registered (#526).</strong> All five step-config
+    /// <strong>Fails closed when no validator is registered (#526).</strong> All six step-config
     /// validators reach this method's caller through one mechanism — <c>AddValidatorsFromAssembly</c>
     /// on the <c>Application.Core</c> assembly, unconditional in every DI composition this repo ships
     /// (verified: no <c>if</c>/feature flag guards any of the three <c>AddValidatorsFromAssembly</c>
@@ -276,7 +285,7 @@ public sealed class PlanValidator : IPlanValidator
     /// the returned list, never whether a validator ran. Returning one error instead makes that gap
     /// visible in exactly the channel a caller is already watching, rather than adding a second
     /// channel (a distinct result type) that every caller would additionally have to check. Complemented
-    /// by <c>PlannerStepConfigValidatorWiringTests</c>, which resolves all five step-config validators
+    /// by <c>PlannerStepConfigValidatorWiringTests</c>, which resolves all six step-config validators
     /// from the real composition root so the scan breaking fails CI directly rather than only at the
     /// point some future plan happens to exercise this fallback.
     /// </para>
@@ -291,10 +300,7 @@ public sealed class PlanValidator : IPlanValidator
                 "No validator registered for StepConfiguration type '{ConfigType}'; the plan is being " +
                 "rejected rather than accepted unchecked",
                 typeof(T).Name);
-            return [
-                $"No validator is registered for step configuration type '{typeof(T).Name}' " +
-                "— this step cannot be validated and the plan is rejected rather than accepted unchecked."
-            ];
+            return [NoValidatorErrorMessage(typeof(T).Name)];
         }
 
         var result = await validator.ValidateAsync(config, ct);
