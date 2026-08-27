@@ -70,7 +70,10 @@ public sealed partial class DirectToolInvoker
             // can succeed with it in its output — code review on the PR that added #479/#484's
             // guarantees to the success path below caught that this branch never picked them up.
             var (preCutError, _) = PreCutForScrub(rawError, ceiling);
-            if (!armed.AdmissionPipeline.TryApplyTextOutputPolicy(admission, armed.ToolName, preCutError, out var admittedError))
+            // Truncation discarded here for the same reason the ScrubAndBound below discards its own:
+            // the outcome carries no ErrorTruncated field to report it on.
+            if (!armed.AdmissionPipeline.TryApplyTextOutputPolicy(
+                    admission, armed.ToolName, preCutError, out var admittedError, out _))
             {
                 return DirectToolInvocationOutcome.Refused(
                     DirectToolInvocationStatus.Denied,
@@ -106,7 +109,8 @@ public sealed partial class DirectToolInvoker
         // Fails closed: when a redaction was required and could not be applied, the chain returns
         // false and the original must be withheld rather than emitted. See the chain's own remarks
         // for why falling back to the raw content is the trap.
-        if (!armed.AdmissionPipeline.TryApplyTextOutputPolicy(admission, armed.ToolName, preCut, out var admitted))
+        if (!armed.AdmissionPipeline.TryApplyTextOutputPolicy(
+                admission, armed.ToolName, preCut, out var admitted, out var truncatedByPipeline))
         {
             return DirectToolInvocationOutcome.Refused(
                 DirectToolInvocationStatus.Denied,
@@ -118,7 +122,16 @@ public sealed partial class DirectToolInvoker
         // failure branch above applies to result.Error, and independent of whatever the admission
         // pipeline's sanitizer already did above.
         var (output, truncatedByOwnScrub) = ScrubAndBound(admitted ?? string.Empty, ceiling, armed.ToolName);
-        var truncated = droppedByPreCut || truncatedByOwnScrub;
+
+        // truncatedByPipeline is the third term, and without it the other two are not enough (#532).
+        // Both of them measure against THIS class's ceiling; the admission pipeline cuts to its own,
+        // which on shipped defaults is roughly five times smaller. For any output between the two,
+        // the pre-cut found nothing to drop, the pipeline removed most of the body, and the scrub
+        // then saw a string already well inside the ceiling and also found nothing to drop — so the
+        // response carried a prefix while reporting OutputTruncated = false. The DTO's own remarks
+        // name that harm exactly: a caller that cannot tell a complete result from a prefix parses
+        // the prefix as complete.
+        var truncated = droppedByPreCut || truncatedByPipeline || truncatedByOwnScrub;
 
         return new DirectToolInvocationOutcome
         {

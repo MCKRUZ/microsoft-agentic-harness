@@ -62,6 +62,7 @@ public sealed class DirectToolInvokerTests
     private readonly GovernorRecord _governor = new();
     private readonly RecordingSanitizer _sanitizer = new();
     private readonly DirectToolInvocationConfig _config = new() { Enabled = true };
+    private int? _pipelineOutputCeiling;
     private readonly Mock<IApprovalExecutionReporter> _executionReporter = new();
     private FakeClassificationGate? _classificationGate;
     private FakeObserverChain? _observerChain;
@@ -515,6 +516,33 @@ public sealed class DirectToolInvokerTests
         outcome.OutputTruncated.Should().BeFalse();
     }
 
+    [Fact]
+    public async Task Reports_truncation_the_admission_pipeline_applied_even_when_the_invokers_own_ceiling_never_fires()
+    {
+        // #532's actual defect, reproduced at the ratio production ships with rather than the inverse
+        // ratio most fixtures in this file use: the invoker's own ceiling (MaxOutputCharacters, real
+        // default 262,144) is far LARGER than the admission pipeline's (PerResultCharLimit, real
+        // default 50,000). An output landing strictly between the two passes both of the invoker's own
+        // pre-cut and post-scrub checks untouched — neither ever sees anything to drop — while the
+        // pipeline in between removes most of the body. Before the fix, OutputTruncated was computed
+        // only from the invoker's own two checks and came back false on a response that was, in fact,
+        // a prefix.
+        _config.MaxOutputCharacters = 1000;
+        _pipelineOutputCeiling = 100;
+        _sanitizer.PassThrough = true;
+        var tool = Tool("alpha", result: ToolResult.Ok(new string('a', 500)));
+
+        var outcome = await Invoke(Request("alpha"), tool);
+
+        outcome.Output!.Length.Should().BeLessThanOrEqualTo(1000,
+            "the invoker's own ceiling is the outer bound the response must respect regardless of "
+            + "which stage did the cutting");
+        outcome.OutputTruncated.Should().BeTrue(
+            "the admission pipeline cut this response to 100 characters before the invoker's own " +
+            "1000-character checks ever ran, so the response IS a prefix even though neither of the " +
+            "invoker's own measurements found anything to drop");
+    }
+
     // ---- data classification --------------------------------------------------------------------
 
     [Fact]
@@ -843,13 +871,21 @@ public sealed class DirectToolInvokerTests
 
         // #532: the chain now bounds tool output and reads its ceiling from AppConfig, so it requires
         // one — registered here for the same reason as every gate above, and stated the same way: an
-        // absent registration is a composition that cannot exist in production. Shipped defaults, so
-        // the pipeline's 50,000-character ceiling sits far above the small per-test ceilings this
-        // fixture gives DirectToolInvoker itself; the invoker's own cut is what these tests observe,
-        // and the pipeline's is a no-op at this size. That separation is deliberate: if the two ever
-        // interfered, the truncation tests below would be asserting against the wrong cut.
+        // absent registration is a composition that cannot exist in production. Most tests leave
+        // _pipelineOutputCeiling unset, which binds the shipped 50,000-character default — far above
+        // the small per-test ceilings this fixture gives DirectToolInvoker itself, so the invoker's own
+        // cut is what those tests observe and the pipeline's is a no-op at that size.
+        //
+        // A prior version of this comment stated that separation as though it always held. It does
+        // not: on real shipped defaults the invoker's ceiling (262,144) is roughly five times LARGER
+        // than the pipeline's (50,000), the inverse of what most tests here set up — which is exactly
+        // why the family below needs _pipelineOutputCeiling set below the invoker's ceiling rather than
+        // above it, to reproduce the ratio production actually ships with.
+        var pipelineConfig = new Domain.Common.Config.AppConfig();
+        if (_pipelineOutputCeiling is { } ceiling)
+            pipelineConfig.AI.ContextManagement.ToolResultStorage.PerResultCharLimit = ceiling;
         services.AddSingleton<IOptionsMonitor<Domain.Common.Config.AppConfig>>(
-            new StaticOptionsMonitor<Domain.Common.Config.AppConfig>(new Domain.Common.Config.AppConfig()));
+            new StaticOptionsMonitor<Domain.Common.Config.AppConfig>(pipelineConfig));
 
         // The real chain, not a mock of it, built the same way the production root builds it. This
         // suite's whole subject is what the Execution API does before, during and after a tool call,

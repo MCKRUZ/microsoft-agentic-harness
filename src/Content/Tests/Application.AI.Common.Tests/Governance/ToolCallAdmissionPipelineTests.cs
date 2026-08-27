@@ -297,7 +297,7 @@ public sealed class ToolCallAdmissionPipelineTests
             classificationGate: gate.Object,
             sanitizer: AdmissionHarness.SubstitutingSanitizer("secret", "[SCRUBBED]"));
 
-        var ok = pipeline.TryApplyTextOutputPolicy(ToolCallAdmission.Allow(), Tool, "a secret value", out var result);
+        var ok = pipeline.TryApplyTextOutputPolicy(ToolCallAdmission.Allow(), Tool, "a secret value", out var result, out _);
 
         ok.Should().BeTrue();
         result.Should().Be("a [SCRUBBED] value");
@@ -312,7 +312,7 @@ public sealed class ToolCallAdmissionPipelineTests
         var pipeline = AdmissionHarness.Pipeline(classificationGate: gate.Object);
 
         var ok = pipeline.TryApplyTextOutputPolicy(
-            ToolCallAdmission.AllowWithOutputRedaction(), Tool, "raw text", out var result);
+            ToolCallAdmission.AllowWithOutputRedaction(), Tool, "raw text", out var result, out _);
 
         ok.Should().BeTrue();
         result.Should().Be("[redacted]");
@@ -329,7 +329,7 @@ public sealed class ToolCallAdmissionPipelineTests
         var pipeline = AdmissionHarness.Pipeline(classificationGate: gate.Object);
 
         var ok = pipeline.TryApplyTextOutputPolicy(
-            ToolCallAdmission.AllowWithOutputRedaction(), Tool, "raw text", out var result);
+            ToolCallAdmission.AllowWithOutputRedaction(), Tool, "raw text", out var result, out _);
 
         ok.Should().BeFalse();
         result.Should().BeNull();
@@ -368,7 +368,7 @@ public sealed class ToolCallAdmissionPipelineTests
         var pipeline = AdmissionHarness.Pipeline(outputCeiling: 100);
 
         var ok = pipeline.TryApplyTextOutputPolicy(
-            ToolCallAdmission.Allow(), Tool, new string('x', 5000), out var result);
+            ToolCallAdmission.Allow(), Tool, new string('x', 5000), out var result, out _);
 
         ok.Should().BeTrue("bounding is not a policy denial — the result is admitted, just cut");
         result!.Length.Should().BeLessThanOrEqualTo(100);
@@ -414,7 +414,7 @@ public sealed class ToolCallAdmissionPipelineTests
         var sanitizer = new Mock<ICompositeResponseSanitizer>(MockBehavior.Strict);
         var pipeline = AdmissionHarness.Pipeline(sanitizer: sanitizer.Object);
 
-        var ok = pipeline.TryApplyTextOutputPolicy(ToolCallAdmission.Allow(), Tool, null, out var result);
+        var ok = pipeline.TryApplyTextOutputPolicy(ToolCallAdmission.Allow(), Tool, null, out var result, out _);
 
         ok.Should().BeTrue("there is nothing to sanitize in an absent result");
         result.Should().BeNull();
@@ -434,7 +434,7 @@ public sealed class ToolCallAdmissionPipelineTests
         var pipeline = AdmissionHarness.Pipeline(classificationGate: gate.Object);
 
         var ok = pipeline.TryApplyTextOutputPolicy(
-            ToolCallAdmission.AllowWithOutputRedaction(), Tool, null, out var result);
+            ToolCallAdmission.AllowWithOutputRedaction(), Tool, null, out var result, out _);
 
         ok.Should().BeFalse("a redact-required call must never report success just because there was nothing to redact yet");
         result.Should().BeNull();

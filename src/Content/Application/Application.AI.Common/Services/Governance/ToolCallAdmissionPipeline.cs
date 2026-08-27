@@ -305,9 +305,18 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
 
     /// <inheritdoc />
     public bool TryApplyTextOutputPolicy(
-        ToolCallAdmission admission, string toolName, string? content, out string? result)
+        ToolCallAdmission admission,
+        string toolName,
+        string? content,
+        out string? result,
+        out bool wasTruncated)
     {
         ArgumentNullException.ThrowIfNull(admission);
+
+        // Every early return below leaves nothing to report; only the one branch that actually cuts
+        // overwrites this. Set once here so no future branch can forget it and silently answer "not
+        // truncated" — which is the exact failure this out-parameter exists to make impossible.
+        wasTruncated = false;
 
         // #479: sanitize unconditionally on both branches, the same guarantee ApplyOutputPolicy carries
         // (#469) — this method used to sanitize only when a redaction was required, leaving the
@@ -328,9 +337,17 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
         if (processed is string text)
         {
             // #532: bound after sanitize/redact — see ApplyOutputPolicy for why the order is fixed.
-            // This is the plan path's only cut. The Execution API's DirectToolInvoker pre-cuts before
-            // calling in and cuts again after, so it is unaffected while its ceiling is no larger.
-            result = BoundedText.Cap(text, OutputCeiling, OutputTruncationMarker).Text;
+            // This is the plan path's only cut. It is NOT the Execution API's only cut, and an earlier
+            // version of this comment claimed the API was "unaffected while its ceiling is no larger"
+            // — a precondition that does not hold on shipped defaults (its 262,144 against this
+            // 50,000), so its own before-and-after checks both saw an unchanged string while this step
+            // had already removed most of the body. Rather than restore that assumption by aligning
+            // the two numbers, the cut now reports itself and the caller ORs it into whatever
+            // truncation signal it publishes: a fact that travels with the value cannot drift apart
+            // the way two independently-owned ceilings can.
+            var (bounded, truncated) = BoundedText.Cap(text, OutputCeiling, OutputTruncationMarker);
+            result = bounded;
+            wasTruncated = truncated;
             return true;
         }
 

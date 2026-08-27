@@ -233,8 +233,13 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
         // reports itself as safe. #479: this call now sanitizes unconditionally on both the redact and
         // plain-allow branches — the separate unconditional Sanitize() call this method used to make
         // immediately afterward is gone, not just moved; making it again here would scrub twice.
+        // Truncation discarded here, unlike in the Execution API (#532). This is the plan path's only
+        // cut — there is no second, wider ceiling whose own measurement would contradict it — and a
+        // step result has no truncation field to publish it on. The marker the cut leaves in the text
+        // is what a later step or a reader sees. If StepExecutionResult ever gains such a field, this
+        // is the value it takes.
         if (!_admissionPipeline.TryApplyTextOutputPolicy(
-                admission, config.ToolName, sandboxResult.Output, out var content))
+                admission, config.ToolName, sandboxResult.Output, out var content, out _))
         {
             await ReportExecutionAsync(
                 admission, EscalationExecutionStatus.Failed, GovernanceDenials.NotPermitted(config.ToolName),
