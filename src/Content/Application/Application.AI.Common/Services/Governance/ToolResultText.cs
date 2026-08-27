@@ -68,7 +68,7 @@ internal static class ToolResultText
     /// (#490).
     /// </remarks>
     public static string? Sanitize(string? content, ICompositeResponseSanitizer sanitizer, string toolName) =>
-        content is null ? null : SanitizeText(content, sanitizer, toolName);
+        (string?)Sanitize((object?)content, sanitizer, toolName);
 
     /// <summary>
     /// Runs <paramref name="result"/>'s text through <paramref name="sanitizer"/> and then
@@ -107,7 +107,7 @@ internal static class ToolResultText
         ICompositeResponseSanitizer sanitizer,
         IContentRedactionFilter redactionFilter,
         string toolName) =>
-        content is null ? null : redactionFilter.Redact(SanitizeText(content, sanitizer, toolName), RedactionCategories.All);
+        (string?)SanitizeAndRedact((object?)content, sanitizer, redactionFilter, toolName);
 
     /// <summary>
     /// Cuts the free text carried by <paramref name="result"/> so that its <strong>total</strong>
@@ -139,23 +139,8 @@ internal static class ToolResultText
     /// here and belongs to whatever budgets a whole turn (#522).
     /// </para>
     /// </remarks>
-    public static object? Bound(object? result, int ceiling, string marker)
-    {
-        var remaining = ceiling;
-
-        return Transform(result, text =>
-        {
-            if (text.Length <= remaining)
-            {
-                remaining -= text.Length;
-                return text;
-            }
-
-            var (bounded, _) = BoundedText.Cap(text, remaining, marker);
-            remaining = 0;
-            return bounded;
-        });
-    }
+    public static object? Bound(object? result, int ceiling, string marker) =>
+        BudgetedCut(result, ceiling, marker).Result;
 
     /// <summary>
     /// Cuts the free text carried by <paramref name="result"/> to a scan-cost-bounded region — the total
@@ -210,7 +195,17 @@ internal static class ToolResultText
         // Saturating rather than wrapping: the arithmetic should not depend on a check in another
         // assembly (the config validator bounds the ceiling) to stay correct on this path.
         var scanCeiling = ceiling <= int.MaxValue - overlapMargin ? ceiling + overlapMargin : int.MaxValue;
-        var remaining = scanCeiling;
+        return BudgetedCut(result, scanCeiling, marker);
+    }
+
+    /// <summary>
+    /// The shared cross-block budget walk both <see cref="Bound"/> and <see cref="PreCutForScan(object?, int, int, string)"/>
+    /// reduce to — the two differ only in what ceiling they pass in and whether they need
+    /// <c>Dropped</c> back, not in how the walk itself works.
+    /// </summary>
+    private static (object? Result, bool Dropped) BudgetedCut(object? result, int ceiling, string marker)
+    {
+        var remaining = ceiling;
         var dropped = false;
 
         var transformed = Transform(result, text =>

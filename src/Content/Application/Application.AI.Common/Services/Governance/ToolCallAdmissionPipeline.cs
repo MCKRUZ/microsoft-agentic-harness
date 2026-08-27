@@ -278,11 +278,7 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
     /// and the pre-cut it sizes, used to live privately on <c>DirectToolInvoker</c> alone; every caller
     /// of THIS pipeline needs the same protection against scanning an unbounded result, so it moved here
     /// — the one place that already owns <see cref="OutputCeiling"/> (#487). Not a claim about every
-    /// path that reaches a tool result: <c>GoverningToolContextProvider.SanitizingAIFunction</c> calls
-    /// <see cref="ToolResultText.Sanitize(object?, ICompositeResponseSanitizer, string)"/> directly for
-    /// <c>load_skill</c>/<c>read_skill_resource</c>, bypassing this pipeline (and its bound) entirely —
-    /// tracked separately, since a plugin-sourced <c>SKILL.md</c> is lower-trust-delta content than a
-    /// live tool result but is not out of scope on principle.
+    /// path that reaches a tool result — see #544 for one known bypass.
     /// </remarks>
     internal const int ScrubOverlapMargin = 8 * 1024;
 
@@ -317,11 +313,9 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
         // is also what protects the agent-turn path (GovernedAIFunction), which used to have no bound
         // on scan cost at all.
         //
-        // The marker is passed here, unlike TryApplyTextOutputPolicy's use of the same primitive:
-        // THIS method has no out-parameter to report a drop through, so a drop that only the pre-cut
-        // makes (sanitizing/redacting then shrinks the survivor back under OutputCeiling, so the final
-        // Bound call below never fires to leave a marker of its own) would otherwise be invisible to
-        // the model reading the result — caught by security review on this PR.
+        // A real marker is passed, unlike TryApplyTextOutputPolicy's use of the same primitive: this
+        // method has no out-parameter to report a drop through — see PreCutForScan's own marker doc,
+        // and #487's security-review finding on this PR that this line closes.
         var (preCut, _) = ToolResultText.PreCutForScan(result, OutputCeiling, ScrubOverlapMargin, OutputTruncationMarker);
 
         // #469: the sanitize pass below is unconditional — see the interface remarks for why. It stays
@@ -346,6 +340,11 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
         out bool wasTruncated)
     {
         ArgumentNullException.ThrowIfNull(admission);
+
+        // Every early return below leaves nothing to report; only the one branch that actually cuts
+        // overwrites this. Set once here so no future branch can forget it and silently answer "not
+        // truncated" — which is the exact failure this out-parameter exists to make impossible.
+        wasTruncated = false;
 
         // #487: the same scan-cost pre-cut ApplyOutputPolicy applies, for the same reason — this is the
         // method the plan step executor (a sandboxed tool's output, unbounded upstream) and the
@@ -376,7 +375,6 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
                 // Non-redact branch: Sanitize's null-in/null-out guarantee (#490) means reaching here
                 // can only mean preCut was null — nothing to sanitize.
                 result = null;
-                wasTruncated = false;
                 return true;
             }
 
@@ -393,7 +391,6 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
                 + "withheld rather than returned unredacted.",
                 toolName);
             result = null;
-            wasTruncated = false;
             return false;
         }
 

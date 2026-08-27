@@ -137,11 +137,6 @@ public sealed class DefaultToolClassificationGate : IToolClassificationGate
         ToolResultText.SanitizeAndRedact(result, _sanitizer, _redactionFilter, toolName);
 
     /// <inheritdoc />
-    /// <remarks>
-    /// Same treatment as the general overload, through the string-typed
-    /// <see cref="ToolResultText.SanitizeAndRedact(string?, ICompositeResponseSanitizer, IContentRedactionFilter, string)"/>
-    /// overload, which carries the non-null-in/non-null-out guarantee the interface's remarks describe.
-    /// </remarks>
     public string? RedactResult(string toolName, string? content) =>
         ToolResultText.SanitizeAndRedact(content, _sanitizer, _redactionFilter, toolName);
 
