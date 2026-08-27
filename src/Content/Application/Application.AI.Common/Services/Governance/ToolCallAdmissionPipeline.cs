@@ -267,16 +267,22 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
     /// <summary>
     /// How much beyond <see cref="OutputCeiling"/> is kept while sanitizing and redacting, so a secret
     /// or an injection pattern straddling the ceiling stays inside the scanned region rather than being
-    /// sliced in half — removed again by the final cut. See <see cref="ToolResultText.PreCutForScan(object?, int, int)"/>
-    /// for the full rationale and the residual risk it accepts.
+    /// sliced in half — removed again by the final cut. See
+    /// <see cref="ToolResultText.PreCutForScan(object?, int, int, string)"/> for the full rationale and
+    /// the residual risk it accepts.
     /// </summary>
     /// <remarks>
     /// Sized generously against the longest thing the sanitizers look for — connection strings and
     /// PEM-armoured keys run to a few kilobytes — because the cost of being wrong in one direction is a
     /// few spare kilobytes scanned, and in the other it is an unredacted secret on the wire. This value,
-    /// and the pre-cut it sizes, used to live privately on <c>DirectToolInvoker</c> alone; every path
-    /// that reaches a tool needs the same protection against scanning an unbounded result, so it moved
-    /// here — the one place that already owns <see cref="OutputCeiling"/> (#487).
+    /// and the pre-cut it sizes, used to live privately on <c>DirectToolInvoker</c> alone; every caller
+    /// of THIS pipeline needs the same protection against scanning an unbounded result, so it moved here
+    /// — the one place that already owns <see cref="OutputCeiling"/> (#487). Not a claim about every
+    /// path that reaches a tool result: <c>GoverningToolContextProvider.SanitizingAIFunction</c> calls
+    /// <see cref="ToolResultText.Sanitize(object?, ICompositeResponseSanitizer, string)"/> directly for
+    /// <c>load_skill</c>/<c>read_skill_resource</c>, bypassing this pipeline (and its bound) entirely —
+    /// tracked separately, since a plugin-sourced <c>SKILL.md</c> is lower-trust-delta content than a
+    /// live tool result but is not out of scope on principle.
     /// </remarks>
     internal const int ScrubOverlapMargin = 8 * 1024;
 
@@ -310,7 +316,13 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
         // remarks for the trade this accepts. Every caller of this method funnels through it, so this
         // is also what protects the agent-turn path (GovernedAIFunction), which used to have no bound
         // on scan cost at all.
-        var (preCut, _) = ToolResultText.PreCutForScan(result, OutputCeiling, ScrubOverlapMargin);
+        //
+        // The marker is passed here, unlike TryApplyTextOutputPolicy's use of the same primitive:
+        // THIS method has no out-parameter to report a drop through, so a drop that only the pre-cut
+        // makes (sanitizing/redacting then shrinks the survivor back under OutputCeiling, so the final
+        // Bound call below never fires to leave a marker of its own) would otherwise be invisible to
+        // the model reading the result — caught by security review on this PR.
+        var (preCut, _) = ToolResultText.PreCutForScan(result, OutputCeiling, ScrubOverlapMargin, OutputTruncationMarker);
 
         // #469: the sanitize pass below is unconditional — see the interface remarks for why. It stays
         // in shape-preserving lockstep with RedactResult below via the shared ToolResultText.Sanitize.

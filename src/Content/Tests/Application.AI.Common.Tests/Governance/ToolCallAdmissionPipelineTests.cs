@@ -381,6 +381,32 @@ public sealed class ToolCallAdmissionPipelineTests
     }
 
     [Fact]
+    public void ApplyOutputPolicy_PreCutDropsContentThatSanitizingThenShrinksBelowTheCeiling_StillMarksTheResult()
+    {
+        // #487 security-review finding on this PR: unlike TryApplyTextOutputPolicy, this method has no
+        // out-parameter to report a drop through, so a pre-cut drop must leave its OWN marker in the
+        // payload. If it doesn't, and sanitizing then shrinks the survivor back under the ceiling, the
+        // final Bound call never fires to leave a marker of its own -- the model reads a silently
+        // truncated prefix as the complete result. Reproduced with a sanitizer that collapses a large
+        // run the way a real one collapses a base64 blob, exactly the scenario security review named.
+        var pipeline = AdmissionHarness.Pipeline(
+            outputCeiling: 10_000,
+            sanitizer: AdmissionHarness.SubstitutingSanitizer(new string('z', 1), string.Empty));
+
+        var result = pipeline.ApplyOutputPolicy(
+            ToolCallAdmission.Allow(), Tool, "HEADER" + new string('z', 50_000));
+
+        // The pre-cut (ceiling + 8 KiB margin) fires on the 50,000-character blob long before
+        // sanitizing runs; sanitizing then deletes every 'z', leaving "HEADER" plus whatever the
+        // pre-cut's own marker appended -- far under the 10,000 ceiling, so the FINAL Bound call has
+        // nothing left to cut. The only place a marker can come from is the pre-cut itself.
+        result.Should().BeOfType<string>().Which
+            .Should().Contain(ToolCallAdmissionPipeline.OutputTruncationMarker,
+                "sanitizing collapsed the pre-cut's survivor below the ceiling, so a reader must not "
+                + "conclude the result is complete just because the final cut never fired");
+    }
+
+    [Fact]
     public void ApplyOutputPolicy_TextWithinTheCeiling_IsReturnedWhole()
     {
         // Control. Without this, a bound that cut EVERYTHING would satisfy the two tests above while

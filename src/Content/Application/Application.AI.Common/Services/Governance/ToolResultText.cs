@@ -172,6 +172,19 @@ internal static class ToolResultText
     /// sanitizer/redaction pass that follows, rather than being sliced in half and emitted. Removed
     /// again by the later <see cref="Bound"/> call.
     /// </param>
+    /// <param name="marker">
+    /// Appended where the pre-cut itself lands. Leave as the default empty string when the caller
+    /// reports truncation through its own out-parameter instead (OR the returned <c>Dropped</c> flag
+    /// into it) — the marker the model sees then comes from the later <see cref="Bound"/> call alone,
+    /// and a second one here would be redundant noise inside the still-scanned region.
+    /// <strong>A caller with no such out-parameter must pass a real marker</strong>, or a drop this
+    /// method makes is invisible whenever the sanitize/redact pass that follows shrinks the surviving
+    /// text back under <paramref name="ceiling"/> — the one case <see cref="Bound"/>'s own cut never
+    /// fires to leave a marker of its own. This is what ties a prefix DIRECTLY to being reported as one,
+    /// not left to a caller remembering to OR two booleans it does not have when it has no
+    /// out-parameter to OR them into (see <see cref="Services.Tools.DirectToolInvoker"/>'s remarks on
+    /// exactly this shape of miss).
+    /// </param>
     /// <returns>The (possibly cut) result, and whether anything was dropped.</returns>
     /// <remarks>
     /// <para>
@@ -191,7 +204,8 @@ internal static class ToolResultText
     /// on paths a remote caller or a sandboxed tool can trigger — the trade this method exists to make.
     /// </para>
     /// </remarks>
-    public static (object? Result, bool Dropped) PreCutForScan(object? result, int ceiling, int overlapMargin)
+    public static (object? Result, bool Dropped) PreCutForScan(
+        object? result, int ceiling, int overlapMargin, string marker = "")
     {
         // Saturating rather than wrapping: the arithmetic should not depend on a check in another
         // assembly (the config validator bounds the ceiling) to stay correct on this path.
@@ -208,9 +222,7 @@ internal static class ToolResultText
             }
 
             dropped = true;
-            // Empty marker: the pre-cut is invisible in the payload, and only the returned flag records
-            // it — the marker the model actually sees comes from the later Bound call.
-            var (cut, _) = BoundedText.Cap(text, remaining, string.Empty);
+            var (cut, _) = BoundedText.Cap(text, remaining, marker);
             remaining = 0;
             return cut;
         });
@@ -219,15 +231,17 @@ internal static class ToolResultText
     }
 
     /// <summary>
-    /// String-typed overload of <see cref="PreCutForScan(object?, int, int)"/> for a caller that already
-    /// knows its content is plain text — see that overload's remarks for the pre-cut rationale. Carries
-    /// the same non-null-in/non-null-out guarantee as <see cref="Sanitize(string?, ICompositeResponseSanitizer, string)"/>,
-    /// for the identical reason: a <see langword="string"/>-typed input can only produce a
+    /// String-typed overload of <see cref="PreCutForScan(object?, int, int, string)"/> for a caller that
+    /// already knows its content is plain text — see that overload's remarks for the pre-cut rationale
+    /// and for when <paramref name="marker"/> must be non-empty. Carries the same non-null-in/non-null-out
+    /// guarantee as <see cref="Sanitize(string?, ICompositeResponseSanitizer, string)"/>, for the
+    /// identical reason: a <see langword="string"/>-typed input can only produce a
     /// <see langword="string"/>-typed output through <see cref="Transform"/>'s <c>case string</c> arm.
     /// </summary>
-    public static (string? Text, bool Dropped) PreCutForScan(string? content, int ceiling, int overlapMargin)
+    public static (string? Text, bool Dropped) PreCutForScan(
+        string? content, int ceiling, int overlapMargin, string marker = "")
     {
-        var (transformed, dropped) = PreCutForScan((object?)content, ceiling, overlapMargin);
+        var (transformed, dropped) = PreCutForScan((object?)content, ceiling, overlapMargin, marker);
         return ((string?)transformed, dropped);
     }
 
