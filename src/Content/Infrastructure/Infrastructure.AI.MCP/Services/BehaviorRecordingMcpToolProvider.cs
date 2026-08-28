@@ -36,6 +36,14 @@ namespace Infrastructure.AI.MCP.Services;
 /// registry has never heard of resolves to <see cref="ToolBehavior.Unknown"/> and is gated, so
 /// declining to guess fails closed.
 /// </para>
+/// <para>
+/// A request-scoped list cache (<c>CachingMcpToolProvider</c>, #495) sits OUTSIDE this decorator, so a
+/// cache hit within one HTTP request skips re-recording too — not just re-scanning. <c>IsTrusted</c>
+/// reads <c>IOptionsMonitor&lt;AIConfig&gt;.CurrentValue</c> per call specifically so an operator's
+/// config-reload trust change takes effect on the next discovery; within the narrow window of one
+/// in-flight request that window doesn't reopen on a cache hit, the same bounded exception the scanning
+/// decorator's own remarks describe for re-scanning.
+/// </para>
 /// </remarks>
 public sealed class BehaviorRecordingMcpToolProvider : IMcpToolProvider
 {

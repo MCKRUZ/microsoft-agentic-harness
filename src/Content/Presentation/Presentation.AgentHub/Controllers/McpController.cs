@@ -6,6 +6,7 @@ using System.Text.Json;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Tools;
+using Application.AI.Common.Services.Tools;
 using Domain.AI.Bundles;
 using Domain.AI.Governance;
 using Domain.AI.MCP;
@@ -180,15 +181,25 @@ public sealed class McpController : ControllerBase
                 arguments[prop.Name] = prop.Value;
         }
 
-        var outcome = await _invoker.InvokeMcpToolAsync(
-            new DirectMcpToolInvocationRequest
-            {
-                ToolName = name,
-                Arguments = arguments,
-                OwnerId = userId,
-                Envelope = await ResolveMcpEnvelopeAsync(ct)
-            },
-            ct);
+        DirectToolInvocationOutcome outcome;
+        using (McpToolListCacheAccessor.Begin())
+        {
+            // Scoped around envelope resolution AND invocation, not just the former: on the
+            // ungranted-caller fallback (see ResolveMcpEnvelopeAsync's remarks), the envelope resolves
+            // by fetching every connected server's tools, and the invoker's own grant re-resolution
+            // (DirectToolInvoker.ResolveGrantedMcpToolAsync) re-fetches each of those same servers one
+            // at a time to find the one being invoked — #495. Both calls must share one cache scope for
+            // the second to ever hit it.
+            outcome = await _invoker.InvokeMcpToolAsync(
+                new DirectMcpToolInvocationRequest
+                {
+                    ToolName = name,
+                    Arguments = arguments,
+                    OwnerId = userId,
+                    Envelope = await ResolveMcpEnvelopeAsync(ct)
+                },
+                ct);
+        }
 
         _logger.LogInformation(
             "MCP tool completed. UserId={UserId} ToolName={ToolName} Status={Status} DurationMs={DurationMs} CorrelationId={CorrelationId}",

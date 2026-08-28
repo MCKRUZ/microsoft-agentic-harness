@@ -18,6 +18,8 @@ So the scan sits at the single point where MCP tools cross into the harness: `Sc
 
 All three tool-returning methods are screened, including the by-name lookup. That last one matters: the inner provider's own by-name implementation calls its own tool listing rather than the decorated one, so a decorator that delegated it unscreened would hand back a withheld tool to anyone who asked for it directly.
 
+A request-scoped list cache (`CachingMcpToolProvider`, #495) sits **outside** `ScanningMcpToolProvider` — outside every decorator in the chain, in fact — so a second lookup of the same server within one HTTP request is served from cache without re-scanning. That window is bounded to a single request; it does not weaken this scan across requests, which is where a server changing its own tool definition is actually observable.
+
 ## 3. What is detected
 
 | Finding | Severity | What it looks for |
