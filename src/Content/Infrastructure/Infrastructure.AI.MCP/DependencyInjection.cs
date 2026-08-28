@@ -68,9 +68,9 @@ public static class DependencyInjection
                 scopeFactory, ambientScope, sp);
         });
 
-        // Tool provider — singleton wrapping connection manager. Only the scanning decorator is
-        // published as IMcpToolProvider, so every consumer sees screened tools; the transport
-        // implementation stays resolvable by its concrete type for the decorator to wrap.
+        // Tool provider — singleton wrapping connection manager. The full decorator chain below is
+        // published as IMcpToolProvider, so every consumer sees screened, recorded, cached tools; the
+        // transport implementation stays resolvable by its concrete type for the chain to wrap.
         services.AddSingleton<McpToolProvider>();
 
         // Resolving IMcpSecurityScanner makes the tool-definition scan a mandatory dependency, on the

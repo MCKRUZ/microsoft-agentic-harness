@@ -16,7 +16,7 @@ Two sources, and the difference between them is the whole security argument.
 
 **First-party tools** declare themselves through `ITool.IsReadOnly`, which already existed for concurrency classification and graded autonomy. It defaults to `false` — assume it writes — so a tool that never thought about the question is gated rather than exempt.
 
-**External MCP tools** declare themselves through the protocol's tool annotations: `readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`. These arrive on the definition a server advertises and were previously discarded. They are captured now at discovery by `BehaviorRecordingMcpToolProvider`, a decorator over `IMcpToolProvider` that sits **outside** the security scanner, so only tools that survived the definition scan are recorded.
+**External MCP tools** declare themselves through the protocol's tool annotations: `readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`. These arrive on the definition a server advertises and were previously discarded. They are captured at discovery by `BehaviorRecordingMcpToolProvider`, a decorator over `IMcpToolProvider` that sits **outside** the security scanner, so only tools that survived the definition scan are recorded — except on a cache hit within the same HTTP request, where a request-scoped list cache (`CachingMcpToolProvider`, #495) sits outside this decorator too and serves the earlier fetch's already-recorded result without a second recording pass. That window is bounded to one request.
 
 Discovery is the only moment the information exists. By the time a tool call arrives, all that remains is a name; the annotations are not reachable from it.
 

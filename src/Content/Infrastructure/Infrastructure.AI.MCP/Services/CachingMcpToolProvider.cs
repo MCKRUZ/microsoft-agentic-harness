@@ -49,16 +49,15 @@ public sealed class CachingMcpToolProvider : IMcpToolProvider
     /// </remarks>
     public async Task<IList<AITool>> GetToolsAsync(string serverName, CancellationToken cancellationToken = default)
     {
-        var cache = McpToolListCacheAccessor.Current;
-        if (cache is not null && cache.TryGetValue(serverName, out var cached))
+        if (McpToolListCacheAccessor.TryGet(serverName, out var cached))
             return cached;
 
         var tools = await _inner.GetToolsAsync(serverName, cancellationToken).ConfigureAwait(false);
-        if (cache is null)
+        if (!McpToolListCacheAccessor.IsActive)
             return tools;
 
         var snapshot = new ReadOnlyCollection<AITool>([.. tools]);
-        cache.TryAdd(serverName, snapshot);
+        McpToolListCacheAccessor.TryAdd(serverName, snapshot);
         return snapshot;
     }
 
@@ -68,15 +67,14 @@ public sealed class CachingMcpToolProvider : IMcpToolProvider
     {
         var discovered = await _inner.GetAllToolsAsync(cancellationToken).ConfigureAwait(false);
 
-        var cache = McpToolListCacheAccessor.Current;
-        if (cache is null)
+        if (!McpToolListCacheAccessor.IsActive)
             return discovered;
 
         var snapshot = new Dictionary<string, IList<AITool>>(discovered.Count);
         foreach (var (serverName, tools) in discovered)
         {
             var readOnly = new ReadOnlyCollection<AITool>([.. tools]);
-            cache[serverName] = readOnly;
+            McpToolListCacheAccessor.TrySet(serverName, readOnly);
             snapshot[serverName] = readOnly;
         }
 

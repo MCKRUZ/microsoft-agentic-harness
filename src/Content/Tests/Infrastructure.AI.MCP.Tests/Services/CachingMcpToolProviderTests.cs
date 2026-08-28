@@ -161,7 +161,7 @@ public sealed class CachingMcpToolProviderTests
             {
                 await _sut.GetToolsAsync(ServerA);
                 await Task.Delay(20);
-                flowASawServerB = McpToolListCacheAccessor.Current!.ContainsKey(ServerB);
+                flowASawServerB = McpToolListCacheAccessor.TryGet(ServerB, out _);
             }
         });
         var flowB = Task.Run(async () =>
@@ -170,7 +170,7 @@ public sealed class CachingMcpToolProviderTests
             {
                 await _sut.GetToolsAsync(ServerB);
                 await Task.Delay(20);
-                flowBSawServerA = McpToolListCacheAccessor.Current!.ContainsKey(ServerA);
+                flowBSawServerA = McpToolListCacheAccessor.TryGet(ServerA, out _);
             }
         });
 

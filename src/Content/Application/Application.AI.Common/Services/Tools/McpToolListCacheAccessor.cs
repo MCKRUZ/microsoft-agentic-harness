@@ -32,6 +32,23 @@ namespace Application.AI.Common.Services.Tools;
 /// are a superset of the second call's per-server lookups within the same request.
 /// </para>
 /// <para>
+/// <strong>Read/write access is behind methods, not a raw dictionary.</strong> An earlier version
+/// exposed the underlying <see cref="ConcurrentDictionary{TKey,TValue}"/> directly through <c>Current</c>
+/// — a public, directly-mutable collection, which this repo's own coding-style rule requires public
+/// surfaces to avoid (<c>IReadOnlyDictionary&lt;K,V&gt;</c> or narrower). Only <c>CachingMcpToolProvider</c>
+/// is meant to write, so the write surface is <see cref="TrySet"/>/<see cref="TryAdd"/> rather than a
+/// settable collection any holder of a reference could mutate (#495 security review, finding L3/#3).
+/// </para>
+/// <para>
+/// <strong>The backing dictionary is allocated lazily, on first write.</strong> <see cref="Begin"/> is
+/// called on every MCP tool invocation, including the common case — a caller with an operator-configured
+/// grant — where nothing is ever cached because <c>ResolveMcpEnvelopeAsync</c> never takes the
+/// <c>GetAllToolsAsync</c> fallback branch that would populate it. Eagerly allocating a
+/// <see cref="ConcurrentDictionary{TKey,TValue}"/> on every call would pay that cost on the majority path
+/// for a benefit only the minority fallback path uses (#495 review finding #8); deferring the allocation
+/// to the first actual write means an unused scope costs one small wrapper object, not a dictionary.
+/// </para>
+/// <para>
 /// Caveat, identical to the other ambient accessors: like any <see cref="AsyncLocal{T}"/>, the cache is
 /// captured into the <c>ExecutionContext</c> of any fire-and-forget work started <em>while it is
 /// active</em>, and that work keeps reading it after the request's own flow has torn it down. The one
@@ -42,10 +59,69 @@ namespace Application.AI.Common.Services.Tools;
 /// </remarks>
 public static class McpToolListCacheAccessor
 {
-    private static readonly AsyncLocal<ConcurrentDictionary<string, IList<AITool>>?> s_current = new();
+    private static readonly AsyncLocal<Scope?> s_current = new();
 
-    /// <summary>The active cache for the current async flow, or <see langword="null"/> when no scope is open.</summary>
-    public static ConcurrentDictionary<string, IList<AITool>>? Current => s_current.Value;
+    /// <summary>
+    /// Whether a cache scope is open for the current async flow. Read-only, unlike the retired
+    /// <c>Current</c> property this type used to expose — lets a caller behave identically to an
+    /// undecorated provider off the one call site that opens a scope, without handing out anything
+    /// mutable to check that against.
+    /// </summary>
+    public static bool IsActive => s_current.Value is not null;
+
+    /// <summary>
+    /// Attempts to read a previously-cached server's tool list for the current async flow.
+    /// </summary>
+    /// <returns><see langword="true"/> when a scope is open and it holds an entry for <paramref name="serverName"/>.</returns>
+    public static bool TryGet(string serverName, out IList<AITool> tools)
+    {
+        var cache = s_current.Value?.Cache;
+        if (cache is not null && cache.TryGetValue(serverName, out var found))
+        {
+            tools = found;
+            return true;
+        }
+
+        tools = null!;
+        return false;
+    }
+
+    /// <summary>
+    /// Caches <paramref name="tools"/> for <paramref name="serverName"/> only if no entry already exists,
+    /// for the rest of the current scope. A no-op when no scope is open.
+    /// </summary>
+    /// <remarks>
+    /// Used by an opportunistic single-server fetch (<c>IMcpToolProvider.GetToolsAsync</c>) — "only if
+    /// absent" so a single-server lookup can never clobber a fresher, authoritative entry a preceding
+    /// <c>GetAllToolsAsync</c> discovery already published for the same server.
+    /// </remarks>
+    public static void TryAdd(string serverName, IList<AITool> tools)
+    {
+        var scope = s_current.Value;
+        if (scope is null)
+            return;
+
+        (scope.Cache ??= new ConcurrentDictionary<string, IList<AITool>>()).TryAdd(serverName, tools);
+    }
+
+    /// <summary>
+    /// Caches <paramref name="tools"/> for <paramref name="serverName"/>, unconditionally overwriting any
+    /// existing entry, for the rest of the current scope. A no-op when no scope is open.
+    /// </summary>
+    /// <remarks>
+    /// Used by an authoritative discovery fetch (<c>IMcpToolProvider.GetAllToolsAsync</c>), which always
+    /// overwrites — a re-discovery within the same scope is the freshest information available and
+    /// should win over whatever a stale entry held.
+    /// </remarks>
+    public static void TrySet(string serverName, IList<AITool> tools)
+    {
+        var scope = s_current.Value;
+        if (scope is null)
+            return;
+
+        var cache = scope.Cache ??= new ConcurrentDictionary<string, IList<AITool>>();
+        cache[serverName] = tools;
+    }
 
     /// <summary>
     /// Opens an empty cache for the current async flow and returns a handle that restores the previous
@@ -57,11 +133,17 @@ public static class McpToolListCacheAccessor
     public static IDisposable Begin()
     {
         var previous = s_current.Value;
-        s_current.Value = new ConcurrentDictionary<string, IList<AITool>>();
+        s_current.Value = new Scope();
         return new CacheScope(previous);
     }
 
-    private sealed class CacheScope(ConcurrentDictionary<string, IList<AITool>>? previous) : IDisposable
+    /// <summary>The per-flow state: a lazily-allocated backing dictionary, present only once something is cached.</summary>
+    private sealed class Scope
+    {
+        public ConcurrentDictionary<string, IList<AITool>>? Cache;
+    }
+
+    private sealed class CacheScope(Scope? previous) : IDisposable
     {
         private bool _disposed;
 
