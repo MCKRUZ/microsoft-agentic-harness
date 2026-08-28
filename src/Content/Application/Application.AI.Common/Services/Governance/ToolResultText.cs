@@ -360,22 +360,54 @@ internal static class ToolResultText
     /// "what does an MCP content array look like" knowledge can't drift between the two call sites.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// A bare top-level <c>content</c> array is not unique to MCP — a keyed-DI tool's own domain JSON
     /// schema could coincidentally use that same property name, and would previously have been
-    /// misidentified and silently reparsed as an MCP result (#488). Every real serialized
-    /// <c>CallToolResult</c> also carries at least one of <c>isError</c>, <c>structuredContent</c>, or
-    /// <c>_meta</c> — the three protocol-specific markers <see cref="Tools.McpFailureNormalizingAIFunction"/>'s
-    /// own <c>isError</c> check already independently relied on — so requiring one narrows this
-    /// structural signal to something only the MCP wire shape actually produces.
+    /// misidentified and silently reparsed as an MCP result (#488).
+    /// </para>
+    /// <para>
+    /// <strong>Narrowed on content-block shape, not on <c>isError</c>/<c>structuredContent</c>/<c>_meta</c>
+    /// presence — a marker-presence check was tried and reverted (security review on #488).</strong> Those
+    /// three properties are only ever written when non-null/non-empty
+    /// (<c>McpJsonUtilities.DefaultOptions</c> sets <c>JsonIgnoreCondition.WhenWritingNull</c>), and a
+    /// spec-conformant success result omits all three: <c>McpClientTool.InvokeCoreAsync</c> falls back to
+    /// serializing the whole <c>CallToolResult</c> not only when it carries structured content or
+    /// metadata, but also whenever any content block fails <c>AIContent</c> conversion — confirmed
+    /// against the pinned SDK, a <c>resource_link</c> block always does. A marker-presence check
+    /// therefore missed a real, spec-legal, adversary-triggerable MCP shape entirely, silently skipping
+    /// sanitize/redact/bound for it — worse than the false positive #488 filed against, and reachable by
+    /// any MCP server appending one <c>resource_link</c> block to a response.
+    /// </para>
+    /// <para>
+    /// Every MCP content block — <c>text</c>, <c>image</c>, <c>audio</c>, <c>resource</c>,
+    /// <c>resource_link</c>, and the two agent-loop block kinds — carries a required string <c>type</c>
+    /// discriminator; that is the protocol's own structural invariant, not an artifact of which optional
+    /// properties a particular serialization happened to include. Requiring every element to be an
+    /// object with a string <c>type</c> is strictly tighter than the original any-array check (a
+    /// first-party array of bare strings, numbers, or typeless objects no longer matches) while never
+    /// missing a real MCP content array, marker-less or not.
+    /// </para>
     /// </remarks>
     internal static bool TryGetContentArray(JsonElement element, out JsonElement content)
     {
         if (!element.TryGetProperty("content", out content) || content.ValueKind != JsonValueKind.Array)
             return false;
 
-        return element.TryGetProperty("isError", out _)
-            || element.TryGetProperty("structuredContent", out _)
-            || element.TryGetProperty("_meta", out _);
+        var sawABlock = false;
+        foreach (var block in content.EnumerateArray())
+        {
+            if (block.ValueKind != JsonValueKind.Object
+                || !block.TryGetProperty("type", out var type)
+                || type.ValueKind != JsonValueKind.String)
+                return false;
+
+            sawABlock = true;
+        }
+
+        // An empty content array (Content.Count == 0's fall-through, e.g. AIFunctionMcpServerTool's own
+        // null => branch) has nothing to distinguish it from a first-party empty array by shape alone —
+        // there is also nothing in it to sanitize, redact, or extract, so recognizing it costs nothing.
+        return sawABlock || content.GetArrayLength() == 0;
     }
 
     /// <summary>
