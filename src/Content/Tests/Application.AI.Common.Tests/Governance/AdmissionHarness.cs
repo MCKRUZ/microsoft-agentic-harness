@@ -1,8 +1,11 @@
+using Application.AI.Common.Interfaces.Agent;
+using Application.AI.Common.Interfaces.Context;
 using Application.AI.Common.Interfaces.Escalation;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Telemetry;
 using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Services.Governance;
+using Domain.AI.Context;
 using Domain.AI.Governance;
 using Domain.Common.Config;
 using Domain.Common.Config.AI;
@@ -34,7 +37,10 @@ internal static class AdmissionHarness
         ICallOnceGate? callOnceGate = null,
         IGovernanceTraceRecorder? trace = null,
         ICompositeResponseSanitizer? sanitizer = null,
-        int? outputCeiling = null) =>
+        IContentRedactionFilter? redactionFilter = null,
+        int? outputCeiling = null,
+        IAgentExecutionContext? executionContext = null,
+        IToolResultStore? resultStore = null) =>
         new(authorizationGate ?? PermissiveAuthorizationGate(),
             governor ?? PermissiveGovernor(),
             classificationGate ?? PermissiveClassificationGate(),
@@ -44,9 +50,74 @@ internal static class AdmissionHarness
             trace ?? TraceRecorder(),
             Mock.Of<IApprovalExecutionReporter>(),
             sanitizer ?? PermissiveSanitizer(),
-            PermissiveRedactionFilter(),
+            redactionFilter ?? PermissiveRedactionFilter(),
             Config(outputCeiling),
-            NullLogger<ToolCallAdmissionPipeline>.Instance);
+            NullLogger<ToolCallAdmissionPipeline>.Instance,
+            executionContext ?? StubExecutionContext(),
+            resultStore ?? StubResultStore());
+
+    /// <summary>
+    /// An execution context with a stable, non-null <see cref="IAgentExecutionContext.ToolResultScopeId"/>
+    /// (#521) — what a test needs to exercise the spill path deterministically, since the real
+    /// implementation's fallback is a fresh GUID per instance and a test asserting round-trip spill/
+    /// retrieve behavior needs the SAME scope on both sides of that round trip.
+    /// </summary>
+    public static IAgentExecutionContext StubExecutionContext(string toolResultScopeId = "test-scope") =>
+        Mock.Of<IAgentExecutionContext>(c => c.ToolResultScopeId == toolResultScopeId);
+
+    /// <summary>
+    /// A result store that answers every store request as if the result were small enough to keep
+    /// inline (#521) — the permissive default for a test that isn't specifically exercising spill
+    /// behavior. A test that IS should build its own mock or pass a real
+    /// <c>FileSystemToolResultStore</c> pointed at a temp directory.
+    /// </summary>
+    public static IToolResultStore StubResultStore()
+    {
+        var store = new Mock<IToolResultStore>();
+        store
+            .Setup(s => s.StoreIfLargeAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync((string _, string toolName, string? operation, string fullOutput, CancellationToken _) =>
+                new ToolResultReference
+                {
+                    ResultId = Guid.NewGuid().ToString("N"),
+                    ToolName = toolName,
+                    Operation = operation,
+                    PreviewContent = fullOutput,
+                    FullContentPath = null,
+                    SizeChars = fullOutput.Length,
+                    Timestamp = DateTimeOffset.UtcNow
+                });
+        return store.Object;
+    }
+
+    /// <summary>
+    /// A result store that answers every store request as if the result were actually persisted to
+    /// disk (#521) — for a test that IS exercising spill behavior specifically, where
+    /// <see cref="StubResultStore"/>'s "always inline" default would make the pipeline correctly
+    /// decline to embed a retrieval id for a spill that never really happened.
+    /// </summary>
+    public static IToolResultStore PersistedResultStore()
+    {
+        var store = new Mock<IToolResultStore>();
+        store
+            .Setup(s => s.StoreIfLargeAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync((string scopeId, string toolName, string? operation, string fullOutput, CancellationToken _) =>
+                new ToolResultReference
+                {
+                    ResultId = Guid.NewGuid().ToString("N"),
+                    ToolName = toolName,
+                    Operation = operation,
+                    PreviewContent = fullOutput[..Math.Min(20, fullOutput.Length)],
+                    FullContentPath = $"/fake/{scopeId}/tool-results/persisted.json",
+                    SizeChars = fullOutput.Length,
+                    Timestamp = DateTimeOffset.UtcNow
+                });
+        return store.Object;
+    }
 
     /// <summary>
     /// Config carrying the tool-output ceiling (#532), defaulting to the shipped

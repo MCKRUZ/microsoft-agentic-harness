@@ -97,8 +97,9 @@ public sealed class GovernedAIFunctionTests
             .Callback<ToolCallAdmissionRequest, CancellationToken>((r, _) => seen = r)
             .Returns(ValueTask.FromResult(ToolCallAdmission.Allow()));
         pipeline
-            .Setup(p => p.ApplyOutputPolicy(It.IsAny<ToolCallAdmission>(), It.IsAny<string>(), It.IsAny<object?>()))
-            .Returns<ToolCallAdmission, string, object?>((_, _, result) => result);
+            .Setup(p => p.ApplyOutputPolicyAsync(
+                It.IsAny<ToolCallAdmission>(), It.IsAny<string>(), It.IsAny<object?>(), It.IsAny<CancellationToken>()))
+            .Returns<ToolCallAdmission, string, object?, CancellationToken>((_, _, result, _) => ValueTask.FromResult(result));
 
         await InvokeUnder(pipeline.Object, inner);
 
@@ -119,8 +120,9 @@ public sealed class GovernedAIFunctionTests
             .Setup(p => p.AdmitAsync(It.IsAny<ToolCallAdmissionRequest>(), It.IsAny<CancellationToken>()))
             .Returns(ValueTask.FromResult(ToolCallAdmission.Allow().WithApproval(call)));
         pipeline
-            .Setup(p => p.ApplyOutputPolicy(It.IsAny<ToolCallAdmission>(), It.IsAny<string>(), It.IsAny<object?>()))
-            .Returns<ToolCallAdmission, string, object?>((_, _, result) => result);
+            .Setup(p => p.ApplyOutputPolicyAsync(
+                It.IsAny<ToolCallAdmission>(), It.IsAny<string>(), It.IsAny<object?>(), It.IsAny<CancellationToken>()))
+            .Returns<ToolCallAdmission, string, object?, CancellationToken>((_, _, result, _) => ValueTask.FromResult(result));
         return pipeline;
     }
 

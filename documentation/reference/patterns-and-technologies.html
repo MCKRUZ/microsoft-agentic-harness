@@ -429,6 +429,14 @@ know the exact filename. Cite file paths in `path:line` form.</code></pre>
                         strategy: drop deep nesting, summarise repetitive rows, gzip-and-pointer for truly large blobs.
                         <code>src/Content/Application/Application.AI.Common/MediatRBehaviors/ToolOutputCompressionBehavior.cs</code>
                     </p>
+                    <p>
+                        When compression alone still leaves output over the ceiling, <code>ToolCallAdmissionPipeline</code>
+                        truncates it, spills the full text to <code>IToolResultStore</code>, and embeds a retrieval id
+                        in the truncation marker — the model can call the <code>tool_result_fetch</code> tool with that
+                        id to recover the rest, scoped to its own conversation.
+                        <code>src/Content/Application/Application.AI.Common/Services/Governance/ToolCallAdmissionPipeline.cs</code>,
+                        <code>src/Content/Infrastructure/Infrastructure.AI/Tools/ToolResultFetchTool.cs</code>
+                    </p>
 
                     <h3 id="content-safety">Content safety middleware</h3>
                     <p>

@@ -35,15 +35,33 @@ public static class BoundedText
     /// is not larger than the marker's own length, the marker is dropped rather than overshooting the
     /// ceiling to fit it — the ceiling is the promise a caller sizing a downstream field is relying on.
     /// </param>
-    /// <returns>The (possibly cut) text, and whether anything was cut.</returns>
-    public static (string Text, bool Truncated) Cap(string text, int ceiling, string marker)
+    /// <param name="alwaysEmbedMarker">
+    /// When <see langword="true"/>, embeds <paramref name="marker"/> even when <paramref name="text"/>
+    /// is already within <paramref name="ceiling"/> on its own, cutting only as much of
+    /// <paramref name="text"/> as is needed to make room for it (#521's droppedByPreCut-only case: a
+    /// truncation happened upstream that this call alone would not otherwise see, so the normal
+    /// "nothing to cut, nothing to say" default would silently drop the marker instead of the caller's
+    /// own already-known truncation signal). The returned <c>Truncated</c> is <see langword="false"/> in
+    /// that append-only sub-case, since <paramref name="text"/> itself was never cut — callers using
+    /// this flag already carry their own truncation signal from elsewhere and are expected to OR it in,
+    /// not read it off this return.
+    /// </param>
+    /// <returns>The (possibly cut) text, and whether <paramref name="text"/> itself was cut.</returns>
+    public static (string Text, bool Truncated) Cap(
+        string text, int ceiling, string marker, bool alwaysEmbedMarker = false)
     {
-        if (text.Length <= ceiling)
+        if (!alwaysEmbedMarker && text.Length <= ceiling)
         {
             return (text, false);
         }
 
+        if (alwaysEmbedMarker && text.Length + marker.Length <= ceiling)
+        {
+            return (text + marker, false);
+        }
+
         var cutIndex = ceiling > marker.Length ? ceiling - marker.Length : ceiling;
+        cutIndex = Math.Min(cutIndex, text.Length);
         if (cutIndex > 0 && char.IsHighSurrogate(text[cutIndex - 1]))
         {
             cutIndex--;

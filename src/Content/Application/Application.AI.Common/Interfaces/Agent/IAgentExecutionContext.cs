@@ -52,6 +52,30 @@ public interface IAgentExecutionContext
     string? CallOnceScopeId { get; }
 
     /// <summary>
+    /// Gets the isolation boundary spilled tool output is persisted under and must be retrieved
+    /// within (#521) — never <c>null</c>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>Deliberately not <see cref="ConversationId"/>, and not simply mirroring
+    /// <see cref="CallOnceScopeId"/> either.</strong> A tool-result store is a data-isolation
+    /// boundary, not a rate/repeat gate — <see cref="CallOnceScopeId"/>'s own remarks document
+    /// that a <see langword="null"/> scope there is a correct, deliberate fail-<em>open</em> for
+    /// the direct-invoke path ("no logical conversation for a repeat call to happen within"). The
+    /// identical fail-open on a retrieval boundary would mean "no scope enforced" — the exact
+    /// ownership hole this property exists to close. This property is therefore <em>never</em>
+    /// null: it reuses <see cref="CallOnceScopeId"/>'s value wherever that is already correctly
+    /// scoped (the durable conversation for an agent turn, the run id for a plan run — both
+    /// already exactly right for "which execution may retrieve this result back"), and falls back
+    /// to a freshly generated id, unique to this <see cref="IAgentExecutionContext"/> instance,
+    /// only where <see cref="CallOnceScopeId"/> is null. A fresh id is always safe here — narrower
+    /// than the true caller-appropriate scope is merely inconvenient (retrieval degrades to
+    /// "spilled and immediately gone" for that one call), where wider would be the leak.
+    /// </para>
+    /// </remarks>
+    string ToolResultScopeId { get; }
+
+    /// <summary>
     /// Gets the workload identity of the executing agent, or <c>null</c> when identity
     /// is disabled (<c>AppConfig.AI.Identity.Enabled</c> is false), the call is outside
     /// any agent execution, or the identity has not yet been resolved by

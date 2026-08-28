@@ -523,7 +523,9 @@ public sealed class ToolUseStepExecutorTests
             PermissiveAdmission.PermissiveRedactionFilter(),
             Mock.Of<IOptionsMonitor<Domain.Common.Config.AppConfig>>(
                 m => m.CurrentValue == new Domain.Common.Config.AppConfig()),
-            NullLogger<ToolCallAdmissionPipeline>.Instance);
+            NullLogger<ToolCallAdmissionPipeline>.Instance,
+            PermissiveAdmission.StubExecutionContext(),
+            PermissiveAdmission.StubResultStore());
 
     /// <summary>
     /// Admits everything, matching what the real gate answers with

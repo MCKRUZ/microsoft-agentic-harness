@@ -1,8 +1,11 @@
+using Application.AI.Common.Interfaces.Agent;
+using Application.AI.Common.Interfaces.Context;
 using Application.AI.Common.Interfaces.Escalation;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Telemetry;
 using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Services.Governance;
+using Domain.AI.Context;
 using Domain.AI.Governance;
 using Domain.Common.Config.AI;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -61,7 +64,35 @@ internal static class PermissiveAdmission
             PermissiveRedactionFilter(),
             Mock.Of<IOptionsMonitor<Domain.Common.Config.AppConfig>>(
                 m => m.CurrentValue == new Domain.Common.Config.AppConfig()),
-            NullLogger<ToolCallAdmissionPipeline>.Instance);
+            NullLogger<ToolCallAdmissionPipeline>.Instance,
+            StubExecutionContext(),
+            StubResultStore());
+
+    /// <summary>An execution context with a stable, non-null ToolResultScopeId (#521).</summary>
+    public static IAgentExecutionContext StubExecutionContext(string toolResultScopeId = "test-scope") =>
+        Mock.Of<IAgentExecutionContext>(c => c.ToolResultScopeId == toolResultScopeId);
+
+    /// <summary>A result store that answers as if every result were small enough to keep inline.</summary>
+    public static IToolResultStore StubResultStore()
+    {
+        var store = new Mock<IToolResultStore>();
+        store
+            .Setup(s => s.StoreIfLargeAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync((string _, string toolName, string? operation, string fullOutput, CancellationToken _) =>
+                new ToolResultReference
+                {
+                    ResultId = Guid.NewGuid().ToString("N"),
+                    ToolName = toolName,
+                    Operation = operation,
+                    PreviewContent = fullOutput,
+                    FullContentPath = null,
+                    SizeChars = fullOutput.Length,
+                    Timestamp = DateTimeOffset.UtcNow
+                });
+        return store.Object;
+    }
 
     /// <summary>A sanitizer that returns content unchanged — the answer a real one gives to clean text.</summary>
     public static ICompositeResponseSanitizer PermissiveSanitizer()

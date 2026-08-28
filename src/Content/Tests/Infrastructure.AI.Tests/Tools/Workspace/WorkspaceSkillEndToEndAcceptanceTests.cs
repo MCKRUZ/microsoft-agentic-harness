@@ -259,7 +259,9 @@ public sealed class WorkspaceSkillEndToEndAcceptanceTests : IDisposable
         public string? ConversationId { get; private set; }
         public int? TurnNumber { get; private set; }
         public string? CallOnceScopeId { get; private set; }
+        public string ToolResultScopeId => CallOnceScopeId ?? _fallbackToolResultScopeId;
         public AgentIdentity? AgentIdentity { get; private set; }
+        private readonly string _fallbackToolResultScopeId = Guid.NewGuid().ToString("N");
         public void Initialize(string agentId, string conversationId, int turnNumber, string? callOnceScopeId = null)
         {
             AgentId = agentId;

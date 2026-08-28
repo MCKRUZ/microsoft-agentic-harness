@@ -22,7 +22,7 @@ public sealed partial class DirectToolInvoker
 
     /// <summary>
     /// Redacts if the classification gate said to and sanitizes unconditionally — both now owned
-    /// entirely by <see cref="IToolCallAdmissionPipeline.TryApplyTextOutputPolicy"/> (#487/#489/#490),
+    /// entirely by <see cref="IToolCallAdmissionPipeline.TryApplyTextOutputPolicyAsync"/> (#487/#489/#490),
     /// which pre-cuts, sanitizes, redacts, and bounds to its own ceiling in one place — then applies
     /// this caller's own <paramref name="ceiling"/> on top, which may be stricter than the pipeline's.
     /// </summary>
@@ -45,7 +45,7 @@ public sealed partial class DirectToolInvoker
     /// does not reopen the unbounded-scan cost #487 fixed.
     /// </para>
     /// </remarks>
-    private static DirectToolInvocationOutcome ShapeText(
+    private static async Task<DirectToolInvocationOutcome> ShapeTextAsync(
         string? failureText,
         string successText,
         string toolName,
@@ -53,7 +53,8 @@ public sealed partial class DirectToolInvoker
         ToolCallAdmission admission,
         int ceiling,
         TimeSpan duration,
-        ILogger logger)
+        ILogger logger,
+        CancellationToken cancellationToken)
     {
         if (failureText is not null)
         {
@@ -62,8 +63,11 @@ public sealed partial class DirectToolInvoker
             // text (a connection string, a stack trace carrying an API key) exactly as easily as it
             // can succeed with it in its output — code review on the PR that added #479/#484's
             // guarantees to the success path caught that this branch never picked them up.
-            if (!admissionPipeline.TryApplyTextOutputPolicy(
-                    admission, toolName, failureText, out var admittedError, out _))
+            var errorPolicy = await admissionPipeline
+                .TryApplyTextOutputPolicyAsync(admission, toolName, failureText, cancellationToken)
+                .ConfigureAwait(false);
+            var admittedError = errorPolicy.Result;
+            if (!errorPolicy.Success)
             {
                 // #491: this Denied is not a governance refusal in the usual sense — the tool DID run
                 // and DID produce failure text; only the redaction of that text couldn't be applied.
@@ -95,8 +99,12 @@ public sealed partial class DirectToolInvoker
         // Fails closed: when a redaction was required and could not be applied, the chain returns
         // false and the original must be withheld rather than emitted. See the chain's own remarks
         // for why falling back to the raw content is the trap.
-        if (!admissionPipeline.TryApplyTextOutputPolicy(
-                admission, toolName, successText, out var admitted, out var truncatedByPipeline))
+        var successPolicy = await admissionPipeline
+            .TryApplyTextOutputPolicyAsync(admission, toolName, successText, cancellationToken)
+            .ConfigureAwait(false);
+        var admitted = successPolicy.Result;
+        var truncatedByPipeline = successPolicy.WasTruncated;
+        if (!successPolicy.Success)
         {
             // #491, same gap as the failure branch above and for the identical reason: the tool DID
             // run and DID succeed, with whatever side effects that entailed — only the redaction of its
@@ -125,13 +133,14 @@ public sealed partial class DirectToolInvoker
         };
     }
 
-    /// <summary>Reduces a keyed-DI <see cref="ToolResult"/> to <see cref="ShapeText"/>'s shared shape.</summary>
-    private DirectToolInvocationOutcome Shape(
+    /// <summary>Reduces a keyed-DI <see cref="ToolResult"/> to <see cref="ShapeTextAsync"/>'s shared shape.</summary>
+    private Task<DirectToolInvocationOutcome> ShapeAsync(
         ToolResult result,
         ArmedInvocation armed,
         ToolCallAdmission admission,
-        TimeSpan duration) =>
-        ShapeText(
+        TimeSpan duration,
+        CancellationToken cancellationToken) =>
+        ShapeTextAsync(
             result.Success ? null : result.Error ?? "The tool reported a failure.",
             result.Output ?? string.Empty,
             armed.ToolName,
@@ -139,5 +148,6 @@ public sealed partial class DirectToolInvoker
             admission,
             armed.Config.MaxOutputCharacters,
             duration,
-            _logger);
+            _logger,
+            cancellationToken);
 }

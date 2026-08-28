@@ -23,6 +23,12 @@ public sealed class AgentExecutionContext : IAgentExecutionContext
     private readonly object _gate = new();
     private bool _initialized;
 
+    // Computed once, at construction — before Initialize is ever called, and independent of
+    // whatever it's later called with. This scope must exist and be stable even for a caller
+    // that never calls Initialize at all (nothing today does that, but ToolResultScopeId itself
+    // must not throw or return null just because initialization hasn't happened yet).
+    private readonly string _fallbackToolResultScopeId = Guid.NewGuid().ToString("N");
+
     /// <inheritdoc />
     public string? AgentId { get; private set; }
 
@@ -34,6 +40,9 @@ public sealed class AgentExecutionContext : IAgentExecutionContext
 
     /// <inheritdoc />
     public string? CallOnceScopeId { get; private set; }
+
+    /// <inheritdoc />
+    public string ToolResultScopeId => CallOnceScopeId ?? _fallbackToolResultScopeId;
 
     /// <inheritdoc />
     public AgentIdentity? AgentIdentity { get; private set; }
