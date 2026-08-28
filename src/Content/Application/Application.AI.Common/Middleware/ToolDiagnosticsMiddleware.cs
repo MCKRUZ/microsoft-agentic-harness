@@ -301,14 +301,15 @@ public sealed class ToolDiagnosticsMiddleware : DelegatingChatClient
     /// </summary>
     private bool DetermineShouldTrace(string callId, Services.ReplayedToolCallSet? alreadyReplayed)
     {
+        var hasWriter = _traceWriter is not null;
         var claimSet = alreadyReplayed ?? _intraRunToolCallClaims;
-        var shouldTrace = _traceWriter is not null && claimSet.TryClaim(callId);
+        var shouldTrace = hasWriter && claimSet.TryClaim(callId);
 
         // Observable rather than silent (#512): a suppressed trace is either a genuine duplicate
         // (correct, expected) or a call id collision (the residual gap #541 tracks for the unarmed
         // fallback specifically) — either way, a reader debugging a missing trace row needs a signal
         // for why, not an empty search through traces.jsonl.
-        if (_traceWriter is not null && !shouldTrace)
+        if (hasWriter && !shouldTrace)
         {
             // CallId is provider- or MCP-server-supplied and unsanitized at this point in the
             // pipeline — LoggingHelper.SanitizeForLog strips control characters and bounds length so a

@@ -151,49 +151,43 @@ public static class ToolCallTranscriptExtractor
     /// <remarks>
     /// Deliberately not <see cref="IToolCallReplayTreatment.Treat"/> — that pass is built for free
     /// text (sanitize an injection payload, then redact secret patterns, then size-tier), and a tool
-    /// name or call id has a much narrower legitimate shape than a payload. Matching
-    /// <c>BundleOwnedMcpToolNaming.Sanitize</c>'s own precedent for the identical question ("what
-    /// characters can a tool name actually contain"), an allowlist of ASCII letters, digits,
-    /// underscore, and hyphen is both stricter — nothing outside that set survives, so there is no
-    /// character class left for an injection payload to exploit — and cheaper than running the full
-    /// treatment pipeline on a string that was never meant to carry free text in the first place. The
-    /// extractor does not verify the name resolves to a declared tool (a hallucinated or
-    /// attacker-suggested name still produces a <see cref="ToolExchange"/>), so this is the only gate
-    /// between a provider- or model-supplied identifier and durable, model-facing persistence.
+    /// name or call id has a much narrower legitimate shape than a payload. Shares the character-class
+    /// scan itself with <c>BundleOwnedMcpToolNaming</c>'s identical need via
+    /// <see cref="Domain.Common.Helpers.IdentifierSanitizer.Sanitize"/> — an allowlist of ASCII
+    /// letters, digits, underscore, and hyphen is both stricter than free-text treatment — nothing
+    /// outside that set survives, so there is no character class left for an injection payload to
+    /// exploit — and cheaper than running the full treatment pipeline on a string that was never meant
+    /// to carry free text in the first place. The extractor does not verify the name resolves to a
+    /// declared tool (a hallucinated or attacker-suggested name still produces a
+    /// <see cref="ToolExchange"/>), so this is the only gate between a provider- or model-supplied
+    /// identifier and durable, model-facing persistence.
     /// <para>
-    /// Also matches <c>BundleOwnedMcpToolNaming.SanitizeWithCollisionGuard</c>'s own precedent for
-    /// avoiding what that method's doc comment calls out directly: mapping every disallowed character
-    /// to the same <c>'_'</c> collapses information, so two distinct raw values (e.g. <c>"call#1"</c>
-    /// and <c>"call$1"</c>) can sanitize to an identical string. This type's own dedup (by raw,
-    /// pre-sanitization CallId) runs before either value is sanitized, so both would otherwise survive as separate
-    /// <see cref="ToolExchange"/> records sharing one persisted CallId — the same "duplicate
-    /// tool_call id" hazard the raw-duplicate dedup exists to prevent, reintroduced by sanitization
-    /// itself. A hash suffix of the original raw value, appended only when sanitization actually
-    /// changed something, keeps distinct raw values distinct after sanitizing.
+    /// The truncation-and-collision-guard policy layered on top of that shared primitive is this
+    /// caller's own, matching <c>BundleOwnedMcpToolNaming.SanitizeWithCollisionGuard</c>'s own
+    /// precedent for the identical reason that method carries a guard at all: mapping every disallowed
+    /// character to the same <c>'_'</c> collapses information, so two distinct raw values (e.g.
+    /// <c>"call#1"</c> and <c>"call$1"</c>) can sanitize to an identical string. This type's own dedup
+    /// (by raw, pre-sanitization CallId) runs before either value is sanitized, so both would otherwise
+    /// survive as separate <see cref="ToolExchange"/> records sharing one persisted CallId — the same
+    /// "duplicate tool_call id" hazard the raw-duplicate dedup exists to prevent, reintroduced by
+    /// sanitization itself. A hash suffix of the original raw value, appended only when sanitization
+    /// actually changed something, keeps distinct raw values distinct after sanitizing.
     /// </para>
     /// </remarks>
     private static string SanitizeIdentifier(string value, ILogger logger, string fieldName, string? correlationId)
     {
         var truncated = value.Length > MaxIdentifierLength ? value[..MaxIdentifierLength] : value;
-        var changed = truncated.Length != value.Length;
+        var sanitized = IdentifierSanitizer.Sanitize(truncated);
+        var changed = truncated.Length != value.Length || sanitized != truncated;
 
-        var chars = new char[truncated.Length];
-        for (var i = 0; i < truncated.Length; i++)
-        {
-            var c = truncated[i];
-            var safe = char.IsAsciiLetterOrDigit(c) || c is '_' or '-';
-            chars[i] = safe ? c : '_';
-            changed |= !safe;
-        }
-
-        // Fast path: the overwhelming common case is an already-clean, already-short value — skip the
-        // allocation above entirely rather than discarding it.
+        // IdentifierSanitizer.Sanitize itself already takes the zero-allocation path for an
+        // already-clean value — this only adds the truncation check on top.
         if (!changed)
             return value;
 
         var suffix = $"{HashSuffixSeparator}{Sha256HexPrefixHelper.Compute(value, HashSuffixHexLength)}";
         var keep = Math.Max(0, MaxIdentifierLength - suffix.Length);
-        var basePart = chars.Length > keep ? new string(chars, 0, keep) : new string(chars);
+        var basePart = sanitized.Length > keep ? sanitized[..keep] : sanitized;
         var result = $"{basePart}{suffix}";
 
         // Never log the raw, attacker-controlled value here (CWE-117): a hostile CallId could
