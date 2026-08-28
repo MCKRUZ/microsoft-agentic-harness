@@ -5,7 +5,7 @@ using Microsoft.Extensions.AI;
 namespace Application.AI.Common.Tests.Models.Conversations;
 
 /// <summary>
-/// Proves the read-side half of #508: <see cref="ConversationMessageMapping.ToChatMessages"/> bounds
+/// Proves the read-side half of #508: <see cref="ConversationMessageMapping.ToChatMessages(IReadOnlyList{ConversationMessage},bool,int,Microsoft.Extensions.Logging.ILogger?)"/> bounds
 /// the total treated tool-call text one replayed window sends to the model, dropping oldest-first.
 /// </summary>
 /// <remarks>

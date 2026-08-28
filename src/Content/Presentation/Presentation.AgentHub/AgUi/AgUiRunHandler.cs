@@ -471,17 +471,11 @@ public sealed class AgUiRunHandler
             ? parsed
             : Guid.NewGuid();
 
-    // Delegates to the shared projection rather than repeating the role switch. This file, the SignalR
-    // orchestrator and the durable multi-turn loop each carried a byte-identical copy; a role added to
-    // one of three copies does not fail, it silently replays as the fallback. Not static: gates
-    // tool-call expansion on the live IToolCallReplayTreatment.Enabled value so an operator's kill
-    // switch stops replaying already-persisted tool payloads, not just stop writing new ones.
+    // Read fresh on every call, not cached — states "live" (#515); see
+    // ToolCallReplayWindowPolicy.FromCurrentSettings' remarks for why that's a deliberate choice here.
     private IReadOnlyList<ChatMessage> ToMeaiHistory(IReadOnlyList<ConversationMessage> messages) =>
         ConversationMessageMapping.ToChatMessages(
-            messages,
-            _toolCallReplayTreatment.Enabled,
-            _toolCallReplayTreatment.MaxReplayedChars,
-            _logger);
+            messages, ToolCallReplayWindowPolicy.FromCurrentSettings(_toolCallReplayTreatment), _logger);
 
     private static async Task TryWriteErrorAsync(IAgUiEventWriter writer, string message, CancellationToken ct)
     {

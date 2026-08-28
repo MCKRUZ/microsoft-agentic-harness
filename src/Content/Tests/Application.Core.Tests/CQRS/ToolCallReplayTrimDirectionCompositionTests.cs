@@ -83,7 +83,7 @@ public sealed class ToolCallReplayTrimDirectionCompositionTests
         };
 
         var replayed = ConversationMessageMapping.ToChatMessages(
-            transcript, replayToolCalls: true, maxReplayedChars: 3 * CostPerCall);
+            transcript, new ToolCallReplayWindowPolicy(ReplayToolCalls: true, MaxReplayedChars: 3 * CostPerCall));
 
         ReplayedCallIds(replayed).Should().Equal(
             ["call-7", "call-8", "call-9"],
@@ -111,7 +111,8 @@ public sealed class ToolCallReplayTrimDirectionCompositionTests
                 };
 
                 var survivors = ReplayedCallIds(ConversationMessageMapping.ToChatMessages(
-                    transcript, replayToolCalls: true, maxReplayedChars: affordable * CostPerCall));
+                    transcript,
+                    new ToolCallReplayWindowPolicy(ReplayToolCalls: true, MaxReplayedChars: affordable * CostPerCall)));
 
                 var expectedCount = Math.Min(cap, affordable);
                 var expected = allCalls

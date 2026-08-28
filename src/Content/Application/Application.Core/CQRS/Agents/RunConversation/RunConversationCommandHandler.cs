@@ -147,12 +147,14 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 		using var turnCts = CancellationTokenSource.CreateLinkedTokenSource(
 			cancellationToken, lease.LeaseLost);
 
+		// Snapshotted once, here, deliberately — see DurableTranscript's own constructor remarks for why
+		// this run's replay policy must stay fixed rather than re-read live mid-run.
+		var replayPolicy = ToolCallReplayWindowPolicy.FromCurrentSettings(_toolCallReplayTreatment);
 		var transcript = new DurableTranscript(
 			_conversationStore,
 			request.ConversationId,
 			ownerId,
-			_toolCallReplayTreatment.Enabled,
-			_toolCallReplayTreatment.MaxReplayedChars,
+			replayPolicy,
 			_logger);
 
 		return await RunAsync(request, transcript, turnCts.Token);
