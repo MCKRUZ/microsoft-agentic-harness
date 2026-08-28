@@ -122,8 +122,29 @@ public static class McpToolListCacheAccessor
         GetOrCreateCache(scope)[serverName] = tools;
     }
 
-    private static ConcurrentDictionary<string, IList<AITool>> GetOrCreateCache(Scope scope) =>
-        scope.Cache ??= new ConcurrentDictionary<string, IList<AITool>>();
+    /// <summary>
+    /// Returns <paramref name="scope"/>'s backing dictionary, allocating it on first use.
+    /// </summary>
+    /// <remarks>
+    /// <c>??=</c> alone is not atomic — two concurrent writers into the same scope (reachable if the
+    /// invoked tool transitively triggers more MCP resolution, e.g. <c>ToolChainBuilder</c>'s own
+    /// <c>Task.WhenAll</c> fan-out) could each allocate, with the loser's dictionary and whatever it
+    /// wrote silently discarded (run-gates correctness/security review, #495). The consequence was
+    /// always benign — a dropped write here means a redundant fetch next time, never a wrong or
+    /// corrupted result, since nothing is ever read back from the discarded instance — but
+    /// <see cref="Interlocked.CompareExchange{T}(ref T, T, T)"/> closes it structurally rather than
+    /// leaving the cache's own thread-safety weaker than the <see cref="ConcurrentDictionary{TKey,TValue}"/>
+    /// inside it implies.
+    /// </remarks>
+    private static ConcurrentDictionary<string, IList<AITool>> GetOrCreateCache(Scope scope)
+    {
+        var cache = scope.Cache;
+        if (cache is not null)
+            return cache;
+
+        var created = new ConcurrentDictionary<string, IList<AITool>>();
+        return Interlocked.CompareExchange(ref scope.Cache, created, null) ?? created;
+    }
 
     /// <summary>
     /// Opens an empty cache for the current async flow and returns a handle that restores the previous
