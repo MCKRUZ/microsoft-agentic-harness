@@ -342,10 +342,8 @@ internal static class ToolResultText
         List<string>? texts = null;
         foreach (var block in content.EnumerateArray())
         {
-            if (block.ValueKind == JsonValueKind.Object
-                && block.TryGetProperty("type", out var typeProp)
-                && typeProp.ValueKind == JsonValueKind.String
-                && TryGetBlockText(block, typeProp.GetString(), out var text, out _))
+            if (IsContentBlock(block, out var type)
+                && TryGetBlockText(block, type, out var text, out _))
             {
                 (texts ??= []).Add(text);
             }
@@ -359,8 +357,68 @@ internal static class ToolResultText
     /// failure's text rather than to rewrite one. Kept as one structural check rather than two so the
     /// "what does an MCP content array look like" knowledge can't drift between the two call sites.
     /// </summary>
-    internal static bool TryGetContentArray(JsonElement element, out JsonElement content) =>
-        element.TryGetProperty("content", out content) && content.ValueKind == JsonValueKind.Array;
+    /// <remarks>
+    /// <para>
+    /// A bare top-level <c>content</c> array is not unique to MCP — a keyed-DI tool's own domain JSON
+    /// schema could coincidentally use that same property name, and would previously have been
+    /// misidentified and silently reparsed as an MCP result (#488).
+    /// </para>
+    /// <para>
+    /// Recognizes an array containing <em>at least one</em> element shaped like a real MCP content
+    /// block — an object with a string <c>type</c> property, the one thing every content-block kind
+    /// shares, checked structurally rather than against the specific kinds MCP defines today: a
+    /// hardcoded list goes stale the moment the protocol adds one, and staleness here means silently
+    /// un-recognizing a real MCP result, not just tolerating one more first-party coincidence.
+    /// </para>
+    /// <para>
+    /// This is the third design considered. A marker-presence check
+    /// (<c>isError</c>/<c>structuredContent</c>/<c>_meta</c>) and a require-<em>every</em>-element version
+    /// were each tried and reverted after independent security review found a false negative in each —
+    /// see this repo's CLAUDE.md Common Mistakes (#488) for the full history before changing this method
+    /// again, so a fourth round doesn't reintroduce either regression.
+    /// </para>
+    /// </remarks>
+    internal static bool TryGetContentArray(JsonElement element, out JsonElement content)
+    {
+        if (!element.TryGetProperty("content", out content) || content.ValueKind != JsonValueKind.Array)
+            return false;
+
+        // A foreach + early return, not .Any(...) — JsonElement.ArrayEnumerator is a struct, and LINQ's
+        // IEnumerable<T>-typed Any() would box it. Still short-circuits on the first qualifying block —
+        // the common case for a genuine MCP result, where a real block is typically among the first
+        // elements, not a full second pass over the array every recognized call would otherwise pay for
+        // on top of the processing pass.
+        foreach (var block in content.EnumerateArray())
+        {
+            if (IsContentBlock(block, out _))
+                return true;
+        }
+
+        // An empty content array (Content.Count == 0's fall-through, e.g. AIFunctionMcpServerTool's own
+        // null => branch) has nothing to distinguish it from a first-party empty array by shape alone —
+        // there is also nothing in it to sanitize, redact, or extract, so recognizing it costs nothing.
+        return content.GetArrayLength() == 0;
+    }
+
+    /// <summary>
+    /// Whether <paramref name="block"/> has the one shape every MCP content block shares — an object
+    /// with a required string <c>type</c> discriminator — shared by every place in this file that walks
+    /// a content array, so "what counts as a content block" can't drift between them (#488 second
+    /// review round: it had, three separate hand-written copies of this exact check).
+    /// </summary>
+    private static bool IsContentBlock(JsonElement block, out string? type)
+    {
+        if (block.ValueKind == JsonValueKind.Object
+            && block.TryGetProperty("type", out var typeProp)
+            && typeProp.ValueKind == JsonValueKind.String)
+        {
+            type = typeProp.GetString();
+            return true;
+        }
+
+        type = null;
+        return false;
+    }
 
     /// <summary>
     /// Walks the <c>content</c> array of a serialized <c>CallToolResult</c>, applying
@@ -387,10 +445,8 @@ internal static class ToolResultText
 
         foreach (var block in content.EnumerateArray())
         {
-            if (block.ValueKind == JsonValueKind.Object
-                && block.TryGetProperty("type", out var typeProp)
-                && typeProp.ValueKind == JsonValueKind.String
-                && TryGetBlockText(block, typeProp.GetString(), out var text, out var isEmbeddedResource))
+            if (IsContentBlock(block, out var type)
+                && TryGetBlockText(block, type, out var text, out var isEmbeddedResource))
             {
                 var transformed = transform(text);
                 if (!string.Equals(transformed, text, StringComparison.Ordinal))
