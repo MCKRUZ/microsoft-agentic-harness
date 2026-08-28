@@ -246,6 +246,7 @@ public sealed class ToolResultTextTests
         var sanitizer = AdmissionHarness.SubstitutingSanitizer("IGNORE PREVIOUS INSTRUCTIONS", "[SANITIZED]");
         var structured = JsonSerializer.SerializeToElement(new
         {
+            isError = false,
             content = new object[]
             {
                 new
@@ -280,6 +281,7 @@ public sealed class ToolResultTextTests
         var sanitizer = AdmissionHarness.SubstitutingSanitizer("secret", "[SCRUBBED]");
         object structured = JsonSerializer.SerializeToElement(new
         {
+            isError = false,
             content = new object[]
             {
                 new
@@ -299,6 +301,7 @@ public sealed class ToolResultTextTests
         var sanitizer = AdmissionHarness.SubstitutingSanitizer("nothing-to-find", "unused");
         object structured = JsonSerializer.SerializeToElement(new
         {
+            isError = false,
             content = new object[] { new { type = "text", text = "perfectly ordinary output" } }
         });
 
@@ -311,6 +314,7 @@ public sealed class ToolResultTextTests
         var sanitizer = AdmissionHarness.SubstitutingSanitizer("secret", "[SCRUBBED]");
         object structured = JsonSerializer.SerializeToElement(new
         {
+            isError = false,
             content = new object[] { new { type = "image", data = "aGVsbG8=" } }
         });
 
@@ -329,6 +333,29 @@ public sealed class ToolResultTextTests
         var result = ToolResultText.Sanitize(structured, sanitizer.Object, ToolName);
 
         result.Should().BeOfType<JsonElement>().Which.GetProperty("rows").GetArrayLength().Should().Be(3);
+    }
+
+    [Fact]
+    public void Sanitize_FirstPartyResultWithACoincidentalContentArrayButNoMcpMarker_IsNotReparsedAsMcpContent()
+    {
+        // #488: a bare top-level "content" array is not unique to MCP — a keyed-DI tool's own domain
+        // schema could name a property "content" for entirely unrelated reasons (e.g. a document
+        // store's list of chunks) and previously have been silently misidentified and reparsed as MCP
+        // content blocks. Every real serialized CallToolResult also carries at least one of isError,
+        // structuredContent, or _meta; this fixture deliberately has none of the three, so it must fall
+        // through untouched. MockBehavior.Strict on the sanitizer is the actual assertion: if the
+        // structural check still misfires, TransformSerializedContentBlocks calls the sanitizer on
+        // "text", and the strict mock throws instead of silently substituting.
+        var sanitizer = new Mock<ICompositeResponseSanitizer>(MockBehavior.Strict);
+        var structured = JsonSerializer.SerializeToElement(new
+        {
+            content = new object[] { new { type = "text", text = "not actually an MCP content block" } }
+        });
+
+        var result = ToolResultText.Sanitize(structured, sanitizer.Object, ToolName);
+
+        result.Should().BeOfType<JsonElement>().Which.GetProperty("content")[0].GetProperty("text")
+            .GetString().Should().Be("not actually an MCP content block");
     }
 
     // ── SanitizeAndRedact: the path DefaultToolClassificationGate.RedactResult uses (#484) ──
@@ -416,6 +443,7 @@ public sealed class ToolResultTextTests
     {
         var structured = JsonSerializer.SerializeToElement(new
         {
+            isError = false,
             content = new object[]
             {
                 new { type = "text", text = "line one" },
@@ -431,6 +459,20 @@ public sealed class ToolResultTextTests
     public void ExtractText_StructuredJsonElementWithoutContentArray_ReturnsRawJson()
     {
         var structured = JsonSerializer.SerializeToElement(new { rows = 3 });
+
+        ToolResultText.ExtractText(structured).Should().Be(structured.GetRawText());
+    }
+
+    [Fact]
+    public void ExtractText_FirstPartyResultWithACoincidentalContentArrayButNoMcpMarker_ReturnsRawJsonNotJoinedText()
+    {
+        // #488, ExtractText's side of the same structural false positive Sanitize is tested against
+        // above: no isError/structuredContent/_meta marker means this isn't recognized as MCP content,
+        // so it must fall through to the raw-JSON case rather than being joined as extracted block text.
+        var structured = JsonSerializer.SerializeToElement(new
+        {
+            content = new object[] { new { type = "text", text = "not actually an MCP content block" } }
+        });
 
         ToolResultText.ExtractText(structured).Should().Be(structured.GetRawText());
     }

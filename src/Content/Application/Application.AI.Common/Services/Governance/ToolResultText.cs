@@ -359,8 +359,24 @@ internal static class ToolResultText
     /// failure's text rather than to rewrite one. Kept as one structural check rather than two so the
     /// "what does an MCP content array look like" knowledge can't drift between the two call sites.
     /// </summary>
-    internal static bool TryGetContentArray(JsonElement element, out JsonElement content) =>
-        element.TryGetProperty("content", out content) && content.ValueKind == JsonValueKind.Array;
+    /// <remarks>
+    /// A bare top-level <c>content</c> array is not unique to MCP — a keyed-DI tool's own domain JSON
+    /// schema could coincidentally use that same property name, and would previously have been
+    /// misidentified and silently reparsed as an MCP result (#488). Every real serialized
+    /// <c>CallToolResult</c> also carries at least one of <c>isError</c>, <c>structuredContent</c>, or
+    /// <c>_meta</c> — the three protocol-specific markers <see cref="Tools.McpFailureNormalizingAIFunction"/>'s
+    /// own <c>isError</c> check already independently relied on — so requiring one narrows this
+    /// structural signal to something only the MCP wire shape actually produces.
+    /// </remarks>
+    internal static bool TryGetContentArray(JsonElement element, out JsonElement content)
+    {
+        if (!element.TryGetProperty("content", out content) || content.ValueKind != JsonValueKind.Array)
+            return false;
+
+        return element.TryGetProperty("isError", out _)
+            || element.TryGetProperty("structuredContent", out _)
+            || element.TryGetProperty("_meta", out _);
+    }
 
     /// <summary>
     /// Walks the <c>content</c> array of a serialized <c>CallToolResult</c>, applying
