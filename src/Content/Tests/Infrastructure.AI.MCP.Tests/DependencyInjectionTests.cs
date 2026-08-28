@@ -80,10 +80,16 @@ public sealed class DependencyInjectionTests : IAsyncLifetime
         var toolProvider = provider.GetService<IMcpToolProvider>();
 
         toolProvider.Should().NotBeNull();
-        toolProvider.Should().BeOfType<BehaviorRecordingMcpToolProvider>(
+        // CachingMcpToolProvider (#495) is now outermost — see its own remarks for why a cache hit must
+        // skip everything downstream, not just the wire. Pinning the outermost type here is what makes
+        // this test fail if that decorator is ever dropped from the chain or registered somewhere other
+        // than outermost.
+        toolProvider.Should().BeOfType<CachingMcpToolProvider>(
             "every consumer resolves the interface, so the decorators have to be what the interface "
             + "returns — registering the bare transport provider would leave tool definitions from "
-            + "external servers unscanned and their declared behaviour unrecorded");
+            + "external servers unscanned and their declared behaviour unrecorded, and skipping the "
+            + "caching decorator would reintroduce #495's double-fetch");
+        toolProvider.Should().NotBeOfType<BehaviorRecordingMcpToolProvider>();
         toolProvider.Should().NotBeOfType<McpToolProvider>();
     }
 

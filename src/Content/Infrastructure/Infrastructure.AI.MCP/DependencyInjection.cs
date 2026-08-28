@@ -78,18 +78,23 @@ public static class DependencyInjection
         // throws rather than silently publishing unscanned tool descriptions into the model's context.
         // The governance layer registers a no-op scanner when governance is switched off, so an
         // intentionally ungoverned host still composes.
-        // Two decorators, and the order is the argument. Recording sits OUTSIDE screening so only the
+        // Three decorators, and the order is the argument. Recording sits OUTSIDE screening so only the
         // tools that survived the definition scan get their declared behaviour put on file — a tool
-        // withheld for a poisoned description is never offered to the model and needs no entry.
-        services.AddSingleton<IMcpToolProvider>(sp => new BehaviorRecordingMcpToolProvider(
-            new ScanningMcpToolProvider(
-                sp.GetRequiredService<McpToolProvider>(),
-                sp.GetRequiredService<IMcpSecurityScanner>(),
+        // withheld for a poisoned description is never offered to the model and needs no entry. Caching
+        // sits OUTSIDE recording so a cache hit within one request (#495) skips the wire, the scan, AND
+        // re-recording identical behaviour annotations a second time — every consumer, including
+        // DirectToolInvoker's grant re-resolution, sees the same screened, recorded result whether it
+        // came from the wire or the cache.
+        services.AddSingleton<IMcpToolProvider>(sp => new CachingMcpToolProvider(
+            new BehaviorRecordingMcpToolProvider(
+                new ScanningMcpToolProvider(
+                    sp.GetRequiredService<McpToolProvider>(),
+                    sp.GetRequiredService<IMcpSecurityScanner>(),
+                    sp.GetRequiredService<IOptionsMonitor<AIConfig>>(),
+                    sp.GetRequiredService<ILogger<ScanningMcpToolProvider>>()),
+                sp.GetRequiredService<IToolBehaviorRegistry>(),
                 sp.GetRequiredService<IOptionsMonitor<AIConfig>>(),
-                sp.GetRequiredService<ILogger<ScanningMcpToolProvider>>()),
-            sp.GetRequiredService<IToolBehaviorRegistry>(),
-            sp.GetRequiredService<IOptionsMonitor<AIConfig>>(),
-            sp.GetRequiredService<ILogger<BehaviorRecordingMcpToolProvider>>()));
+                sp.GetRequiredService<ILogger<BehaviorRecordingMcpToolProvider>>())));
 
         // Trace resource provider — exposes optimization run trace files at trace:// URIs.
         // Auth-gated and feature-flagged via MetaHarnessConfig.EnableMcpTraceResources.
