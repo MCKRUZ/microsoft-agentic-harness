@@ -56,7 +56,7 @@ public sealed class CachingMcpToolProvider : IMcpToolProvider
         if (!McpToolListCacheAccessor.IsActive)
             return tools;
 
-        var snapshot = new ReadOnlyCollection<AITool>([.. tools]);
+        var snapshot = Snapshot(tools);
         McpToolListCacheAccessor.TryAdd(serverName, snapshot);
         return snapshot;
     }
@@ -70,16 +70,28 @@ public sealed class CachingMcpToolProvider : IMcpToolProvider
         if (!McpToolListCacheAccessor.IsActive)
             return discovered;
 
-        var snapshot = new Dictionary<string, IList<AITool>>(discovered.Count);
-        foreach (var (serverName, tools) in discovered)
+        // Mutated in place rather than copied into a second dictionary: discovered is a fresh instance
+        // this call exclusively owns (ScanningMcpToolProvider.GetAllToolsAsync allocates it and hands
+        // it nowhere else), so there is no other holder for a second dictionary to protect against.
+        foreach (var serverName in discovered.Keys)
         {
-            var readOnly = new ReadOnlyCollection<AITool>([.. tools]);
+            var readOnly = Snapshot(discovered[serverName]);
+            discovered[serverName] = readOnly;
             McpToolListCacheAccessor.TrySet(serverName, readOnly);
-            snapshot[serverName] = readOnly;
         }
 
-        return snapshot;
+        return discovered;
     }
+
+    /// <summary>
+    /// Wraps <paramref name="tools"/> read-only without copying it — safe because every producer in the
+    /// chain (<c>ScanningMcpToolProvider.Screen</c>, and <c>BehaviorRecordingMcpToolProvider</c>'s
+    /// pass-through) hands back a freshly-allocated list this call exclusively owns, never one retained
+    /// or reused elsewhere. An earlier version defensively re-copied it (<c>[.. tools]</c>) before
+    /// wrapping; <c>/simplify</c>'s reuse and efficiency passes both flagged that as a wasted allocation
+    /// once the ownership was traced end to end.
+    /// </summary>
+    private static ReadOnlyCollection<AITool> Snapshot(IList<AITool> tools) => new(tools);
 
     /// <inheritdoc />
     /// <remarks>

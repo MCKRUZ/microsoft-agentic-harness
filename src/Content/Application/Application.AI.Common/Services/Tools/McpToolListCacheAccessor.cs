@@ -101,7 +101,7 @@ public static class McpToolListCacheAccessor
         if (scope is null)
             return;
 
-        (scope.Cache ??= new ConcurrentDictionary<string, IList<AITool>>()).TryAdd(serverName, tools);
+        GetOrCreateCache(scope).TryAdd(serverName, tools);
     }
 
     /// <summary>
@@ -119,9 +119,11 @@ public static class McpToolListCacheAccessor
         if (scope is null)
             return;
 
-        var cache = scope.Cache ??= new ConcurrentDictionary<string, IList<AITool>>();
-        cache[serverName] = tools;
+        GetOrCreateCache(scope)[serverName] = tools;
     }
+
+    private static ConcurrentDictionary<string, IList<AITool>> GetOrCreateCache(Scope scope) =>
+        scope.Cache ??= new ConcurrentDictionary<string, IList<AITool>>();
 
     /// <summary>
     /// Opens an empty cache for the current async flow and returns a handle that restores the previous
