@@ -73,7 +73,11 @@ public sealed class CachingMcpToolProvider : IMcpToolProvider
         // Mutated in place rather than copied into a second dictionary: discovered is a fresh instance
         // this call exclusively owns (ScanningMcpToolProvider.GetAllToolsAsync allocates it and hands
         // it nowhere else), so there is no other holder for a second dictionary to protect against.
-        foreach (var serverName in discovered.Keys)
+        // .ToList(): overwriting an existing key's value doesn't invalidate a live Dictionary
+        // enumerator today, but that's an implementation detail, not the documented contract — the one
+        // guarantee is "don't add or remove during enumeration," which a throwaway key snapshot keeps
+        // true regardless (run-gates correctness review, #495).
+        foreach (var serverName in discovered.Keys.ToList())
         {
             var readOnly = Snapshot(discovered[serverName]);
             discovered[serverName] = readOnly;
