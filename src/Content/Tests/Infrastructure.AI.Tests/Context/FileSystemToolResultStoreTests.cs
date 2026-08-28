@@ -152,6 +152,33 @@ public sealed class FileSystemToolResultStoreTests : IDisposable
             .WithParameterName("sessionId");
     }
 
+    [Theory]
+    [InlineData("session1 ")]
+    [InlineData("session1.")]
+    public async Task StoreIfLargeAsync_TrailingDotOrSpaceInSessionId_ThrowsArgumentException(string sessionId)
+    {
+        // Security-review finding: Windows silently trims trailing dots/spaces off a path segment, so
+        // "session1" and "session1 " would resolve to the SAME directory there even though they compare
+        // unequal as strings — two different scopes colliding onto one storage directory. Rejected here
+        // rather than allowed to (on Windows only) collide with a different caller's scope.
+        var act = () => _sut.StoreIfLargeAsync(sessionId, "tool", null, "data");
+
+        await act.Should().ThrowAsync<ArgumentException>()
+            .WithParameterName("sessionId");
+    }
+
+    [Fact]
+    public async Task RetrieveFullContentAsync_TrailingSpaceInScopeId_ThrowsArgumentExceptionNamingScopeId()
+    {
+        // Same collision guard, exercised through the retrieval side — and confirms the exception names
+        // the CALLING method's own parameter (scopeId), not a copy-pasted "sessionId" from the sibling
+        // method that shares this validation helper (a /code-review finding).
+        var act = () => _sut.RetrieveFullContentAsync(Guid.NewGuid().ToString("N"), "session1 ");
+
+        await act.Should().ThrowAsync<ArgumentException>()
+            .WithParameterName("scopeId");
+    }
+
     [Fact]
     public async Task StoreIfLargeAsync_NullOutput_ThrowsArgumentNullException()
     {

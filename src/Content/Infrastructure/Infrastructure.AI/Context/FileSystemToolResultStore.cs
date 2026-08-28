@@ -44,7 +44,7 @@ public sealed class FileSystemToolResultStore : IToolResultStore
         // H-1: sessionId must be a single safe path segment. Path.GetFileName equality
         // alone is insufficient — it lets "." and ".." through (GetFileName(("..")) == "..")
         // which Path.Combine then resolves to a parent directory, escaping the storage root.
-        var safeSessionId = SanitizeSessionSegment(sessionId);
+        var safeSessionId = SanitizeSessionSegment(sessionId, nameof(sessionId));
 
         var config = _options.CurrentValue.AI.ContextManagement.ToolResultStorage;
         var resultId = Guid.NewGuid().ToString("N");
@@ -136,7 +136,7 @@ public sealed class FileSystemToolResultStore : IToolResultStore
         // than a path captured at write time means a same-process hot reload of StoragePath between a
         // spill and its retrieval would point this read at a different root than the write used. Not
         // fixed — StoragePath is not a value anyone realistically hot-reloads mid-process.
-        var safeScopeId = SanitizeSessionSegment(scopeId);
+        var safeScopeId = SanitizeSessionSegment(scopeId, nameof(scopeId));
         var config = _options.CurrentValue.AI.ContextManagement.ToolResultStorage;
         var storagePath = Path.Combine(config.StoragePath, safeScopeId, "tool-results", $"{resultId}.json");
 
@@ -164,12 +164,18 @@ public sealed class FileSystemToolResultStore : IToolResultStore
     /// the storage root via path traversal.
     /// </summary>
     /// <param name="sessionId">The caller-supplied session identifier.</param>
+    /// <param name="paramName">
+    /// The CALLING method's own parameter name to report in a thrown <see cref="ArgumentException"/> —
+    /// this helper is shared by <see cref="StoreIfLargeAsync"/> (parameter <c>sessionId</c>) and
+    /// <see cref="RetrieveFullContentAsync"/> (parameter <c>scopeId</c>); a hardcoded <c>nameof(sessionId)</c>
+    /// would misreport the latter (a /code-review finding).
+    /// </param>
     /// <returns>The validated session identifier, guaranteed to be a single path segment.</returns>
     /// <exception cref="ArgumentException">
-    /// Thrown when <paramref name="sessionId"/> contains path separators, is rooted, or is a
-    /// relative directory reference ("." or "..").
+    /// Thrown when <paramref name="sessionId"/> contains path separators, is rooted, is a relative
+    /// directory reference ("." or ".."), or has trailing dots/spaces Windows would silently strip.
     /// </exception>
-    private static string SanitizeSessionSegment(string sessionId)
+    private static string SanitizeSessionSegment(string sessionId, string paramName)
     {
         // Reject any path separator from EITHER platform, a rooted path, or a relative
         // directory reference. Path.GetFileName / Path.IsPathRooted are OS-specific — on
@@ -179,14 +185,24 @@ public sealed class FileSystemToolResultStore : IToolResultStore
         if (sessionId.Contains('/') || sessionId.Contains('\\') || Path.IsPathRooted(sessionId))
         {
             throw new ArgumentException(
-                "Session ID must be a single path segment without separators.", nameof(sessionId));
+                "Session ID must be a single path segment without separators.", paramName);
         }
 
         // "." and ".." resolve to the storage root or a parent when combined, so reject them.
         if (sessionId is "." or "..")
         {
             throw new ArgumentException(
-                "Session ID must not be a relative directory reference.", nameof(sessionId));
+                "Session ID must not be a relative directory reference.", paramName);
+        }
+
+        // Windows silently trims trailing dots/spaces off a path segment, so "<id>" and "<id> " (or
+        // "<id>.") resolve to the SAME directory there even though they compare unequal as strings —
+        // two different scopes could collide onto one storage directory (a security-review finding).
+        // Comparing against the OS-trimmed form works identically, and harmlessly, on every platform.
+        if (sessionId != sessionId.TrimEnd(' ', '.'))
+        {
+            throw new ArgumentException(
+                "Session ID must not have trailing dots or spaces.", paramName);
         }
 
         return sessionId;

@@ -99,8 +99,9 @@ services.AddKeyedSingleton&lt;ITool&gt;(RestrictedSearchTool.ToolName, (sp, _) =
                         The real built-in tools are <code>FileSystemTool</code> (<code>file_system</code>),
                         <code>EchoCalculateTool</code> (<code>echo_calculate</code>),
                         <code>RestrictedSearchTool</code> (<code>restricted_search</code>),
-                        <code>DocumentSearchTool</code> (<code>document_search</code>), and the generative-UI render
-                        tools (<a href="16-generative-ui.html">Chapter 16</a>). There is no
+                        <code>DocumentSearchTool</code> (<code>document_search</code>),
+                        <code>ToolResultFetchTool</code> (<code>tool_result_fetch</code>), and the generative-UI
+                        render tools (<a href="16-generative-ui.html">Chapter 16</a>). There is no
                         <code>CalculationTool</code> or <code>WebSearchTool</code> — those names are historical.
                     </p>
 
@@ -381,6 +382,21 @@ services.AddKeyedSingleton&lt;ITool&gt;(RestrictedSearchTool.ToolName, (sp, _) =
                         <code>FreeText</code> that heuristics can't shrink enough.
                     </p>
 
+                    <div class="callout callout-warn">
+                        <span class="callout-icon">!</span>
+                        <div class="callout-body">
+                            <div class="callout-title">The hard ceiling and tool_result_fetch</div>
+                            <p style="margin: 0">
+                                Compression is a best-effort shrink, not a guarantee. Output still over the final
+                                character ceiling after compression is truncated by <code>ToolCallAdmissionPipeline</code>
+                                and marked with <code>[tool output truncated — full output available via
+                                tool_result_fetch, id=...]</code>. The agent can call the <code>tool_result_fetch</code>
+                                tool with that id to retrieve the rest, scoped to its own conversation — a different
+                                conversation's id always reads back as "not found."
+                            </p>
+                        </div>
+                    </div>
+
                     <h2>Where each tool lives in the repo</h2>
                     <table>
                         <thead><tr><th>Tool family</th><th>Project</th></tr></thead>
@@ -390,6 +406,8 @@ services.AddKeyedSingleton&lt;ITool&gt;(RestrictedSearchTool.ToolName, (sp, _) =
                             <tr><td>MCP-discovered tools</td><td>Cast to <code>AITool</code> by <code>McpToolProvider</code> (not <code>ITool</code>)</td></tr>
                             <tr><td>Plugin-provided tools</td><td>Plugin's local directory; loaded via <code>IPluginLoader</code></td></tr>
                             <tr><td>Tool output compression</td><td><code>ToolOutputCompressionBehavior</code> (MediatR pipeline behavior)</td></tr>
+                            <tr><td>Hard-ceiling truncation, spill &amp; retrieval marker</td><td><code>Application.AI.Common/Services/Governance/ToolCallAdmissionPipeline.cs</code></td></tr>
+                            <tr><td>Retrieval tool (<code>tool_result_fetch</code>)</td><td><code>Infrastructure.AI/Tools/ToolResultFetchTool.cs</code></td></tr>
                             <tr><td>Tool DI registration</td><td><code>Infrastructure.AI/DependencyInjection.Tools.cs</code></td></tr>
                             <tr><td>Invocation-time governance wrapper</td><td><code>Application.AI.Common/Services/Tools/GovernedAIFunction.cs</code></td></tr>
                         </tbody>

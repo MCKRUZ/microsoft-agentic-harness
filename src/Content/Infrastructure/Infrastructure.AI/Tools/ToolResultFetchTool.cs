@@ -86,8 +86,9 @@ public sealed class ToolResultFetchTool : ITool
 
     /// <inheritdoc />
     public string Description =>
-        "Retrieves the full text of a tool result that was truncated. Use the id given in the " +
-        $"\"{string.Format(Application.AI.Common.Services.Governance.ToolCallAdmissionPipeline.SpilledResultMarkerFormat, "...").Trim()}\" marker.";
+        "Retrieves the full text of a tool result that was truncated. Pass the id from the " +
+        $"\"{string.Format(Application.AI.Common.Services.Governance.ToolCallAdmissionPipeline.SpilledResultMarkerFormat, "...").Trim()}\" " +
+        "marker as the 'resultId' parameter.";
 
     /// <inheritdoc />
     public IReadOnlyList<string> SupportedOperations => Operations;
@@ -149,7 +150,8 @@ public sealed class ToolResultFetchTool : ITool
             // why "wrong scope" and "never existed" must be indistinguishable from outside the store.
             return ToolResult.Fail($"No stored result found for id '{resultId}'.");
         }
-        catch (Exception ex) when (ex is ArgumentException or IOException or UnauthorizedAccessException)
+        catch (Exception ex) when (ex is ArgumentException or IOException or UnauthorizedAccessException
+            or NotSupportedException or System.Security.SecurityException)
         {
             // A security review of #521 found these could otherwise escape ExecuteAsync as raw
             // exceptions — AIToolConverter invokes tools with no surrounding try/catch. The write side
