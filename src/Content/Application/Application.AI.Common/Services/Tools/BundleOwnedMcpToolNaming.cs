@@ -64,8 +64,9 @@ public static class BundleOwnedMcpToolNaming
     }
 
     /// <summary>
-    /// Sanitizes <paramref name="raw"/> to the provider charset. When the raw value was already clean,
-    /// <see cref="Sanitize"/> is a no-op and the result is returned as-is — preserving a short, readable
+    /// Sanitizes <paramref name="raw"/> to the provider charset via
+    /// <see cref="Domain.Common.Helpers.IdentifierSanitizer.Sanitize"/>. When the raw value was already
+    /// clean, sanitizing is a no-op and the result is returned as-is — preserving a short, readable
     /// name for the overwhelmingly common case. When sanitization actually changes the value, it
     /// necessarily collapses information (multiple distinct raw characters all map to <c>'_'</c>), so two
     /// different raw values can sanitize to the identical string — e.g. two raw tool names "get user" and
@@ -81,7 +82,7 @@ public static class BundleOwnedMcpToolNaming
     /// </summary>
     private static string SanitizeWithCollisionGuard(string raw)
     {
-        var sanitized = Sanitize(raw);
+        var sanitized = IdentifierSanitizer.Sanitize(raw);
         return sanitized == raw ? sanitized : $"{sanitized}_{HexHashPrefix(raw)}";
     }
 
@@ -108,15 +109,4 @@ public static class BundleOwnedMcpToolNaming
     /// <summary>The first <see cref="HashSuffixByteCount"/> bytes of <paramref name="value"/>'s SHA-256 digest, as lowercase hex.</summary>
     private static string HexHashPrefix(string value) =>
         Sha256HexPrefixHelper.Compute(value, HashSuffixByteCount * 2);
-
-    private static string Sanitize(string value)
-    {
-        var chars = new char[value.Length];
-        for (var i = 0; i < value.Length; i++)
-        {
-            var c = value[i];
-            chars[i] = char.IsAsciiLetterOrDigit(c) || c is '_' or '-' ? c : '_';
-        }
-        return new string(chars);
-    }
 }

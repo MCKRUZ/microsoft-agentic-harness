@@ -2,6 +2,7 @@ using Application.AI.Common.Helpers;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Traces;
 using Application.AI.Common.Services;
+using Application.Common.Logging;
 using Domain.Common.Extensions;
 using Domain.Common.MetaHarness;
 using Microsoft.Extensions.AI;
@@ -157,12 +158,13 @@ public sealed class ToolDiagnosticsMiddleware : DelegatingChatClient
     /// a result already sitting in <em>replayed</em> conversation history (#249 item 6), or a result
     /// this same turn already recorded on an earlier round — content this middleware cannot tell apart
     /// from a genuinely new result by looking at it alone, since all three are an ordinary
-    /// <see cref="FunctionResultContent"/> in the (cumulative, ever-growing) inbound list. Excluding
-    /// any result whose <c>CallId</c> is present in <see cref="Services.ReplayedToolCallScope.Current"/>
-    /// is what supplies that missing signal: the turn handler seeds it with the pre-dispatch history's
-    /// call ids, and this method grows it in place as it records each result, so both the
-    /// cross-turn (replayed history) and intra-turn (an earlier round of this same turn) duplicate
-    /// cases are covered by one check.
+    /// <see cref="FunctionResultContent"/> in the (cumulative, ever-growing) inbound list. A result
+    /// whose <c>CallId</c> is already claimed in <see cref="Services.ReplayedToolCallScope.Current"/> is
+    /// excluded from the <em>trace</em> — not from usage-capture, which is idempotent and always
+    /// records (#512) — which is what supplies that missing signal: the turn handler seeds the scope
+    /// with the pre-dispatch history's call ids, and this method grows it in place as it records each
+    /// result, so both the cross-turn (replayed history) and intra-turn (an earlier round of this same
+    /// turn) duplicate cases are covered by one check.
     /// </remarks>
     private async Task AppendFunctionResultTracesAsync(IEnumerable<ChatMessage> messages, CancellationToken ct)
     {
@@ -223,22 +225,7 @@ public sealed class ToolDiagnosticsMiddleware : DelegatingChatClient
                 continue;
             }
 
-            if (alreadyReplayed is not null)
-            {
-                // Armed: a single claim decides both outputs together, exactly as it always has.
-                // This scope is per-request (AsyncLocal, seeded by ExecuteAgentTurnCommandHandler),
-                // so sharing one decision here introduces none of the cross-request risk the
-                // unarmed fallback carries.
-                if (alreadyReplayed.TryClaim(candidate.CallId))
-                    functionResults.Add((candidate, ShouldTrace: true));
-                continue;
-            }
-
-            // Unarmed. Usage-capture always records (see remarks above); trace eligibility is its
-            // own decision, against the fallback set, and only made at all when there is a writer
-            // to write to.
-            var shouldTrace = _traceWriter is not null && _intraRunToolCallClaims.TryClaim(candidate.CallId);
-            functionResults.Add((candidate, shouldTrace));
+            functionResults.Add((candidate, DetermineShouldTrace(candidate.CallId, alreadyReplayed)));
         }
 
         foreach (var (result, shouldTrace) in functionResults)
@@ -303,6 +290,37 @@ public sealed class ToolDiagnosticsMiddleware : DelegatingChatClient
                     "[ToolDiag] Failed to append trace record for CallId={CallId}", result.CallId);
             }
         }
+    }
+
+    /// <summary>
+    /// Decides trace eligibility for one candidate <c>CallId</c> (#512) — armed (<paramref
+    /// name="alreadyReplayed"/> not <see langword="null"/>) and unarmed both reduce to the identical
+    /// shape, claiming against whichever set applies. Usage-capture is never gated here; it always
+    /// records regardless of this method's result (see <see cref="AppendFunctionResultTracesAsync"/>'s
+    /// remarks) — this method decides only whether a trace record gets written for this candidate.
+    /// </summary>
+    private bool DetermineShouldTrace(string callId, Services.ReplayedToolCallSet? alreadyReplayed)
+    {
+        var hasWriter = _traceWriter is not null;
+        var claimSet = alreadyReplayed ?? _intraRunToolCallClaims;
+        var shouldTrace = hasWriter && claimSet.TryClaim(callId);
+
+        // Observable rather than silent (#512): a suppressed trace is either a genuine duplicate
+        // (correct, expected) or a call id collision (the residual gap #541 tracks for the unarmed
+        // fallback specifically) — either way, a reader debugging a missing trace row needs a signal
+        // for why, not an empty search through traces.jsonl.
+        if (hasWriter && !shouldTrace)
+        {
+            // CallId is provider- or MCP-server-supplied and unsanitized at this point in the
+            // pipeline — LoggingHelper.SanitizeForLog strips control characters and bounds length so a
+            // hostile id can't forge log lines or blow up the log sink (CWE-117).
+            _logger.LogDebug(
+                "[ToolDiag] Trace record suppressed for CallId={CallId} — already claimed this turn " +
+                "(duplicate round, replayed history, or a call id collision).",
+                LoggingHelper.SanitizeForLog(callId));
+        }
+
+        return shouldTrace;
     }
 
     // Deduplicate tools by name (case-insensitive) before they reach the HTTP layer.
