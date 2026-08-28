@@ -48,6 +48,12 @@ namespace Infrastructure.AI.MCP.Services;
 /// surface, and then changes that description would keep its cached verdict forever. Re-reading the
 /// definition each time is the only thing that catches a definition that changed.
 /// </para>
+/// <para>
+/// A request-scoped list cache (<c>CachingMcpToolProvider</c>, #495) sits OUTSIDE this decorator, so a
+/// second lookup of the same server within one HTTP request is served without re-scanning. That window
+/// is bounded by a single request and does not weaken rug-pull detection across requests, which is
+/// where a definition change is actually observable.
+/// </para>
 /// </remarks>
 public sealed class ScanningMcpToolProvider : IMcpToolProvider
 {

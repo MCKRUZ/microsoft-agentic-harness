@@ -118,6 +118,69 @@ public sealed class CachingMcpToolProviderTests
     }
 
     [Fact]
+    public async Task GetAllToolsAsync_PopulatingOneServersEntry_NeverAnswersALookupForADifferentServer()
+    {
+        // Security review finding (#495): the grant-enforcement re-resolution
+        // (DirectToolInvoker.ResolveGrantedMcpToolAsync) walks a caller's granted server list one name
+        // at a time. This is the sharpest proof available at this layer that the cache cannot turn that
+        // lookup into contact with a server the caller was never granted: populating the cache with
+        // ServerA's tools must never satisfy a GetToolsAsync(ServerB) call for an ungranted server.
+        _inner
+            .Setup(p => p.GetAllToolsAsync(It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new Dictionary<string, IList<AITool>> { [ServerA] = [Tool("a1")] });
+        InnerReturns(ServerB, Tool("b1"));
+
+        using (McpToolListCacheAccessor.Begin())
+        {
+            await _sut.GetAllToolsAsync();
+
+            await _sut.GetToolsAsync(ServerB);
+        }
+
+        _inner.Verify(p => p.GetToolsAsync(ServerB, It.IsAny<CancellationToken>()), Times.Once,
+            "ServerB was never discovered, so asking for it must still reach the inner provider — a "
+            + "cache miss must never resolve to another server's cached entry");
+    }
+
+    [Fact]
+    public async Task ConcurrentFlows_EachWithItsOwnScope_DoNotSeeEachOthersCache()
+    {
+        // Pins the property Q1/Q4 of the security review depend on: AsyncLocal isolates concurrent
+        // flows from each other, which is what makes this an ambient per-REQUEST cache rather than an
+        // accidental per-process one. A future "optimisation" to a shared static field would break this
+        // silently — this test is what catches it.
+        InnerReturns(ServerA, Tool("a1"));
+        InnerReturns(ServerB, Tool("b1"));
+
+        var flowASawServerB = false;
+        var flowBSawServerA = false;
+
+        var flowA = Task.Run(async () =>
+        {
+            using (McpToolListCacheAccessor.Begin())
+            {
+                await _sut.GetToolsAsync(ServerA);
+                await Task.Delay(20);
+                flowASawServerB = McpToolListCacheAccessor.Current!.ContainsKey(ServerB);
+            }
+        });
+        var flowB = Task.Run(async () =>
+        {
+            using (McpToolListCacheAccessor.Begin())
+            {
+                await _sut.GetToolsAsync(ServerB);
+                await Task.Delay(20);
+                flowBSawServerA = McpToolListCacheAccessor.Current!.ContainsKey(ServerA);
+            }
+        });
+
+        await Task.WhenAll(flowA, flowB);
+
+        flowASawServerB.Should().BeFalse();
+        flowBSawServerA.Should().BeFalse();
+    }
+
+    [Fact]
     public async Task GetToolByNameAsync_IsNeverCached_AndAlwaysDelegates()
     {
         // Different shape from a per-server fetch — see the type's remarks on why this path is not

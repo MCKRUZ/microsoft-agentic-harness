@@ -31,6 +31,14 @@ namespace Application.AI.Common.Services.Tools;
 /// time to find the one tool being invoked — is exactly this shape: the first call's discovered servers
 /// are a superset of the second call's per-server lookups within the same request.
 /// </para>
+/// <para>
+/// Caveat, identical to the other ambient accessors: like any <see cref="AsyncLocal{T}"/>, the cache is
+/// captured into the <c>ExecutionContext</c> of any fire-and-forget work started <em>while it is
+/// active</em>, and that work keeps reading it after the request's own flow has torn it down. The one
+/// call site's scope spans the whole tool invocation, not just list resolution — it has to, since the
+/// second per-server fetch happens inside <c>InvokeMcpToolAsync</c>'s own preflight — so anything the
+/// invoked tool transitively triggers while that scope is open is served from this cache too.
+/// </para>
 /// </remarks>
 public static class McpToolListCacheAccessor
 {
@@ -41,9 +49,10 @@ public static class McpToolListCacheAccessor
 
     /// <summary>
     /// Opens an empty cache for the current async flow and returns a handle that restores the previous
-    /// ambient value when disposed. Use with <c>using</c> so the cache is guaranteed to be torn down when
-    /// the request completes, even on exception — a cache that outlived its request would go stale the
-    /// moment any MCP server's tool list changed.
+    /// ambient value when disposed. Use with <c>using</c> so the cache is torn down for the request's own
+    /// flow when it completes, even on exception — a cache that outlived its request would go stale the
+    /// moment any MCP server's tool list changed. See this type's remarks for the one exception: work
+    /// started detached while the scope is open keeps its own captured reference.
     /// </summary>
     public static IDisposable Begin()
     {

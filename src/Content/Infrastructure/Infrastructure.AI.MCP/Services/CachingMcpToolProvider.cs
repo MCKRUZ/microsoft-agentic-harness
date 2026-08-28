@@ -1,3 +1,4 @@
+using System.Collections.ObjectModel;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Services.Tools;
 using Microsoft.Extensions.AI;
@@ -38,6 +39,14 @@ public sealed class CachingMcpToolProvider : IMcpToolProvider
     }
 
     /// <inheritdoc />
+    /// <remarks>
+    /// A list served from the cache is shared with every other caller who asks for the same server
+    /// within this request, so it is wrapped read-only before caching (#495 security review, finding
+    /// L3) — a formerly-private, freshly-allocated list becoming a value multiple callers alias would
+    /// otherwise let one consumer's in-place mutation silently corrupt what the grant-enforcement
+    /// re-resolution (<c>DirectToolInvoker.ResolveGrantedMcpToolAsync</c>) reads. No current consumer
+    /// mutates the list it gets back, but the invariant is made structural rather than conventional.
+    /// </remarks>
     public async Task<IList<AITool>> GetToolsAsync(string serverName, CancellationToken cancellationToken = default)
     {
         var cache = McpToolListCacheAccessor.Current;
@@ -45,23 +54,33 @@ public sealed class CachingMcpToolProvider : IMcpToolProvider
             return cached;
 
         var tools = await _inner.GetToolsAsync(serverName, cancellationToken).ConfigureAwait(false);
-        cache?.TryAdd(serverName, tools);
-        return tools;
+        if (cache is null)
+            return tools;
+
+        var snapshot = new ReadOnlyCollection<AITool>([.. tools]);
+        cache.TryAdd(serverName, snapshot);
+        return snapshot;
     }
 
     /// <inheritdoc />
+    /// <remarks>See <see cref="GetToolsAsync"/>'s remarks — the same read-only-snapshot reasoning applies here.</remarks>
     public async Task<Dictionary<string, IList<AITool>>> GetAllToolsAsync(CancellationToken cancellationToken = default)
     {
         var discovered = await _inner.GetAllToolsAsync(cancellationToken).ConfigureAwait(false);
 
         var cache = McpToolListCacheAccessor.Current;
-        if (cache is not null)
+        if (cache is null)
+            return discovered;
+
+        var snapshot = new Dictionary<string, IList<AITool>>(discovered.Count);
+        foreach (var (serverName, tools) in discovered)
         {
-            foreach (var (serverName, tools) in discovered)
-                cache[serverName] = tools;
+            var readOnly = new ReadOnlyCollection<AITool>([.. tools]);
+            cache[serverName] = readOnly;
+            snapshot[serverName] = readOnly;
         }
 
-        return discovered;
+        return snapshot;
     }
 
     /// <inheritdoc />
