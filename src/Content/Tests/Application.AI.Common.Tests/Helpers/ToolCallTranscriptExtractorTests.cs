@@ -233,6 +233,37 @@ public sealed class ToolCallTranscriptExtractorTests
     }
 
     [Fact]
+    public void Extract_TwoCallIdsCollidingAfterSanitization_PersistDistinctValues()
+    {
+        // Code-review finding on #513: a plain character-replace sanitizer maps every disallowed
+        // character to the same '_', so "call#1" and "call$1" would otherwise both become "call_1" —
+        // two distinct raw ids colliding into one persisted CallId, reintroducing the exact
+        // duplicate-tool_call-id hazard Extract's own raw-CallId dedup exists to prevent. A
+        // collision-guard hash suffix (mirroring BundleOwnedMcpToolNaming.SanitizeWithCollisionGuard)
+        // must keep them distinct.
+        var messages = new List<ChatMessage>
+        {
+            new(ChatRole.Assistant,
+            [
+                new FunctionCallContent("call#1", "search"),
+                new FunctionCallContent("call$1", "search"),
+            ]),
+            new(ChatRole.Tool,
+            [
+                new FunctionResultContent("call#1", "first"),
+                new FunctionResultContent("call$1", "second"),
+            ]),
+        };
+
+        var exchanges = ToolCallTranscriptExtractor.Extract(messages, Logger);
+
+        exchanges.Should().HaveCount(2);
+        exchanges[0].CallId.Should().NotBe(exchanges[1].CallId);
+        exchanges[0].ResultText.Should().Be("first");
+        exchanges[1].ResultText.Should().Be("second");
+    }
+
+    [Fact]
     public void Extract_OrdinaryToolNameAndCallId_PassThroughUnchanged()
     {
         // The common case: a real provider- and codebase-shaped name/id (matching this repo's own

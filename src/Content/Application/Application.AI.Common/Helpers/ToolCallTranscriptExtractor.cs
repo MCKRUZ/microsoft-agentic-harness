@@ -1,4 +1,5 @@
 using Application.AI.Common.Interfaces;
+using Domain.Common.Helpers;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
@@ -107,9 +108,12 @@ public static class ToolCallTranscriptExtractor
             // Pairing above (calls, resultsByCallId) is keyed on the RAW call.CallId — sanitizing
             // before the lookup would risk two distinct raw ids collapsing to the same sanitized
             // value and silently mismatching a call to the wrong result. Only the id and name
-            // actually placed into the persisted record are sanitized, below.
-            var safeCallId = SanitizeIdentifier(call.CallId, logger, "CallId", call.CallId);
-            var safeName = SanitizeIdentifier(call.Name, logger, "ToolName", call.CallId);
+            // actually placed into the persisted record are sanitized, below. correlationId is
+            // always an already-sanitized value (or null, self-correlating) — never the raw,
+            // attacker-controlled call.CallId — so a hostile CallId can never reach a log sink
+            // unsanitized via the warning below, only its cleaned replacement.
+            var safeCallId = SanitizeIdentifier(call.CallId, logger, "CallId", correlationId: null);
+            var safeName = SanitizeIdentifier(call.Name, logger, "ToolName", correlationId: safeCallId);
 
             if (resultsByCallId.TryGetValue(call.CallId, out var result))
             {
@@ -133,6 +137,11 @@ public static class ToolCallTranscriptExtractor
     /// </summary>
     internal const int MaxIdentifierLength = 128;
 
+    /// <summary>Hex characters of the collision-guard hash suffix — mirrors <c>BundleOwnedMcpToolNaming</c>'s own 5-byte suffix.</summary>
+    private const int HashSuffixHexLength = 10;
+
+    private const string HashSuffixSeparator = "_";
+
     /// <summary>
     /// Narrows a tool name or call id to the shape both are supposed to have, before either is ever
     /// persisted for replay (#513) — previously reaching the conversation store, and the model's own
@@ -151,8 +160,19 @@ public static class ToolCallTranscriptExtractor
     /// extractor does not verify the name resolves to a declared tool (a hallucinated or
     /// attacker-suggested name still produces a <see cref="ToolExchange"/>), so this is the only gate
     /// between a provider- or model-supplied identifier and durable, model-facing persistence.
+    /// <para>
+    /// Also matches <c>BundleOwnedMcpToolNaming.SanitizeWithCollisionGuard</c>'s own precedent for
+    /// avoiding what that method's doc comment calls out directly: mapping every disallowed character
+    /// to the same <c>'_'</c> collapses information, so two distinct raw values (e.g. <c>"call#1"</c>
+    /// and <c>"call$1"</c>) can sanitize to an identical string. This type's own dedup (by raw,
+    /// pre-sanitization CallId) runs before either value is sanitized, so both would otherwise survive as separate
+    /// <see cref="ToolExchange"/> records sharing one persisted CallId — the same "duplicate
+    /// tool_call id" hazard the raw-duplicate dedup exists to prevent, reintroduced by sanitization
+    /// itself. A hash suffix of the original raw value, appended only when sanitization actually
+    /// changed something, keeps distinct raw values distinct after sanitizing.
+    /// </para>
     /// </remarks>
-    private static string SanitizeIdentifier(string value, ILogger logger, string fieldName, string callId)
+    private static string SanitizeIdentifier(string value, ILogger logger, string fieldName, string? correlationId)
     {
         var truncated = value.Length > MaxIdentifierLength ? value[..MaxIdentifierLength] : value;
         var changed = truncated.Length != value.Length;
@@ -166,16 +186,28 @@ public static class ToolCallTranscriptExtractor
             changed |= !safe;
         }
 
-        if (changed)
-        {
-            logger.LogWarning(
-                "[ToolCallTranscriptExtractor] {Field} for CallId={CallId} was truncated or contained " +
-                "characters outside the expected identifier shape ([A-Za-z0-9_-]); replaced before " +
-                "persisting for replay.",
-                fieldName, callId);
-        }
+        // Fast path: the overwhelming common case is an already-clean, already-short value — skip the
+        // allocation above entirely rather than discarding it.
+        if (!changed)
+            return value;
 
-        return new string(chars);
+        var suffix = $"{HashSuffixSeparator}{Sha256HexPrefixHelper.Compute(value, HashSuffixHexLength)}";
+        var keep = Math.Max(0, MaxIdentifierLength - suffix.Length);
+        var basePart = chars.Length > keep ? new string(chars, 0, keep) : new string(chars);
+        var result = $"{basePart}{suffix}";
+
+        // Never log the raw, attacker-controlled value here (CWE-117): a hostile CallId could
+        // otherwise carry log-forging control characters or, since the ceiling above only bounds
+        // what gets persisted, an unbounded payload straight into the log sink. correlationId is
+        // always already-sanitized (or null when this call is sanitizing the CallId itself, in
+        // which case the value's own cleaned replacement is the correlation id).
+        logger.LogWarning(
+            "[ToolCallTranscriptExtractor] {Field} for CallId={CallId} was truncated or contained " +
+            "characters outside the expected identifier shape ([A-Za-z0-9_-]); replaced with " +
+            "{Sanitized} before persisting for replay.",
+            fieldName, correlationId ?? result, result);
+
+        return result;
     }
 
     /// <summary>Adapter over <see cref="Extract(IEnumerable{ChatMessage}, ILogger)"/> for an agent's response.</summary>
