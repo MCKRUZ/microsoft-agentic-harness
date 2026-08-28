@@ -342,10 +342,8 @@ internal static class ToolResultText
         List<string>? texts = null;
         foreach (var block in content.EnumerateArray())
         {
-            if (block.ValueKind == JsonValueKind.Object
-                && block.TryGetProperty("type", out var typeProp)
-                && typeProp.ValueKind == JsonValueKind.String
-                && TryGetBlockText(block, typeProp.GetString(), out var text, out _))
+            if (IsContentBlock(block, out var typeProp)
+                && TryGetBlockText(block, typeProp, out var text, out _))
             {
                 (texts ??= []).Add(text);
             }
@@ -382,10 +380,19 @@ internal static class ToolResultText
     /// Every MCP content block — <c>text</c>, <c>image</c>, <c>audio</c>, <c>resource</c>,
     /// <c>resource_link</c>, and the two agent-loop block kinds — carries a required string <c>type</c>
     /// discriminator; that is the protocol's own structural invariant, not an artifact of which optional
-    /// properties a particular serialization happened to include. Requiring every element to be an
-    /// object with a string <c>type</c> is strictly tighter than the original any-array check (a
-    /// first-party array of bare strings, numbers, or typeless objects no longer matches) while never
-    /// missing a real MCP content array, marker-less or not.
+    /// properties a particular serialization happened to include.
+    /// </para>
+    /// <para>
+    /// <strong>At least one qualifying block, not every element — a require-all version was tried and
+    /// reverted (second review round on #488).</strong> <see cref="TransformSerializedContentBlocks"/> and
+    /// <see cref="ExtractContentArrayText"/> already tolerate a non-conforming element by skipping it, one
+    /// block at a time — they never needed the whole array to be uniform. Requiring every element to
+    /// qualify made one deliberately malformed block (trivial for the hostile server this whole check
+    /// defends against to include) reject the entire array, silently withholding sanitize/redact/bound
+    /// from every other block in it too — including a genuine injection-bearing <c>text</c> block sitting
+    /// right next to the malformed one. "At least one" is still strictly tighter than the original
+    /// any-array check (a first-party array of bare strings, numbers, or all-typeless objects still never
+    /// matches) without that all-or-nothing failure mode.
     /// </para>
     /// </remarks>
     internal static bool TryGetContentArray(JsonElement element, out JsonElement content)
@@ -393,21 +400,36 @@ internal static class ToolResultText
         if (!element.TryGetProperty("content", out content) || content.ValueKind != JsonValueKind.Array)
             return false;
 
-        var sawABlock = false;
-        foreach (var block in content.EnumerateArray())
-        {
-            if (block.ValueKind != JsonValueKind.Object
-                || !block.TryGetProperty("type", out var type)
-                || type.ValueKind != JsonValueKind.String)
-                return false;
-
-            sawABlock = true;
-        }
+        // Short-circuits on the first qualifying block — the common case for a genuine MCP result,
+        // where a real block is typically among the first elements, not a full second pass over the
+        // array every recognized call would otherwise pay for on top of the processing pass.
+        if (content.EnumerateArray().Any(block => IsContentBlock(block, out _)))
+            return true;
 
         // An empty content array (Content.Count == 0's fall-through, e.g. AIFunctionMcpServerTool's own
         // null => branch) has nothing to distinguish it from a first-party empty array by shape alone —
         // there is also nothing in it to sanitize, redact, or extract, so recognizing it costs nothing.
-        return sawABlock || content.GetArrayLength() == 0;
+        return content.GetArrayLength() == 0;
+    }
+
+    /// <summary>
+    /// Whether <paramref name="block"/> has the one shape every MCP content block shares — an object
+    /// with a required string <c>type</c> discriminator — shared by every place in this file that walks
+    /// a content array, so "what counts as a content block" can't drift between them (#488 second
+    /// review round: it had, three separate hand-written copies of this exact check).
+    /// </summary>
+    private static bool IsContentBlock(JsonElement block, out string? type)
+    {
+        if (block.ValueKind == JsonValueKind.Object
+            && block.TryGetProperty("type", out var typeProp)
+            && typeProp.ValueKind == JsonValueKind.String)
+        {
+            type = typeProp.GetString();
+            return true;
+        }
+
+        type = null;
+        return false;
     }
 
     /// <summary>
@@ -435,10 +457,8 @@ internal static class ToolResultText
 
         foreach (var block in content.EnumerateArray())
         {
-            if (block.ValueKind == JsonValueKind.Object
-                && block.TryGetProperty("type", out var typeProp)
-                && typeProp.ValueKind == JsonValueKind.String
-                && TryGetBlockText(block, typeProp.GetString(), out var text, out var isEmbeddedResource))
+            if (IsContentBlock(block, out var typeProp)
+                && TryGetBlockText(block, typeProp, out var text, out var isEmbeddedResource))
             {
                 var transformed = transform(text);
                 if (!string.Equals(transformed, text, StringComparison.Ordinal))
