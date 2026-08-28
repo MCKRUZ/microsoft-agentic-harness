@@ -353,6 +353,15 @@ docker run -d --name jaeger \
                         <em>un-persist</em> anything already stored, so containment after a leak needs a store-side
                         purge as well.
                     </p>
+                    <p>
+                        <code>ToolName</code> and <code>CallId</code> are narrowed separately, before either ever
+                        reaches <code>IToolCallReplayTreatment</code>: <code>ToolCallTranscriptExtractor</code>
+                        restricts both to <code>[A-Za-z0-9_-]</code>, truncates to 128 characters, and appends a
+                        short hash suffix when sanitization actually changed the value (so two distinct raw ids
+                        can't collapse onto one persisted <code>CallId</code>). This is deliberately not the
+                        sanitize/redact/size-tier pipeline above — that pipeline is built for free text, and an
+                        identifier has a much narrower legitimate shape than a payload does.
+                    </p>
 
                     <h3>8 · Human escalation</h3>
                     <p>
