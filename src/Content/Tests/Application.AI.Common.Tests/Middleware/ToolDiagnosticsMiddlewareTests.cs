@@ -248,6 +248,49 @@ public sealed class ToolDiagnosticsMiddlewareTests
     }
 
     [Fact]
+    public async Task InvokeNext_ArmedWithCollidingCallId_StillRecordsUsageCaptureEvenThoughTraceIsSuppressed()
+    {
+        // #512: the armed path used to let one TryClaim decide both outputs together, so a colliding
+        // call id (already present in ReplayedToolCallScope.Current, seeded from replayed history or
+        // an earlier round of this same turn) silently dropped usage-capture along with the trace —
+        // even though RecordToolResult is a dictionary upsert keyed by CallId, safe to call more than
+        // once for the same id. This proves the split: usage-capture must still see the collision, the
+        // trace-suppression test above proves the trace still correctly does not.
+        var innerClient = MakeChatClient();
+        var (writerMock, middleware) = MakeMiddlewareWithWriter(innerClient);
+
+        var usageCapture = new Mock<ILlmUsageCapture>();
+        LlmUsageCapture.Current = usageCapture.Object;
+
+        var messages = new ChatMessage[]
+        {
+            new(ChatRole.Tool, [new FunctionResultContent("call-1", "42 results")])
+        };
+
+        ReplayedToolCallScope.Current = new ReplayedToolCallSet(["call-1"]);
+        try
+        {
+            await middleware.GetResponseAsync(messages, null, CancellationToken.None);
+        }
+        finally
+        {
+            ReplayedToolCallScope.Current = null;
+            LlmUsageCapture.Current = null;
+        }
+
+        usageCapture.Verify(
+            c => c.RecordToolResult("call-1", It.IsAny<string>()),
+            Times.Once,
+            "a call id collision on the armed path must still reach usage-capture — only the trace " +
+            "write should be suppressed for a duplicate");
+        writerMock.Verify(
+            w => w.AppendTraceAsync(It.IsAny<ExecutionTraceRecord>(), It.IsAny<CancellationToken>()),
+            Times.Never,
+            "the trace itself must still be suppressed — this test is not proving #512 undid the " +
+            "original dedup, only that it stopped taking usage-capture down with it");
+    }
+
+    [Fact]
     public async Task InvokeNext_ResultCallIdNotInReplayedScope_StillCallsAppendTrace()
     {
         var innerClient = MakeChatClient();

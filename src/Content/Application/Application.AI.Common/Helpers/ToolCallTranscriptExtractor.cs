@@ -1,3 +1,4 @@
+using Application.AI.Common.Interfaces;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
@@ -49,9 +50,14 @@ public readonly record struct ToolExchange(
 /// holding, the fallback is to capture from inside the middleware pipeline instead — already proven
 /// to work in this repo, and swapping the data source changes nothing downstream of this type.
 /// <para>
-/// Does no redaction or sanitization — extraction and treatment are separate concerns with different
-/// callers and different failure modes; see the security-treatment layer this extractor's output
-/// feeds into.
+/// Does no free-text redaction or sanitization — <see cref="ToolExchange.ArgsJson"/> and
+/// <see cref="ToolExchange.ResultText"/> pass through exactly as captured, and extraction/treatment
+/// of them stay separate concerns with different callers and different failure modes; see the
+/// security-treatment layer this extractor's output feeds into. <see cref="ToolExchange.ToolName"/>
+/// and <see cref="ToolExchange.CallId"/> are the one exception (#513): both are narrowed to an
+/// identifier shape (see <see cref="SanitizeIdentifier"/>) here, at extraction, rather than treated
+/// as free text downstream — a fundamentally different, narrower operation than the sanitize/redact
+/// pipeline the payload fields still go through elsewhere.
 /// </para>
 /// </remarks>
 public static class ToolCallTranscriptExtractor
@@ -98,19 +104,78 @@ public static class ToolCallTranscriptExtractor
             var call = calls[i];
             var argsJson = TrySerializeArguments(call, logger);
 
+            // Pairing above (calls, resultsByCallId) is keyed on the RAW call.CallId — sanitizing
+            // before the lookup would risk two distinct raw ids collapsing to the same sanitized
+            // value and silently mismatching a call to the wrong result. Only the id and name
+            // actually placed into the persisted record are sanitized, below.
+            var safeCallId = SanitizeIdentifier(call.CallId, logger, "CallId", call.CallId);
+            var safeName = SanitizeIdentifier(call.Name, logger, "ToolName", call.CallId);
+
             if (resultsByCallId.TryGetValue(call.CallId, out var result))
             {
                 exchanges.Add(new ToolExchange(
-                    call.CallId, call.Name, argsJson, ResultText(result), HasResult: true, RoundOrdinal: i));
+                    safeCallId, safeName, argsJson, ResultText(result), HasResult: true, RoundOrdinal: i));
             }
             else
             {
                 exchanges.Add(new ToolExchange(
-                    call.CallId, call.Name, argsJson, ResultText: null, HasResult: false, RoundOrdinal: i));
+                    safeCallId, safeName, argsJson, ResultText: null, HasResult: false, RoundOrdinal: i));
             }
         }
 
         return exchanges;
+    }
+
+    /// <summary>
+    /// The longest a tool name or call id may be once persisted for replay (#513). Well above every
+    /// provider's own limit, so a legitimate value is never truncated — a value that reaches this
+    /// ceiling is already suspicious on length alone, independent of what characters it contains.
+    /// </summary>
+    internal const int MaxIdentifierLength = 128;
+
+    /// <summary>
+    /// Narrows a tool name or call id to the shape both are supposed to have, before either is ever
+    /// persisted for replay (#513) — previously reaching the conversation store, and the model's own
+    /// context on every later turn, with no character-class restriction at all, unlike the free-text
+    /// payload beside it that already goes through <see cref="IToolCallReplayTreatment.Treat"/>.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately not <see cref="IToolCallReplayTreatment.Treat"/> — that pass is built for free
+    /// text (sanitize an injection payload, then redact secret patterns, then size-tier), and a tool
+    /// name or call id has a much narrower legitimate shape than a payload. Matching
+    /// <c>BundleOwnedMcpToolNaming.Sanitize</c>'s own precedent for the identical question ("what
+    /// characters can a tool name actually contain"), an allowlist of ASCII letters, digits,
+    /// underscore, and hyphen is both stricter — nothing outside that set survives, so there is no
+    /// character class left for an injection payload to exploit — and cheaper than running the full
+    /// treatment pipeline on a string that was never meant to carry free text in the first place. The
+    /// extractor does not verify the name resolves to a declared tool (a hallucinated or
+    /// attacker-suggested name still produces a <see cref="ToolExchange"/>), so this is the only gate
+    /// between a provider- or model-supplied identifier and durable, model-facing persistence.
+    /// </remarks>
+    private static string SanitizeIdentifier(string value, ILogger logger, string fieldName, string callId)
+    {
+        var truncated = value.Length > MaxIdentifierLength ? value[..MaxIdentifierLength] : value;
+        var changed = truncated.Length != value.Length;
+
+        var chars = new char[truncated.Length];
+        for (var i = 0; i < truncated.Length; i++)
+        {
+            var c = truncated[i];
+            var safe = char.IsAsciiLetterOrDigit(c) || c is '_' or '-';
+            chars[i] = safe ? c : '_';
+            changed |= !safe;
+        }
+
+        if (changed)
+        {
+            logger.LogWarning(
+                "[ToolCallTranscriptExtractor] {Field} for CallId={CallId} was truncated or contained " +
+                "characters outside the expected identifier shape ([A-Za-z0-9_-]); replaced before " +
+                "persisting for replay.",
+                fieldName, callId);
+        }
+
+        return new string(chars);
     }
 
     /// <summary>Adapter over <see cref="Extract(IEnumerable{ChatMessage}, ILogger)"/> for an agent's response.</summary>
