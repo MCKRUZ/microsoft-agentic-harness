@@ -97,15 +97,17 @@ public static partial class DependencyInjection
         services.AddKeyedSingleton<ITool>(EchoLookupTool.ToolName, (_, _) => new EchoLookupTool());
         services.AddKeyedSingleton<ITool>(EchoCalculateTool.ToolName, (_, _) => new EchoCalculateTool());
 
-        // Tool-result retrieval (#521) — Scoped, not Singleton like the tools above. This one depends
-        // on IAgentExecutionContext, itself Scoped, to read the CALLING request's own scope id back —
-        // not to spawn an independent unit of work the way DocumentIngestTool's IServiceScopeFactory
-        // does above. A Singleton registration would capture whichever caller's scope resolved it
-        // first and leak that scope to every later caller; see ToolResultFetchTool's own remarks.
-        services.AddKeyedScoped<ITool>(ToolResultFetchTool.ToolName, (sp, _) =>
+        // Tool-result retrieval (#521) — Singleton, like every other keyed tool above. Every production
+        // caller resolves a keyed ITool by name from a singleton holding the ROOT provider
+        // (ToolChainBuilder.ResolveToolByName, FirstPartyToolLookup.Resolve), so there is no per-request
+        // scope at resolution time to register INTO — an earlier AddKeyedScoped registration threw
+        // InvalidOperationException on every turn of every skill that lists this tool (caught by the
+        // correctness gate). The request-scoped IAgentExecutionContext it needs is resolved per
+        // invocation from IAmbientRequestScope.Current instead — see ToolResultFetchTool's own remarks.
+        services.AddKeyedSingleton<ITool>(ToolResultFetchTool.ToolName, (sp, _) =>
             new ToolResultFetchTool(
                 sp.GetRequiredService<Application.AI.Common.Interfaces.Context.IToolResultStore>(),
-                sp.GetRequiredService<Application.AI.Common.Interfaces.Agent.IAgentExecutionContext>(),
+                sp.GetRequiredService<Application.AI.Common.Interfaces.IAmbientRequestScope>(),
                 sp.GetRequiredService<ILogger<ToolResultFetchTool>>()));
 
         // Delegation tool — lets a skill hand a self-contained subtask to the capability-matching

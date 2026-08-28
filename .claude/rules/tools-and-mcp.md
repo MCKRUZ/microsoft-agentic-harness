@@ -10,15 +10,23 @@ paths: src/Content/**/MCPServer/**/*.cs, src/Content/**/Tools/**/*.cs
 4. Add JSON schema via `IToolSchemaService` for agent discovery
 5. Convert to `AITool` via `IToolConverter`
 
-**Exception — keyed scoped, not singleton:** a tool that constructor-injects a genuinely
-request-scoped dependency (e.g. `IAgentExecutionContext`, to read the CALLING request's own state
-back — not to spawn an independent unit of work) must be registered `AddKeyedScoped`, never
-`AddKeyedSingleton`. A singleton registration would capture whichever caller's scope resolved it
-first and leak that scope to every later caller — a captive-dependency bug, not a style choice.
-`ToolResultFetchTool` (#521) is the first instance; see its own remarks for the full reasoning.
-Contrast with `DocumentIngestTool`, which stays singleton and instead takes `IServiceScopeFactory`
-to spawn its own fresh scope per call — the right shape when the tool starts independent work
-rather than reading the calling request's own identity.
+**A tool that needs the CALLING request's own scoped state (e.g. `IAgentExecutionContext`) stays
+keyed SINGLETON, like every other tool — never `AddKeyedScoped`.** Every production caller resolves
+a keyed `ITool` by name from a singleton holding the ROOT service provider
+(`ToolChainBuilder.ResolveToolByName`, `FirstPartyToolLookup.Resolve`), so there is no per-request
+scope at resolution time to register a scoped tool into — `AddKeyedScoped` throws
+`InvalidOperationException` under `ValidateScopes = true` (every host) the moment either resolver
+reaches it. This was tried and caught by the `correctness` gate before shipping (#521,
+`ToolResultFetchTool`) — do not repeat it.
+
+Instead, constructor-inject `IAmbientRequestScope` (itself a singleton, AsyncLocal-backed) and
+resolve the scoped dependency from `IAmbientRequestScope.Current` inside the tool's `ExecuteAsync`,
+per invocation — not at construction. This is the same pattern already used by a dozen-plus other
+long-lived singletons that need per-request state (see `IAmbientRequestScope`'s own remarks, and
+e.g. `KnowledgeMemoryContextProvider`, `EgressPolicyDelegatingHandler`). `ToolResultFetchTool` is
+the reference example for a tool doing this. Contrast with `DocumentIngestTool`, which takes
+`IServiceScopeFactory` to spawn its own INDEPENDENT fresh scope per call — the right shape when the
+tool starts new work, not when it needs to read the calling request's own identity back.
 
 ## Tool Schema Requirements
 Every tool must have:
