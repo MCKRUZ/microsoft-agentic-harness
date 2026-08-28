@@ -246,7 +246,6 @@ public sealed class ToolResultTextTests
         var sanitizer = AdmissionHarness.SubstitutingSanitizer("IGNORE PREVIOUS INSTRUCTIONS", "[SANITIZED]");
         var structured = JsonSerializer.SerializeToElement(new
         {
-            isError = false,
             content = new object[]
             {
                 new
@@ -281,7 +280,6 @@ public sealed class ToolResultTextTests
         var sanitizer = AdmissionHarness.SubstitutingSanitizer("secret", "[SCRUBBED]");
         object structured = JsonSerializer.SerializeToElement(new
         {
-            isError = false,
             content = new object[]
             {
                 new
@@ -301,7 +299,6 @@ public sealed class ToolResultTextTests
         var sanitizer = AdmissionHarness.SubstitutingSanitizer("nothing-to-find", "unused");
         object structured = JsonSerializer.SerializeToElement(new
         {
-            isError = false,
             content = new object[] { new { type = "text", text = "perfectly ordinary output" } }
         });
 
@@ -314,7 +311,6 @@ public sealed class ToolResultTextTests
         var sanitizer = AdmissionHarness.SubstitutingSanitizer("secret", "[SCRUBBED]");
         object structured = JsonSerializer.SerializeToElement(new
         {
-            isError = false,
             content = new object[] { new { type = "image", data = "aGVsbG8=" } }
         });
 
@@ -509,7 +505,6 @@ public sealed class ToolResultTextTests
     {
         var structured = JsonSerializer.SerializeToElement(new
         {
-            isError = false,
             content = new object[]
             {
                 new { type = "text", text = "line one" },
