@@ -41,7 +41,13 @@ public static class ConversationMessageMapping
     };
 
     /// <summary>
-    /// Projects a transcript window onto chat messages, oldest first, ready to seed a dispatch.
+    /// Core projection logic, taking the two <see cref="ToolCallReplayWindowPolicy"/> settings as loose
+    /// parameters rather than the bundled record. Internal rather than private only so the test suite
+    /// that exercises the budget/expansion mechanics directly (predating
+    /// <see cref="ToolCallReplayWindowPolicy"/>) keeps working without every test constructing a policy
+    /// record it isn't testing — every production caller goes through the public, policy-based overload
+    /// below instead, which is where a caller belongs: one entry point production code can reach for,
+    /// not two kept in sync only by convention.
     /// </summary>
     /// <param name="messages">The window, in transcript order.</param>
     /// <param name="replayToolCalls">
@@ -89,7 +95,7 @@ public static class ConversationMessageMapping
     /// which takes a logger the same way and for the same reason — silently shrinking a model's memory
     /// is exactly the kind of change that must leave a trace.
     /// </param>
-    public static IReadOnlyList<ChatMessage> ToChatMessages(
+    internal static IReadOnlyList<ChatMessage> ToChatMessages(
         IReadOnlyList<ConversationMessage> messages,
         bool replayToolCalls,
         int maxReplayedChars,
@@ -151,11 +157,23 @@ public static class ConversationMessageMapping
     }
 
     /// <summary>
-    /// Overload of <see cref="ToChatMessages(IReadOnlyList{ConversationMessage},bool,int,ILogger?)"/>
-    /// taking the two settings bundled as one <see cref="ToolCallReplayWindowPolicy"/> rather than as
-    /// loose parameters — the type production callers should reach for; see that record's remarks for
-    /// why bundling them exists at all.
+    /// Projects a transcript window onto chat messages, oldest first, ready to seed a dispatch — the
+    /// public entry point every production caller uses. See the internal
+    /// <see cref="ToChatMessages(IReadOnlyList{ConversationMessage},bool,int,ILogger?)"/> overload's
+    /// own remarks for the full expansion/budget mechanics this delegates to.
     /// </summary>
+    /// <param name="messages">The window, in transcript order.</param>
+    /// <param name="replayPolicy">
+    /// Whether tool calls expand at all, and the character budget for the whole window if they do — see
+    /// <see cref="ToolCallReplayWindowPolicy"/>'s own remarks for what each setting means and for why
+    /// bundling them, and being explicit about when they're read, exists at all. Build via
+    /// <see cref="ToolCallReplayWindowPolicy.FromCurrentSettings"/>.
+    /// </param>
+    /// <param name="logger">
+    /// Optional, for reporting what the budget dropped. Matching <c>ToolCallTranscriptExtractor.Extract</c>,
+    /// which takes a logger the same way and for the same reason — silently shrinking a model's memory
+    /// is exactly the kind of change that must leave a trace.
+    /// </param>
     public static IReadOnlyList<ChatMessage> ToChatMessages(
         IReadOnlyList<ConversationMessage> messages,
         ToolCallReplayWindowPolicy replayPolicy,

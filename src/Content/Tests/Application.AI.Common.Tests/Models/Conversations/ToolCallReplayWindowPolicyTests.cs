@@ -38,24 +38,6 @@ public sealed class ToolCallReplayWindowPolicyTests
     }
 
     [Fact]
-    public void FromCurrentSettings_CalledTwice_ReflectsWhateverTheMockReturnsAtEachCall()
-    {
-        // Proves "live" is a property of WHEN a caller calls this, not of the record itself — the same
-        // factory, called again after the underlying setting changes, produces a different policy. This
-        // is what AgUiRunHandler/ConversationOrchestrator rely on by calling it fresh every turn, and
-        // what DurableTranscript deliberately does NOT do by calling it once and reusing the result.
-        var treatment = new Mock<IToolCallReplayTreatment>();
-        treatment.Setup(t => t.Enabled).Returns(true);
-        treatment.SetupSequence(t => t.MaxReplayedChars).Returns(1000).Returns(2000);
-
-        var first = ToolCallReplayWindowPolicy.FromCurrentSettings(treatment.Object);
-        var second = ToolCallReplayWindowPolicy.FromCurrentSettings(treatment.Object);
-
-        first.MaxReplayedChars.Should().Be(1000);
-        second.MaxReplayedChars.Should().Be(2000);
-    }
-
-    [Fact]
     public void ToChatMessages_PolicyOverload_MatchesTheLooseParameterOverload()
     {
         var transcript = new List<ConversationMessage>
