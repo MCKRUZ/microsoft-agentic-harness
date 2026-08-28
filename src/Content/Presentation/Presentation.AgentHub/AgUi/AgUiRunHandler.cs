@@ -471,15 +471,11 @@ public sealed class AgUiRunHandler
             ? parsed
             : Guid.NewGuid();
 
-    // Delegates to the shared live-settings projection (#515) rather than reading
-    // _toolCallReplayTreatment's two properties here directly — this file and the SignalR orchestrator
-    // used to each hand-write that same two-line unpacking, which is exactly the kind of duplication a
-    // role or setting added to one copy and not the other turns into a silent split, not a compile
-    // error. Read fresh on every call (not cached): an operator's replay kill switch
-    // (IToolCallReplayTreatment.Enabled) must stop replaying already-persisted tool payloads starting
-    // the very next turn, not just stop writing new ones.
+    // Read fresh on every call, not cached — states "live" (#515); see
+    // ToolCallReplayWindowPolicy.FromCurrentSettings' remarks for why that's a deliberate choice here.
     private IReadOnlyList<ChatMessage> ToMeaiHistory(IReadOnlyList<ConversationMessage> messages) =>
-        ConversationMessageMapping.ToChatMessagesFromLiveSettings(messages, _toolCallReplayTreatment, _logger);
+        ConversationMessageMapping.ToChatMessages(
+            messages, ToolCallReplayWindowPolicy.FromCurrentSettings(_toolCallReplayTreatment), _logger);
 
     private static async Task TryWriteErrorAsync(IAgUiEventWriter writer, string message, CancellationToken ct)
     {

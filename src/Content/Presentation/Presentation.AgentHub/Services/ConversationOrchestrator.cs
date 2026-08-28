@@ -683,11 +683,9 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
         };
     }
 
-    // Delegates to the shared live-settings projection (#515) — see ConversationMessageMapping for why
-    // hand-writing this same two-line unpacking here and in AgUiRunHandler was a latent bug. Read
-    // fresh on every call (not cached): an operator's replay kill switch
-    // (IToolCallReplayTreatment.Enabled) must stop replaying already-persisted tool payloads starting
-    // the very next turn, not just stop writing new ones.
+    // Read fresh on every call, not cached — states "live" (#515); see
+    // ToolCallReplayWindowPolicy.FromCurrentSettings' remarks for why that's a deliberate choice here.
     private IReadOnlyList<ChatMessage> ToMeaiHistory(IReadOnlyList<ConversationMessage> messages) =>
-        ConversationMessageMapping.ToChatMessagesFromLiveSettings(messages, _toolCallReplayTreatment, _logger);
+        ConversationMessageMapping.ToChatMessages(
+            messages, ToolCallReplayWindowPolicy.FromCurrentSettings(_toolCallReplayTreatment), _logger);
 }

@@ -1,5 +1,4 @@
 using System.Text.Json;
-using Application.AI.Common.Interfaces;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 
@@ -165,25 +164,6 @@ public static class ConversationMessageMapping
         ArgumentNullException.ThrowIfNull(replayPolicy);
         return ToChatMessages(messages, replayPolicy.ReplayToolCalls, replayPolicy.MaxReplayedChars, logger);
     }
-
-    /// <summary>
-    /// Projects a window using <paramref name="treatment"/>'s <em>current</em> settings, read fresh on
-    /// this call — the shared helper for a caller that wants "live" (<c>AgUiRunHandler</c> and
-    /// <c>ConversationOrchestrator</c> both call this once per turn, so a hot-reloaded config
-    /// change applies starting the very next one). Previously each of those two files hand-wrote this
-    /// same delegation; a role or setting added to one copy and not the other was a silent split, not a
-    /// compile error. A caller that instead wants "snapshot once, fixed for a run" — <c>DurableTranscript</c>
-    /// — calls <see cref="ToolCallReplayWindowPolicy.FromCurrentSettings"/> itself, once, at
-    /// construction, and reuses the resulting policy across every <see cref="ToChatMessages(IReadOnlyList{ConversationMessage},ToolCallReplayWindowPolicy,ILogger?)"/>
-    /// call it makes — the same factory, called at a different point in the caller's lifetime, is what
-    /// makes "live vs. snapshot" an explicit choice each caller states rather than an accident of which
-    /// file it happens to be.
-    /// </summary>
-    public static IReadOnlyList<ChatMessage> ToChatMessagesFromLiveSettings(
-        IReadOnlyList<ConversationMessage> messages,
-        IToolCallReplayTreatment treatment,
-        ILogger? logger = null) =>
-        ToChatMessages(messages, ToolCallReplayWindowPolicy.FromCurrentSettings(treatment), logger);
 
     /// <summary>
     /// Decides, for every row in the window, which of its tool calls fit inside

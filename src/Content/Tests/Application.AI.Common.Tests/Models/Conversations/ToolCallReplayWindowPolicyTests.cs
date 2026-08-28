@@ -1,3 +1,4 @@
+using System.Reflection;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Models.Conversations;
 using FluentAssertions;
@@ -73,8 +74,11 @@ public sealed class ToolCallReplayWindowPolicyTests
     }
 
     [Fact]
-    public void ToChatMessagesFromLiveSettings_DelegatesToThePolicyOverloadUsingCurrentTreatmentValues()
+    public void ToChatMessages_ComposedWithFromCurrentSettings_UsesCurrentTreatmentValues()
     {
+        // AgUiRunHandler/ConversationOrchestrator's actual call shape: ToChatMessages composed directly
+        // with FromCurrentSettings, not through an intermediate wrapper (#515 code-review round — a
+        // one-line wrapper whose body was just this composition was its own unnecessary duplication).
         var toolCall = new ToolCallRecord(
             "search", """{"q":"weather"}""", """{"r":"sunny"}""", DurationMs: 1, CallId: "call-1", RoundOrdinal: 0);
         var transcript = new List<ConversationMessage>
@@ -85,7 +89,8 @@ public sealed class ToolCallReplayWindowPolicyTests
         treatment.Setup(t => t.Enabled).Returns(true);
         treatment.Setup(t => t.MaxReplayedChars).Returns(int.MaxValue);
 
-        var result = ConversationMessageMapping.ToChatMessagesFromLiveSettings(transcript, treatment.Object);
+        var result = ConversationMessageMapping.ToChatMessages(
+            transcript, ToolCallReplayWindowPolicy.FromCurrentSettings(treatment.Object));
 
         // Expansion (call + result + trailing text = 3 messages) only happens when ReplayToolCalls is
         // true — proves the live Enabled value actually reached the projection, not just that some
@@ -95,7 +100,7 @@ public sealed class ToolCallReplayWindowPolicyTests
     }
 
     [Fact]
-    public void ToChatMessagesFromLiveSettings_TreatmentDisabled_FallsBackToTextOnlyProjection()
+    public void ToChatMessages_ComposedWithFromCurrentSettings_TreatmentDisabled_FallsBackToTextOnlyProjection()
     {
         var toolCall = new ToolCallRecord(
             "search", """{"q":"weather"}""", """{"r":"sunny"}""", DurationMs: 1, CallId: "call-1", RoundOrdinal: 0);
@@ -105,10 +110,42 @@ public sealed class ToolCallReplayWindowPolicyTests
         };
         var treatment = new Mock<IToolCallReplayTreatment>();
         treatment.Setup(t => t.Enabled).Returns(false);
+        // Stubbed even though this test is about Enabled=false, and load-bearing: an unstubbed
+        // MaxReplayedChars is 0, and a zero budget admits nothing, so the assertions below would hold
+        // for a kill switch that had silently failed OPEN. Mutation-checked — flipping Enabled to true
+        // fails this test only because this line is here. This is the exact trap
+        // IToolCallReplayTreatment.MaxReplayedChars' own remarks warn about.
+        treatment.Setup(t => t.MaxReplayedChars).Returns(int.MaxValue);
 
-        var result = ConversationMessageMapping.ToChatMessagesFromLiveSettings(transcript, treatment.Object);
+        var result = ConversationMessageMapping.ToChatMessages(
+            transcript, ToolCallReplayWindowPolicy.FromCurrentSettings(treatment.Object));
 
         result.Should().ContainSingle();
         result[0].Contents.OfType<FunctionCallContent>().Should().BeEmpty();
+    }
+
+    [Fact]
+    public void IToolCallReplayTreatment_MemberSet_IsPinnedSoANewSettingCannotSilentlyMissFromCurrentSettings()
+    {
+        // FromCurrentSettings hand-maps exactly today's two read-side settings (Enabled,
+        // MaxReplayedChars) with nothing compiler-enforced tying its shape to the interface's member
+        // set — a new property added to IToolCallReplayTreatment compiles cleanly whether or not
+        // FromCurrentSettings picks it up. This pins the interface's full member set so that addition
+        // fails THIS test, forcing a human decision: read-side (wire it into FromCurrentSettings) or
+        // write-side, like MaxCallsPerTurn, Treat and NoResultPlaceholder already are (leave it out,
+        // update the expected set below). Not a claim FromCurrentSettings is complete on its own — a
+        // pin on the thing that can drift, matching this repo's own precedent for enum/interface
+        // member-set staleness (see ContentCaptureConfigValidatorTests' DefaultValues_MatchEvery...).
+        var members = typeof(IToolCallReplayTreatment)
+            .GetMembers(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly)
+            // Excludes property accessor methods (get_Enabled etc.) — MemberInfo itself has no
+            // IsSpecialName; only MethodInfo does, so non-method members (properties) pass through.
+            .Where(m => m is not MethodInfo method || !method.IsSpecialName)
+            .Select(m => m.Name)
+            .OrderBy(n => n, StringComparer.Ordinal)
+            .ToArray();
+
+        members.Should().BeEquivalentTo(
+            ["Enabled", "MaxCallsPerTurn", "MaxReplayedChars", "NoResultPlaceholder", "Treat"]);
     }
 }
