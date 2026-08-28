@@ -97,6 +97,17 @@ public static partial class DependencyInjection
         services.AddKeyedSingleton<ITool>(EchoLookupTool.ToolName, (_, _) => new EchoLookupTool());
         services.AddKeyedSingleton<ITool>(EchoCalculateTool.ToolName, (_, _) => new EchoCalculateTool());
 
+        // Tool-result retrieval (#521) — Scoped, not Singleton like the tools above. This one depends
+        // on IAgentExecutionContext, itself Scoped, to read the CALLING request's own scope id back —
+        // not to spawn an independent unit of work the way DocumentIngestTool's IServiceScopeFactory
+        // does above. A Singleton registration would capture whichever caller's scope resolved it
+        // first and leak that scope to every later caller; see ToolResultFetchTool's own remarks.
+        services.AddKeyedScoped<ITool>(ToolResultFetchTool.ToolName, (sp, _) =>
+            new ToolResultFetchTool(
+                sp.GetRequiredService<Application.AI.Common.Interfaces.Context.IToolResultStore>(),
+                sp.GetRequiredService<Application.AI.Common.Interfaces.Agent.IAgentExecutionContext>(),
+                sp.GetRequiredService<ILogger<ToolResultFetchTool>>()));
+
         // Delegation tool — lets a skill hand a self-contained subtask to the capability-matching
         // supervisor, which selects, runs, and governs (autonomy tiers, depth limits, audit) a
         // best-fit subagent. Opt-in per skill via SKILL.md allowed-tools.

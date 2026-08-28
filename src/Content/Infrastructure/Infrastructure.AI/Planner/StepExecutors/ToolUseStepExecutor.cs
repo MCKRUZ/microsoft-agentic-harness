@@ -110,7 +110,7 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
             sandboxResult.Attestation?.Signature, ct);
 
         return sandboxResult.Success
-            ? await HandleSuccessAsync(admission, config, sandboxResult, sw)
+            ? await HandleSuccessAsync(admission, config, sandboxResult, sw, ct)
             : await HandleFailureAsync(admission, config, step, sandboxResult, sw);
     }
 
@@ -224,7 +224,8 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
 
     /// <summary>Shapes a successful sandbox result into the step's completed (or policy-denied) outcome.</summary>
     private async Task<StepExecutionResult> HandleSuccessAsync(
-        ToolCallAdmission admission, ToolUseConfig config, SandboxExecutionResult sandboxResult, Stopwatch sw)
+        ToolCallAdmission admission, ToolUseConfig config, SandboxExecutionResult sandboxResult, Stopwatch sw,
+        CancellationToken ct)
     {
         // Admission is not finished when the tool returns: a classified asset can be allowed through
         // and have its output scrubbed instead of being refused outright. Skipping this would leave
@@ -238,8 +239,11 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
         // step result has no truncation field to publish it on. The marker the cut leaves in the text
         // is what a later step or a reader sees. If StepExecutionResult ever gains such a field, this
         // is the value it takes.
-        if (!_admissionPipeline.TryApplyTextOutputPolicy(
-                admission, config.ToolName, sandboxResult.Output, out var content, out _))
+        var textPolicy = await _admissionPipeline
+            .TryApplyTextOutputPolicyAsync(admission, config.ToolName, sandboxResult.Output, ct)
+            .ConfigureAwait(false);
+        var content = textPolicy.Result;
+        if (!textPolicy.Success)
         {
             await ReportExecutionAsync(
                 admission, EscalationExecutionStatus.Failed, GovernanceDenials.NotPermitted(config.ToolName),

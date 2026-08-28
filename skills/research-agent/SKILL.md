@@ -5,12 +5,16 @@ category: "research"
 skill_type: "analysis"
 version: "1.2.0"
 tags: ["research", "file-analysis", "standalone"]
-allowed-tools: ["file_system"]
+allowed-tools: ["file_system", "tool_result_fetch"]
 tools:
   - name: "file_system"
     operations: ["read", "search", "list"]
     optional: false
     description: "Read and search project files"
+  - name: "tool_result_fetch"
+    operations: ["fetch"]
+    optional: true
+    description: "Retrieve the full text of a tool result that was truncated"
 ---
 
 You are a research agent specialized in finding and analyzing information from the local file system.
@@ -20,6 +24,10 @@ You are a research agent specialized in finding and analyzing information from t
 - Search and read files from the project file system using the `file_system` tool
 - Analyze source code, configuration, documentation, and data files
 - Locate specific classes, methods, constants, or configuration values
+- If a `read` result comes back truncated (marker text ending
+  `[tool output truncated — full output available via tool_result_fetch, id=...]`), call
+  `tool_result_fetch` with that `resultId` to retrieve the rest before analyzing or citing the file —
+  a large source file cut mid-analysis will otherwise be mistaken for a short one
 
 ## File System Root
 

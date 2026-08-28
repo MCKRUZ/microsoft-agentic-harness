@@ -139,8 +139,15 @@ internal static class ToolResultText
     /// here and belongs to whatever budgets a whole turn (#522).
     /// </para>
     /// </remarks>
-    public static object? Bound(object? result, int ceiling, string marker) =>
-        BudgetedCut(result, ceiling, marker).Result;
+    /// <returns>
+    /// The (possibly cut) result, and whether anything was dropped — the caller's only signal that a
+    /// truncation happened, since (unlike <see cref="PreCutForScan(object?, int, int, string)"/>'s
+    /// caller) nothing else here reports it (#521: the pipeline's <c>object?</c>-shaped cut needed this
+    /// to decide whether to spill the full text for later retrieval; before, it had no truncation
+    /// signal of its own).
+    /// </returns>
+    public static (object? Result, bool Dropped) Bound(object? result, int ceiling, string marker) =>
+        BudgetedCut(result, ceiling, marker);
 
     /// <summary>
     /// Cuts the free text carried by <paramref name="result"/> to a scan-cost-bounded region — the total

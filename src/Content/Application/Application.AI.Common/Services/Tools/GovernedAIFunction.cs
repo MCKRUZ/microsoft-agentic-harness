@@ -142,7 +142,9 @@ internal sealed class GovernedAIFunction : DelegatingAIFunction
                 : new ToolExecutionReport(EscalationExecutionStatus.Failed, failureText, null, ToolName: Name),
             ReportedBy, CancellationToken.None).ConfigureAwait(false);
 
-        return admissionPipeline.ApplyOutputPolicy(admission, Name, Unwrap(result));
+        return await admissionPipeline
+            .ApplyOutputPolicyAsync(admission, Name, Unwrap(result), CancellationToken.None)
+            .ConfigureAwait(false);
     }
 
     /// <summary>

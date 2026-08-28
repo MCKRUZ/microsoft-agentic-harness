@@ -17,7 +17,7 @@ namespace Application.AI.Common.Tests.Governance;
 /// <remarks>
 /// The redact case is the reason admission is not purely a pre-call decision: the verdict has to
 /// survive the tool call and be applied to its output. That second half lives on the chain
-/// (<see cref="IToolCallAdmissionPipeline.ApplyOutputPolicy"/>) rather than at each caller, so a caller
+/// (<see cref="IToolCallAdmissionPipeline.ApplyOutputPolicyAsync"/>) rather than at each caller, so a caller
 /// can neither hold the gate itself nor forget to consult it.
 /// </remarks>
 public sealed class GovernedAIFunctionClassificationTests

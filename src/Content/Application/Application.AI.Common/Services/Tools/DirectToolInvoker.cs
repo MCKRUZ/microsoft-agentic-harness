@@ -221,7 +221,7 @@ public sealed partial class DirectToolInvoker : IDirectToolInvoker
             .ConfigureAwait(false);
 
         sw.Stop();
-        return Shape(result, armed, admission, sw.Elapsed);
+        return await ShapeAsync(result, armed, admission, sw.Elapsed, cancellationToken).ConfigureAwait(false);
     }
 
     private const string ReportedBy = "direct-invocation";

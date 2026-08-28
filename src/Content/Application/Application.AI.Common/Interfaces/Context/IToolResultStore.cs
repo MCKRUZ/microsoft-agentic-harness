@@ -30,13 +30,28 @@ public interface IToolResultStore
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Retrieves the full content of a previously persisted result.
+    /// Retrieves the full content of a previously persisted result, enforced against the scope it was
+    /// stored under (#521).
     /// </summary>
     /// <param name="resultId">The unique identifier of the stored result.</param>
+    /// <param name="scopeId">
+    /// The caller's own isolation boundary — <see cref="Agent.IAgentExecutionContext.ToolResultScopeId"/>
+    /// in production. Must match the <c>sessionId</c> <see cref="StoreIfLargeAsync"/> was called with
+    /// when this result was stored, or retrieval is refused. Enforced <em>here</em>, in the store, not
+    /// left to each call site — the same rule <c>IConversationStore</c> applies to conversation
+    /// ownership, for the identical reason: a check a caller could forget is not a check.
+    /// </param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>The full content that was persisted to disk.</returns>
-    /// <exception cref="KeyNotFoundException">Thrown when <paramref name="resultId"/> is not found.</exception>
+    /// <exception cref="KeyNotFoundException">
+    /// Thrown when <paramref name="resultId"/> is not found <em>under <paramref name="scopeId"/></em> —
+    /// indistinguishable from "does not exist at all" on purpose. A result that exists under a
+    /// different scope must read exactly like one that was never stored; a distinct error for "exists,
+    /// but not yours" would tell an unauthorized caller that guessing worked, which is the same
+    /// information a Denied vs. NotFound split would leak on a conversation lookup.
+    /// </exception>
     Task<string> RetrieveFullContentAsync(
         string resultId,
+        string scopeId,
         CancellationToken cancellationToken = default);
 }

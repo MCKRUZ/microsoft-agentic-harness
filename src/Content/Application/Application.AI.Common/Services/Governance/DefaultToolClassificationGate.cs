@@ -124,7 +124,7 @@ public sealed class DefaultToolClassificationGate : IToolClassificationGate
     /// <inheritdoc />
     /// <remarks>
     /// #484: a <c>Redact</c> verdict must do strictly more than the unconditional sanitize every other
-    /// tool result already gets (<see cref="ToolCallAdmissionPipeline.ApplyOutputPolicy"/>) — otherwise
+    /// tool result already gets (<see cref="ToolCallAdmissionPipeline.ApplyOutputPolicyAsync"/>) — otherwise
     /// an operator-configured classification policy is a control with no distinct effect. Routes through
     /// <see cref="ToolResultText.SanitizeAndRedact(object?, ICompositeResponseSanitizer, IContentRedactionFilter, string)"/>
     /// rather than <see cref="ToolResultText.Sanitize(object?, ICompositeResponseSanitizer, string)"/>,

@@ -14,7 +14,7 @@ namespace Application.AI.Common.Tests.Governance;
 
 /// <summary>
 /// Tests for <see cref="ToolResultText.Sanitize(object?, ICompositeResponseSanitizer, string)"/> directly, across every shape a tool result can
-/// arrive in at a policy boundary — the two callers (<see cref="ToolCallAdmissionPipeline.ApplyOutputPolicy"/>,
+/// arrive in at a policy boundary — the two callers (<see cref="ToolCallAdmissionPipeline.ApplyOutputPolicyAsync"/>,
 /// <see cref="DefaultToolClassificationGate.RedactResult(string, object?)"/>) each get one routing test instead of
 /// re-proving every shape's behavior twice.
 /// </summary>

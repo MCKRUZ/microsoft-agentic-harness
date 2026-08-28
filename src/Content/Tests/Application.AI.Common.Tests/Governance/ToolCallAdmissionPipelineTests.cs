@@ -1,9 +1,11 @@
 using System.Text.RegularExpressions;
+using Application.AI.Common.Interfaces.Context;
 using Application.AI.Common.Interfaces.Escalation;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Telemetry;
 using Application.AI.Common.Services.Governance;
 using Domain.AI.Changes;
+using Domain.AI.Context;
 using Domain.AI.Escalation;
 using Domain.AI.Governance;
 using Microsoft.Extensions.AI;
@@ -261,11 +263,12 @@ public sealed class ToolCallAdmissionPipelineTests
 
         admission.IsAllowed.Should().BeTrue("a redact verdict lets the call run — it scrubs the answer");
         admission.RedactsOutput.Should().BeTrue();
-        pipeline.ApplyOutputPolicy(admission, Tool, "secret").Should().Be("[redacted]");
+        (await pipeline.ApplyOutputPolicyAsync(admission, Tool, "secret", CancellationToken.None))
+            .Should().Be("[redacted]");
     }
 
     [Fact]
-    public void ApplyOutputPolicy_PlainAllow_SanitizesTheResultWithoutCallingTheClassificationGate()
+    public async Task ApplyOutputPolicy_PlainAllow_SanitizesTheResultWithoutCallingTheClassificationGate()
     {
         // #469: a plain allow never consults the classification gate — the sanitizer is the only
         // guarantee a plain-allow result gets. A transforming sanitizer (not the permissive no-op) is
@@ -275,7 +278,7 @@ public sealed class ToolCallAdmissionPipelineTests
             classificationGate: gate.Object,
             sanitizer: AdmissionHarness.SubstitutingSanitizer("secret", "[SCRUBBED]"));
 
-        pipeline.ApplyOutputPolicy(ToolCallAdmission.Allow(), Tool, "a secret value")
+        (await pipeline.ApplyOutputPolicyAsync(ToolCallAdmission.Allow(), Tool, "a secret value", CancellationToken.None))
             .Should().Be("a [SCRUBBED] value");
 
         gate.Verify(g => g.RedactResult(It.IsAny<string>(), It.IsAny<object?>()), Times.Never);
@@ -283,43 +286,44 @@ public sealed class ToolCallAdmissionPipelineTests
 
     // Shape-preservation across every result type (string, JsonElement, TextContent, AIContent[],
     // structured) is covered exhaustively by ToolResultTextTests — this class only needs to prove
-    // ApplyOutputPolicy routes a plain allow to the sanitizer rather than the classification gate.
+    // ApplyOutputPolicyAsync routes a plain allow to the sanitizer rather than the classification gate.
 
     [Fact]
-    public void TryApplyTextOutputPolicy_PlainAllow_SanitizesTheResult()
+    public async Task TryApplyTextOutputPolicy_PlainAllow_SanitizesTheResult()
     {
         // #479: before this fix, the plain-allow branch was a pure passthrough — the string-shaped
-        // sibling of ApplyOutputPolicy did NOT carry the same unconditional-sanitize guarantee #469 gave
-        // its object-shaped twin. Both current callers papered over the gap with their own duplicate
-        // scrub; this proves the guarantee now lives on the interface method itself.
+        // sibling of ApplyOutputPolicyAsync did NOT carry the same unconditional-sanitize guarantee
+        // #469 gave its object-shaped twin. Both current callers papered over the gap with their own
+        // duplicate scrub; this proves the guarantee now lives on the interface method itself.
         var gate = new Mock<IToolClassificationGate>(MockBehavior.Strict);
         var pipeline = AdmissionHarness.Pipeline(
             classificationGate: gate.Object,
             sanitizer: AdmissionHarness.SubstitutingSanitizer("secret", "[SCRUBBED]"));
 
-        var ok = pipeline.TryApplyTextOutputPolicy(ToolCallAdmission.Allow(), Tool, "a secret value", out var result, out _);
+        var policy = await pipeline.TryApplyTextOutputPolicyAsync(
+            ToolCallAdmission.Allow(), Tool, "a secret value", CancellationToken.None);
 
-        ok.Should().BeTrue();
-        result.Should().Be("a [SCRUBBED] value");
+        policy.Success.Should().BeTrue();
+        policy.Result.Should().Be("a [SCRUBBED] value");
         gate.Verify(g => g.RedactResult(It.IsAny<string>(), It.IsAny<object?>()), Times.Never);
     }
 
     [Fact]
-    public void TryApplyTextOutputPolicy_RedactVerdict_RoutesThroughTheClassificationGate()
+    public async Task TryApplyTextOutputPolicy_RedactVerdict_RoutesThroughTheClassificationGate()
     {
         var gate = new Mock<IToolClassificationGate>();
         gate.Setup(g => g.RedactResult(Tool, "raw text")).Returns("[redacted]");
         var pipeline = AdmissionHarness.Pipeline(classificationGate: gate.Object);
 
-        var ok = pipeline.TryApplyTextOutputPolicy(
-            ToolCallAdmission.AllowWithOutputRedaction(), Tool, "raw text", out var result, out _);
+        var policy = await pipeline.TryApplyTextOutputPolicyAsync(
+            ToolCallAdmission.AllowWithOutputRedaction(), Tool, "raw text", CancellationToken.None);
 
-        ok.Should().BeTrue();
-        result.Should().Be("[redacted]");
+        policy.Success.Should().BeTrue();
+        policy.Result.Should().Be("[redacted]");
     }
 
     [Fact]
-    public void TryApplyTextOutputPolicy_RedactVerdict_ClassificationGateReturnsNonString_FailsClosed()
+    public async Task TryApplyTextOutputPolicy_RedactVerdict_ClassificationGateReturnsNonString_FailsClosed()
     {
         // Preserved from before #479: a consumer-supplied IToolClassificationGate that violates the
         // "redact always answers with a string" contract must withhold, not fall back to the original —
@@ -333,11 +337,11 @@ public sealed class ToolCallAdmissionPipelineTests
         gate.Setup(g => g.RedactResult(Tool, "raw text")).Returns((string?)null);
         var pipeline = AdmissionHarness.Pipeline(classificationGate: gate.Object);
 
-        var ok = pipeline.TryApplyTextOutputPolicy(
-            ToolCallAdmission.AllowWithOutputRedaction(), Tool, "raw text", out var result, out _);
+        var policy = await pipeline.TryApplyTextOutputPolicyAsync(
+            ToolCallAdmission.AllowWithOutputRedaction(), Tool, "raw text", CancellationToken.None);
 
-        ok.Should().BeFalse();
-        result.Should().BeNull();
+        policy.Success.Should().BeFalse();
+        policy.Result.Should().BeNull();
     }
 
     // ===== #532: tool output is bounded, not just sanitized =====
@@ -354,72 +358,125 @@ public sealed class ToolCallAdmissionPipelineTests
     // with PreCutForScrub before this call and ScrubAndBound/FinalCut after it.
 
     [Fact]
-    public void ApplyOutputPolicy_OversizedText_IsBoundedAndMarked()
+    public async Task ApplyOutputPolicy_OversizedText_IsBoundedAndMarked()
     {
-        var pipeline = AdmissionHarness.Pipeline(outputCeiling: 100);
+        // #521: ceiling raised from 100 to 200 — the id-carrying marker
+        // ("...full output available via tool_result_fetch, id={32-char guid}]") is itself ~107 chars,
+        // so a 100-char ceiling would exercise BoundedText.Cap's own documented "marker doesn't fit,
+        // drop it" branch instead of the truncation-with-marker behavior this test exists to prove.
+        var pipeline = AdmissionHarness.Pipeline(
+            outputCeiling: 200, resultStore: AdmissionHarness.PersistedResultStore());
 
-        var result = pipeline.ApplyOutputPolicy(ToolCallAdmission.Allow(), Tool, new string('x', 5000));
+        var result = await pipeline.ApplyOutputPolicyAsync(
+            ToolCallAdmission.Allow(), Tool, new string('x', 5000), CancellationToken.None);
 
-        result.Should().BeOfType<string>().Which.Length.Should().BeLessThanOrEqualTo(100,
+        result.Should().BeOfType<string>().Which.Length.Should().BeLessThanOrEqualTo(200,
             "the ceiling is the promise a caller sizing the context window relies on — the marker "
             + "counts against it rather than overshooting it");
-        result.As<string>().Should().EndWith(ToolCallAdmissionPipeline.OutputTruncationMarker,
+        result.As<string>().Should().Contain("tool_result_fetch",
+            "a spilled result must tell the model how to retrieve the rest, not just that it was cut");
+        result.As<string>().Should().EndWith("]",
             "a silent cut reads to the model as the tool having returned exactly this much");
     }
 
     [Fact]
-    public void TryApplyTextOutputPolicy_OversizedText_IsBoundedAndMarked()
+    public async Task ApplyOutputPolicy_OversizedText_SpilledCopyIsRedactedEvenOnThePlainAllowPath()
     {
-        var pipeline = AdmissionHarness.Pipeline(outputCeiling: 100);
+        // #521 security finding: on a plain-allow call (RedactsOutput == false), the MODEL-facing text
+        // only goes through the injection sanitizer — IContentRedactionFilter only runs when the
+        // classification gate demanded it. But persisting to disk is a stronger exposure than showing
+        // the model its own tool's output, so the AT-REST spilled copy must be redacted regardless.
+        var redactionFilter = new Mock<IContentRedactionFilter>();
+        redactionFilter
+            .Setup(f => f.Redact(It.IsAny<string>(), It.Is<IReadOnlyList<Domain.AI.Telemetry.Redaction.RedactionCategory>>(c => c.Count > 0)))
+            .Returns("REDACTED-AT-REST");
 
-        var ok = pipeline.TryApplyTextOutputPolicy(
-            ToolCallAdmission.Allow(), Tool, new string('x', 5000), out var result, out _);
+        string? spilledText = null;
+        var resultStore = new Mock<IToolResultStore>();
+        resultStore
+            .Setup(s => s.StoreIfLargeAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Callback<string, string, string?, string, CancellationToken>((_, _, _, text, _) => spilledText = text)
+            .ReturnsAsync((string _, string toolName, string? operation, string fullOutput, CancellationToken _) =>
+                new ToolResultReference
+                {
+                    ResultId = Guid.NewGuid().ToString("N"),
+                    ToolName = toolName,
+                    Operation = operation,
+                    PreviewContent = fullOutput,
+                    FullContentPath = "/fake/persisted.json",
+                    SizeChars = fullOutput.Length,
+                    Timestamp = DateTimeOffset.UtcNow
+                });
 
-        ok.Should().BeTrue("bounding is not a policy denial — the result is admitted, just cut");
-        result!.Length.Should().BeLessThanOrEqualTo(100);
-        result.Should().EndWith(ToolCallAdmissionPipeline.OutputTruncationMarker);
+        var pipeline = AdmissionHarness.Pipeline(
+            redactionFilter: redactionFilter.Object, outputCeiling: 200, resultStore: resultStore.Object);
+
+        var result = await pipeline.ApplyOutputPolicyAsync(
+            ToolCallAdmission.Allow(), Tool, new string('x', 5000), CancellationToken.None);
+
+        spilledText.Should().Be("REDACTED-AT-REST",
+            "the spilled copy must be redacted even when the model-facing copy's own redaction decision was 'no'");
+        result.As<string>().Should().NotContain("REDACTED-AT-REST",
+            "redaction applies only to the at-rest copy — the model-facing text is unaffected");
     }
 
     [Fact]
-    public void TryApplyTextOutputPolicy_PreCutDropsContentThatSanitizingThenShrinksBelowTheCeiling_StillMarksTheResult()
+    public async Task TryApplyTextOutputPolicy_OversizedText_IsBoundedAndMarked()
+    {
+        var pipeline = AdmissionHarness.Pipeline(
+            outputCeiling: 200, resultStore: AdmissionHarness.PersistedResultStore());
+
+        var policy = await pipeline.TryApplyTextOutputPolicyAsync(
+            ToolCallAdmission.Allow(), Tool, new string('x', 5000), CancellationToken.None);
+
+        policy.Success.Should().BeTrue("bounding is not a policy denial — the result is admitted, just cut");
+        policy.Result!.Length.Should().BeLessThanOrEqualTo(200);
+        policy.Result.Should().Contain("tool_result_fetch");
+        policy.Result.Should().EndWith("]");
+    }
+
+    [Fact]
+    public async Task TryApplyTextOutputPolicy_PreCutDropsContentThatSanitizingThenShrinksBelowTheCeiling_StillMarksTheResult()
     {
         // Found by run-gates' correctness gate: the sibling of ApplyOutputPolicy_...StillMarksTheResult
         // below, on the OTHER caller of the same new pre-cut. This method DOES report a drop through
-        // wasTruncated -- but ToolUseStepExecutor.HandleSuccessAsync (the plan path) discards that
-        // out-parameter with `out _` and depends entirely on a marker embedded in the returned text, a
-        // premise that broke the moment this pre-cut could drop content silently.
+        // WasTruncated -- but ToolUseStepExecutor.HandleSuccessAsync (the plan path) discards that flag
+        // and depends entirely on a marker embedded in the returned text, a premise that broke the
+        // moment this pre-cut could drop content silently.
         var pipeline = AdmissionHarness.Pipeline(
             outputCeiling: 10_000,
             sanitizer: AdmissionHarness.SubstitutingSanitizer(new string('z', 1), string.Empty));
 
-        var ok = pipeline.TryApplyTextOutputPolicy(
-            ToolCallAdmission.Allow(), Tool, "HEADER" + new string('z', 50_000), out var result, out var wasTruncated);
+        var policy = await pipeline.TryApplyTextOutputPolicyAsync(
+            ToolCallAdmission.Allow(), Tool, "HEADER" + new string('z', 50_000), CancellationToken.None);
 
-        ok.Should().BeTrue();
-        wasTruncated.Should().BeTrue("the pre-cut genuinely dropped content, regardless of whether a caller reads this flag");
+        policy.Success.Should().BeTrue();
+        policy.WasTruncated.Should().BeTrue("the pre-cut genuinely dropped content, regardless of whether a caller reads this flag");
         // The property under test: a caller that ONLY reads the text (as ToolUseStepExecutor does) must
         // still be able to tell this was cut, because the final BoundedText.Cap never fires here --
         // sanitizing shrank the pre-cut's survivor to "HEADER" + marker, already under the 10,000 ceiling.
-        result.Should().Contain(ToolCallAdmissionPipeline.OutputTruncationMarker,
-            "a reader with no access to wasTruncated (ToolUseStepExecutor.HandleSuccessAsync discards it) "
+        policy.Result.Should().Contain(ToolCallAdmissionPipeline.OutputTruncationMarker,
+            "a reader with no access to WasTruncated (ToolUseStepExecutor.HandleSuccessAsync discards it) "
             + "must not conclude the result is complete just because the final cut never fired");
     }
 
     [Fact]
-    public void ApplyOutputPolicy_PreCutDropsContentThatSanitizingThenShrinksBelowTheCeiling_StillMarksTheResult()
+    public async Task ApplyOutputPolicy_PreCutDropsContentThatSanitizingThenShrinksBelowTheCeiling_StillMarksTheResult()
     {
-        // #487 security-review finding on this PR: unlike TryApplyTextOutputPolicy, this method has no
-        // out-parameter to report a drop through, so a pre-cut drop must leave its OWN marker in the
-        // payload. If it doesn't, and sanitizing then shrinks the survivor back under the ceiling, the
-        // final Bound call never fires to leave a marker of its own -- the model reads a silently
-        // truncated prefix as the complete result. Reproduced with a sanitizer that collapses a large
-        // run the way a real one collapses a base64 blob, exactly the scenario security review named.
+        // #487 security-review finding on this PR: unlike TryApplyTextOutputPolicyAsync, this method
+        // has no truncation signal of its own to report a drop through, so a pre-cut drop must leave
+        // its OWN marker in the payload. If it doesn't, and sanitizing then shrinks the survivor back
+        // under the ceiling, the final Bound call never fires to leave a marker of its own -- the model
+        // reads a silently truncated prefix as the complete result. Reproduced with a sanitizer that
+        // collapses a large run the way a real one collapses a base64 blob, exactly the scenario
+        // security review named.
         var pipeline = AdmissionHarness.Pipeline(
             outputCeiling: 10_000,
             sanitizer: AdmissionHarness.SubstitutingSanitizer(new string('z', 1), string.Empty));
 
-        var result = pipeline.ApplyOutputPolicy(
-            ToolCallAdmission.Allow(), Tool, "HEADER" + new string('z', 50_000));
+        var result = await pipeline.ApplyOutputPolicyAsync(
+            ToolCallAdmission.Allow(), Tool, "HEADER" + new string('z', 50_000), CancellationToken.None);
 
         // The pre-cut (ceiling + 8 KiB margin) fires on the 50,000-character blob long before
         // sanitizing runs; sanitizing then deletes every 'z', leaving "HEADER" plus whatever the
@@ -432,18 +489,18 @@ public sealed class ToolCallAdmissionPipelineTests
     }
 
     [Fact]
-    public void ApplyOutputPolicy_TextWithinTheCeiling_IsReturnedWhole()
+    public async Task ApplyOutputPolicy_TextWithinTheCeiling_IsReturnedWhole()
     {
         // Control. Without this, a bound that cut EVERYTHING would satisfy the two tests above while
         // destroying every tool result in the harness.
         var pipeline = AdmissionHarness.Pipeline(outputCeiling: 100);
 
-        pipeline.ApplyOutputPolicy(ToolCallAdmission.Allow(), Tool, "a short result")
+        (await pipeline.ApplyOutputPolicyAsync(ToolCallAdmission.Allow(), Tool, "a short result", CancellationToken.None))
             .Should().Be("a short result", "text under the ceiling must not be touched or marked");
     }
 
     [Fact]
-    public void ApplyOutputPolicy_MultipleTextBlocks_BoundsTheTOTALNotEachBlock()
+    public async Task ApplyOutputPolicy_MultipleTextBlocks_BoundsTheTOTALNotEachBlock()
     {
         // The one that is easy to get wrong. Capping each block at N yields N x blockCount, which
         // bounds nothing on a result with many blocks — exactly the shape an MCP tool returns.
@@ -456,7 +513,7 @@ public sealed class ToolCallAdmissionPipelineTests
             new TextContent(new string('c', 500))
         };
 
-        var result = pipeline.ApplyOutputPolicy(ToolCallAdmission.Allow(), Tool, blocks);
+        var result = await pipeline.ApplyOutputPolicyAsync(ToolCallAdmission.Allow(), Tool, blocks, CancellationToken.None);
 
         result.Should().BeOfType<AIContent[]>()
             .Which.OfType<TextContent>().Sum(b => b.Text.Length)
@@ -465,19 +522,48 @@ public sealed class ToolCallAdmissionPipelineTests
     }
 
     [Fact]
-    public void TryApplyTextOutputPolicy_PlainAllow_NullContent_PassesThroughWithoutSanitizing()
+    public async Task ApplyOutputPolicy_MultiBlockOverflowLandsInANarrowBudget_StillCarriesATruncationMarker()
+    {
+        // #521 gap found by code review: BudgetedCut's multi-block walk uses one shared, shrinking
+        // per-block budget. Whichever block first overflows is cut with whatever budget remains AT
+        // THAT POINT, which can be smaller than the id-carrying marker (~90+ chars, carries a 32-char
+        // guid) while still larger than the plain OutputTruncationMarker (~25 chars) — BoundedText.Cap
+        // silently DROPS a marker that doesn't fit rather than shrinking it, so re-cutting with the
+        // long marker can lose the marker entirely on a block where the plain marker would have fit.
+        var pipeline = AdmissionHarness.Pipeline(
+            outputCeiling: 600, resultStore: AdmissionHarness.PersistedResultStore());
+
+        var blocks = new AIContent[]
+        {
+            // Leaves ~50 chars of per-block budget when block 2 overflows — enough for the ~25-char
+            // plain marker, not enough for the ~90+-char id marker.
+            new TextContent(new string('a', 550)),
+            new TextContent(new string('b', 500)),
+        };
+
+        var result = await pipeline.ApplyOutputPolicyAsync(
+            ToolCallAdmission.Allow(), Tool, blocks, CancellationToken.None);
+
+        var text = string.Join("\n", ((AIContent[])result!).OfType<TextContent>().Select(b => b.Text));
+        text.Should().Contain("tool output truncated",
+            "the model must always get SOME truncation signal — losing room for the id marker must " +
+            "never mean losing every marker");
+    }
+
+    [Fact]
+    public async Task TryApplyTextOutputPolicy_PlainAllow_NullContent_PassesThroughWithoutSanitizing()
     {
         var sanitizer = new Mock<ICompositeResponseSanitizer>(MockBehavior.Strict);
         var pipeline = AdmissionHarness.Pipeline(sanitizer: sanitizer.Object);
 
-        var ok = pipeline.TryApplyTextOutputPolicy(ToolCallAdmission.Allow(), Tool, null, out var result, out _);
+        var policy = await pipeline.TryApplyTextOutputPolicyAsync(ToolCallAdmission.Allow(), Tool, null, CancellationToken.None);
 
-        ok.Should().BeTrue("there is nothing to sanitize in an absent result");
-        result.Should().BeNull();
+        policy.Success.Should().BeTrue("there is nothing to sanitize in an absent result");
+        policy.Result.Should().BeNull();
     }
 
     [Fact]
-    public void TryApplyTextOutputPolicy_RedactVerdict_NullContent_FailsClosed()
+    public async Task TryApplyTextOutputPolicy_RedactVerdict_NullContent_FailsClosed()
     {
         // Regression: an early null-content short-circuit ahead of the RedactsOutput branch would
         // silently answer true for a redact-required call with no content yet — turning a denial into
@@ -489,11 +575,11 @@ public sealed class ToolCallAdmissionPipelineTests
         gate.Setup(g => g.RedactResult(Tool, (string?)null)).Returns((string?)null);
         var pipeline = AdmissionHarness.Pipeline(classificationGate: gate.Object);
 
-        var ok = pipeline.TryApplyTextOutputPolicy(
-            ToolCallAdmission.AllowWithOutputRedaction(), Tool, null, out var result, out _);
+        var policy = await pipeline.TryApplyTextOutputPolicyAsync(
+            ToolCallAdmission.AllowWithOutputRedaction(), Tool, null, CancellationToken.None);
 
-        ok.Should().BeFalse("a redact-required call must never report success just because there was nothing to redact yet");
-        result.Should().BeNull();
+        policy.Success.Should().BeFalse("a redact-required call must never report success just because there was nothing to redact yet");
+        policy.Result.Should().BeNull();
     }
 
     [Fact]
@@ -649,7 +735,8 @@ public sealed class ToolCallAdmissionPipelineTests
             new Mock<IApprovalExecutionReporter>().Object,
             AdmissionHarness.PermissiveSanitizer(), AdmissionHarness.PermissiveRedactionFilter(),
             AdmissionHarness.Config(),
-            NullLogger<ToolCallAdmissionPipeline>.Instance);
+            NullLogger<ToolCallAdmissionPipeline>.Instance,
+            AdmissionHarness.StubExecutionContext(), AdmissionHarness.StubResultStore());
     }
 
     // ===== ReportExecutionAsync: #325 execution reporting dispatch =====
@@ -663,7 +750,8 @@ public sealed class ToolCallAdmissionPipelineTests
         Mock.Of<ICallOnceGate>(), AdmissionHarness.TraceRecorder(), reporter.Object,
         sanitizer ?? AdmissionHarness.PermissiveSanitizer(), redactionFilter ?? AdmissionHarness.PermissiveRedactionFilter(),
         AdmissionHarness.Config(),
-            NullLogger<ToolCallAdmissionPipeline>.Instance);
+            NullLogger<ToolCallAdmissionPipeline>.Instance,
+            AdmissionHarness.StubExecutionContext(), AdmissionHarness.StubResultStore());
 
     private static ApprovedCall Call() =>
         new(Guid.NewGuid(), new ApprovalFailureKey("conv-1", "agent-1", Tool));

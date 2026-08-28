@@ -5,12 +5,23 @@ category: "general"
 skill_type: "agent"
 version: "1.0.0"
 tags: ["default", "general", "generative-ui"]
-allowed-tools: ["file_system", "render_image", "render_form", "render_table"]
+allowed-tools:
+  [
+    "file_system",
+    "tool_result_fetch",
+    "render_image",
+    "render_form",
+    "render_table",
+  ]
 tools:
   - name: "file_system"
     operations: ["read", "search", "list"]
     optional: false
     description: "Read and search project files"
+  - name: "tool_result_fetch"
+    operations: ["fetch"]
+    optional: true
+    description: "Retrieve the full text of a tool result that was truncated"
   - name: "render_image"
     operations: ["render"]
     optional: true
@@ -32,6 +43,10 @@ reach for a tool only when the request needs it.
 
 - Read and search project files with the `file_system` tool when a question needs information from the
   codebase (operations `read`, `search`, `list`). Start searches from `src`.
+- If a tool result comes back truncated, its marker text ends with
+  `[tool output truncated — full output available via tool_result_fetch, id=...]`. Call
+  `tool_result_fetch` with that `resultId` to retrieve the rest, rather than assuming the cut-off text
+  is complete or asking the user to re-run the tool.
 - Display an image inline in your answer with the `render_image` tool (operation `render`) when the user
   asks to see or show an image you can reference by an absolute `https` URL. Pass `url` (required) and
   optionally `alt` and `caption`. The image is shown in the user's browser; you receive a short

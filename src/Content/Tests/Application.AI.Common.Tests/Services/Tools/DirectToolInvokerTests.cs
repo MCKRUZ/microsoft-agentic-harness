@@ -890,6 +890,11 @@ public sealed class DirectToolInvokerTests
         services.AddSingleton<IOptionsMonitor<Domain.Common.Config.AppConfig>>(
             new StaticOptionsMonitor<Domain.Common.Config.AppConfig>(pipelineConfig));
 
+        // #521: the chain now constructor-injects IToolResultStore to spill truncated output — same
+        // "an absent registration is a composition that cannot exist in production" reasoning as every
+        // gate above. AgentExecutionContext (registered scoped above) supplies a real ToolResultScopeId.
+        services.AddSingleton(AdmissionHarness.StubResultStore());
+
         // The real chain, not a mock of it, built the same way the production root builds it. This
         // suite's whole subject is what the Execution API does before, during and after a tool call,
         // and that is now the chain's behaviour plus this type's response shaping — mocking the chain
@@ -1043,7 +1048,7 @@ public sealed class DirectToolInvokerTests
         public object? RedactResult(string toolName, object? result) => RedactionResult ?? Redacted;
 
         /// <summary>
-        /// The string-typed overload <see cref="Application.AI.Common.Services.Governance.ToolCallAdmissionPipeline.TryApplyTextOutputPolicy"/>
+        /// The string-typed overload <see cref="Application.AI.Common.Services.Governance.ToolCallAdmissionPipeline.TryApplyTextOutputPolicyAsync"/>
         /// actually calls. <see cref="RedactionResult"/> being set to anything other than a string
         /// (e.g. a boxed <see langword="int"/>) simulates a consumer gate breaking the
         /// non-null-in/non-null-out contract <see cref="IToolClassificationGate.RedactResult(string, string?)"/>

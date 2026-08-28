@@ -73,4 +73,38 @@ public sealed class BoundedTextTests
         text.Should().BeEmpty();
         truncated.Should().BeFalse();
     }
+
+    // ===== alwaysEmbedMarker (#521) =====
+
+    [Fact]
+    public void Cap_AlwaysEmbedMarker_TextUnderCeilingButFitsWithMarker_AppendsMarkerWithoutCutting()
+    {
+        var (text, truncated) = BoundedText.Cap("hello", 20, Marker, alwaysEmbedMarker: true);
+
+        text.Should().Be("hello" + Marker,
+            "the default (non-embedding) contract would drop the marker entirely here — this is the whole point of the flag");
+        truncated.Should().BeFalse("nothing in text itself was cut, only appended");
+    }
+
+    [Fact]
+    public void Cap_AlwaysEmbedMarker_TextPlusMarkerExceedsCeiling_CutsTextToMakeRoom()
+    {
+        var input = new string('x', 15);
+        var (text, truncated) = BoundedText.Cap(input, 20, Marker, alwaysEmbedMarker: true);
+
+        text.Length.Should().Be(20);
+        text.Should().EndWith(Marker);
+        truncated.Should().BeTrue("text itself had to be cut to make room for the marker");
+    }
+
+    [Fact]
+    public void Cap_AlwaysEmbedMarkerFalse_TextUnderCeiling_MarkerNeverEmbedded()
+    {
+        // Pins the default's unchanged behavior now that Cap has a second parameter — the flag must
+        // be opt-in, not a silent change to every existing call site.
+        var (text, truncated) = BoundedText.Cap("hello", 20, Marker);
+
+        text.Should().Be("hello");
+        truncated.Should().BeFalse();
+    }
 }

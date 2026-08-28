@@ -1,11 +1,14 @@
 using System.Collections.ObjectModel;
 using System.Text.Json;
+using Application.AI.Common.Interfaces.Agent;
+using Application.AI.Common.Interfaces.Context;
 using Application.AI.Common.Interfaces.Escalation;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Telemetry;
 using Application.AI.Common.Services.Tools;
 using Domain.AI.Escalation;
 using Domain.AI.Governance;
+using Domain.AI.Telemetry.Redaction;
 using Domain.Common.Config;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -61,6 +64,8 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
     private readonly IContentRedactionFilter _redactionFilter;
     private readonly IOptionsMonitor<AppConfig> _options;
     private readonly ILogger<ToolCallAdmissionPipeline> _logger;
+    private readonly IAgentExecutionContext _executionContext;
+    private readonly IToolResultStore _resultStore;
 
     /// <summary>Initializes a new instance of the <see cref="ToolCallAdmissionPipeline"/> class.</summary>
     /// <param name="authorizationGate">
@@ -98,11 +103,20 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
     /// raw failure text for reporting — see <see cref="ReportExecutionAsync"/> and
     /// <see cref="ReportedFailureText.PrepareForReporting"/>. On its own, also the unconditional
     /// injection-scrubber every plain-allow tool result is run through in
-    /// <see cref="ApplyOutputPolicy"/> — see #469; that path never reaches
+    /// <see cref="ApplyOutputPolicyAsync"/> — see #469; that path never reaches
     /// <paramref name="redactionFilter"/> at all.
     /// </param>
     /// <param name="redactionFilter">Scrubs known secret patterns from a failed call's reported text.</param>
     /// <param name="logger">Records a redaction that could not be applied.</param>
+    /// <param name="executionContext">
+    /// Supplies <see cref="IAgentExecutionContext.ToolResultScopeId"/> — the isolation boundary a
+    /// truncated result is spilled under (#521). Scoped in DI, same lifetime as this pipeline, so
+    /// plain constructor injection is correct here; no ambient lookup needed.
+    /// </param>
+    /// <param name="resultStore">
+    /// Where a truncated result's full, already-sanitized/redacted text is spilled so a later
+    /// <c>tool_result_fetch</c> call can retrieve it (#521).
+    /// </param>
     public ToolCallAdmissionPipeline(
         IAgentToolAuthorizationGate authorizationGate,
         IToolInvocationGovernor governor,
@@ -115,7 +129,9 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
         ICompositeResponseSanitizer sanitizer,
         IContentRedactionFilter redactionFilter,
         IOptionsMonitor<AppConfig> options,
-        ILogger<ToolCallAdmissionPipeline> logger)
+        ILogger<ToolCallAdmissionPipeline> logger,
+        IAgentExecutionContext executionContext,
+        IToolResultStore resultStore)
     {
         ArgumentNullException.ThrowIfNull(options);
         _options = options;
@@ -130,6 +146,8 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
         ArgumentNullException.ThrowIfNull(sanitizer);
         ArgumentNullException.ThrowIfNull(redactionFilter);
         ArgumentNullException.ThrowIfNull(logger);
+        ArgumentNullException.ThrowIfNull(executionContext);
+        ArgumentNullException.ThrowIfNull(resultStore);
 
         _authorizationGate = authorizationGate;
         _governor = governor;
@@ -142,6 +160,8 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
         _sanitizer = sanitizer;
         _redactionFilter = redactionFilter;
         _logger = logger;
+        _executionContext = executionContext;
+        _resultStore = resultStore;
     }
 
     /// <inheritdoc />
@@ -265,6 +285,17 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
     public const string OutputTruncationMarker = "\n[tool output truncated]";
 
     /// <summary>
+    /// Format string for the marker embedded when a truncated result was spilled and can be retrieved
+    /// via <c>tool_result_fetch</c> (#521) — <c>{0}</c> is the spilled result's id. The single source
+    /// of truth for this text: <c>ToolResultFetchTool.Description</c> (Infrastructure.AI, which may
+    /// reference Application.AI.Common) formats the same string with a placeholder id rather than
+    /// hand-copying the phrase, so the tool's own self-description can never silently drift from the
+    /// marker text it actually needs to recognize (a reuse finding from this package's `/simplify` pass).
+    /// </summary>
+    public const string SpilledResultMarkerFormat =
+        "\n[tool output truncated — full output available via tool_result_fetch, id={0}]";
+
+    /// <summary>
     /// How much beyond <see cref="OutputCeiling"/> is kept while sanitizing and redacting, so a secret
     /// or an injection pattern straddling the ceiling stays inside the scanned region rather than being
     /// sliced in half — removed again by the final cut. See
@@ -303,9 +334,11 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
         _options.CurrentValue.AI.ContextManagement.ToolResultStorage.PerResultCharLimit;
 
     /// <inheritdoc />
-    public object? ApplyOutputPolicy(ToolCallAdmission admission, string toolName, object? result)
+    public async ValueTask<object?> ApplyOutputPolicyAsync(
+        ToolCallAdmission admission, string toolName, object? result, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(admission);
+        cancellationToken.ThrowIfCancellationRequested();
 
         // #487: cut to a scan-cost-bounded region BEFORE sanitizing or redacting — the opposite order
         // from the final cut below, and safe only because of the overlap margin: see PreCutForScan's
@@ -313,9 +346,13 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
         // is also what protects the agent-turn path (GovernedAIFunction), which used to have no bound
         // on scan cost at all.
         //
-        // A real marker is passed, unlike TryApplyTextOutputPolicy's use of the same primitive: this
-        // method has no out-parameter to report a drop through — see PreCutForScan's own marker doc,
-        // and #487's security-review finding on this PR that this line closes.
+        // A real marker is passed, unlike TryApplyTextOutputPolicyAsync's use of the same primitive:
+        // this method has no truncation signal from the pre-cut alone — see PreCutForScan's own marker
+        // doc, and #487's security-review finding on this PR that this line closes. #521's spill below
+        // therefore only fires on the FINAL cut's own drop, not the pre-cut's — a pre-cut-only drop
+        // still leaves its own embedded marker (unchanged, pre-existing behavior) but is not spilled;
+        // narrower than TryApplyTextOutputPolicyAsync's coverage, and stated here rather than left
+        // implicit, matching this repo's own "no silent caps" convention.
         //
         // Ceiling captured once, not re-read from _options.CurrentValue at the pre-cut and again at the
         // final cut: a hot reload between the two reads would otherwise let them disagree about what
@@ -333,45 +370,65 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
         // different, wider, scan-cost-only bound, not a substitute for this one. It also mirrors
         // ReportExecutionAsync, which has always sanitized, redacted, and THEN bounded tool failure
         // text at this same pipeline (#460); success output simply never got the third step.
-        return ToolResultText.Bound(treated, ceiling, OutputTruncationMarker);
+        var (bounded, dropped) = ToolResultText.Bound(treated, ceiling, OutputTruncationMarker);
+        if (!dropped)
+            return bounded;
+
+        // #521: treated (not preCut) is spilled — sanitized/redacted, but not yet cut to ceiling,
+        // preserving the existing "redacted before it ever touches disk" property. The id-carrying
+        // marker is longer than OutputTruncationMarker, so it is never swapped into the
+        // already-ceiling-respecting `bounded` string after the fact — that would silently overshoot
+        // the ceiling by the length difference between the two markers (caught by
+        // ApplyOutputPolicy_OversizedText_IsBoundedAndMarked). Re-cutting treated against the real
+        // marker instead makes ToolResultText.Bound reserve room for it directly; dropped==true here
+        // guarantees treated's TOTAL length is still over ceiling, so the re-cut always drops
+        // something — but for a multi-block AIContent[] result, that guarantee is total-length only.
+        var marker = await SpillAndBuildMarkerAsync(toolName, ToolResultText.ExtractText(treated)).ConfigureAwait(false);
+        var (reboundedWithId, _) = ToolResultText.Bound(treated, ceiling, marker);
+
+        // A code-review found this residual gap: ToolResultText.Bound/BudgetedCut walks a multi-block
+        // result with a single shared per-block budget, and cuts whichever block first exceeds it.
+        // BoundedText.Cap's own documented contract silently DROPS a marker (not overshoots) whenever
+        // that block's local remaining budget is smaller than the marker's own length — every block
+        // after the cut then runs with a zero budget and is silently emptied too, also markerless. The
+        // short OutputTruncationMarker (~25 chars) made this window narrow; the id-carrying marker
+        // (~107 chars, carrying a GUID) widens it roughly 4x, and #539's own multi-block test
+        // (ApplyOutputPolicy_MultipleTextBlocks_BoundsTheTOTALNotEachBlock) proves multi-block results
+        // are a first-class shape this method handles, not a contrived one. Rather than reworking
+        // BudgetedCut's per-block budget algorithm to guarantee room wherever a cut could land, fall
+        // back to the already-correct, already-computed `bounded` (plain marker) whenever the id
+        // marker didn't actually survive the re-cut — the model always gets an honest truncation
+        // signal, even on the rarer path where this call can't fit a retrieval id in the space left.
+        var idMarkerLanded = ToolResultText.ExtractText(reboundedWithId).Contains(marker, StringComparison.Ordinal);
+        return idMarkerLanded ? reboundedWithId : bounded;
     }
 
     /// <inheritdoc />
-    public bool TryApplyTextOutputPolicy(
+    public async ValueTask<TextOutputPolicyResult> TryApplyTextOutputPolicyAsync(
         ToolCallAdmission admission,
         string toolName,
         string? content,
-        out string? result,
-        out bool wasTruncated)
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(admission);
+        cancellationToken.ThrowIfCancellationRequested();
 
-        // Every early return below leaves nothing to report; only the one branch that actually cuts
-        // overwrites this. Set once here so no future branch can forget it and silently answer "not
-        // truncated" — which is the exact failure this out-parameter exists to make impossible.
-        wasTruncated = false;
-
-        // #487: the same scan-cost pre-cut ApplyOutputPolicy applies, for the same reason — this is the
-        // method the plan step executor (a sandboxed tool's output, unbounded upstream) and the
+        // #487: the same scan-cost pre-cut ApplyOutputPolicyAsync applies, for the same reason — this is
+        // the method the plan step executor (a sandboxed tool's output, unbounded upstream) and the
         // Execution API both call, and neither used to bound scan cost on this side of the boundary.
         //
-        // A real marker is passed here too, not just at ApplyOutputPolicy's call site: this method DOES
-        // report a drop through wasTruncated below, but ToolUseStepExecutor.HandleSuccessAsync (the plan
-        // path) discards that out-parameter with `out _` and relies entirely on a marker embedded in
-        // the text — a premise that held before this PR (the final cut was the only cut, and it always
-        // left a marker when it fired) and stopped holding the moment this pre-cut could drop content
-        // with nothing to show for it whenever sanitizing/redacting then shrinks the survivor back under
-        // OutputCeiling. Caught by run-gates' correctness gate: the second caller of this same new
-        // primitive didn't get the fix #487's own security review already applied to the other one.
+        // An empty marker is passed here, unlike ApplyOutputPolicyAsync's use of the same primitive:
+        // this method reports a drop through the returned WasTruncated instead — droppedByPreCut is
+        // combined with the final cut's own flag below rather than embedding a marker twice.
         //
         // Ceiling captured once, not re-read at the pre-cut and again at the final cut below — see
-        // ApplyOutputPolicy's identical capture for why (run-gates' correctness gate, advisory).
+        // ApplyOutputPolicyAsync's identical capture for why (run-gates' correctness gate, advisory).
         var ceiling = OutputCeiling;
         var (preCut, droppedByPreCut) =
             ToolResultText.PreCutForScan(content, ceiling, ScrubOverlapMargin, OutputTruncationMarker);
 
-        // #479: sanitize unconditionally on both branches, the same guarantee ApplyOutputPolicy carries
-        // (#469) — this method used to sanitize only when a redaction was required, leaving the
+        // #479: sanitize unconditionally on both branches, the same guarantee ApplyOutputPolicyAsync
+        // carries (#469) — this method used to sanitize only when a redaction was required, leaving the
         // invariant enforced by caller discipline (both current callers ran their own unconditional
         // scrub immediately after) rather than by this interface itself.
         //
@@ -393,8 +450,7 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
             {
                 // Non-redact branch: Sanitize's null-in/null-out guarantee (#490) means reaching here
                 // can only mean preCut was null — nothing to sanitize.
-                result = null;
-                return true;
+                return new TextOutputPolicyResult(Success: true, Result: null, WasTruncated: false);
             }
 
             // Fail closed, deliberately without asking whether preCut was itself null. A redact-required
@@ -409,26 +465,99 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
                 "Classification gate returned null when redacting output of {ToolName}; the result is "
                 + "withheld rather than returned unredacted.",
                 toolName);
-            result = null;
-            return false;
+            return new TextOutputPolicyResult(Success: false, Result: null, WasTruncated: false);
         }
 
-        // #532: bound after sanitize/redact — see ApplyOutputPolicy for why the order is fixed. This is
-        // the plan path's only cut. It is NOT the Execution API's only cut, and an earlier version of
-        // this comment claimed the API was "unaffected while its ceiling is no larger" — a
+        // #532: bound after sanitize/redact — see ApplyOutputPolicyAsync for why the order is fixed.
+        // This is the plan path's only cut. It is NOT the Execution API's only cut, and an earlier
+        // version of this comment claimed the API was "unaffected while its ceiling is no larger" — a
         // precondition that does not hold on shipped defaults (its 262,144 against this 50,000), so its
         // own before-and-after checks both saw an unchanged string while this step had already removed
         // most of the body. Rather than restore that assumption by aligning the two numbers, the cut
         // now reports itself and the caller ORs it into whatever truncation signal it publishes: a fact
         // that travels with the value cannot drift apart the way two independently-owned ceilings can.
         var (bounded, cutAfterProcessing) = BoundedText.Cap(processed, ceiling, OutputTruncationMarker);
-        result = bounded;
         // droppedByPreCut is carried forward, not discarded: content the pre-cut dropped can still
         // leave this final cut with nothing further to drop once sanitizing/redacting has shrunk what
         // remains — this cut's own flag alone would under-report what was actually lost (#487/#493,
         // the same reasoning DirectToolInvoker's now-retired ScrubAndBound used to carry by hand).
-        wasTruncated = droppedByPreCut || cutAfterProcessing;
-        return true;
+        var wasTruncated = droppedByPreCut || cutAfterProcessing;
+
+        if (!wasTruncated)
+            return new TextOutputPolicyResult(Success: true, Result: bounded, WasTruncated: false);
+
+        // #521: processed (not preCut) is spilled — sanitized/redacted, but not yet cut to ceiling. The
+        // id-carrying marker is longer than OutputTruncationMarker, so neither a post-hoc replace nor an
+        // unconditional append is safe here: cutAfterProcessing==true means processed is already known
+        // to exceed ceiling, but droppedByPreCut-only means processed is UNDER ceiling — Cap's normal
+        // "nothing to cut, marker not embedded" default would silently drop the id, since this branch
+        // (unlike ApplyOutputPolicyAsync's) already knows wasTruncated=true from a signal Cap itself
+        // never sees. alwaysEmbedMarker covers both: it only cuts as much of processed as is needed to
+        // make room for the marker, never more, and never lets the result exceed ceiling.
+        var marker = await SpillAndBuildMarkerAsync(toolName, processed).ConfigureAwait(false);
+        var (withId, _) = BoundedText.Cap(processed, ceiling, marker, alwaysEmbedMarker: true);
+        return new TextOutputPolicyResult(Success: true, Result: withId, WasTruncated: true);
+    }
+
+    /// <summary>
+    /// Spills <paramref name="fullTreatedText"/> — already sanitized/redacted for the MODEL-facing copy,
+    /// not yet cut to the tool-output ceiling — to <see cref="_resultStore"/> under this execution's
+    /// <see cref="IAgentExecutionContext.ToolResultScopeId"/>, and returns the marker to substitute for
+    /// the plain <see cref="OutputTruncationMarker"/>, carrying the resulting id so a later
+    /// <c>tool_result_fetch</c> call can retrieve the rest (#521).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The AT-REST copy is redacted with <see cref="RedactionCategories.All"/> regardless of
+    /// <see cref="ToolCallAdmission.RedactsOutput"/> — <paramref name="fullTreatedText"/> has only been
+    /// through <see cref="_sanitizer"/> (an injection scrubber, unconditional) on the plain-allow path;
+    /// <see cref="_redactionFilter"/> only ran if the classification gate demanded it. Persisting to
+    /// disk is a stronger exposure than showing the model its own tool's output, so this is not
+    /// optional the way the model-facing redaction decision is — matching the same
+    /// "redact immediately before persistence so secrets never land at rest" rule
+    /// <c>ToolOutputCompressionBehavior</c> already applies at its own persistence boundary. The
+    /// MODEL-facing text (already cut and marked by the caller) is never touched by this — a security
+    /// review found and closed a #521 residual gap: a plain-allow call was writing unredacted secrets
+    /// to disk on every truncation.
+    /// </para>
+    /// <para>
+    /// A store failure degrades to the plain marker rather than throwing out of a cut every caller of
+    /// this pipeline depends on completing — the same must-not-throw discipline this file applies
+    /// everywhere else. Always writes with <see cref="CancellationToken.None"/>, never the caller's own
+    /// token: the write finalizes output a tool call already produced, the same "already happened,
+    /// don't abandon it" reasoning <see cref="ReportExecutionAsync"/> applies to reporting.
+    /// </para>
+    /// <para>
+    /// If the text turns out to be at or under <c>PerResultCharLimit</c> once redaction has (rarely)
+    /// shrunk it, <see cref="_resultStore"/> answers with an inline reference and no file on disk — the
+    /// plain marker is returned instead of one naming an id nothing was ever written under, so a later
+    /// <c>tool_result_fetch</c> can never be told "not found" for a spill this call believed it made.
+    /// </para>
+    /// </remarks>
+    private async ValueTask<string> SpillAndBuildMarkerAsync(string toolName, string fullTreatedText)
+    {
+        try
+        {
+            var atRest = _redactionFilter.Redact(fullTreatedText, RedactionCategories.All);
+            var reference = await _resultStore
+                .StoreIfLargeAsync(
+                    _executionContext.ToolResultScopeId, toolName, operation: null, atRest,
+                    CancellationToken.None)
+                .ConfigureAwait(false);
+
+            if (reference.FullContentPath is null)
+                return OutputTruncationMarker;
+
+            return string.Format(SpilledResultMarkerFormat, reference.ResultId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex,
+                "Failed to spill truncated output of {ToolName} for later retrieval via tool_result_fetch; "
+                + "the result stays truncated with no retrieval id",
+                toolName);
+            return OutputTruncationMarker;
+        }
     }
 
     /// <inheritdoc />

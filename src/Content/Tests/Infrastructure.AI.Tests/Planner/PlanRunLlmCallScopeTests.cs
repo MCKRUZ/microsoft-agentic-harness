@@ -172,6 +172,11 @@ public sealed class PlanRunLlmCallScopeTests
         services.AddSingleton<IOptionsMonitor<Domain.Common.Config.AppConfig>>(
             Mock.Of<IOptionsMonitor<Domain.Common.Config.AppConfig>>(
                 m => m.CurrentValue == new Domain.Common.Config.AppConfig()));
+
+        // #521: the chain now constructor-injects IToolResultStore to spill truncated output — same
+        // "an absent registration is a composition that cannot exist in production" reasoning as
+        // every gate above. This suite doesn't truncate output, so a permissive stub is enough.
+        services.AddSingleton(StepExecutors.PermissiveAdmission.StubResultStore());
         services.AddToolCallAdmissionChain();
         services.AddSingleton(Mock.Of<IPlanProgressNotifier>());
         services.AddScoped(_ => new PlanExecutionContext());

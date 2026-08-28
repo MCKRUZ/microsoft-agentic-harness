@@ -229,35 +229,39 @@ public sealed partial class DirectToolInvoker
             McpReportedBy).ConfigureAwait(false);
 
         sw.Stop();
-        return ShapeMcp(failureText, rawResult, request.ToolName, admissionPipeline, admission, config, sw.Elapsed);
+        return await ShapeMcpAsync(
+            failureText, rawResult, request.ToolName, admissionPipeline, admission, config, sw.Elapsed,
+            cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
-    /// Reduces an MCP result to <see cref="ShapeText"/>'s shared shape — the MCP analogue of
-    /// <c>DirectToolInvoker.Response.cs</c>'s <c>Shape</c>, differing only in how the raw text is
+    /// Reduces an MCP result to <see cref="ShapeTextAsync"/>'s shared shape — the MCP analogue of
+    /// <c>DirectToolInvoker.Response.cs</c>'s <c>ShapeAsync</c>, differing only in how the raw text is
     /// obtained: a keyed-DI <c>ToolResult</c> already carries a string, an MCP result needs
     /// <see cref="ToolResultText.ExtractText"/> first.
     /// </summary>
-    private DirectToolInvocationOutcome ShapeMcp(
+    private Task<DirectToolInvocationOutcome> ShapeMcpAsync(
         string? failureText,
         object? rawResult,
         string toolName,
         IToolCallAdmissionPipeline admissionPipeline,
         ToolCallAdmission admission,
         DirectToolInvocationConfig config,
-        TimeSpan duration) =>
-        ShapeText(
+        TimeSpan duration,
+        CancellationToken cancellationToken) =>
+        ShapeTextAsync(
             failureText,
-            // ShapeText never reads successText on the failure branch, and ExtractText's own default
-            // case does a full JsonSerializer.Serialize of the raw result — not worth paying on every
-            // MCP failure just to build a value that gets thrown away.
+            // ShapeTextAsync never reads successText on the failure branch, and ExtractText's own
+            // default case does a full JsonSerializer.Serialize of the raw result — not worth paying on
+            // every MCP failure just to build a value that gets thrown away.
             failureText is null ? ToolResultText.ExtractText(rawResult) : string.Empty,
             toolName,
             admissionPipeline,
             admission,
             config.MaxOutputCharacters,
             duration,
-            _logger);
+            _logger,
+            cancellationToken);
 
     /// <summary>
     /// The result of MCP pre-flight: either a refusal to return as-is, or the resolved tool and caller

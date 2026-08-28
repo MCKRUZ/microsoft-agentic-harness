@@ -80,7 +80,7 @@ public interface IToolCallAdmissionPipeline
     /// <returns>
     /// The verdict. A refusal always carries a caller-facing message; an allow may carry an
     /// instruction to redact the tool's output, which the caller applies through
-    /// <see cref="ApplyOutputPolicy"/>.
+    /// <see cref="ApplyOutputPolicyAsync"/>.
     /// </returns>
     ValueTask<ToolCallAdmission> AdmitAsync(ToolCallAdmissionRequest request, CancellationToken cancellationToken);
 
@@ -119,7 +119,15 @@ public interface IToolCallAdmissionPipeline
     /// unlike this pipeline's other execution paths, which already sanitize unconditionally.
     /// </para>
     /// </remarks>
-    object? ApplyOutputPolicy(ToolCallAdmission admission, string toolName, object? result);
+    /// <param name="cancellationToken">
+    /// Cancels the pipeline's own work (sanitize/redact/bound). Does <strong>not</strong> cancel a
+    /// spill write to <c>IToolResultStore</c> when a cut actually drops content (#521) — that write
+    /// finalizes output a tool call already produced, the same "already happened, don't abandon it"
+    /// reasoning <see cref="ReportExecutionAsync"/> applies, so it always runs to completion or logs
+    /// its own failure rather than honoring this token.
+    /// </param>
+    ValueTask<object?> ApplyOutputPolicyAsync(
+        ToolCallAdmission admission, string toolName, object? result, CancellationToken cancellationToken);
 
     /// <summary>
     /// Applies the admission's output policy to a result that must leave as <em>text</em>, reporting
@@ -128,20 +136,25 @@ public interface IToolCallAdmissionPipeline
     /// <param name="admission">The verdict returned by <see cref="AdmitAsync"/> for this same call.</param>
     /// <param name="toolName">The tool that produced <paramref name="content"/>.</param>
     /// <param name="content">The tool's raw text.</param>
-    /// <param name="result">
-    /// <paramref name="content"/>, run unconditionally through the general-purpose sanitizer — the same
-    /// guarantee <see cref="ApplyOutputPolicy"/> carries (#469) — and additionally through
-    /// <see cref="IToolClassificationGate.RedactResult(string, string?)"/>'s known-secret-pattern scrub when a redaction
-    /// was required (#479 closed the gap where this method sanitized only on that second path, unlike
-    /// its sibling). Null content passes through as null: there is nothing to sanitize or redact. Null
-    /// when the method returns <see langword="false"/>.
+    /// <param name="cancellationToken">
+    /// Cancels the pipeline's own work. Does not cancel a spill write on truncation — see
+    /// <see cref="ApplyOutputPolicyAsync"/>'s identical parameter for why.
     /// </param>
     /// <returns>
+    /// See <see cref="TextOutputPolicyResult"/>. <see cref="TextOutputPolicyResult.Success"/> is
     /// <see langword="false"/> when a redaction was required but did not produce text, in which case
     /// the caller must <strong>withhold</strong> the result rather than emit the original.
+    /// <see cref="TextOutputPolicyResult.Result"/> is <paramref name="content"/>, run unconditionally
+    /// through the general-purpose sanitizer — the same guarantee <see cref="ApplyOutputPolicyAsync"/>
+    /// carries (#469) — and additionally through
+    /// <see cref="IToolClassificationGate.RedactResult(string, string?)"/>'s known-secret-pattern scrub
+    /// when a redaction was required (#479 closed the gap where this method sanitized only on that
+    /// second path, unlike its sibling). Null content passes through as null: there is nothing to
+    /// sanitize or redact. Null when <see cref="TextOutputPolicyResult.Success"/> is
+    /// <see langword="false"/>.
     /// </returns>
     /// <remarks>
-    /// Separate from <see cref="ApplyOutputPolicy"/> because the two callers want different things
+    /// Separate from <see cref="ApplyOutputPolicyAsync"/> because the two callers want different things
     /// from the same verdict. The agent turn hands the model structured results and passes them
     /// through untouched, so it wants the object form. The plan step and the Execution API emit text
     /// across a boundary, and for them a non-text answer means a gate did something unexpected — on a
@@ -150,29 +163,26 @@ public interface IToolCallAdmissionPipeline
     /// survives. Both also used to implement the unconditional sanitize themselves, immediately after
     /// calling this method — caller discipline standing in for a guarantee that now lives here instead
     /// (#479).
-    /// </remarks>
-    /// <param name="wasTruncated">
-    /// <see langword="true"/> when this method <em>itself</em> cut <paramref name="content"/> to fit
-    /// the tool-output ceiling (#532). Callers that publish a "was this cut short?" signal across a
-    /// boundary must OR this into it.
     /// <para>
-    /// It is an out-parameter rather than something a caller can infer, because inferring it requires
-    /// the caller to already know this pipeline's ceiling and to assume its own is not larger. The
+    /// <see cref="TextOutputPolicyResult.WasTruncated"/> is <see langword="true"/> when this method
+    /// <em>itself</em> cut <paramref name="content"/> to fit the tool-output ceiling (#532). Callers
+    /// that publish a "was this cut short?" signal across a boundary must OR this into it — reported on
+    /// the return value rather than something a caller can infer, because inferring it requires the
+    /// caller to already know this pipeline's ceiling and to assume its own is not larger. The
     /// Execution API assumed exactly that and was wrong on shipped defaults: its ceiling is 262,144
     /// characters, the pipeline's is 50,000, so for every output between those two numbers its own
-    /// before-and-after measurements both saw nothing to cut while the middle step had already
-    /// removed four fifths of the body — and it answered <c>OutputTruncated = false</c> on a prefix.
-    /// A caller that cannot tell a complete result from a prefix parses the prefix as complete.
-    /// Reporting the fact alongside the value is what makes that unrepresentable; two components
-    /// agreeing on a number is not, because either can change its number alone.
+    /// before-and-after measurements both saw nothing to cut while the middle step had already removed
+    /// four fifths of the body — and it answered <c>OutputTruncated = false</c> on a prefix. A caller
+    /// that cannot tell a complete result from a prefix parses the prefix as complete. Reporting the
+    /// fact alongside the value is what makes that unrepresentable; two components agreeing on a number
+    /// is not, because either can change its number alone.
     /// </para>
-    /// </param>
-    bool TryApplyTextOutputPolicy(
+    /// </remarks>
+    ValueTask<TextOutputPolicyResult> TryApplyTextOutputPolicyAsync(
         ToolCallAdmission admission,
         string toolName,
         string? content,
-        out string? result,
-        out bool wasTruncated);
+        CancellationToken cancellationToken);
 
     /// <summary>
     /// Reports what happened when a call this pipeline approved was actually carried out, closing
@@ -228,6 +238,18 @@ public interface IToolCallAdmissionPipeline
     /// </remarks>
     void Reset();
 }
+
+/// <summary>
+/// The outcome of <see cref="IToolCallAdmissionPipeline.TryApplyTextOutputPolicyAsync"/> — see that
+/// method's own remarks for what each member means.
+/// </summary>
+/// <param name="Success">
+/// <see langword="false"/> when a redaction was required but did not produce text; the caller must
+/// withhold the result rather than emit the original.
+/// </param>
+/// <param name="Result">The treated text, or <see langword="null"/> when <paramref name="Success"/> is <see langword="false"/>.</param>
+/// <param name="WasTruncated">Whether the pipeline itself cut the text to fit its ceiling.</param>
+public readonly record struct TextOutputPolicyResult(bool Success, string? Result, bool WasTruncated);
 
 /// <summary>
 /// One tool call, as the admission chain sees it.
