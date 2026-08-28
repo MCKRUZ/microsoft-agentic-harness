@@ -342,8 +342,8 @@ internal static class ToolResultText
         List<string>? texts = null;
         foreach (var block in content.EnumerateArray())
         {
-            if (IsContentBlock(block, out var typeProp)
-                && TryGetBlockText(block, typeProp, out var text, out _))
+            if (IsContentBlock(block, out var type)
+                && TryGetBlockText(block, type, out var text, out _))
             {
                 (texts ??= []).Add(text);
             }
@@ -364,35 +364,18 @@ internal static class ToolResultText
     /// misidentified and silently reparsed as an MCP result (#488).
     /// </para>
     /// <para>
-    /// <strong>Narrowed on content-block shape, not on <c>isError</c>/<c>structuredContent</c>/<c>_meta</c>
-    /// presence — a marker-presence check was tried and reverted (security review on #488).</strong> Those
-    /// three properties are only ever written when non-null/non-empty
-    /// (<c>McpJsonUtilities.DefaultOptions</c> sets <c>JsonIgnoreCondition.WhenWritingNull</c>), and a
-    /// spec-conformant success result omits all three: <c>McpClientTool.InvokeCoreAsync</c> falls back to
-    /// serializing the whole <c>CallToolResult</c> not only when it carries structured content or
-    /// metadata, but also whenever any content block fails <c>AIContent</c> conversion — confirmed
-    /// against the pinned SDK, a <c>resource_link</c> block always does. A marker-presence check
-    /// therefore missed a real, spec-legal, adversary-triggerable MCP shape entirely, silently skipping
-    /// sanitize/redact/bound for it — worse than the false positive #488 filed against, and reachable by
-    /// any MCP server appending one <c>resource_link</c> block to a response.
+    /// Recognizes an array containing <em>at least one</em> element shaped like a real MCP content
+    /// block — an object with a string <c>type</c> property, the one thing every content-block kind
+    /// shares, checked structurally rather than against the specific kinds MCP defines today: a
+    /// hardcoded list goes stale the moment the protocol adds one, and staleness here means silently
+    /// un-recognizing a real MCP result, not just tolerating one more first-party coincidence.
     /// </para>
     /// <para>
-    /// Every MCP content block — <c>text</c>, <c>image</c>, <c>audio</c>, <c>resource</c>,
-    /// <c>resource_link</c>, and the two agent-loop block kinds — carries a required string <c>type</c>
-    /// discriminator; that is the protocol's own structural invariant, not an artifact of which optional
-    /// properties a particular serialization happened to include.
-    /// </para>
-    /// <para>
-    /// <strong>At least one qualifying block, not every element — a require-all version was tried and
-    /// reverted (second review round on #488).</strong> <see cref="TransformSerializedContentBlocks"/> and
-    /// <see cref="ExtractContentArrayText"/> already tolerate a non-conforming element by skipping it, one
-    /// block at a time — they never needed the whole array to be uniform. Requiring every element to
-    /// qualify made one deliberately malformed block (trivial for the hostile server this whole check
-    /// defends against to include) reject the entire array, silently withholding sanitize/redact/bound
-    /// from every other block in it too — including a genuine injection-bearing <c>text</c> block sitting
-    /// right next to the malformed one. "At least one" is still strictly tighter than the original
-    /// any-array check (a first-party array of bare strings, numbers, or all-typeless objects still never
-    /// matches) without that all-or-nothing failure mode.
+    /// This is the third design considered. A marker-presence check
+    /// (<c>isError</c>/<c>structuredContent</c>/<c>_meta</c>) and a require-<em>every</em>-element version
+    /// were each tried and reverted after independent security review found a false negative in each —
+    /// see this repo's CLAUDE.md Common Mistakes (#488) for the full history before changing this method
+    /// again, so a fourth round doesn't reintroduce either regression.
     /// </para>
     /// </remarks>
     internal static bool TryGetContentArray(JsonElement element, out JsonElement content)
@@ -400,11 +383,16 @@ internal static class ToolResultText
         if (!element.TryGetProperty("content", out content) || content.ValueKind != JsonValueKind.Array)
             return false;
 
-        // Short-circuits on the first qualifying block — the common case for a genuine MCP result,
-        // where a real block is typically among the first elements, not a full second pass over the
-        // array every recognized call would otherwise pay for on top of the processing pass.
-        if (content.EnumerateArray().Any(block => IsContentBlock(block, out _)))
-            return true;
+        // A foreach + early return, not .Any(...) — JsonElement.ArrayEnumerator is a struct, and LINQ's
+        // IEnumerable<T>-typed Any() would box it. Still short-circuits on the first qualifying block —
+        // the common case for a genuine MCP result, where a real block is typically among the first
+        // elements, not a full second pass over the array every recognized call would otherwise pay for
+        // on top of the processing pass.
+        foreach (var block in content.EnumerateArray())
+        {
+            if (IsContentBlock(block, out _))
+                return true;
+        }
 
         // An empty content array (Content.Count == 0's fall-through, e.g. AIFunctionMcpServerTool's own
         // null => branch) has nothing to distinguish it from a first-party empty array by shape alone —
@@ -457,8 +445,8 @@ internal static class ToolResultText
 
         foreach (var block in content.EnumerateArray())
         {
-            if (IsContentBlock(block, out var typeProp)
-                && TryGetBlockText(block, typeProp, out var text, out var isEmbeddedResource))
+            if (IsContentBlock(block, out var type)
+                && TryGetBlockText(block, type, out var text, out var isEmbeddedResource))
             {
                 var transformed = transform(text);
                 if (!string.Equals(transformed, text, StringComparison.Ordinal))
