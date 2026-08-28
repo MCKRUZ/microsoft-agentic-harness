@@ -7,7 +7,7 @@ using Xunit;
 namespace Application.AI.Common.Tests.Models.Conversations;
 
 /// <summary>
-/// Proves <see cref="ConversationMessageMapping.ToChatMessages"/> expands a persisted
+/// Proves <see cref="ConversationMessageMapping.ToChatMessages(IReadOnlyList{ConversationMessage},bool,int,Microsoft.Extensions.Logging.ILogger?)"/> expands a persisted
 /// <see cref="ConversationMessage.ToolCalls"/> record back into the real
 /// <see cref="FunctionCallContent"/>/<see cref="FunctionResultContent"/> pair the model actually
 /// produced (#249 item 6), rather than the narrated-text-only projection this mapping used to be

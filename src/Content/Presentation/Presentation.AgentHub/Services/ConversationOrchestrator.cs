@@ -683,14 +683,11 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
         };
     }
 
-    // Delegates to the shared projection rather than repeating the role switch — see
-    // ConversationMessageMapping for why three copies of one mapping was a latent bug. Not static:
-    // gates tool-call expansion on the live IToolCallReplayTreatment.Enabled value so an operator's
-    // kill switch stops replaying already-persisted tool payloads, not just stop writing new ones.
+    // Delegates to the shared live-settings projection (#515) — see ConversationMessageMapping for why
+    // hand-writing this same two-line unpacking here and in AgUiRunHandler was a latent bug. Read
+    // fresh on every call (not cached): an operator's replay kill switch
+    // (IToolCallReplayTreatment.Enabled) must stop replaying already-persisted tool payloads starting
+    // the very next turn, not just stop writing new ones.
     private IReadOnlyList<ChatMessage> ToMeaiHistory(IReadOnlyList<ConversationMessage> messages) =>
-        ConversationMessageMapping.ToChatMessages(
-            messages,
-            _toolCallReplayTreatment.Enabled,
-            _toolCallReplayTreatment.MaxReplayedChars,
-            _logger);
+        ConversationMessageMapping.ToChatMessagesFromLiveSettings(messages, _toolCallReplayTreatment, _logger);
 }

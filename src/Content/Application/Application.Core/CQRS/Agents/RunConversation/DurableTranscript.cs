@@ -28,24 +28,19 @@ internal sealed class DurableTranscript
     private readonly IConversationStore _store;
     private readonly string _conversationId;
     private readonly string _ownerId;
-    private readonly bool _replayToolCalls;
-    private readonly int _maxReplayedChars;
+    private readonly ToolCallReplayWindowPolicy _replayPolicy;
     private readonly ILogger? _logger;
 
     /// <summary>Binds a transcript to the conversation and caller a run is executing for.</summary>
     /// <param name="store">The transcript store. Enforces ownership on every call made here.</param>
     /// <param name="conversationId">The conversation being continued.</param>
     /// <param name="ownerId">The authenticated caller. Must be non-blank.</param>
-    /// <param name="replayToolCalls">
-    /// The deployment's live <c>IToolCallReplayTreatment.Enabled</c> value at the moment this transcript
-    /// was opened — see <see cref="LoadHistoryAsync"/>. Read once, at construction, deliberately: it
-    /// gates one run's dispatch, not a value re-checked mid-run.
-    /// </param>
-    /// <param name="maxReplayedChars">
-    /// The deployment's <c>IToolCallReplayTreatment.MaxReplayedChars</c> budget, snapshotted at the same
-    /// moment and for the same reason as <paramref name="replayToolCalls"/> — the two settings gate one
-    /// run's dispatch together, and reading one live while the other is fixed would let a mid-run config
-    /// reload apply half a policy.
+    /// <param name="replayPolicy">
+    /// The deployment's <c>IToolCallReplayTreatment</c> settings at the moment this transcript was
+    /// opened (see <see cref="ToolCallReplayWindowPolicy.FromCurrentSettings"/>) — see
+    /// <see cref="LoadHistoryAsync"/>. Captured once, at construction, deliberately: it gates one run's
+    /// dispatch, not a value re-checked mid-run, and reading one of its two settings live while the
+    /// other stayed fixed would let a mid-run config reload apply half a policy.
     /// </param>
     /// <param name="logger">
     /// Optional, for reporting tool-call history the budget dropped. Absent in tests that construct a
@@ -55,19 +50,18 @@ internal sealed class DurableTranscript
         IConversationStore store,
         string conversationId,
         string ownerId,
-        bool replayToolCalls,
-        int maxReplayedChars,
+        ToolCallReplayWindowPolicy replayPolicy,
         ILogger? logger = null)
     {
         ArgumentNullException.ThrowIfNull(store);
         ArgumentException.ThrowIfNullOrWhiteSpace(conversationId);
         ArgumentException.ThrowIfNullOrWhiteSpace(ownerId);
+        ArgumentNullException.ThrowIfNull(replayPolicy);
 
         _store = store;
         _conversationId = conversationId;
         _ownerId = ownerId;
-        _replayToolCalls = replayToolCalls;
-        _maxReplayedChars = maxReplayedChars;
+        _replayPolicy = replayPolicy;
         _logger = logger;
     }
 
@@ -133,8 +127,7 @@ internal sealed class DurableTranscript
         if (messages is null || messages.Count == 0)
             return [];
 
-        return ConversationMessageMapping.ToChatMessages(
-            messages, _replayToolCalls, _maxReplayedChars, _logger);
+        return ConversationMessageMapping.ToChatMessages(messages, _replayPolicy, _logger);
     }
 
     /// <summary>
