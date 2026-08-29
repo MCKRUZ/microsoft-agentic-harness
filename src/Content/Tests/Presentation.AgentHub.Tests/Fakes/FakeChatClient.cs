@@ -1,5 +1,6 @@
 using System.Runtime.CompilerServices;
 using Microsoft.Extensions.AI;
+using Tests.AI.Fakes;
 
 namespace Presentation.AgentHub.Tests.Fakes;
 
@@ -57,8 +58,14 @@ public sealed class FakeChatClient : IChatClient
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         var response = await GetResponseAsync(messages, options, cancellationToken);
-        var text = string.Join("", response.Messages.Select(m => m.Text));
-        yield return new ChatResponseUpdate(ChatRole.Assistant, text);
+
+        // Streams each content item as its own update, usage as a trailing frame — mirroring what
+        // a real provider does. Collapsing to a single joined-text update (the prior behaviour
+        // here) made every response arrive as exactly one frame, which defeats any test asserting
+        // a per-frame invariant over a real streaming sequence. Shared with the other chat-client
+        // fakes via ChatResponseStreaming so this logic can't drift out of sync with them again.
+        await foreach (var update in ChatResponseStreaming.ToUpdatesAsync(response).WithCancellation(cancellationToken))
+            yield return update;
     }
 
     /// <inheritdoc />
