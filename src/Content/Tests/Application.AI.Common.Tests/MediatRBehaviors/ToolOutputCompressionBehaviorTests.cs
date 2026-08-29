@@ -107,7 +107,7 @@ public sealed class ToolOutputCompressionBehaviorTests
             Timestamp = DateTimeOffset.UtcNow
         };
 
-        _resultStore.Setup(x => x.StoreIfLargeAsync("session-1", "test_tool", null, largeOutput, It.IsAny<CancellationToken>()))
+        _resultStore.Setup(x => x.StoreIfLargeAsync("session-1", "test_tool", null, largeOutput, It.IsAny<int?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(reference);
 
         _compressor.Setup(x => x.CompressAsync(largeOutput, null, 2000, It.IsAny<CancellationToken>()))
@@ -130,7 +130,7 @@ public sealed class ToolOutputCompressionBehaviorTests
         Assert.Contains("[Full output: result://ref-123]", result.Value!.ToolOutput);
 
         _resultStore.Verify(
-            x => x.StoreIfLargeAsync("session-1", "test_tool", null, largeOutput, It.IsAny<CancellationToken>()),
+            x => x.StoreIfLargeAsync("session-1", "test_tool", null, largeOutput, It.IsAny<int?>(), It.IsAny<CancellationToken>()),
             Times.Once);
         _compressor.Verify(
             x => x.CompressAsync(largeOutput, null, 2000, It.IsAny<CancellationToken>()),
@@ -171,7 +171,7 @@ public sealed class ToolOutputCompressionBehaviorTests
             Timestamp = DateTimeOffset.UtcNow
         };
 
-        _resultStore.Setup(x => x.StoreIfLargeAsync("session-1", "test_tool", null, largeOutput, It.IsAny<CancellationToken>()))
+        _resultStore.Setup(x => x.StoreIfLargeAsync("session-1", "test_tool", null, largeOutput, It.IsAny<int?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(reference);
 
         _compressor.Setup(x => x.CompressAsync(largeOutput, null, 2000, It.IsAny<CancellationToken>()))

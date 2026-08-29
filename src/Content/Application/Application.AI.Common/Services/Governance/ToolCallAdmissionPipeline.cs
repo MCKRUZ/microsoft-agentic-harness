@@ -67,6 +67,12 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
     private readonly IAgentExecutionContext _executionContext;
     private readonly IToolResultStore _resultStore;
 
+    // #522: running total of characters actually reserved toward this turn's aggregate output
+    // budget (ToolResultStorageConfig.AggregatePerMessageCharLimit) — see ReserveAggregateCeiling's
+    // remarks for why this needs an atomic reserve/settle pair rather than a plain read-then-add.
+    private readonly Lock _aggregateBudgetLock = new();
+    private int _aggregateCharsReserved;
+
     /// <summary>Initializes a new instance of the <see cref="ToolCallAdmissionPipeline"/> class.</summary>
     /// <param name="authorizationGate">
     /// Stage 1 — whether the executing agent identity is permitted this tool. Required rather than
@@ -333,6 +339,70 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
     private int OutputCeiling =>
         _options.CurrentValue.AI.ContextManagement.ToolResultStorage.PerResultCharLimit;
 
+    /// <summary>
+    /// Atomically claims up to <paramref name="perResultCeiling"/> characters from this turn's
+    /// remaining <c>AggregatePerMessageCharLimit</c> budget (#522) and returns the ceiling this one
+    /// call must cut to. Always call <see cref="SettleAggregateReservation"/> with the same value once
+    /// the actual output length is known, or later calls in the same turn are starved by budget this
+    /// call reserved but never used.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>Why a reserve/settle pair instead of reading "remaining" once and subtracting the
+    /// actual length afterward.</strong> Parallel tool calls in one turn run concurrently — the same
+    /// concurrency <see cref="ReplayedToolCallSet"/>'s remarks document for
+    /// <c>FunctionInvokingChatClient</c>'s <c>AllowConcurrentInvocation = true</c>. Reading remaining
+    /// budget, cutting, and only then subtracting the real length leaves the same race that type's own
+    /// remarks warn against: two calls can both read the same "remaining" before either commits, both
+    /// cut to that full amount, and the turn ends up having emitted up to twice the configured budget.
+    /// Reserving <paramref name="perResultCeiling"/> up front — atomically, under the same lock that
+    /// reads remaining — means the running total can never be over-committed, because every caller's
+    /// share is subtracted before it does any cutting, not after.
+    /// </para>
+    /// <para>
+    /// The reservation is deliberately the full per-result ceiling, not a guess at the eventual output
+    /// size: at reservation time this call has not yet sanitized, redacted, or cut anything, so the
+    /// ceiling is the only size it can name with certainty won't be exceeded.
+    /// <see cref="SettleAggregateReservation"/> gives back whatever fraction of that reservation the
+    /// call didn't actually use, so a handful of small results does not exhaust the aggregate budget
+    /// the way a handful of large ones should.
+    /// </para>
+    /// </remarks>
+    private int ReserveAggregateCeiling(int perResultCeiling)
+    {
+        var aggregateLimit = _options.CurrentValue.AI.ContextManagement.ToolResultStorage.AggregatePerMessageCharLimit;
+
+        lock (_aggregateBudgetLock)
+        {
+            var remaining = Math.Max(0, aggregateLimit - _aggregateCharsReserved);
+            var reserved = Math.Min(perResultCeiling, remaining);
+            _aggregateCharsReserved += reserved;
+            return reserved;
+        }
+    }
+
+    /// <summary>
+    /// Returns whatever part of <paramref name="reserved"/> this call did not actually spend, once the
+    /// final output length is known — see <see cref="ReserveAggregateCeiling"/>. A no-op when the call
+    /// used everything it reserved (the common case once the aggregate budget is genuinely tight).
+    /// </summary>
+    /// <param name="reserved">The value <see cref="ReserveAggregateCeiling"/> returned for this call.</param>
+    /// <param name="actualLength">
+    /// The final emitted text's length. Never exceeds <paramref name="reserved"/> — this call's own
+    /// cut was bounded to it — so this only ever gives budget back, never claims more.
+    /// </param>
+    private void SettleAggregateReservation(int reserved, int actualLength)
+    {
+        var unused = reserved - actualLength;
+        if (unused <= 0)
+            return;
+
+        lock (_aggregateBudgetLock)
+        {
+            _aggregateCharsReserved -= unused;
+        }
+    }
+
     /// <inheritdoc />
     public async ValueTask<object?> ApplyOutputPolicyAsync(
         ToolCallAdmission admission, string toolName, object? result, CancellationToken cancellationToken)
@@ -370,9 +440,18 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
         // different, wider, scan-cost-only bound, not a substitute for this one. It also mirrors
         // ReportExecutionAsync, which has always sanitized, redacted, and THEN bounded tool failure
         // text at this same pipeline (#460); success output simply never got the third step.
-        var (bounded, dropped) = ToolResultText.Bound(treated, ceiling, OutputTruncationMarker);
+        //
+        // #522: the FINAL cut alone respects the aggregate per-message budget, via effectiveCeiling —
+        // never the pre-cut above, which stays on the full per-result ceiling because it bounds SCAN
+        // cost, not output size (see ReserveAggregateCeiling's remarks for why a smaller pre-cut would
+        // still be safe but is not necessary here).
+        var effectiveCeiling = ReserveAggregateCeiling(ceiling);
+        var (bounded, dropped) = ToolResultText.Bound(treated, effectiveCeiling, OutputTruncationMarker);
         if (!dropped)
+        {
+            SettleAggregateReservation(effectiveCeiling, ToolResultText.ExtractText(bounded).Length);
             return bounded;
+        }
 
         // #521: treated (not preCut) is spilled — sanitized/redacted, but not yet cut to ceiling,
         // preserving the existing "redacted before it ever touches disk" property. The id-carrying
@@ -383,8 +462,9 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
         // marker instead makes ToolResultText.Bound reserve room for it directly; dropped==true here
         // guarantees treated's TOTAL length is still over ceiling, so the re-cut always drops
         // something — but for a multi-block AIContent[] result, that guarantee is total-length only.
-        var marker = await SpillAndBuildMarkerAsync(toolName, ToolResultText.ExtractText(treated)).ConfigureAwait(false);
-        var (reboundedWithId, _) = ToolResultText.Bound(treated, ceiling, marker);
+        var marker = await SpillAndBuildMarkerAsync(
+            toolName, ToolResultText.ExtractText(treated), effectiveCeiling).ConfigureAwait(false);
+        var (reboundedWithId, _) = ToolResultText.Bound(treated, effectiveCeiling, marker);
 
         // A code-review found this residual gap: ToolResultText.Bound/BudgetedCut walks a multi-block
         // result with a single shared per-block budget, and cuts whichever block first exceeds it.
@@ -399,8 +479,16 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
         // back to the already-correct, already-computed `bounded` (plain marker) whenever the id
         // marker didn't actually survive the re-cut — the model always gets an honest truncation
         // signal, even on the rarer path where this call can't fit a retrieval id in the space left.
-        var idMarkerLanded = ToolResultText.ExtractText(reboundedWithId).Contains(marker, StringComparison.Ordinal);
-        return idMarkerLanded ? reboundedWithId : bounded;
+        //
+        // reboundedText is extracted once and reused for both the Contains check and the settle
+        // length below — ExtractText walks and rejoins every text block, so re-running it on the same
+        // object a second time would double that cost on every truncated multi-block result.
+        var reboundedText = ToolResultText.ExtractText(reboundedWithId);
+        var idMarkerLanded = reboundedText.Contains(marker, StringComparison.Ordinal);
+        var final = idMarkerLanded ? reboundedWithId : bounded;
+        var finalLength = idMarkerLanded ? reboundedText.Length : ToolResultText.ExtractText(bounded).Length;
+        SettleAggregateReservation(effectiveCeiling, finalLength);
+        return final;
     }
 
     /// <inheritdoc />
@@ -476,7 +564,11 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
         // most of the body. Rather than restore that assumption by aligning the two numbers, the cut
         // now reports itself and the caller ORs it into whatever truncation signal it publishes: a fact
         // that travels with the value cannot drift apart the way two independently-owned ceilings can.
-        var (bounded, cutAfterProcessing) = BoundedText.Cap(processed, ceiling, OutputTruncationMarker);
+        // #522: the final cut alone respects the aggregate per-message budget, via effectiveCeiling —
+        // see ApplyOutputPolicyAsync's identical comment for why the pre-cut above stays on the full
+        // per-result ceiling.
+        var effectiveCeiling = ReserveAggregateCeiling(ceiling);
+        var (bounded, cutAfterProcessing) = BoundedText.Cap(processed, effectiveCeiling, OutputTruncationMarker);
         // droppedByPreCut is carried forward, not discarded: content the pre-cut dropped can still
         // leave this final cut with nothing further to drop once sanitizing/redacting has shrunk what
         // remains — this cut's own flag alone would under-report what was actually lost (#487/#493,
@@ -484,7 +576,10 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
         var wasTruncated = droppedByPreCut || cutAfterProcessing;
 
         if (!wasTruncated)
+        {
+            SettleAggregateReservation(effectiveCeiling, bounded.Length);
             return new TextOutputPolicyResult(Success: true, Result: bounded, WasTruncated: false);
+        }
 
         // #521: processed (not preCut) is spilled — sanitized/redacted, but not yet cut to ceiling. The
         // id-carrying marker is longer than OutputTruncationMarker, so neither a post-hoc replace nor an
@@ -494,8 +589,9 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
         // (unlike ApplyOutputPolicyAsync's) already knows wasTruncated=true from a signal Cap itself
         // never sees. alwaysEmbedMarker covers both: it only cuts as much of processed as is needed to
         // make room for the marker, never more, and never lets the result exceed ceiling.
-        var marker = await SpillAndBuildMarkerAsync(toolName, processed).ConfigureAwait(false);
-        var (withId, _) = BoundedText.Cap(processed, ceiling, marker, alwaysEmbedMarker: true);
+        var marker = await SpillAndBuildMarkerAsync(toolName, processed, effectiveCeiling).ConfigureAwait(false);
+        var (withId, _) = BoundedText.Cap(processed, effectiveCeiling, marker, alwaysEmbedMarker: true);
+        SettleAggregateReservation(effectiveCeiling, withId.Length);
         return new TextOutputPolicyResult(Success: true, Result: withId, WasTruncated: true);
     }
 
@@ -528,13 +624,22 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
     /// don't abandon it" reasoning <see cref="ReportExecutionAsync"/> applies to reporting.
     /// </para>
     /// <para>
-    /// If the text turns out to be at or under <c>PerResultCharLimit</c> once redaction has (rarely)
-    /// shrunk it, <see cref="_resultStore"/> answers with an inline reference and no file on disk — the
-    /// plain marker is returned instead of one naming an id nothing was ever written under, so a later
-    /// <c>tool_result_fetch</c> can never be told "not found" for a spill this call believed it made.
+    /// Always passes <paramref name="sizeThreshold"/> through to <see cref="_resultStore"/> as its own
+    /// <c>sizeThreshold</c> (#522), rather than leaving the store to compare against its
+    /// config-derived <c>PerResultCharLimit</c>. This method is only ever reached when a caller's own
+    /// cut already dropped content against that exact threshold — which, since the aggregate
+    /// per-message budget can shrink the ceiling a single result is cut to well below
+    /// <c>PerResultCharLimit</c>, no longer implies <paramref name="fullTreatedText"/> itself exceeds
+    /// the store's own configured limit. Comparing against the caller's real threshold instead of the
+    /// store's keeps this a genuine size check rather than an unconditional bypass: a normal-sized
+    /// result cut only by the aggregate budget still gets persisted (fixing the gap where the store
+    /// judged it too small and returned the plain marker for content that was, in fact, fully
+    /// available and recoverable), while nothing here can force disk I/O for content the caller never
+    /// actually decided needed spilling. A store failure, or a redacted result that genuinely still
+    /// can't be written, degrades to the plain marker below exactly as before.
     /// </para>
     /// </remarks>
-    private async ValueTask<string> SpillAndBuildMarkerAsync(string toolName, string fullTreatedText)
+    private async ValueTask<string> SpillAndBuildMarkerAsync(string toolName, string fullTreatedText, int sizeThreshold)
     {
         try
         {
@@ -542,7 +647,7 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
             var reference = await _resultStore
                 .StoreIfLargeAsync(
                     _executionContext.ToolResultScopeId, toolName, operation: null, atRest,
-                    CancellationToken.None)
+                    sizeThreshold: sizeThreshold, CancellationToken.None)
                 .ConfigureAwait(false);
 
             if (reference.FullContentPath is null)
@@ -630,6 +735,14 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
     {
         _trace.Reset();
         _progressEvaluator.Reset();
+
+        // #522: every Reset() call site (agent turn, orchestrated task, eval run, direct-invoke
+        // arming) marks the start of a new unit of work, which is exactly the boundary the aggregate
+        // output budget should restart at — see ReserveAggregateCeiling's remarks.
+        lock (_aggregateBudgetLock)
+        {
+            _aggregateCharsReserved = 0;
+        }
     }
 
     // Blank counts as absent, not just null: whitespace reaches a model as indistinguishable from an

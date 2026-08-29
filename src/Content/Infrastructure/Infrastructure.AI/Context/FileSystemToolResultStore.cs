@@ -35,6 +35,7 @@ public sealed class FileSystemToolResultStore : IToolResultStore
         string toolName,
         string? operation,
         string fullOutput,
+        int? sizeThreshold = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
@@ -49,8 +50,9 @@ public sealed class FileSystemToolResultStore : IToolResultStore
         var config = _options.CurrentValue.AI.ContextManagement.ToolResultStorage;
         var resultId = Guid.NewGuid().ToString("N");
         var timestamp = DateTimeOffset.UtcNow;
+        var effectiveThreshold = sizeThreshold ?? config.PerResultCharLimit;
 
-        if (fullOutput.Length <= config.PerResultCharLimit)
+        if (fullOutput.Length <= effectiveThreshold)
         {
             _logger.LogDebug(
                 "Tool result {ResultId} from {ToolName} is {Length} chars — keeping inline",
