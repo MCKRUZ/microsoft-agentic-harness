@@ -197,7 +197,7 @@ public sealed class ObservabilitySchemaUpgradeTests
 
         // ---- Treatment: the same database, brought forward by the runner.
         var applied = await schema.ApplyAsync(all, Ledger);
-        Assert.Equal(1, applied); // only 005 was outstanding
+        Assert.Equal(all.Count - previousRelease.Length, applied); // every migration after 004 was outstanding
 
         Assert.Null(await schema.TryExecuteAsync(InsertCancelledSession));
         Assert.Equal("cancelled", await schema.ScalarAsync<string>(
