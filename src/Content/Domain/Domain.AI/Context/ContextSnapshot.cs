@@ -10,7 +10,12 @@ namespace Domain.AI.Context;
 /// <param name="ConversationId">Stable conversation identifier; matches the SignalR group name.</param>
 /// <param name="TurnIndex">Zero-based index of the turn within the conversation.</param>
 /// <param name="TurnId">Stable id of the turn (e.g. "t-01") for cross-reference with stored messages.</param>
-/// <param name="CtxAfter">Cumulative breakdown after this turn lands.</param>
+/// <param name="CtxAfter">
+/// Cumulative breakdown after this turn lands. Its <c>Messages</c> lane is measured over the
+/// pre-response history the turn's last model call actually saw (#517) — this turn's own assistant
+/// reply is not folded in until the next turn's snapshot, since it was never part of a billed prompt
+/// at the moment this snapshot is taken.
+/// </param>
 /// <param name="Loaded">Artifacts added by this turn (the per-turn delta).</param>
 /// <param name="CapturedAtUtc">Server clock at capture; clients show this in the timeline.</param>
 /// <param name="UnattributedTokens">
