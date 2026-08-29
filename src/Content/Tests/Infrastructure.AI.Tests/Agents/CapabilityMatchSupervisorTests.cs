@@ -438,6 +438,39 @@ public sealed class CapabilityMatchSupervisorTests : IDisposable
     }
 
     [Fact]
+    public async Task DelegateToNamedAgentAsync_TargetHasSkillsWithPrerequisites_SuppliesAConversationScope()
+    {
+        // Correctness-review finding: AgentExecutionContextFactory stamps a prerequisite map whenever
+        // any of the target's skills declares prerequisites, and AgentFactory.ChatClient's
+        // ResolvePrerequisiteScope throws InvalidOperationException when no conversation scope is
+        // present in SkillAgentOptions.AdditionalProperties[AgentFactory.ConversationIdPropertyKey].
+        // The ordinary-turn path always supplies one (AgentConversationCache.WithConversationScope);
+        // this branch must too, or every named delegation to a peer with prerequisite-declaring
+        // skills fails deterministically.
+        var target = new AgentDefinition
+        {
+            Id = "prerequisite-agent",
+            Name = "Prerequisite Agent",
+            Description = "d"
+        };
+        _agentRegistryMock.Setup(r => r.TryGet("prerequisite-agent")).Returns(target);
+
+        SkillAgentOptions? capturedOptions = null;
+        _agentFactoryMock
+            .Setup(f => f.CreateAgentWithContextFromSkillsAsync(
+                It.IsAny<IReadOnlyList<string>>(), It.IsAny<SkillAgentOptions>(), It.IsAny<CancellationToken>()))
+            .Callback<IReadOnlyList<string>, SkillAgentOptions, CancellationToken>(
+                (_, options, _) => capturedOptions = options)
+            .ReturnsAsync(new AgentBuildResult(new TestableAIAgent("out"), new AgentExecutionContext()));
+
+        await _supervisor.DelegateToNamedAgentAsync("prerequisite-agent", "test task", "caller-agent");
+
+        capturedOptions!.AdditionalProperties.Should().NotBeNull();
+        capturedOptions.AdditionalProperties!.Should().ContainKey(AgentFactory.ConversationIdPropertyKey)
+            .WhoseValue.Should().Be("prerequisite-agent");
+    }
+
+    [Fact]
     public async Task DelegateToNamedAgentAsync_TargetHasNoDeclaredSkills_FallsBackToItsOwnIdAsTheSkillId()
     {
         var target = new AgentDefinition { Id = "peer-agent", Name = "Peer Agent", Description = "d" };

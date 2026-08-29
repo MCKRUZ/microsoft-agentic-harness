@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Application.AI.Common.Factories;
 using Application.AI.Common.Interfaces.Escalation;
 using Application.AI.Common.OpenTelemetry.Metrics;
 using Application.AI.Common.Services;
@@ -320,7 +321,23 @@ public sealed partial class CapabilityMatchSupervisor
                 // (AllowedTools = agentDef?.AllowedTools). AgentDefinition.AllowedTools is empty, not
                 // null, when the agent declares no ceiling, so this assignment is a direct 1:1 mapping
                 // of the same "empty means unrestricted" contract that path already relies on.
-                AllowedTools = target.AllowedTools
+                AllowedTools = target.AllowedTools,
+                // #518 correctness-review finding: without this, AgentExecutionContextFactory still
+                // stamps a prerequisite map whenever any of target's skills declares prerequisites, but
+                // ResolvePrerequisiteScope throws when no conversation scope is present — deterministic
+                // InvalidOperationException on every delegation to such a target. The ordinary-turn path
+                // this branch mirrors always supplies one via AgentConversationCache.WithConversationScope.
+                // Using the caller's real conversation id (IAgentExecutionContext.ConversationId) is
+                // deliberately avoided here — that property documents three different meanings across its
+                // callers (see its own remarks), and reusing it for a new purpose is the exact mistake
+                // that already forced a dedicated CallOnceScopeId property elsewhere in this codebase.
+                // target.Id is stable (bounded by the registered-agent count, not a fresh value per call)
+                // and scopes prerequisite unlock state to "this named target, delegated to by anyone" —
+                // the natural analogue of a conversation for a stateless, one-shot delegation call.
+                AdditionalProperties = new Dictionary<string, object>
+                {
+                    [AgentFactory.ConversationIdPropertyKey] = target.Id
+                }
             };
             var built = await _agentFactory.CreateAgentWithContextFromSkillsAsync(skillIds, options, ct);
             agent = built.Agent;
