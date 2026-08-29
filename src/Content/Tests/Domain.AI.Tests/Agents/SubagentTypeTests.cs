@@ -15,14 +15,15 @@ public sealed class SubagentTypeTests
     [InlineData(SubagentType.Verify, 2)]
     [InlineData(SubagentType.Execute, 3)]
     [InlineData(SubagentType.General, 4)]
+    [InlineData(SubagentType.NamedAgent, 5)]
     public void Values_HaveExpectedUnderlyingIntegers(SubagentType value, int expected)
     {
         ((int)value).Should().Be(expected);
     }
 
     [Fact]
-    public void Enum_HasExactlyFiveValues()
+    public void Enum_HasExactlySixValues()
     {
-        Enum.GetValues<SubagentType>().Should().HaveCount(5);
+        Enum.GetValues<SubagentType>().Should().HaveCount(6);
     }
 }

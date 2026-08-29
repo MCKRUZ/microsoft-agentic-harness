@@ -54,13 +54,22 @@ public static class PeerAgentContextFormatter
     /// </summary>
     /// <param name="registry">Discovers the full set of registered agents.</param>
     /// <param name="owningAgentId">
-    /// The calling agent's own id, excluded from its own peer list. <see langword="null"/> excludes
-    /// nothing — a caller with no owning agent (a bare skill invocation) is not itself a registered
-    /// peer, so there is nothing of its own to filter out.
+    /// The calling agent's own id, excluded from its own peer list. <see langword="null"/> yields
+    /// <em>no peers at all</em>, not "exclude nothing" — a caller with no owning id has no verified
+    /// self to filter out, and several real paths reach here with one (an orchestrator built via
+    /// <c>SkillAgentOptions</c> with no <c>OwningAgentId</c>, the parameterless
+    /// <c>CreateAgentFromSkillAsync(skillId)</c> overload). Injecting the full registry for those
+    /// callers reopens exactly the gap #518 exists to close — text the prompt receives that the
+    /// <c>Agents</c> lane never charges for, since <c>BuildRegistrationSnapshot</c> already treats a
+    /// null owning agent as zero sub-agents. Failing closed here keeps both sides of that agreement.
     /// </param>
-    public static List<AgentRegistration> GetPeers(IAgentMetadataRegistry registry, string? owningAgentId) =>
-        registry.GetAll()
+    public static List<AgentRegistration> GetPeers(IAgentMetadataRegistry registry, string? owningAgentId)
+    {
+        if (owningAgentId is null) return [];
+
+        return registry.GetAll()
             .Where(a => !string.Equals(a.Id, owningAgentId, StringComparison.OrdinalIgnoreCase))
             .Select(a => new AgentRegistration(a.Id, a.Name, a.Description))
             .ToList();
+    }
 }

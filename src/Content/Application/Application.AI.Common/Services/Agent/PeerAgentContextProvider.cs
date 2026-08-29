@@ -37,8 +37,9 @@ public sealed class PeerAgentContextProvider : AIContextProvider
     /// <param name="owningAgentId">
     /// This agent's own id — excluded from its own peer list so an agent is never offered itself as a
     /// delegation target. <see langword="null"/> when this agent has no owning <c>AGENT.md</c> (a bare
-    /// skill invocation), in which case nothing is excluded — such an agent is not itself a registered
-    /// peer, so there is nothing of its own to filter out.
+    /// skill invocation or a caller-curated orchestrator), in which case this provider injects
+    /// <em>nothing</em> — see <see cref="PeerAgentContextFormatter.GetPeers"/>'s own remarks for why
+    /// "exclude nothing" is unsafe here (it was this provider's own #518 correctness-review defect).
     /// </param>
     public PeerAgentContextProvider(IAgentMetadataRegistry agentRegistry, string? owningAgentId)
     {
