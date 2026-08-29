@@ -1179,4 +1179,35 @@ public sealed class ToolCallAdmissionPipelineTests
             "even with zero characters of the second call's own content able to fit, the plain "
             + "truncation marker must still survive so the model knows this is not a real empty result");
     }
+
+    [Fact]
+    public async Task TryApplyTextOutputPolicy_AggregateBudgetFullyExhausted_StillCarriesTheTruncationMarker()
+    {
+        // Second-round correctness-review/security-review finding on the same PR: the floor added to
+        // ReserveAggregateCeiling guarantees room for the PLAIN OutputTruncationMarker (24 chars) but
+        // not the much longer id-carrying marker (#521, ~107 chars) SpillAndBuildMarkerAsync builds.
+        // ApplyOutputPolicyAsync already falls back to a plain-marker cut when the id marker doesn't
+        // land (idMarkerLanded) — TryApplyTextOutputPolicyAsync had no equivalent, so once the budget
+        // was tight enough to fit the plain marker but not the id marker, this method returned a
+        // markerless cut of the caller's own content: no truncation signal at all, on the plan-step
+        // path (ToolUseStepExecutor), which per its own code discards WasTruncated entirely and reads
+        // truncation only from the marker embedded in the text itself.
+        var pipeline = AdmissionHarness.Pipeline(
+            outputCeiling: 1_000, aggregateLimit: 1_000, resultStore: AdmissionHarness.PersistedResultStore());
+
+        await pipeline.TryApplyTextOutputPolicyAsync(
+            ToolCallAdmission.Allow(), Tool, new string('x', 5_000), CancellationToken.None);
+
+        var second = await pipeline.TryApplyTextOutputPolicyAsync(
+            ToolCallAdmission.Allow(), Tool, new string('y', 5_000), CancellationToken.None);
+
+        second.Success.Should().BeTrue();
+        second.Result.Should().NotBeNullOrEmpty(
+            "an empty result with the aggregate budget fully spent is indistinguishable from the tool "
+            + "genuinely returning nothing — the model must always be told something was cut");
+        second.Result.Should().Contain("tool output truncated",
+            "the id-carrying marker may not fit this tight a budget, but the plain truncation marker "
+            + "must still survive — ToolUseStepExecutor reads truncation from the text itself, not "
+            + "from WasTruncated, so a markerless result here is read as a complete, real result");
+    }
 }

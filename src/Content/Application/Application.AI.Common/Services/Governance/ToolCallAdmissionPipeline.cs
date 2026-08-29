@@ -613,6 +613,24 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
         // make room for the marker, never more, and never lets the result exceed ceiling.
         var marker = await SpillAndBuildMarkerAsync(toolName, processed, effectiveCeiling).ConfigureAwait(false);
         var (withId, _) = BoundedText.Cap(processed, effectiveCeiling, marker, alwaysEmbedMarker: true);
+
+        // #522: correctness-review and security-review finding on the PR that introduced the aggregate
+        // budget's floor — ReserveAggregateCeiling's floor guarantees room for OutputTruncationMarker
+        // (24 chars) but NOT for this id-carrying marker (~107 chars), so effectiveCeiling can still be
+        // too small for `marker` to survive Cap's own "ceiling not larger than marker, drop it rather
+        // than overshoot" contract. Unlike ApplyOutputPolicyAsync, this method had no fallback for that
+        // case — the result silently lost every marker at once, not just the retrieval id, the same
+        // "no signal at all" defect the floor was meant to close, just one marker size further out.
+        // Falling back to a plain-marker cut mirrors ApplyOutputPolicyAsync's idMarkerLanded check, and
+        // is guaranteed to land: effectiveCeiling is always > OutputTruncationMarker.Length by
+        // construction of the floor, so alwaysEmbedMarker's append-and-cut branch always has room.
+        if (!withId.Contains(marker, StringComparison.Ordinal))
+        {
+            var (plainBounded, _) = BoundedText.Cap(processed, effectiveCeiling, OutputTruncationMarker, alwaysEmbedMarker: true);
+            SettleAggregateReservation(effectiveCeiling, plainBounded.Length);
+            return new TextOutputPolicyResult(Success: true, Result: plainBounded, WasTruncated: true);
+        }
+
         SettleAggregateReservation(effectiveCeiling, withId.Length);
         return new TextOutputPolicyResult(Success: true, Result: withId, WasTruncated: true);
     }
