@@ -193,4 +193,76 @@ public sealed class DefaultContextSnapshotComputerTests
 
         act.Should().Throw<ArgumentNullException>();
     }
+
+    [Fact]
+    public void Compute_LastCallPromptTokensOmitted_UnattributedTokensIsNull()
+    {
+        // A turn with no model call (a failed turn, or one with only local work) has nothing to
+        // reconcile against — every existing test above omits this parameter and must keep passing.
+        var snapshot = _sut.Compute(
+            conversationId: "conv-1",
+            turnIndex: 0,
+            turnId: "t-00",
+            history: [],
+            registrations: CategoryBreakdown.Empty,
+            turnLoaded: [],
+            capturedAtUtc: _now);
+
+        snapshot.UnattributedTokens.Should().BeNull();
+    }
+
+    [Fact]
+    public void Compute_LastCallPromptTokensExceedsCtxAfter_UnattributedTokensIsPositive()
+    {
+        // #517: context reached the model that no lane explains — the case the original,
+        // removed #507 attempt existed to surface, now computed against operands pinned to the
+        // same call and the same side of the turn boundary instead of an accumulated total.
+        var snapshot = _sut.Compute(
+            conversationId: "conv-1",
+            turnIndex: 0,
+            turnId: "t-00",
+            history: [],
+            registrations: Registrations(system: 1_000),
+            turnLoaded: [],
+            capturedAtUtc: _now,
+            lastCallPromptTokens: 1_500);
+
+        snapshot.CtxAfter.Total.Should().Be(1_000);
+        snapshot.UnattributedTokens.Should().Be(500);
+    }
+
+    [Fact]
+    public void Compute_LastCallPromptTokensUndershootsCtxAfter_UnattributedTokensIsNegative()
+    {
+        // The bar's own estimates overshot the real prompt — a signed value is what makes this
+        // direction distinguishable from the positive case, which a seventh additive ContextCategory
+        // could never represent.
+        var snapshot = _sut.Compute(
+            conversationId: "conv-1",
+            turnIndex: 0,
+            turnId: "t-00",
+            history: [],
+            registrations: Registrations(system: 2_000),
+            turnLoaded: [],
+            capturedAtUtc: _now,
+            lastCallPromptTokens: 1_700);
+
+        snapshot.UnattributedTokens.Should().Be(-300);
+    }
+
+    [Fact]
+    public void Compute_LastCallPromptTokensExactlyMatchesCtxAfter_UnattributedTokensIsZero()
+    {
+        var snapshot = _sut.Compute(
+            conversationId: "conv-1",
+            turnIndex: 0,
+            turnId: "t-00",
+            history: [],
+            registrations: Registrations(system: 900),
+            turnLoaded: [],
+            capturedAtUtc: _now,
+            lastCallPromptTokens: 900);
+
+        snapshot.UnattributedTokens.Should().Be(0);
+    }
 }

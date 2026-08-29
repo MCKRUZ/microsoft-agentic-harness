@@ -188,4 +188,44 @@ public sealed class ContextSnapshotsTests
 
         result.Should().BeEmpty();
     }
+
+    [SkippableFact]
+    public async Task RoundTrip_SignedUnattributedTokens_PersistsAndReadsBackExactly()
+    {
+        // #517: the field must survive exactly as stored — including negative (estimate overshoot),
+        // not just positive (unattributed context) — the bug the original attempt shipped with was
+        // the live SignalR stream carrying a real value while a page reload returned zero for the
+        // same turn because the store neither persisted nor rehydrated it.
+        _fixture.SkipIfUnavailable();
+        await EnsureSchemaAsync();
+
+        using var store = new PostgresObservabilityStore(_fixture.ConnectionString, _fixture.StoreLogger);
+        var convId = _fixture.NewConversationId();
+        var snapshot = MakeSnapshot(convId, turnIndex: 0, messages: 1200, system: 8200)
+            with
+        { UnattributedTokens = -350 };
+
+        await store.RecordContextSnapshotAsync(snapshot);
+        var read = await store.GetLatestSnapshotAsync(convId);
+
+        read!.UnattributedTokens.Should().Be(-350);
+    }
+
+    [SkippableFact]
+    public async Task RoundTrip_NoUnattributedTokens_PersistsAndReadsBackAsNull()
+    {
+        // The common case — a turn with no model call has nothing to reconcile against. Must read
+        // back as null, not 0, since 0 is a real (if unlikely) reconciliation result on its own.
+        _fixture.SkipIfUnavailable();
+        await EnsureSchemaAsync();
+
+        using var store = new PostgresObservabilityStore(_fixture.ConnectionString, _fixture.StoreLogger);
+        var convId = _fixture.NewConversationId();
+        var snapshot = MakeSnapshot(convId, turnIndex: 0, messages: 1200, system: 8200);
+
+        await store.RecordContextSnapshotAsync(snapshot);
+        var read = await store.GetLatestSnapshotAsync(convId);
+
+        read!.UnattributedTokens.Should().BeNull();
+    }
 }

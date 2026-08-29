@@ -89,6 +89,14 @@ export interface ContextSnapshotEvent {
   ctxAfter: CategoryBreakdown;
   loaded: LoadedItem[];
   capturedAtUtc: string;
+  /**
+   * Signed reconciliation gap between what ctxAfter attributed and what the
+   * provider actually billed for this turn's last model call (#517).
+   * Positive: context reached the model that no category explains. Negative:
+   * the bar's own estimates overshot the real prompt. `null` when no model
+   * call landed this turn.
+   */
+  unattributedTokens?: number | null;
 }
 
 export interface SessionRecord {

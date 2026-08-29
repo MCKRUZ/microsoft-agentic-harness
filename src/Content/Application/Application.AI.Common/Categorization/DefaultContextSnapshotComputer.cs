@@ -16,8 +16,9 @@ namespace Application.AI.Common.Categorization;
 /// (<see cref="ContextCategory.System"/>, <see cref="ContextCategory.Skills"/>,
 /// <see cref="ContextCategory.Tools"/>, <see cref="ContextCategory.Mcp"/>,
 /// <see cref="ContextCategory.Agents"/>) arrive already summed from the real system-prompt, skill,
-/// tool-schema and peer-agent text; <see cref="ContextCategory.Messages"/> is estimated over the
-/// post-turn transcript.
+/// tool-schema and peer-agent text; <see cref="ContextCategory.Messages"/> is estimated over
+/// <c>history</c> as the caller passes it — the turn's own not-yet-sent response must not be in
+/// there (#517; see <see cref="IContextSnapshotComputer.Compute"/>'s remarks on <c>history</c>).
 /// </para>
 /// <para>
 /// <b>What changed, and why it was wrong before (#507).</b> This class used to compute
@@ -30,11 +31,11 @@ namespace Application.AI.Common.Categorization;
 /// has always shown two of its six lanes.
 /// </para>
 /// <para>
-/// The provider's reported total is no longer consulted at all. Reconciling against it would need a
-/// measurement of this turn's <em>prompt</em>, and what the harness records is input tokens
-/// accumulated across every model call in the turn — see <see cref="ContextSnapshot"/>'s remarks. The
-/// breakdown now stands on its own measurements rather than on a subtraction from a number that means
-/// something else.
+/// The provider's reported total feeds exactly one figure now, computed against operands pinned to
+/// the same side of the turn boundary (#517): <see cref="ContextSnapshot.UnattributedTokens"/>. It
+/// does not feed any <see cref="ContextCategory"/> — those remain pure measurements of what was
+/// actually loaded, never a subtraction from a billed total. See that property's remarks for why this
+/// is safe where #507's original, removed attempt was not.
 /// </para>
 /// </remarks>
 public sealed class DefaultContextSnapshotComputer : IContextSnapshotComputer
@@ -47,7 +48,8 @@ public sealed class DefaultContextSnapshotComputer : IContextSnapshotComputer
         IReadOnlyList<ChatMessage> history,
         CategoryBreakdown registrations,
         IReadOnlyList<LoadedItem> turnLoaded,
-        DateTimeOffset capturedAtUtc)
+        DateTimeOffset capturedAtUtc,
+        int? lastCallPromptTokens = null)
     {
         ArgumentException.ThrowIfNullOrEmpty(conversationId);
         ArgumentException.ThrowIfNullOrEmpty(turnId);
@@ -70,6 +72,7 @@ public sealed class DefaultContextSnapshotComputer : IContextSnapshotComputer
             TurnId: turnId,
             CtxAfter: ctxAfter,
             Loaded: turnLoaded,
-            CapturedAtUtc: capturedAtUtc);
+            CapturedAtUtc: capturedAtUtc,
+            UnattributedTokens: lastCallPromptTokens is { } prompt ? prompt - ctxAfter.Total : null);
     }
 }

@@ -199,4 +199,54 @@ public class LlmUsageCaptureTests
         snapshot.Model.Should().Be("claude-haiku-4-5", "an explicitly recorded model must not be overridden by the default");
         snapshot.CostUsd.Should().Be(0.80m);
     }
+
+    // ── #517: per-call usage, distinct from the accumulated totals above ──
+    // The context-bar reconciliation needs one specific call's prompt size, not the turn's
+    // accumulated total across every model call — a turn with two tool round-trips would
+    // otherwise report roughly three prompts' worth against a snapshot of one.
+
+    [Fact]
+    public void TakeSnapshot_NoActivity_CallsIsEmpty()
+    {
+        var sut = CreateSut();
+
+        var snapshot = sut.TakeSnapshot();
+
+        snapshot.Calls.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void TakeSnapshot_MultipleCalls_RecordsEachSeparatelyInOrder()
+    {
+        var sut = CreateSut();
+
+        sut.Record(inputTokens: 1_000, outputTokens: 50, cacheRead: 0, cacheWrite: 0, model: "test-model");
+        sut.Record(inputTokens: 8_000, outputTokens: 200, cacheRead: 100, cacheWrite: 0, model: "test-model");
+        sut.Record(inputTokens: 9_500, outputTokens: 300, cacheRead: 0, cacheWrite: 50, model: "test-model");
+
+        var snapshot = sut.TakeSnapshot();
+
+        snapshot.Calls.Should().HaveCount(3,
+            "the accumulated total folds three calls into one number; reconciliation needs each on its own");
+        snapshot.Calls[0].InputTokens.Should().Be(1_000);
+        snapshot.Calls[1].InputTokens.Should().Be(8_000);
+        snapshot.Calls[1].CacheRead.Should().Be(100);
+        snapshot.Calls[2].InputTokens.Should().Be(9_500);
+        snapshot.Calls[2].CacheWrite.Should().Be(50);
+
+        // The accumulated totals must still be correct and independent of the per-call list.
+        snapshot.InputTokens.Should().Be(1_000 + 8_000 + 9_500);
+    }
+
+    [Fact]
+    public void TakeSnapshot_ResetsCalls()
+    {
+        var sut = CreateSut();
+        sut.Record(inputTokens: 1_000, outputTokens: 0, cacheRead: 0, cacheWrite: 0, model: "test-model");
+
+        _ = sut.TakeSnapshot();
+        var second = sut.TakeSnapshot();
+
+        second.Calls.Should().BeEmpty();
+    }
 }
