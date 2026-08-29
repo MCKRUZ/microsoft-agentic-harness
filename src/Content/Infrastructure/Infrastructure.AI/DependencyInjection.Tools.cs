@@ -116,6 +116,7 @@ public static partial class DependencyInjection
         services.AddKeyedSingleton<ITool>(DelegateToSubagentTool.ToolName, (sp, _) =>
             new DelegateToSubagentTool(
                 sp.GetRequiredService<Application.AI.Common.Interfaces.Agents.ISupervisor>(),
+                sp.GetRequiredService<Application.AI.Common.Interfaces.IAmbientRequestScope>(),
                 sp.GetRequiredService<ILogger<DelegateToSubagentTool>>()));
 
         // Dashboard control tool — acts on the connected dashboard UI (read view, set time range,

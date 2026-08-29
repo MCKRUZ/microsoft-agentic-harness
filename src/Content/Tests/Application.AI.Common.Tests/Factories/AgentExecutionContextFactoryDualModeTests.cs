@@ -64,7 +64,8 @@ public class AgentExecutionContextFactoryDualModeTests
             toolChainBuilder,
             new SkillPrerequisiteResolver(),
             new UnsandboxedSkillFileReader(),
-            Application.AI.Common.Tests.Governance.AdmissionHarness.PermissiveSanitizer());
+            Application.AI.Common.Tests.Governance.AdmissionHarness.PermissiveSanitizer(),
+            Mock.Of<IAgentMetadataRegistry>(r => r.GetAll() == new List<AgentDefinition>()));
     }
 
     [Fact]

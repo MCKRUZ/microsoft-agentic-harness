@@ -7,6 +7,7 @@ using Application.AI.Common.Interfaces.Tools;
 using Domain.AI.Agents;
 using Domain.AI.Governance;
 using Domain.AI.Orchestration;
+using Domain.AI.Skills;
 using Domain.Common.Config;
 using Domain.Common.Config.AI;
 using Domain.Common.Config.AI.Orchestration;
@@ -32,6 +33,7 @@ public sealed class CapabilityMatchSupervisorTests : IDisposable
     private readonly Mock<IAutonomyTierResolver> _tierResolverMock = new();
     private readonly Mock<IGovernanceAuditService> _auditServiceMock = new();
     private readonly Mock<IAgentFactory> _agentFactoryMock = new();
+    private readonly Mock<IAgentMetadataRegistry> _agentRegistryMock = new();
     private readonly IOptionsMonitor<AppConfig> _options;
     private readonly CapabilityMatchSupervisor _supervisor;
 
@@ -60,6 +62,7 @@ public sealed class CapabilityMatchSupervisorTests : IDisposable
             }
         };
         _options = Mock.Of<IOptionsMonitor<AppConfig>>(o => o.CurrentValue == config);
+        _agentRegistryMock.Setup(r => r.GetAll()).Returns(new List<AgentDefinition>());
 
         _defaultSelection = new AgentSelection
         {
@@ -84,7 +87,8 @@ public sealed class CapabilityMatchSupervisorTests : IDisposable
             Mock.Of<IToolChainBuilder>(),
             Mock.Of<ISkillPrerequisiteResolver>(),
             new UnsandboxedSkillFileReader(),
-            Infrastructure.AI.Tests.Planner.StepExecutors.PermissiveAdmission.PermissiveSanitizer());
+            Infrastructure.AI.Tests.Planner.StepExecutors.PermissiveAdmission.PermissiveSanitizer(),
+            _agentRegistryMock.Object);
 
         SetupDefaults();
 
@@ -97,6 +101,7 @@ public sealed class CapabilityMatchSupervisorTests : IDisposable
             _auditServiceMock.Object,
             contextFactory,
             _agentFactoryMock.Object,
+            _agentRegistryMock.Object,
             _options,
             NullLogger<CapabilityMatchSupervisor>.Instance);
     }
@@ -313,6 +318,153 @@ public sealed class CapabilityMatchSupervisorTests : IDisposable
                     && !r.FailureReason.Contains("Agent creation failed")),
                 It.IsAny<CancellationToken>()),
             Times.Once());
+    }
+
+    // ── DelegateToNamedAgentAsync (#518) ──────────────────────────────────────
+
+    [Fact]
+    public async Task DelegateToNamedAgentAsync_UnregisteredTarget_ReturnsFailWithoutCallingAgentFactory()
+    {
+        _agentRegistryMock.Setup(r => r.TryGet("no-such-agent")).Returns((AgentDefinition?)null);
+
+        var result = await _supervisor.DelegateToNamedAgentAsync("no-such-agent", "test task", "caller-agent");
+
+        result.IsSuccess.Should().BeFalse();
+        result.FailureReason.Should().Contain("no-such-agent");
+        _agentFactoryMock.Verify(
+            f => f.CreateAgentWithContextFromSkillsAsync(
+                It.IsAny<IReadOnlyList<string>>(), It.IsAny<SkillAgentOptions>(), It.IsAny<CancellationToken>()),
+            Times.Never(),
+            "an unregistered target must be refused before any agent is built");
+    }
+
+    [Fact]
+    public async Task DelegateToNamedAgentAsync_TargetIsTheCallingAgentItself_ReturnsFailWithoutLookup()
+    {
+        var result = await _supervisor.DelegateToNamedAgentAsync(
+            "same-agent", "test task", callingAgentId: "same-agent");
+
+        result.IsSuccess.Should().BeFalse();
+        result.FailureReason.Should().Contain("self");
+        _agentRegistryMock.Verify(r => r.TryGet(It.IsAny<string>()), Times.Never(),
+            "self-exclusion is a name comparison — it must not need a registry lookup to catch this case");
+    }
+
+    [Fact]
+    public async Task DelegateToNamedAgentAsync_NoCallingAgentId_SkipsSelfExclusionAndStillDelegates()
+    {
+        // A caller with no resolvable identity (no ambient request scope) is not refused — self-
+        // delegation by name is wasteful, not unsafe, and is still bounded by MaxDelegationDepth.
+        var target = new AgentDefinition { Id = "peer-agent", Name = "Peer Agent", Description = "d" };
+        _agentRegistryMock.Setup(r => r.TryGet("peer-agent")).Returns(target);
+        _agentFactoryMock
+            .Setup(f => f.CreateAgentWithContextFromSkillsAsync(
+                It.IsAny<IReadOnlyList<string>>(), It.IsAny<SkillAgentOptions>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new AgentBuildResult(new TestableAIAgent("NAMED_OUTPUT"), new AgentExecutionContext()));
+
+        var result = await _supervisor.DelegateToNamedAgentAsync(
+            "peer-agent", "test task", callingAgentId: null);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Output.Should().Be("NAMED_OUTPUT");
+    }
+
+    [Fact]
+    public async Task DelegateToNamedAgentAsync_RegisteredTarget_BuildsFromTheTargetsOwnSkillsAndRunsIt()
+    {
+        var target = new AgentDefinition
+        {
+            Id = "peer-agent",
+            Name = "Peer Agent",
+            Description = "d",
+            Skills = ["peer-skill-a", "peer-skill-b"]
+        };
+        _agentRegistryMock.Setup(r => r.TryGet("peer-agent")).Returns(target);
+
+        IReadOnlyList<string>? capturedSkillIds = null;
+        SkillAgentOptions? capturedOptions = null;
+        _agentFactoryMock
+            .Setup(f => f.CreateAgentWithContextFromSkillsAsync(
+                It.IsAny<IReadOnlyList<string>>(), It.IsAny<SkillAgentOptions>(), It.IsAny<CancellationToken>()))
+            .Callback<IReadOnlyList<string>, SkillAgentOptions, CancellationToken>(
+                (skillIds, options, _) =>
+                {
+                    capturedSkillIds = skillIds;
+                    capturedOptions = options;
+                })
+            .ReturnsAsync(new AgentBuildResult(new TestableAIAgent("NAMED_OUTPUT"), new AgentExecutionContext()));
+
+        var result = await _supervisor.DelegateToNamedAgentAsync(
+            "peer-agent", "UNIQUE_NAMED_TASK", callingAgentId: "caller-agent");
+
+        result.IsSuccess.Should().BeTrue();
+        result.Output.Should().Be("NAMED_OUTPUT");
+        // Bypasses ISubagentProfileRegistry entirely — it is built from the TARGET's own AGENT.md
+        // skills, exactly like an ordinary turn for that agent, not a built-in profile's fixed set.
+        capturedSkillIds.Should().Equal("peer-skill-a", "peer-skill-b");
+        capturedOptions!.OwningAgentId.Should().Be("peer-agent");
+        _profileRegistryMock.Verify(r => r.GetProfile(It.IsAny<SubagentType>()), Times.Never());
+    }
+
+    [Fact]
+    public async Task DelegateToNamedAgentAsync_TargetHasAToolCeiling_PassesItThroughToTheBuiltAgent()
+    {
+        // Correctness-review finding on this PR: named delegation must not bypass the target's own
+        // AGENT.md tool ceiling. ExecuteAgentTurnCommandHandler's ordinary-turn path always passes
+        // AllowedTools = agentDef?.AllowedTools — this branch must mirror that exactly, or an operator
+        // who locked an agent down to read-only tools via allowed-tools: sees that ceiling silently
+        // ignored whenever the agent is reached through delegate_task's target_agent instead of a
+        // normal turn.
+        var target = new AgentDefinition
+        {
+            Id = "locked-down-agent",
+            Name = "Locked Down Agent",
+            Description = "d",
+            AllowedTools = ["read_file", "list_files"]
+        };
+        _agentRegistryMock.Setup(r => r.TryGet("locked-down-agent")).Returns(target);
+
+        SkillAgentOptions? capturedOptions = null;
+        _agentFactoryMock
+            .Setup(f => f.CreateAgentWithContextFromSkillsAsync(
+                It.IsAny<IReadOnlyList<string>>(), It.IsAny<SkillAgentOptions>(), It.IsAny<CancellationToken>()))
+            .Callback<IReadOnlyList<string>, SkillAgentOptions, CancellationToken>(
+                (_, options, _) => capturedOptions = options)
+            .ReturnsAsync(new AgentBuildResult(new TestableAIAgent("out"), new AgentExecutionContext()));
+
+        await _supervisor.DelegateToNamedAgentAsync("locked-down-agent", "test task", "caller-agent");
+
+        capturedOptions!.AllowedTools.Should().Equal("read_file", "list_files");
+    }
+
+    [Fact]
+    public async Task DelegateToNamedAgentAsync_TargetHasNoDeclaredSkills_FallsBackToItsOwnIdAsTheSkillId()
+    {
+        var target = new AgentDefinition { Id = "peer-agent", Name = "Peer Agent", Description = "d" };
+        _agentRegistryMock.Setup(r => r.TryGet("peer-agent")).Returns(target);
+
+        IReadOnlyList<string>? capturedSkillIds = null;
+        _agentFactoryMock
+            .Setup(f => f.CreateAgentWithContextFromSkillsAsync(
+                It.IsAny<IReadOnlyList<string>>(), It.IsAny<SkillAgentOptions>(), It.IsAny<CancellationToken>()))
+            .Callback<IReadOnlyList<string>, SkillAgentOptions, CancellationToken>(
+                (skillIds, _, _) => capturedSkillIds = skillIds)
+            .ReturnsAsync(new AgentBuildResult(new TestableAIAgent("out"), new AgentExecutionContext()));
+
+        await _supervisor.DelegateToNamedAgentAsync("peer-agent", "test task", "caller-agent");
+
+        capturedSkillIds.Should().Equal("peer-agent");
+    }
+
+    [Fact]
+    public async Task DelegateToNamedAgentAsync_DepthLimitReached_ReturnsFailWithoutAnyLookup()
+    {
+        var result = await _supervisor.DelegateToNamedAgentAsync(
+            "peer-agent", "test task", "caller-agent", currentDelegationDepth: 3);
+
+        result.IsSuccess.Should().BeFalse();
+        result.FailureReason.Should().Contain("depth");
+        _agentRegistryMock.Verify(r => r.TryGet(It.IsAny<string>()), Times.Never());
     }
 
     private static DelegationRecord BuildStoreRecord(DelegationState state) => new()

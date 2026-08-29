@@ -1,3 +1,5 @@
+using Application.AI.Common.Interfaces;
+using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Agents;
 using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Services.Tools;
@@ -7,6 +9,7 @@ using Domain.AI.Governance;
 using Domain.AI.Sandbox;
 using Domain.Common.Config.AI.Governance;
 using Domain.AI.Models;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
 namespace Infrastructure.AI.Tools;
@@ -51,14 +54,25 @@ public sealed class DelegateToSubagentTool : ITool
     private static readonly IReadOnlyList<string> Operations = ["delegate"];
 
     private readonly ISupervisor _supervisor;
+    private readonly IAmbientRequestScope _ambientScope;
     private readonly ILogger<DelegateToSubagentTool> _logger;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="DelegateToSubagentTool"/> class.
     /// </summary>
-    public DelegateToSubagentTool(ISupervisor supervisor, ILogger<DelegateToSubagentTool> logger)
+    /// <param name="supervisor">Runs the delegation, either capability-matched or to a named target.</param>
+    /// <param name="ambientScope">
+    /// Bridges to the calling request's own scope so <c>target_agent</c> (#518) can resolve the
+    /// calling agent's own id for self-exclusion — see <c>.claude/rules/tools-and-mcp.md</c> for why
+    /// this keyed-singleton tool resolves scoped state this way instead of taking it as a constructor
+    /// dependency.
+    /// </param>
+    /// <param name="logger">Records delegation diagnostics.</param>
+    public DelegateToSubagentTool(
+        ISupervisor supervisor, IAmbientRequestScope ambientScope, ILogger<DelegateToSubagentTool> logger)
     {
         _supervisor = supervisor;
+        _ambientScope = ambientScope;
         _logger = logger;
     }
 
@@ -67,8 +81,12 @@ public sealed class DelegateToSubagentTool : ITool
 
     /// <inheritdoc />
     public string Description =>
-        "Delegate a self-contained subtask to the best-fit specialized subagent (the supervisor picks it). " +
-        "Returns the subagent's result. Parameters: 'task' (required) — what to do; " +
+        "Delegate a self-contained subtask to a subagent. Returns the subagent's result. " +
+        "Parameters: 'task' (required) — what to do; " +
+        "'target_agent' (optional) — the id of a specific registered peer agent to delegate to " +
+        "directly, if your instructions list one whose description fits this task; when supplied, " +
+        "'capabilities' and 'minimum_tier' are ignored and the named agent handles the task itself. " +
+        "Without 'target_agent', the best-fit specialized subagent is chosen automatically: " +
         "'capabilities' (optional) — comma-separated tool names the subagent needs (e.g. \"file_system,document_search\"); " +
         "'minimum_tier' (optional) — one of Restricted, Supervised, Autonomous (default Supervised). " +
         "Use this to hand off a well-scoped piece of work rather than doing it inline.";
@@ -131,6 +149,7 @@ public sealed class DelegateToSubagentTool : ITool
             return ToolResult.Fail(
                 $"Delegation depth limit ({MaxDelegationDepth}) reached; refusing to delegate further.");
 
+        var targetAgent = GetString(parameters, "target_agent");
         var capabilities = ParseCapabilities(GetString(parameters, "capabilities"));
         var minimumTier = ParseTier(GetString(parameters, "minimum_tier"));
 
@@ -139,13 +158,23 @@ public sealed class DelegateToSubagentTool : ITool
         s_delegationDepth.Value = depth + 1;
         try
         {
-            var result = await _supervisor.DelegateAsync(
-                task,
-                capabilities,
-                minimumTier,
-                currentDelegationDepth: depth,
-                toolOverrides: null,
-                cancellationToken);
+            // #518: 'target_agent' takes over entirely when supplied — capabilities/minimum_tier
+            // are meaningless once the caller has already named a specific peer.
+            var result = !string.IsNullOrWhiteSpace(targetAgent)
+                ? await _supervisor.DelegateToNamedAgentAsync(
+                    targetAgent,
+                    task,
+                    callingAgentId: ResolveCallingAgentId(),
+                    currentDelegationDepth: depth,
+                    toolOverrides: null,
+                    cancellationToken)
+                : await _supervisor.DelegateAsync(
+                    task,
+                    capabilities,
+                    minimumTier,
+                    currentDelegationDepth: depth,
+                    toolOverrides: null,
+                    cancellationToken);
 
             if (result.IsSuccess)
             {
@@ -167,6 +196,16 @@ public sealed class DelegateToSubagentTool : ITool
             s_delegationDepth.Value = depth;
         }
     }
+
+    /// <summary>
+    /// Resolves the calling agent's own id for <c>target_agent</c>'s self-exclusion (#518), best
+    /// effort. <see langword="null"/> when no request scope is ambient — a direct invocation, or any
+    /// caller outside a governed turn — in which case <see cref="ISupervisor.DelegateToNamedAgentAsync"/>
+    /// skips self-exclusion rather than refusing the call; see that method's own remarks for why a
+    /// missing identity is not treated as a self-delegation risk.
+    /// </summary>
+    private string? ResolveCallingAgentId()
+        => _ambientScope.Current?.GetService<IAgentExecutionContext>()?.AgentId;
 
     private static string? GetString(IReadOnlyDictionary<string, object?> parameters, string key)
         => parameters.TryGetValue(key, out var value) ? value?.ToString() : null;

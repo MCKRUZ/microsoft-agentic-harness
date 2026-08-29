@@ -31,10 +31,16 @@ and returns its output back to you. Its parameters:
 - `task` (required): a self-contained description of the subtask. The sub-agent sees
   **only** this text and none of the surrounding conversation, so include every piece
   of context it needs to succeed.
+- `target_agent` (optional): the id of a specific registered peer agent to delegate to
+  directly, when your own instructions list one whose description already fits this
+  subtask. Prefer this over `capabilities`/`minimum_tier` when you know exactly who
+  should handle the subtask — it skips selection entirely and hands the subtask to that
+  agent. `capabilities` and `minimum_tier` are ignored when this is set.
 - `capabilities` (optional): comma-separated tool names the sub-agent will need
   (e.g. `"file_system"`). Leave empty when the subtask is pure reasoning or writing.
+  Ignored when `target_agent` is set.
 - `minimum_tier` (optional): one of `Restricted`, `Supervised`, `Autonomous`
-  (default `Supervised`).
+  (default `Supervised`). Ignored when `target_agent` is set.
 
 Issue one `delegate_task` call per subtask. When subtasks are independent, delegate
 them all before synthesizing; when a later subtask depends on an earlier result, wait

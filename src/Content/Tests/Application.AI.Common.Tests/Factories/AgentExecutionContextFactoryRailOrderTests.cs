@@ -145,6 +145,7 @@ public sealed class AgentExecutionContextFactoryRailOrderTests : IDisposable
             new SkillPrerequisiteResolver(),
             new UnsandboxedSkillFileReader(),
             Application.AI.Common.Tests.Governance.AdmissionHarness.PermissiveSanitizer(),
+            Mock.Of<IAgentMetadataRegistry>(r => r.GetAll() == new List<Domain.AI.Agents.AgentDefinition>()),
             budgetTracker
                 ? new ContextBudgetTracker(
                     Mock.Of<IOptionsMonitor<AppConfig>>(m => m.CurrentValue == new AppConfig()),
@@ -164,6 +165,7 @@ public sealed class AgentExecutionContextFactoryRailOrderTests : IDisposable
 
         RailTypes(context).Should().Equal(
             [
+                typeof(PeerAgentContextProvider),         // instructions only; unconditional, no config gate
                 typeof(AgentSkillsProvider),              // contributes the framework's skill tools
                 typeof(ToolPermissionFilter),             // everything above it is filtered; nothing below is
                 typeof(KnowledgeMemoryContextProvider),   // instructions only
@@ -246,7 +248,7 @@ public sealed class AgentExecutionContextFactoryRailOrderTests : IDisposable
 
         // Control: the two rows really do differ, so this is not the same case asserted twice. Without
         // it, a factory that ignored the flag would satisfy both.
-        rail.Count.Should().Be(4 + (recall ? 2 : 0));
+        rail.Count.Should().Be(5 + (recall ? 2 : 0));
 
         rail[^1].Should().BeOfType<PerTurnBudgetContextProvider>(
             "the measurer charges the difference between what it is handed and the baseline it was built "

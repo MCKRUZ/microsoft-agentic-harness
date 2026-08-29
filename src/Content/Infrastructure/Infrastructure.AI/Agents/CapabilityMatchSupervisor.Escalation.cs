@@ -8,6 +8,7 @@ using Domain.AI.Agents;
 using Domain.AI.Escalation;
 using Domain.AI.Governance;
 using Domain.AI.Orchestration;
+using Domain.AI.Skills;
 using Domain.AI.Telemetry.Conventions;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
@@ -295,9 +296,41 @@ public sealed partial class CapabilityMatchSupervisor
         Stopwatch stopwatch,
         CancellationToken ct)
     {
-        var definition = _profileRegistry.GetProfile(selection.SelectedAgent.AgentType);
-        var agentContext = _contextFactory.CreateFromDelegation(definition, toolOverrides, currentDepth + 1, pendingRecord.DelegationId);
-        var agent = await _agentFactory.CreateAgentAsync(agentContext, ct);
+        // #518: a named-agent delegation (SubagentType.NamedAgent) has no ISubagentProfileRegistry
+        // entry — GetProfile only knows the built-in profiles. Build the runnable agent the same way
+        // an ordinary turn does for an AGENT.md-registered agent (skill resolution, full context
+        // provider rail — including PeerAgentContextProvider, so a delegated agent sees ITS OWN
+        // peers too) rather than the profile path's lightweight, skill-free CreateFromDelegation.
+        AIAgent agent;
+        if (selection.SelectedAgent.AgentType == SubagentType.NamedAgent)
+        {
+            var target = _agentRegistry.TryGet(selection.SelectedAgent.AgentId)
+                ?? throw new InvalidOperationException(
+                    $"Named delegation target '{selection.SelectedAgent.AgentId}' was validated at "
+                    + "selection time but is no longer registered.");
+            var skillIds = target.Skills is { Count: > 0 } ? target.Skills : [target.Id];
+            var options = new SkillAgentOptions
+            {
+                AgentNameOverride = target.Id,
+                OwningAgentId = target.Id,
+                AgentInstructions = target.Instructions,
+                // #518 correctness-review finding: omitting this let a named delegation bypass the
+                // target's own AGENT.md tool ceiling entirely — ExecuteAgentTurnCommandHandler's
+                // ordinary-turn path this branch claims to mirror always passes it
+                // (AllowedTools = agentDef?.AllowedTools). AgentDefinition.AllowedTools is empty, not
+                // null, when the agent declares no ceiling, so this assignment is a direct 1:1 mapping
+                // of the same "empty means unrestricted" contract that path already relies on.
+                AllowedTools = target.AllowedTools
+            };
+            var built = await _agentFactory.CreateAgentWithContextFromSkillsAsync(skillIds, options, ct);
+            agent = built.Agent;
+        }
+        else
+        {
+            var definition = _profileRegistry.GetProfile(selection.SelectedAgent.AgentType);
+            var agentContext = _contextFactory.CreateFromDelegation(definition, toolOverrides, currentDepth + 1, pendingRecord.DelegationId);
+            agent = await _agentFactory.CreateAgentAsync(agentContext, ct);
+        }
 
         // Run the delegated subagent on the task, isolating its usage accounting from the parent turn.
         // Creating the agent alone does no work — the task description must be sent as the subagent's

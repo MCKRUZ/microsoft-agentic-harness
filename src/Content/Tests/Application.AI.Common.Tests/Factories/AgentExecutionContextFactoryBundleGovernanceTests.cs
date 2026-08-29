@@ -8,6 +8,7 @@ using Application.AI.Common.Services.Governance;
 using Application.AI.Common.Services.Skills;
 using Application.AI.Common.Services.Tools;
 using Application.AI.Common.Tests.Governance;
+using Domain.AI.Agents;
 using Application.AI.Common.Tests.Helpers;
 using Domain.AI.Bundles;
 using Domain.AI.Governance;
@@ -146,7 +147,8 @@ public sealed class AgentExecutionContextFactoryBundleGovernanceTests : IDisposa
             // #480: GoverningToolContextProvider now resolves a sanitizer to scrub load_skill/
             // read_skill_resource output — this fixture builds bundle agents through the real
             // AIContextProvider rail, so it needs one, matching every real composition.
-            Application.AI.Common.Tests.Governance.AdmissionHarness.PermissiveSanitizer());
+            Application.AI.Common.Tests.Governance.AdmissionHarness.PermissiveSanitizer(),
+            Mock.Of<IAgentMetadataRegistry>(r => r.GetAll() == new List<AgentDefinition>()));
     }
 
     /// <summary>

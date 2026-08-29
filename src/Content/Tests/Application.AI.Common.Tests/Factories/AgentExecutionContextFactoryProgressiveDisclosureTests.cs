@@ -1,5 +1,6 @@
 using Application.AI.Common.Factories;
 using Application.AI.Common.Helpers;
+using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Context;
 using Application.AI.Common.Interfaces.Skills;
 using Application.AI.Common.Interfaces.Telemetry;
@@ -126,6 +127,7 @@ public sealed class AgentExecutionContextFactoryProgressiveDisclosureTests : IDi
             new SkillPrerequisiteResolver(),
             new UnsandboxedSkillFileReader(),
             Application.AI.Common.Tests.Governance.AdmissionHarness.PermissiveSanitizer(),
+            Mock.Of<IAgentMetadataRegistry>(r => r.GetAll() == new List<Domain.AI.Agents.AgentDefinition>()),
             budgetTracker);
     }
 

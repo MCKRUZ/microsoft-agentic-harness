@@ -4,6 +4,7 @@ using Application.AI.Common.Interfaces.Plugins;
 using Application.AI.Common.Interfaces.Skills;
 using Application.AI.Common.Interfaces.Telemetry;
 using Application.AI.Common.Interfaces.Tools;
+using Domain.AI.Agents;
 using Application.AI.Common.Services.Skills;
 using Application.AI.Common.Services.Tools;
 using Domain.AI.Skills;
@@ -67,7 +68,8 @@ public sealed class AgentExecutionContextFactoryGovernanceTests
             // #480: GoverningToolContextProvider now resolves a sanitizer to scrub load_skill/
             // read_skill_resource output — this fixture builds agents through the real
             // AIContextProvider rail, so it needs one, matching every real composition.
-            Application.AI.Common.Tests.Governance.AdmissionHarness.PermissiveSanitizer());
+            Application.AI.Common.Tests.Governance.AdmissionHarness.PermissiveSanitizer(),
+            Mock.Of<IAgentMetadataRegistry>(r => r.GetAll() == new List<AgentDefinition>()));
     }
 
     private void SetupMcpTools(params (string server, string[] tools)[] servers)

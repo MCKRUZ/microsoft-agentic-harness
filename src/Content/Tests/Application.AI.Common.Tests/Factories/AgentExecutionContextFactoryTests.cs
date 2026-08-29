@@ -83,6 +83,7 @@ public class AgentExecutionContextFactoryTests
             new SkillPrerequisiteResolver(),
             new UnsandboxedSkillFileReader(),
             Application.AI.Common.Tests.Governance.AdmissionHarness.PermissiveSanitizer(),
+            Mock.Of<IAgentMetadataRegistry>(r => r.GetAll() == new List<AgentDefinition>()),
             budgetTracker: budgetTracker,
             traceStore: traceStore);
     }
@@ -207,7 +208,8 @@ public class AgentExecutionContextFactoryTests
             new ToolChainBuilder(NullLogger<ToolChainBuilder>.Instance, sp),
             new SkillPrerequisiteResolver(),
             new UnsandboxedSkillFileReader(),
-            Application.AI.Common.Tests.Governance.AdmissionHarness.PermissiveSanitizer());
+            Application.AI.Common.Tests.Governance.AdmissionHarness.PermissiveSanitizer(),
+            Mock.Of<IAgentMetadataRegistry>(r => r.GetAll() == new List<AgentDefinition>()));
 
         var context = await factory.MapToAgentContextAsync(SimpleSkill(), new SkillAgentOptions());
 

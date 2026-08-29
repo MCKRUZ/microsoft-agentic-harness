@@ -76,7 +76,10 @@ public sealed class AgentFactoryCompactionWiringTests
             monitor,
             new ServiceCollection().BuildServiceProvider(),
             NullLoggerFactory.Instance,
-            null!, null!, new UnsandboxedSkillFileReader(), null!, null!, null!, null!, null!);
+            null!, null!, new UnsandboxedSkillFileReader(), null!,
+            Moq.Mock.Of<Application.AI.Common.Interfaces.IAgentMetadataRegistry>(
+                r => r.GetAll() == new List<Domain.AI.Agents.AgentDefinition>()),
+            null!, null!, null!, null!);
 
         var services = new ServiceCollection();
         services.AddSingleton(compactionService);

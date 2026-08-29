@@ -38,6 +38,7 @@ public sealed class CapabilityMatchSupervisorEscalationTests : IDisposable
     private readonly Mock<IAutonomyTierResolver> _tierResolverMock = new();
     private readonly Mock<IGovernanceAuditService> _auditServiceMock = new();
     private readonly Mock<IAgentFactory> _agentFactoryMock = new();
+    private readonly Mock<IAgentMetadataRegistry> _agentRegistryMock = new();
     private readonly Mock<IEscalationService> _escalationServiceMock = new();
     private readonly IOptionsMonitor<AppConfig> _options;
     private readonly CapabilityMatchSupervisor _supervisor;
@@ -77,6 +78,7 @@ public sealed class CapabilityMatchSupervisorEscalationTests : IDisposable
             }
         };
         _options = Mock.Of<IOptionsMonitor<AppConfig>>(o => o.CurrentValue == config);
+        _agentRegistryMock.Setup(r => r.GetAll()).Returns(new List<AgentDefinition>());
 
         SetupDefaults();
 
@@ -88,7 +90,8 @@ public sealed class CapabilityMatchSupervisorEscalationTests : IDisposable
             Mock.Of<IToolChainBuilder>(),
             Mock.Of<ISkillPrerequisiteResolver>(),
             new UnsandboxedSkillFileReader(),
-            Infrastructure.AI.Tests.Planner.StepExecutors.PermissiveAdmission.PermissiveSanitizer());
+            Infrastructure.AI.Tests.Planner.StepExecutors.PermissiveAdmission.PermissiveSanitizer(),
+            _agentRegistryMock.Object);
 
         _supervisor = new CapabilityMatchSupervisor(
             _strategyMock.Object,
@@ -99,6 +102,7 @@ public sealed class CapabilityMatchSupervisorEscalationTests : IDisposable
             _auditServiceMock.Object,
             contextFactory,
             _agentFactoryMock.Object,
+            _agentRegistryMock.Object,
             _options,
             NullLogger<CapabilityMatchSupervisor>.Instance,
             modelRouter: null,

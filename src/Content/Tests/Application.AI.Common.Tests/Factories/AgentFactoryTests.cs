@@ -72,7 +72,10 @@ public class AgentFactoryTests
             monitor,
             new ServiceCollection().BuildServiceProvider(),
             NullLoggerFactory.Instance,
-            null!, null!, new UnsandboxedSkillFileReader(), null!, null!, null!, null!, null!);
+            null!, null!, new UnsandboxedSkillFileReader(), null!,
+            Moq.Mock.Of<Application.AI.Common.Interfaces.IAgentMetadataRegistry>(
+                r => r.GetAll() == new List<Domain.AI.Agents.AgentDefinition>()),
+            null!, null!, null!, null!);
 
         _factory = new AgentFactory(
             NullLogger<AgentFactory>.Instance,
