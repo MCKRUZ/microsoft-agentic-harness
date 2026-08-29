@@ -249,4 +249,29 @@ public class LlmUsageCaptureTests
 
         second.Calls.Should().BeEmpty();
     }
+
+    [Fact]
+    public void LastCallPromptTokens_NoCalls_IsNull()
+    {
+        var sut = CreateSut();
+
+        var snapshot = sut.TakeSnapshot();
+
+        snapshot.LastCallPromptTokens.Should().BeNull();
+    }
+
+    [Fact]
+    public void LastCallPromptTokens_SumsInputCacheReadAndCacheWrite_ForTheLastCallOnly()
+    {
+        var sut = CreateSut();
+
+        sut.Record(inputTokens: 1_000, outputTokens: 0, cacheRead: 0, cacheWrite: 0, model: "test-model");
+        sut.Record(inputTokens: 8_450, outputTokens: 0, cacheRead: 100, cacheWrite: 50, model: "test-model");
+
+        var snapshot = sut.TakeSnapshot();
+
+        snapshot.LastCallPromptTokens.Should().Be(8_450 + 100 + 50,
+            "the first call's 1,000 tokens must not fold into the reconciliation figure — only the " +
+            "last call's own prompt matters for #517");
+    }
 }

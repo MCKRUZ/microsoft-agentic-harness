@@ -99,4 +99,17 @@ public record LlmUsageSnapshot(
     /// context window as it stood for the call that just ran."
     /// </summary>
     public IReadOnlyList<LlmCallUsage> Calls { get; init; } = Array.Empty<LlmCallUsage>();
+
+    /// <summary>
+    /// The turn's last model call's own prompt size — input, cache-read, and cache-write tokens for
+    /// that one call, all three real prompt content (<c>LlmCostCalculator</c> prices them identically).
+    /// This is the figure a context-bar reconciliation needs (#517), never <see cref="InputTokens"/>
+    /// above, which accumulates across every call in the turn and answers "what did the whole turn
+    /// cost," not "how big was the context window for the call that just ran." Null when no call
+    /// landed this turn.
+    /// </summary>
+    public int? LastCallPromptTokens =>
+        Calls.Count > 0
+            ? Calls[^1].InputTokens + Calls[^1].CacheRead + Calls[^1].CacheWrite
+            : null;
 }

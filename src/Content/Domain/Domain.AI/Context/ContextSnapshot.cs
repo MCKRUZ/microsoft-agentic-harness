@@ -35,6 +35,16 @@ namespace Domain.AI.Context;
 /// includes this turn's own not-yet-sent assistant reply. Both were the two "same side of the turn
 /// boundary" gaps #517 tracked.
 /// </para>
+/// <para>
+/// One real, known gap still shows up here as a nonzero figure rather than a false one: intra-turn
+/// tool-round-trip messages (a tool call and its result, exchanged mid-turn) are invisible to
+/// <see cref="CategoryBreakdown.Messages"/> the same way they are to
+/// <c>RegistrationBreakdownCalculator.TokensFor(SkillRegistration)</c>'s own remarks — whether they
+/// ever land in the estimated transcript depends on the durable tool-call replay path, not on
+/// anything this turn does. On a tool-heavy turn that content genuinely was billed as input, so a
+/// positive <see cref="UnattributedTokens"/> there is a true reconciliation signal, not noise —
+/// exactly the "context reached the model that no lane explains" case this field exists to surface.
+/// </para>
 /// </remarks>
 public sealed record ContextSnapshot(
     string ConversationId,

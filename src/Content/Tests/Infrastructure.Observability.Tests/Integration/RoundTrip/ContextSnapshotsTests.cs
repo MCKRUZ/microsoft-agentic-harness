@@ -202,8 +202,7 @@ public sealed class ContextSnapshotsTests
         using var store = new PostgresObservabilityStore(_fixture.ConnectionString, _fixture.StoreLogger);
         var convId = _fixture.NewConversationId();
         var snapshot = MakeSnapshot(convId, turnIndex: 0, messages: 1200, system: 8200)
-            with
-        { UnattributedTokens = -350 };
+            with { UnattributedTokens = -350 };
 
         await store.RecordContextSnapshotAsync(snapshot);
         var read = await store.GetLatestSnapshotAsync(convId);

@@ -273,16 +273,6 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 					request.UserMessage,
 					responseText,
 					toolsInvoked);
-				// #517: the last call's own prompt tokens — never usage's accumulated total, which
-				// sums every model call in the turn and would misrepresent a multi-round-trip turn
-				// as having a context window several times its real end-of-turn size. Includes
-				// cache-read/cache-write alongside plain input tokens because all three are real
-				// prompt content for that one call (LlmCostCalculator prices them the same way).
-				var lastCall = usage.Calls.Count > 0 ? usage.Calls[^1] : null;
-				var lastCallPromptTokens = lastCall is not null
-					? lastCall.InputTokens + lastCall.CacheRead + lastCall.CacheWrite
-					: (int?)null;
-
 				var snapshot = _snapshotComputer.Compute(
 					conversationId: request.ConversationId,
 					turnIndex: request.TurnNumber,
@@ -290,12 +280,12 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 					// #517: pre-response history — the state the last call's prompt actually saw.
 					// updatedHistory (below) additionally carries this turn's own assistant reply,
 					// which is output, never billed as input, and would misalign Messages against
-					// lastCallPromptTokens by exactly one message.
+					// usage.LastCallPromptTokens by exactly one message.
 					history: messages,
 					registrations: registrations,
 					turnLoaded: turnLoaded,
 					capturedAtUtc: _timeProvider.GetUtcNow(),
-					lastCallPromptTokens: lastCallPromptTokens);
+					lastCallPromptTokens: usage.LastCallPromptTokens);
 
 				// RecordLoadedBodiesAsync writes to the context_snapshot_loaded_bodies
 				// sidecar table — keeps the snapshot row + SignalR wire small (just
