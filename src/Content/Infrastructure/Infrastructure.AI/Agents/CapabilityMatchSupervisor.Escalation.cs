@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using Application.AI.Common.Factories;
 using Application.AI.Common.Interfaces.Escalation;
+using Application.AI.Common.Interfaces.Traces;
 using Application.AI.Common.OpenTelemetry.Metrics;
 using Application.AI.Common.Services;
 using Application.AI.Common.Services.Tools;
@@ -303,6 +304,8 @@ public sealed partial class CapabilityMatchSupervisor
         // provider rail — including PeerAgentContextProvider, so a delegated agent sees ITS OWN
         // peers too) rather than the profile path's lightweight, skill-free CreateFromDelegation.
         AIAgent agent;
+        AgentExecutionContext? namedDelegationContext = null;
+        string? namedDelegationScope = null;
         if (selection.SelectedAgent.AgentType == SubagentType.NamedAgent)
         {
             var target = _agentRegistry.TryGet(selection.SelectedAgent.AgentId)
@@ -310,6 +313,16 @@ public sealed partial class CapabilityMatchSupervisor
                     $"Named delegation target '{selection.SelectedAgent.AgentId}' was validated at "
                     + "selection time but is no longer registered.");
             var skillIds = target.Skills is { Count: > 0 } ? target.Skills : [target.Id];
+            // #518 security-review finding: this scope gates SkillPrerequisiteMiddleware's tool
+            // withholding — a capability gate, not a hint. An earlier version of this fix scoped it to
+            // target.Id, stable but shared by EVERY caller who ever delegates to this agent — one
+            // tenant unlocking a gated skill permanently unlocked it for every other tenant, forever,
+            // breaking the exact cross-caller isolation AgentConversationCache.Evict's
+            // ClearConversation call exists to guarantee for ordinary conversations. The delegation id
+            // is unique per call, so no two callers ever share it, and it is explicitly cleared in
+            // FinalizeNamedDelegationScopeAsync once this run completes, so it never outlives the one
+            // delegation it was minted for.
+            namedDelegationScope = pendingRecord.DelegationId.ToString();
             var options = new SkillAgentOptions
             {
                 AgentNameOverride = target.Id,
@@ -327,20 +340,18 @@ public sealed partial class CapabilityMatchSupervisor
                 // ResolvePrerequisiteScope throws when no conversation scope is present — deterministic
                 // InvalidOperationException on every delegation to such a target. The ordinary-turn path
                 // this branch mirrors always supplies one via AgentConversationCache.WithConversationScope.
-                // Using the caller's real conversation id (IAgentExecutionContext.ConversationId) is
-                // deliberately avoided here — that property documents three different meanings across its
-                // callers (see its own remarks), and reusing it for a new purpose is the exact mistake
-                // that already forced a dedicated CallOnceScopeId property elsewhere in this codebase.
-                // target.Id is stable (bounded by the registered-agent count, not a fresh value per call)
-                // and scopes prerequisite unlock state to "this named target, delegated to by anyone" —
-                // the natural analogue of a conversation for a stateless, one-shot delegation call.
                 AdditionalProperties = new Dictionary<string, object>
                 {
-                    [AgentFactory.ConversationIdPropertyKey] = target.Id
+                    [AgentFactory.ConversationIdPropertyKey] = namedDelegationScope
                 }
             };
             var built = await _agentFactory.CreateAgentWithContextFromSkillsAsync(skillIds, options, ct);
             agent = built.Agent;
+            // #518 correctness-review finding: the profile branch's CreateFromDelegation context never
+            // holds a trace writer, but this path can — AgentExecutionContextFactory stamps one
+            // whenever execution tracing is enabled, and nothing else on a one-shot delegation's path
+            // ever completes/disposes it. Held here so the finally below can finalize it after the run.
+            namedDelegationContext = built.Context;
         }
         else
         {
@@ -373,6 +384,8 @@ public sealed partial class CapabilityMatchSupervisor
         finally
         {
             LlmUsageCapture.Current = previousUsage;
+            if (namedDelegationContext is not null)
+                await FinalizeNamedDelegationScopeAsync(namedDelegationContext, namedDelegationScope!, ct);
         }
 
         stopwatch.Stop();
@@ -402,6 +415,50 @@ public sealed partial class CapabilityMatchSupervisor
 
         var output = response.Text ?? string.Empty;
         return DelegationResult.Success(output, usage.InputTokens + usage.OutputTokens, durationMs);
+    }
+
+    /// <summary>
+    /// Finalizes a named delegation's one-shot execution scope once its run completes, success or
+    /// failure (#518, two review findings on the same code path). Completes and disposes the run's
+    /// <see cref="ITraceWriter"/> if execution tracing stamped one into the built context — a
+    /// one-shot delegation has no <c>AgentConversationCache</c> eviction to drive that, unlike an
+    /// ordinary turn, so it must happen explicitly here or the manifest is permanently left
+    /// <c>write_completed: false</c> and the writer's handle/semaphore never released. Then clears the
+    /// skill-prerequisite unlock state recorded under this delegation's scope id — that scope gates
+    /// real tool withholding (<c>SkillPrerequisiteMiddleware</c>), so it must never outlive the single
+    /// delegation it was minted for, or one caller's unlock silently persists for the next caller to
+    /// delegate to the same target.
+    /// </summary>
+    private async Task FinalizeNamedDelegationScopeAsync(
+        AgentExecutionContext context, string scope, CancellationToken ct)
+    {
+        if (context.AdditionalProperties is not null
+            && context.AdditionalProperties.TryGetValue(ITraceWriter.AdditionalPropertiesKey, out var stashed)
+            && stashed is ITraceWriter writer)
+        {
+            try
+            {
+                // CancellationToken.None: this finalization must not be skipped just because the
+                // delegation's own token was cancelled or timed out — matches
+                // AgentConversationCache.CompleteTraceWriter's identical reasoning for the ordinary-turn
+                // path this mirrors.
+                await writer.CompleteAsync(CancellationToken.None);
+            }
+            catch (Exception ex)
+            {
+                // Swallowed, but logged: a run whose manifest was never stamped complete is
+                // indistinguishable on disk from one still in flight, so silence would hide the gap.
+                _logger.LogWarning(ex,
+                    "Failed to finalize the execution trace for delegation {DelegationId} — its "
+                    + "manifest will stay marked incomplete.", scope);
+            }
+            finally
+            {
+                await writer.DisposeAsync();
+            }
+        }
+
+        _completionTracker.ClearConversation(scope);
     }
 
     private async Task RecordCompletion(DelegationRecord pendingRecord, CancellationToken ct)

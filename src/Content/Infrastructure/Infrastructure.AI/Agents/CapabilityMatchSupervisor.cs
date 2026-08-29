@@ -6,6 +6,7 @@ using Application.AI.Common.Interfaces.Agents;
 using Application.AI.Common.Interfaces.Escalation;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Routing;
+using Application.AI.Common.Interfaces.Skills;
 using Application.AI.Common.OpenTelemetry.Metrics;
 using Domain.AI.Agents;
 using Domain.AI.Escalation;
@@ -40,6 +41,7 @@ public sealed partial class CapabilityMatchSupervisor : ISupervisor, IDisposable
     private readonly AgentExecutionContextFactory _contextFactory;
     private readonly IAgentFactory _agentFactory;
     private readonly IAgentMetadataRegistry _agentRegistry;
+    private readonly ISkillCompletionTracker _completionTracker;
     private readonly IModelRouter? _modelRouter;
     private readonly IEscalationService? _escalationService;
     private readonly IOptionsMonitor<AppConfig> _options;
@@ -62,6 +64,12 @@ public sealed partial class CapabilityMatchSupervisor : ISupervisor, IDisposable
     /// Discovers <c>AGENT.md</c>-registered peer agents for <see cref="DelegateToNamedAgentAsync"/>
     /// (#518) — resolving and validating the target the caller named.
     /// </param>
+    /// <param name="completionTracker">
+    /// Clears the per-delegation skill-prerequisite unlock scope after a named delegation finishes
+    /// (#518 security-review finding) — see <see cref="ExecuteAgent"/>'s remarks for why the scope is
+    /// the delegation id, not the target agent's id, and must be explicitly cleared here since a
+    /// one-shot delegation has no cache eviction to hang the clear off.
+    /// </param>
     /// <param name="options">Application configuration for orchestration settings.</param>
     /// <param name="logger">Logger instance.</param>
     /// <param name="modelRouter">Optional model router for complexity-aware agent selection.</param>
@@ -76,6 +84,7 @@ public sealed partial class CapabilityMatchSupervisor : ISupervisor, IDisposable
         AgentExecutionContextFactory contextFactory,
         IAgentFactory agentFactory,
         IAgentMetadataRegistry agentRegistry,
+        ISkillCompletionTracker completionTracker,
         IOptionsMonitor<AppConfig> options,
         ILogger<CapabilityMatchSupervisor> logger,
         IModelRouter? modelRouter = null,
@@ -90,6 +99,7 @@ public sealed partial class CapabilityMatchSupervisor : ISupervisor, IDisposable
         _contextFactory = contextFactory;
         _agentFactory = agentFactory;
         _agentRegistry = agentRegistry;
+        _completionTracker = completionTracker;
         _options = options;
         _logger = logger;
         _modelRouter = modelRouter;

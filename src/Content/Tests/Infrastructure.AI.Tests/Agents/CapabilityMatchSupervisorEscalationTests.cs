@@ -103,6 +103,7 @@ public sealed class CapabilityMatchSupervisorEscalationTests : IDisposable
             contextFactory,
             _agentFactoryMock.Object,
             _agentRegistryMock.Object,
+            Mock.Of<ISkillCompletionTracker>(),
             _options,
             NullLogger<CapabilityMatchSupervisor>.Instance,
             modelRouter: null,

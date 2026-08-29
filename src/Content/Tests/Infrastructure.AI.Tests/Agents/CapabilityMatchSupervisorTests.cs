@@ -4,6 +4,7 @@ using Application.AI.Common.Interfaces.Agents;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Skills;
 using Application.AI.Common.Interfaces.Tools;
+using Application.AI.Common.Interfaces.Traces;
 using Domain.AI.Agents;
 using Domain.AI.Governance;
 using Domain.AI.Orchestration;
@@ -34,6 +35,7 @@ public sealed class CapabilityMatchSupervisorTests : IDisposable
     private readonly Mock<IGovernanceAuditService> _auditServiceMock = new();
     private readonly Mock<IAgentFactory> _agentFactoryMock = new();
     private readonly Mock<IAgentMetadataRegistry> _agentRegistryMock = new();
+    private readonly Mock<ISkillCompletionTracker> _completionTrackerMock = new();
     private readonly IOptionsMonitor<AppConfig> _options;
     private readonly CapabilityMatchSupervisor _supervisor;
 
@@ -102,6 +104,7 @@ public sealed class CapabilityMatchSupervisorTests : IDisposable
             contextFactory,
             _agentFactoryMock.Object,
             _agentRegistryMock.Object,
+            _completionTrackerMock.Object,
             _options,
             NullLogger<CapabilityMatchSupervisor>.Instance);
     }
@@ -466,8 +469,90 @@ public sealed class CapabilityMatchSupervisorTests : IDisposable
         await _supervisor.DelegateToNamedAgentAsync("prerequisite-agent", "test task", "caller-agent");
 
         capturedOptions!.AdditionalProperties.Should().NotBeNull();
-        capturedOptions.AdditionalProperties!.Should().ContainKey(AgentFactory.ConversationIdPropertyKey)
-            .WhoseValue.Should().Be("prerequisite-agent");
+        capturedOptions.AdditionalProperties!.Should().ContainKey(AgentFactory.ConversationIdPropertyKey);
+        var scope = (string)capturedOptions.AdditionalProperties[AgentFactory.ConversationIdPropertyKey];
+        Guid.TryParse(scope, out _).Should().BeTrue(
+            "the scope must be the per-delegation id, not the target agent's own (stable, shared) id");
+    }
+
+    [Fact]
+    public async Task DelegateToNamedAgentAsync_TwoDelegationsToTheSameTarget_GetIsolatedPrerequisiteScopes()
+    {
+        // #518 security-review finding: scoping to target.Id (constant for every caller) let one
+        // tenant's unlocked prerequisite skill permanently unlock the gated tools for every other
+        // caller who later delegates to the same target. Two separate delegations to the same target
+        // must never share a scope value.
+        var target = new AgentDefinition { Id = "shared-target", Name = "Shared Target", Description = "d" };
+        _agentRegistryMock.Setup(r => r.TryGet("shared-target")).Returns(target);
+
+        var capturedScopes = new List<string>();
+        _agentFactoryMock
+            .Setup(f => f.CreateAgentWithContextFromSkillsAsync(
+                It.IsAny<IReadOnlyList<string>>(), It.IsAny<SkillAgentOptions>(), It.IsAny<CancellationToken>()))
+            .Callback<IReadOnlyList<string>, SkillAgentOptions, CancellationToken>(
+                (_, options, _) => capturedScopes.Add(
+                    (string)options.AdditionalProperties![AgentFactory.ConversationIdPropertyKey]))
+            .ReturnsAsync(new AgentBuildResult(new TestableAIAgent("out"), new AgentExecutionContext()));
+
+        await _supervisor.DelegateToNamedAgentAsync("shared-target", "task one", "caller-a");
+        await _supervisor.DelegateToNamedAgentAsync("shared-target", "task two", "caller-b");
+
+        capturedScopes.Should().HaveCount(2);
+        capturedScopes[0].Should().NotBe(capturedScopes[1],
+            "two different delegations to the same target must never share prerequisite-unlock scope");
+    }
+
+    [Fact]
+    public async Task DelegateToNamedAgentAsync_RunCompletes_ClearsThePrerequisiteScope()
+    {
+        // #518 security-review finding: the delegation-scoped unlock state must not outlive the
+        // delegation it was created for, or it accumulates forever with nothing to clear it.
+        var target = new AgentDefinition { Id = "cleared-target", Name = "Cleared Target", Description = "d" };
+        _agentRegistryMock.Setup(r => r.TryGet("cleared-target")).Returns(target);
+
+        string? capturedScope = null;
+        _agentFactoryMock
+            .Setup(f => f.CreateAgentWithContextFromSkillsAsync(
+                It.IsAny<IReadOnlyList<string>>(), It.IsAny<SkillAgentOptions>(), It.IsAny<CancellationToken>()))
+            .Callback<IReadOnlyList<string>, SkillAgentOptions, CancellationToken>(
+                (_, options, _) => capturedScope =
+                    (string)options.AdditionalProperties![AgentFactory.ConversationIdPropertyKey])
+            .ReturnsAsync(new AgentBuildResult(new TestableAIAgent("out"), new AgentExecutionContext()));
+
+        await _supervisor.DelegateToNamedAgentAsync("cleared-target", "test task", "caller-agent");
+
+        capturedScope.Should().NotBeNull();
+        _completionTrackerMock.Verify(t => t.ClearConversation(capturedScope!), Times.Once);
+    }
+
+    [Fact]
+    public async Task DelegateToNamedAgentAsync_ExecutionTracingStampedAWriter_CompletesAndDisposesIt()
+    {
+        // Correctness-review finding: the profile branch's CreateFromDelegation context never holds a
+        // trace writer, but CreateAgentWithContextFromSkillsAsync's context can when execution tracing
+        // is enabled — and nothing on a one-shot delegation's path completed or disposed it, silently
+        // leaving the run's manifest.json permanently stamped write_completed: false and its
+        // SemaphoreSlim/file handle unreleased.
+        var target = new AgentDefinition { Id = "traced-target", Name = "Traced Target", Description = "d" };
+        _agentRegistryMock.Setup(r => r.TryGet("traced-target")).Returns(target);
+
+        var writerMock = new Mock<ITraceWriter>();
+        var builtContext = new AgentExecutionContext
+        {
+            AdditionalProperties = new Dictionary<string, object>
+            {
+                [ITraceWriter.AdditionalPropertiesKey] = writerMock.Object
+            }
+        };
+        _agentFactoryMock
+            .Setup(f => f.CreateAgentWithContextFromSkillsAsync(
+                It.IsAny<IReadOnlyList<string>>(), It.IsAny<SkillAgentOptions>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new AgentBuildResult(new TestableAIAgent("out"), builtContext));
+
+        await _supervisor.DelegateToNamedAgentAsync("traced-target", "test task", "caller-agent");
+
+        writerMock.Verify(w => w.CompleteAsync(It.IsAny<CancellationToken>()), Times.Once);
+        writerMock.Verify(w => w.DisposeAsync(), Times.Once);
     }
 
     [Fact]
