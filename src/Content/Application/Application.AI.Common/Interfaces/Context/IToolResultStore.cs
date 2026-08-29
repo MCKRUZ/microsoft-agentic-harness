@@ -17,16 +17,31 @@ public interface IToolResultStore
     /// <param name="toolName">The name of the tool that produced the result.</param>
     /// <param name="operation">The specific operation within the tool, if applicable.</param>
     /// <param name="fullOutput">The complete tool output to evaluate and potentially store.</param>
+    /// <param name="sizeThreshold">
+    /// The size, in characters, above which <paramref name="fullOutput"/> must be persisted — compared
+    /// in place of the store's own configured size limit when supplied. A caller that already cut
+    /// <paramref name="fullOutput"/>'s model-facing copy to a ceiling smaller than that configured
+    /// limit — <c>ToolCallAdmissionPipeline</c>'s aggregate per-message budget shrinks the ceiling a
+    /// single result is cut to below <c>PerResultCharLimit</c> (#522) — must pass that same ceiling
+    /// here. Re-deriving the spill decision from a threshold the caller's own cut never used would
+    /// silently judge a perfectly normal-sized result "too small to bother spilling" and leave a
+    /// truncated, unrecoverable result with no retrieval id. The comparison still runs either way — a
+    /// caller can shrink the threshold that applies, never bypass the check outright. Defaults to
+    /// <see langword="null"/> so a caller with no ceiling of its own keeps today's size-based behavior,
+    /// compared against the store's own configured limit.
+    /// </param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>
-    /// A <see cref="ToolResultReference"/> containing either the full content as a preview
-    /// (for small results) or a truncated preview with a disk path (for large results).
+    /// A <see cref="ToolResultReference"/> containing either the full content as a preview (when
+    /// <paramref name="fullOutput"/> is at or under whichever threshold applied) or a truncated preview
+    /// with a disk path (when it exceeds that threshold).
     /// </returns>
     Task<ToolResultReference> StoreIfLargeAsync(
         string sessionId,
         string toolName,
         string? operation,
         string fullOutput,
+        int? sizeThreshold = null,
         CancellationToken cancellationToken = default);
 
     /// <summary>

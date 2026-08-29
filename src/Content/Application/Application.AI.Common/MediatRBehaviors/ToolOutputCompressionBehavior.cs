@@ -123,7 +123,7 @@ public sealed class ToolOutputCompressionBehavior<TRequest, TResponse>
             toolRequest.ToolName,
             operation: null,
             redactedOutput,
-            cancellationToken);
+            cancellationToken: cancellationToken);
 
         var compressionResult = await _compressor.CompressAsync(
             redactedOutput,

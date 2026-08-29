@@ -39,6 +39,7 @@ internal static class AdmissionHarness
         ICompositeResponseSanitizer? sanitizer = null,
         IContentRedactionFilter? redactionFilter = null,
         int? outputCeiling = null,
+        int? aggregateLimit = null,
         IAgentExecutionContext? executionContext = null,
         IToolResultStore? resultStore = null) =>
         new(authorizationGate ?? PermissiveAuthorizationGate(),
@@ -51,7 +52,7 @@ internal static class AdmissionHarness
             Mock.Of<IApprovalExecutionReporter>(),
             sanitizer ?? PermissiveSanitizer(),
             redactionFilter ?? PermissiveRedactionFilter(),
-            Config(outputCeiling),
+            Config(outputCeiling, aggregateLimit),
             NullLogger<ToolCallAdmissionPipeline>.Instance,
             executionContext ?? StubExecutionContext(),
             resultStore ?? StubResultStore());
@@ -77,8 +78,8 @@ internal static class AdmissionHarness
         store
             .Setup(s => s.StoreIfLargeAsync(
                 It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync((string _, string toolName, string? operation, string fullOutput, CancellationToken _) =>
+                It.IsAny<int?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((string _, string toolName, string? operation, string fullOutput, int? _, CancellationToken _) =>
                 new ToolResultReference
                 {
                     ResultId = Guid.NewGuid().ToString("N"),
@@ -104,8 +105,8 @@ internal static class AdmissionHarness
         store
             .Setup(s => s.StoreIfLargeAsync(
                 It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync((string scopeId, string toolName, string? operation, string fullOutput, CancellationToken _) =>
+                It.IsAny<int?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((string scopeId, string toolName, string? operation, string fullOutput, int? _, CancellationToken _) =>
                 new ToolResultReference
                 {
                     ResultId = Guid.NewGuid().ToString("N"),
@@ -120,18 +121,21 @@ internal static class AdmissionHarness
     }
 
     /// <summary>
-    /// Config carrying the tool-output ceiling (#532), defaulting to the shipped
-    /// <c>PerResultCharLimit</c> so a test that does not care about bounding is unaffected by it.
+    /// Config carrying the tool-output ceiling (#532) and the turn's aggregate output budget (#522),
+    /// both defaulting to the shipped values so a test that does not care about bounding is unaffected
+    /// by either.
     /// </summary>
     /// <remarks>
     /// A test that DOES care passes a small ceiling rather than building a 50,000-character result:
     /// the property under test is that the budget is enforced, not the size of the default.
     /// </remarks>
-    public static IOptionsMonitor<AppConfig> Config(int? outputCeiling = null)
+    public static IOptionsMonitor<AppConfig> Config(int? outputCeiling = null, int? aggregateLimit = null)
     {
         var config = new AppConfig();
         if (outputCeiling is { } ceiling)
             config.AI.ContextManagement.ToolResultStorage.PerResultCharLimit = ceiling;
+        if (aggregateLimit is { } aggregate)
+            config.AI.ContextManagement.ToolResultStorage.AggregatePerMessageCharLimit = aggregate;
 
         var monitor = new Mock<IOptionsMonitor<AppConfig>>();
         monitor.SetupGet(m => m.CurrentValue).Returns(config);

@@ -395,9 +395,10 @@ public sealed class ToolCallAdmissionPipelineTests
         var resultStore = new Mock<IToolResultStore>();
         resultStore
             .Setup(s => s.StoreIfLargeAsync(
-                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
-            .Callback<string, string, string?, string, CancellationToken>((_, _, _, text, _) => spilledText = text)
-            .ReturnsAsync((string _, string toolName, string? operation, string fullOutput, CancellationToken _) =>
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string>(),
+                It.IsAny<int?>(), It.IsAny<CancellationToken>()))
+            .Callback<string, string, string?, string, int?, CancellationToken>((_, _, _, text, _, _) => spilledText = text)
+            .ReturnsAsync((string _, string toolName, string? operation, string fullOutput, int? _, CancellationToken _) =>
                 new ToolResultReference
                 {
                     ResultId = Guid.NewGuid().ToString("N"),
@@ -971,5 +972,242 @@ public sealed class ToolCallAdmissionPipelineTests
         reporter.Verify(
             r => r.ReportNotExecutedAsync(It.IsAny<ApprovedCall>(), It.IsAny<EscalationNotExecutedReason>(), It.IsAny<string>(), It.IsAny<CancellationToken>()),
             Times.Never);
+    }
+
+    // #522: AggregatePerMessageCharLimit existed and was validated, but nothing ever read it — a
+    // batch of results that each individually fit under PerResultCharLimit could still land in
+    // context together far past what the aggregate setting promised. These tests exercise the
+    // pipeline's own reserve/settle bookkeeping directly: one pipeline instance, two or more calls in
+    // a row, standing in for two tool results the model receives in the same turn.
+
+    [Fact]
+    public async Task ApplyOutputPolicy_SecondCallExceedsWhatTheFirstCallLeftOfTheAggregateBudget_IsCutEvenThoughItFitsItsOwnCeiling()
+    {
+        // Both calls individually fit under the 1,000-char PerResultCharLimit. The first consumes
+        // (almost) the entire 1,000-char aggregate budget on its own, so the second — 50 chars, which
+        // would normally pass through completely untouched — must still be cut once the pipeline is
+        // asked to respect the aggregate on top of the per-result ceiling.
+        var pipeline = AdmissionHarness.Pipeline(
+            outputCeiling: 1_000, aggregateLimit: 1_000, resultStore: AdmissionHarness.PersistedResultStore());
+
+        var first = await pipeline.ApplyOutputPolicyAsync(
+            ToolCallAdmission.Allow(), Tool, new string('x', 5_000), CancellationToken.None);
+        first.Should().BeOfType<string>().Which.Length.Should().Be(1_000,
+            "an oversized first result consumes the full per-result ceiling, which here equals the "
+            + "entire aggregate budget");
+
+        var second = await pipeline.ApplyOutputPolicyAsync(
+            ToolCallAdmission.Allow(), Tool, new string('y', 50), CancellationToken.None);
+
+        second.Should().BeOfType<string>().Which
+            .Should().NotBe(new string('y', 50),
+                "50 characters is far under the 1,000-char PerResultCharLimit and would normally pass "
+                + "through whole — it must be cut here only because the first call already spent the "
+                + "turn's aggregate budget");
+    }
+
+    [Fact]
+    public async Task ApplyOutputPolicy_SmallResultsWellUnderTheirOwnCeiling_DoNotPrematurelyExhaustTheAggregateBudget()
+    {
+        // The reservation ReserveAggregateCeiling makes up front is the full per-result ceiling — the
+        // only size it can name with certainty before sanitizing/redacting/cutting. Without
+        // SettleAggregateReservation giving back what a small result didn't actually use, five 40-char
+        // results would each reserve (and never return) 1,000 characters and exhaust a 2,000-char
+        // aggregate budget after the second one — even though the five together total 200 characters.
+        var pipeline = AdmissionHarness.Pipeline(outputCeiling: 1_000, aggregateLimit: 2_000);
+
+        for (var i = 0; i < 5; i++)
+        {
+            var result = await pipeline.ApplyOutputPolicyAsync(
+                ToolCallAdmission.Allow(), Tool, new string('a', 40), CancellationToken.None);
+
+            result.Should().Be(new string('a', 40),
+                $"call {i + 1} of 5 is far under both ceilings and must be returned whole — a "
+                + "reservation that isn't given back after use would starve later calls for budget "
+                + "none of them actually needed");
+        }
+    }
+
+    [Fact]
+    public async Task Reset_ClearsTheAggregateBudgetFromTheEarlierTurn_ANewTurnStartsWithAFreshBudget()
+    {
+        // Every Reset() call site (agent turn, orchestrated task, eval run, direct-invoke arming)
+        // marks the start of a new unit of work. Mutation test: delete the _aggregateCharsReserved = 0
+        // line from Reset() and this test fails — the second "turn"'s result stays cut by the first
+        // turn's already-exhausted budget instead of starting fresh.
+        var pipeline = AdmissionHarness.Pipeline(
+            outputCeiling: 1_000, aggregateLimit: 1_000, resultStore: AdmissionHarness.PersistedResultStore());
+
+        await pipeline.ApplyOutputPolicyAsync(
+            ToolCallAdmission.Allow(), Tool, new string('x', 5_000), CancellationToken.None);
+
+        pipeline.Reset();
+
+        var afterReset = await pipeline.ApplyOutputPolicyAsync(
+            ToolCallAdmission.Allow(), Tool, new string('y', 50), CancellationToken.None);
+
+        afterReset.Should().Be(new string('y', 50),
+            "Reset() marks the start of a new turn — the aggregate budget must not carry over from "
+            + "whatever the previous turn already spent");
+    }
+
+    [Fact]
+    public async Task TryApplyTextOutputPolicy_SecondCallExceedsWhatTheFirstCallLeftOfTheAggregateBudget_IsCutEvenThoughItFitsItsOwnCeiling()
+    {
+        // Mirrors the ApplyOutputPolicyAsync test above on the text-shaped sibling — the plan-step and
+        // Execution API path, not the agent-turn path.
+        var pipeline = AdmissionHarness.Pipeline(
+            outputCeiling: 1_000, aggregateLimit: 1_000, resultStore: AdmissionHarness.PersistedResultStore());
+
+        var first = await pipeline.TryApplyTextOutputPolicyAsync(
+            ToolCallAdmission.Allow(), Tool, new string('x', 5_000), CancellationToken.None);
+        first.Result!.Length.Should().Be(1_000);
+
+        var second = await pipeline.TryApplyTextOutputPolicyAsync(
+            ToolCallAdmission.Allow(), Tool, new string('y', 50), CancellationToken.None);
+
+        second.WasTruncated.Should().BeTrue(
+            "50 characters is far under the 1,000-char PerResultCharLimit and would normally pass "
+            + "through whole — it must be cut here only because the first call already spent the "
+            + "turn's aggregate budget");
+    }
+
+    [Fact]
+    public async Task ApplyOutputPolicy_AggregateBudgetLargeRelativeToResults_LeavesBothUntouched()
+    {
+        // Control for the two "second call gets cut" tests above. Without this, a change that made
+        // the aggregate ceiling bind unconditionally (ignoring how much budget genuinely remains)
+        // would satisfy them while cutting every tool result regardless of actual usage.
+        var pipeline = AdmissionHarness.Pipeline(outputCeiling: 1_000, aggregateLimit: 200_000);
+
+        var first = await pipeline.ApplyOutputPolicyAsync(
+            ToolCallAdmission.Allow(), Tool, "first result", CancellationToken.None);
+        var second = await pipeline.ApplyOutputPolicyAsync(
+            ToolCallAdmission.Allow(), Tool, "second result", CancellationToken.None);
+
+        first.Should().Be("first result");
+        second.Should().Be("second result");
+    }
+
+    [Fact]
+    public async Task ApplyOutputPolicy_ParallelOversizedCalls_NeverConsumeMoreThanTheAggregateBudgetInTotal()
+    {
+        // The scenario #522 exists for: FunctionInvokingChatClient runs an assistant turn's tool calls
+        // concurrently (AllowConcurrentInvocation = true), so eight calls can all be mid-cut against
+        // the SAME pipeline instance at once. A naive "read remaining, cut, subtract afterward" design
+        // would let every one of them read the same stale "remaining" before any commits, and the
+        // total emitted could run past the budget by up to (Batch - 1) reservations.
+        //
+        // Repeats the batch many rounds over, mirroring ProgressEvaluatorConcurrencyTests's own
+        // rationale: a single batch is not evidence a race is absent, only that it didn't happen to
+        // fire on this run's particular thread-pool scheduling. A deliberately de-atomicized version
+        // of ReserveAggregateCeiling (read and write outside the lock) passed a single round 5/5 times
+        // in a row during this test's own development — only repeating the round, resetting the
+        // pipeline's aggregate state between rounds, made the race fire reliably enough to fail.
+        //
+        // Every call's content (5,000 'x') is oversized against the 1,000-char PerResultCharLimit, so
+        // BoundedText.Cap always cuts to exactly the ceiling it was given — no give-back ever fires,
+        // making each round's total exactly (not just at-most) the smaller of the aggregate budget and
+        // what the batch could have consumed. That determinism is what makes the assertion race-proof
+        // rather than merely race-tolerant: whatever order the 8 threads run in within a round, exactly
+        // 3 reservations of 1,000 fit inside a 3,000-char aggregate budget, and the remaining 5 each
+        // reserve ReserveAggregateCeiling's floor (OutputTruncationMarker.Length + 1 = 25) instead of
+        // 0 — the floor that guarantees a fully-exhausted budget still leaves room for a truncation
+        // marker (#522 correctness/security review finding) rather than silently emitting nothing.
+        const int batch = 8;
+        const int rounds = 100;
+        var pipeline = AdmissionHarness.Pipeline(
+            outputCeiling: 1_000, aggregateLimit: 3_000, resultStore: AdmissionHarness.PersistedResultStore());
+
+        var roundTotal = 0;
+        var worstRoundTotal = 0;
+
+        using var betweenRounds = new Barrier(batch, _ =>
+        {
+            worstRoundTotal = Math.Max(worstRoundTotal, Volatile.Read(ref roundTotal));
+            Volatile.Write(ref roundTotal, 0);
+            pipeline.Reset();
+        });
+
+        await Task.WhenAll(Enumerable.Range(0, batch).Select(_ => Task.Run(async () =>
+        {
+            for (var round = 0; round < rounds; round++)
+            {
+                betweenRounds.SignalAndWait();
+                var result = await pipeline.ApplyOutputPolicyAsync(
+                    ToolCallAdmission.Allow(), Tool, new string('x', 5_000), CancellationToken.None);
+                Interlocked.Add(ref roundTotal, ToolResultText.ExtractText(result).Length);
+            }
+
+            // One last phase so the final round is banked like the others.
+            betweenRounds.SignalAndWait();
+        })));
+
+        worstRoundTotal.Should().Be(3_125,
+            "atomic reserve/settle means the total emitted across a concurrent batch is deterministic "
+            + "in every round — 3 calls at the full 1,000-char ceiling (3,000) plus 5 calls at the "
+            + "25-char truncation-marker floor (125) once the budget is exhausted — never more from a "
+            + "race and never less because give-back only fires when actual usage is below what was "
+            + "reserved, which never happens for oversized input");
+    }
+
+    [Fact]
+    public async Task ApplyOutputPolicy_AggregateBudgetFullyExhausted_StillCarriesTheTruncationMarker()
+    {
+        // Correctness-review and security-review finding: ReserveAggregateCeiling used to return
+        // exactly "remaining", which reaches 0 once a turn's aggregate budget is fully spent.
+        // BoundedText.Cap drops a marker outright when the ceiling it's given isn't larger than the
+        // marker's own length, so a 0-char ceiling produced an EMPTY result with no marker and no
+        // retrieval id — indistinguishable from the tool genuinely returning nothing, reopening #487's
+        // "no silent caps" finding one level up. Two calls guarantee full exhaustion regardless of how
+        // the first one settles: the first consumes the entire aggregate budget, the second must still
+        // get SOME signal it was cut, not silence.
+        var pipeline = AdmissionHarness.Pipeline(
+            outputCeiling: 1_000, aggregateLimit: 1_000, resultStore: AdmissionHarness.PersistedResultStore());
+
+        await pipeline.ApplyOutputPolicyAsync(
+            ToolCallAdmission.Allow(), Tool, new string('x', 5_000), CancellationToken.None);
+
+        var second = await pipeline.ApplyOutputPolicyAsync(
+            ToolCallAdmission.Allow(), Tool, new string('y', 5_000), CancellationToken.None);
+
+        var secondText = ToolResultText.ExtractText(second);
+        secondText.Should().NotBeEmpty(
+            "an empty result with the aggregate budget fully spent is indistinguishable from the tool "
+            + "genuinely returning nothing — the model must always be told something was cut");
+        secondText.Should().Contain("tool output truncated",
+            "even with zero characters of the second call's own content able to fit, the plain "
+            + "truncation marker must still survive so the model knows this is not a real empty result");
+    }
+
+    [Fact]
+    public async Task TryApplyTextOutputPolicy_AggregateBudgetFullyExhausted_StillCarriesTheTruncationMarker()
+    {
+        // Second-round correctness-review/security-review finding on the same PR: the floor added to
+        // ReserveAggregateCeiling guarantees room for the PLAIN OutputTruncationMarker (24 chars) but
+        // not the much longer id-carrying marker (#521, ~107 chars) SpillAndBuildMarkerAsync builds.
+        // ApplyOutputPolicyAsync already falls back to a plain-marker cut when the id marker doesn't
+        // land (idMarkerLanded) — TryApplyTextOutputPolicyAsync had no equivalent, so once the budget
+        // was tight enough to fit the plain marker but not the id marker, this method returned a
+        // markerless cut of the caller's own content: no truncation signal at all, on the plan-step
+        // path (ToolUseStepExecutor), which per its own code discards WasTruncated entirely and reads
+        // truncation only from the marker embedded in the text itself.
+        var pipeline = AdmissionHarness.Pipeline(
+            outputCeiling: 1_000, aggregateLimit: 1_000, resultStore: AdmissionHarness.PersistedResultStore());
+
+        await pipeline.TryApplyTextOutputPolicyAsync(
+            ToolCallAdmission.Allow(), Tool, new string('x', 5_000), CancellationToken.None);
+
+        var second = await pipeline.TryApplyTextOutputPolicyAsync(
+            ToolCallAdmission.Allow(), Tool, new string('y', 5_000), CancellationToken.None);
+
+        second.Success.Should().BeTrue();
+        second.Result.Should().NotBeNullOrEmpty(
+            "an empty result with the aggregate budget fully spent is indistinguishable from the tool "
+            + "genuinely returning nothing — the model must always be told something was cut");
+        second.Result.Should().Contain("tool output truncated",
+            "the id-carrying marker may not fit this tight a budget, but the plain truncation marker "
+            + "must still survive — ToolUseStepExecutor reads truncation from the text itself, not "
+            + "from WasTruncated, so a markerless result here is read as a complete, real result");
     }
 }
