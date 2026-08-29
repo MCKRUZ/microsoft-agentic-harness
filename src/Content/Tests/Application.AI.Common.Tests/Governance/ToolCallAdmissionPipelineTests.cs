@@ -1110,7 +1110,10 @@ public sealed class ToolCallAdmissionPipelineTests
         // making each round's total exactly (not just at-most) the smaller of the aggregate budget and
         // what the batch could have consumed. That determinism is what makes the assertion race-proof
         // rather than merely race-tolerant: whatever order the 8 threads run in within a round, exactly
-        // 3 reservations of 1,000 fit inside a 3,000-char aggregate budget and the rest get nothing.
+        // 3 reservations of 1,000 fit inside a 3,000-char aggregate budget, and the remaining 5 each
+        // reserve ReserveAggregateCeiling's floor (OutputTruncationMarker.Length + 1 = 25) instead of
+        // 0 — the floor that guarantees a fully-exhausted budget still leaves room for a truncation
+        // marker (#522 correctness/security review finding) rather than silently emitting nothing.
         const int batch = 8;
         const int rounds = 100;
         var pipeline = AdmissionHarness.Pipeline(
@@ -1140,10 +1143,40 @@ public sealed class ToolCallAdmissionPipelineTests
             betweenRounds.SignalAndWait();
         })));
 
-        worstRoundTotal.Should().Be(3_000,
-            "atomic reserve/settle means the total emitted across a concurrent batch is exactly the "
-            + "aggregate budget in every round, never more from a race and never less because "
-            + "give-back only fires when actual usage is below what was reserved — which never "
-            + "happens for oversized input");
+        worstRoundTotal.Should().Be(3_125,
+            "atomic reserve/settle means the total emitted across a concurrent batch is deterministic "
+            + "in every round — 3 calls at the full 1,000-char ceiling (3,000) plus 5 calls at the "
+            + "25-char truncation-marker floor (125) once the budget is exhausted — never more from a "
+            + "race and never less because give-back only fires when actual usage is below what was "
+            + "reserved, which never happens for oversized input");
+    }
+
+    [Fact]
+    public async Task ApplyOutputPolicy_AggregateBudgetFullyExhausted_StillCarriesTheTruncationMarker()
+    {
+        // Correctness-review and security-review finding: ReserveAggregateCeiling used to return
+        // exactly "remaining", which reaches 0 once a turn's aggregate budget is fully spent.
+        // BoundedText.Cap drops a marker outright when the ceiling it's given isn't larger than the
+        // marker's own length, so a 0-char ceiling produced an EMPTY result with no marker and no
+        // retrieval id — indistinguishable from the tool genuinely returning nothing, reopening #487's
+        // "no silent caps" finding one level up. Two calls guarantee full exhaustion regardless of how
+        // the first one settles: the first consumes the entire aggregate budget, the second must still
+        // get SOME signal it was cut, not silence.
+        var pipeline = AdmissionHarness.Pipeline(
+            outputCeiling: 1_000, aggregateLimit: 1_000, resultStore: AdmissionHarness.PersistedResultStore());
+
+        await pipeline.ApplyOutputPolicyAsync(
+            ToolCallAdmission.Allow(), Tool, new string('x', 5_000), CancellationToken.None);
+
+        var second = await pipeline.ApplyOutputPolicyAsync(
+            ToolCallAdmission.Allow(), Tool, new string('y', 5_000), CancellationToken.None);
+
+        var secondText = ToolResultText.ExtractText(second);
+        secondText.Should().NotBeEmpty(
+            "an empty result with the aggregate budget fully spent is indistinguishable from the tool "
+            + "genuinely returning nothing — the model must always be told something was cut");
+        secondText.Should().Contain("tool output truncated",
+            "even with zero characters of the second call's own content able to fit, the plain "
+            + "truncation marker must still survive so the model knows this is not a real empty result");
     }
 }

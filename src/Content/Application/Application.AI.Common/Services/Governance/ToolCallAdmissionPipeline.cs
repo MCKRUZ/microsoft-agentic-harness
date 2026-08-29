@@ -367,15 +367,37 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
     /// call didn't actually use, so a handful of small results does not exhaust the aggregate budget
     /// the way a handful of large ones should.
     /// </para>
+    /// <para>
+    /// <strong>Never returns less than <see cref="OutputTruncationMarker"/>'s own length plus one
+    /// (bounded by <paramref name="perResultCeiling"/>).</strong> Correctness review and security
+    /// review both independently flagged the version of this method that returned exactly
+    /// <c>remaining</c> even when it had reached zero: once a turn's aggregate budget was fully spent,
+    /// every later result was cut to an empty string — <see cref="BoundedText.Cap"/>'s own contract
+    /// drops a marker outright unless the ceiling it is given is <em>strictly greater than</em> the
+    /// marker's length (<c>ceiling &gt; marker.Length</c>, not <c>&gt;=</c> — the marker needs at least
+    /// one character of surviving content alongside it to be appended at all), so a zero (or
+    /// near-zero) ceiling left no marker and no retrieval id, re-opening #487's "no silent caps"
+    /// finding at the turn level instead of the per-result level it was originally closed at. This
+    /// floor guarantees every truncated result carries at least the plain truncation signal — the
+    /// id-carrying marker (#521, ~107 chars) may still be dropped by the existing
+    /// <c>idMarkerLanded</c> fallback when the budget is this tight, exactly as it already is for a
+    /// merely small per-result ceiling; only the PLAIN marker's visibility is guaranteed here. The
+    /// floor lets the aggregate ledger run up to <see cref="OutputTruncationMarker"/>'s length plus one
+    /// past the configured limit once budget is effectively exhausted (every subsequent call in the
+    /// turn reserves the floor, not zero) — a small, bounded softening of a budget this package
+    /// invented, not a violation of <paramref name="perResultCeiling"/> itself, which nothing here ever
+    /// exceeds.
+    /// </para>
     /// </remarks>
     private int ReserveAggregateCeiling(int perResultCeiling)
     {
         var aggregateLimit = _options.CurrentValue.AI.ContextManagement.ToolResultStorage.AggregatePerMessageCharLimit;
+        var minimumViable = Math.Min(perResultCeiling, OutputTruncationMarker.Length + 1);
 
         lock (_aggregateBudgetLock)
         {
             var remaining = Math.Max(0, aggregateLimit - _aggregateCharsReserved);
-            var reserved = Math.Min(perResultCeiling, remaining);
+            var reserved = Math.Max(minimumViable, Math.Min(perResultCeiling, remaining));
             _aggregateCharsReserved += reserved;
             return reserved;
         }
