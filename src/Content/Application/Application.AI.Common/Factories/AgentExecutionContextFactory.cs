@@ -50,6 +50,7 @@ public partial class AgentExecutionContextFactory
     private readonly ISkillPrerequisiteResolver _prerequisiteResolver;
     private readonly ISkillFileReader _skillFileReader;
     private readonly ICompositeResponseSanitizer _sanitizer;
+    private readonly IAgentMetadataRegistry _agentRegistry;
     private readonly IContextBudgetTracker? _budgetTracker;
     private readonly IExecutionTraceStore? _traceStore;
     private readonly IAgentConfigReporter? _agentConfigReporter;
@@ -76,6 +77,11 @@ public partial class AgentExecutionContextFactory
     /// <param name="traceStore">Persists per-turn execution traces, when the host wires one in.</param>
     /// <param name="agentConfigReporter">Reports the resolved agent configuration, when the host wires one in.</param>
     /// <param name="resilientChatClientProvider">Supplies a resilience-wrapped chat client, when the host wires one in.</param>
+    /// <param name="agentRegistry">
+    /// Discovers registered peer agents for <see cref="Services.Agent.PeerAgentContextProvider"/> (#518).
+    /// A singleton with no per-request state, so unlike the recall providers it is a first-class
+    /// constructor dependency rather than resolved through <see cref="IAmbientRequestScope"/>.
+    /// </param>
     public AgentExecutionContextFactory(
         ILogger<AgentExecutionContextFactory> logger,
         IOptionsMonitor<AppConfig> appConfig,
@@ -85,12 +91,14 @@ public partial class AgentExecutionContextFactory
         ISkillPrerequisiteResolver prerequisiteResolver,
         ISkillFileReader skillFileReader,
         ICompositeResponseSanitizer sanitizer,
+        IAgentMetadataRegistry agentRegistry,
         IContextBudgetTracker? budgetTracker = null,
         IExecutionTraceStore? traceStore = null,
         IAgentConfigReporter? agentConfigReporter = null,
         IResilientChatClientProvider? resilientChatClientProvider = null)
     {
         ArgumentNullException.ThrowIfNull(skillFileReader);
+        ArgumentNullException.ThrowIfNull(agentRegistry);
 
         _logger = logger;
         _appConfig = appConfig;
@@ -100,6 +108,7 @@ public partial class AgentExecutionContextFactory
         _prerequisiteResolver = prerequisiteResolver;
         _skillFileReader = skillFileReader;
         _sanitizer = sanitizer;
+        _agentRegistry = agentRegistry;
         _budgetTracker = budgetTracker;
         _traceStore = traceStore;
         _agentConfigReporter = agentConfigReporter;
@@ -183,7 +192,8 @@ public partial class AgentExecutionContextFactory
             skills.Count,
             effectiveAllowedTools,
             disclosableSkills,
-            staticBudget);
+            staticBudget,
+            options.OwningAgentId);
 
         var frameworkType = options.FrameworkType
             ?? ResolveFrameworkTypeFromMetadata(primarySkill)

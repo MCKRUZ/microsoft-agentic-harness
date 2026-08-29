@@ -513,7 +513,12 @@ know the exact filename. Cite file paths in `path:line` form.</code></pre>
                         Agents can dispatch <em>subagents</em> for parallel sub-tasks. <code>SubagentToolResolver</code>
                         exposes a subagent as a callable tool to its parent; <code>InMemoryAgentMailbox</code> routes
                         messages; <code>BuiltInSubagentProfiles</code> ships ready-made profiles (planner, architect,
-                        explorer, ...). Delegation transcripts persist via <code>JsonlDelegationStore</code>.
+                        explorer, ...). Delegation transcripts persist via <code>JsonlDelegationStore</code>. A
+                        caller can also target a specific, named <code>AGENT.md</code>-registered peer directly
+                        (<code>target_agent</code> on the delegate tool, <code>SubagentType.NamedAgent</code>),
+                        bypassing capability-match scoring. <code>PeerAgentContextProvider</code> injects each
+                        agent's delegatable-peer descriptions into its own instructions every turn so it knows
+                        who is available to name.
                     </p>
 
                     <h3 id="a2a">A2A hosting</h3>

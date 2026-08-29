@@ -47,7 +47,11 @@ public sealed class RegistrationBreakdownCalculatorTests
         breakdown.Skills.Should().Be(Est(skill));
         breakdown.Tools.Should().Be(Est(schema));
         breakdown.Mcp.Should().Be(Est(mcpSchema));
-        breakdown.Agents.Should().Be(Est(peer));
+        // #518: sized from the same formatted entry PeerAgentContextProvider actually injects — id,
+        // name, and description wrapped in the entry format — not the raw description alone.
+        breakdown.Agents.Should().Be(
+            Est(Application.AI.Common.Services.Agent.PeerAgentContextFormatter.FormatEntry(
+                new AgentRegistration("a1", "Peer", peer))));
         breakdown.System.Should().Be(Est(instruction) - Est(skill));
 
         breakdown.Messages.Should().Be(0,

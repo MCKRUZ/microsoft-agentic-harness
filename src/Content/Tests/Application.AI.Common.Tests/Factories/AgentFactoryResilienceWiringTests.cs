@@ -75,7 +75,10 @@ public sealed class AgentFactoryResilienceWiringTests
             monitor,
             new ServiceCollection().BuildServiceProvider(),
             NullLoggerFactory.Instance,
-            null!, null!, new UnsandboxedSkillFileReader(), null!, null!, null!, null!, null!);
+            null!, null!, new UnsandboxedSkillFileReader(), null!,
+            Moq.Mock.Of<Application.AI.Common.Interfaces.IAgentMetadataRegistry>(
+                r => r.GetAll() == new List<Domain.AI.Agents.AgentDefinition>()),
+            null!, null!, null!, null!);
 
         var factory = new AgentFactory(
             NullLogger<AgentFactory>.Instance,
@@ -249,6 +252,8 @@ public sealed class AgentFactoryResilienceWiringTests
             new SkillPrerequisiteResolver(),
             new UnsandboxedSkillFileReader(),
             Application.AI.Common.Tests.Governance.AdmissionHarness.PermissiveSanitizer(),
+            Moq.Mock.Of<Application.AI.Common.Interfaces.IAgentMetadataRegistry>(
+                r => r.GetAll() == new List<Domain.AI.Agents.AgentDefinition>()),
             resilientChatClientProvider: resilientProvider);
     }
 

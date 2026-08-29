@@ -70,7 +70,8 @@ public sealed class AgentExecutionContextFactoryPromptComposerTests
                 NullLogger<ToolChainBuilder>.Instance, serviceProvider),
             new SkillPrerequisiteResolver(),
             new UnsandboxedSkillFileReader(),
-            Application.AI.Common.Tests.Governance.AdmissionHarness.PermissiveSanitizer());
+            Application.AI.Common.Tests.Governance.AdmissionHarness.PermissiveSanitizer(),
+            Mock.Of<IAgentMetadataRegistry>(r => r.GetAll() == new List<Domain.AI.Agents.AgentDefinition>()));
 
     /// <summary>
     /// Builds a root provider containing the full prompt-composition graph plus the ambient request

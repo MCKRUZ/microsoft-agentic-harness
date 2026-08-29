@@ -71,7 +71,9 @@ public sealed class AgentConversationCacheTests
             // #480: GoverningToolContextProvider now resolves a sanitizer to scrub load_skill/
             // read_skill_resource output, so the live-agent-build path this fixture exercises needs
             // one, matching what every real composition already provides unconditionally.
-            Application.AI.Common.Tests.Governance.AdmissionHarness.PermissiveSanitizer());
+            Application.AI.Common.Tests.Governance.AdmissionHarness.PermissiveSanitizer(),
+            Moq.Mock.Of<Application.AI.Common.Interfaces.IAgentMetadataRegistry>(
+                r => r.GetAll() == new List<Domain.AI.Agents.AgentDefinition>()));
 
         // Registry returns a two-skill graph where "deploy" depends on "validate".
         var registry = new Mock<ISkillMetadataRegistry>();
@@ -261,6 +263,8 @@ public sealed class AgentConversationCacheTraceLifecycleTests
             new SkillPrerequisiteResolver(),
             new UnsandboxedSkillFileReader(),
             Application.AI.Common.Tests.Governance.AdmissionHarness.PermissiveSanitizer(),
+            Moq.Mock.Of<Application.AI.Common.Interfaces.IAgentMetadataRegistry>(
+                r => r.GetAll() == new List<Domain.AI.Agents.AgentDefinition>()),
             traceStore: traceStore.Object);
 
         var registry = new Mock<ISkillMetadataRegistry>();

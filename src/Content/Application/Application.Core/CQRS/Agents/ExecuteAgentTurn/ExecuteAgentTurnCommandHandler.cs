@@ -684,17 +684,12 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 			}
 		}
 
-		// Sub-agents: only AGENT.md-discoverable peers count for the Agents lane today.
-		// Self is excluded so the agent doesn't show up as a delegation target on itself.
-		var subAgents = new List<AgentRegistration>();
-		if (agentDef is not null)
-		{
-			foreach (var peer in _agentRegistry.GetAll())
-			{
-				if (string.Equals(peer.Id, agentDef.Id, StringComparison.OrdinalIgnoreCase)) continue;
-				subAgents.Add(new AgentRegistration(peer.Id, peer.Name, peer.Description));
-			}
-		}
+		// Sub-agents: only AGENT.md-discoverable peers count for the Agents lane today. Self-exclusion
+		// is the same rule PeerAgentContextProvider applies to the prompt injection itself (#518) —
+		// shared via PeerAgentContextFormatter.GetPeers so the two never drift into different filters.
+		var subAgents = agentDef is null
+			? []
+			: Application.AI.Common.Services.Agent.PeerAgentContextFormatter.GetPeers(_agentRegistry, agentDef.Id);
 
 		return new RegistrationSnapshot(
 			SystemPromptText: ctx.Instruction,

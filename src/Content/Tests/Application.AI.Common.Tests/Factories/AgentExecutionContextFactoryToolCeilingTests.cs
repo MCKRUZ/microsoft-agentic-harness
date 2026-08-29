@@ -53,7 +53,9 @@ public sealed class AgentExecutionContextFactoryToolCeilingTests
                 NullLogger<ToolChainBuilder>.Instance, sp),
             new SkillPrerequisiteResolver(),
             new UnsandboxedSkillFileReader(),
-            Application.AI.Common.Tests.Governance.AdmissionHarness.PermissiveSanitizer());
+            Application.AI.Common.Tests.Governance.AdmissionHarness.PermissiveSanitizer(),
+            Moq.Mock.Of<Application.AI.Common.Interfaces.IAgentMetadataRegistry>(
+                r => r.GetAll() == new List<Domain.AI.Agents.AgentDefinition>()));
     }
 
     private static SkillDefinition Skill(string id, params string[] allowedTools) => new()

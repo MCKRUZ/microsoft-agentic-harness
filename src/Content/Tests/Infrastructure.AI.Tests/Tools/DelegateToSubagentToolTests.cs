@@ -1,8 +1,11 @@
+using Application.AI.Common.Interfaces;
+using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Agents;
 using Domain.AI.Governance;
 using Domain.AI.Orchestration;
 using FluentAssertions;
 using Infrastructure.AI.Tools;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using Xunit;
@@ -13,8 +16,32 @@ public class DelegateToSubagentToolTests
 {
     private readonly Mock<ISupervisor> _supervisor = new();
 
+    /// <summary>
+    /// No ambient scope by default (<c>Current == null</c>) — matches a direct invocation or any
+    /// caller outside a governed turn. Tests exercising self-exclusion build their own scope via
+    /// <see cref="BuildToolWithCallingAgentId"/>.
+    /// </summary>
+    private readonly Mock<IAmbientRequestScope> _ambientScope = new();
+
     private DelegateToSubagentTool BuildTool() =>
-        new(_supervisor.Object, NullLogger<DelegateToSubagentTool>.Instance);
+        new(_supervisor.Object, _ambientScope.Object, NullLogger<DelegateToSubagentTool>.Instance);
+
+    /// <summary>
+    /// Builds a tool whose ambient scope resolves an <see cref="IAgentExecutionContext"/> reporting
+    /// <paramref name="callingAgentId"/> — what a real governed turn establishes before invoking a
+    /// tool, and what <c>target_agent</c>'s self-exclusion (#518) reads.
+    /// </summary>
+    private DelegateToSubagentTool BuildToolWithCallingAgentId(string callingAgentId)
+    {
+        var services = new ServiceCollection();
+        services.AddSingleton(Mock.Of<IAgentExecutionContext>(c => c.AgentId == callingAgentId));
+        var scope = services.BuildServiceProvider();
+
+        return new DelegateToSubagentTool(
+            _supervisor.Object,
+            Mock.Of<IAmbientRequestScope>(a => a.Current == (IServiceProvider)scope),
+            NullLogger<DelegateToSubagentTool>.Instance);
+    }
 
     private static Dictionary<string, object?> Params(params (string Key, object? Value)[] entries)
         => entries.ToDictionary(e => e.Key, e => e.Value);
@@ -180,5 +207,129 @@ public class DelegateToSubagentToolTests
         tool.SupportedOperations.Should().ContainSingle().Which.Should().Be("delegate");
         tool.IsReadOnly.Should().BeFalse();
         tool.IsConcurrencySafe.Should().BeFalse();
+    }
+
+    // ── target_agent (#518) ────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task ExecuteAsync_TargetAgentSupplied_RoutesToNamedDelegationNotCapabilityMatch()
+    {
+        _supervisor
+            .Setup(s => s.DelegateToNamedAgentAsync(
+                "peer-agent", "do the thing", It.IsAny<string?>(),
+                It.IsAny<int>(), It.IsAny<IReadOnlyList<string>?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(DelegationResult.Success("named agent output", tokensUsed: 10, durationMs: 5));
+
+        var result = await BuildTool().ExecuteAsync(
+            "delegate", Params(("task", "do the thing"), ("target_agent", "peer-agent")));
+
+        result.Success.Should().BeTrue();
+        result.Output.Should().Be("named agent output");
+        _supervisor.Verify(
+            s => s.DelegateAsync(
+                It.IsAny<string>(), It.IsAny<IReadOnlyList<string>>(), It.IsAny<AutonomyLevel>(),
+                It.IsAny<int>(), It.IsAny<IReadOnlyList<string>?>(), It.IsAny<CancellationToken>()),
+            Times.Never,
+            "target_agent must take over entirely, not run alongside the capability-match path");
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_TargetAgentSupplied_IgnoresCapabilitiesAndMinimumTier()
+    {
+        IReadOnlyList<string>? unused = null;
+        _supervisor
+            .Setup(s => s.DelegateToNamedAgentAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(),
+                It.IsAny<int>(), It.IsAny<IReadOnlyList<string>?>(), It.IsAny<CancellationToken>()))
+            .Callback<string, string, string?, int, IReadOnlyList<string>?, CancellationToken>(
+                (_, _, _, _, overrides, _) => unused = overrides)
+            .ReturnsAsync(DelegationResult.Success("ok", 1, 1));
+
+        await BuildTool().ExecuteAsync("delegate", Params(
+            ("task", "do it"),
+            ("target_agent", "peer-agent"),
+            ("capabilities", "file_system"),
+            ("minimum_tier", "Autonomous")));
+
+        // capabilities/minimum_tier are simply never read on this path — DelegateToNamedAgentAsync's
+        // own signature has no capabilities parameter and no tier floor to receive them.
+        unused.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_TargetAgentSupplied_ResolvesCallingAgentIdFromAmbientScopeForSelfExclusion()
+    {
+        string? capturedCallingId = "not-set";
+        _supervisor
+            .Setup(s => s.DelegateToNamedAgentAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(),
+                It.IsAny<int>(), It.IsAny<IReadOnlyList<string>?>(), It.IsAny<CancellationToken>()))
+            .Callback<string, string, string?, int, IReadOnlyList<string>?, CancellationToken>(
+                (_, _, callingId, _, _, _) => capturedCallingId = callingId)
+            .ReturnsAsync(DelegationResult.Success("ok", 1, 1));
+
+        await BuildToolWithCallingAgentId("this-agent").ExecuteAsync(
+            "delegate", Params(("task", "do it"), ("target_agent", "peer-agent")));
+
+        capturedCallingId.Should().Be("this-agent");
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_TargetAgentSupplied_NoAmbientScope_PassesNullCallingIdRatherThanThrowing()
+    {
+        string? capturedCallingId = "not-set";
+        _supervisor
+            .Setup(s => s.DelegateToNamedAgentAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(),
+                It.IsAny<int>(), It.IsAny<IReadOnlyList<string>?>(), It.IsAny<CancellationToken>()))
+            .Callback<string, string, string?, int, IReadOnlyList<string>?, CancellationToken>(
+                (_, _, callingId, _, _, _) => capturedCallingId = callingId)
+            .ReturnsAsync(DelegationResult.Success("ok", 1, 1));
+
+        // Default BuildTool() has _ambientScope.Current == null (no request scope established) — a
+        // direct invocation or any caller outside a governed turn. This must degrade gracefully.
+        var result = await BuildTool().ExecuteAsync(
+            "delegate", Params(("task", "do it"), ("target_agent", "peer-agent")));
+
+        result.Success.Should().BeTrue();
+        capturedCallingId.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_TargetAgentFails_SurfacesFailureReason()
+    {
+        _supervisor
+            .Setup(s => s.DelegateToNamedAgentAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(),
+                It.IsAny<int>(), It.IsAny<IReadOnlyList<string>?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(DelegationResult.Fail("No registered agent with id 'peer-agent'."));
+
+        var result = await BuildTool().ExecuteAsync(
+            "delegate", Params(("task", "do it"), ("target_agent", "peer-agent")));
+
+        result.Success.Should().BeFalse();
+        result.Error.Should().Be("No registered agent with id 'peer-agent'.");
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_NoTargetAgent_StillRoutesThroughCapabilityMatch()
+    {
+        // Control for every test above: without target_agent, nothing about the existing
+        // capability-match path may change.
+        _supervisor
+            .Setup(s => s.DelegateAsync(
+                It.IsAny<string>(), It.IsAny<IReadOnlyList<string>>(), It.IsAny<AutonomyLevel>(),
+                It.IsAny<int>(), It.IsAny<IReadOnlyList<string>?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(DelegationResult.Success("capability-matched output", 1, 1));
+
+        var result = await BuildTool().ExecuteAsync("delegate", Params(("task", "do it")));
+
+        result.Success.Should().BeTrue();
+        result.Output.Should().Be("capability-matched output");
+        _supervisor.Verify(
+            s => s.DelegateToNamedAgentAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(),
+                It.IsAny<int>(), It.IsAny<IReadOnlyList<string>?>(), It.IsAny<CancellationToken>()),
+            Times.Never);
     }
 }

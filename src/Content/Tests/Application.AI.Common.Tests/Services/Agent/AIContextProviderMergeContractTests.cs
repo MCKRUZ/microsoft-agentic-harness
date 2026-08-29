@@ -84,6 +84,7 @@ public sealed class AIContextProviderMergeContractTests
                 Application.AI.Common.Tests.Governance.AdmissionHarness.PermissiveSanitizer()),
         [nameof(KnowledgeMemoryContextProvider)] = BuildKnowledgeMemory,
         [nameof(LearningsRecallContextProvider)] = BuildLearningsRecall,
+        [nameof(PeerAgentContextProvider)] = BuildPeerAgentContext,
         [nameof(PerTurnBudgetContextProvider)] = () => new PerTurnBudgetContextProvider(
             "MergeContractAgent",
             new Mock<IContextBudgetTracker>().Object,
@@ -187,6 +188,31 @@ public sealed class AIContextProviderMergeContractTests
             NullLogger<LearningsRecallContextProvider>.Instance);
     }
 
+    private static PeerAgentContextProvider BuildPeerAgentContext()
+    {
+        var registry = new Mock<Application.AI.Common.Interfaces.IAgentMetadataRegistry>();
+        registry.Setup(r => r.GetAll()).Returns(new List<Domain.AI.Agents.AgentDefinition>
+        {
+            new()
+            {
+                Id = "peer-agent",
+                Name = "Peer Agent",
+                Description = "Handles peer-shaped work."
+            },
+            new()
+            {
+                Id = "self-agent",
+                Name = "Self Agent",
+                Description = "Must not appear — this is the owning agent's own id."
+            }
+        });
+
+        // owningAgentId "self-agent" proves self-exclusion is exercised, not just the happy path of
+        // an agent with no peers at all — the active configuration for this provider is "at least one
+        // OTHER peer visible, and the caller's own entry filtered out."
+        return new PeerAgentContextProvider(registry.Object, owningAgentId: "self-agent");
+    }
+
     // ── the guard: no subclass may escape this suite ─────────────────────────
 
     [Fact]
@@ -254,6 +280,40 @@ public sealed class AIContextProviderMergeContractTests
 
         CountOccurrences(result.Instructions, "Lessons from past work").Should().Be(1);
         result.Instructions.Should().Contain("Prefer batching related fixes.");
+    }
+
+    [Fact]
+    public async Task PeerAgentContext_StillInjectsThePeerBlockExactlyOnceAndExcludesSelf()
+    {
+        var result = await Create(nameof(PeerAgentContextProvider))
+            .InvokingAsync(MakeContext(ActiveInput()));
+
+        CountOccurrences(result.Instructions, "peer-agent").Should().Be(1);
+        result.Instructions.Should().Contain("Handles peer-shaped work.");
+        result.Instructions.Should().NotContain("self-agent",
+            "the owning agent's own id must never appear as one of its own delegation targets");
+    }
+
+    [Fact]
+    public async Task PeerAgentContext_NoOwningAgentId_InjectsNothing()
+    {
+        // #518 correctness-review regression: a caller with no owning agent id (an orchestrator built
+        // with no OwningAgentId, or the parameterless CreateAgentFromSkillAsync(skillId) overload) used
+        // to have "nothing excluded" read as "inject the whole registry" — while
+        // ExecuteAgentTurnCommandHandler.BuildRegistrationSnapshot already treats a null owning agent as
+        // zero sub-agents, so the Agents lane charged nothing for what this provider injected in full.
+        var registry = new Mock<Application.AI.Common.Interfaces.IAgentMetadataRegistry>();
+        registry.Setup(r => r.GetAll()).Returns(new List<Domain.AI.Agents.AgentDefinition>
+        {
+            new() { Id = "peer-agent", Name = "Peer Agent", Description = "Handles peer-shaped work." }
+        });
+        var provider = new PeerAgentContextProvider(registry.Object, owningAgentId: null);
+
+        var result = await provider.InvokingAsync(MakeContext(ActiveInput()));
+
+        result.Instructions.Should().NotContain("peer-agent",
+            "a caller with no owning agent id has no verified self to exclude, so nothing should be " +
+            "injected at all rather than the full registry");
     }
 
     [Theory]

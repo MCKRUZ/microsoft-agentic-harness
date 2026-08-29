@@ -50,6 +50,10 @@ public partial class AgentExecutionContextFactory
     /// <param name="effectiveAllowlist">The one allowlist governing this agent, or <see langword="null"/>.</param>
     /// <param name="disclosableSkills">The skills the framework provider is given, built once by the caller.</param>
     /// <param name="baseline">What the agent was already charged for; see <see cref="PerTurnBudgetBaseline"/>.</param>
+    /// <param name="owningAgentId">
+    /// This agent's own id, for <see cref="Services.Agent.PeerAgentContextProvider"/>'s self-exclusion
+    /// (#518) — <see langword="null"/> for a bare-skill agent with no owning <c>AGENT.md</c>.
+    /// </param>
     /// <returns>
     /// The ordered rail as a read-only list. Never empty: the governance wrapper is on every agent's
     /// rail (see the attachment site below), so there is no such thing as an agent with no providers.
@@ -66,9 +70,17 @@ public partial class AgentExecutionContextFactory
         int skillCount,
         IReadOnlyList<string>? effectiveAllowlist,
         IReadOnlyList<DisclosableSkill> disclosableSkills,
-        PerTurnBudgetBaseline baseline)
+        PerTurnBudgetBaseline baseline,
+        string? owningAgentId)
     {
         var providers = new List<AIContextProvider>();
+
+        // Peer-agent descriptions (#518). No config gate — unlike the two recall providers below,
+        // this is not an optional feature: it is what makes the Agents lane correct. Placed early,
+        // ahead of the governance wrapper and the per-turn measurer, so its contribution is governed
+        // and charged like everything else on the rail. Contributes nothing (empty AIContext) when
+        // this agent has zero delegatable peers, so a host with one agent pays nothing extra.
+        providers.Add(new Services.Agent.PeerAgentContextProvider(_agentRegistry, owningAgentId));
 
         if (disclosableSkills.Count > 0)
         {

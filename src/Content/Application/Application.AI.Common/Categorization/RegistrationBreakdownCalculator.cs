@@ -134,9 +134,14 @@ public static class RegistrationBreakdownCalculator
             : 0;
     }
 
-    /// <summary>One delegatable peer agent's description.</summary>
+    /// <summary>
+    /// One delegatable peer agent's entry — sized from the same formatted text
+    /// <see cref="Services.Agent.PeerAgentContextProvider"/> actually injects (#518), not
+    /// <see cref="AgentRegistration.Description"/> alone, so this total and the prompt agree by
+    /// construction rather than by two independent estimates happening to match.
+    /// </summary>
     public static int TokensFor(AgentRegistration agent) =>
-        TokenEstimationHelper.EstimateTokens(agent.Description);
+        TokenEstimationHelper.EstimateTokens(Services.Agent.PeerAgentContextFormatter.FormatEntry(agent));
 
     /// <summary>
     /// A tool's footprint: its serialized schema when it has one, else its name and description.
