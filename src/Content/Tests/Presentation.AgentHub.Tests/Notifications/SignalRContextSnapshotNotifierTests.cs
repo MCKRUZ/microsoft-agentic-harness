@@ -99,6 +99,7 @@ public sealed class SignalRContextSnapshotNotifierTests
             "ctxAfter",
             "loaded",
             "capturedAtUtc",
+            "unattributedTokens",
         ]);
     }
 

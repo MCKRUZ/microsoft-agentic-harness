@@ -27,7 +27,18 @@ public class ExecuteAgentTurnCommandHandler_SnapshotTests
     private readonly Mock<IContextSnapshotNotifier> _notifier = new();
     private readonly Mock<IObservabilityStore> _store = new();
 
-    private ExecuteAgentTurnCommandHandler BuildHandler(IContextSnapshotNotifier notifier)
+    private static readonly LlmUsageSnapshot DefaultUsageSnapshot = new(
+        InputTokens: 5_000,
+        OutputTokens: 200,
+        CacheRead: 0,
+        CacheWrite: 0,
+        Model: "test-model",
+        CostUsd: 0m,
+        CacheHitPct: 0m,
+        ToolNames: Array.Empty<string>());
+
+    private ExecuteAgentTurnCommandHandler BuildHandler(
+        IContextSnapshotNotifier notifier, LlmUsageSnapshot? usageSnapshot = null)
     {
         _agentRegistry
             .Setup(r => r.TryGet(It.IsAny<string>()))
@@ -36,15 +47,7 @@ public class ExecuteAgentTurnCommandHandler_SnapshotTests
         var usageCapture = new Mock<ILlmUsageCapture>();
         usageCapture
             .Setup(c => c.TakeSnapshot())
-            .Returns(new LlmUsageSnapshot(
-                InputTokens: 5_000,
-                OutputTokens: 200,
-                CacheRead: 0,
-                CacheWrite: 0,
-                Model: "test-model",
-                CostUsd: 0m,
-                CacheHitPct: 0m,
-                ToolNames: Array.Empty<string>()));
+            .Returns(usageSnapshot ?? DefaultUsageSnapshot);
 
         return new ExecuteAgentTurnCommandHandler(
             _agentCache.Object,
@@ -181,5 +184,59 @@ public class ExecuteAgentTurnCommandHandler_SnapshotTests
         captured.Loaded.Should().Contain(li => li.What == "User message");
         captured.Loaded.Should().Contain(li => li.What == "Assistant message");
         captured.Loaded.All(li => li.Category == ContextCategory.Messages).Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Handle_UsesLastCallNotAccumulatedTotal_ForUnattributedTokens()
+    {
+        // #517: a turn with two tool round-trips (three model calls) must reconcile against the
+        // LAST call's own prompt, not the accumulated total across all three — the exact confusion
+        // that got #507's original reconciliation attempt pulled before merge.
+        SetupAgent("ok");
+        var usage = DefaultUsageSnapshot with
+        {
+            Calls =
+            [
+                new LlmCallUsage(InputTokens: 8_000, OutputTokens: 50, CacheRead: 0, CacheWrite: 0, Model: "test-model"),
+                new LlmCallUsage(InputTokens: 8_200, OutputTokens: 60, CacheRead: 0, CacheWrite: 0, Model: "test-model"),
+                new LlmCallUsage(InputTokens: 8_450, OutputTokens: 70, CacheRead: 100, CacheWrite: 0, Model: "test-model"),
+            ]
+        };
+        ContextSnapshot? captured = null;
+        _notifier
+            .Setup(n => n.NotifyAsync(It.IsAny<ContextSnapshot>(), It.IsAny<CancellationToken>()))
+            .Callback<ContextSnapshot, CancellationToken>((s, _) => captured = s)
+            .Returns(Task.CompletedTask);
+
+        var handler = BuildHandler(_notifier.Object, usage);
+        await handler.Handle(Command(), CancellationToken.None);
+
+        // Nothing is registered in this fixture, so CtxAfter.Total is just the measured Messages
+        // lane; UnattributedTokens is the last call's prompt (8,450 + 100 cache-read) minus that.
+        captured!.UnattributedTokens.Should().Be(
+            8_450 + 100 - captured.CtxAfter.Total,
+            "reconciliation must key off Calls[^1], not the 24,650-token accumulated total across all three calls");
+    }
+
+    [Fact]
+    public async Task Handle_MessagesEstimate_ExcludesThisTurnsOwnAssistantResponse()
+    {
+        // #517's second, smaller gap: the assistant's own reply is this call's OUTPUT, never part
+        // of what was billed as input, so it must not inflate the Messages lane used to reconcile
+        // against the last call's prompt tokens.
+        var longResponse = new string('a', 4_000);
+        SetupAgent(longResponse);
+        ContextSnapshot? captured = null;
+        _notifier
+            .Setup(n => n.NotifyAsync(It.IsAny<ContextSnapshot>(), It.IsAny<CancellationToken>()))
+            .Callback<ContextSnapshot, CancellationToken>((s, _) => captured = s)
+            .Returns(Task.CompletedTask);
+
+        var handler = BuildHandler(_notifier.Object);
+        await handler.Handle(Command(), CancellationToken.None);
+
+        captured!.CtxAfter.Messages.Should().BeLessThan(1_000,
+            "the 4,000-char assistant response must not be estimated into Messages — only the short " +
+            "user message this turn's last call actually saw as input belongs there");
     }
 }

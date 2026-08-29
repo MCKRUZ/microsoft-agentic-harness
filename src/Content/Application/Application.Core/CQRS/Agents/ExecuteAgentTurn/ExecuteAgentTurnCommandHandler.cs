@@ -277,10 +277,15 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 					conversationId: request.ConversationId,
 					turnIndex: request.TurnNumber,
 					turnId: $"t-{request.TurnNumber:D2}",
-					history: updatedHistory,
+					// #517: pre-response history — the state the last call's prompt actually saw.
+					// updatedHistory (below) additionally carries this turn's own assistant reply,
+					// which is output, never billed as input, and would misalign Messages against
+					// usage.LastCallPromptTokens by exactly one message.
+					history: messages,
 					registrations: registrations,
 					turnLoaded: turnLoaded,
-					capturedAtUtc: _timeProvider.GetUtcNow());
+					capturedAtUtc: _timeProvider.GetUtcNow(),
+					lastCallPromptTokens: usage.LastCallPromptTokens);
 
 				// RecordLoadedBodiesAsync writes to the context_snapshot_loaded_bodies
 				// sidecar table — keeps the snapshot row + SignalR wire small (just

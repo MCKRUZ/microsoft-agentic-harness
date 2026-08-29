@@ -58,6 +58,20 @@ public record ToolInvocationCapture(
     string? Stdout);
 
 /// <summary>
+/// Token usage from a single LLM call, in the order <see cref="ILlmUsageCapture.Record"/> saw it.
+/// Unlike <see cref="LlmUsageSnapshot"/>'s totals — accumulated across every call in the turn — this
+/// is what one specific call's prompt actually cost, which is what a context-bar reconciliation
+/// needs to compare against (#517): the accumulated total answers "how much did this turn cost
+/// altogether," not "how big was the context window for the call that just ran."
+/// </summary>
+public record LlmCallUsage(
+    int InputTokens,
+    int OutputTokens,
+    int CacheRead,
+    int CacheWrite,
+    string? Model);
+
+/// <summary>
 /// Immutable snapshot of accumulated LLM usage for a single agent turn.
 /// </summary>
 public record LlmUsageSnapshot(
@@ -76,4 +90,26 @@ public record LlmUsageSnapshot(
     /// </summary>
     public IReadOnlyList<ToolInvocationCapture> ToolInvocations { get; init; } =
         Array.Empty<ToolInvocationCapture>();
+
+    /// <summary>
+    /// Each individual model call's usage, in call order, alongside the totals above that sum them.
+    /// Empty when no call landed this turn (e.g. a turn that failed before any LLM call completed).
+    /// The last entry is the call whose prompt the context bar's per-turn reconciliation compares
+    /// against (#517) — the most recent model call is the closest available measurement of "the
+    /// context window as it stood for the call that just ran."
+    /// </summary>
+    public IReadOnlyList<LlmCallUsage> Calls { get; init; } = Array.Empty<LlmCallUsage>();
+
+    /// <summary>
+    /// The turn's last model call's own prompt size — input, cache-read, and cache-write tokens for
+    /// that one call, all three real prompt content (<c>LlmCostCalculator</c> prices them identically).
+    /// This is the figure a context-bar reconciliation needs (#517), never <see cref="InputTokens"/>
+    /// above, which accumulates across every call in the turn and answers "what did the whole turn
+    /// cost," not "how big was the context window for the call that just ran." Null when no call
+    /// landed this turn.
+    /// </summary>
+    public int? LastCallPromptTokens =>
+        Calls.Count > 0
+            ? Calls[^1].InputTokens + Calls[^1].CacheRead + Calls[^1].CacheWrite
+            : null;
 }

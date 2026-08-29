@@ -39,6 +39,12 @@ public sealed class LlmUsageCapture : ILlmUsageCapture
     private readonly HashSet<string> _toolNames = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
+    /// Per-call usage in call order — see <see cref="LlmUsageSnapshot.Calls"/> for why this exists
+    /// alongside the accumulated totals above (#517).
+    /// </summary>
+    private readonly List<LlmCallUsage> _calls = new();
+
+    /// <summary>
     /// Per-CallId invocation capture. Tool call requests land here keyed by their
     /// LLM-supplied call id; the matching result message updates the same entry
     /// on the next turn (when the FunctionResultContent is submitted back).
@@ -73,6 +79,7 @@ public sealed class LlmUsageCapture : ILlmUsageCapture
             _cacheRead += cacheRead;
             _cacheWrite += cacheWrite;
             _model ??= model;
+            _calls.Add(new LlmCallUsage(inputTokens, outputTokens, cacheRead, cacheWrite, model));
         }
     }
 
@@ -160,11 +167,16 @@ public sealed class LlmUsageCapture : ILlmUsageCapture
                     .ToList()
                 : Array.Empty<ToolInvocationCapture>();
 
+            IReadOnlyList<LlmCallUsage> calls = _calls.Count > 0
+                ? _calls.ToList()
+                : Array.Empty<LlmCallUsage>();
+
             var snapshot = new LlmUsageSnapshot(
                 _inputTokens, _outputTokens, _cacheRead, _cacheWrite,
                 model, cost, Math.Round(cacheHitPct, 4), toolNames)
             {
-                ToolInvocations = invocations
+                ToolInvocations = invocations,
+                Calls = calls
             };
 
             _inputTokens = 0;
@@ -174,6 +186,7 @@ public sealed class LlmUsageCapture : ILlmUsageCapture
             _model = null;
             _toolNames.Clear();
             _invocations.Clear();
+            _calls.Clear();
 
             return snapshot;
         }

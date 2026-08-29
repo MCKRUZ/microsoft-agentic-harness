@@ -12,10 +12,15 @@ namespace Presentation.AgentHub.DTOs;
 /// <param name="CtxAfter">Cumulative per-category breakdown after this turn.</param>
 /// <param name="Loaded">Per-turn delta items.</param>
 /// <param name="CapturedAtUtc">Server clock at capture.</param>
+/// <param name="UnattributedTokens">
+/// Signed reconciliation gap (#517) — see <see cref="Domain.AI.Context.ContextSnapshot.UnattributedTokens"/>
+/// for the full contract. <see langword="null"/> when no model call landed this turn.
+/// </param>
 public sealed record ContextSnapshotDto(
     string ConversationId,
     int TurnIndex,
     string TurnId,
     CategoryBreakdownDto CtxAfter,
     IReadOnlyList<LoadedItemDto> Loaded,
-    DateTimeOffset CapturedAtUtc);
+    DateTimeOffset CapturedAtUtc,
+    int? UnattributedTokens);

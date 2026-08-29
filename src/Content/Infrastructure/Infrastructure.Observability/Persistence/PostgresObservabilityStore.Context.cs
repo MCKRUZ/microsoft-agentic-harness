@@ -7,8 +7,8 @@ namespace Infrastructure.Observability.Persistence;
 
 /// <summary>
 /// Foresight context-snapshot persistence. Schema lives in
-/// <c>Migrations/002_context_snapshots.sql</c>, embedded in this assembly and applied by the
-/// migration runner.
+/// <c>Migrations/002_context_snapshots.sql</c> plus <c>006_context_snapshots_unattributed_tokens.sql</c>
+/// (#517), embedded in this assembly and applied by the migration runner.
 /// </summary>
 public sealed partial class PostgresObservabilityStore
 {
@@ -40,19 +40,20 @@ public sealed partial class PostgresObservabilityStore
             INSERT INTO context_snapshots (
                 conversation_id, turn_index, turn_id,
                 cat_system, cat_agents, cat_skills, cat_tools, cat_mcp, cat_messages,
-                loaded_json, captured_at
+                loaded_json, captured_at, unattributed_tokens
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12)
             ON CONFLICT (conversation_id, turn_index) DO UPDATE SET
-                turn_id      = EXCLUDED.turn_id,
-                cat_system   = EXCLUDED.cat_system,
-                cat_agents   = EXCLUDED.cat_agents,
-                cat_skills   = EXCLUDED.cat_skills,
-                cat_tools    = EXCLUDED.cat_tools,
-                cat_mcp      = EXCLUDED.cat_mcp,
-                cat_messages = EXCLUDED.cat_messages,
-                loaded_json  = EXCLUDED.loaded_json,
-                captured_at  = EXCLUDED.captured_at
+                turn_id             = EXCLUDED.turn_id,
+                cat_system          = EXCLUDED.cat_system,
+                cat_agents          = EXCLUDED.cat_agents,
+                cat_skills          = EXCLUDED.cat_skills,
+                cat_tools           = EXCLUDED.cat_tools,
+                cat_mcp             = EXCLUDED.cat_mcp,
+                cat_messages        = EXCLUDED.cat_messages,
+                loaded_json         = EXCLUDED.loaded_json,
+                captured_at         = EXCLUDED.captured_at,
+                unattributed_tokens = EXCLUDED.unattributed_tokens
             """;
 
         try
@@ -78,6 +79,7 @@ public sealed partial class PostgresObservabilityStore
             cmd.Parameters.AddWithValue(snapshot.CtxAfter.Messages);
             cmd.Parameters.AddWithValue(loadedJson);
             cmd.Parameters.AddWithValue(snapshot.CapturedAtUtc);
+            cmd.Parameters.AddWithValue((object?)snapshot.UnattributedTokens ?? DBNull.Value);
 
             await cmd.ExecuteNonQueryAsync(cancellationToken);
         }
@@ -98,7 +100,7 @@ public sealed partial class PostgresObservabilityStore
         const string sql = """
             SELECT conversation_id, turn_index, turn_id,
                    cat_system, cat_agents, cat_skills, cat_tools, cat_mcp, cat_messages,
-                   loaded_json, captured_at
+                   loaded_json, captured_at, unattributed_tokens
             FROM context_snapshots
             WHERE conversation_id = $1
             ORDER BY turn_index DESC
@@ -132,7 +134,7 @@ public sealed partial class PostgresObservabilityStore
         const string sql = """
             SELECT conversation_id, turn_index, turn_id,
                    cat_system, cat_agents, cat_skills, cat_tools, cat_mcp, cat_messages,
-                   loaded_json, captured_at
+                   loaded_json, captured_at, unattributed_tokens
             FROM context_snapshots
             WHERE conversation_id = $1
             ORDER BY turn_index ASC
@@ -226,6 +228,7 @@ public sealed partial class PostgresObservabilityStore
             Messages: reader.GetInt32(8));
         var loadedJson = reader.GetString(9);
         var capturedAt = reader.GetFieldValue<DateTimeOffset>(10);
+        var unattributedTokens = reader.IsDBNull(11) ? (int?)null : reader.GetInt32(11);
 
         var loadedWire = JsonSerializer.Deserialize<LoadedItemWire[]>(loadedJson, s_loadedJson)
                          ?? Array.Empty<LoadedItemWire>();
@@ -234,6 +237,6 @@ public sealed partial class PostgresObservabilityStore
             .ToList();
 
         return new ContextSnapshot(
-            conversationId, turnIndex, turnId, ctxAfter, loaded, capturedAt);
+            conversationId, turnIndex, turnId, ctxAfter, loaded, capturedAt, unattributedTokens);
     }
 }
