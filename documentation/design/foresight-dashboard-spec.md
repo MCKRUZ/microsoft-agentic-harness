@@ -272,6 +272,9 @@ type Turn = {
   }>
   ctxAfter:  CategoryBreakdown         // snapshot immediately AFTER this turn lands
   loaded:    LoadedItem[]              // what this turn added — the per-turn delta
+  unattributedTokens?: number | null   // signed reconciliation gap vs. the last model call's real
+                                        // prompt (#517); positive = unattributed context, negative =
+                                        // estimate overshoot; null when no model call landed this turn
 }
 
 type LoadedItem = {
