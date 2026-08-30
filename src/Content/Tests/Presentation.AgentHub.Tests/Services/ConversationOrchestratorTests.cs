@@ -647,6 +647,61 @@ public class ConversationOrchestratorTests
         outcome.HistoryKeepCount.Should().Be(1);
     }
 
+    [Fact]
+    public async Task RetryFromMessage_OnHistoryTruncatedThrowsCancellationMatchingCt_PropagatesRatherThanSwallowed()
+    {
+        // A cancellation matching the turn's own token means the client's connection is gone —
+        // there is no one left to stream deltas to, so unlike a generic transport failure this must
+        // propagate and abort rather than be swallowed.
+        var userMsg = new ConversationMessage(Guid.NewGuid(), MessageRole.User, "Original", DateTimeOffset.UtcNow);
+        var record = new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, [userMsg]);
+        _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
+        _store.Setup(s => s.TruncateFromMessageAsync("c1", "user1", It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, [userMsg]));
+
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        var orchestrator = CreateOrchestrator();
+        var act = () => orchestrator.RetryFromMessageAsync(
+            "conn1", "c1", Guid.NewGuid(), "user1",
+            onChunk: null, cts.Token,
+            onHistoryTruncated: (_, ct) => throw new OperationCanceledException(ct));
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+    }
+
+    [Fact]
+    public async Task RetryFromMessage_OnHistoryTruncatedThrowsCancellationFromUnrelatedToken_IsSwallowed()
+    {
+        // A cancellation from some OTHER token (an internal timeout, not the turn's own connection
+        // token going away) must be swallowed like any other transient notification failure, not
+        // treated as this turn's own disconnect.
+        var userMsg = new ConversationMessage(Guid.NewGuid(), MessageRole.User, "Original", DateTimeOffset.UtcNow);
+        var record = new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, [userMsg]);
+        _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
+        _store.Setup(s => s.TruncateFromMessageAsync("c1", "user1", It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, [userMsg]));
+        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", 20, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<ConversationMessage> { userMsg });
+        _obsStore.Setup(s => s.StartSessionAsync("c1", "agent", null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Guid.NewGuid());
+        _mediator.Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new AgentTurnResult { Success = true, Response = "Retried", UpdatedHistory = [] });
+
+        using var unrelatedCts = new CancellationTokenSource();
+        unrelatedCts.Cancel();
+
+        var orchestrator = CreateOrchestrator();
+        var outcome = await orchestrator.RetryFromMessageAsync(
+            "conn1", "c1", Guid.NewGuid(), "user1",
+            onChunk: null, CancellationToken.None,
+            onHistoryTruncated: (_, _) => throw new OperationCanceledException(unrelatedCts.Token));
+
+        outcome.Success.Should().BeTrue(
+            "a cancellation from an unrelated token must be swallowed, not treated as this turn's own disconnect");
+    }
+
     // ── ValidateAccess ───────────────────────────────────────────────────
 
     [Fact]
