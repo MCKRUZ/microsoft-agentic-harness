@@ -32,6 +32,12 @@
          ToolChainBuilder's merge step so the collision/shadowing/drift tests prove the withhold
          decision end-to-end, not just that a mocked scanner was called correctly. -->
     <ProjectReference Include="../../Infrastructure/Infrastructure.AI.Governance/Infrastructure.AI.Governance.csproj" />
+    <!-- The shared role-aware chat-client fake (Tests.AI.Fakes) — used by structured-output
+         repair-round-trip tests that need to script fail-then-succeed responses and assert
+         whether ChatOptions.ResponseFormat was populated on each call. -->
+    <ProjectReference Include="../Tests.AI.Fakes/Tests.AI.Fakes.csproj" />
+    <!-- RepoRoot/SourceScan for the structured-output schema-generation chokepoint test. -->
+    <ProjectReference Include="../Tests.Common/Tests.Common.csproj" />
   </ItemGroup>
 
 </Project>

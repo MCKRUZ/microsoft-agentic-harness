@@ -1,5 +1,6 @@
 using System.Runtime.CompilerServices;
 using Microsoft.Extensions.AI;
+using Tests.AI.Fakes;
 
 namespace Application.AI.Common.Tests.Fakes;
 
@@ -81,15 +82,11 @@ public sealed class FakeChatClient : IChatClient
     {
         var response = await GetResponseAsync(messages, options, cancellationToken);
 
-        // Stream each content item (text, tool calls) as its own update so middleware
-        // reconstructing via ToChatResponse() sees the same shape as the blocking path.
-        foreach (var message in response.Messages)
-            foreach (var content in message.Contents)
-                yield return new ChatResponseUpdate(message.Role, new List<AIContent> { content });
-
-        // Mirror real providers: token usage arrives as a UsageContent item in a final chunk.
-        if (response.Usage is { } usage)
-            yield return new ChatResponseUpdate(ChatRole.Assistant, new List<AIContent> { new UsageContent(usage) });
+        // Delegates to the shared helper (Tests.AI.Fakes) so this fake's streaming semantics can't
+        // drift from the other chat-client fakes' — which is exactly what happened to the sibling
+        // copy in Presentation.AgentHub.Tests before this package fixed it.
+        await foreach (var update in ChatResponseStreaming.ToUpdatesAsync(response, cancellationToken))
+            yield return update;
     }
 
     /// <inheritdoc />

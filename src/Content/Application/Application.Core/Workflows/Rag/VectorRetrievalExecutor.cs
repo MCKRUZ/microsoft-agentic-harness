@@ -136,6 +136,16 @@ public sealed class VectorRetrievalExecutor : Executor<ClassifiedQuery, VectorRe
                     return new VectorRetrievalOutput(
                         message.Query, [], WasRefined: attempt > 1, AttemptCount: attempt);
 
+                case CorrectionAction.EvaluationUnavailable:
+                    // The gate did not run — falls through to the same "best available" path as
+                    // an exhausted Refine or WebFallback, never treated as Accept. Kept as its own
+                    // case (rather than relying on `default` below) so this is an audited decision,
+                    // not an incidental one — see the enum member's own remarks.
+                    _logger.LogWarning(
+                        "CRAG evaluation unavailable on attempt {Attempt}: {Reason}",
+                        attempt, evaluation.Reasoning);
+                    goto default;
+
                 default:
                     _logger.LogInformation(
                         "CRAG {Action} after {Attempt} attempts; returning best available",

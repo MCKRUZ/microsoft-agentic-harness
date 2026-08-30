@@ -1,9 +1,8 @@
 using System.Diagnostics;
 using System.Text;
-using System.Text.Json;
-using System.Text.Json.Serialization;
 using Application.AI.Common.Interfaces.RAG;
 using Application.AI.Common.Interfaces.Routing;
+using Application.AI.Common.StructuredOutput;
 using Domain.AI.RAG.Enums;
 using Domain.AI.RAG.Models;
 using Domain.AI.Telemetry.Conventions;
@@ -25,12 +24,14 @@ public sealed class CragEvaluator : ICragEvaluator
 {
     private static readonly ActivitySource ActivitySource = new("AgenticHarness.RAG.Evaluation");
 
-    private static readonly JsonSerializerOptions JsonOptions = new()
-    {
-        PropertyNameCaseInsensitive = true
-    };
+    // Built once — the same contract both attaches the schema to the request and validates the
+    // reply against, so the two can never independently drift. See StructuredOutputSchema's remarks
+    // for why its posture never marks a member required unless the CLR type does.
+    private static readonly StructuredOutputContract Contract =
+        StructuredOutputSchema.Build<CragResponse>("crag_evaluation", "Corrective RAG relevance evaluation");
 
     private readonly IModelRouter _modelRouter;
+    private readonly Application.AI.Common.Interfaces.AI.IStructuredOutputInvoker _structuredOutput;
     private readonly IOptionsMonitor<AppConfig> _configMonitor;
     private readonly ILogger<CragEvaluator> _logger;
 
@@ -38,14 +39,17 @@ public sealed class CragEvaluator : ICragEvaluator
     /// Initializes a new instance of the <see cref="CragEvaluator"/> class.
     /// </summary>
     /// <param name="modelRouter">Model router for selecting the standard-tier chat client.</param>
+    /// <param name="structuredOutput">Schema-out, validated-parse-back, one-repair invoker.</param>
     /// <param name="configMonitor">Configuration monitor for CRAG threshold values.</param>
     /// <param name="logger">Logger for recording evaluation outcomes and failures.</param>
     public CragEvaluator(
         IModelRouter modelRouter,
+        Application.AI.Common.Interfaces.AI.IStructuredOutputInvoker structuredOutput,
         IOptionsMonitor<AppConfig> configMonitor,
         ILogger<CragEvaluator> logger)
     {
         _modelRouter = modelRouter;
+        _structuredOutput = structuredOutput;
         _configMonitor = configMonitor;
         _logger = logger;
     }
@@ -69,8 +73,11 @@ public sealed class CragEvaluator : ICragEvaluator
 
         try
         {
-            var response = await chatClient.GetResponseAsync(prompt, cancellationToken: cancellationToken);
-            var evaluation = ParseResponse(response.Text ?? "{}", cragConfig);
+            var messages = new List<ChatMessage> { new(ChatRole.User, prompt) };
+            var parseResult = await _structuredOutput.InvokeAsync<CragResponse>(
+                chatClient, Contract, messages, chatOptions: null, cancellationToken);
+
+            var evaluation = BuildEvaluation(parseResult, cragConfig);
 
             activity?.SetTag(RagConventions.CragAction, evaluation.Action.ToString().ToLowerInvariant());
             activity?.SetTag(RagConventions.CragScore, evaluation.RelevanceScore);
@@ -81,17 +88,48 @@ public sealed class CragEvaluator : ICragEvaluator
 
             return evaluation;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogWarning(ex, "CRAG evaluation failed; defaulting to Accept to avoid blocking pipeline");
-            return new CragEvaluation
-            {
-                Action = CorrectionAction.Accept,
-                RelevanceScore = 0.5,
-                Reasoning = $"Evaluation failed: {ex.Message}"
-            };
+            // A gate that cannot read its own output must never silently green-light the
+            // retrieval it exists to check — EvaluationUnavailable, never Accept. See that enum
+            // member's remarks; every consumer of CorrectionAction handles this explicitly.
+            _logger.LogWarning(ex, "CRAG evaluation failed; the gate did not run for this retrieval");
+            return UnavailableEvaluation($"Evaluation failed: {ex.Message}");
         }
     }
+
+    /// <summary>
+    /// Converts the invoker's result into a <see cref="CragEvaluation"/>: a successful parse
+    /// derives the action from the score against configured thresholds (never from the model's own
+    /// <see cref="CragResponse.Action"/> label — see that type's remarks); any non-success outcome
+    /// becomes <see cref="CorrectionAction.EvaluationUnavailable"/>, never a passing score.
+    /// </summary>
+    private static CragEvaluation BuildEvaluation(
+        StructuredOutputResult<CragResponse> parseResult,
+        Domain.Common.Config.AI.RAG.CragConfig cragConfig)
+    {
+        if (!parseResult.IsSuccess || parseResult.Value is null)
+            return UnavailableEvaluation(parseResult.ErrorMessage ?? "CRAG response could not be parsed.");
+
+        var parsed = parseResult.Value;
+        var score = Math.Clamp(parsed.Score, 0.0, 1.0);
+        var action = DetermineAction(score, cragConfig);
+
+        return new CragEvaluation
+        {
+            Action = action,
+            RelevanceScore = score,
+            Reasoning = parsed.Reasoning,
+            WeakChunkIds = parsed.WeakChunkIds ?? [],
+        };
+    }
+
+    private static CragEvaluation UnavailableEvaluation(string reason) => new()
+    {
+        Action = CorrectionAction.EvaluationUnavailable,
+        RelevanceScore = 0.5,
+        Reasoning = reason,
+    };
 
     private static string BuildPrompt(
         string query,
@@ -119,43 +157,7 @@ public sealed class CragEvaluator : ICragEvaluator
             - "Reject" if score < {{cragConfig.RefineThreshold}}
 
             Also list IDs of any weak/irrelevant passages.
-
-            Respond as JSON: {"action": "...", "score": 0.0, "reasoning": "...", "weak_chunk_ids": [...]}
             """;
-    }
-
-    private CragEvaluation ParseResponse(
-        string responseText,
-        Domain.Common.Config.AI.RAG.CragConfig cragConfig)
-    {
-        try
-        {
-            var jsonStart = responseText.IndexOf('{');
-            var jsonEnd = responseText.LastIndexOf('}');
-            if (jsonStart < 0 || jsonEnd < 0)
-                return FallbackEvaluation("No JSON found in response");
-
-            var json = responseText[jsonStart..(jsonEnd + 1)];
-            var parsed = JsonSerializer.Deserialize<CragResponseDto>(json, JsonOptions);
-            if (parsed is null)
-                return FallbackEvaluation("Failed to deserialize CRAG response");
-
-            var score = Math.Clamp(parsed.Score, 0.0, 1.0);
-            var action = DetermineAction(score, cragConfig);
-
-            return new CragEvaluation
-            {
-                Action = action,
-                RelevanceScore = score,
-                Reasoning = parsed.Reasoning,
-                WeakChunkIds = parsed.WeakChunkIds ?? []
-            };
-        }
-        catch (JsonException ex)
-        {
-            _logger.LogWarning(ex, "Failed to parse CRAG JSON response");
-            return FallbackEvaluation("JSON parse error");
-        }
     }
 
     private static CorrectionAction DetermineAction(
@@ -169,24 +171,5 @@ public sealed class CragEvaluator : ICragEvaluator
         return cragConfig.AllowWebFallback
             ? CorrectionAction.WebFallback
             : CorrectionAction.Reject;
-    }
-
-    private static CragEvaluation FallbackEvaluation(string reason) =>
-        new()
-        {
-            Action = CorrectionAction.Accept,
-            RelevanceScore = 0.5,
-            Reasoning = $"Fallback: {reason}"
-        };
-
-    /// <summary>DTO for deserializing the LLM's JSON response.</summary>
-    private sealed class CragResponseDto
-    {
-        public string? Action { get; set; }
-        public double Score { get; set; }
-        public string? Reasoning { get; set; }
-
-        [JsonPropertyName("weak_chunk_ids")]
-        public List<string>? WeakChunkIds { get; set; }
     }
 }

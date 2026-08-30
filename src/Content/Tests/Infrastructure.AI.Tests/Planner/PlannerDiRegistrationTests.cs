@@ -284,6 +284,12 @@ public sealed class PlannerDiRegistrationTests : IDisposable
         // itself (and the unused collaborators nothing here resolves) come from the shared default.
         services.AddToolCallAdmissionChain();
         services.AddSingleton(new Mock<Application.AI.Common.Interfaces.AI.IConversationBudgetTracker>().Object);
+        // Real implementation, not a mock — LlmPlanGeneratorService's structured-output call is
+        // exactly the behaviour under test elsewhere (LlmPlanGeneratorServiceTests); here it only
+        // needs to resolve, so the cheap, stateless real StructuredOutputInvoker is simpler than
+        // mocking a generic-method interface.
+        services.AddSingleton<Application.AI.Common.Interfaces.AI.IStructuredOutputInvoker,
+            Application.AI.Common.StructuredOutput.StructuredOutputInvoker>();
         services.AddSingleton<ISender>(new Mock<ISender>().Object);
         services.AddSingleton<IPlanProgressNotifier>(new Mock<IPlanProgressNotifier>().Object);
         services.AddSingleton<ICapabilityEnforcer>(new Mock<ICapabilityEnforcer>().Object);

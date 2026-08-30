@@ -63,6 +63,10 @@ public sealed partial class RagOrchestrator
                 var cragEval = await _cragEvaluator.EvaluateAsync(
                     query, iterativeResult.AggregatedResults, cancellationToken);
 
+                // Allowlist, not a blocklist: EvaluationUnavailable — like Reject and WebFallback —
+                // already falls through to the conservative "return the already-assembled context"
+                // path below rather than being silently treated as a pass. A new CorrectionAction
+                // value defaults safe here by construction.
                 if (cragEval.Action == CorrectionAction.Accept || cragEval.Action == CorrectionAction.Refine)
                 {
                     var filtered = FilterWeakChunks(reranked, cragEval.WeakChunkIds);

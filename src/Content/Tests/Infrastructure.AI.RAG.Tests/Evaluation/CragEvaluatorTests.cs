@@ -1,4 +1,5 @@
 using Application.AI.Common.Interfaces.Routing;
+using Application.AI.Common.StructuredOutput;
 using Domain.AI.RAG.Enums;
 using Domain.AI.Routing.Enums;
 using Domain.AI.Routing.Models;
@@ -29,8 +30,12 @@ public sealed class CragEvaluatorTests
             c.AI.Rag.Crag.AllowWebFallback = allowWebFallback;
         });
 
+        // Real invoker, not a mock — proves the structured-output wiring works end to end.
+        var structuredOutput = new StructuredOutputInvoker(Mock.Of<ILogger<StructuredOutputInvoker>>());
+
         return new CragEvaluator(
             _mockRouter.Object,
+            structuredOutput,
             config,
             Mock.Of<ILogger<CragEvaluator>>());
     }
@@ -97,8 +102,11 @@ public sealed class CragEvaluatorTests
     }
 
     [Fact]
-    public async Task EvaluateAsync_LlmFailure_ReturnsFallbackAccept()
+    public async Task EvaluateAsync_LlmFailure_ReturnsEvaluationUnavailable_NeverAccept()
     {
+        // THE CONTROL for #323's sharpest finding: a CRAG evaluator that cannot read its own
+        // response must never silently green-light the retrieval it exists to gate. This test used
+        // to assert the opposite (CorrectionAction.Accept) — that was the bug.
         var mockChatClient = new Mock<IChatClient>();
         mockChatClient
             .Setup(c => c.GetResponseAsync(
@@ -123,9 +131,24 @@ public sealed class CragEvaluatorTests
 
         var evaluation = await evaluator.EvaluateAsync("test query", results);
 
-        evaluation.Action.Should().Be(CorrectionAction.Accept);
+        evaluation.Action.Should().Be(CorrectionAction.EvaluationUnavailable);
+        evaluation.Action.Should().NotBe(CorrectionAction.Accept);
         evaluation.RelevanceScore.Should().Be(0.5);
         evaluation.Reasoning.Should().Contain("failed");
+    }
+
+    [Fact]
+    public async Task EvaluateAsync_MalformedResponseAfterRepairAttempt_ReturnsEvaluationUnavailable_NeverAccept()
+    {
+        // Second half of the same control: a response that never parses, even after the one
+        // repair round-trip, must degrade the same way as a thrown exception — never a passing score.
+        SetupChatResponse("this is not json at all, no braces here");
+        var evaluator = CreateEvaluator();
+        var results = RagTestData.CreateRetrievalResults(3);
+
+        var evaluation = await evaluator.EvaluateAsync("test query", results);
+
+        evaluation.Action.Should().Be(CorrectionAction.EvaluationUnavailable);
     }
 
     [Fact]

@@ -13,8 +13,13 @@ internal sealed record LlmPlanOutput
     [JsonPropertyName("name")]
     public string Name { get; init; } = "";
 
+    // Required: a plan with no steps is meaningless, and GenerateAsync's own empty-plan check
+    // (Steps.Count == 0) becomes redundant with the schema itself once this is required — a model
+    // that omits "steps" now fails to parse rather than sailing through Deserialize as {} and
+    // failing two statements later. See LlmStepOutput.Name/Type and LlmEdgeOutput.From/To for the
+    // same reasoning applied one level down.
     [JsonPropertyName("steps")]
-    public IReadOnlyList<LlmStepOutput> Steps { get; init; } = [];
+    public required IReadOnlyList<LlmStepOutput> Steps { get; init; }
 
     [JsonPropertyName("edges")]
     public IReadOnlyList<LlmEdgeOutput> Edges { get; init; } = [];
@@ -25,11 +30,15 @@ internal sealed record LlmPlanOutput
 
 internal sealed record LlmStepOutput
 {
+    // Required: LlmPlanOutputMapper.MapToPlanGraph indexes steps by Name (nameToId dictionary) and
+    // ParseStepType throws InvalidOperationException on any Type it doesn't recognise, including
+    // the empty string the old default silently produced. Both are already-mandatory-in-practice;
+    // this makes the schema say so instead of letting a missing value surface as a mapper crash.
     [JsonPropertyName("name")]
-    public string Name { get; init; } = "";
+    public required string Name { get; init; }
 
     [JsonPropertyName("type")]
-    public string Type { get; init; } = "";
+    public required string Type { get; init; }
 
     [JsonPropertyName("configuration")]
     public JsonElement Configuration { get; init; }
@@ -43,11 +52,14 @@ internal sealed record LlmStepOutput
 
 internal sealed record LlmEdgeOutput
 {
+    // Required: LlmPlanOutputMapper.MapEdges throws InvalidOperationException if From/To don't
+    // resolve against the step-name map — an edge with a missing endpoint was already unusable,
+    // this just moves the failure to schema validation instead of a mapper-level exception.
     [JsonPropertyName("from")]
-    public string From { get; init; } = "";
+    public required string From { get; init; }
 
     [JsonPropertyName("to")]
-    public string To { get; init; } = "";
+    public required string To { get; init; }
 
     [JsonPropertyName("type")]
     public string Type { get; init; } = "ControlFlow";

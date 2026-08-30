@@ -232,6 +232,10 @@ public static class DependencyInjection
         // Context budget tracking
         services.AddSingleton<IContextBudgetTracker, ContextBudgetTracker>();
 
+        // Structured-output contract layer (#323) — schema-out, validated-parse-back, one repair
+        // round-trip. Stateless; holds no per-request state.
+        services.AddSingleton<Interfaces.AI.IStructuredOutputInvoker, StructuredOutput.StructuredOutputInvoker>();
+
         // LLM usage capture — scoped so middleware and handler share the same instance per turn
         services.AddScoped<ILlmUsageCapture, Services.LlmUsageCapture>();
 
