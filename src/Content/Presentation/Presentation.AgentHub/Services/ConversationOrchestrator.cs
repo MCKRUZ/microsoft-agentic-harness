@@ -167,8 +167,12 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
         {
             await onHistoryTruncated(keepCount, ct);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
         {
+            // The filter checks ct.IsCancellationRequested, not just the exception's type: an
+            // OperationCanceledException from some OTHER token (an internal timeout, not this
+            // turn's own connection going away) must still be swallowed like any other transient
+            // failure — only a cancellation that actually matches ct signals a real disconnect.
             _logger.LogWarning(ex,
                 "Failed to notify the client of a history truncation to {KeepCount} messages — " +
                 "the truncation itself already committed and the turn continues.", keepCount);

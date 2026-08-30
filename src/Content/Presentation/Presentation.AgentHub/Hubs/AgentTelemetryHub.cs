@@ -460,9 +460,10 @@ public sealed class AgentTelemetryHub : Hub
     /// history was truncated. A bare <see cref="HubException"/> only surfaces to the caller's RPC
     /// promise, never through the client's <c>Error</c> event handler — leaving it showing a
     /// truncated transcript with no explanation and no retried response. Called only from the
-    /// generic <c>catch (Exception) when (historyTruncatedSignaled)</c> clause in
-    /// <see cref="RetryFromMessage"/> and <see cref="EditAndResubmit"/>, which then rethrows so the
-    /// RPC caller still observes the failure too.
+    /// <c>catch (Exception ex)</c> block's <c>if (historyTruncatedSignaled)</c> guard in
+    /// <see cref="RetryFromMessage"/> and <see cref="EditAndResubmit"/>, before that same block
+    /// rethrows (or maps to a <see cref="HubException"/>) so the RPC caller still observes the
+    /// failure too.
     /// </summary>
     private Task EmitPostTruncationFailureAsync(string conversationId, CancellationToken ct) =>
         Clients.Caller.SendAsync(EventError,
