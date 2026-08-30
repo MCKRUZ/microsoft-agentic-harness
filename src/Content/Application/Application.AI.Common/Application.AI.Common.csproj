@@ -16,6 +16,10 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="Application.AI.Common.Tests" />
+    <!-- ZeroLlmPipelineTests (#322) constructs the real AgentConversationCache directly, rather
+         than mocking IAgentConversationCache as AgentPipelineIntegrationTests does, so the full
+         AgentFactory graph actually runs end to end. -->
+    <InternalsVisibleTo Include="Application.Core.Tests" />
   </ItemGroup>
 
   <ItemGroup>
