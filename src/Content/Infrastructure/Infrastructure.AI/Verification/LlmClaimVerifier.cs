@@ -6,8 +6,10 @@ using Application.AI.Common.Prompts.Interfaces;
 using Application.AI.Common.StructuredOutput;
 using Domain.AI.ClaimVerification;
 using Domain.AI.Prompts;
+using Domain.Common.Config;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace Infrastructure.AI.Verification;
 
@@ -54,6 +56,7 @@ public sealed class LlmClaimVerifier : IClaimVerifier
     private readonly IPromptRegistry _promptRegistry;
     private readonly IPromptRenderer _promptRenderer;
     private readonly IPromptUsageRecorder _usageRecorder;
+    private readonly IOptionsMonitor<AppConfig> _config;
     private readonly ILogger<LlmClaimVerifier> _logger;
 
     /// <summary>Initializes a new instance of the <see cref="LlmClaimVerifier"/> class.</summary>
@@ -63,6 +66,7 @@ public sealed class LlmClaimVerifier : IClaimVerifier
         IPromptRegistry promptRegistry,
         IPromptRenderer promptRenderer,
         IPromptUsageRecorder usageRecorder,
+        IOptionsMonitor<AppConfig> config,
         ILogger<LlmClaimVerifier> logger)
     {
         ArgumentNullException.ThrowIfNull(chatClientProvider);
@@ -70,6 +74,7 @@ public sealed class LlmClaimVerifier : IClaimVerifier
         ArgumentNullException.ThrowIfNull(promptRegistry);
         ArgumentNullException.ThrowIfNull(promptRenderer);
         ArgumentNullException.ThrowIfNull(usageRecorder);
+        ArgumentNullException.ThrowIfNull(config);
         ArgumentNullException.ThrowIfNull(logger);
 
         _chatClientProvider = chatClientProvider;
@@ -77,6 +82,7 @@ public sealed class LlmClaimVerifier : IClaimVerifier
         _promptRegistry = promptRegistry;
         _promptRenderer = promptRenderer;
         _usageRecorder = usageRecorder;
+        _config = config;
         _logger = logger;
     }
 
@@ -85,6 +91,12 @@ public sealed class LlmClaimVerifier : IClaimVerifier
     {
         ArgumentNullException.ThrowIfNull(claim);
         ArgumentNullException.ThrowIfNull(evidenceContent);
+
+        if (!_config.CurrentValue.AI.ClaimVerification.Enabled)
+        {
+            return ClaimVerdict.Unverifiable(
+                claim, "Claim verification is disabled (AppConfig:AI:ClaimVerification:Enabled=false).");
+        }
 
         var descriptorResult = await PromptDescriptorResolver.ResolveAsync(
             _promptRegistry, PromptName, _logger, cancellationToken).ConfigureAwait(false);

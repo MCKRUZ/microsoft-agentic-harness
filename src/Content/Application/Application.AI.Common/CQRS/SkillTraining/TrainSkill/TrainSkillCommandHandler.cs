@@ -515,26 +515,23 @@ public sealed class TrainSkillCommandHandler
         var accepted = new List<HarnessChangeSuggestion>(proposed.Count);
         foreach (var suggestion in proposed)
         {
-            var surfaced = await ValidateAndAuditSuggestionAsync(
-                suggestion, request.SkillId, finalStep, cancellationToken).ConfigureAwait(false);
+            var surfaced = ValidateAndAuditSuggestion(suggestion, request.SkillId, finalStep);
             if (surfaced is not null)
             {
                 accepted.Add(surfaced);
             }
         }
 
-        return accepted;
+        return await AnnotateWithClaimVerificationAsync(accepted, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
     /// Validates one suggestion against the config-surface constraint and audits the outcome. Returns the
-    /// suggestion to surface — with its value replaced by the scrubbed canonical form and, when the claimed
-    /// <see cref="HarnessChangeSuggestion.CurrentValue"/> could not be confirmed against live config,
-    /// annotated in <see cref="HarnessChangeSuggestion.Rationale"/> — when allowed, or
+    /// suggestion to surface — with its value replaced by the scrubbed canonical form — when allowed, or
     /// <see langword="null"/> when rejected.
     /// </summary>
-    private async Task<HarnessChangeSuggestion?> ValidateAndAuditSuggestionAsync(
-        HarnessChangeSuggestion suggestion, string skillId, int finalStep, CancellationToken cancellationToken)
+    private HarnessChangeSuggestion? ValidateAndAuditSuggestion(
+        HarnessChangeSuggestion suggestion, string skillId, int finalStep)
     {
         var validation = _suggestionValidator.Validate(suggestion);
         if (validation.IsAllowed)
@@ -547,8 +544,7 @@ public sealed class TrainSkillCommandHandler
             SafeAudit(skillId, "skill_training.harness_change_suggested",
                 $"suggest: {suggestion.Surface}.{suggestion.Field}={validation.NormalizedValue}", finalStep);
             // Surface the canonical value too, so consumers of the run result never see raw proposer text.
-            var accepted = suggestion with { ProposedValue = validation.NormalizedValue ?? suggestion.ProposedValue };
-            return await AnnotateWithClaimVerificationAsync(accepted, cancellationToken).ConfigureAwait(false);
+            return suggestion with { ProposedValue = validation.NormalizedValue ?? suggestion.ProposedValue };
         }
 
         // Audit rejections too (audit-everything guardrail). The raw, unvalidated proposer Field and value
@@ -563,45 +559,44 @@ public sealed class TrainSkillCommandHandler
     }
 
     /// <summary>
-    /// Checks the accepted suggestion's claimed <see cref="HarnessChangeSuggestion.CurrentValue"/>
-    /// against the live config it names (#319's first consumer). A claim that survives verification
-    /// (held, or genuinely unverifiable/erroring — fail-safe) surfaces the suggestion unchanged; a
-    /// claim the artifact contradicts is never dropped, only annotated — the same "revise, don't
-    /// delete" rule <see cref="ClaimVerdict"/>'s factories apply to the claim itself, extended here
-    /// to the suggestion it backs. Never throws: a faulty or unconfigured verifier must not fail an
-    /// already-completed run, matching <see cref="EmitHarnessChangeSuggestionsAsync"/>'s own
-    /// tolerance for a faulty suggester.
+    /// Checks every accepted suggestion's claimed <see cref="HarnessChangeSuggestion.CurrentValue"/>
+    /// against the live config it names (#319's first consumer), in a single batched
+    /// <see cref="ClaimVerificationRunner.RunAsync"/> call rather than one round-trip per suggestion
+    /// — the runner already dispatches its whole input concurrently, bounded by
+    /// <c>ClaimVerificationConfig.MaxParallelVerifiers</c>, so verifying suggestions one at a time
+    /// would pay N sequential round-trips for work it is built to parallelize. A claim that survives
+    /// verification (held, or genuinely unverifiable/erroring — fail-safe) surfaces its suggestion
+    /// unchanged; a claim the artifact contradicts is never dropped, only annotated — the same
+    /// "revise, don't delete" rule <see cref="ClaimVerdict"/>'s factories apply to the claim itself,
+    /// extended here to the suggestion it backs. Never throws: a faulty or unconfigured verifier
+    /// must not fail an already-completed run, matching <see cref="EmitHarnessChangeSuggestionsAsync"/>'s
+    /// own tolerance for a faulty suggester.
     /// </summary>
-    private async Task<HarnessChangeSuggestion> AnnotateWithClaimVerificationAsync(
-        HarnessChangeSuggestion suggestion, CancellationToken cancellationToken)
+    private async Task<IReadOnlyList<HarnessChangeSuggestion>> AnnotateWithClaimVerificationAsync(
+        IReadOnlyList<HarnessChangeSuggestion> suggestions, CancellationToken cancellationToken)
     {
-        var configPath = _configSurfaceConstraint.ResolveConfigPath(suggestion.Surface, suggestion.Field);
-        if (configPath is null)
+        // Positional, not suggestion-keyed: HarnessChangeSuggestion is a record with no identity
+        // field, so two accepted suggestions could compare equal — index correlation is the only
+        // reliable way to zip a verdict back to the suggestion that produced its claim.
+        var claims = new Claim?[suggestions.Count];
+        for (var i = 0; i < suggestions.Count; i++)
         {
-            // ConfigSurfaceConstraint governs this surface/field (validation above already confirmed
-            // that) but has no known live-config path for it. Nothing to verify against.
-            return suggestion;
+            var configPath = _configSurfaceConstraint.ResolveConfigPath(suggestions[i].Surface, suggestions[i].Field);
+            // ConfigSurfaceConstraint governs this surface/field (validation already confirmed that)
+            // but may have no known live-config path for it. Nothing to verify against.
+            claims[i] = configPath is null ? null : BuildCurrentValueClaim(suggestions[i], configPath);
         }
 
-        var claim = new Claim
+        var toVerify = claims.Where(c => c is not null).Select(c => c!).ToList();
+        if (toVerify.Count == 0)
         {
-            Text = $"The current value of {suggestion.Surface}.{suggestion.Field} is {suggestion.CurrentValue}.",
-            Location = $"config:{configPath}",
-            ConsequenceSignals = new ClaimConsequenceSignals
-            {
-                CausesWrite = false,
-                // The suggestion is never applied automatically, but a human's accept/reject
-                // decision on it depends on trusting CurrentValue — that dependency is what
-                // "gates a decision" means here.
-                GatesADecision = true
-            }
-        };
+            return suggestions;
+        }
 
-        ClaimVerdict verdict;
+        IReadOnlyList<ClaimVerdict> verdicts;
         try
         {
-            var verdicts = await _claimVerificationRunner.RunAsync([claim], cancellationToken).ConfigureAwait(false);
-            verdict = verdicts[0];
+            verdicts = await _claimVerificationRunner.RunAsync(toVerify, cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
@@ -610,10 +605,38 @@ public sealed class TrainSkillCommandHandler
         catch (Exception ex)
         {
             _logger.LogError(ex,
-                "Claim verification threw while checking a harness-change suggestion's current value; surfacing the suggestion unannotated.");
-            return suggestion;
+                "Claim verification threw while checking harness-change suggestions' current values; surfacing all suggestions unannotated.");
+            return suggestions;
         }
 
+        var result = new List<HarnessChangeSuggestion>(suggestions.Count);
+        var verdictIndex = 0;
+        for (var i = 0; i < suggestions.Count; i++)
+        {
+            result.Add(claims[i] is null
+                ? suggestions[i]
+                : AnnotateIfContradicted(suggestions[i], verdicts[verdictIndex++]));
+        }
+
+        return result;
+    }
+
+    private static Claim BuildCurrentValueClaim(HarnessChangeSuggestion suggestion, string configPath) => new()
+    {
+        Text = $"The current value of {suggestion.Surface}.{suggestion.Field} is {suggestion.CurrentValue}.",
+        Location = $"config:{configPath}",
+        ConsequenceSignals = new ClaimConsequenceSignals
+        {
+            CausesWrite = false,
+            // The suggestion is never applied automatically, but a human's accept/reject decision
+            // on it depends on trusting CurrentValue — that dependency is what "gates a decision"
+            // means here.
+            GatesADecision = true
+        }
+    };
+
+    private HarnessChangeSuggestion AnnotateIfContradicted(HarnessChangeSuggestion suggestion, ClaimVerdict verdict)
+    {
         if (verdict.Outcome is not (ClaimVerificationOutcome.Broken or ClaimVerificationOutcome.LocationNotFound))
         {
             return suggestion;
@@ -622,9 +645,13 @@ public sealed class TrainSkillCommandHandler
         _logger.LogWarning(
             "Harness-change suggestion's claimed current value could not be confirmed against live config ({Outcome}): {Explanation}",
             verdict.Outcome, verdict.Explanation);
+        // RevisedClaim.Confidence carries the same floor ClaimVerdict.Broken/LocationNotFound apply
+        // to the claim itself — surfaced here rather than discarded, so a reader of the annotation
+        // sees the same signal the claim-verification subsystem recorded, not a re-derived summary.
         return suggestion with
         {
-            Rationale = $"[UNVERIFIED CURRENT VALUE — {verdict.Outcome}: {verdict.Explanation}] {suggestion.Rationale}"
+            Rationale = $"[UNVERIFIED CURRENT VALUE ({verdict.RevisedClaim.Confidence:F1} confidence) — " +
+                $"{verdict.Outcome}: {verdict.Explanation}] {suggestion.Rationale}"
         };
     }
 

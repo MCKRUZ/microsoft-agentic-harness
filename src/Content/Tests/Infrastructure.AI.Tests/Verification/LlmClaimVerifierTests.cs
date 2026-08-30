@@ -5,10 +5,12 @@ using Application.AI.Common.Prompts.Models;
 using Application.AI.Common.StructuredOutput;
 using Domain.AI.ClaimVerification;
 using Domain.AI.Prompts;
+using Domain.Common.Config;
 using FluentAssertions;
 using Infrastructure.AI.Verification;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using Moq;
 using Tests.Common;
 using Xunit;
@@ -40,6 +42,12 @@ public sealed class LlmClaimVerifierTests
     private readonly Mock<IPromptRegistry> _promptRegistry = new();
     private readonly Mock<IPromptRenderer> _promptRenderer = new();
     private readonly Mock<IPromptUsageRecorder> _usageRecorder = new();
+
+    // Enabled=true by default in this fixture: every test in this file exercises the model-call
+    // path, so the feature must be on. The Enabled=false gate is its own dedicated test below,
+    // built with a separate SUT instance rather than mutating this shared config.
+    private readonly IOptionsMonitor<AppConfig> _config = new StaticOptionsMonitor<AppConfig>(
+        new AppConfig { AI = { ClaimVerification = { Enabled = true } } });
 
     private readonly LlmClaimVerifier _sut;
 
@@ -84,6 +92,7 @@ public sealed class LlmClaimVerifierTests
             _promptRegistry.Object,
             _promptRenderer.Object,
             _usageRecorder.Object,
+            _config,
             NullLogger<LlmClaimVerifier>.Instance);
     }
 
@@ -257,11 +266,44 @@ public sealed class LlmClaimVerifierTests
             realRegistry,
             realRenderer,
             _usageRecorder.Object,
+            _config,
             NullLogger<LlmClaimVerifier>.Instance);
         SetupChatClientResponse("""{ "status": "held", "explanation": "confirmed" }""");
 
         var verdict = await sutWithRealRegistry.VerifyAsync(SampleClaim, "content", CancellationToken.None);
 
         verdict.Outcome.Should().Be(ClaimVerificationOutcome.Held, because: verdict.Explanation);
+    }
+
+    // AppConfig:AI:ClaimVerification:Enabled gates the judge call itself — a disabled host must
+    // never send claim/evidence content to a model, and must fail safe (Unverifiable) rather than
+    // throw. Deleting this check restores the dead-control defect: setting Enabled=false would no
+    // longer stop a live judge call.
+    [Fact]
+    public async Task VerifyAsync_ClaimVerificationDisabled_ReturnsUnverifiableWithoutCallingTheModel()
+    {
+        var disabledSut = new LlmClaimVerifier(
+            _chatClientProvider.Object,
+            new StructuredOutputInvoker(NullLogger<StructuredOutputInvoker>.Instance),
+            _promptRegistry.Object,
+            _promptRenderer.Object,
+            _usageRecorder.Object,
+            new StaticOptionsMonitor<AppConfig>(new AppConfig { AI = { ClaimVerification = { Enabled = false } } }),
+            NullLogger<LlmClaimVerifier>.Instance);
+
+        var verdict = await disabledSut.VerifyAsync(SampleClaim, "content", CancellationToken.None);
+
+        verdict.Outcome.Should().Be(ClaimVerificationOutcome.Unverifiable);
+        _chatClient.Verify(
+            c => c.GetResponseAsync(It.IsAny<IEnumerable<ChatMessage>>(), It.IsAny<ChatOptions?>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    private sealed class StaticOptionsMonitor<T> : IOptionsMonitor<T>
+    {
+        public StaticOptionsMonitor(T value) { CurrentValue = value; }
+        public T CurrentValue { get; }
+        public T Get(string? name) => CurrentValue;
+        public IDisposable? OnChange(Action<T, string?> listener) => null;
     }
 }

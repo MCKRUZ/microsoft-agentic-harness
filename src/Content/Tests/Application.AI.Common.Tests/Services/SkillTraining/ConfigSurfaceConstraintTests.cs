@@ -81,4 +81,26 @@ public class ConfigSurfaceConstraintTests
     public void ResolveConfigPath_GovernedSurfaceUnknownField_ReturnsNull()
         => _sut.ResolveConfigPath(HarnessSurface.ToolErrorRetryLimit, "BaseDelaySeconds")
             .Should().BeNull();
+
+    // Reflection, not a hand-typed field list: ConfigSurfaceConstraint hand-maintains AllowedFields
+    // (which field a suggestion may target) and ConfigPaths (where that field's live value lives)
+    // as two independent structures — nothing in the compiler ties them together. A field added to
+    // one and forgotten in the other means ResolveConfigPath silently returns null for a governed,
+    // allowed field, and AnnotateWithClaimVerificationAsync treats that as "nothing to verify
+    // against" — a silent, permanent skip with no error or warning. This fails the moment the two
+    // sets diverge, regardless of which field name is added.
+    [Fact]
+    public void EveryAllowedField_HasAResolvableConfigPath()
+    {
+        var allowedFieldsField = typeof(ConfigSurfaceConstraint).GetField(
+            "AllowedFields", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+        var allowedFields = (IReadOnlySet<string>)allowedFieldsField!.GetValue(null)!;
+
+        allowedFields.Should().NotBeEmpty();
+        foreach (var field in allowedFields)
+        {
+            _sut.ResolveConfigPath(_sut.GovernedSurface, field).Should().NotBeNull(
+                because: $"'{field}' is in AllowedFields but has no matching ConfigPaths entry");
+        }
+    }
 }

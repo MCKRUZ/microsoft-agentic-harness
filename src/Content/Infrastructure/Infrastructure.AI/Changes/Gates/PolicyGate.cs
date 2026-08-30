@@ -120,12 +120,24 @@ public sealed class PolicyGate : IChangeProposalGate
             var summary = string.Join("; ", blocking.Take(5).Select(f =>
                 $"[{f.Severity} {f.PolicyKey}] {f.Message}"));
             var more = blocking.Count > 5 ? $" (+{blocking.Count - 5} more)" : string.Empty;
+            // Not "at or above {threshold}" — a Blocking=true finding can be blocking regardless of
+            // its own severity (see PolicyFinding.Blocking's remarks), so that phrase would be false
+            // for it. Each finding's actual severity is already visible in the summary above.
             return GateResult.Fail(
-                $"{blocking.Count} blocking finding(s) at or above {threshold}: {summary}{more}");
+                $"{blocking.Count} blocking finding(s): {summary}{more}");
         }
 
+        // Every non-blocking finding is either genuinely below threshold, or excluded because its
+        // severity has not been independently verified (RequiresVerification, unconfirmed) — the
+        // two are not the same claim, and collapsing them into "below threshold" would misdescribe
+        // an unconfirmed Critical finding as one the gate judged too minor to matter.
+        var excludedPendingVerification = allFindings.Count(f => f.RequiresVerification && !f.Blocking);
+        var belowThreshold = allFindings.Count - excludedPendingVerification;
+        var excludedSuffix = excludedPendingVerification > 0
+            ? $", {excludedPendingVerification} excluded pending verification"
+            : string.Empty;
         return GateResult.Pass(
-            $"{policies.Count} policy(ies) evaluated, {allFindings.Count} finding(s) below {threshold} threshold");
+            $"{policies.Count} policy(ies) evaluated, {belowThreshold} finding(s) below {threshold} threshold{excludedSuffix}");
     }
 
     private static PolicyFindingSeverity ParseThreshold(string raw)

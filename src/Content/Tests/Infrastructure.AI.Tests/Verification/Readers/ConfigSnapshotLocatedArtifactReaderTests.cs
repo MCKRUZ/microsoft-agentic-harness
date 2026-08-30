@@ -32,6 +32,18 @@ public sealed class ConfigSnapshotLocatedArtifactReaderTests
         content.Should().Be("AI.Resilience.Retry.MaxAttempts = 5");
     }
 
+    // The security-critical case: a path that resolves perfectly well but was never put on the
+    // allowlist — e.g. a live secret — must be refused exactly like a nonexistent one.
+    [Fact]
+    public async Task TryReadAsync_WellFormedButNotAllowlistedPath_ReturnsNullWithoutLeakingTheValue()
+    {
+        _config.AI.AgentFramework.ApiKey = "sk-super-secret-value";
+
+        var content = await _sut.TryReadAsync("config:AI.AgentFramework.ApiKey", CancellationToken.None);
+
+        content.Should().BeNull();
+    }
+
     [Fact]
     public async Task TryReadAsync_UnknownSegment_ReturnsNull()
     {

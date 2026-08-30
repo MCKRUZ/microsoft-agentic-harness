@@ -261,6 +261,11 @@ public sealed class PolicyGateTests
             var result = await sut.EvaluateAsync(TestProposals.NewProposal(), Ctx(), CancellationToken.None);
 
             result.Action.Should().Be(GateAction.Pass);
+            // Not "below threshold" — Critical IS at/above every real threshold. The Reason must say
+            // it was excluded pending verification, not misdescribe it as too minor to matter.
+            result.Reason.Should().Contain("excluded pending verification");
+            result.Reason.Should().NotContain("1 finding(s) below",
+                because: "an unconfirmed Critical finding was excluded, not judged below threshold");
         }
         finally
         {
@@ -302,6 +307,9 @@ public sealed class PolicyGateTests
 
             result.Action.Should().Be(GateAction.Fail);
             result.Reason.Should().Contain("hard stop");
+            // Must not claim the finding was "at or above" threshold — it wasn't; Blocking is what
+            // forced the fail, and the message must not misdescribe why.
+            result.Reason.Should().NotContain("at or above");
         }
         finally
         {
