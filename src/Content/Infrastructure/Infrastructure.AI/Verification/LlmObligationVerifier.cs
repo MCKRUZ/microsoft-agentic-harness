@@ -173,31 +173,14 @@ public sealed class LlmObligationVerifier : IObligationVerifier
         }
     }
 
-    private async Task<(string SystemPrompt, string EnvelopedUser)> BuildEnvelopedRequestAsync(
-        PromptDescriptor descriptor, string untrustedBody, string nonce, CancellationToken cancellationToken)
-    {
-        var rendered = await _promptRenderer.RenderAsync(
-            descriptor, new Dictionary<string, object?>(), cancellationToken).ConfigureAwait(false);
-
-        await _usageRecorder.RecordAsync(
-            descriptor, new PromptUsageContext { MetricKey = MetricKey }, cancellationToken).ConfigureAwait(false);
-
-        var encodedBody = System.Net.WebUtility.HtmlEncode(untrustedBody);
-        var envelopedUser = PromptInjectionEnvelope.Wrap(EnvelopeTagName, nonce, encodedBody);
-
-        var systemPrompt = PromptInjectionEnvelope.AppendDirective(
-            rendered.Body, EnvelopeTagName, nonce, "verify");
-
-        return (systemPrompt, envelopedUser);
-    }
-
     private async Task<VerificationVerdict> InvokeVerificationModelAsync(
         PromptDescriptor descriptor, Obligation obligation, string untrustedBody, string nonce, CancellationToken cancellationToken)
     {
         try
         {
-            var (systemPrompt, envelopedUser) = await BuildEnvelopedRequestAsync(
-                descriptor, untrustedBody, nonce, cancellationToken).ConfigureAwait(false);
+            var (systemPrompt, envelopedUser) = await EnvelopedRequestBuilder.BuildAsync(
+                _promptRenderer, _usageRecorder, descriptor, untrustedBody, EnvelopeTagName, nonce,
+                MetricKey, "verify", cancellationToken).ConfigureAwait(false);
 
             var chatClient = await _chatClientProvider.GetJudgeAsync(cancellationToken).ConfigureAwait(false);
 
