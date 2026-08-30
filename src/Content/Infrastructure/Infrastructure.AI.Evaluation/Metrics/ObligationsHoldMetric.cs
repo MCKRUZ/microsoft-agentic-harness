@@ -61,27 +61,9 @@ public sealed class ObligationsHoldMetric : IEvalMetric
     {
         var sw = Stopwatch.StartNew();
 
-        if (!_config.CurrentValue.AI.Obligations.Enabled)
-        {
-            sw.Stop();
-            return Warn(sw, "Obligation verification is disabled (AI:Obligations:Enabled=false).");
-        }
-
-        if (!output.Success || string.IsNullOrWhiteSpace(output.Output))
-        {
-            sw.Stop();
-            return Warn(sw, "No output to extract obligations from.");
-        }
-
-        // IObligationExtractor.ExtractAsync throws ArgumentException on a blank artifactPath.
-        // EvalCase.Id is required but that only guarantees it's set, not non-blank — a dataset
-        // supplying "id": "" would otherwise throw out of a metric whose own remarks promise it
-        // never does.
-        if (string.IsNullOrWhiteSpace(@case.Id))
-        {
-            sw.Stop();
-            return Warn(sw, "EvalCase.Id is blank; cannot extract obligations without an artifact identifier.");
-        }
+        var precondition = CheckPreconditions(@case, output, sw);
+        if (precondition is not null)
+            return precondition;
 
         var extraction = await _extractor.ExtractAsync(@case.Id, output.Output, cancellationToken).ConfigureAwait(false);
         if (!extraction.IsSuccess || extraction.Value is null)
@@ -106,30 +88,65 @@ public sealed class ObligationsHoldMetric : IEvalMetric
         }
 
         var verdicts = await _runner.RunAsync(extraction.Value, output.Output, cancellationToken).ConfigureAwait(false);
-        var broken = verdicts.Where(v => v.Outcome == VerificationOutcome.Broken).ToList();
+        sw.Stop();
+        return BuildVerdictScore(sw, extraction.Value.Count, verdicts);
+    }
+
+    // Feature-disabled / no-output / blank-id checks — the three ways ScoreAsync can short-circuit
+    // before ever calling the extractor. Returns null when none apply and ScoreAsync should proceed.
+    private MetricScore? CheckPreconditions(EvalCase @case, AgentInvocationResult output, Stopwatch sw)
+    {
+        if (!_config.CurrentValue.AI.Obligations.Enabled)
+        {
+            sw.Stop();
+            return Warn(sw, "Obligation verification is disabled (AI:Obligations:Enabled=false).");
+        }
+
+        if (!output.Success || string.IsNullOrWhiteSpace(output.Output))
+        {
+            sw.Stop();
+            return Warn(sw, "No output to extract obligations from.");
+        }
+
+        // IObligationExtractor.ExtractAsync throws ArgumentException on a blank artifactPath.
+        // EvalCase.Id is required but that only guarantees it's set, not non-blank — a dataset
+        // supplying "id": "" would otherwise throw out of a metric whose own remarks promise it
+        // never does.
+        if (string.IsNullOrWhiteSpace(@case.Id))
+        {
+            sw.Stop();
+            return Warn(sw, "EvalCase.Id is blank; cannot extract obligations without an artifact identifier.");
+        }
+
+        return null;
+    }
+
+    // Turns a completed verification run into the final MetricScore — the fail-safe "all rejected"
+    // warning, a Fail itemizing every broken obligation, or a Pass, each carrying a coverage note
+    // when the runner dispatched fewer obligations than were extracted.
+    private MetricScore BuildVerdictScore(Stopwatch sw, int extractedCount, IReadOnlyList<VerificationVerdict> verdicts)
+    {
+        // Distinct from the extraction.Value.Count == 0 branch in ScoreAsync: extraction found
+        // something worth checking, but every single one was rejected by ObligationValidator before
+        // dispatch — "we found claims but couldn't check any of them" is not the same finding as "we
+        // looked and there was nothing to check," and reporting it as a plain Pass would read as the
+        // latter.
+        if (verdicts.Count == 0)
+        {
+            return Warn(sw, $"{extractedCount} obligation(s) extracted but all were rejected as malformed — nothing was verified.");
+        }
 
         // verdicts.Count reflects only what the runner actually dispatched — after
-        // ObligationValidator rejects malformed obligations and MaxObligations caps the rest —
-        // not extraction.Value.Count, the original extracted total. Reporting the gap keeps the
-        // reasoning honest about coverage rather than implying every extracted obligation was
-        // checked when some may have been silently rejected or dropped.
-        var notDispatched = extraction.Value.Count - verdicts.Count;
+        // ObligationValidator rejects malformed obligations and MaxObligations caps the rest — not
+        // extractedCount, the original extracted total. Reporting the gap keeps the reasoning honest
+        // about coverage rather than implying every extracted obligation was checked when some may
+        // have been silently rejected or dropped.
+        var notDispatched = extractedCount - verdicts.Count;
         var coverageNote = notDispatched > 0
             ? $" ({notDispatched} extracted obligation(s) not dispatched — rejected as malformed or over the configured cap.)"
             : string.Empty;
 
-        sw.Stop();
-
-        // Distinct from the extraction.Value.Count == 0 branch above: extraction found something
-        // worth checking, but every single one was rejected by ObligationValidator before dispatch
-        // — "we found claims but couldn't check any of them" is not the same finding as "we looked
-        // and there was nothing to check," and reporting it as a plain Pass would read as the
-        // latter.
-        if (verdicts.Count == 0)
-        {
-            return Warn(sw, $"{extraction.Value.Count} obligation(s) extracted but all were rejected as malformed — nothing was verified.");
-        }
-
+        var broken = verdicts.Where(v => v.Outcome == VerificationOutcome.Broken).ToList();
         if (broken.Count > 0)
         {
             var summary = string.Join(" | ", broken.Select(v => $"{v.Obligation.Property}: {v.Explanation}"));
