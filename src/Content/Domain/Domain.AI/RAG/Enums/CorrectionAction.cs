@@ -30,5 +30,15 @@ public enum CorrectionAction
     /// entirely and respond with an explicit "I don't have this information"
     /// rather than hallucinating from poor context.
     /// </summary>
-    Reject
+    Reject,
+
+    /// <summary>
+    /// The CRAG gate itself did not run — the evaluation call threw, or the model's response could
+    /// not be parsed even after a repair attempt. This is <em>not</em> a relevance judgment and
+    /// must never be treated as equivalent to <see cref="Accept"/>: a gate that cannot read its own
+    /// output must not silently green-light the retrieval it exists to check. Every consumer of
+    /// <c>CragEvaluation.Action</c> must handle this explicitly rather than falling through to
+    /// whatever the default branch happens to do for an unrecognised value.
+    /// </summary>
+    EvaluationUnavailable,
 }

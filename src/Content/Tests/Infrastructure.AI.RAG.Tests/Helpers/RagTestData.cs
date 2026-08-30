@@ -129,6 +129,14 @@ internal static class RagTestData
             Reasoning = "Local results insufficient; recommend web fallback"
         };
 
+    public static CragEvaluation CreateEvaluationUnavailableEvaluation(string reason = "Evaluation failed: simulated failure") =>
+        new()
+        {
+            Action = CorrectionAction.EvaluationUnavailable,
+            RelevanceScore = 0.5,
+            Reasoning = reason
+        };
+
     public static TaskComplexityAssessment CreateTrivialClassification(double confidence = 0.9) =>
         new()
         {

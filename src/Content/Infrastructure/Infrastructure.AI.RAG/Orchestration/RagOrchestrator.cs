@@ -404,6 +404,17 @@ public sealed partial class RagOrchestrator : IRagOrchestrator
                         augmented, DefaultMaxTokens, cancellationToken);
                 }
 
+                case CorrectionAction.EvaluationUnavailable:
+                    // The gate did not run — never treated as a confident Accept. Falls through to
+                    // the same degraded "assemble best available" path as an exhausted Refine,
+                    // which is the explicit, audited version of what an unhandled enum value would
+                    // already do via `default` below — kept as its own case so this decision is
+                    // visible rather than incidental.
+                    _logger.LogWarning(
+                        "CRAG evaluation unavailable: {Reason}; assembling best available without a relevance judgment",
+                        evaluation.Reasoning);
+                    goto default;
+
                 default:
                     // Refine exhausted or WebFallback — assemble what we have
                     _logger.LogInformation(
@@ -532,8 +543,12 @@ public sealed partial class RagOrchestrator : IRagOrchestrator
                 evaluation.Reasoning ?? "Multi-source content not relevant to the query.");
         }
 
-        if (evaluation.Action == CorrectionAction.Refine)
+        if (evaluation.Action is CorrectionAction.Refine or CorrectionAction.EvaluationUnavailable)
         {
+            // EvaluationUnavailable joins Refine here rather than falling through to the
+            // unconditional Accept-shaped return below — the gate did not run, so this path must
+            // not be indistinguishable from a confident Accept. FilterWeakChunks is a no-op when
+            // the gate never produced weak-chunk ids, which is the correct degraded behavior.
             var filtered = FilterWeakChunks(reranked, evaluation.WeakChunkIds);
             return await _contextAssembler.AssembleAsync(filtered, DefaultMaxTokens, cancellationToken);
         }

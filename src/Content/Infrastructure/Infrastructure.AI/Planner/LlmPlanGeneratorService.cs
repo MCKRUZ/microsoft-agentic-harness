@@ -1,8 +1,9 @@
-using System.Text.Json;
 using Application.AI.Common.Interfaces;
+using Application.AI.Common.Interfaces.AI;
 using Application.AI.Common.Interfaces.Planner;
 using Application.AI.Common.Prompts.Exceptions;
 using Application.AI.Common.Prompts.Interfaces;
+using Application.AI.Common.StructuredOutput;
 using Domain.AI.Planner;
 using Domain.AI.Prompts;
 using Domain.Common;
@@ -24,7 +25,13 @@ public sealed class LlmPlanGeneratorService : IPlanGenerator
     private const string PromptName = "plan-generator-system";
     private const string MetricKey = "plan_generation";
 
+    // Built once — the schema attached to the request and the schema the reply is validated
+    // against are the same object, so they can never independently drift.
+    private static readonly StructuredOutputContract Contract =
+        StructuredOutputSchema.Build<LlmPlanOutput>("plan_generation", "A generated agentic plan graph");
+
     private readonly IChatClientFactory _chatClientFactory;
+    private readonly IStructuredOutputInvoker _structuredOutput;
     private readonly IPromptRegistry _promptRegistry;
     private readonly IPromptRenderer _promptRenderer;
     private readonly IPromptUsageRecorder _usageRecorder;
@@ -32,15 +39,10 @@ public sealed class LlmPlanGeneratorService : IPlanGenerator
     private readonly IOptionsMonitor<PlannerOptions> _options;
     private readonly ILogger<LlmPlanGeneratorService> _logger;
 
-    private static readonly JsonSerializerOptions JsonOptions = new()
-    {
-        PropertyNameCaseInsensitive = true,
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase
-    };
-
     /// <summary>Initializes a new instance.</summary>
     public LlmPlanGeneratorService(
         IChatClientFactory chatClientFactory,
+        IStructuredOutputInvoker structuredOutput,
         IPromptRegistry promptRegistry,
         IPromptRenderer promptRenderer,
         IPromptUsageRecorder usageRecorder,
@@ -49,6 +51,7 @@ public sealed class LlmPlanGeneratorService : IPlanGenerator
         ILogger<LlmPlanGeneratorService> logger)
     {
         ArgumentNullException.ThrowIfNull(chatClientFactory);
+        ArgumentNullException.ThrowIfNull(structuredOutput);
         ArgumentNullException.ThrowIfNull(promptRegistry);
         ArgumentNullException.ThrowIfNull(promptRenderer);
         ArgumentNullException.ThrowIfNull(usageRecorder);
@@ -57,6 +60,7 @@ public sealed class LlmPlanGeneratorService : IPlanGenerator
         ArgumentNullException.ThrowIfNull(logger);
 
         _chatClientFactory = chatClientFactory;
+        _structuredOutput = structuredOutput;
         _promptRegistry = promptRegistry;
         _promptRenderer = promptRenderer;
         _usageRecorder = usageRecorder;
@@ -119,28 +123,21 @@ public sealed class LlmPlanGeneratorService : IPlanGenerator
                 MaxOutputTokens = opts.GenerationMaxTokens
             };
 
-            var response = await chatClient.GetResponseAsync(messages, chatOptions, ct);
-            var responseText = SanitizeJsonResponse(response.Text ?? string.Empty);
+            var parseResult = await _structuredOutput.InvokeAsync<LlmPlanOutput>(
+                chatClient, Contract, messages, chatOptions, ct);
 
-            if (string.IsNullOrWhiteSpace(responseText))
+            if (!parseResult.IsSuccess || parseResult.Value is null)
             {
-                _logger.LogWarning("LLM returned empty response for plan generation");
-                return Result<PlanGraph>.Fail("LLM returned an empty response.");
+                _logger.LogWarning(
+                    "Plan generation structured-output call failed: {Outcome} — {Reason}",
+                    parseResult.Outcome, parseResult.ErrorMessage);
+                return Result<PlanGraph>.Fail(
+                    $"Plan generation failed ({parseResult.Outcome}): {parseResult.ErrorMessage}");
             }
 
-            LlmPlanOutput? planOutput;
-            try
-            {
-                planOutput = JsonSerializer.Deserialize<LlmPlanOutput>(responseText, JsonOptions);
-            }
-            catch (JsonException ex)
-            {
-                _logger.LogWarning(ex, "Failed to deserialize LLM plan output as JSON");
-                return Result<PlanGraph>.Fail($"LLM did not return valid JSON: {ex.Message}");
-            }
-
-            if (planOutput is null || planOutput.Steps.Count == 0)
-                return Result<PlanGraph>.Fail("LLM returned an empty or null plan.");
+            var planOutput = parseResult.Value;
+            if (planOutput.Steps.Count == 0)
+                return Result<PlanGraph>.Fail("LLM returned a plan with no steps.");
 
             PlanGraph graph;
             try
@@ -214,10 +211,4 @@ public sealed class LlmPlanGeneratorService : IPlanGenerator
 
         return $"Task: {taskDescription}";
     }
-
-    /// <summary>
-    /// Strips markdown code fences that LLMs frequently add despite instructions not to.
-    /// </summary>
-    private static string SanitizeJsonResponse(string response)
-        => Application.AI.Common.Json.LlmJsonResponseParser.StripFences(response);
 }

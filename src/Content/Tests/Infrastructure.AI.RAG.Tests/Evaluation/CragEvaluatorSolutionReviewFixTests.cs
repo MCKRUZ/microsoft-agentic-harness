@@ -1,4 +1,5 @@
 using Application.AI.Common.Interfaces.Routing;
+using Application.AI.Common.StructuredOutput;
 using Domain.AI.Routing.Enums;
 using Domain.AI.Routing.Models;
 using Domain.Common.Config.AI;
@@ -32,8 +33,11 @@ public sealed class CragEvaluatorSolutionReviewFixTests
             c.AI.Rag.Crag.AllowWebFallback = false;
         });
 
+        var structuredOutput = new StructuredOutputInvoker(Mock.Of<ILogger<StructuredOutputInvoker>>());
+
         return new CragEvaluator(
             _mockRouter.Object,
+            structuredOutput,
             config,
             Mock.Of<ILogger<CragEvaluator>>());
     }

@@ -36,6 +36,8 @@
          repair-round-trip tests that need to script fail-then-succeed responses and assert
          whether ChatOptions.ResponseFormat was populated on each call. -->
     <ProjectReference Include="../Tests.AI.Fakes/Tests.AI.Fakes.csproj" />
+    <!-- RepoRoot/SourceScan for the structured-output schema-generation chokepoint test. -->
+    <ProjectReference Include="../Tests.Common/Tests.Common.csproj" />
   </ItemGroup>
 
 </Project>

@@ -2,6 +2,7 @@ using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Planner;
 using Application.AI.Common.Prompts.Interfaces;
 using Application.AI.Common.Prompts.Models;
+using Application.AI.Common.StructuredOutput;
 using Domain.AI.Planner;
 using Domain.AI.Prompts;
 using Domain.Common;
@@ -75,8 +76,13 @@ public sealed class LlmPlanGeneratorServiceTests
         var optionsMonitor = Mock.Of<IOptionsMonitor<PlannerOptions>>(
             o => o.CurrentValue == _options);
 
+        // Real implementation, not a mock — drives the actual schema-out/parse-back/repair loop so
+        // these tests prove the wiring works end to end, not just that a mocked invoker was called.
+        var structuredOutput = new StructuredOutputInvoker(NullLogger<StructuredOutputInvoker>.Instance);
+
         _sut = new LlmPlanGeneratorService(
             _chatClientFactory.Object,
+            structuredOutput,
             _promptRegistry.Object,
             _promptRenderer.Object,
             _usageRecorder.Object,
