@@ -71,6 +71,27 @@ public sealed class ObligationVerificationRunner
 
         var config = _config.CurrentValue.AI.Obligations;
 
+        // ObligationConfigValidator + ValidateOnStart guards these at startup, but IOptionsMonitor
+        // can pick up a hot-reloaded config value that never goes through that startup check again.
+        // A MaxParallelVerifiers of 0 hangs every verifier on gate.WaitAsync forever (no timeout can
+        // rescue a permit that's never granted); a negative value throws out of SemaphoreSlim's own
+        // constructor; a non-positive PerVerifierTimeout throws out of CancelAfter — all three would
+        // escape RunAsync uncaught, breaking the "never throws" contract this type documents. Clamped
+        // here rather than trusted, the same way ObligationValidator re-checks obligations that were
+        // already validated upstream.
+        var maxParallelVerifiers = config.MaxParallelVerifiers > 0 ? config.MaxParallelVerifiers : 1;
+        var perVerifierTimeout = config.PerVerifierTimeout > TimeSpan.Zero
+            ? config.PerVerifierTimeout
+            : TimeSpan.FromSeconds(30);
+        if (maxParallelVerifiers != config.MaxParallelVerifiers || perVerifierTimeout != config.PerVerifierTimeout)
+        {
+            _logger.LogWarning(
+                "ObligationConfig has an invalid MaxParallelVerifiers ({MaxParallelVerifiers}) or " +
+                "PerVerifierTimeout ({PerVerifierTimeout}) — a hot-reloaded value bypassing startup " +
+                "validation. Falling back to {ClampedMaxParallelVerifiers}/{ClampedPerVerifierTimeout}.",
+                config.MaxParallelVerifiers, config.PerVerifierTimeout, maxParallelVerifiers, perVerifierTimeout);
+        }
+
         var validated = obligations.Where(o => _validator.Validate(o).IsValid).ToList();
         if (validated.Count < obligations.Count)
         {
@@ -91,7 +112,7 @@ public sealed class ObligationVerificationRunner
                 validated.Count, config.MaxObligations, validated.Count - bounded.Count);
         }
 
-        using var gate = new SemaphoreSlim(config.MaxParallelVerifiers);
+        using var gate = new SemaphoreSlim(maxParallelVerifiers);
         var tasks = bounded.Select(async obligation =>
         {
             await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -101,7 +122,7 @@ public sealed class ObligationVerificationRunner
             // the abandoned call keeps running in the background and still occupies a concurrency
             // slot in spirit even after this method has released its semaphore permit.
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            timeoutCts.CancelAfter(config.PerVerifierTimeout);
+            timeoutCts.CancelAfter(perVerifierTimeout);
             try
             {
                 return await _verifier.VerifyAsync(obligation, artifactContent, timeoutCts.Token).ConfigureAwait(false);
@@ -122,7 +143,7 @@ public sealed class ObligationVerificationRunner
                 // VerificationVerdict.Explanation is persisted (surfaced via MetricScore.Reasoning),
                 // and an unfiltered exception message has leaked sensitive detail elsewhere in this repo.
                 var reason = timedOut
-                    ? $"Verifier exceeded the {config.PerVerifierTimeout} timeout."
+                    ? $"Verifier exceeded the {perVerifierTimeout} timeout."
                     : "Obligation verifier failed; see logs for details.";
                 return VerificationVerdict.VerifierError(obligation, reason);
             }

@@ -132,6 +132,36 @@ public sealed class LlmObligationExtractorTests
         result.IsSuccess.Should().BeFalse();
     }
 
+    // Render and usage-recording must be inside the same try as the model call — a throw from
+    // either must degrade to Result.Fail, not escape ExtractAsync uncaught and break the caller's
+    // (ObligationsHoldMetric's) own "never throws" promise.
+    [Fact]
+    public async Task ExtractAsync_PromptRendererThrows_ReturnsFailNotThrow()
+    {
+        _promptRenderer
+            .Setup(r => r.RenderAsync(
+                It.IsAny<PromptDescriptor>(),
+                It.IsAny<IReadOnlyDictionary<string, object?>>(),
+                It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("render blew up"));
+
+        var result = await _sut.ExtractAsync("artifact.txt", "content", CancellationToken.None);
+
+        result.IsSuccess.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task ExtractAsync_UsageRecorderThrows_ReturnsFailNotThrow()
+    {
+        _usageRecorder
+            .Setup(r => r.RecordAsync(It.IsAny<PromptDescriptor>(), It.IsAny<PromptUsageContext>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("recording blew up"));
+
+        var result = await _sut.ExtractAsync("artifact.txt", "content", CancellationToken.None);
+
+        result.IsSuccess.Should().BeFalse();
+    }
+
     [Fact]
     public async Task ExtractAsync_SendsArtifactContentEnvelopedInTheUserMessage()
     {

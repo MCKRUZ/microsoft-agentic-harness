@@ -44,6 +44,48 @@ public sealed class ObligationVerificationRunnerTests
         verifier.CallCount.Should().Be(3);
     }
 
+    // ObligationConfigValidator + ValidateOnStart guard MaxParallelVerifiers/PerVerifierTimeout at
+    // startup, but IOptionsMonitor can still hand the runner a hot-reloaded value that never went
+    // through that check again. A MaxParallelVerifiers of 0 hangs every verifier on gate.WaitAsync
+    // forever with no timeout able to rescue it — the WaitAsync(5s) below is what turns "hangs
+    // forever" into a failing test instead of a CI job that never finishes.
+    [Fact]
+    public async Task RunAsync_MaxParallelVerifiersIsZero_DoesNotHangAndReportsVerifierError()
+    {
+        var verifier = new RecordingVerifier((o, _, _) => Task.FromResult(VerificationVerdict.Held(o)));
+        var sut = CreateSut(verifier, maxObligations: 10, maxParallelVerifiers: 0);
+
+        var verdicts = await sut.RunAsync([MakeObligation(0)], ArtifactContent, CancellationToken.None)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+
+        verdicts.Should().ContainSingle();
+        verdicts[0].Outcome.Should().Be(VerificationOutcome.Held);
+    }
+
+    [Fact]
+    public async Task RunAsync_MaxParallelVerifiersIsNegative_DoesNotThrowFromSemaphoreConstruction()
+    {
+        var verifier = new RecordingVerifier((o, _, _) => Task.FromResult(VerificationVerdict.Held(o)));
+        var sut = CreateSut(verifier, maxObligations: 10, maxParallelVerifiers: -1);
+
+        var verdicts = await sut.RunAsync([MakeObligation(0)], ArtifactContent, CancellationToken.None)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+
+        verdicts.Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task RunAsync_PerVerifierTimeoutIsNonPositive_DoesNotThrowFromCancelAfter()
+    {
+        var verifier = new RecordingVerifier((o, _, _) => Task.FromResult(VerificationVerdict.Held(o)));
+        var sut = CreateSut(verifier, maxObligations: 10, maxParallelVerifiers: 4, perVerifierTimeout: TimeSpan.Zero);
+
+        var verdicts = await sut.RunAsync([MakeObligation(0)], ArtifactContent, CancellationToken.None)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+
+        verdicts.Should().ContainSingle();
+    }
+
     [Fact]
     public async Task RunAsync_OneVerifierThrows_OtherVerdictsAreUnaffectedAndThrowerReportsVerifierError()
     {

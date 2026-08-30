@@ -183,6 +183,37 @@ public sealed class LlmObligationVerifierTests
         verdict.Outcome.Should().Be(VerificationOutcome.VerifierError);
     }
 
+    // Render and usage-recording must be inside the same try as the model call — a throw from
+    // either must degrade to VerifierError, not escape VerifyAsync uncaught (ObligationVerificationRunner's
+    // catch is not a substitute here, since IObligationVerifier is public DI and a caller can invoke
+    // VerifyAsync directly, bypassing the runner entirely).
+    [Fact]
+    public async Task VerifyAsync_PromptRendererThrows_ReturnsVerifierErrorNotThrow()
+    {
+        _promptRenderer
+            .Setup(r => r.RenderAsync(
+                It.IsAny<PromptDescriptor>(),
+                It.IsAny<IReadOnlyDictionary<string, object?>>(),
+                It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("render blew up"));
+
+        var verdict = await _sut.VerifyAsync(SampleObligation, "content", CancellationToken.None);
+
+        verdict.Outcome.Should().Be(VerificationOutcome.VerifierError);
+    }
+
+    [Fact]
+    public async Task VerifyAsync_UsageRecorderThrows_ReturnsVerifierErrorNotThrow()
+    {
+        _usageRecorder
+            .Setup(r => r.RecordAsync(It.IsAny<PromptDescriptor>(), It.IsAny<PromptUsageContext>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("recording blew up"));
+
+        var verdict = await _sut.VerifyAsync(SampleObligation, "content", CancellationToken.None);
+
+        verdict.Outcome.Should().Be(VerificationOutcome.VerifierError);
+    }
+
     [Fact]
     public async Task VerifyAsync_SendsObligationAndArtifactContentEnvelopedInTheUserMessage()
     {

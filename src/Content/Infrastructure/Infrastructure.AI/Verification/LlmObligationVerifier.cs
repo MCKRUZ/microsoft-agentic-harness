@@ -147,20 +147,20 @@ public sealed class LlmObligationVerifier : IObligationVerifier
                 obligation, "Nonce collision against obligation/artifact content; refusing to verify to avoid injection ambiguity.");
         }
 
-        var rendered = await _promptRenderer.RenderAsync(
-            descriptor, new Dictionary<string, object?>(), cancellationToken).ConfigureAwait(false);
-
-        await _usageRecorder.RecordAsync(
-            descriptor, new PromptUsageContext { MetricKey = MetricKey }, cancellationToken).ConfigureAwait(false);
-
-        var encodedBody = System.Net.WebUtility.HtmlEncode(untrustedBody);
-        var envelopedUser = PromptInjectionEnvelope.Wrap(EnvelopeTagName, nonce, encodedBody);
-
-        var systemPrompt = PromptInjectionEnvelope.AppendDirective(
-            rendered.Body, EnvelopeTagName, nonce, "verify");
-
         try
         {
+            var rendered = await _promptRenderer.RenderAsync(
+                descriptor, new Dictionary<string, object?>(), cancellationToken).ConfigureAwait(false);
+
+            await _usageRecorder.RecordAsync(
+                descriptor, new PromptUsageContext { MetricKey = MetricKey }, cancellationToken).ConfigureAwait(false);
+
+            var encodedBody = System.Net.WebUtility.HtmlEncode(untrustedBody);
+            var envelopedUser = PromptInjectionEnvelope.Wrap(EnvelopeTagName, nonce, encodedBody);
+
+            var systemPrompt = PromptInjectionEnvelope.AppendDirective(
+                rendered.Body, EnvelopeTagName, nonce, "verify");
+
             var chatClient = await _chatClientProvider.GetJudgeAsync(cancellationToken).ConfigureAwait(false);
 
             var messages = new List<ChatMessage>
