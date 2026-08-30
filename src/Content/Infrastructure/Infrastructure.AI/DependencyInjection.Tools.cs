@@ -78,11 +78,11 @@ public static partial class DependencyInjection
         // gating a plain file read or config lookup behind AddClaimVerification() would be scope
         // creep — see ClaimVerificationDependencyInjection's remarks.
         services.AddKeyedSingleton<Application.AI.Common.Interfaces.ClaimVerification.ILocatedArtifactReader>(
-            "file", (sp, _) => new Verification.Readers.FileSystemLocatedArtifactReader(
+            Domain.AI.ClaimVerification.ClaimLocationScheme.File, (sp, _) => new Verification.Readers.FileSystemLocatedArtifactReader(
                 sp.GetRequiredService<IFileSystemService>(),
                 sp.GetRequiredService<ILogger<Verification.Readers.FileSystemLocatedArtifactReader>>()));
         services.AddKeyedSingleton<Application.AI.Common.Interfaces.ClaimVerification.ILocatedArtifactReader>(
-            "config", (sp, _) => new Verification.Readers.ConfigSnapshotLocatedArtifactReader(
+            Domain.AI.ClaimVerification.ClaimLocationScheme.Config, (sp, _) => new Verification.Readers.ConfigSnapshotLocatedArtifactReader(
                 sp.GetRequiredService<IOptionsMonitor<AppConfig>>(),
                 sp.GetRequiredService<ILogger<Verification.Readers.ConfigSnapshotLocatedArtifactReader>>()));
 

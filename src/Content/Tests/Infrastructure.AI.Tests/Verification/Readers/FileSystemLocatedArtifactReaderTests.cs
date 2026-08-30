@@ -49,6 +49,19 @@ public sealed class FileSystemLocatedArtifactReaderTests : IDisposable
         content.Should().BeNull();
     }
 
+    // A model omitting the line number after a trailing ':' ("file:Foo.cs:" instead of
+    // "file:Foo.cs") must not corrupt the path — the file genuinely exists and must be read, not
+    // reported as LocationNotFound because of an unstripped trailing colon.
+    [Fact]
+    public async Task TryReadAsync_TrailingColonWithNoLineNumber_StripsColonAndReadsTheFile()
+    {
+        File.WriteAllText(Path.Combine(_root, "Foo.cs"), "class Foo { }");
+
+        var content = await _sut.TryReadAsync("file:Foo.cs:", CancellationToken.None);
+
+        content.Should().Contain("class Foo { }");
+    }
+
     [Fact]
     public async Task TryReadAsync_LineNumberSuffix_StripsSuffixAndPrependsHint()
     {

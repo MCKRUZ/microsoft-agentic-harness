@@ -219,7 +219,22 @@ public sealed class ClaimVerificationRunnerTests
     {
         var config = new AppConfig();
 
+        config.AI.ClaimVerification.MaxClaims.Should().Be(14);
         config.AI.ClaimVerification.MaxParallelVerifiers.Should().Be(4);
+    }
+
+    [Fact]
+    public async Task RunAsync_MoreClaimsThanMaxClaims_OnlyVerifiesUpToTheCapAndDropsTheRestSilently()
+    {
+        var reader = new RecordingLocatedArtifactReader((_, _) => Task.FromResult<string?>("evidence"));
+        var verifier = new RecordingClaimVerifier((c, _, _) => Task.FromResult(ClaimVerdict.Held(c)));
+        var sut = CreateSut(verifier, [("file", reader)], maxClaims: 3);
+        var claims = Enumerable.Range(0, 5).Select(i => MakeClaim($"file:claim-{i}.cs")).ToList();
+
+        var verdicts = await sut.RunAsync(claims, CancellationToken.None);
+
+        verdicts.Should().HaveCount(3);
+        verifier.CallCount.Should().Be(3);
     }
 
     private static ClaimVerificationRunner CreateSut(
@@ -231,7 +246,8 @@ public sealed class ClaimVerificationRunnerTests
         IClaimVerifier verifier,
         IReadOnlyCollection<(string Scheme, ILocatedArtifactReader Reader)> readers,
         int maxParallelVerifiers = 4,
-        TimeSpan? perVerifierTimeout = null)
+        TimeSpan? perVerifierTimeout = null,
+        int maxClaims = 14)
     {
         var services = new ServiceCollection();
         foreach (var (scheme, reader) in readers)
@@ -241,6 +257,7 @@ public sealed class ClaimVerificationRunnerTests
         var provider = services.BuildServiceProvider();
 
         var config = new AppConfig();
+        config.AI.ClaimVerification.MaxClaims = maxClaims;
         config.AI.ClaimVerification.MaxParallelVerifiers = maxParallelVerifiers;
         config.AI.ClaimVerification.PerVerifierTimeout = perVerifierTimeout ?? TimeSpan.FromSeconds(30);
 

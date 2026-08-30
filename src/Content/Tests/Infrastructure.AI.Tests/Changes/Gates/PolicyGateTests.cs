@@ -273,6 +273,29 @@ public sealed class PolicyGateTests
         }
     }
 
+    // The control for the test above: a RequiresVerification finding whose severity was NEVER
+    // going to block (Info, well under the default High threshold) belongs in "below threshold" —
+    // confirming it would not have changed the outcome, so calling it "excluded pending
+    // verification" would overstate its significance.
+    [Fact]
+    public async Task EvaluateAsync_LowSeverityRequiresVerificationFinding_CountedAsBelowThresholdNotExcluded()
+    {
+        var (sut, dir) = Build(new ScriptedPolicy("claim-checker",
+            Finding("claim-checker", PolicyFindingSeverity.Info, "unconfirmed but minor", requiresVerification: true)));
+        try
+        {
+            var result = await sut.EvaluateAsync(TestProposals.NewProposal(), Ctx(), CancellationToken.None);
+
+            result.Action.Should().Be(GateAction.Pass);
+            result.Reason.Should().Contain("1 finding(s) below");
+            result.Reason.Should().NotContain("excluded pending verification");
+        }
+        finally
+        {
+            try { Directory.Delete(dir, recursive: true); } catch { }
+        }
+    }
+
     // The control for the mutation above: the SAME finding, but a verifier has since confirmed it
     // and the policy re-emits it with Blocking set — it must block regardless of RequiresVerification.
     [Fact]

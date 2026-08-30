@@ -1,5 +1,6 @@
 using Application.AI.Common.Interfaces.ClaimVerification;
 using Application.AI.Common.Interfaces.Tools;
+using Domain.AI.ClaimVerification;
 using Microsoft.Extensions.Logging;
 
 namespace Infrastructure.AI.Verification.Readers;
@@ -18,7 +19,7 @@ namespace Infrastructure.AI.Verification.Readers;
 /// </remarks>
 public sealed class FileSystemLocatedArtifactReader : ILocatedArtifactReader
 {
-    private const string SchemePrefix = "file:";
+    private const string SchemePrefix = $"{ClaimLocationScheme.File}:";
 
     private readonly IFileSystemService _fileSystem;
     private readonly ILogger<FileSystemLocatedArtifactReader> _logger;
@@ -83,6 +84,16 @@ public sealed class FileSystemLocatedArtifactReader : ILocatedArtifactReader
         if (lastColon > 0 && int.TryParse(remainder[(lastColon + 1)..], out var line))
         {
             return (remainder[..lastColon], line);
+        }
+
+        // A trailing ':' with nothing after it (e.g. "file:Foo.cs:") is not a valid line-number
+        // suffix, but it is also clearly not part of the path — a plausible model formatting slip
+        // (line number omitted), not an intentional colon-bearing filename. Left unstripped, the
+        // colon becomes part of the path handed to the file system and the read fails with a false
+        // "location not found" for a file that genuinely exists.
+        if (lastColon == remainder.Length - 1)
+        {
+            return (remainder[..lastColon], null);
         }
 
         return (remainder, null);

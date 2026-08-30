@@ -613,7 +613,11 @@ public sealed class TrainSkillCommandHandler
         var verdictIndex = 0;
         for (var i = 0; i < suggestions.Count; i++)
         {
-            result.Add(claims[i] is null
+            // verdicts can be SHORTER than toVerify — ClaimVerificationRunner.MaxClaims caps the
+            // batch and produces no verdict at all for a claim beyond it (logged there, not an
+            // error here). Any claim run out of verdicts is left unannotated, exactly like a claim
+            // this loop never built in the first place.
+            result.Add(claims[i] is null || verdictIndex >= verdicts.Count
                 ? suggestions[i]
                 : AnnotateIfContradicted(suggestions[i], verdicts[verdictIndex++]));
         }
@@ -624,7 +628,7 @@ public sealed class TrainSkillCommandHandler
     private static Claim BuildCurrentValueClaim(HarnessChangeSuggestion suggestion, string configPath) => new()
     {
         Text = $"The current value of {suggestion.Surface}.{suggestion.Field} is {suggestion.CurrentValue}.",
-        Location = $"config:{configPath}",
+        Location = $"{ClaimLocationScheme.Config}:{configPath}",
         ConsequenceSignals = new ClaimConsequenceSignals
         {
             CausesWrite = false,

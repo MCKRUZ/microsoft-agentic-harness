@@ -127,11 +127,16 @@ public sealed class PolicyGate : IChangeProposalGate
                 $"{blocking.Count} blocking finding(s): {summary}{more}");
         }
 
-        // Every non-blocking finding is either genuinely below threshold, or excluded because its
-        // severity has not been independently verified (RequiresVerification, unconfirmed) — the
-        // two are not the same claim, and collapsing them into "below threshold" would misdescribe
-        // an unconfirmed Critical finding as one the gate judged too minor to matter.
-        var excludedPendingVerification = allFindings.Count(f => f.RequiresVerification && !f.Blocking);
+        // Every non-blocking finding is either genuinely below threshold, or excluded because it
+        // WOULD have blocked (severity >= threshold) but its severity has not been independently
+        // verified — the two are not the same claim, and collapsing them into "below threshold"
+        // would misdescribe an unconfirmed Critical finding as one the gate judged too minor to
+        // matter. Not `!f.Blocking`: control only reaches this line when blocking.Count == 0, which
+        // already guarantees no finding here has Blocking == true, so that conjunct would be dead
+        // weight. A RequiresVerification finding whose severity is itself below threshold was never
+        // going to block either way — it belongs in "below threshold", not "excluded", since
+        // confirming it would not have changed anything.
+        var excludedPendingVerification = allFindings.Count(f => f.RequiresVerification && f.Severity >= threshold);
         var belowThreshold = allFindings.Count - excludedPendingVerification;
         var excludedSuffix = excludedPendingVerification > 0
             ? $", {excludedPendingVerification} excluded pending verification"

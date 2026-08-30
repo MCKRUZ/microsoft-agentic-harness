@@ -1,5 +1,6 @@
 using Application.AI.Common.Interfaces.ClaimVerification;
 using Application.Common.Helpers;
+using Domain.AI.ClaimVerification;
 using Domain.Common.Config;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -33,7 +34,7 @@ namespace Infrastructure.AI.Verification.Readers;
 /// </remarks>
 public sealed class ConfigSnapshotLocatedArtifactReader : ILocatedArtifactReader
 {
-    private const string SchemePrefix = "config:";
+    private const string SchemePrefix = $"{ClaimLocationScheme.Config}:";
 
     private static readonly IReadOnlySet<string> AllowedPaths =
         new HashSet<string>(StringComparer.Ordinal) { "AI.Resilience.Retry.MaxAttempts" };

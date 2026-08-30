@@ -75,8 +75,12 @@ public sealed class ClaimVerificationRunner
     }
 
     /// <summary>
-    /// Verifies every claim in <paramref name="claims"/> concurrently, bounded by
-    /// <see cref="ClaimVerificationConfig.MaxParallelVerifiers"/>. A low-consequence claim (per
+    /// Verifies every claim in <paramref name="claims"/> (up to
+    /// <see cref="ClaimVerificationConfig.MaxClaims"/>) concurrently, bounded by
+    /// <see cref="ClaimVerificationConfig.MaxParallelVerifiers"/>. A claim beyond the cap produces no
+    /// verdict at all — it is not dispatched, and does not appear in the returned list, so a caller
+    /// that needs 1:1 correspondence with its input must treat a shorter result as "the trailing
+    /// claims were never checked," not as an error. A low-consequence claim (per
     /// <see cref="IClaimConsequenceClassifier"/>) is reported <see cref="ClaimVerificationOutcome.NotConsequential"/>
     /// without invoking any reader or verifier. Never throws for a per-claim failure — every
     /// exception a reader or verifier can raise, including a per-verifier timeout, is converted to
@@ -87,33 +91,45 @@ public sealed class ClaimVerificationRunner
     {
         ArgumentNullException.ThrowIfNull(claims);
 
-        var (maxParallelVerifiers, perVerifierTimeout) = ResolveEffectiveConfig();
+        var (maxClaims, maxParallelVerifiers, perVerifierTimeout) = ResolveEffectiveConfig();
+
+        var bounded = claims.Count > maxClaims ? claims.Take(maxClaims).ToList() : claims;
+        if (bounded.Count < claims.Count)
+        {
+            _logger.LogWarning(
+                "Claim batch of {Total} exceeds MaxClaims {Max} — {Dropped} claim(s) were NOT verified.",
+                claims.Count, maxClaims, claims.Count - bounded.Count);
+        }
 
         using var gate = new SemaphoreSlim(maxParallelVerifiers);
-        var tasks = claims.Select(c => VerifyOneAsync(c, gate, perVerifierTimeout, cancellationToken));
+        var tasks = bounded.Select(c => VerifyOneAsync(c, gate, perVerifierTimeout, cancellationToken));
         return await Task.WhenAll(tasks).ConfigureAwait(false);
     }
 
-    private (int MaxParallelVerifiers, TimeSpan PerVerifierTimeout) ResolveEffectiveConfig()
+    private (int MaxClaims, int MaxParallelVerifiers, TimeSpan PerVerifierTimeout) ResolveEffectiveConfig()
     {
         var config = _config.CurrentValue.AI.ClaimVerification;
 
+        var maxClaims = config.MaxClaims > 0 ? config.MaxClaims : Defaults.MaxClaims;
         var maxParallelVerifiers = config.MaxParallelVerifiers > 0 ? config.MaxParallelVerifiers : Defaults.MaxParallelVerifiers;
         var perVerifierTimeout = config.PerVerifierTimeout > TimeSpan.Zero
             ? config.PerVerifierTimeout
             : Defaults.PerVerifierTimeout;
 
-        if (maxParallelVerifiers != config.MaxParallelVerifiers || perVerifierTimeout != config.PerVerifierTimeout)
+        if (maxClaims != config.MaxClaims
+            || maxParallelVerifiers != config.MaxParallelVerifiers
+            || perVerifierTimeout != config.PerVerifierTimeout)
         {
             _logger.LogWarning(
-                "ClaimVerificationConfig has an invalid MaxParallelVerifiers ({MaxParallelVerifiers}) or " +
-                "PerVerifierTimeout ({PerVerifierTimeout}) — a hot-reloaded value bypassing startup " +
-                "validation. Falling back to {ClampedMaxParallelVerifiers}/{ClampedPerVerifierTimeout}.",
-                config.MaxParallelVerifiers, config.PerVerifierTimeout,
-                maxParallelVerifiers, perVerifierTimeout);
+                "ClaimVerificationConfig has an invalid MaxClaims ({MaxClaims}), MaxParallelVerifiers " +
+                "({MaxParallelVerifiers}), or PerVerifierTimeout ({PerVerifierTimeout}) — a hot-reloaded " +
+                "value bypassing startup validation. Falling back to " +
+                "{ClampedMaxClaims}/{ClampedMaxParallelVerifiers}/{ClampedPerVerifierTimeout}.",
+                config.MaxClaims, config.MaxParallelVerifiers, config.PerVerifierTimeout,
+                maxClaims, maxParallelVerifiers, perVerifierTimeout);
         }
 
-        return (maxParallelVerifiers, perVerifierTimeout);
+        return (maxClaims, maxParallelVerifiers, perVerifierTimeout);
     }
 
     private async Task<ClaimVerdict> VerifyOneAsync(

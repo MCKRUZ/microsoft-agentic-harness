@@ -15,6 +15,17 @@ public class ClaimVerificationConfig
     /// </summary>
     public bool Enabled { get; set; }
 
+    /// <summary>
+    /// Maximum number of claims in one batch that will actually be dispatched to verifiers. Guards
+    /// against an untrusted or misbehaving <c>IHarnessChangeSuggester</c> (or any future claim
+    /// producer — the interface's own contract only promises "possibly empty", never "bounded")
+    /// fanning out an unbounded number of judge-model calls in a single batch. Mirrors
+    /// <c>ObligationConfig.MaxObligations</c>'s identical rationale for its own untrusted-extraction
+    /// input.
+    /// </summary>
+    /// <value>Default: 14.</value>
+    public int MaxClaims { get; set; } = 14;
+
     /// <summary>Maximum number of verifiers dispatched concurrently for one batch of claims.</summary>
     /// <value>Default: 4.</value>
     public int MaxParallelVerifiers { get; set; } = 4;

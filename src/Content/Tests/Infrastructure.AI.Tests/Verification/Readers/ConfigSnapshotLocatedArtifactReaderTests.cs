@@ -1,3 +1,5 @@
+using System.Reflection;
+using Application.AI.Common.Services.SkillTraining;
 using Domain.Common.Config;
 using FluentAssertions;
 using Infrastructure.AI.Verification.Readers;
@@ -74,6 +76,33 @@ public sealed class ConfigSnapshotLocatedArtifactReaderTests
         var content = await _sut.TryReadAsync("config:", CancellationToken.None);
 
         content.Should().BeNull();
+    }
+
+    // Cross-checks two INDEPENDENTLY hand-maintained allowlists: ConfigSurfaceConstraint's
+    // suggestion-target fields (what CurrentValue claims may name) and this reader's own
+    // claim-verification-evidence allowlist (what it will actually resolve). Neither is derived
+    // from the other by design — see this reader's own remarks — so nothing but a test stops them
+    // from drifting apart. If they do, a real, governed suggestion's claim silently comes back
+    // LocationNotFound (a floored-confidence "finding") for no reason but allowlist drift.
+    [Fact]
+    public async Task TryReadAsync_EveryConfigSurfaceConstraintResolvablePath_IsAlsoOnThisReadersAllowlist()
+    {
+        var constraint = new ConfigSurfaceConstraint();
+        var allowedFieldsField = typeof(ConfigSurfaceConstraint).GetField(
+            "AllowedFields", BindingFlags.NonPublic | BindingFlags.Static);
+        var allowedFields = (IReadOnlySet<string>)allowedFieldsField!.GetValue(null)!;
+        allowedFields.Should().NotBeEmpty();
+
+        foreach (var field in allowedFields)
+        {
+            var path = constraint.ResolveConfigPath(constraint.GovernedSurface, field);
+            path.Should().NotBeNull(because: $"'{field}' is allowed by ConfigSurfaceConstraint but has no ConfigPaths entry");
+
+            var content = await _sut.TryReadAsync($"config:{path}", CancellationToken.None);
+
+            content.Should().NotBeNull(
+                because: $"'{path}' is resolvable via ConfigSurfaceConstraint but missing from {nameof(ConfigSnapshotLocatedArtifactReader)}'s own allowlist");
+        }
     }
 
     private sealed class StaticOptionsMonitor<T> : IOptionsMonitor<T>
