@@ -81,14 +81,15 @@ public static class DependencyInjection
         services.AddSingleton<HarnessAgentInvoker>();
         services.AddSingleton<IAgentInvoker, RouterEvalInvoker>();
 
-        // ILlmJudge + its collaborators — factored into AddLlmJudge (DependencyInjection.Judges.cs)
-        // so a consumer needing a judge without the rest of this framework can call it alone.
-        services.AddLlmJudge();
-
         // Obligation-based analysis (#320) — factored into AddObligationVerification
-        // (DependencyInjection.Verification.cs) for the same reason as AddLlmJudge. Registered
-        // here so the framework's own "obligations_hold" metric below always has a resolvable
-        // IObligationExtractor/IObligationVerifier.
+        // (DependencyInjection.Verification.cs). Registered here so the framework's own
+        // "obligations_hold" metric below always has a resolvable IObligationExtractor/
+        // IObligationVerifier. This also brings in ILlmJudge + its collaborators (factored
+        // separately into AddLlmJudge, DependencyInjection.Judges.cs, so a consumer needing a
+        // judge without the rest of this framework can call it alone) — not called a second time
+        // directly here, since AddObligationVerification already calls it; duplicate AddSingleton
+        // registrations resolve fine via last-wins, but calling it twice would still leave two
+        // registrations behind for any future IEnumerable<ILlmJudge>-shaped consumer.
         services.AddObligationVerification();
         services.AddEvalMetric<ObligationsHoldMetric>("obligations_hold");
 

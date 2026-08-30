@@ -25,7 +25,7 @@ public static class DependencyInjectionJudges
     /// </summary>
     /// <remarks>
     /// Idempotent to call alongside <see cref="DependencyInjection.AddEvaluationDependencies(IServiceCollection, Action{JudgeCostOptions})"/>: both register the same
-    /// five services, and .NET's DI container resolves repeated identical registrations to the last
+    /// six services, and .NET's DI container resolves repeated identical registrations to the last
     /// one added without error. A consumer wiring both is not a misconfiguration.
     /// </remarks>
     /// <param name="services">The service collection.</param>
