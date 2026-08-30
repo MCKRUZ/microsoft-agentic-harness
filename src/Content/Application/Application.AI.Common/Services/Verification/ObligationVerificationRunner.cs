@@ -1,6 +1,7 @@
 using Application.AI.Common.Interfaces.Verification;
 using Domain.AI.Verification;
 using Domain.Common.Config;
+using Domain.Common.Config.AI;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -106,15 +107,20 @@ public sealed class ObligationVerificationRunner
     // but it would still misreport as "nothing to check" instead of "config says verify none" —
     // clamped alongside the other two for the same reason: trust nothing hot-reload can hand this
     // method, the same way ObligationValidator re-checks obligations already validated upstream.
+    // Derived from ObligationConfig's own property-initializer defaults rather than re-literaled
+    // here — a hand-typed second copy of 14/4/30s would silently drift from the config type's own
+    // defaults the next time someone changes one without remembering this fallback.
+    private static readonly ObligationConfig Defaults = new();
+
     private (int MaxObligations, int MaxParallelVerifiers, TimeSpan PerVerifierTimeout) ResolveEffectiveConfig()
     {
         var config = _config.CurrentValue.AI.Obligations;
 
-        var maxObligations = config.MaxObligations > 0 ? config.MaxObligations : 14;
-        var maxParallelVerifiers = config.MaxParallelVerifiers > 0 ? config.MaxParallelVerifiers : 4;
+        var maxObligations = config.MaxObligations > 0 ? config.MaxObligations : Defaults.MaxObligations;
+        var maxParallelVerifiers = config.MaxParallelVerifiers > 0 ? config.MaxParallelVerifiers : Defaults.MaxParallelVerifiers;
         var perVerifierTimeout = config.PerVerifierTimeout > TimeSpan.Zero
             ? config.PerVerifierTimeout
-            : TimeSpan.FromSeconds(30);
+            : Defaults.PerVerifierTimeout;
 
         if (maxObligations != config.MaxObligations
             || maxParallelVerifiers != config.MaxParallelVerifiers

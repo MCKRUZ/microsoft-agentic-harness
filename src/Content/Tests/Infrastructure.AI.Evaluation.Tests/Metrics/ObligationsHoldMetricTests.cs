@@ -9,6 +9,7 @@ using Infrastructure.AI.Evaluation.Metrics;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Moq;
+using Tests.AI.Fakes;
 using Xunit;
 
 namespace Infrastructure.AI.Evaluation.Tests.Metrics;
@@ -38,7 +39,7 @@ public sealed class ObligationsHoldMetricTests
     {
         var obligation = new Obligation(Where: "calls Foo()", ReliesOn: "def Foo() at line 40", Property: "Foo is defined");
         var extractor = MockExtractorReturning(Result<IReadOnlyList<Obligation>>.Success([obligation]));
-        var verifier = new FakeVerifier((o, _, _) => Task.FromResult(VerificationVerdict.Held(o)));
+        var verifier = new RecordingObligationVerifier((o, _, _) => Task.FromResult(VerificationVerdict.Held(o)));
         var sut = CreateSut(extractor.Object, verifier, enabled: true);
 
         var score = await sut.ScoreAsync(Case, SuccessfulOutput("agreeing content"), Spec, CancellationToken.None);
@@ -52,7 +53,7 @@ public sealed class ObligationsHoldMetricTests
     {
         var obligation = new Obligation(Where: "calls Foo()", ReliesOn: "def Bar() at line 40", Property: "Foo is defined");
         var extractor = MockExtractorReturning(Result<IReadOnlyList<Obligation>>.Success([obligation]));
-        var verifier = new FakeVerifier((o, _, _) => Task.FromResult(VerificationVerdict.Broken(o, "Foo is not defined anywhere")));
+        var verifier = new RecordingObligationVerifier((o, _, _) => Task.FromResult(VerificationVerdict.Broken(o, "Foo is not defined anywhere")));
         var sut = CreateSut(extractor.Object, verifier, enabled: true);
 
         var score = await sut.ScoreAsync(Case, SuccessfulOutput("disagreeing content"), Spec, CancellationToken.None);
@@ -66,7 +67,7 @@ public sealed class ObligationsHoldMetricTests
     public async Task ScoreAsync_NoObligationsExtracted_ReturnsPassNotWarn()
     {
         var extractor = MockExtractorReturning(Result<IReadOnlyList<Obligation>>.Success([]));
-        var verifier = new FakeVerifier((o, _, _) => Task.FromResult(VerificationVerdict.Held(o)));
+        var verifier = new RecordingObligationVerifier((o, _, _) => Task.FromResult(VerificationVerdict.Held(o)));
         var sut = CreateSut(extractor.Object, verifier, enabled: true);
 
         var score = await sut.ScoreAsync(Case, SuccessfulOutput("clean content"), Spec, CancellationToken.None);
@@ -85,7 +86,7 @@ public sealed class ObligationsHoldMetricTests
     {
         var selfReferential = new Obligation(Where: "same text", ReliesOn: "same text", Property: "property");
         var extractor = MockExtractorReturning(Result<IReadOnlyList<Obligation>>.Success([selfReferential]));
-        var verifier = new FakeVerifier((o, _, _) => Task.FromResult(VerificationVerdict.Held(o)));
+        var verifier = new RecordingObligationVerifier((o, _, _) => Task.FromResult(VerificationVerdict.Held(o)));
         var sut = CreateSut(extractor.Object, verifier, enabled: true);
 
         var score = await sut.ScoreAsync(Case, SuccessfulOutput("content"), Spec, CancellationToken.None);
@@ -98,7 +99,7 @@ public sealed class ObligationsHoldMetricTests
     public async Task ScoreAsync_ExtractionFails_ReturnsWarnNotPassOrFail()
     {
         var extractor = MockExtractorReturning(Result<IReadOnlyList<Obligation>>.Fail("prompt unavailable"));
-        var verifier = new FakeVerifier((o, _, _) => Task.FromResult(VerificationVerdict.Held(o)));
+        var verifier = new RecordingObligationVerifier((o, _, _) => Task.FromResult(VerificationVerdict.Held(o)));
         var sut = CreateSut(extractor.Object, verifier, enabled: true);
 
         var score = await sut.ScoreAsync(Case, SuccessfulOutput("content"), Spec, CancellationToken.None);
@@ -115,7 +116,7 @@ public sealed class ObligationsHoldMetricTests
     {
         var obligation = new Obligation(Where: "where", ReliesOn: "relies on", Property: "property");
         var extractor = MockExtractorReturning(Result<IReadOnlyList<Obligation>>.Success([obligation]));
-        var verifier = new FakeVerifier((o, _, _) => Task.FromResult(VerificationVerdict.VerifierError(o, "timed out")));
+        var verifier = new RecordingObligationVerifier((o, _, _) => Task.FromResult(VerificationVerdict.VerifierError(o, "timed out")));
         var sut = CreateSut(extractor.Object, verifier, enabled: true);
 
         var score = await sut.ScoreAsync(Case, SuccessfulOutput("content"), Spec, CancellationToken.None);
@@ -128,7 +129,7 @@ public sealed class ObligationsHoldMetricTests
     public async Task ScoreAsync_FeatureDisabled_ReturnsWarnWithoutCallingExtractor()
     {
         var extractor = new Mock<IObligationExtractor>(MockBehavior.Strict);
-        var verifier = new FakeVerifier((o, _, _) => Task.FromResult(VerificationVerdict.Held(o)));
+        var verifier = new RecordingObligationVerifier((o, _, _) => Task.FromResult(VerificationVerdict.Held(o)));
         var sut = CreateSut(extractor.Object, verifier, enabled: false);
 
         var score = await sut.ScoreAsync(Case, SuccessfulOutput("content"), Spec, CancellationToken.None);
@@ -141,7 +142,7 @@ public sealed class ObligationsHoldMetricTests
     public async Task ScoreAsync_UnsuccessfulHarnessOutput_ReturnsWarnWithoutCallingExtractor()
     {
         var extractor = new Mock<IObligationExtractor>(MockBehavior.Strict);
-        var verifier = new FakeVerifier((o, _, _) => Task.FromResult(VerificationVerdict.Held(o)));
+        var verifier = new RecordingObligationVerifier((o, _, _) => Task.FromResult(VerificationVerdict.Held(o)));
         var sut = CreateSut(extractor.Object, verifier, enabled: true);
         var output = new Application.AI.Common.Evaluation.Models.AgentInvocationResult { Success = false, Output = "" };
 
@@ -158,7 +159,7 @@ public sealed class ObligationsHoldMetricTests
     public async Task ScoreAsync_BlankCaseId_ReturnsWarnWithoutCallingExtractor()
     {
         var extractor = new Mock<IObligationExtractor>(MockBehavior.Strict);
-        var verifier = new FakeVerifier((o, _, _) => Task.FromResult(VerificationVerdict.Held(o)));
+        var verifier = new RecordingObligationVerifier((o, _, _) => Task.FromResult(VerificationVerdict.Held(o)));
         var sut = CreateSut(extractor.Object, verifier, enabled: true);
         var blankIdCase = Case with { Id = "" };
 
@@ -188,25 +189,6 @@ public sealed class ObligationsHoldMetricTests
 
         return new ObligationsHoldMetric(
             extractor, runner, new StaticOptionsMonitor<AppConfig>(config), NullLogger<ObligationsHoldMetric>.Instance);
-    }
-
-    private sealed class FakeVerifier : IObligationVerifier
-    {
-        private readonly Func<Obligation, string, CancellationToken, Task<VerificationVerdict>> _handler;
-        private int _callCount;
-
-        public FakeVerifier(Func<Obligation, string, CancellationToken, Task<VerificationVerdict>> handler)
-        {
-            _handler = handler;
-        }
-
-        public int CallCount => _callCount;
-
-        public Task<VerificationVerdict> VerifyAsync(Obligation obligation, string artifactContent, CancellationToken cancellationToken)
-        {
-            Interlocked.Increment(ref _callCount);
-            return _handler(obligation, artifactContent, cancellationToken);
-        }
     }
 
     private sealed class StaticOptionsMonitor<T> : IOptionsMonitor<T>

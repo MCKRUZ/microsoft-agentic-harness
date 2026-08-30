@@ -108,10 +108,12 @@ public sealed class LlmObligationVerifier : IObligationVerifier
                 obligation, $"Obligation rejected by ObligationValidator: {validation.RejectionReason}.");
         }
 
-        var descriptorResult = await ResolvePromptDescriptorAsync(obligation, cancellationToken).ConfigureAwait(false);
-        if (descriptorResult.Descriptor is null)
+        var descriptorResult = await PromptDescriptorResolver.ResolveAsync(
+            _promptRegistry, PromptName, _logger, cancellationToken).ConfigureAwait(false);
+        if (!descriptorResult.IsSuccess || descriptorResult.Value is null)
         {
-            return descriptorResult.Verdict!;
+            return VerificationVerdict.VerifierError(
+                obligation, string.Join("; ", descriptorResult.Errors));
         }
 
         // The obligation's own fields are themselves derived from untrusted artifact content (the
@@ -136,41 +138,7 @@ public sealed class LlmObligationVerifier : IObligationVerifier
         }
 
         return await InvokeVerificationModelAsync(
-            descriptorResult.Descriptor, obligation, untrustedBody, nonce, cancellationToken).ConfigureAwait(false);
-    }
-
-    private async Task<(PromptDescriptor? Descriptor, VerificationVerdict? Verdict)> ResolvePromptDescriptorAsync(
-        Obligation obligation, CancellationToken cancellationToken)
-    {
-        try
-        {
-            var descriptor = await _promptRegistry.GetLatestAsync(PromptName, cancellationToken).ConfigureAwait(false);
-            return (descriptor, null);
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (Exception ex) when (ex is KeyNotFoundException or PromptRegistryUnavailableException)
-        {
-            _logger.LogError(ex, "Could not resolve obligation-verifier system prompt '{Prompt}'", PromptName);
-            // Full exception detail is logged above; never echoed into the returned reason —
-            // VerificationVerdict.Explanation is persisted (surfaced via MetricScore.Reasoning), and
-            // an unfiltered exception message has leaked sensitive detail elsewhere in this repo.
-            return (null, VerificationVerdict.VerifierError(
-                obligation, $"Obligation-verifier prompt '{PromptName}' is unavailable; see logs for details."));
-        }
-        catch (Exception ex)
-        {
-            // IPromptRegistry's own contract says implementations throw only the two types caught
-            // above (plus OperationCanceledException) — but trusting an interface's documentation to
-            // hold for every implementation is exactly the kind of assumption this method's own
-            // "never throws" remarks can't afford. A non-compliant or buggy registry still degrades
-            // to VerifierError here instead of escaping uncaught.
-            _logger.LogError(ex, "Could not resolve obligation-verifier system prompt '{Prompt}'", PromptName);
-            return (null, VerificationVerdict.VerifierError(
-                obligation, $"Obligation-verifier prompt '{PromptName}' is unavailable; see logs for details."));
-        }
+            descriptorResult.Value, obligation, untrustedBody, nonce, cancellationToken).ConfigureAwait(false);
     }
 
     private async Task<VerificationVerdict> InvokeVerificationModelAsync(
@@ -178,11 +146,17 @@ public sealed class LlmObligationVerifier : IObligationVerifier
     {
         try
         {
-            var (systemPrompt, envelopedUser) = await EnvelopedRequestBuilder.BuildAsync(
+            // No data dependency between building the request and resolving the chat client — run
+            // concurrently. The win is bounded by IJudgeChatClientProvider's own caching (a
+            // near-instant hit in steady state), but matters on the first call after process start
+            // or after a JudgeOptions hot-reload evicts the cache.
+            var buildTask = EnvelopedRequestBuilder.BuildAsync(
                 _promptRenderer, _usageRecorder, descriptor, untrustedBody, EnvelopeTagName, nonce,
-                MetricKey, "verify", cancellationToken).ConfigureAwait(false);
-
-            var chatClient = await _chatClientProvider.GetJudgeAsync(cancellationToken).ConfigureAwait(false);
+                MetricKey, "verify", cancellationToken);
+            var clientTask = _chatClientProvider.GetJudgeAsync(cancellationToken);
+            await Task.WhenAll(buildTask, clientTask).ConfigureAwait(false);
+            var (systemPrompt, envelopedUser) = await buildTask.ConfigureAwait(false);
+            var chatClient = await clientTask.ConfigureAwait(false);
 
             var messages = new List<ChatMessage>
             {

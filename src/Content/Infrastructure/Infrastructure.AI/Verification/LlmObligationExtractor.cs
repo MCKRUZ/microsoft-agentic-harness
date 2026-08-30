@@ -87,7 +87,8 @@ public sealed class LlmObligationExtractor : IObligationExtractor
         ArgumentException.ThrowIfNullOrWhiteSpace(artifactPath);
         ArgumentNullException.ThrowIfNull(artifactContent);
 
-        var descriptorResult = await ResolvePromptDescriptorAsync(cancellationToken).ConfigureAwait(false);
+        var descriptorResult = await PromptDescriptorResolver.ResolveAsync(
+            _promptRegistry, PromptName, _logger, cancellationToken).ConfigureAwait(false);
         if (!descriptorResult.IsSuccess || descriptorResult.Value is null)
         {
             return Result<IReadOnlyList<Obligation>>.Fail(descriptorResult.Errors.ToArray());
@@ -115,49 +116,22 @@ public sealed class LlmObligationExtractor : IObligationExtractor
             descriptorResult.Value, artifactPath, untrustedBody, nonce, cancellationToken).ConfigureAwait(false);
     }
 
-    private async Task<Result<PromptDescriptor>> ResolvePromptDescriptorAsync(CancellationToken cancellationToken)
-    {
-        try
-        {
-            var descriptor = await _promptRegistry.GetLatestAsync(PromptName, cancellationToken).ConfigureAwait(false);
-            return Result<PromptDescriptor>.Success(descriptor);
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (Exception ex) when (ex is KeyNotFoundException or PromptRegistryUnavailableException)
-        {
-            _logger.LogError(ex, "Could not resolve obligation-extractor system prompt '{Prompt}'", PromptName);
-            // Full exception detail is logged above; never echoed into the returned message — a
-            // Result.Fail reason can end up persisted (e.g. via MetricScore.Reasoning), and an
-            // unfiltered exception message has leaked sensitive detail elsewhere in this repo.
-            return Result<PromptDescriptor>.Fail(
-                $"Obligation-extractor prompt '{PromptName}' is unavailable; see logs for details.");
-        }
-        catch (Exception ex)
-        {
-            // IPromptRegistry's own contract says implementations throw only the two types caught
-            // above (plus OperationCanceledException) — but trusting an interface's documentation
-            // to hold for every implementation is exactly the kind of assumption this method's
-            // "never throws" promise can't afford. A non-compliant or buggy registry still degrades
-            // to Result.Fail here instead of escaping into ObligationsHoldMetric.ScoreAsync uncaught.
-            _logger.LogError(ex, "Could not resolve obligation-extractor system prompt '{Prompt}'", PromptName);
-            return Result<PromptDescriptor>.Fail(
-                $"Obligation-extractor prompt '{PromptName}' is unavailable; see logs for details.");
-        }
-    }
-
     private async Task<Result<IReadOnlyList<Obligation>>> InvokeExtractionModelAsync(
         PromptDescriptor descriptor, string artifactPath, string untrustedBody, string nonce, CancellationToken cancellationToken)
     {
         try
         {
-            var (systemPrompt, envelopedUser) = await EnvelopedRequestBuilder.BuildAsync(
+            // No data dependency between building the request and resolving the chat client — run
+            // concurrently. The win is bounded by IJudgeChatClientProvider's own caching (a
+            // near-instant hit in steady state), but matters on the first call after process start
+            // or after a JudgeOptions hot-reload evicts the cache.
+            var buildTask = EnvelopedRequestBuilder.BuildAsync(
                 _promptRenderer, _usageRecorder, descriptor, untrustedBody, EnvelopeTagName, nonce,
-                MetricKey, "extract obligations from", cancellationToken).ConfigureAwait(false);
-
-            var chatClient = await _chatClientProvider.GetJudgeAsync(cancellationToken).ConfigureAwait(false);
+                MetricKey, "extract obligations from", cancellationToken);
+            var clientTask = _chatClientProvider.GetJudgeAsync(cancellationToken);
+            await Task.WhenAll(buildTask, clientTask).ConfigureAwait(false);
+            var (systemPrompt, envelopedUser) = await buildTask.ConfigureAwait(false);
+            var chatClient = await clientTask.ConfigureAwait(false);
 
             var messages = new List<ChatMessage>
             {

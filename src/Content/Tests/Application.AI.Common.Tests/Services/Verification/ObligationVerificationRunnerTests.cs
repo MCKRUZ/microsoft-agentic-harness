@@ -5,6 +5,7 @@ using Domain.Common.Config;
 using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using Tests.AI.Fakes;
 using Xunit;
 
 namespace Application.AI.Common.Tests.Services.Verification;
@@ -34,7 +35,7 @@ public sealed class ObligationVerificationRunnerTests
     [Fact]
     public async Task RunAsync_MoreObligationsThanMaxObligations_OnlyVerifiesUpToTheCap()
     {
-        var verifier = new RecordingVerifier((o, _, _) => Task.FromResult(VerificationVerdict.Held(o)));
+        var verifier = new RecordingObligationVerifier((o, _, _) => Task.FromResult(VerificationVerdict.Held(o)));
         var sut = CreateSut(verifier, maxObligations: 3, maxParallelVerifiers: 4);
         var obligations = Enumerable.Range(0, 5).Select(i => MakeObligation(i)).ToList();
 
@@ -52,7 +53,7 @@ public sealed class ObligationVerificationRunnerTests
     [Fact]
     public async Task RunAsync_MaxParallelVerifiersIsZero_DoesNotHangAndVerifiesNormally()
     {
-        var verifier = new RecordingVerifier((o, _, _) => Task.FromResult(VerificationVerdict.Held(o)));
+        var verifier = new RecordingObligationVerifier((o, _, _) => Task.FromResult(VerificationVerdict.Held(o)));
         var sut = CreateSut(verifier, maxObligations: 10, maxParallelVerifiers: 0);
 
         var verdicts = await sut.RunAsync([MakeObligation(0)], ArtifactContent, CancellationToken.None)
@@ -65,7 +66,7 @@ public sealed class ObligationVerificationRunnerTests
     [Fact]
     public async Task RunAsync_MaxParallelVerifiersIsNegative_DoesNotThrowFromSemaphoreConstruction()
     {
-        var verifier = new RecordingVerifier((o, _, _) => Task.FromResult(VerificationVerdict.Held(o)));
+        var verifier = new RecordingObligationVerifier((o, _, _) => Task.FromResult(VerificationVerdict.Held(o)));
         var sut = CreateSut(verifier, maxObligations: 10, maxParallelVerifiers: -1);
 
         var verdicts = await sut.RunAsync([MakeObligation(0)], ArtifactContent, CancellationToken.None)
@@ -77,7 +78,7 @@ public sealed class ObligationVerificationRunnerTests
     [Fact]
     public async Task RunAsync_PerVerifierTimeoutIsNonPositive_DoesNotThrowFromCancelAfter()
     {
-        var verifier = new RecordingVerifier((o, _, _) => Task.FromResult(VerificationVerdict.Held(o)));
+        var verifier = new RecordingObligationVerifier((o, _, _) => Task.FromResult(VerificationVerdict.Held(o)));
         var sut = CreateSut(verifier, maxObligations: 10, maxParallelVerifiers: 4, perVerifierTimeout: TimeSpan.Zero);
 
         var verdicts = await sut.RunAsync([MakeObligation(0)], ArtifactContent, CancellationToken.None)
@@ -90,7 +91,7 @@ public sealed class ObligationVerificationRunnerTests
     public async Task RunAsync_OneVerifierThrows_OtherVerdictsAreUnaffectedAndThrowerReportsVerifierError()
     {
         var poisoned = MakeObligation(0);
-        var verifier = new RecordingVerifier((o, _, _) =>
+        var verifier = new RecordingObligationVerifier((o, _, _) =>
             ReferenceEquals(o, poisoned)
                 ? throw new InvalidOperationException("boom")
                 : Task.FromResult(VerificationVerdict.Held(o)));
@@ -110,7 +111,7 @@ public sealed class ObligationVerificationRunnerTests
     [Fact]
     public async Task RunAsync_VerifierExceedsPerVerifierTimeout_ReportsVerifierErrorNotAHang()
     {
-        var verifier = new RecordingVerifier(async (o, _, ct) =>
+        var verifier = new RecordingObligationVerifier(async (o, _, ct) =>
         {
             await Task.Delay(TimeSpan.FromSeconds(30), ct);
             return VerificationVerdict.Held(o);
@@ -133,7 +134,7 @@ public sealed class ObligationVerificationRunnerTests
     {
         var rejected = new Obligation(Where: "same text", ReliesOn: "same text", Property: "property");
         var valid = MakeObligation(0);
-        var verifier = new RecordingVerifier((o, _, _) => Task.FromResult(VerificationVerdict.Held(o)));
+        var verifier = new RecordingObligationVerifier((o, _, _) => Task.FromResult(VerificationVerdict.Held(o)));
         var sut = CreateSut(verifier, maxObligations: 10, maxParallelVerifiers: 4);
 
         var verdicts = await sut.RunAsync([rejected, valid], ArtifactContent, CancellationToken.None);
@@ -147,7 +148,7 @@ public sealed class ObligationVerificationRunnerTests
     public async Task RunAsync_ObligationWithEmptyReliesOn_ProducesNoVerdict()
     {
         var rejected = new Obligation(Where: "where", ReliesOn: "", Property: "property");
-        var verifier = new RecordingVerifier((o, _, _) => Task.FromResult(VerificationVerdict.Held(o)));
+        var verifier = new RecordingObligationVerifier((o, _, _) => Task.FromResult(VerificationVerdict.Held(o)));
         var sut = CreateSut(verifier, maxObligations: 10, maxParallelVerifiers: 4);
 
         var verdicts = await sut.RunAsync([rejected], ArtifactContent, CancellationToken.None);
@@ -159,7 +160,7 @@ public sealed class ObligationVerificationRunnerTests
     [Fact]
     public async Task RunAsync_MultipleObligations_AllAreReturnedRegardlessOfOutcome()
     {
-        var verifier = new RecordingVerifier((o, _, _) => Task.FromResult(VerificationVerdict.Held(o)));
+        var verifier = new RecordingObligationVerifier((o, _, _) => Task.FromResult(VerificationVerdict.Held(o)));
         var sut = CreateSut(verifier, maxObligations: 10, maxParallelVerifiers: 2);
         var obligations = Enumerable.Range(0, 6).Select(i => MakeObligation(i)).ToList();
 
@@ -184,24 +185,6 @@ public sealed class ObligationVerificationRunnerTests
     private static Obligation MakeObligation(int index) =>
         new(Where: $"where-{index}", ReliesOn: $"relies-on-{index}", Property: $"property-{index}");
 
-    private sealed class RecordingVerifier : IObligationVerifier
-    {
-        private readonly Func<Obligation, string, CancellationToken, Task<VerificationVerdict>> _handler;
-        private int _callCount;
-
-        public RecordingVerifier(Func<Obligation, string, CancellationToken, Task<VerificationVerdict>> handler)
-        {
-            _handler = handler;
-        }
-
-        public int CallCount => _callCount;
-
-        public Task<VerificationVerdict> VerifyAsync(Obligation obligation, string artifactContent, CancellationToken cancellationToken)
-        {
-            Interlocked.Increment(ref _callCount);
-            return _handler(obligation, artifactContent, cancellationToken);
-        }
-    }
 
     private sealed class StaticOptionsMonitor<T> : IOptionsMonitor<T>
     {
