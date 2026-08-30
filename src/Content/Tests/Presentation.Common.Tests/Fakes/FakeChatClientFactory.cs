@@ -2,6 +2,7 @@ using Application.AI.Common.Interfaces;
 using Application.AI.Common.Models;
 using Domain.Common.Config.AI;
 using Microsoft.Extensions.AI;
+using Tests.AI.Fakes;
 
 namespace Presentation.Common.Tests.Fakes;
 
@@ -64,8 +65,8 @@ public sealed class FakeChatClientFactory : IChatClientFactory
             [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
             var response = await GetResponseAsync(messages, options, cancellationToken);
-            foreach (var message in response.Messages)
-                yield return new ChatResponseUpdate(message.Role, message.Contents);
+            await foreach (var update in ChatResponseStreaming.ToUpdatesAsync(response, cancellationToken))
+                yield return update;
         }
 
         public object? GetService(Type serviceType, object? serviceKey = null) => null;

@@ -8,22 +8,28 @@ namespace Tests.AI.Fakes;
 /// for the same role across repeated <c>IChatClientFactory.GetChatClientAsync</c> calls, so a
 /// scenario's queue state survives agent reconstruction within one test.
 /// </summary>
+/// <remarks>
+/// Thread-safe — <c>AgentFactory</c> sets <c>AllowConcurrentInvocation = true</c> for tool-bearing
+/// turns, and plan steps run with bounded concurrency, so two calls against the same role's script
+/// can race in a real scenario. Every mutating/reading operation takes <see cref="_gate"/>.
+/// </remarks>
 public sealed class RoleScript
 {
+    private readonly Lock _gate = new();
     private readonly Queue<ScriptedItem> _responses = new();
-    private ChatResponse _defaultResponse = new(new ChatMessage(ChatRole.Assistant, "fake response"));
+    private string _defaultResponseText = "fake response";
 
-    /// <summary>Sets the response returned once the queue is empty.</summary>
+    /// <summary>Sets the text returned (as a freshly built response) once the queue is empty.</summary>
     public RoleScript WithDefaultResponse(string content)
     {
-        _defaultResponse = new ChatResponse(new ChatMessage(ChatRole.Assistant, content));
+        lock (_gate) _defaultResponseText = content;
         return this;
     }
 
     /// <summary>Enqueues a plain-text response.</summary>
     public RoleScript Enqueue(string content)
     {
-        _responses.Enqueue(ScriptedItem.Of(new ChatResponse(new ChatMessage(ChatRole.Assistant, content))));
+        lock (_gate) _responses.Enqueue(ScriptedItem.Of(new ChatResponse(new ChatMessage(ChatRole.Assistant, content))));
         return this;
     }
 
@@ -42,7 +48,7 @@ public sealed class RoleScript
                 TotalTokenCount = inputTokens + outputTokens,
             },
         };
-        _responses.Enqueue(ScriptedItem.Of(response));
+        lock (_gate) _responses.Enqueue(ScriptedItem.Of(response));
         return this;
     }
 
@@ -63,24 +69,49 @@ public sealed class RoleScript
         {
             new FunctionCallContent(callId, toolName, arguments ?? new Dictionary<string, object?>()),
         });
-        _responses.Enqueue(ScriptedItem.Of(new ChatResponse(message)));
+        lock (_gate) _responses.Enqueue(ScriptedItem.Of(new ChatResponse(message)));
         return this;
     }
 
-    /// <summary>Enqueues a response that always throws when requested, for total-failure scenarios.</summary>
+    /// <summary>
+    /// Enqueues an exception to be thrown the one time this item is dequeued — for scripting a
+    /// single failed call within a larger sequence (e.g. "attempt one throws, attempt two
+    /// succeeds"). This is <em>not</em> sticky: once dequeued, later calls proceed to whatever is
+    /// enqueued next, or the default response if the queue is now empty. For a call that must fail
+    /// every time it is invoked, enqueue this repeatedly or use <see cref="AlwaysThrow"/>.
+    /// </summary>
     public RoleScript EnqueueThrow(Exception exception)
     {
-        _responses.Enqueue(ScriptedItem.Throw(exception));
+        lock (_gate) _responses.Enqueue(ScriptedItem.Throw(exception));
         return this;
     }
 
+    /// <summary>
+    /// Makes every call against this role throw <paramref name="exception"/>, including calls made
+    /// after the queue is otherwise exhausted — for a genuine total-failure scenario, where a
+    /// single <see cref="EnqueueThrow"/> would let a later, unscripted call fall through to the
+    /// default success response.
+    /// </summary>
+    public RoleScript AlwaysThrow(Exception exception)
+    {
+        lock (_gate) _alwaysThrow = exception;
+        return this;
+    }
+
+    private Exception? _alwaysThrow;
+
     /// <summary>Dequeues the next scripted response, or the default if the queue is empty. Throws
-    /// the scripted exception, if one was enqueued, instead of returning.</summary>
+    /// the scripted exception, if the dequeued item is one, or the sticky exception set via
+    /// <see cref="AlwaysThrow"/> if one is active.</summary>
     internal ChatResponse Next()
     {
-        if (_responses.Count == 0) return _defaultResponse;
-        var item = _responses.Dequeue();
-        return item.Exception is { } exception ? throw exception : item.ResponseValue!;
+        lock (_gate)
+        {
+            if (_alwaysThrow is { } sticky) throw sticky;
+            if (_responses.Count == 0) return new ChatResponse(new ChatMessage(ChatRole.Assistant, _defaultResponseText));
+            var item = _responses.Dequeue();
+            return item.Exception is { } exception ? throw exception : item.ResponseValue!;
+        }
     }
 
     /// <summary>

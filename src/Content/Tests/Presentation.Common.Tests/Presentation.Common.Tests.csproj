@@ -28,6 +28,9 @@
   <ItemGroup>
     <ProjectReference Include="..\..\Presentation\Presentation.Common\Presentation.Common.csproj" />
     <ProjectReference Include="..\Tests.Common\Tests.Common.csproj" />
+    <!-- Shares ChatResponseStreaming so FakeChatClientFactory's nested fake streams the same way
+         as the other chat-client fakes, instead of a fourth hand-copied loop. -->
+    <ProjectReference Include="..\Tests.AI.Fakes\Tests.AI.Fakes.csproj" />
   </ItemGroup>
 
 </Project>
