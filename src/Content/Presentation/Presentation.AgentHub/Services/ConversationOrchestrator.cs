@@ -196,7 +196,7 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
 
             var last = truncated.Messages.LastOrDefault();
             if (last is null || last.Role != MessageRole.User)
-                throw new InvalidOperationException("Cannot retry: no preceding user message found.");
+                throw new InvalidOperationException(ConversationRetryNotice.NoPrecedingUserMessage);
 
             // Signal the truncation BEFORE dispatching — see the interface's remarks (#328): a
             // caller streaming onChunk must be able to tell its client to drop the stale local

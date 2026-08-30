@@ -269,10 +269,12 @@ public sealed class AgentTelemetryHubStreamingInvariantTests
         // — C# matches catch clauses top-down, so for InvalidOperationException/UnauthorizedAccessException
         // (a stolen turn lease, a mid-flight ConversationAccessDeniedException — the types this
         // method actually throws on this path) the typed clause won FIRST and the new guard never
-        // ran, silently defeating it for the exact failures it exists for. This test uses the same
-        // exception type ConversationOrchestrator's own lease-conflict path throws
-        // (InvalidOperationException(ConversationLeaseNotice.Message)) rather than an arbitrary one,
-        // specifically so it cannot pass by accident the way the IOException-based test above could.
+        // ran, silently defeating it for the exact failures it exists for. This test throws the same
+        // exception TYPE ConversationOrchestrator's own lease-conflict path throws
+        // (InvalidOperationException — see ConversationLeaseNotice, internal to Presentation.AgentHub
+        // and not referenced by literal here) rather than an arbitrary one, specifically so it cannot
+        // pass by accident the way the IOException-based test above could. The message text below is
+        // this test's own stand-in, not the production literal.
         var fixture = Build();
         fixture.Orchestrator
             .Setup(o => o.RetryFromMessageAsync(

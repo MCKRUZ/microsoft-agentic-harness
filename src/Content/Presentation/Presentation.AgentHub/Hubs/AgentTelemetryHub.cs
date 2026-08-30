@@ -4,6 +4,7 @@ using Application.AI.Common.Models.Conversations;
 using Presentation.AgentHub.DTOs;
 using Presentation.Common.Extensions;
 using Presentation.AgentHub.Interfaces;
+using Presentation.AgentHub.Services;
 
 namespace Presentation.AgentHub.Hubs;
 
@@ -463,10 +464,12 @@ public sealed class AgentTelemetryHub : Hub
         return ex switch
         {
             UnauthorizedAccessException => new HubException("Access denied."),
-            // The "retry" substring check only ever matches RetryFromMessage's own
-            // "Cannot retry: no preceding user message found." — EditAndResubmit has no failure
-            // path producing that text, so sharing this check between both callers is safe.
-            InvalidOperationException when ex.Message.Contains("retry") => new HubException(ex.Message),
+            // Exact match against the one known constant, not a substring check on arbitrary
+            // InvalidOperationException text (the shape a prior version of this had — any exception
+            // message merely containing "retry", including one from EF Core or the store beneath
+            // this call, would have been echoed to the client verbatim).
+            InvalidOperationException when ex.Message == ConversationRetryNotice.NoPrecedingUserMessage
+                => new HubException(ex.Message),
             InvalidOperationException => new HubException("Conversation not found."),
             _ => null,
         };
