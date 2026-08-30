@@ -197,38 +197,8 @@ public sealed class AgentTelemetryHub : Hub
         }
         catch (Exception ex)
         {
-            // Runs for EVERY exception type — not just the two mapped below — because the client
-            // may already have acted on the truncation notice regardless of what failed afterward.
-            // This must be checked before, not after, the typed-exception mapping: a bare
-            // `catch (Exception) when (historyTruncatedSignaled)` placed below the typed clause
-            // would never run for InvalidOperationException/UnauthorizedAccessException, since C#
-            // matches catch clauses top-down and the typed clause (which matches nearly everything
-            // this method actually throws — a stolen turn lease, ConversationAccessDeniedException)
-            // would win first, silently defeating this guard for the exact failures it exists for.
-            if (historyTruncatedSignaled)
-            {
-                try
-                {
-                    // Best-effort: ct may already be cancelled if ex itself is the client
-                    // disconnecting, in which case this send can throw too — that must not replace
-                    // or hide the original ex, which the rethrow below still needs to surface.
-                    await EmitPostTruncationFailureAsync(conversationId, ct);
-                }
-                catch (Exception notifyEx)
-                {
-                    _logger.LogWarning(notifyEx,
-                        "Failed to notify the client of a post-truncation failure for conversation {ConversationId}.",
-                        conversationId);
-                }
-            }
-
-            if (ex is InvalidOperationException or UnauthorizedAccessException)
-            {
-                throw new HubException(ex is UnauthorizedAccessException
-                    ? "Access denied."
-                    : ex.Message.Contains("retry") ? ex.Message : "Conversation not found.");
-            }
-
+            var mapped = await NotifyPostTruncationFailureAndMapAsync(ex, conversationId, historyTruncatedSignaled, ct);
+            if (mapped is not null) throw mapped;
             throw;
         }
 
@@ -258,30 +228,8 @@ public sealed class AgentTelemetryHub : Hub
         }
         catch (Exception ex)
         {
-            // See RetryFromMessage's identical structure and comment for why this must run before,
-            // not after, the typed-exception mapping below.
-            if (historyTruncatedSignaled)
-            {
-                try
-                {
-                    // Best-effort: ct may already be cancelled if ex itself is the client
-                    // disconnecting, in which case this send can throw too — that must not replace
-                    // or hide the original ex, which the rethrow below still needs to surface.
-                    await EmitPostTruncationFailureAsync(conversationId, ct);
-                }
-                catch (Exception notifyEx)
-                {
-                    _logger.LogWarning(notifyEx,
-                        "Failed to notify the client of a post-truncation failure for conversation {ConversationId}.",
-                        conversationId);
-                }
-            }
-
-            if (ex is InvalidOperationException or UnauthorizedAccessException)
-            {
-                throw new HubException(ex is UnauthorizedAccessException ? "Access denied." : "Conversation not found.");
-            }
-
+            var mapped = await NotifyPostTruncationFailureAndMapAsync(ex, conversationId, historyTruncatedSignaled, ct);
+            if (mapped is not null) throw mapped;
             throw;
         }
 
@@ -459,11 +407,8 @@ public sealed class AgentTelemetryHub : Hub
     /// Emits an <c>Error</c> event for a turn that failed AFTER the client was already told its
     /// history was truncated. A bare <see cref="HubException"/> only surfaces to the caller's RPC
     /// promise, never through the client's <c>Error</c> event handler — leaving it showing a
-    /// truncated transcript with no explanation and no retried response. Called only from the
-    /// <c>catch (Exception ex)</c> block's <c>if (historyTruncatedSignaled)</c> guard in
-    /// <see cref="RetryFromMessage"/> and <see cref="EditAndResubmit"/>, before that same block
-    /// rethrows (or maps to a <see cref="HubException"/>) so the RPC caller still observes the
-    /// failure too.
+    /// truncated transcript with no explanation and no retried response. Called only from
+    /// <see cref="NotifyPostTruncationFailureAndMapAsync"/>.
     /// </summary>
     private Task EmitPostTruncationFailureAsync(string conversationId, CancellationToken ct) =>
         Clients.Caller.SendAsync(EventError,
@@ -473,6 +418,59 @@ public sealed class AgentTelemetryHub : Hub
                 message = "The turn could not be completed after truncating history. Reload the conversation to resynchronize.",
                 code = "AGENT_ERROR",
             }, ct);
+
+    /// <summary>
+    /// Shared failure handling for <see cref="RetryFromMessage"/> and <see cref="EditAndResubmit"/>:
+    /// best-effort-notifies the client of a post-truncation failure when it may already have acted
+    /// on the truncation notice, then returns the <see cref="HubException"/> the caller should throw
+    /// for a recognised failure type, or <see langword="null"/> when the caller should instead
+    /// rethrow <paramref name="ex"/> itself via a bare <c>throw;</c> (which must stay in the
+    /// caller's own catch block to preserve the original stack trace — this helper cannot do that
+    /// rethrow on the caller's behalf).
+    /// </summary>
+    /// <remarks>
+    /// The notify runs for EVERY exception type, not just the two mapped to a
+    /// <see cref="HubException"/> below — the client may already have acted on the truncation
+    /// notice regardless of what failed afterward. This must happen before, not conditioned on,
+    /// the typed-exception mapping: if a caller instead used a bare
+    /// <c>catch (Exception) when (historyTruncatedSignaled)</c> clause placed below a typed catch
+    /// clause, C#'s top-down clause matching would let the typed clause win first for
+    /// <see cref="InvalidOperationException"/>/<see cref="UnauthorizedAccessException"/> — which are
+    /// exactly the types this path actually throws (a stolen turn lease,
+    /// <c>ConversationAccessDeniedException</c>) — silently defeating the guard for the failures it
+    /// exists for. This shape was shipped once and caught by CI's correctness-review gate.
+    /// </remarks>
+    private async Task<HubException?> NotifyPostTruncationFailureAndMapAsync(
+        Exception ex, string conversationId, bool historyTruncatedSignaled, CancellationToken ct)
+    {
+        if (historyTruncatedSignaled)
+        {
+            try
+            {
+                // Best-effort: ct may already be cancelled if ex itself is the client
+                // disconnecting, in which case this send can throw too — that must not replace or
+                // hide ex, which the caller still needs to map or rethrow after this returns.
+                await EmitPostTruncationFailureAsync(conversationId, ct);
+            }
+            catch (Exception notifyEx)
+            {
+                _logger.LogWarning(notifyEx,
+                    "Failed to notify the client of a post-truncation failure for conversation {ConversationId}.",
+                    conversationId);
+            }
+        }
+
+        return ex switch
+        {
+            UnauthorizedAccessException => new HubException("Access denied."),
+            // The "retry" substring check only ever matches RetryFromMessage's own
+            // "Cannot retry: no preceding user message found." — EditAndResubmit has no failure
+            // path producing that text, so sharing this check between both callers is safe.
+            InvalidOperationException when ex.Message.Contains("retry") => new HubException(ex.Message),
+            InvalidOperationException => new HubException("Conversation not found."),
+            _ => null,
+        };
+    }
 
     /// <summary>
     /// Emits the standard post-turn events to the caller: either (final TokenReceived +
