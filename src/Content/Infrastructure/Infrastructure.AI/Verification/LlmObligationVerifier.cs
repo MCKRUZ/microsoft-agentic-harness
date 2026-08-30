@@ -125,6 +125,17 @@ public sealed class LlmObligationVerifier : IObligationVerifier
             return VerificationVerdict.VerifierError(
                 obligation, $"Obligation-verifier prompt '{PromptName}' is unavailable; see logs for details.");
         }
+        catch (Exception ex)
+        {
+            // IPromptRegistry's own contract says implementations throw only the two types caught
+            // above (plus OperationCanceledException) — but trusting an interface's documentation to
+            // hold for every implementation is exactly the kind of assumption this method's own
+            // "never throws" remarks can't afford. A non-compliant or buggy registry still degrades
+            // to VerifierError here instead of escaping uncaught.
+            _logger.LogError(ex, "Could not resolve obligation-verifier system prompt '{Prompt}'", PromptName);
+            return VerificationVerdict.VerifierError(
+                obligation, $"Obligation-verifier prompt '{PromptName}' is unavailable; see logs for details.");
+        }
 
         // The obligation's own fields are themselves derived from untrusted artifact content (the
         // extractor read them out of it), so they get the same envelope treatment as the artifact

@@ -76,20 +76,27 @@ public sealed class ObligationVerificationRunner
         // A MaxParallelVerifiers of 0 hangs every verifier on gate.WaitAsync forever (no timeout can
         // rescue a permit that's never granted); a negative value throws out of SemaphoreSlim's own
         // constructor; a non-positive PerVerifierTimeout throws out of CancelAfter — all three would
-        // escape RunAsync uncaught, breaking the "never throws" contract this type documents. Clamped
-        // here rather than trusted, the same way ObligationValidator re-checks obligations that were
-        // already validated upstream.
+        // escape RunAsync uncaught, breaking the "never throws" contract this type documents. A
+        // hot-reloaded MaxObligations of 0 wouldn't throw or hang (Take(0) is a silent empty result),
+        // but it would still misreport as "nothing to check" instead of "config says verify none" —
+        // clamped alongside the other two for the same reason: trust nothing hot-reload can hand this
+        // method, the same way ObligationValidator re-checks obligations already validated upstream.
+        var maxObligations = config.MaxObligations > 0 ? config.MaxObligations : 14;
         var maxParallelVerifiers = config.MaxParallelVerifiers > 0 ? config.MaxParallelVerifiers : 1;
         var perVerifierTimeout = config.PerVerifierTimeout > TimeSpan.Zero
             ? config.PerVerifierTimeout
             : TimeSpan.FromSeconds(30);
-        if (maxParallelVerifiers != config.MaxParallelVerifiers || perVerifierTimeout != config.PerVerifierTimeout)
+        if (maxObligations != config.MaxObligations
+            || maxParallelVerifiers != config.MaxParallelVerifiers
+            || perVerifierTimeout != config.PerVerifierTimeout)
         {
             _logger.LogWarning(
-                "ObligationConfig has an invalid MaxParallelVerifiers ({MaxParallelVerifiers}) or " +
-                "PerVerifierTimeout ({PerVerifierTimeout}) — a hot-reloaded value bypassing startup " +
-                "validation. Falling back to {ClampedMaxParallelVerifiers}/{ClampedPerVerifierTimeout}.",
-                config.MaxParallelVerifiers, config.PerVerifierTimeout, maxParallelVerifiers, perVerifierTimeout);
+                "ObligationConfig has an invalid MaxObligations ({MaxObligations}), MaxParallelVerifiers " +
+                "({MaxParallelVerifiers}), or PerVerifierTimeout ({PerVerifierTimeout}) — a hot-reloaded " +
+                "value bypassing startup validation. Falling back to " +
+                "{ClampedMaxObligations}/{ClampedMaxParallelVerifiers}/{ClampedPerVerifierTimeout}.",
+                config.MaxObligations, config.MaxParallelVerifiers, config.PerVerifierTimeout,
+                maxObligations, maxParallelVerifiers, perVerifierTimeout);
         }
 
         var validated = obligations.Where(o => _validator.Validate(o).IsValid).ToList();
@@ -100,8 +107,8 @@ public sealed class ObligationVerificationRunner
                 obligations.Count - validated.Count, obligations.Count);
         }
 
-        var bounded = validated.Count > config.MaxObligations
-            ? validated.Take(config.MaxObligations).ToList()
+        var bounded = validated.Count > maxObligations
+            ? validated.Take(maxObligations).ToList()
             : validated;
 
         if (bounded.Count < validated.Count)
@@ -109,7 +116,7 @@ public sealed class ObligationVerificationRunner
             _logger.LogWarning(
                 "Extraction produced {Total} valid obligations, exceeding MaxObligations {Max} — " +
                 "{Dropped} obligation(s) were NOT verified.",
-                validated.Count, config.MaxObligations, validated.Count - bounded.Count);
+                validated.Count, maxObligations, validated.Count - bounded.Count);
         }
 
         using var gate = new SemaphoreSlim(maxParallelVerifiers);

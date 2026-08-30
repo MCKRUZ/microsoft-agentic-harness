@@ -50,7 +50,7 @@ public sealed class ObligationVerificationRunnerTests
     // forever with no timeout able to rescue it — the WaitAsync(5s) below is what turns "hangs
     // forever" into a failing test instead of a CI job that never finishes.
     [Fact]
-    public async Task RunAsync_MaxParallelVerifiersIsZero_DoesNotHangAndReportsVerifierError()
+    public async Task RunAsync_MaxParallelVerifiersIsZero_DoesNotHangAndVerifiesNormally()
     {
         var verifier = new RecordingVerifier((o, _, _) => Task.FromResult(VerificationVerdict.Held(o)));
         var sut = CreateSut(verifier, maxObligations: 10, maxParallelVerifiers: 0);

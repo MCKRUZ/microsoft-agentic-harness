@@ -105,6 +105,17 @@ public sealed class LlmObligationExtractor : IObligationExtractor
             return Result<IReadOnlyList<Obligation>>.Fail(
                 $"Obligation-extractor prompt '{PromptName}' is unavailable; see logs for details.");
         }
+        catch (Exception ex)
+        {
+            // IPromptRegistry's own contract says implementations throw only the two types caught
+            // above (plus OperationCanceledException) — but trusting an interface's documentation
+            // to hold for every implementation is exactly the kind of assumption this method's
+            // "never throws" promise can't afford. A non-compliant or buggy registry still degrades
+            // to Result.Fail here instead of escaping into ObligationsHoldMetric.ScoreAsync uncaught.
+            _logger.LogError(ex, "Could not resolve obligation-extractor system prompt '{Prompt}'", PromptName);
+            return Result<IReadOnlyList<Obligation>>.Fail(
+                $"Obligation-extractor prompt '{PromptName}' is unavailable; see logs for details.");
+        }
 
         // The path is untrusted the same as the content — both are caller-supplied per
         // IObligationExtractor's contract ("e.g. a file path"), not guaranteed to come from a

@@ -119,6 +119,17 @@ public sealed class ObligationsHoldMetric : IEvalMetric
             : string.Empty;
 
         sw.Stop();
+
+        // Distinct from the extraction.Value.Count == 0 branch above: extraction found something
+        // worth checking, but every single one was rejected by ObligationValidator before dispatch
+        // — "we found claims but couldn't check any of them" is not the same finding as "we looked
+        // and there was nothing to check," and reporting it as a plain Pass would read as the
+        // latter.
+        if (verdicts.Count == 0)
+        {
+            return Warn(sw, $"{extraction.Value.Count} obligation(s) extracted but all were rejected as malformed — nothing was verified.");
+        }
+
         if (broken.Count > 0)
         {
             var summary = string.Join(" | ", broken.Select(v => $"{v.Obligation.Property}: {v.Explanation}"));

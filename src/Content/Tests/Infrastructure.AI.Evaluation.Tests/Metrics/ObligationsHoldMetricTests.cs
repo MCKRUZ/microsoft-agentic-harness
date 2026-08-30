@@ -76,6 +76,24 @@ public sealed class ObligationsHoldMetricTests
         verifier.CallCount.Should().Be(0);
     }
 
+    // Distinct from the case above: extraction found something worth checking, but every single
+    // obligation was rejected by ObligationValidator before dispatch (e.g. a self-referential
+    // relies_on). "Found claims, couldn't check any of them" must not read as a plain Pass — that
+    // would be indistinguishable from "looked and found nothing to check."
+    [Fact]
+    public async Task ScoreAsync_AllExtractedObligationsRejected_ReturnsWarnNotPass()
+    {
+        var selfReferential = new Obligation(Where: "same text", ReliesOn: "same text", Property: "property");
+        var extractor = MockExtractorReturning(Result<IReadOnlyList<Obligation>>.Success([selfReferential]));
+        var verifier = new FakeVerifier((o, _, _) => Task.FromResult(VerificationVerdict.Held(o)));
+        var sut = CreateSut(extractor.Object, verifier, enabled: true);
+
+        var score = await sut.ScoreAsync(Case, SuccessfulOutput("content"), Spec, CancellationToken.None);
+
+        score.Verdict.Should().Be(Verdict.Warn);
+        verifier.CallCount.Should().Be(0);
+    }
+
     [Fact]
     public async Task ScoreAsync_ExtractionFails_ReturnsWarnNotPassOrFail()
     {
