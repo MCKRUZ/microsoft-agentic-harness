@@ -503,6 +503,45 @@ public class ConversationOrchestratorTests
     }
 
     [Fact]
+    public async Task RetryFromMessage_OnHistoryTruncatedFiresBeforeOnChunk()
+    {
+        // #328: a client appending streamed deltas onto its still-untruncated local message list
+        // before being told to drop the stale tail is a real ordering bug this callback exists to
+        // prevent (caught by AgentTelemetryHubStreamingInvariantTests' I3 check). Proves the REAL
+        // orchestrator — not just the hub's own wiring — calls onHistoryTruncated before any
+        // onChunk delta, and with the correct surviving-message count.
+        var userMsg = new ConversationMessage(Guid.NewGuid(), MessageRole.User, "Original", DateTimeOffset.UtcNow);
+        var record = new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow,
+            [userMsg]);
+        _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
+        _store.Setup(s => s.TruncateFromMessageAsync("c1", "user1", It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, [userMsg]));
+        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", 20, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<ConversationMessage> { userMsg });
+        _obsStore.Setup(s => s.StartSessionAsync("c1", "agent", null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Guid.NewGuid());
+
+        var events = new List<string>();
+        _mediator.Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(() =>
+            {
+                events.Add("dispatch"); // the model call itself happens strictly after truncation
+                return new AgentTurnResult { Success = true, Response = "Retried", UpdatedHistory = [] };
+            });
+
+        var orchestrator = CreateOrchestrator();
+        var outcome = await orchestrator.RetryFromMessageAsync(
+            "conn1", "c1", Guid.NewGuid(), "user1",
+            onChunk: (_, _) => { events.Add("chunk"); return Task.CompletedTask; },
+            CancellationToken.None,
+            onHistoryTruncated: (keepCount, _) => { events.Add($"truncated:{keepCount}"); return Task.CompletedTask; });
+
+        outcome.HistoryKeepCount.Should().Be(1);
+        events.Should().StartWith("truncated:1",
+            "onHistoryTruncated must fire before the turn (and therefore before any streamed delta) dispatches");
+    }
+
+    [Fact]
     public async Task RetryFromMessage_NoUserMessage_ThrowsInvalidOperationException()
     {
         var record = new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []);
@@ -541,6 +580,126 @@ public class ConversationOrchestratorTests
 
         outcome.Success.Should().BeTrue();
         outcome.HistoryKeepCount.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task EditAndResubmit_AppendsTheEditedMessageBeforeSignalingTruncation()
+    {
+        // Code-review finding: unlike RetryFromMessageAsync, this method's onHistoryTruncated is
+        // what the client acts on to optimistically re-insert the edited message — so if it fired
+        // before the edit was durably appended, an append failure would leave the client showing
+        // an edit the server never persisted, with nothing to roll it back. Proves the real
+        // orchestrator appends first.
+        var record = new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []);
+        _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
+        _store.Setup(s => s.TruncateFromMessageAsync("c1", "user1", It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []));
+        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", 20, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<ConversationMessage>());
+        _obsStore.Setup(s => s.StartSessionAsync("c1", "agent", null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Guid.NewGuid());
+        _mediator.Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new AgentTurnResult { Success = true, Response = "Edited", UpdatedHistory = [] });
+
+        var events = new List<string>();
+        _store.Setup(s => s.AppendMessageAsync("c1", "user1", It.IsAny<ConversationMessage>(), It.IsAny<CancellationToken>()))
+            .Callback(() => events.Add("append"))
+            .Returns(Task.CompletedTask);
+
+        var orchestrator = CreateOrchestrator();
+        await orchestrator.EditAndResubmitAsync(
+            "conn1", "c1", Guid.NewGuid(), Guid.NewGuid(), "New content", "user1",
+            onChunk: null, CancellationToken.None,
+            onHistoryTruncated: (_, _) => { events.Add("truncated"); return Task.CompletedTask; });
+
+        // DispatchTurnAsync appends the assistant's own response afterward — a second, unrelated
+        // "append" this test isn't about — so check relative order of the first two events rather
+        // than asserting the full sequence.
+        events.Take(2).Should().Equal("append", "truncated");
+    }
+
+    [Fact]
+    public async Task RetryFromMessage_OnHistoryTruncatedFailure_IsSwallowedAndTheTurnStillDispatches()
+    {
+        // The truncation this signals already committed durably in the store — a transport failure
+        // delivering the notice (dropped connection, slow client) must not abort a turn whose
+        // underlying mutation already succeeded.
+        var userMsg = new ConversationMessage(Guid.NewGuid(), MessageRole.User, "Original", DateTimeOffset.UtcNow);
+        var record = new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow,
+            [userMsg]);
+        _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
+        _store.Setup(s => s.TruncateFromMessageAsync("c1", "user1", It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, [userMsg]));
+        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", 20, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<ConversationMessage> { userMsg });
+        _obsStore.Setup(s => s.StartSessionAsync("c1", "agent", null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Guid.NewGuid());
+        _mediator.Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new AgentTurnResult { Success = true, Response = "Retried", UpdatedHistory = [] });
+
+        var orchestrator = CreateOrchestrator();
+        var outcome = await orchestrator.RetryFromMessageAsync(
+            "conn1", "c1", Guid.NewGuid(), "user1",
+            onChunk: null, CancellationToken.None,
+            onHistoryTruncated: (_, _) => throw new IOException("client connection dropped"));
+
+        outcome.Success.Should().BeTrue("a failed notification must not abort a turn whose truncation already committed");
+        outcome.HistoryKeepCount.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task RetryFromMessage_OnHistoryTruncatedThrowsCancellationMatchingCt_PropagatesRatherThanSwallowed()
+    {
+        // A cancellation matching the turn's own token means the client's connection is gone —
+        // there is no one left to stream deltas to, so unlike a generic transport failure this must
+        // propagate and abort rather than be swallowed.
+        var userMsg = new ConversationMessage(Guid.NewGuid(), MessageRole.User, "Original", DateTimeOffset.UtcNow);
+        var record = new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, [userMsg]);
+        _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
+        _store.Setup(s => s.TruncateFromMessageAsync("c1", "user1", It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, [userMsg]));
+
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        var orchestrator = CreateOrchestrator();
+        var act = () => orchestrator.RetryFromMessageAsync(
+            "conn1", "c1", Guid.NewGuid(), "user1",
+            onChunk: null, cts.Token,
+            onHistoryTruncated: (_, ct) => throw new OperationCanceledException(ct));
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+    }
+
+    [Fact]
+    public async Task RetryFromMessage_OnHistoryTruncatedThrowsCancellationFromUnrelatedToken_IsSwallowed()
+    {
+        // A cancellation from some OTHER token (an internal timeout, not the turn's own connection
+        // token going away) must be swallowed like any other transient notification failure, not
+        // treated as this turn's own disconnect.
+        var userMsg = new ConversationMessage(Guid.NewGuid(), MessageRole.User, "Original", DateTimeOffset.UtcNow);
+        var record = new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, [userMsg]);
+        _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
+        _store.Setup(s => s.TruncateFromMessageAsync("c1", "user1", It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, [userMsg]));
+        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", 20, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<ConversationMessage> { userMsg });
+        _obsStore.Setup(s => s.StartSessionAsync("c1", "agent", null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Guid.NewGuid());
+        _mediator.Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new AgentTurnResult { Success = true, Response = "Retried", UpdatedHistory = [] });
+
+        using var unrelatedCts = new CancellationTokenSource();
+        unrelatedCts.Cancel();
+
+        var orchestrator = CreateOrchestrator();
+        var outcome = await orchestrator.RetryFromMessageAsync(
+            "conn1", "c1", Guid.NewGuid(), "user1",
+            onChunk: null, CancellationToken.None,
+            onHistoryTruncated: (_, _) => throw new OperationCanceledException(unrelatedCts.Token));
+
+        outcome.Success.Should().BeTrue(
+            "a cancellation from an unrelated token must be swallowed, not treated as this turn's own disconnect");
     }
 
     // ── ValidateAccess ───────────────────────────────────────────────────
