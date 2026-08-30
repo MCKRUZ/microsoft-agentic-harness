@@ -54,104 +54,11 @@ public class AgentPipelineIntegrationTests
         // Scoped agent execution context — real implementation, not mock
         services.AddScoped<IAgentExecutionContext, AgentExecutionContext>();
 
-        // Tool-invocation governor — not under test here; permissive mock so the handler resolves.
-        var governorMock = new Mock<Application.AI.Common.Interfaces.Governance.IToolInvocationGovernor>();
-        governorMock
-            .Setup(g => g.AuthorizeAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(Application.AI.Common.Interfaces.Governance.ToolInvocationDecision.Allow());
-        services.AddScoped(_ => governorMock.Object);
-
-        // Progress / spin guard — not under test here; permissive mock so the handler resolves.
-        // Evaluate is set up explicitly because a loose mock would return null and the chain assumes
-        // a verdict exists.
-        var progressMock = new Mock<Application.AI.Common.Interfaces.Governance.IProgressEvaluator>();
-        progressMock
-            .Setup(p => p.Evaluate(It.IsAny<string>(), It.IsAny<Func<string?>>()))
-            .Returns(Application.AI.Common.Interfaces.Governance.ProgressVerdict.Continue());
-        services.AddScoped(_ => progressMock.Object);
-
-        // The turn's governance trail — real, and required by the admission chain the handler resolves.
-        // Built via the shared registration below rather than by hand; it needs these two collaborators
-        // registered so DI can resolve it.
-        services.AddSingleton(Mock.Of<Microsoft.Extensions.Options.IOptionsMonitor<Domain.Common.Config.AI.GovernanceConfig>>(
-            m => m.CurrentValue == new Domain.Common.Config.AI.GovernanceConfig()));
-        services.AddSingleton(Mock.Of<Application.AI.Common.Interfaces.Tools.IToolRiskClassifier>(
-            c => c.Classify(It.IsAny<string>()) == Application.AI.Common.Interfaces.Tools.ToolRiskProfile.Default));
-
-        // Classification DLP gate — not under test here; permissive mock so the handler resolves.
-        var classificationMock = new Mock<Application.AI.Common.Interfaces.Governance.IToolClassificationGate>();
-        classificationMock
-            .Setup(g => g.EvaluateAsync(
-                It.IsAny<string>(), It.IsAny<IReadOnlyDictionary<string, object?>>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(Application.AI.Common.Interfaces.Governance.ClassificationVerdict.Allow());
-        services.AddScoped(_ => classificationMock.Object);
-
-        // Consumer tool-call observers — none registered here, matching the default composition, so
-        // the chain reports itself empty and the chokepoint skips it.
-        var observerChainMock = new Mock<Application.AI.Common.Interfaces.Governance.IToolCallObserverChain>();
-        observerChainMock.SetupGet(c => c.HasObservers).Returns(false);
-        services.AddScoped(_ => observerChainMock.Object);
-
-        // Per-agent tool RBAC — admits, which is what the real gate answers when
-        // AI.Identity.ToolAuthorization.Enabled is unset, i.e. the default composition this suite runs.
-        var authorizationMock = new Mock<Application.AI.Common.Interfaces.Governance.IAgentToolAuthorizationGate>();
-        authorizationMock
-            .Setup(g => g.EvaluateAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(Application.AI.Common.Interfaces.Governance.ToolInvocationDecision.Allow());
-        services.AddScoped(_ => authorizationMock.Object);
-
-        // Closes the approval loop for whichever call this chain approves — not under test here;
-        // permissive mock so the handler resolves.
-        services.AddScoped(_ => Mock.Of<Application.AI.Common.Interfaces.Escalation.IApprovalExecutionReporter>());
-
-        // #460: ToolCallAdmissionPipeline.ReportExecutionAsync now sanitizes and redacts a failure's
-        // reported text itself — not under test here, so permissive pass-through mocks, matching the
-        // pattern above, so DI resolution of the chain succeeds.
-        var sanitizerMock = new Mock<Application.AI.Common.Interfaces.Governance.ICompositeResponseSanitizer>();
-        sanitizerMock
-            .Setup(s => s.Sanitize(It.IsAny<string>(), It.IsAny<string?>()))
-            .Returns((string content, string? _) => Domain.AI.Governance.SanitizationResult.Clean(content));
-        services.AddScoped(_ => sanitizerMock.Object);
-
-        var redactionFilterMock = new Mock<Application.AI.Common.Interfaces.Telemetry.IContentRedactionFilter>();
-        redactionFilterMock
-            .Setup(f => f.Redact(It.IsAny<string>(), It.IsAny<IReadOnlyList<Domain.AI.Telemetry.Redaction.RedactionCategory>>()))
-            .Returns((string content, IReadOnlyList<Domain.AI.Telemetry.Redaction.RedactionCategory> _) => content);
-        services.AddScoped(_ => redactionFilterMock.Object);
-
-        // #249 item 6: ExecuteAgentTurnCommandHandler now depends on IToolCallReplayTreatment to
-        // treat a turn's tool calls for durable replay — not under test here, so a permissive
-        // pass-through mock, matching the pattern above, so DI resolution of the handler succeeds.
-        var toolCallReplayTreatmentMock = new Mock<Application.AI.Common.Interfaces.IToolCallReplayTreatment>();
-        toolCallReplayTreatmentMock.Setup(t => t.Enabled).Returns(true);
-        toolCallReplayTreatmentMock
-            .Setup(t => t.Treat(It.IsAny<string>(), It.IsAny<string?>()))
-            .Returns((string rawText, string? _) => rawText);
-        toolCallReplayTreatmentMock.Setup(t => t.NoResultPlaceholder).Returns("[no result recorded]");
-        // Explicit, because an unconfigured Moq int property returns 0 — and a zero limit here is not
-        // "no limit", it drops every tool call.
-        toolCallReplayTreatmentMock.Setup(t => t.MaxCallsPerTurn).Returns(32);
-        toolCallReplayTreatmentMock.Setup(t => t.MaxReplayedChars).Returns(65536);
-        services.AddScoped(_ => toolCallReplayTreatmentMock.Object);
-
-        // The REAL admission chain over the five permissive gates above, not a mock of it, built the
-        // same way the production root builds it. The handler depends only on the chain now, and
-        // registering the real one keeps this an end-to-end proof that the five gates are reachable
-        // from the turn — a mocked chain would prove nothing about whether they are wired at all.
-        // #532: the admission chain bounds tool output and reads its ceiling from AppConfig,
-        // so it requires one. Registered rather than defaulted inside AddToolCallAdmissionChain:
-        // a host that forgets to bind AppConfig should fail loudly at container build, which is
-        // what ValidateOnBuildSweepTests exists to catch — a TryAdd default there would make that
-        // guard structurally unable to see it.
-        services.AddSingleton<IOptionsMonitor<Domain.Common.Config.AppConfig>>(
-            Mock.Of<IOptionsMonitor<Domain.Common.Config.AppConfig>>(
-                m => m.CurrentValue == new Domain.Common.Config.AppConfig()));
-
-        // #521: the chain now constructor-injects IToolResultStore to spill truncated output — same
-        // "an absent registration is a composition that cannot exist in production" reasoning as
-        // every gate above. None of these tests truncate output, so a permissive stub is enough.
-        services.AddSingleton(Mock.Of<IToolResultStore>());
-        services.AddToolCallAdmissionChain();
+        // The REAL admission chain over five permissive gates, not a mock of it, built the same way
+        // the production root builds it — an end-to-end proof the gates are reachable from the turn,
+        // which a mocked chain would not prove. Shared with ZeroLlmPipelineTests (see
+        // PermissiveGovernanceChain's remarks) rather than kept as a second hand-copied block.
+        services.AddPermissiveGovernanceChain();
 
         // Conversation-lifetime budget — not under test here; permissive mock (disabled) so the
         // RunConversation handler resolves and never reports exhaustion.
