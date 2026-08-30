@@ -3,6 +3,9 @@ namespace Application.AI.Common.Services.Verification;
 /// <summary>Why <see cref="ObligationValidator.Validate"/> rejected an obligation.</summary>
 public enum ObligationRejectionReason
 {
+    /// <summary><c>Where</c> is empty or whitespace — the obligation has no anchor location.</summary>
+    EmptyWhere,
+
     /// <summary><c>ReliesOn</c> is empty or whitespace — nothing for a verifier to locate.</summary>
     EmptyReliesOn,
 

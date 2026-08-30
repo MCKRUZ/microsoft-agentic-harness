@@ -15,17 +15,20 @@ namespace Application.AI.Common.Services.Verification;
 public sealed class ObligationValidator
 {
     /// <summary>
-    /// Validates that <paramref name="obligation"/> has a non-empty <c>ReliesOn</c> location, a
-    /// non-empty <c>Property</c>, and that <c>ReliesOn</c> does not merely restate <c>Where</c>
-    /// (an obligation that cites itself as its own dependency has nothing else for a verifier to
-    /// read). The <c>ReliesOn</c>/<c>Where</c> comparison is normalized the same way a judge's
-    /// quoted clause is compared against its rubric source — see
-    /// <see cref="QuotedTextNormalizer"/> — so two locations differing only in HTML-entity
+    /// Validates that <paramref name="obligation"/> has a non-empty <c>Where</c> anchor, a
+    /// non-empty <c>ReliesOn</c> location, a non-empty <c>Property</c>, and that <c>ReliesOn</c>
+    /// does not merely restate <c>Where</c> (an obligation that cites itself as its own dependency
+    /// has nothing else for a verifier to read). The <c>ReliesOn</c>/<c>Where</c> comparison is
+    /// normalized the same way a judge's quoted clause is compared against its rubric source —
+    /// see <see cref="QuotedTextNormalizer"/> — so two locations differing only in HTML-entity
     /// encoding or line-wrap whitespace still compare equal.
     /// </summary>
     public ObligationValidation Validate(Obligation obligation)
     {
         ArgumentNullException.ThrowIfNull(obligation);
+
+        if (string.IsNullOrWhiteSpace(obligation.Where))
+            return ObligationValidation.Rejected(ObligationRejectionReason.EmptyWhere);
 
         if (string.IsNullOrWhiteSpace(obligation.ReliesOn))
             return ObligationValidation.Rejected(ObligationRejectionReason.EmptyReliesOn);

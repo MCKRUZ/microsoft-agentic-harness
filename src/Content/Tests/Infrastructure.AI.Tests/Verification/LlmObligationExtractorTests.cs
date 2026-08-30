@@ -9,6 +9,7 @@ using Infrastructure.AI.Verification;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
+using Tests.Common;
 using Xunit;
 
 namespace Infrastructure.AI.Tests.Verification;
@@ -170,5 +171,32 @@ public sealed class LlmObligationExtractorTests
         _chatClient
             .Setup(c => c.GetResponseAsync(It.IsAny<IEnumerable<ChatMessage>>(), It.IsAny<ChatOptions?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new ChatResponse(new ChatMessage(ChatRole.Assistant, json)));
+    }
+
+    // Every other test in this file mocks IPromptRegistry, which cannot catch the sut's own
+    // PromptName constant drifting from the real prompts/{name}/ folder — exactly the bug a
+    // prior review round found here (PromptName said "obligation-extractor-system", the folder
+    // was "obligation-extractor", every mocked test still passed). This test wires the SUT
+    // against a real FilePromptRegistry pointed at the actual checked-in prompts/ directory, so
+    // if PromptName drifts from the folder again, GetLatestAsync throws KeyNotFoundException
+    // inside ExtractAsync and the result comes back a failure instead of IsSuccess.
+    [Fact]
+    public async Task ExtractAsync_PromptNameResolvesAgainstTheRealPromptsDirectory()
+    {
+        var realRegistry = new Infrastructure.AI.Prompts.FilePromptRegistry(
+            RepoRoot.Combine("prompts"), NullLogger<Infrastructure.AI.Prompts.FilePromptRegistry>.Instance);
+        var realRenderer = new Infrastructure.AI.Prompts.ScribanPromptRenderer(NullLogger<Infrastructure.AI.Prompts.ScribanPromptRenderer>.Instance);
+        var sutWithRealRegistry = new LlmObligationExtractor(
+            _chatClientProvider.Object,
+            new StructuredOutputInvoker(NullLogger<StructuredOutputInvoker>.Instance),
+            realRegistry,
+            realRenderer,
+            _usageRecorder.Object,
+            NullLogger<LlmObligationExtractor>.Instance);
+        SetupChatClientResponse("""{ "obligations": [] }""");
+
+        var result = await sutWithRealRegistry.ExtractAsync("artifact.txt", "content", CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue(because: string.Join("; ", result.Errors));
     }
 }

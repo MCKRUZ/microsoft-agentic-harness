@@ -10,6 +10,7 @@ using Infrastructure.AI.Verification;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
+using Tests.Common;
 using Xunit;
 
 namespace Infrastructure.AI.Tests.Verification;
@@ -193,5 +194,30 @@ public sealed class LlmObligationVerifierTests
         _chatClient
             .Setup(c => c.GetResponseAsync(It.IsAny<IEnumerable<ChatMessage>>(), It.IsAny<ChatOptions?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new ChatResponse(new ChatMessage(ChatRole.Assistant, json)));
+    }
+
+    // Every other test in this file mocks IPromptRegistry, which cannot catch the sut's own
+    // PromptName constant drifting from the real prompts/{name}/ folder. This test wires the SUT
+    // against a real FilePromptRegistry pointed at the actual checked-in prompts/ directory, so
+    // if PromptName drifts from the folder again, GetLatestAsync throws KeyNotFoundException
+    // inside VerifyAsync and the verdict comes back VerifierError instead of a real check.
+    [Fact]
+    public async Task VerifyAsync_PromptNameResolvesAgainstTheRealPromptsDirectory()
+    {
+        var realRegistry = new Infrastructure.AI.Prompts.FilePromptRegistry(
+            RepoRoot.Combine("prompts"), NullLogger<Infrastructure.AI.Prompts.FilePromptRegistry>.Instance);
+        var realRenderer = new Infrastructure.AI.Prompts.ScribanPromptRenderer(NullLogger<Infrastructure.AI.Prompts.ScribanPromptRenderer>.Instance);
+        var sutWithRealRegistry = new LlmObligationVerifier(
+            _chatClientProvider.Object,
+            new StructuredOutputInvoker(NullLogger<StructuredOutputInvoker>.Instance),
+            realRegistry,
+            realRenderer,
+            _usageRecorder.Object,
+            NullLogger<LlmObligationVerifier>.Instance);
+        SetupChatClientResponse("""{ "status": "held", "explanation": "confirmed" }""");
+
+        var verdict = await sutWithRealRegistry.VerifyAsync(SampleObligation, "content", CancellationToken.None);
+
+        verdict.Outcome.Should().Be(VerificationOutcome.Held, because: verdict.Explanation);
     }
 }

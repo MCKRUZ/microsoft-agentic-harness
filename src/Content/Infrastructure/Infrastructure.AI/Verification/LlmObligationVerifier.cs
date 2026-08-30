@@ -28,7 +28,10 @@ namespace Infrastructure.AI.Verification;
 /// </remarks>
 public sealed class LlmObligationVerifier : IObligationVerifier
 {
-    private const string PromptName = "obligation-verifier-system";
+    // Must match the prompts/{name}/ folder exactly — FilePromptRegistry resolves by this
+    // literal string with no fallback, so a typo here fails silently into VerifierError on
+    // every host, undetectable by unit tests that mock IPromptRegistry.
+    private const string PromptName = "obligation-verifier";
     private const string EnvelopeTagName = "artifact_data";
     private const string MetricKey = "obligation_verification";
 
@@ -123,8 +126,7 @@ public sealed class LlmObligationVerifier : IObligationVerifier
         await _usageRecorder.RecordAsync(
             descriptor, new PromptUsageContext { MetricKey = MetricKey }, cancellationToken).ConfigureAwait(false);
 
-        var encodedBody = PromptTemplateRenderer.Render(
-            "{{body}}", new Dictionary<string, string?> { ["body"] = untrustedBody }, out _);
+        var encodedBody = System.Net.WebUtility.HtmlEncode(untrustedBody);
         var envelopedUser = PromptInjectionEnvelope.Wrap(EnvelopeTagName, nonce, encodedBody);
 
         var systemPrompt = PromptInjectionEnvelope.AppendDirective(

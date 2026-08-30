@@ -23,6 +23,19 @@ public sealed class ObligationValidatorTests
     [Theory]
     [InlineData("")]
     [InlineData("   ")]
+    public void Validate_EmptyOrWhitespaceWhere_RejectsAsEmptyWhere(string where)
+    {
+        var obligation = new Obligation(Where: where, ReliesOn: "relies on", Property: "property");
+
+        var result = _sut.Validate(obligation);
+
+        result.IsValid.Should().BeFalse();
+        result.RejectionReason.Should().Be(ObligationRejectionReason.EmptyWhere);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
     public void Validate_EmptyOrWhitespaceReliesOn_RejectsAsEmptyReliesOn(string reliesOn)
     {
         var obligation = new Obligation(Where: "where", ReliesOn: reliesOn, Property: "property");

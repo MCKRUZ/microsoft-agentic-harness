@@ -7,9 +7,11 @@ namespace Domain.Common.Config.AI;
 public class ObligationConfig
 {
     /// <summary>
-    /// Whether this host wires obligation-based analysis at all. Off by default: extraction and
-    /// per-obligation verification both call an LLM, so a host that never uses this should not pay
-    /// for the registrations on every cold start.
+    /// Whether obligation-based analysis actually runs. Off by default: extraction and
+    /// per-obligation verification both call an LLM, and a host that never uses this should not
+    /// pay for those calls on every eval case. This gates per-call execution — checked inside
+    /// <c>ObligationsHoldMetric.ScoreAsync</c> — not DI registration; the extractor, verifier,
+    /// and metric are registered unconditionally (cheap, lazy) regardless of this flag.
     /// </summary>
     public bool Enabled { get; set; }
 

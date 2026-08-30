@@ -98,6 +98,16 @@ public sealed class ObligationsHoldMetric : IEvalMetric
         var verdicts = await _runner.RunAsync(extraction.Value, output.Output, cancellationToken).ConfigureAwait(false);
         var broken = verdicts.Where(v => v.Outcome == VerificationOutcome.Broken).ToList();
 
+        // verdicts.Count reflects only what the runner actually dispatched — after
+        // ObligationValidator rejects malformed obligations and MaxObligations caps the rest —
+        // not extraction.Value.Count, the original extracted total. Reporting the gap keeps the
+        // reasoning honest about coverage rather than implying every extracted obligation was
+        // checked when some may have been silently rejected or dropped.
+        var notDispatched = extraction.Value.Count - verdicts.Count;
+        var coverageNote = notDispatched > 0
+            ? $" ({notDispatched} extracted obligation(s) not dispatched — rejected as malformed or over the configured cap.)"
+            : string.Empty;
+
         sw.Stop();
         if (broken.Count > 0)
         {
@@ -107,7 +117,7 @@ public sealed class ObligationsHoldMetric : IEvalMetric
                 MetricKey = Key,
                 Score = 0.0,
                 Verdict = Verdict.Fail,
-                Reasoning = $"{broken.Count}/{verdicts.Count} obligation(s) broken: {summary}",
+                Reasoning = $"{broken.Count}/{verdicts.Count} dispatched obligation(s) broken: {summary}{coverageNote}",
                 Duration = sw.Elapsed
             };
         }
@@ -117,7 +127,7 @@ public sealed class ObligationsHoldMetric : IEvalMetric
             MetricKey = Key,
             Score = 1.0,
             Verdict = Verdict.Pass,
-            Reasoning = $"All {verdicts.Count} obligation(s) held.",
+            Reasoning = $"All {verdicts.Count} dispatched obligation(s) held.{coverageNote}",
             Duration = sw.Elapsed
         };
     }

@@ -36,7 +36,10 @@ namespace Infrastructure.AI.Verification;
 /// </remarks>
 public sealed class LlmObligationExtractor : IObligationExtractor
 {
-    private const string PromptName = "obligation-extractor-system";
+    // Must match the prompts/{name}/ folder exactly — FilePromptRegistry resolves by this
+    // literal string with no fallback, so a typo here fails silently into Result.Fail on every
+    // host, undetectable by unit tests that mock IPromptRegistry.
+    private const string PromptName = "obligation-extractor";
     private const string EnvelopeTagName = "artifact_data";
     private const string MetricKey = "obligation_extraction";
 
@@ -100,10 +103,16 @@ public sealed class LlmObligationExtractor : IObligationExtractor
                 $"Obligation-extractor prompt '{PromptName}' is unavailable: {ex.Message}");
         }
 
+        // The path is untrusted the same as the content — both are caller-supplied per
+        // IObligationExtractor's contract ("e.g. a file path"), not guaranteed to come from a
+        // trusted caller — so both go inside the one envelope rather than leaving the path with
+        // only HTML-encoding while the content gets the full nonce-tagged defense.
+        var untrustedBody = $"Artifact path: {artifactPath}\n\n{artifactContent}";
+
         // Nonce generated before rendering so a collision refuses the call before any model is
         // touched — same ordering JudgeCallCore.TryBuildPrompt uses for the identical reason.
         var nonce = PromptInjectionEnvelope.NewNonce();
-        if (PromptInjectionEnvelope.HasCollision(nonce, artifactContent))
+        if (PromptInjectionEnvelope.HasCollision(nonce, untrustedBody))
         {
             _logger.LogWarning(
                 "Nonce collision against artifact content for '{Path}'; refusing to extract to avoid injection ambiguity.",
@@ -118,12 +127,8 @@ public sealed class LlmObligationExtractor : IObligationExtractor
         await _usageRecorder.RecordAsync(
             descriptor, new PromptUsageContext { MetricKey = MetricKey }, cancellationToken).ConfigureAwait(false);
 
-        var encodedPath = System.Net.WebUtility.HtmlEncode(artifactPath);
-        var encodedContent = PromptTemplateRenderer.Render(
-            "{{content}}", new Dictionary<string, string?> { ["content"] = artifactContent }, out _);
-        var envelopedUser =
-            $"Artifact path: {encodedPath}\n\n" +
-            PromptInjectionEnvelope.Wrap(EnvelopeTagName, nonce, encodedContent);
+        var encodedBody = System.Net.WebUtility.HtmlEncode(untrustedBody);
+        var envelopedUser = PromptInjectionEnvelope.Wrap(EnvelopeTagName, nonce, encodedBody);
 
         var systemPrompt = PromptInjectionEnvelope.AppendDirective(
             rendered.Body, EnvelopeTagName, nonce, "extract obligations from");
