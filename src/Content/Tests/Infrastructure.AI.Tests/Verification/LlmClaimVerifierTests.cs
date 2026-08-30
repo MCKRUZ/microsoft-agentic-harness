@@ -156,6 +156,19 @@ public sealed class LlmClaimVerifierTests
         verdict.Explanation.Should().NotBeNullOrWhiteSpace();
     }
 
+    // Same RespectNullableAnnotations gap, on Status this time: a model returning
+    // {"status":null,...} deserializes successfully despite `required`. Must fail safe to
+    // VerifierError, not throw an NRE out of .Trim().
+    [Fact]
+    public async Task VerifyAsync_NullStatus_ReturnsVerifierErrorNotThrow()
+    {
+        SetupChatClientResponse("""{ "status": null, "explanation": "whatever" }""");
+
+        var verdict = await _sut.VerifyAsync(SampleClaim, "content", CancellationToken.None);
+
+        verdict.Outcome.Should().Be(ClaimVerificationOutcome.VerifierError);
+    }
+
     [Fact]
     public async Task VerifyAsync_StatusIsCaseInsensitive()
     {

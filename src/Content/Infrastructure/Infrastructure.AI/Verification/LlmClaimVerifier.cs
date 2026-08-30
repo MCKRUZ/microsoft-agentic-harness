@@ -189,12 +189,22 @@ public sealed class LlmClaimVerifier : IClaimVerifier
             explanation = "Verifier did not provide an explanation.";
         }
 
-        return response.Status.Trim().ToLowerInvariant() switch
+        // Same gap applies to Status: `required` guarantees the constructor call, not the
+        // deserializer, so a model returning {"status":null,...} would NRE on .Trim() below without
+        // this guard. Treated as an unrecognized status (fail-safe VerifierError) rather than a
+        // distinct case — a missing status carries no more information than a nonsense one.
+        var status = response.Status;
+        if (string.IsNullOrWhiteSpace(status))
+        {
+            return LogAndFailUnrecognizedStatus(claim, status ?? "(null)");
+        }
+
+        return status.Trim().ToLowerInvariant() switch
         {
             HeldStatus => ClaimVerdict.Held(claim),
             BrokenStatus => ClaimVerdict.Broken(claim, explanation),
             UnverifiableStatus => ClaimVerdict.Unverifiable(claim, explanation),
-            _ => LogAndFailUnrecognizedStatus(claim, response.Status),
+            _ => LogAndFailUnrecognizedStatus(claim, status),
         };
     }
 
