@@ -4,6 +4,7 @@ using Application.AI.Common.Interfaces.AI;
 using Application.AI.Common.Interfaces.Verification;
 using Application.AI.Common.Prompts.Exceptions;
 using Application.AI.Common.Prompts.Interfaces;
+using Application.AI.Common.Services.Verification;
 using Application.AI.Common.StructuredOutput;
 using Domain.AI.Prompts;
 using Domain.AI.Verification;
@@ -25,6 +26,14 @@ namespace Infrastructure.AI.Verification;
 /// here, inside this method, rather than left to escape as an exception. <c>ObligationVerificationRunner</c>'s
 /// own catch only sees exceptions (a genuine infrastructure failure, or the per-verifier timeout) —
 /// it is not a substitute for this type handling its own soft failures.
+/// <para>
+/// Also re-validates via <see cref="ObligationValidator"/> at the top of <see cref="VerifyAsync"/>,
+/// even though <c>ObligationVerificationRunner</c> already filters rejected obligations before
+/// dispatch. <see cref="IObligationVerifier"/> is registered as a public DI service (a consumer can
+/// inject it directly, bypassing the runner entirely), so the runner's filter alone cannot be the
+/// only place a malformed obligation is caught — defense-in-depth here is what makes that claim
+/// actually hold regardless of caller.
+/// </para>
 /// </remarks>
 public sealed class LlmObligationVerifier : IObligationVerifier
 {
@@ -50,6 +59,7 @@ public sealed class LlmObligationVerifier : IObligationVerifier
     private readonly IPromptRegistry _promptRegistry;
     private readonly IPromptRenderer _promptRenderer;
     private readonly IPromptUsageRecorder _usageRecorder;
+    private readonly ObligationValidator _validator;
     private readonly ILogger<LlmObligationVerifier> _logger;
 
     /// <summary>Initializes a new instance of the <see cref="LlmObligationVerifier"/> class.</summary>
@@ -59,6 +69,7 @@ public sealed class LlmObligationVerifier : IObligationVerifier
         IPromptRegistry promptRegistry,
         IPromptRenderer promptRenderer,
         IPromptUsageRecorder usageRecorder,
+        ObligationValidator validator,
         ILogger<LlmObligationVerifier> logger)
     {
         ArgumentNullException.ThrowIfNull(chatClientProvider);
@@ -66,6 +77,7 @@ public sealed class LlmObligationVerifier : IObligationVerifier
         ArgumentNullException.ThrowIfNull(promptRegistry);
         ArgumentNullException.ThrowIfNull(promptRenderer);
         ArgumentNullException.ThrowIfNull(usageRecorder);
+        ArgumentNullException.ThrowIfNull(validator);
         ArgumentNullException.ThrowIfNull(logger);
 
         _chatClientProvider = chatClientProvider;
@@ -73,6 +85,7 @@ public sealed class LlmObligationVerifier : IObligationVerifier
         _promptRegistry = promptRegistry;
         _promptRenderer = promptRenderer;
         _usageRecorder = usageRecorder;
+        _validator = validator;
         _logger = logger;
     }
 
@@ -82,6 +95,17 @@ public sealed class LlmObligationVerifier : IObligationVerifier
     {
         ArgumentNullException.ThrowIfNull(obligation);
         ArgumentNullException.ThrowIfNull(artifactContent);
+
+        var validation = _validator.Validate(obligation);
+        if (!validation.IsValid)
+        {
+            _logger.LogWarning(
+                "Obligation rejected by ObligationValidator ({Reason}) at the verifier itself — this obligation " +
+                "bypassed ObligationVerificationRunner's own filter, which should be the only path here.",
+                validation.RejectionReason);
+            return VerificationVerdict.VerifierError(
+                obligation, $"Obligation rejected by ObligationValidator: {validation.RejectionReason}.");
+        }
 
         PromptDescriptor descriptor;
         try

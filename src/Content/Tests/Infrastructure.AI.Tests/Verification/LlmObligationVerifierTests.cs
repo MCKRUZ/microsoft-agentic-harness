@@ -2,6 +2,7 @@ using Application.AI.Common.Evaluation.Interfaces;
 using Application.AI.Common.Interfaces.AI;
 using Application.AI.Common.Prompts.Interfaces;
 using Application.AI.Common.Prompts.Models;
+using Application.AI.Common.Services.Verification;
 using Application.AI.Common.StructuredOutput;
 using Domain.AI.Prompts;
 using Domain.AI.Verification;
@@ -80,6 +81,7 @@ public sealed class LlmObligationVerifierTests
             _promptRegistry.Object,
             _promptRenderer.Object,
             _usageRecorder.Object,
+            new ObligationValidator(),
             NullLogger<LlmObligationVerifier>.Instance);
     }
 
@@ -128,6 +130,24 @@ public sealed class LlmObligationVerifierTests
 
         verdict.Outcome.Should().Be(VerificationOutcome.VerifierError);
         verdict.Holds.Should().BeTrue();
+    }
+
+    // Defense-in-depth: IObligationVerifier is registered as a public DI service, so a caller
+    // that injects it directly (bypassing ObligationVerificationRunner's own filter) must still
+    // get a rejected obligation caught here — and caught before any model call, not after a
+    // wasted round-trip.
+    [Fact]
+    public async Task VerifyAsync_RejectedObligation_ReturnsVerifierErrorWithoutCallingTheModel()
+    {
+        var rejected = new Obligation(Where: "same text", ReliesOn: "same text", Property: "property");
+
+        var verdict = await _sut.VerifyAsync(rejected, "content", CancellationToken.None);
+
+        verdict.Outcome.Should().Be(VerificationOutcome.VerifierError);
+        verdict.Holds.Should().BeTrue();
+        _chatClient.Verify(
+            c => c.GetResponseAsync(It.IsAny<IEnumerable<ChatMessage>>(), It.IsAny<ChatOptions?>(), It.IsAny<CancellationToken>()),
+            Times.Never);
     }
 
     [Fact]
@@ -213,6 +233,7 @@ public sealed class LlmObligationVerifierTests
             realRegistry,
             realRenderer,
             _usageRecorder.Object,
+            new ObligationValidator(),
             NullLogger<LlmObligationVerifier>.Instance);
         SetupChatClientResponse("""{ "status": "held", "explanation": "confirmed" }""");
 
