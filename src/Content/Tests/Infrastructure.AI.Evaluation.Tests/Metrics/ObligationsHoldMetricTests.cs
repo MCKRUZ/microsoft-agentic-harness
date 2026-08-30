@@ -133,6 +133,23 @@ public sealed class ObligationsHoldMetricTests
         extractor.VerifyNoOtherCalls();
     }
 
+    // IObligationExtractor.ExtractAsync throws ArgumentException on a blank artifactPath, and
+    // EvalCase.Id (passed as artifactPath) is required but not guaranteed non-blank. Proves the
+    // metric's own "never throws" promise holds even for a dataset with "id": "".
+    [Fact]
+    public async Task ScoreAsync_BlankCaseId_ReturnsWarnWithoutCallingExtractor()
+    {
+        var extractor = new Mock<IObligationExtractor>(MockBehavior.Strict);
+        var verifier = new FakeVerifier((o, _, _) => Task.FromResult(VerificationVerdict.Held(o)));
+        var sut = CreateSut(extractor.Object, verifier, enabled: true);
+        var blankIdCase = Case with { Id = "" };
+
+        var score = await sut.ScoreAsync(blankIdCase, SuccessfulOutput("content"), Spec, CancellationToken.None);
+
+        score.Verdict.Should().Be(Verdict.Warn);
+        extractor.VerifyNoOtherCalls();
+    }
+
     private static Mock<IObligationExtractor> MockExtractorReturning(Result<IReadOnlyList<Obligation>> result)
     {
         var mock = new Mock<IObligationExtractor>();

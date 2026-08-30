@@ -119,8 +119,11 @@ public sealed class LlmObligationVerifier : IObligationVerifier
         catch (Exception ex) when (ex is KeyNotFoundException or PromptRegistryUnavailableException)
         {
             _logger.LogError(ex, "Could not resolve obligation-verifier system prompt '{Prompt}'", PromptName);
+            // Full exception detail is logged above; never echoed into the returned reason —
+            // VerificationVerdict.Explanation is persisted (surfaced via MetricScore.Reasoning), and
+            // an unfiltered exception message has leaked sensitive detail elsewhere in this repo.
             return VerificationVerdict.VerifierError(
-                obligation, $"Obligation-verifier prompt '{PromptName}' is unavailable: {ex.Message}");
+                obligation, $"Obligation-verifier prompt '{PromptName}' is unavailable; see logs for details.");
         }
 
         // The obligation's own fields are themselves derived from untrusted artifact content (the
@@ -187,7 +190,7 @@ public sealed class LlmObligationVerifier : IObligationVerifier
         catch (Exception ex)
         {
             _logger.LogError(ex, "Obligation verification failed for obligation relying on '{ReliesOn}'", obligation.ReliesOn);
-            return VerificationVerdict.VerifierError(obligation, $"Obligation verification failed: {ex.Message}");
+            return VerificationVerdict.VerifierError(obligation, "Obligation verification failed; see logs for details.");
         }
     }
 

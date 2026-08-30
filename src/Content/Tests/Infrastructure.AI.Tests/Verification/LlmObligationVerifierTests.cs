@@ -27,7 +27,7 @@ namespace Infrastructure.AI.Tests.Verification;
 /// </summary>
 public sealed class LlmObligationVerifierTests
 {
-    private const string PromptName = "obligation-verifier-system";
+    private const string PromptName = "obligation-verifier";
 
     private static readonly Obligation SampleObligation =
         new(Where: "calls Foo()", ReliesOn: "def Foo() at line 40", Property: "Foo is defined");

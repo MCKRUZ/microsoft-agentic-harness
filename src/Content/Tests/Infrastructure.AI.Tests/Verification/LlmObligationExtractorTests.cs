@@ -25,7 +25,7 @@ namespace Infrastructure.AI.Tests.Verification;
 /// </summary>
 public sealed class LlmObligationExtractorTests
 {
-    private const string PromptName = "obligation-extractor-system";
+    private const string PromptName = "obligation-extractor";
 
     private readonly Mock<IJudgeChatClientProvider> _chatClientProvider = new();
     private readonly Mock<IChatClient> _chatClient = new();

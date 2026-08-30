@@ -95,24 +95,35 @@ public sealed class ObligationVerificationRunner
         var tasks = bounded.Select(async obligation =>
         {
             await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            // Linked, not a bare WaitAsync race: passing timeoutCts.Token (not cancellationToken)
+            // into VerifyAsync means a per-verifier timeout actually cancels the verifier's own
+            // in-flight work — its chat-client call included — instead of merely racing it while
+            // the abandoned call keeps running in the background and still occupies a concurrency
+            // slot in spirit even after this method has released its semaphore permit.
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutCts.CancelAfter(config.PerVerifierTimeout);
             try
             {
-                return await _verifier.VerifyAsync(obligation, artifactContent, cancellationToken)
-                    .WaitAsync(config.PerVerifierTimeout, cancellationToken)
-                    .ConfigureAwait(false);
+                return await _verifier.VerifyAsync(obligation, artifactContent, timeoutCts.Token).ConfigureAwait(false);
             }
             catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
             {
-                // Catches TimeoutException (WaitAsync's timeout signal — not an OperationCanceledException
-                // tied to cancellationToken) and every other exception a verifier can throw. An
-                // OperationCanceledException that DOES match cancellationToken is let through: the whole
-                // run was cancelled, not just this one obligation, and there is nothing fail-safe to report.
+                // The `when` filter already guarantees that if ex is an OperationCanceledException,
+                // cancellationToken (the outer, whole-run token) was NOT the source — so within this
+                // catch, an OperationCanceledException can only mean timeoutCts's own CancelAfter fired.
+                // An OperationCanceledException that DOES match cancellationToken is let through: the
+                // whole run was cancelled, not just this one obligation, and there is nothing fail-safe
+                // to report.
+                var timedOut = ex is OperationCanceledException;
                 _logger.LogWarning(ex,
                     "Obligation verifier failed for the obligation relying on '{ReliesOn}' — reporting " +
                     "VerifierError (fail-safe) rather than propagating.", obligation.ReliesOn);
-                var reason = ex is TimeoutException
+                // Full exception detail is logged above; never echoed into the returned reason —
+                // VerificationVerdict.Explanation is persisted (surfaced via MetricScore.Reasoning),
+                // and an unfiltered exception message has leaked sensitive detail elsewhere in this repo.
+                var reason = timedOut
                     ? $"Verifier exceeded the {config.PerVerifierTimeout} timeout."
-                    : ex.Message;
+                    : "Obligation verifier failed; see logs for details.";
                 return VerificationVerdict.VerifierError(obligation, reason);
             }
             finally

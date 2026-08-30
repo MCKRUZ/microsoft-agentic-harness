@@ -73,6 +73,16 @@ public sealed class ObligationsHoldMetric : IEvalMetric
             return Warn(sw, "No output to extract obligations from.");
         }
 
+        // IObligationExtractor.ExtractAsync throws ArgumentException on a blank artifactPath.
+        // EvalCase.Id is required but that only guarantees it's set, not non-blank — a dataset
+        // supplying "id": "" would otherwise throw out of a metric whose own remarks promise it
+        // never does.
+        if (string.IsNullOrWhiteSpace(@case.Id))
+        {
+            sw.Stop();
+            return Warn(sw, "EvalCase.Id is blank; cannot extract obligations without an artifact identifier.");
+        }
+
         var extraction = await _extractor.ExtractAsync(@case.Id, output.Output, cancellationToken).ConfigureAwait(false);
         if (!extraction.IsSuccess || extraction.Value is null)
         {

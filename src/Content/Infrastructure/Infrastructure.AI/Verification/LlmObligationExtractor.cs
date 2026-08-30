@@ -99,8 +99,11 @@ public sealed class LlmObligationExtractor : IObligationExtractor
         catch (Exception ex) when (ex is KeyNotFoundException or PromptRegistryUnavailableException)
         {
             _logger.LogError(ex, "Could not resolve obligation-extractor system prompt '{Prompt}'", PromptName);
+            // Full exception detail is logged above; never echoed into the returned message — a
+            // Result.Fail reason can end up persisted (e.g. via MetricScore.Reasoning), and an
+            // unfiltered exception message has leaked sensitive detail elsewhere in this repo.
             return Result<IReadOnlyList<Obligation>>.Fail(
-                $"Obligation-extractor prompt '{PromptName}' is unavailable: {ex.Message}");
+                $"Obligation-extractor prompt '{PromptName}' is unavailable; see logs for details.");
         }
 
         // The path is untrusted the same as the content — both are caller-supplied per
@@ -168,7 +171,7 @@ public sealed class LlmObligationExtractor : IObligationExtractor
         catch (Exception ex)
         {
             _logger.LogError(ex, "Obligation extraction failed for '{Path}'", artifactPath);
-            return Result<IReadOnlyList<Obligation>>.Fail($"Obligation extraction failed: {ex.Message}");
+            return Result<IReadOnlyList<Obligation>>.Fail("Obligation extraction failed; see logs for details.");
         }
     }
 }
