@@ -64,4 +64,30 @@ public sealed class ConfigSurfaceConstraint
         MaxAttemptsField => value >= MinMaxAttempts && value <= MaxMaxAttempts,
         _ => false
     };
+
+    // The dotted path, from AppConfig's own root, that MaxAttemptsField actually lives at
+    // (Domain.Common.Config.AI.Resilience.RetryConfig.MaxAttempts, nested AppConfig.AI.Resilience.Retry).
+    // Hand-typed here rather than derived from AllowedFields, matching that set's own comment: this
+    // constraint's job is a fixed, minimal, code-owned allowlist, not a general-purpose surface→path
+    // mapper. A second admitted field adds one more entry to this switch, not a new mechanism.
+    private static readonly IReadOnlyDictionary<string, string> ConfigPaths =
+        new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            [MaxAttemptsField] = "AI.Resilience.Retry.MaxAttempts"
+        };
+
+    /// <summary>
+    /// Resolves the dotted path, from <c>AppConfig</c>'s own root, that a suggestion's
+    /// <paramref name="surface"/>/<paramref name="field"/> pair actually reads its live value from —
+    /// e.g. <c>"AI.Resilience.Retry.MaxAttempts"</c> for <see cref="HarnessSurface.ToolErrorRetryLimit"/>/<see cref="MaxAttemptsField"/>.
+    /// Used to build the <c>"config:"</c>-scheme <c>Claim.Location</c> a
+    /// <see cref="Domain.AI.SkillTraining.HarnessChangeSuggestion.CurrentValue"/> claim is checked
+    /// against (#319). Returns <see langword="null"/> for any surface/field this constraint does not
+    /// govern — callers must check <see cref="GovernsSurface"/>/<see cref="IsFieldAllowed"/> first,
+    /// exactly as <see cref="IsWithinBounds"/> already requires.
+    /// </summary>
+    /// <param name="surface">The suggestion's target surface.</param>
+    /// <param name="field">The suggestion's target field (must satisfy <see cref="IsFieldAllowed"/>).</param>
+    public string? ResolveConfigPath(HarnessSurface surface, string field) =>
+        GovernsSurface(surface) && ConfigPaths.TryGetValue(field, out var path) ? path : null;
 }

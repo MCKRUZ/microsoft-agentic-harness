@@ -107,18 +107,42 @@ public sealed class PolicyGate : IChangeProposalGate
             return GateResult.Pass($"{policies.Count} policy(ies) evaluated, no findings");
         }
 
-        var blocking = allFindings.Where(f => f.Severity >= threshold).ToList();
+        // A finding with RequiresVerification set carries a model-assigned severity that has not
+        // been independently confirmed against the artifact it is about — it is excluded from the
+        // severity/threshold comparison entirely (neither blocking nor "passing below threshold";
+        // simply not counted), unless the SAME finding also sets Blocking, meaning a verifier already
+        // confirmed it. Every existing policy leaves both flags at their false default, so this is
+        // byte-identical to the prior `f.Severity >= threshold` check for every finding in the repo
+        // today. See PolicyFinding.RequiresVerification's remarks.
+        var blocking = allFindings.Where(f => f.Blocking || (f.Severity >= threshold && !f.RequiresVerification)).ToList();
         if (blocking.Count > 0)
         {
             var summary = string.Join("; ", blocking.Take(5).Select(f =>
                 $"[{f.Severity} {f.PolicyKey}] {f.Message}"));
             var more = blocking.Count > 5 ? $" (+{blocking.Count - 5} more)" : string.Empty;
+            // Not "at or above {threshold}" — a Blocking=true finding can be blocking regardless of
+            // its own severity (see PolicyFinding.Blocking's remarks), so that phrase would be false
+            // for it. Each finding's actual severity is already visible in the summary above.
             return GateResult.Fail(
-                $"{blocking.Count} blocking finding(s) at or above {threshold}: {summary}{more}");
+                $"{blocking.Count} blocking finding(s): {summary}{more}");
         }
 
+        // Every non-blocking finding is either genuinely below threshold, or excluded because it
+        // WOULD have blocked (severity >= threshold) but its severity has not been independently
+        // verified — the two are not the same claim, and collapsing them into "below threshold"
+        // would misdescribe an unconfirmed Critical finding as one the gate judged too minor to
+        // matter. Not `!f.Blocking`: control only reaches this line when blocking.Count == 0, which
+        // already guarantees no finding here has Blocking == true, so that conjunct would be dead
+        // weight. A RequiresVerification finding whose severity is itself below threshold was never
+        // going to block either way — it belongs in "below threshold", not "excluded", since
+        // confirming it would not have changed anything.
+        var excludedPendingVerification = allFindings.Count(f => f.RequiresVerification && f.Severity >= threshold);
+        var belowThreshold = allFindings.Count - excludedPendingVerification;
+        var excludedSuffix = excludedPendingVerification > 0
+            ? $", {excludedPendingVerification} excluded pending verification"
+            : string.Empty;
         return GateResult.Pass(
-            $"{policies.Count} policy(ies) evaluated, {allFindings.Count} finding(s) below {threshold} threshold");
+            $"{policies.Count} policy(ies) evaluated, {belowThreshold} finding(s) below {threshold} threshold{excludedSuffix}");
     }
 
     private static PolicyFindingSeverity ParseThreshold(string raw)

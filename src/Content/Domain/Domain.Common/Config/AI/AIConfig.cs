@@ -248,6 +248,13 @@ public class AIConfig
     /// </summary>
     public ObligationConfig Obligations { get; set; } = new();
 
+    /// <summary>
+    /// Artifact-grounded claim verification configuration (#319): checking a high-consequence claim
+    /// against the artifact it cites. Off by default — see
+    /// <see cref="ClaimVerificationConfig.Enabled"/>.
+    /// </summary>
+    public ClaimVerificationConfig ClaimVerification { get; set; } = new();
+
     /// <summary>Agent Governance Toolkit configuration.</summary>
     public GovernanceConfig Governance { get; init; } = new();
 

@@ -65,4 +65,42 @@ public class ConfigSurfaceConstraintTests
         ConfigSurfaceConstraint.MinMaxAttempts.Should().BeLessThan(ConfigSurfaceConstraint.MaxMaxAttempts);
         ConfigSurfaceConstraint.MinMaxAttempts.Should().BeGreaterThanOrEqualTo(1);
     }
+
+    // #319 first consumer: the dotted path a "config:" claim's Location is built from.
+    [Fact]
+    public void ResolveConfigPath_GovernedSurfaceAndField_ReturnsTheLiveConfigPath()
+        => _sut.ResolveConfigPath(HarnessSurface.ToolErrorRetryLimit, ConfigSurfaceConstraint.MaxAttemptsField)
+            .Should().Be("AI.Resilience.Retry.MaxAttempts");
+
+    [Fact]
+    public void ResolveConfigPath_UngovernedSurface_ReturnsNull()
+        => _sut.ResolveConfigPath(HarnessSurface.SkillDocument, ConfigSurfaceConstraint.MaxAttemptsField)
+            .Should().BeNull();
+
+    [Fact]
+    public void ResolveConfigPath_GovernedSurfaceUnknownField_ReturnsNull()
+        => _sut.ResolveConfigPath(HarnessSurface.ToolErrorRetryLimit, "BaseDelaySeconds")
+            .Should().BeNull();
+
+    // Reflection, not a hand-typed field list: ConfigSurfaceConstraint hand-maintains AllowedFields
+    // (which field a suggestion may target) and ConfigPaths (where that field's live value lives)
+    // as two independent structures — nothing in the compiler ties them together. A field added to
+    // one and forgotten in the other means ResolveConfigPath silently returns null for a governed,
+    // allowed field, and AnnotateWithClaimVerificationAsync treats that as "nothing to verify
+    // against" — a silent, permanent skip with no error or warning. This fails the moment the two
+    // sets diverge, regardless of which field name is added.
+    [Fact]
+    public void EveryAllowedField_HasAResolvableConfigPath()
+    {
+        var allowedFieldsField = typeof(ConfigSurfaceConstraint).GetField(
+            "AllowedFields", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+        var allowedFields = (IReadOnlySet<string>)allowedFieldsField!.GetValue(null)!;
+
+        allowedFields.Should().NotBeEmpty();
+        foreach (var field in allowedFields)
+        {
+            _sut.ResolveConfigPath(_sut.GovernedSurface, field).Should().NotBeNull(
+                because: $"'{field}' is in AllowedFields but has no matching ConfigPaths entry");
+        }
+    }
 }

@@ -93,6 +93,12 @@ public static class DependencyInjection
         services.AddObligationVerification();
         services.AddEvalMetric<ObligationsHoldMetric>("obligations_hold");
 
+        // Artifact-grounded claim verification (#319) — factored into AddClaimVerification
+        // (DependencyInjection.ClaimVerification.cs), same reasoning as AddObligationVerification
+        // above. Overrides the fail-safe NotConfiguredClaimVerifier default every host registers via
+        // AddApplicationAIDependencies → AddClaimVerificationDependencies.
+        services.AddClaimVerification();
+
         // NOTE: RAG metrics resolve their prompts via IPromptRegistry; the registry is
         // wired by the composition root through AddPromptRegistry(...) so the eval
         // framework stays decoupled from the prompts root path.

@@ -1,10 +1,13 @@
 using Application.AI.Common.CQRS.SkillTraining.TrainSkill;
 using Application.AI.Common.Interfaces.SkillTraining;
+using Application.AI.Common.Services.ClaimVerification;
 using Application.AI.Common.Services.SkillTraining;
 using Domain.AI.SkillTraining;
+using Domain.Common.Config;
 using MediatR;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using Presentation.ConsoleUI.Common.Helpers;
 using Spectre.Console;
 
@@ -89,15 +92,31 @@ public sealed class SkillTrainingExample
         var gate = new GateEvaluator();
         var fence = new HarnessPatchValidator(new EditableSurfaceRegistry());
         var suggester = new NoHarnessChangeSuggester();
-        var suggestionValidator = new HarnessChangeSuggestionValidator(new ConfigSurfaceConstraint());
+        var configSurfaceConstraint = new ConfigSurfaceConstraint();
+        var suggestionValidator = new HarnessChangeSuggestionValidator(configSurfaceConstraint);
         var store = new InMemorySkillTrainingCheckpointStore();
         var runner = new DeterministicRolloutRunner();
         var proposer = new DeterministicProposer();
         ILogger<TrainSkillCommandHandler> logger = NullLogger<TrainSkillCommandHandler>.Instance;
 
+        // ClaimVerificationRunner needs an IServiceProvider for its keyed-reader lookup and an
+        // IOptionsMonitor<AppConfig> for its parallelism/timeout config. This demo wires everything
+        // else by hand with no DI container at all, so a throwaway ServiceCollection just for these
+        // two would be an undisposed IDisposable with nothing else to justify pulling in a whole
+        // container — these two trivial, non-disposable stand-ins match the file's own style instead.
+        // NoHarnessChangeSuggester never actually produces a suggestion, so this runner is never
+        // invoked at runtime in this demo — it exists here only so the handler's dependency graph is
+        // genuinely satisfiable.
+        var claimVerificationRunner = new ClaimVerificationRunner(
+            new RuleBasedClaimConsequenceClassifier(),
+            new NotConfiguredClaimVerifier(NullLogger<NotConfiguredClaimVerifier>.Instance),
+            new NoReaderServiceProvider(),
+            new StaticOptionsMonitor<AppConfig>(new AppConfig()),
+            NullLogger<ClaimVerificationRunner>.Instance);
+
         return new TrainSkillCommandHandler(
             runner, proposer, aggregator, selector, applier, gate, fence,
-            suggester, suggestionValidator, store,
+            suggester, suggestionValidator, configSurfaceConstraint, claimVerificationRunner, store,
             new NoOpMediator(), TimeProvider.System, logger);
     }
 
@@ -161,5 +180,22 @@ public sealed class SkillTrainingExample
         public Task Publish(object notification, CancellationToken ct = default) => Task.CompletedTask;
         public Task Publish<TNotification>(TNotification notification, CancellationToken ct = default) where TNotification : INotification
             => Task.CompletedTask;
+    }
+
+    // ClaimVerificationRunner's IServiceProvider dependency exists for keyed ILocatedArtifactReader
+    // lookup; this demo never registers a reader (NoHarnessChangeSuggester never produces a
+    // suggestion, so no claim is ever built), so every lookup correctly finding nothing is exactly
+    // the right behavior — no container needed to express that.
+    private sealed class NoReaderServiceProvider : IServiceProvider
+    {
+        public object? GetService(Type serviceType) => null;
+    }
+
+    private sealed class StaticOptionsMonitor<T> : IOptionsMonitor<T>
+    {
+        public StaticOptionsMonitor(T value) { CurrentValue = value; }
+        public T CurrentValue { get; }
+        public T Get(string? name) => CurrentValue;
+        public IDisposable? OnChange(Action<T, string?> listener) => null;
     }
 }

@@ -278,6 +278,11 @@ public static class DependencyInjection
         // Skill-training subsystem (PatchApplier, GateEvaluator, schedulers, checkpoint store, ...)
         services.AddSkillTrainingDependencies();
 
+        // Artifact-grounded claim verification (#319) — core, judge-independent components with a
+        // fail-safe default verifier. See ClaimVerificationDependencyInjection's remarks for why this
+        // is registered unconditionally rather than gated behind the eval-only extension.
+        services.AddClaimVerificationDependencies();
+
         // Harmonic memory representation seams (Memora port) — fail-fast NotConfigured defaults, inert
         // until AppConfig:AI:HarmonicMemory:Mode is raised above Off.
         services.AddHarmonicMemoryDependencies();

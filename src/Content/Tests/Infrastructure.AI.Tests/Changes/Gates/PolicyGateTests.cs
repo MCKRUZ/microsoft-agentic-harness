@@ -25,11 +25,15 @@ public sealed class PolicyGateTests
             => throw new InvalidOperationException("policy exploded");
     }
 
-    private static PolicyFinding Finding(string policyKey, PolicyFindingSeverity sev, string msg = "issue") => new()
+    private static PolicyFinding Finding(
+        string policyKey, PolicyFindingSeverity sev, string msg = "issue",
+        bool blocking = false, bool requiresVerification = false) => new()
     {
         PolicyKey = policyKey,
         Severity = sev,
-        Message = msg
+        Message = msg,
+        Blocking = blocking,
+        RequiresVerification = requiresVerification
     };
 
     private static (PolicyGate Gate, string TempDir) Build(params IChangeProposalPolicy[] policies)
@@ -237,6 +241,119 @@ public sealed class PolicyGateTests
 
             result.Action.Should().Be(GateAction.Fail);
             result.Reason.Should().Contain("nit");
+        }
+        finally
+        {
+            try { Directory.Delete(dir, recursive: true); } catch { }
+        }
+    }
+
+    // THE MOST IMPORTANT mutation in Package F (#319): a model-assigned Critical finding that has
+    // NOT been independently confirmed must not block on severity alone. Deleting the
+    // `&& !f.RequiresVerification` clause makes this fail (the gate would block again).
+    [Fact]
+    public async Task EvaluateAsync_CriticalFindingRequiresVerificationNotConfirmed_DoesNotBlock()
+    {
+        var (sut, dir) = Build(new ScriptedPolicy("claim-checker",
+            Finding("claim-checker", PolicyFindingSeverity.Critical, "unconfirmed", requiresVerification: true)));
+        try
+        {
+            var result = await sut.EvaluateAsync(TestProposals.NewProposal(), Ctx(), CancellationToken.None);
+
+            result.Action.Should().Be(GateAction.Pass);
+            // Not "below threshold" — Critical IS at/above every real threshold. The Reason must say
+            // it was excluded pending verification, not misdescribe it as too minor to matter.
+            result.Reason.Should().Contain("excluded pending verification");
+            result.Reason.Should().NotContain("1 finding(s) below",
+                because: "an unconfirmed Critical finding was excluded, not judged below threshold");
+        }
+        finally
+        {
+            try { Directory.Delete(dir, recursive: true); } catch { }
+        }
+    }
+
+    // The control for the test above: a RequiresVerification finding whose severity was NEVER
+    // going to block (Info, well under the default High threshold) belongs in "below threshold" —
+    // confirming it would not have changed the outcome, so calling it "excluded pending
+    // verification" would overstate its significance.
+    [Fact]
+    public async Task EvaluateAsync_LowSeverityRequiresVerificationFinding_CountedAsBelowThresholdNotExcluded()
+    {
+        var (sut, dir) = Build(new ScriptedPolicy("claim-checker",
+            Finding("claim-checker", PolicyFindingSeverity.Info, "unconfirmed but minor", requiresVerification: true)));
+        try
+        {
+            var result = await sut.EvaluateAsync(TestProposals.NewProposal(), Ctx(), CancellationToken.None);
+
+            result.Action.Should().Be(GateAction.Pass);
+            result.Reason.Should().Contain("1 finding(s) below");
+            result.Reason.Should().NotContain("excluded pending verification");
+        }
+        finally
+        {
+            try { Directory.Delete(dir, recursive: true); } catch { }
+        }
+    }
+
+    // The control for the mutation above: the SAME finding, but a verifier has since confirmed it
+    // and the policy re-emits it with Blocking set — it must block regardless of RequiresVerification.
+    [Fact]
+    public async Task EvaluateAsync_RequiresVerificationFindingConfirmedViaBlocking_StillBlocks()
+    {
+        var (sut, dir) = Build(new ScriptedPolicy("claim-checker",
+            Finding("claim-checker", PolicyFindingSeverity.Critical, "confirmed broken",
+                blocking: true, requiresVerification: true)));
+        try
+        {
+            var result = await sut.EvaluateAsync(TestProposals.NewProposal(), Ctx(), CancellationToken.None);
+
+            result.Action.Should().Be(GateAction.Fail);
+            result.Reason.Should().Contain("confirmed broken");
+        }
+        finally
+        {
+            try { Directory.Delete(dir, recursive: true); } catch { }
+        }
+    }
+
+    // Blocking wins independent of severity — an Info-severity finding a policy has independently
+    // confirmed as a hard stop must still block, even though Info never crosses any threshold.
+    [Fact]
+    public async Task EvaluateAsync_BlockingFindingBelowSeverityThreshold_StillBlocks()
+    {
+        var (sut, dir) = Build(new ScriptedPolicy("claim-checker",
+            Finding("claim-checker", PolicyFindingSeverity.Info, "hard stop", blocking: true)));
+        try
+        {
+            var result = await sut.EvaluateAsync(TestProposals.NewProposal(), Ctx(), CancellationToken.None);
+
+            result.Action.Should().Be(GateAction.Fail);
+            result.Reason.Should().Contain("hard stop");
+            // Must not claim the finding was "at or above" threshold — it wasn't; Blocking is what
+            // forced the fail, and the message must not misdescribe why.
+            result.Reason.Should().NotContain("at or above");
+        }
+        finally
+        {
+            try { Directory.Delete(dir, recursive: true); } catch { }
+        }
+    }
+
+    // Regression pin (#319): every finding above this line in the file leaves Blocking and
+    // RequiresVerification at their false default, and every one of those tests still asserts the
+    // exact pre-#319 behavior — proving `f.Blocking || (f.Severity >= threshold && !f.RequiresVerification)`
+    // is byte-identical to the old `f.Severity >= threshold` whenever both new flags are unset.
+    [Fact]
+    public async Task EvaluateAsync_BothNewFlagsDefaultFalse_BehavesExactlyLikeSeverityThresholdAlone()
+    {
+        var (sut, dir) = Build(new ScriptedPolicy("checkov", Finding("checkov", PolicyFindingSeverity.High, "unflagged")));
+        try
+        {
+            var result = await sut.EvaluateAsync(TestProposals.NewProposal(), Ctx(), CancellationToken.None);
+
+            result.Action.Should().Be(GateAction.Fail);
+            result.Reason.Should().Contain("unflagged");
         }
         finally
         {

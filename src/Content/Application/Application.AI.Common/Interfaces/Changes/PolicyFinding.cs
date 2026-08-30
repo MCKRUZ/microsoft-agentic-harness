@@ -41,4 +41,24 @@ public sealed record PolicyFinding
     /// fix to the originating agent.
     /// </summary>
     public string? Remediation { get; init; }
+
+    /// <summary>
+    /// When <see langword="true"/>, this finding blocks the gate regardless of
+    /// <see cref="Severity"/> or the configured threshold. Defaults to <see langword="false"/>, so
+    /// every existing policy is unaffected by this field's mere existence. A policy sets this only
+    /// for a finding it has independently confirmed, not merely suspected — see
+    /// <see cref="RequiresVerification"/> for the complementary case.
+    /// </summary>
+    public bool Blocking { get; init; }
+
+    /// <summary>
+    /// When <see langword="true"/>, this finding's own <see cref="Severity"/> is not trusted to
+    /// block the gate on its own — the severity was assigned by a model, not confirmed against the
+    /// artifact the finding is about. <c>PolicyGate</c> excludes such a finding from its severity
+    /// comparison entirely (it neither blocks nor "passes below threshold"; it is simply not counted
+    /// toward the gate decision) unless a verifier has independently confirmed it and the policy
+    /// re-emits it with <see cref="Blocking"/> set instead. Defaults to <see langword="false"/>, so
+    /// every existing policy's findings gate exactly as they always have.
+    /// </summary>
+    public bool RequiresVerification { get; init; }
 }

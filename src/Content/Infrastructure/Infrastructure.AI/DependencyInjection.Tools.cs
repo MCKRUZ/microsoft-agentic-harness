@@ -72,6 +72,20 @@ public static partial class DependencyInjection
         services.AddKeyedSingleton<ITool>(FileSystemTool.ToolName, (sp, _) =>
             new FileSystemTool(sp.GetRequiredService<IFileSystemService>()));
 
+        // ILocatedArtifactReader implementations (#319 claim verification) — keyed by location
+        // scheme, unconditional (neither depends on a judge model, unlike ClaimVerificationRunner's
+        // eval-gated IClaimVerifier). Registered here, not in Infrastructure.AI.Evaluation, because
+        // gating a plain file read or config lookup behind AddClaimVerification() would be scope
+        // creep — see ClaimVerificationDependencyInjection's remarks.
+        services.AddKeyedSingleton<Application.AI.Common.Interfaces.ClaimVerification.ILocatedArtifactReader>(
+            Domain.AI.ClaimVerification.ClaimLocationScheme.File, (sp, _) => new Verification.Readers.FileSystemLocatedArtifactReader(
+                sp.GetRequiredService<IFileSystemService>(),
+                sp.GetRequiredService<ILogger<Verification.Readers.FileSystemLocatedArtifactReader>>()));
+        services.AddKeyedSingleton<Application.AI.Common.Interfaces.ClaimVerification.ILocatedArtifactReader>(
+            Domain.AI.ClaimVerification.ClaimLocationScheme.Config, (sp, _) => new Verification.Readers.ConfigSnapshotLocatedArtifactReader(
+                sp.GetRequiredService<IOptionsMonitor<AppConfig>>(),
+                sp.GetRequiredService<ILogger<Verification.Readers.ConfigSnapshotLocatedArtifactReader>>()));
+
         // Restricted search tool — sandboxed read-only shell commands for the proposer.
         // Always registered; surfaced to the proposer only when EnableShellTool is true.
         services.AddKeyedSingleton<ITool>(RestrictedSearchTool.ToolName, (sp, _) =>

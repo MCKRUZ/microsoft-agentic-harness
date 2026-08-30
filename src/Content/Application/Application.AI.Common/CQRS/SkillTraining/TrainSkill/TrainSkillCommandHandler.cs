@@ -2,8 +2,10 @@ using System.Security.Cryptography;
 using System.Text;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.SkillTraining;
+using Application.AI.Common.Services.ClaimVerification;
 using Application.AI.Common.Services.SkillTraining;
 using Application.AI.Common.Services.SkillTraining.Schedulers;
+using Domain.AI.ClaimVerification;
 using Domain.AI.SkillTraining;
 using Domain.Common;
 using MediatR;
@@ -41,6 +43,8 @@ public sealed class TrainSkillCommandHandler
     private readonly HarnessPatchValidator _fence;
     private readonly IHarnessChangeSuggester _suggester;
     private readonly HarnessChangeSuggestionValidator _suggestionValidator;
+    private readonly ConfigSurfaceConstraint _configSurfaceConstraint;
+    private readonly ClaimVerificationRunner _claimVerificationRunner;
     private readonly ISkillTrainingCheckpointStore _checkpointStore;
     private readonly IMediator _mediator;
     private readonly TimeProvider _time;
@@ -65,6 +69,8 @@ public sealed class TrainSkillCommandHandler
         HarnessPatchValidator fence,
         IHarnessChangeSuggester suggester,
         HarnessChangeSuggestionValidator suggestionValidator,
+        ConfigSurfaceConstraint configSurfaceConstraint,
+        ClaimVerificationRunner claimVerificationRunner,
         ISkillTrainingCheckpointStore checkpointStore,
         IMediator mediator,
         TimeProvider time,
@@ -80,6 +86,8 @@ public sealed class TrainSkillCommandHandler
         ArgumentNullException.ThrowIfNull(fence);
         ArgumentNullException.ThrowIfNull(suggester);
         ArgumentNullException.ThrowIfNull(suggestionValidator);
+        ArgumentNullException.ThrowIfNull(configSurfaceConstraint);
+        ArgumentNullException.ThrowIfNull(claimVerificationRunner);
         ArgumentNullException.ThrowIfNull(checkpointStore);
         ArgumentNullException.ThrowIfNull(mediator);
         ArgumentNullException.ThrowIfNull(time);
@@ -94,6 +102,8 @@ public sealed class TrainSkillCommandHandler
         _fence = fence;
         _suggester = suggester;
         _suggestionValidator = suggestionValidator;
+        _configSurfaceConstraint = configSurfaceConstraint;
+        _claimVerificationRunner = claimVerificationRunner;
         _checkpointStore = checkpointStore;
         _mediator = mediator;
         _time = time;
@@ -512,7 +522,7 @@ public sealed class TrainSkillCommandHandler
             }
         }
 
-        return accepted;
+        return await AnnotateWithClaimVerificationAsync(accepted, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -546,6 +556,107 @@ public sealed class TrainSkillCommandHandler
         SafeAudit(skillId, "skill_training.harness_change_rejected",
             $"deny: {suggestion.Surface} reason {validation.RejectionReason}", finalStep);
         return null;
+    }
+
+    /// <summary>
+    /// Checks every accepted suggestion's claimed <see cref="HarnessChangeSuggestion.CurrentValue"/>
+    /// against the live config it names (#319's first consumer), in a single batched
+    /// <see cref="ClaimVerificationRunner.RunAsync"/> call rather than one round-trip per suggestion
+    /// — the runner already dispatches its whole input concurrently, bounded by
+    /// <c>ClaimVerificationConfig.MaxParallelVerifiers</c>, so verifying suggestions one at a time
+    /// would pay N sequential round-trips for work it is built to parallelize. A claim that survives
+    /// verification (held, or genuinely unverifiable/erroring — fail-safe) surfaces its suggestion
+    /// unchanged; a claim the artifact contradicts is never dropped, only annotated — the same
+    /// "revise, don't delete" rule <see cref="ClaimVerdict"/>'s factories apply to the claim itself,
+    /// extended here to the suggestion it backs. Never throws: a faulty or unconfigured verifier
+    /// must not fail an already-completed run, matching <see cref="EmitHarnessChangeSuggestionsAsync"/>'s
+    /// own tolerance for a faulty suggester.
+    /// </summary>
+    private async Task<IReadOnlyList<HarnessChangeSuggestion>> AnnotateWithClaimVerificationAsync(
+        IReadOnlyList<HarnessChangeSuggestion> suggestions, CancellationToken cancellationToken)
+    {
+        // Positional, not suggestion-keyed: HarnessChangeSuggestion is a record with no identity
+        // field, so two accepted suggestions could compare equal — index correlation is the only
+        // reliable way to zip a verdict back to the suggestion that produced its claim.
+        var claims = new Claim?[suggestions.Count];
+        for (var i = 0; i < suggestions.Count; i++)
+        {
+            var configPath = _configSurfaceConstraint.ResolveConfigPath(suggestions[i].Surface, suggestions[i].Field);
+            // ConfigSurfaceConstraint governs this surface/field (validation already confirmed that)
+            // but may have no known live-config path for it. Nothing to verify against.
+            claims[i] = configPath is null ? null : BuildCurrentValueClaim(suggestions[i], configPath);
+        }
+
+        var toVerify = claims.Where(c => c is not null).Select(c => c!).ToList();
+        if (toVerify.Count == 0)
+        {
+            return suggestions;
+        }
+
+        IReadOnlyList<ClaimVerdict> verdicts;
+        try
+        {
+            verdicts = await _claimVerificationRunner.RunAsync(toVerify, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex,
+                "Claim verification threw while checking harness-change suggestions' current values; surfacing all suggestions unannotated.");
+            return suggestions;
+        }
+
+        var result = new List<HarnessChangeSuggestion>(suggestions.Count);
+        var verdictIndex = 0;
+        for (var i = 0; i < suggestions.Count; i++)
+        {
+            // verdicts can be SHORTER than toVerify — ClaimVerificationRunner.MaxClaims caps the
+            // batch and produces no verdict at all for a claim beyond it (logged there, not an
+            // error here). Any claim run out of verdicts is left unannotated, exactly like a claim
+            // this loop never built in the first place.
+            result.Add(claims[i] is null || verdictIndex >= verdicts.Count
+                ? suggestions[i]
+                : AnnotateIfContradicted(suggestions[i], verdicts[verdictIndex++]));
+        }
+
+        return result;
+    }
+
+    private static Claim BuildCurrentValueClaim(HarnessChangeSuggestion suggestion, string configPath) => new()
+    {
+        Text = $"The current value of {suggestion.Surface}.{suggestion.Field} is {suggestion.CurrentValue}.",
+        Location = $"{ClaimLocationScheme.Config}:{configPath}",
+        ConsequenceSignals = new ClaimConsequenceSignals
+        {
+            CausesWrite = false,
+            // The suggestion is never applied automatically, but a human's accept/reject decision
+            // on it depends on trusting CurrentValue — that dependency is what "gates a decision"
+            // means here.
+            GatesADecision = true
+        }
+    };
+
+    private HarnessChangeSuggestion AnnotateIfContradicted(HarnessChangeSuggestion suggestion, ClaimVerdict verdict)
+    {
+        if (verdict.Outcome is not (ClaimVerificationOutcome.Broken or ClaimVerificationOutcome.LocationNotFound))
+        {
+            return suggestion;
+        }
+
+        _logger.LogWarning(
+            "Harness-change suggestion's claimed current value could not be confirmed against live config ({Outcome}): {Explanation}",
+            verdict.Outcome, verdict.Explanation);
+        // RevisedClaim.Confidence carries the same floor ClaimVerdict.Broken/LocationNotFound apply
+        // to the claim itself — surfaced here rather than discarded, so a reader of the annotation
+        // sees the same signal the claim-verification subsystem recorded, not a re-derived summary.
+        return suggestion with
+        {
+            Rationale = $"[UNVERIFIED CURRENT VALUE ({verdict.RevisedClaim.Confidence:F1} confidence) — " +
+                $"{verdict.Outcome}: {verdict.Explanation}] {suggestion.Rationale}"
+        };
     }
 
     private ILrScheduler ResolveScheduler(string key) => key.ToLowerInvariant() switch
