@@ -220,11 +220,29 @@ public sealed class LlmObligationVerifier : IObligationVerifier
 
     private VerificationVerdict MapToVerdict(Obligation obligation, ObligationVerificationResponse response)
     {
+        // ObligationVerificationResponse.Explanation is C#-`required`, but that is a compile-time
+        // constructor guarantee, not a deserialize-time one: AIJsonUtilities.DefaultOptions leaves
+        // JsonSerializerOptions.RespectNullableAnnotations at its default (false), so a model
+        // returning {"status":"broken","explanation":null} deserializes successfully with
+        // Explanation == null despite the `required` keyword. Left unguarded, that null reaches
+        // VerificationVerdict.Broken/Unverifiable and renders downstream (ObligationsHoldMetric's
+        // "{Property}: {Explanation}" interpolation) as a blank explanation on what looks like a
+        // legitimate finding — the dangerous case, distinct from an unrecognized Status, which
+        // already fails safe via the surrounding try/catch as VerifierError.
+        var explanation = response.Explanation;
+        if (string.IsNullOrWhiteSpace(explanation))
+        {
+            _logger.LogWarning(
+                "Obligation verifier omitted 'explanation' for obligation relying on '{ReliesOn}' despite it being schema-required; substituting a placeholder.",
+                obligation.ReliesOn);
+            explanation = "Verifier did not provide an explanation.";
+        }
+
         return response.Status.Trim().ToLowerInvariant() switch
         {
             HeldStatus => VerificationVerdict.Held(obligation),
-            BrokenStatus => VerificationVerdict.Broken(obligation, response.Explanation),
-            UnverifiableStatus => VerificationVerdict.Unverifiable(obligation, response.Explanation),
+            BrokenStatus => VerificationVerdict.Broken(obligation, explanation),
+            UnverifiableStatus => VerificationVerdict.Unverifiable(obligation, explanation),
             _ => LogAndFailUnrecognizedStatus(obligation, response.Status),
         };
     }

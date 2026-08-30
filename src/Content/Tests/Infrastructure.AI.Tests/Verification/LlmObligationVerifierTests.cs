@@ -150,6 +150,22 @@ public sealed class LlmObligationVerifierTests
             Times.Never);
     }
 
+    // AIJsonUtilities.DefaultOptions leaves RespectNullableAnnotations at its default (false), so
+    // C#'s `required` on ObligationVerificationResponse.Explanation is a constructor-time guarantee
+    // only — a model returning JSON `null` for it deserializes successfully with Explanation == null.
+    // Left unguarded, that reaches VerificationVerdict.Broken and renders as a blank explanation on
+    // what looks like a legitimate finding, rather than failing safe.
+    [Fact]
+    public async Task VerifyAsync_BrokenStatusWithNullExplanation_SubstitutesPlaceholderNotNull()
+    {
+        SetupChatClientResponse("""{ "status": "broken", "explanation": null }""");
+
+        var verdict = await _sut.VerifyAsync(SampleObligation, "content", CancellationToken.None);
+
+        verdict.Outcome.Should().Be(VerificationOutcome.Broken);
+        verdict.Explanation.Should().NotBeNullOrWhiteSpace();
+    }
+
     [Fact]
     public async Task VerifyAsync_StatusIsCaseInsensitive()
     {
