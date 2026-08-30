@@ -81,18 +81,16 @@ public static class DependencyInjection
         services.AddSingleton<HarnessAgentInvoker>();
         services.AddSingleton<IAgentInvoker, RouterEvalInvoker>();
 
-        // Fixed judge chat client (NOT model-router) — preserves cross-run reproducibility.
-        services.AddSingleton<IJudgeChatClientProvider, DefaultJudgeChatClientProvider>();
-        services.AddOptions<JudgeOptions>();
+        // ILlmJudge + its collaborators — factored into AddLlmJudge (DependencyInjection.Judges.cs)
+        // so a consumer needing a judge without the rest of this framework can call it alone.
+        services.AddLlmJudge();
 
-        // Judge panel ("jury"). The public ILlmJudge resolves to JuryLlmJudge, which
-        // delegates to the single DefaultLlmJudge when no panel is configured (the
-        // default) — byte-identical single-judge behavior — and runs a panel only when a
-        // consumer populates JuryOptions.Panelists.
-        services.AddOptions<JuryOptions>();
-        services.AddSingleton<DefaultLlmJudge>();
-        services.AddSingleton<JuryLlmJudge>();
-        services.AddSingleton<ILlmJudge>(sp => sp.GetRequiredService<JuryLlmJudge>());
+        // Obligation-based analysis (#320) — factored into AddObligationVerification
+        // (DependencyInjection.Verification.cs) for the same reason as AddLlmJudge. Registered
+        // here so the framework's own "obligations_hold" metric below always has a resolvable
+        // IObligationExtractor/IObligationVerifier.
+        services.AddObligationVerification();
+        services.AddEvalMetric<ObligationsHoldMetric>("obligations_hold");
 
         // NOTE: RAG metrics resolve their prompts via IPromptRegistry; the registry is
         // wired by the composition root through AddPromptRegistry(...) so the eval

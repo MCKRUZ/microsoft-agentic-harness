@@ -241,6 +241,13 @@ public class AIConfig
     /// </summary>
     public EvaluationConfig Evaluation { get; set; } = new();
 
+    /// <summary>
+    /// Obligation-based analysis configuration (#320): extracting obligations from an artifact and
+    /// dispatching one verifier per obligation. Off by default — see
+    /// <see cref="ObligationConfig.Enabled"/>.
+    /// </summary>
+    public ObligationConfig Obligations { get; set; } = new();
+
     /// <summary>Agent Governance Toolkit configuration.</summary>
     public GovernanceConfig Governance { get; init; } = new();
 

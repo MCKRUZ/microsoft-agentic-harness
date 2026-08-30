@@ -241,6 +241,11 @@ public static class IServiceCollectionExtensions
                 PromptCompositionConfigValidator>()
             .ValidateOnStart();
 
+        services.AddOptions<ObligationConfig>()
+            .Bind(configuration.GetSection("AppConfig:AI:Obligations"))
+            .ValidateFluentValidation<ObligationConfig, ObligationConfigValidator>()
+            .ValidateOnStart();
+
         // PerResultCharLimit is now the ceiling every tool result is cut to before the model sees it
         // (#532), not just the spill-to-disk threshold it used to be. At zero or below that cut takes
         // everything, so every tool would return an empty string to the model with nothing logged.
