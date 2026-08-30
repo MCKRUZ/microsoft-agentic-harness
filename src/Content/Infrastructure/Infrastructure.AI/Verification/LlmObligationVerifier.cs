@@ -177,8 +177,11 @@ public sealed class LlmObligationVerifier : IObligationVerifier
                 _logger.LogWarning(
                     "Obligation verification failed for obligation relying on '{ReliesOn}': {Outcome} — {Reason}",
                     obligation.ReliesOn, result.Outcome, result.ErrorMessage);
+                // result.ErrorMessage can itself wrap a raw provider exception message
+                // (StructuredOutputInvoker's InvocationFailed path) — logged above in full, never
+                // echoed into the returned reason; see the generic catch block's comment.
                 return VerificationVerdict.VerifierError(
-                    obligation, $"Obligation verification failed ({result.Outcome}): {result.ErrorMessage}");
+                    obligation, $"Obligation verification failed ({result.Outcome}); see logs for details.");
             }
 
             return MapToVerdict(obligation, result.Value);

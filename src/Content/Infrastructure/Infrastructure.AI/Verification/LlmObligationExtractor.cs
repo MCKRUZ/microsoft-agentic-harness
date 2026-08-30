@@ -154,8 +154,11 @@ public sealed class LlmObligationExtractor : IObligationExtractor
                 _logger.LogWarning(
                     "Obligation extraction failed for '{Path}': {Outcome} — {Reason}",
                     artifactPath, result.Outcome, result.ErrorMessage);
+                // result.ErrorMessage can itself wrap a raw provider exception message
+                // (StructuredOutputInvoker's InvocationFailed path) — logged above in full, never
+                // echoed into the returned reason; see the generic catch block's comment.
                 return Result<IReadOnlyList<Obligation>>.Fail(
-                    $"Obligation extraction failed ({result.Outcome}): {result.ErrorMessage}");
+                    $"Obligation extraction failed ({result.Outcome}); see logs for details.");
             }
 
             IReadOnlyList<Obligation> obligations = result.Value.Obligations
