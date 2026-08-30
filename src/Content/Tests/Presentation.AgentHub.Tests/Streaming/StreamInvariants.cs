@@ -32,6 +32,7 @@ public static class StreamInvariants
     public static void AssertPrefix(StreamFrameRecorder recorder, string authoritativeFinalText)
     {
         ArgumentNullException.ThrowIfNull(recorder);
+        ArgumentNullException.ThrowIfNull(authoritativeFinalText);
         var concatenated = recorder.ConcatenatedDeltas;
         if (!authoritativeFinalText.StartsWith(concatenated, StringComparison.Ordinal))
         {

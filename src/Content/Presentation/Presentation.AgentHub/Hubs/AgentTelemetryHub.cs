@@ -195,15 +195,40 @@ public sealed class AgentTelemetryHub : Hub
                 ct,
                 EmitHistoryTruncatedAsync(conversationId, () => historyTruncatedSignaled = true));
         }
-        catch (Exception ex) when (ex is InvalidOperationException or UnauthorizedAccessException)
+        catch (Exception ex)
         {
-            throw new HubException(ex is UnauthorizedAccessException
-                ? "Access denied."
-                : ex.Message.Contains("retry") ? ex.Message : "Conversation not found.");
-        }
-        catch (Exception) when (historyTruncatedSignaled)
-        {
-            await EmitPostTruncationFailureAsync(conversationId, ct);
+            // Runs for EVERY exception type — not just the two mapped below — because the client
+            // may already have acted on the truncation notice regardless of what failed afterward.
+            // This must be checked before, not after, the typed-exception mapping: a bare
+            // `catch (Exception) when (historyTruncatedSignaled)` placed below the typed clause
+            // would never run for InvalidOperationException/UnauthorizedAccessException, since C#
+            // matches catch clauses top-down and the typed clause (which matches nearly everything
+            // this method actually throws — a stolen turn lease, ConversationAccessDeniedException)
+            // would win first, silently defeating this guard for the exact failures it exists for.
+            if (historyTruncatedSignaled)
+            {
+                try
+                {
+                    // Best-effort: ct may already be cancelled if ex itself is the client
+                    // disconnecting, in which case this send can throw too — that must not replace
+                    // or hide the original ex, which the rethrow below still needs to surface.
+                    await EmitPostTruncationFailureAsync(conversationId, ct);
+                }
+                catch (Exception notifyEx)
+                {
+                    _logger.LogWarning(notifyEx,
+                        "Failed to notify the client of a post-truncation failure for conversation {ConversationId}.",
+                        conversationId);
+                }
+            }
+
+            if (ex is InvalidOperationException or UnauthorizedAccessException)
+            {
+                throw new HubException(ex is UnauthorizedAccessException
+                    ? "Access denied."
+                    : ex.Message.Contains("retry") ? ex.Message : "Conversation not found.");
+            }
+
             throw;
         }
 
@@ -231,13 +256,32 @@ public sealed class AgentTelemetryHub : Hub
                 ct,
                 EmitHistoryTruncatedAsync(conversationId, () => historyTruncatedSignaled = true));
         }
-        catch (Exception ex) when (ex is InvalidOperationException or UnauthorizedAccessException)
+        catch (Exception ex)
         {
-            throw new HubException(ex is UnauthorizedAccessException ? "Access denied." : "Conversation not found.");
-        }
-        catch (Exception) when (historyTruncatedSignaled)
-        {
-            await EmitPostTruncationFailureAsync(conversationId, ct);
+            // See RetryFromMessage's identical structure and comment for why this must run before,
+            // not after, the typed-exception mapping below.
+            if (historyTruncatedSignaled)
+            {
+                try
+                {
+                    // Best-effort: ct may already be cancelled if ex itself is the client
+                    // disconnecting, in which case this send can throw too — that must not replace
+                    // or hide the original ex, which the rethrow below still needs to surface.
+                    await EmitPostTruncationFailureAsync(conversationId, ct);
+                }
+                catch (Exception notifyEx)
+                {
+                    _logger.LogWarning(notifyEx,
+                        "Failed to notify the client of a post-truncation failure for conversation {ConversationId}.",
+                        conversationId);
+                }
+            }
+
+            if (ex is InvalidOperationException or UnauthorizedAccessException)
+            {
+                throw new HubException(ex is UnauthorizedAccessException ? "Access denied." : "Conversation not found.");
+            }
+
             throw;
         }
 

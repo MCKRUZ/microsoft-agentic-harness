@@ -261,6 +261,44 @@ public sealed class AgentTelemetryHubStreamingInvariantTests
     }
 
     [Fact]
+    public async Task RetryFromMessage_TypedExceptionAfterTruncationWasSignaled_StillEmitsErrorFrame()
+    {
+        // THE CONTROL for the exact gap `run-gates`' correctness reviewer caught: the first version
+        // of this fix put `catch (Exception) when (historyTruncatedSignaled)` BELOW the pre-existing
+        // `catch (Exception ex) when (ex is InvalidOperationException or UnauthorizedAccessException)`
+        // — C# matches catch clauses top-down, so for InvalidOperationException/UnauthorizedAccessException
+        // (a stolen turn lease, a mid-flight ConversationAccessDeniedException — the types this
+        // method actually throws on this path) the typed clause won FIRST and the new guard never
+        // ran, silently defeating it for the exact failures it exists for. This test uses the same
+        // exception type ConversationOrchestrator's own lease-conflict path throws
+        // (InvalidOperationException(ConversationLeaseNotice.Message)) rather than an arbitrary one,
+        // specifically so it cannot pass by accident the way the IOException-based test above could.
+        var fixture = Build();
+        fixture.Orchestrator
+            .Setup(o => o.RetryFromMessageAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<Guid>(), It.IsAny<string>(),
+                It.IsAny<Func<string, CancellationToken, Task>?>(), It.IsAny<CancellationToken>(),
+                It.IsAny<Func<int, CancellationToken, Task>?>()))
+            .Returns(async (string _, string _, Guid _, string _,
+                Func<string, CancellationToken, Task>? _, CancellationToken ct,
+                Func<int, CancellationToken, Task>? onHistoryTruncated) =>
+            {
+                if (onHistoryTruncated is not null)
+                    await onHistoryTruncated(4, ct);
+                throw new InvalidOperationException("Another host now owns this conversation's turn.");
+            });
+
+        var act = () => fixture.Hub.RetryFromMessage("conv-1", Guid.NewGuid());
+
+        // Still wrapped as a HubException — existing typed-exception behaviour for RPC callers is
+        // unchanged — but the Error frame must ALSO have gone out first, unlike before the fix.
+        await act.Should().ThrowAsync<HubException>();
+        fixture.Captured.Should().ContainSingle(f => f.EventName == AgentTelemetryHub.EventHistoryTruncated);
+        fixture.Captured.Should().Contain(f => f.EventName == AgentTelemetryHub.EventError,
+            "an InvalidOperationException after truncation must not silently skip the Error frame");
+    }
+
+    [Fact]
     public void AssertHistoryTruncatedPrecedesTokens_TruncatedAfterFirstDelta_Throws()
     {
         // The check itself, proven against a synthetic violation — production code always emits

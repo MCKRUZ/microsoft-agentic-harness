@@ -137,17 +137,26 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
 
     /// <summary>
     /// Invokes <paramref name="onHistoryTruncated"/>, if provided, with the surviving message
-    /// count — swallowing (and logging) any exception it throws.
+    /// count — swallowing (and logging) any exception it throws, EXCEPT a cancellation matching
+    /// <paramref name="ct"/> itself, which is let through rather than swallowed.
     /// </summary>
     /// <remarks>
     /// The truncation this signals has already committed durably in <see cref="_conversationStore"/>
-    /// by the time this runs. A transport failure delivering the notice (a dropped connection, a
-    /// slow client) must not abort the turn that follows — the caller already dispatched the store
-    /// mutation that made this notice worth sending, so treating the notice itself as best-effort is
-    /// what keeps a client hiccup from turning a durable truncation into a turn that never
-    /// dispatches and a user message that silently vanishes. See #328 (why this fires before
-    /// dispatch, not after) and its follow-up hardening (this swallow, and the ordering of this call
-    /// relative to any local mutation that must NOT be reported as done before it actually is).
+    /// by the time this runs. A generic transport failure delivering the notice (a slow client, a
+    /// transient send error) must not abort the turn that follows — the caller already dispatched
+    /// the store mutation that made this notice worth sending, so treating the notice itself as
+    /// best-effort is what keeps that kind of hiccup from turning a durable truncation into a turn
+    /// that never dispatches and a user message that silently vanishes.
+    /// <para>
+    /// A cancellation is different: it means the client's own connection is gone, not that the send
+    /// merely failed. There is no one left to stream deltas to, so letting it propagate and abort —
+    /// rather than swallowing it and dispatching a turn for a vanished client — is the routine
+    /// disconnect handling this codebase already uses elsewhere (see <c>DispatchTurnAsync</c>'s
+    /// <c>OperationCanceledException when (ct.IsCancellationRequested)</c> handling).
+    /// </para>
+    /// See #328 (why this fires before dispatch, not after) and its follow-up hardening (this
+    /// swallow, and the ordering of this call relative to any local mutation that must NOT be
+    /// reported as done before it actually is).
     /// </remarks>
     private async Task SignalHistoryTruncatedAsync(
         Func<int, CancellationToken, Task>? onHistoryTruncated, int keepCount, CancellationToken ct)
