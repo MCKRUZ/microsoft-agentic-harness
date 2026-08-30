@@ -13,8 +13,13 @@ public sealed record TurnOutcome
     public string? ErrorMessage { get; init; }
 
     /// <summary>
-    /// When non-null, indicates the conversation was truncated before dispatch (retry/edit).
-    /// The transport should emit a truncation event with this count before streaming the response.
+    /// When non-null, indicates the conversation was truncated before dispatch (retry/edit) —
+    /// carried here for callers that only see the final outcome (logging, telemetry, tests). The
+    /// live client notification does NOT read this field: it already went out before this turn was
+    /// even dispatched, via <see cref="Interfaces.IConversationOrchestrator.RetryFromMessageAsync"/>'s
+    /// and <see cref="Interfaces.IConversationOrchestrator.EditAndResubmitAsync"/>'s
+    /// <c>onHistoryTruncated</c> callback (see their remarks) — waiting for this outcome to emit the
+    /// notification is exactly the #328 ordering bug that callback exists to prevent.
     /// </summary>
     public int? HistoryKeepCount { get; init; }
 

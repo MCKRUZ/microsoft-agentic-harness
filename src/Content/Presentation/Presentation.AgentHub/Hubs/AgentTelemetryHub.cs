@@ -183,6 +183,7 @@ public sealed class AgentTelemetryHub : Hub
     {
         var ct = Context.ConnectionAborted;
         var callerId = GetCallerId();
+        var historyTruncatedSignaled = false;
 
         TurnOutcome outcome;
         try
@@ -191,13 +192,19 @@ public sealed class AgentTelemetryHub : Hub
                 Context.ConnectionId, conversationId, assistantMessageId, callerId,
                 (chunk, cct) => Clients.Caller.SendAsync(EventTokenReceived,
                     new { conversationId, token = chunk, isComplete = false }, cct),
-                ct);
+                ct,
+                EmitHistoryTruncatedAsync(conversationId, () => historyTruncatedSignaled = true));
         }
         catch (Exception ex) when (ex is InvalidOperationException or UnauthorizedAccessException)
         {
             throw new HubException(ex is UnauthorizedAccessException
                 ? "Access denied."
                 : ex.Message.Contains("retry") ? ex.Message : "Conversation not found.");
+        }
+        catch (Exception) when (historyTruncatedSignaled)
+        {
+            await EmitPostTruncationFailureAsync(conversationId, ct);
+            throw;
         }
 
         await EmitTurnEventsAsync(conversationId, outcome, ct);
@@ -212,6 +219,7 @@ public sealed class AgentTelemetryHub : Hub
     {
         var ct = Context.ConnectionAborted;
         var callerId = GetCallerId();
+        var historyTruncatedSignaled = false;
 
         TurnOutcome outcome;
         try
@@ -220,11 +228,17 @@ public sealed class AgentTelemetryHub : Hub
                 Context.ConnectionId, conversationId, userMessageId, newUserMessageId, newContent, callerId,
                 (chunk, cct) => Clients.Caller.SendAsync(EventTokenReceived,
                     new { conversationId, token = chunk, isComplete = false }, cct),
-                ct);
+                ct,
+                EmitHistoryTruncatedAsync(conversationId, () => historyTruncatedSignaled = true));
         }
         catch (Exception ex) when (ex is InvalidOperationException or UnauthorizedAccessException)
         {
             throw new HubException(ex is UnauthorizedAccessException ? "Access denied." : "Conversation not found.");
+        }
+        catch (Exception) when (historyTruncatedSignaled)
+        {
+            await EmitPostTruncationFailureAsync(conversationId, ct);
+            throw;
         }
 
         await EmitTurnEventsAsync(conversationId, outcome, ct);
@@ -378,17 +392,50 @@ public sealed class AgentTelemetryHub : Hub
         ?? throw new HubException("Unable to determine caller identity.");
 
     /// <summary>
-    /// Emits the standard post-turn events to the caller: optional HistoryTruncated,
-    /// then either (final TokenReceived + TurnComplete) or Error.
+    /// Builds the callback <see cref="IConversationOrchestrator.RetryFromMessageAsync"/> and
+    /// <see cref="IConversationOrchestrator.EditAndResubmitAsync"/> invoke immediately after
+    /// truncating history, before dispatching the turn — see those methods' remarks on why
+    /// <c>HistoryTruncated</c> must reach the client before this turn's own streamed deltas do (#328).
+    /// </summary>
+    /// <param name="onInvoked">
+    /// Called synchronously, before the SignalR send, purely to record that truncation was
+    /// signalled — regardless of whether the send itself succeeds. The orchestrator swallows a
+    /// failed send (see <c>ConversationOrchestrator.SignalHistoryTruncatedAsync</c>) rather than
+    /// aborting the turn, but the caller still needs to know a client may already have acted on the
+    /// notice, so a later failure in this same turn can be surfaced rather than left as a silent gap.
+    /// </param>
+    private Func<int, CancellationToken, Task> EmitHistoryTruncatedAsync(string conversationId, Action onInvoked) =>
+        (keepCount, cct) =>
+        {
+            onInvoked();
+            return Clients.Caller.SendAsync(EventHistoryTruncated, new { conversationId, keepCount }, cct);
+        };
+
+    /// <summary>
+    /// Emits an <c>Error</c> event for a turn that failed AFTER the client was already told its
+    /// history was truncated. A bare <see cref="HubException"/> only surfaces to the caller's RPC
+    /// promise, never through the client's <c>Error</c> event handler — leaving it showing a
+    /// truncated transcript with no explanation and no retried response. Called only from the
+    /// generic <c>catch (Exception) when (historyTruncatedSignaled)</c> clause in
+    /// <see cref="RetryFromMessage"/> and <see cref="EditAndResubmit"/>, which then rethrows so the
+    /// RPC caller still observes the failure too.
+    /// </summary>
+    private Task EmitPostTruncationFailureAsync(string conversationId, CancellationToken ct) =>
+        Clients.Caller.SendAsync(EventError,
+            new
+            {
+                conversationId,
+                message = "The turn could not be completed after truncating history. Reload the conversation to resynchronize.",
+                code = "AGENT_ERROR",
+            }, ct);
+
+    /// <summary>
+    /// Emits the standard post-turn events to the caller: either (final TokenReceived +
+    /// TurnComplete) or Error. <c>HistoryTruncated</c>, when this turn truncated history, was
+    /// already emitted before dispatch via <see cref="EmitHistoryTruncatedAsync"/> — never here.
     /// </summary>
     private async Task EmitTurnEventsAsync(string conversationId, TurnOutcome outcome, CancellationToken ct)
     {
-        if (outcome.HistoryKeepCount.HasValue)
-        {
-            await Clients.Caller.SendAsync(EventHistoryTruncated,
-                new { conversationId, keepCount = outcome.HistoryKeepCount.Value }, ct);
-        }
-
         if (outcome.Success)
         {
             await Clients.Caller.SendAsync(EventTokenReceived,

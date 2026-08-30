@@ -37,17 +37,39 @@ public interface IConversationOrchestrator
     /// <summary>
     /// Truncates from the specified assistant message and re-dispatches the preceding user message.
     /// </summary>
+    /// <param name="onHistoryTruncated">
+    /// Invoked once with the surviving message count immediately after truncation, BEFORE
+    /// dispatching the retried turn — so a caller streaming <paramref name="onChunk"/> can tell a
+    /// client to drop its stale local tail before any of this turn's own deltas arrive. Emitting
+    /// the truncation signal only after the turn completes (via the returned
+    /// <see cref="TurnOutcome.HistoryKeepCount"/>) would let a client append this turn's streamed
+    /// response onto its still-untruncated message list first — the ordering bug this parameter
+    /// exists to prevent (#328). A failure calling this delegate is caught and logged by the
+    /// implementation, never propagated — the truncation it announces has already committed
+    /// durably, so a failed notification must not abort the turn.
+    /// </param>
     Task<TurnOutcome> RetryFromMessageAsync(
         string sessionKey, string conversationId, Guid assistantMessageId, string callerId,
-        Func<string, CancellationToken, Task>? onChunk, CancellationToken ct);
+        Func<string, CancellationToken, Task>? onChunk, CancellationToken ct,
+        Func<int, CancellationToken, Task>? onHistoryTruncated = null);
 
     /// <summary>
     /// Truncates from the specified user message, appends edited content, and re-dispatches.
     /// </summary>
+    /// <param name="onHistoryTruncated">
+    /// Invoked once with the surviving message count, after the edited message is durably appended
+    /// and immediately before dispatching the resubmitted turn — see
+    /// <see cref="RetryFromMessageAsync"/>'s remarks on this parameter for why the ordering
+    /// relative to dispatch matters, and on why a delegate failure is caught rather than propagated.
+    /// The append happens first here specifically (unlike <see cref="RetryFromMessageAsync"/>, which
+    /// has no equivalent append) so a client acting on this notice — typically by optimistically
+    /// re-inserting the edited message — never does so before the edit is actually persisted.
+    /// </param>
     Task<TurnOutcome> EditAndResubmitAsync(
         string sessionKey, string conversationId, Guid userMessageId, Guid newUserMessageId,
         string newContent, string callerId,
-        Func<string, CancellationToken, Task>? onChunk, CancellationToken ct);
+        Func<string, CancellationToken, Task>? onChunk, CancellationToken ct,
+        Func<int, CancellationToken, Task>? onHistoryTruncated = null);
 
     /// <summary>
     /// Validates that <paramref name="callerId"/> owns the conversation. Throws

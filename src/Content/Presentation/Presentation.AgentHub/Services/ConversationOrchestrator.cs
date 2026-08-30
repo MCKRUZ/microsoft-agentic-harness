@@ -135,10 +135,42 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
         }, ct);
     }
 
+    /// <summary>
+    /// Invokes <paramref name="onHistoryTruncated"/>, if provided, with the surviving message
+    /// count — swallowing (and logging) any exception it throws.
+    /// </summary>
+    /// <remarks>
+    /// The truncation this signals has already committed durably in <see cref="_conversationStore"/>
+    /// by the time this runs. A transport failure delivering the notice (a dropped connection, a
+    /// slow client) must not abort the turn that follows — the caller already dispatched the store
+    /// mutation that made this notice worth sending, so treating the notice itself as best-effort is
+    /// what keeps a client hiccup from turning a durable truncation into a turn that never
+    /// dispatches and a user message that silently vanishes. See #328 (why this fires before
+    /// dispatch, not after) and its follow-up hardening (this swallow, and the ordering of this call
+    /// relative to any local mutation that must NOT be reported as done before it actually is).
+    /// </remarks>
+    private async Task SignalHistoryTruncatedAsync(
+        Func<int, CancellationToken, Task>? onHistoryTruncated, int keepCount, CancellationToken ct)
+    {
+        if (onHistoryTruncated is null) return;
+
+        try
+        {
+            await onHistoryTruncated(keepCount, ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex,
+                "Failed to notify the client of a history truncation to {KeepCount} messages — " +
+                "the truncation itself already committed and the turn continues.", keepCount);
+        }
+    }
+
     /// <inheritdoc />
     public async Task<TurnOutcome> RetryFromMessageAsync(
         string sessionKey, string conversationId, Guid assistantMessageId, string callerId,
-        Func<string, CancellationToken, Task>? onChunk, CancellationToken ct)
+        Func<string, CancellationToken, Task>? onChunk, CancellationToken ct,
+        Func<int, CancellationToken, Task>? onHistoryTruncated = null)
     {
         var record = await _conversationStore.GetAsync(conversationId, callerId, ct)
             ?? throw new InvalidOperationException("Conversation not found.");
@@ -153,6 +185,11 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
             if (last is null || last.Role != MessageRole.User)
                 throw new InvalidOperationException("Cannot retry: no preceding user message found.");
 
+            // Signal the truncation BEFORE dispatching — see the interface's remarks (#328): a
+            // caller streaming onChunk must be able to tell its client to drop the stale local
+            // tail before this turn's own deltas arrive, not after the whole turn completes.
+            await SignalHistoryTruncatedAsync(onHistoryTruncated, truncated.Messages.Count, turnCt);
+
             var outcome = await DispatchTurnAsync(
                 sessionKey, conversationId, record.AgentName, last.Content, callerId, onChunk, turnCt);
 
@@ -164,7 +201,8 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
     public async Task<TurnOutcome> EditAndResubmitAsync(
         string sessionKey, string conversationId, Guid userMessageId, Guid newUserMessageId,
         string newContent, string callerId,
-        Func<string, CancellationToken, Task>? onChunk, CancellationToken ct)
+        Func<string, CancellationToken, Task>? onChunk, CancellationToken ct,
+        Func<int, CancellationToken, Task>? onHistoryTruncated = null)
     {
         var record = await _conversationStore.GetAsync(conversationId, callerId, ct)
             ?? throw new InvalidOperationException("Conversation not found.");
@@ -179,6 +217,14 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
                 newUserMessageId == Guid.Empty ? Guid.NewGuid() : newUserMessageId,
                 MessageRole.User, newContent, DateTimeOffset.UtcNow);
             await _conversationStore.AppendMessageAsync(conversationId, callerId, newUserMsg, turnCt);
+
+            // The new user message is appended BEFORE the truncation notice goes out, not after:
+            // the notice is what the client acts on (it optimistically re-inserts the edited
+            // message), so telling it "truncated to N" before the edit itself is durably stored
+            // would let a subsequent AppendMessageAsync failure leave the client showing an edit
+            // the server never persisted, with nothing to roll it back. Still before dispatch —
+            // see RetryFromMessageAsync's comment and the interface's remarks (#328) for why.
+            await SignalHistoryTruncatedAsync(onHistoryTruncated, truncated.Messages.Count, turnCt);
 
             var outcome = await DispatchTurnAsync(
                 sessionKey, conversationId, record.AgentName, newContent, callerId, onChunk, turnCt);
