@@ -78,10 +78,16 @@ public sealed class StructuredOutputInvokerTests
     }
 
     [Fact]
-    public async Task InvokeAsync_MalformedOnFirstAttemptOnly_NeverAborted_StillReachesSecondAttempt()
+    public async Task InvokeAsync_NeverReachesTheUnreachableMalformedShape()
     {
-        // Distinguishes RepairFailed (both attempts malformed) from Malformed (first-attempt-only
-        // shape doesn't exist in this loop — control proving the outcome differs by attempt count).
+        // THE CONTROL for a real defect a code-review fan-out caught: retryAddendum is set at the
+        // end of attempt 0's iteration on ANY parse failure, so the post-loop branch can only ever
+        // be reached after a repair was already attempted — there is no code path that fails
+        // without one. StructuredOutcome intentionally has no separate "malformed, no repair
+        // attempted" value because this loop can never produce it. This test scripts only ONE
+        // malformed response (the queue then falls back to RoleScript's default, itself malformed)
+        // and asserts two invocations happened and the outcome is RepairFailed — proving a repair
+        // was actually attempted, not skipped.
         var (invoker, script, log) = CreateSut();
         script.EnqueueMalformed();
         var client = ClientFor(script, log);
@@ -89,9 +95,7 @@ public sealed class StructuredOutputInvokerTests
         var result = await invoker.InvokeAsync<Plan>(
             client, Contract, [new ChatMessage(ChatRole.User, "go")], chatOptions: null, CancellationToken.None);
 
-        // Queue exhausted after attempt 1 falls back to RoleScript's default ("fake response"),
-        // which is itself malformed — so this still exercises exactly 2 attempts.
-        log.Invocations.Should().HaveCount(2);
+        log.Invocations.Should().HaveCount(2, "a repair is always attempted before giving up");
         result.Outcome.Should().Be(StructuredOutcome.RepairFailed);
     }
 

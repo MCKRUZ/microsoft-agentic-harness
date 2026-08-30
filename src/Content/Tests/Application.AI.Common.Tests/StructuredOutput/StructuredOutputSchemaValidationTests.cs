@@ -190,63 +190,53 @@ public sealed class StructuredOutputSchemaValidationTests
         StructuredOutputSchemaValidation.FindArraysWithoutItems(schema).Should().BeEmpty();
     }
 
-    private static StructuredOutputContract InjectExtraSchemaProperty(StructuredOutputContract source, string propertyName)
+    // All four corruption helpers below reduce to the same shape — parse the schema to a mutable
+    // dictionary, change one key, re-serialize — so they share it instead of each hand-rolling the
+    // parse/rebuild dance.
+    private static StructuredOutputContract WithSchema(
+        StructuredOutputContract source, Action<Dictionary<string, JsonElement>> mutateTopLevel)
     {
-        using var doc = JsonDocument.Parse(source.Schema.GetRawText());
-        var mutable = new Dictionary<string, JsonElement>();
-        foreach (var prop in doc.RootElement.EnumerateObject())
-            mutable[prop.Name] = prop.Value.Clone();
-
-        using var propsDoc = JsonDocument.Parse(mutable["properties"].GetRawText());
-        var props = new Dictionary<string, JsonElement>();
-        foreach (var p in propsDoc.RootElement.EnumerateObject())
-            props[p.Name] = p.Value.Clone();
-        props[propertyName] = JsonDocument.Parse("""{"type":"string"}""").RootElement.Clone();
-
-        mutable["properties"] = ToJsonElement(props);
+        var mutable = ToDictionary(source.Schema);
+        mutateTopLevel(mutable);
         return source with { Schema = ToJsonElement(mutable) };
     }
 
-    private static StructuredOutputContract RemoveSchemaProperty(StructuredOutputContract source, string propertyName)
+    private static StructuredOutputContract InjectExtraSchemaProperty(StructuredOutputContract source, string propertyName) =>
+        WithSchema(source, top =>
+        {
+            var props = ToDictionary(top["properties"]);
+            props[propertyName] = JsonDocument.Parse("""{"type":"string"}""").RootElement.Clone();
+            top["properties"] = ToJsonElement(props);
+        });
+
+    private static StructuredOutputContract RemoveSchemaProperty(StructuredOutputContract source, string propertyName) =>
+        WithSchema(source, top =>
+        {
+            var props = ToDictionary(top["properties"]);
+            props.Remove(propertyName);
+            top["properties"] = ToJsonElement(props);
+        });
+
+    private static StructuredOutputContract InjectRequired(StructuredOutputContract source, string propertyName) =>
+        WithSchema(source, top =>
+        {
+            var existing = top.TryGetValue("required", out var r)
+                ? r.EnumerateArray().Select(e => e.GetString()!).ToList()
+                : [];
+            existing.Add(propertyName);
+            top["required"] = JsonSerializer.SerializeToElement(existing);
+        });
+
+    private static StructuredOutputContract RemoveAllRequired(StructuredOutputContract source) =>
+        WithSchema(source, top => top.Remove("required"));
+
+    private static Dictionary<string, JsonElement> ToDictionary(JsonElement element)
     {
-        using var doc = JsonDocument.Parse(source.Schema.GetRawText());
-        var mutable = new Dictionary<string, JsonElement>();
+        using var doc = JsonDocument.Parse(element.GetRawText());
+        var result = new Dictionary<string, JsonElement>();
         foreach (var prop in doc.RootElement.EnumerateObject())
-            mutable[prop.Name] = prop.Value.Clone();
-
-        using var propsDoc = JsonDocument.Parse(mutable["properties"].GetRawText());
-        var props = new Dictionary<string, JsonElement>();
-        foreach (var p in propsDoc.RootElement.EnumerateObject())
-            if (p.Name != propertyName) props[p.Name] = p.Value.Clone();
-
-        mutable["properties"] = ToJsonElement(props);
-        return source with { Schema = ToJsonElement(mutable) };
-    }
-
-    private static StructuredOutputContract InjectRequired(StructuredOutputContract source, string propertyName)
-    {
-        using var doc = JsonDocument.Parse(source.Schema.GetRawText());
-        var mutable = new Dictionary<string, JsonElement>();
-        foreach (var prop in doc.RootElement.EnumerateObject())
-            mutable[prop.Name] = prop.Value.Clone();
-
-        var existing = mutable.TryGetValue("required", out var r)
-            ? r.EnumerateArray().Select(e => e.GetString()!).ToList()
-            : [];
-        existing.Add(propertyName);
-        mutable["required"] = JsonSerializer.SerializeToElement(existing);
-
-        return source with { Schema = ToJsonElement(mutable) };
-    }
-
-    private static StructuredOutputContract RemoveAllRequired(StructuredOutputContract source)
-    {
-        using var doc = JsonDocument.Parse(source.Schema.GetRawText());
-        var mutable = new Dictionary<string, JsonElement>();
-        foreach (var prop in doc.RootElement.EnumerateObject())
-            if (prop.Name != "required") mutable[prop.Name] = prop.Value.Clone();
-
-        return source with { Schema = ToJsonElement(mutable) };
+            result[prop.Name] = prop.Value.Clone();
+        return result;
     }
 
     private static JsonElement ToJsonElement(Dictionary<string, JsonElement> obj) =>

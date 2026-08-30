@@ -76,9 +76,13 @@ public sealed class StructuredOutputInvoker(ILogger<StructuredOutputInvoker> log
                 retryAddendum = MalformedJsonAddendum;
             }
 
-            var outcome = retryAddendum is null ? StructuredOutcome.Malformed : StructuredOutcome.RepairFailed;
+            // Always RepairFailed, never a bare "Malformed": retryAddendum is set at the end of
+            // attempt 0's iteration on any parse failure, so reaching here (both attempts
+            // exhausted) means a repair was necessarily attempted. There is no code path in this
+            // two-attempt loop that fails without one.
             return StructuredOutputResult<T>.Fail(
-                outcome, $"Model did not return valid '{contract.SchemaName}' JSON after a repair attempt.", lastRaw);
+                StructuredOutcome.RepairFailed,
+                $"Model did not return valid '{contract.SchemaName}' JSON after a repair attempt.", lastRaw);
         }
         catch (OperationCanceledException)
         {
