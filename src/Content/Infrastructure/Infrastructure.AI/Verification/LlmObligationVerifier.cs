@@ -8,6 +8,7 @@ using Application.AI.Common.Services.Verification;
 using Application.AI.Common.StructuredOutput;
 using Domain.AI.Prompts;
 using Domain.AI.Verification;
+using Domain.Common;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 
@@ -107,34 +108,10 @@ public sealed class LlmObligationVerifier : IObligationVerifier
                 obligation, $"Obligation rejected by ObligationValidator: {validation.RejectionReason}.");
         }
 
-        PromptDescriptor descriptor;
-        try
+        var descriptorResult = await ResolvePromptDescriptorAsync(obligation, cancellationToken).ConfigureAwait(false);
+        if (descriptorResult.Descriptor is null)
         {
-            descriptor = await _promptRegistry.GetLatestAsync(PromptName, cancellationToken).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (Exception ex) when (ex is KeyNotFoundException or PromptRegistryUnavailableException)
-        {
-            _logger.LogError(ex, "Could not resolve obligation-verifier system prompt '{Prompt}'", PromptName);
-            // Full exception detail is logged above; never echoed into the returned reason —
-            // VerificationVerdict.Explanation is persisted (surfaced via MetricScore.Reasoning), and
-            // an unfiltered exception message has leaked sensitive detail elsewhere in this repo.
-            return VerificationVerdict.VerifierError(
-                obligation, $"Obligation-verifier prompt '{PromptName}' is unavailable; see logs for details.");
-        }
-        catch (Exception ex)
-        {
-            // IPromptRegistry's own contract says implementations throw only the two types caught
-            // above (plus OperationCanceledException) — but trusting an interface's documentation to
-            // hold for every implementation is exactly the kind of assumption this method's own
-            // "never throws" remarks can't afford. A non-compliant or buggy registry still degrades
-            // to VerifierError here instead of escaping uncaught.
-            _logger.LogError(ex, "Could not resolve obligation-verifier system prompt '{Prompt}'", PromptName);
-            return VerificationVerdict.VerifierError(
-                obligation, $"Obligation-verifier prompt '{PromptName}' is unavailable; see logs for details.");
+            return descriptorResult.Verdict!;
         }
 
         // The obligation's own fields are themselves derived from untrusted artifact content (the
@@ -158,19 +135,69 @@ public sealed class LlmObligationVerifier : IObligationVerifier
                 obligation, "Nonce collision against obligation/artifact content; refusing to verify to avoid injection ambiguity.");
         }
 
+        return await InvokeVerificationModelAsync(
+            descriptorResult.Descriptor, obligation, untrustedBody, nonce, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<(PromptDescriptor? Descriptor, VerificationVerdict? Verdict)> ResolvePromptDescriptorAsync(
+        Obligation obligation, CancellationToken cancellationToken)
+    {
         try
         {
-            var rendered = await _promptRenderer.RenderAsync(
-                descriptor, new Dictionary<string, object?>(), cancellationToken).ConfigureAwait(false);
+            var descriptor = await _promptRegistry.GetLatestAsync(PromptName, cancellationToken).ConfigureAwait(false);
+            return (descriptor, null);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (ex is KeyNotFoundException or PromptRegistryUnavailableException)
+        {
+            _logger.LogError(ex, "Could not resolve obligation-verifier system prompt '{Prompt}'", PromptName);
+            // Full exception detail is logged above; never echoed into the returned reason —
+            // VerificationVerdict.Explanation is persisted (surfaced via MetricScore.Reasoning), and
+            // an unfiltered exception message has leaked sensitive detail elsewhere in this repo.
+            return (null, VerificationVerdict.VerifierError(
+                obligation, $"Obligation-verifier prompt '{PromptName}' is unavailable; see logs for details."));
+        }
+        catch (Exception ex)
+        {
+            // IPromptRegistry's own contract says implementations throw only the two types caught
+            // above (plus OperationCanceledException) — but trusting an interface's documentation to
+            // hold for every implementation is exactly the kind of assumption this method's own
+            // "never throws" remarks can't afford. A non-compliant or buggy registry still degrades
+            // to VerifierError here instead of escaping uncaught.
+            _logger.LogError(ex, "Could not resolve obligation-verifier system prompt '{Prompt}'", PromptName);
+            return (null, VerificationVerdict.VerifierError(
+                obligation, $"Obligation-verifier prompt '{PromptName}' is unavailable; see logs for details."));
+        }
+    }
 
-            await _usageRecorder.RecordAsync(
-                descriptor, new PromptUsageContext { MetricKey = MetricKey }, cancellationToken).ConfigureAwait(false);
+    private async Task<(string SystemPrompt, string EnvelopedUser)> BuildEnvelopedRequestAsync(
+        PromptDescriptor descriptor, string untrustedBody, string nonce, CancellationToken cancellationToken)
+    {
+        var rendered = await _promptRenderer.RenderAsync(
+            descriptor, new Dictionary<string, object?>(), cancellationToken).ConfigureAwait(false);
 
-            var encodedBody = System.Net.WebUtility.HtmlEncode(untrustedBody);
-            var envelopedUser = PromptInjectionEnvelope.Wrap(EnvelopeTagName, nonce, encodedBody);
+        await _usageRecorder.RecordAsync(
+            descriptor, new PromptUsageContext { MetricKey = MetricKey }, cancellationToken).ConfigureAwait(false);
 
-            var systemPrompt = PromptInjectionEnvelope.AppendDirective(
-                rendered.Body, EnvelopeTagName, nonce, "verify");
+        var encodedBody = System.Net.WebUtility.HtmlEncode(untrustedBody);
+        var envelopedUser = PromptInjectionEnvelope.Wrap(EnvelopeTagName, nonce, encodedBody);
+
+        var systemPrompt = PromptInjectionEnvelope.AppendDirective(
+            rendered.Body, EnvelopeTagName, nonce, "verify");
+
+        return (systemPrompt, envelopedUser);
+    }
+
+    private async Task<VerificationVerdict> InvokeVerificationModelAsync(
+        PromptDescriptor descriptor, Obligation obligation, string untrustedBody, string nonce, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var (systemPrompt, envelopedUser) = await BuildEnvelopedRequestAsync(
+                descriptor, untrustedBody, nonce, cancellationToken).ConfigureAwait(false);
 
             var chatClient = await _chatClientProvider.GetJudgeAsync(cancellationToken).ConfigureAwait(false);
 
@@ -190,7 +217,7 @@ public sealed class LlmObligationVerifier : IObligationVerifier
                     obligation.ReliesOn, result.Outcome, result.ErrorMessage);
                 // result.ErrorMessage can itself wrap a raw provider exception message
                 // (StructuredOutputInvoker's InvocationFailed path) — logged above in full, never
-                // echoed into the returned reason; see the generic catch block's comment.
+                // echoed into the returned reason; see ResolvePromptDescriptorAsync's comment.
                 return VerificationVerdict.VerifierError(
                     obligation, $"Obligation verification failed ({result.Outcome}); see logs for details.");
             }

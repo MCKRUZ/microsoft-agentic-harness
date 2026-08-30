@@ -87,34 +87,10 @@ public sealed class LlmObligationExtractor : IObligationExtractor
         ArgumentException.ThrowIfNullOrWhiteSpace(artifactPath);
         ArgumentNullException.ThrowIfNull(artifactContent);
 
-        PromptDescriptor descriptor;
-        try
+        var descriptorResult = await ResolvePromptDescriptorAsync(cancellationToken).ConfigureAwait(false);
+        if (!descriptorResult.IsSuccess || descriptorResult.Value is null)
         {
-            descriptor = await _promptRegistry.GetLatestAsync(PromptName, cancellationToken).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (Exception ex) when (ex is KeyNotFoundException or PromptRegistryUnavailableException)
-        {
-            _logger.LogError(ex, "Could not resolve obligation-extractor system prompt '{Prompt}'", PromptName);
-            // Full exception detail is logged above; never echoed into the returned message — a
-            // Result.Fail reason can end up persisted (e.g. via MetricScore.Reasoning), and an
-            // unfiltered exception message has leaked sensitive detail elsewhere in this repo.
-            return Result<IReadOnlyList<Obligation>>.Fail(
-                $"Obligation-extractor prompt '{PromptName}' is unavailable; see logs for details.");
-        }
-        catch (Exception ex)
-        {
-            // IPromptRegistry's own contract says implementations throw only the two types caught
-            // above (plus OperationCanceledException) — but trusting an interface's documentation
-            // to hold for every implementation is exactly the kind of assumption this method's
-            // "never throws" promise can't afford. A non-compliant or buggy registry still degrades
-            // to Result.Fail here instead of escaping into ObligationsHoldMetric.ScoreAsync uncaught.
-            _logger.LogError(ex, "Could not resolve obligation-extractor system prompt '{Prompt}'", PromptName);
-            return Result<IReadOnlyList<Obligation>>.Fail(
-                $"Obligation-extractor prompt '{PromptName}' is unavailable; see logs for details.");
+            return Result<IReadOnlyList<Obligation>>.Fail(descriptorResult.Errors.ToArray());
         }
 
         // The path is untrusted the same as the content — both are caller-supplied per
@@ -135,19 +111,68 @@ public sealed class LlmObligationExtractor : IObligationExtractor
                 "Nonce collision against artifact content; refusing to extract to avoid injection ambiguity.");
         }
 
+        return await InvokeExtractionModelAsync(
+            descriptorResult.Value, artifactPath, untrustedBody, nonce, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<Result<PromptDescriptor>> ResolvePromptDescriptorAsync(CancellationToken cancellationToken)
+    {
         try
         {
-            var rendered = await _promptRenderer.RenderAsync(
-                descriptor, new Dictionary<string, object?>(), cancellationToken).ConfigureAwait(false);
+            var descriptor = await _promptRegistry.GetLatestAsync(PromptName, cancellationToken).ConfigureAwait(false);
+            return Result<PromptDescriptor>.Success(descriptor);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (ex is KeyNotFoundException or PromptRegistryUnavailableException)
+        {
+            _logger.LogError(ex, "Could not resolve obligation-extractor system prompt '{Prompt}'", PromptName);
+            // Full exception detail is logged above; never echoed into the returned message — a
+            // Result.Fail reason can end up persisted (e.g. via MetricScore.Reasoning), and an
+            // unfiltered exception message has leaked sensitive detail elsewhere in this repo.
+            return Result<PromptDescriptor>.Fail(
+                $"Obligation-extractor prompt '{PromptName}' is unavailable; see logs for details.");
+        }
+        catch (Exception ex)
+        {
+            // IPromptRegistry's own contract says implementations throw only the two types caught
+            // above (plus OperationCanceledException) — but trusting an interface's documentation
+            // to hold for every implementation is exactly the kind of assumption this method's
+            // "never throws" promise can't afford. A non-compliant or buggy registry still degrades
+            // to Result.Fail here instead of escaping into ObligationsHoldMetric.ScoreAsync uncaught.
+            _logger.LogError(ex, "Could not resolve obligation-extractor system prompt '{Prompt}'", PromptName);
+            return Result<PromptDescriptor>.Fail(
+                $"Obligation-extractor prompt '{PromptName}' is unavailable; see logs for details.");
+        }
+    }
 
-            await _usageRecorder.RecordAsync(
-                descriptor, new PromptUsageContext { MetricKey = MetricKey }, cancellationToken).ConfigureAwait(false);
+    private async Task<(string SystemPrompt, string EnvelopedUser)> BuildEnvelopedRequestAsync(
+        PromptDescriptor descriptor, string untrustedBody, string nonce, CancellationToken cancellationToken)
+    {
+        var rendered = await _promptRenderer.RenderAsync(
+            descriptor, new Dictionary<string, object?>(), cancellationToken).ConfigureAwait(false);
 
-            var encodedBody = System.Net.WebUtility.HtmlEncode(untrustedBody);
-            var envelopedUser = PromptInjectionEnvelope.Wrap(EnvelopeTagName, nonce, encodedBody);
+        await _usageRecorder.RecordAsync(
+            descriptor, new PromptUsageContext { MetricKey = MetricKey }, cancellationToken).ConfigureAwait(false);
 
-            var systemPrompt = PromptInjectionEnvelope.AppendDirective(
-                rendered.Body, EnvelopeTagName, nonce, "extract obligations from");
+        var encodedBody = System.Net.WebUtility.HtmlEncode(untrustedBody);
+        var envelopedUser = PromptInjectionEnvelope.Wrap(EnvelopeTagName, nonce, encodedBody);
+
+        var systemPrompt = PromptInjectionEnvelope.AppendDirective(
+            rendered.Body, EnvelopeTagName, nonce, "extract obligations from");
+
+        return (systemPrompt, envelopedUser);
+    }
+
+    private async Task<Result<IReadOnlyList<Obligation>>> InvokeExtractionModelAsync(
+        PromptDescriptor descriptor, string artifactPath, string untrustedBody, string nonce, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var (systemPrompt, envelopedUser) = await BuildEnvelopedRequestAsync(
+                descriptor, untrustedBody, nonce, cancellationToken).ConfigureAwait(false);
 
             var chatClient = await _chatClientProvider.GetJudgeAsync(cancellationToken).ConfigureAwait(false);
 
@@ -167,7 +192,7 @@ public sealed class LlmObligationExtractor : IObligationExtractor
                     artifactPath, result.Outcome, result.ErrorMessage);
                 // result.ErrorMessage can itself wrap a raw provider exception message
                 // (StructuredOutputInvoker's InvocationFailed path) — logged above in full, never
-                // echoed into the returned reason; see the generic catch block's comment.
+                // echoed into the returned reason; see ResolvePromptDescriptorAsync's comment.
                 return Result<IReadOnlyList<Obligation>>.Fail(
                     $"Obligation extraction failed ({result.Outcome}); see logs for details.");
             }

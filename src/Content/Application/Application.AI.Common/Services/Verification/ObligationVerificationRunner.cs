@@ -82,7 +82,7 @@ public sealed class ObligationVerificationRunner
         // clamped alongside the other two for the same reason: trust nothing hot-reload can hand this
         // method, the same way ObligationValidator re-checks obligations already validated upstream.
         var maxObligations = config.MaxObligations > 0 ? config.MaxObligations : 14;
-        var maxParallelVerifiers = config.MaxParallelVerifiers > 0 ? config.MaxParallelVerifiers : 1;
+        var maxParallelVerifiers = config.MaxParallelVerifiers > 0 ? config.MaxParallelVerifiers : 4;
         var perVerifierTimeout = config.PerVerifierTimeout > TimeSpan.Zero
             ? config.PerVerifierTimeout
             : TimeSpan.FromSeconds(30);
