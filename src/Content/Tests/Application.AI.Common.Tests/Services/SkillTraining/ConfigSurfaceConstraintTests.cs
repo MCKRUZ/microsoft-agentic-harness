@@ -65,4 +65,20 @@ public class ConfigSurfaceConstraintTests
         ConfigSurfaceConstraint.MinMaxAttempts.Should().BeLessThan(ConfigSurfaceConstraint.MaxMaxAttempts);
         ConfigSurfaceConstraint.MinMaxAttempts.Should().BeGreaterThanOrEqualTo(1);
     }
+
+    // #319 first consumer: the dotted path a "config:" claim's Location is built from.
+    [Fact]
+    public void ResolveConfigPath_GovernedSurfaceAndField_ReturnsTheLiveConfigPath()
+        => _sut.ResolveConfigPath(HarnessSurface.ToolErrorRetryLimit, ConfigSurfaceConstraint.MaxAttemptsField)
+            .Should().Be("AI.Resilience.Retry.MaxAttempts");
+
+    [Fact]
+    public void ResolveConfigPath_UngovernedSurface_ReturnsNull()
+        => _sut.ResolveConfigPath(HarnessSurface.SkillDocument, ConfigSurfaceConstraint.MaxAttemptsField)
+            .Should().BeNull();
+
+    [Fact]
+    public void ResolveConfigPath_GovernedSurfaceUnknownField_ReturnsNull()
+        => _sut.ResolveConfigPath(HarnessSurface.ToolErrorRetryLimit, "BaseDelaySeconds")
+            .Should().BeNull();
 }

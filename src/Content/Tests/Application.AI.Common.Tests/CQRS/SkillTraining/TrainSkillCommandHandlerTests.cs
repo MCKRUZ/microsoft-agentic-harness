@@ -1,11 +1,18 @@
 using Application.AI.Common.CQRS.SkillTraining.TrainSkill;
+using Application.AI.Common.Interfaces.ClaimVerification;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.SkillTraining;
+using Application.AI.Common.Services.ClaimVerification;
 using Application.AI.Common.Services.SkillTraining;
+using Domain.AI.ClaimVerification;
 using Domain.AI.SkillTraining;
+using Domain.Common.Config;
 using FluentAssertions;
 using MediatR;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
+using Tests.AI.Fakes;
 using Xunit;
 
 namespace Application.AI.Common.Tests.CQRS.SkillTraining;
@@ -17,7 +24,20 @@ public class TrainSkillCommandHandlerTests
     private static readonly TopKEditSelector Selector = new();
     private static readonly GateEvaluator Gate = new();
     private static readonly HarnessPatchValidator Fence = new(new EditableSurfaceRegistry());
-    private static readonly HarnessChangeSuggestionValidator SuggestionValidator = new(new ConfigSurfaceConstraint());
+    private static readonly ConfigSurfaceConstraint SurfaceConstraint = new();
+    private static readonly HarnessChangeSuggestionValidator SuggestionValidator = new(SurfaceConstraint);
+
+    // NotConfiguredClaimVerifier — the same fail-safe default every host registers by default —
+    // reports every claim Unverifiable, so it never mutates a suggestion under test. Tests
+    // exercising real claim-verification behavior live in ClaimVerificationRunnerTests and
+    // TrainSkillCommandHandler-specific annotation tests below, which inject a scripted verifier
+    // directly rather than going through this shared field.
+    private static readonly ClaimVerificationRunner ClaimVerification = new(
+        new RuleBasedClaimConsequenceClassifier(),
+        new NotConfiguredClaimVerifier(NullLogger<NotConfiguredClaimVerifier>.Instance),
+        new ServiceCollection().BuildServiceProvider(),
+        new StaticOptionsMonitor<AppConfig>(new AppConfig()),
+        NullLogger<ClaimVerificationRunner>.Instance);
 
     private static TrainSkillCommandHandler NewSut(
         IRolloutRunner runner,
@@ -25,13 +45,41 @@ public class TrainSkillCommandHandlerTests
         InMemorySkillTrainingCheckpointStore store,
         IGovernanceAuditService? audit = null,
         HarnessPatchValidator? fence = null,
-        IHarnessChangeSuggester? suggester = null)
+        IHarnessChangeSuggester? suggester = null,
+        ClaimVerificationRunner? claimVerification = null)
     {
         return new TrainSkillCommandHandler(
             runner, proposer, Aggregator, Selector, Applier, Gate, fence ?? Fence,
-            suggester ?? new NoHarnessChangeSuggester(), SuggestionValidator,
+            suggester ?? new NoHarnessChangeSuggester(), SuggestionValidator, SurfaceConstraint,
+            claimVerification ?? ClaimVerification,
             store, new NoOpMediator(), TimeProvider.System,
             NullLogger<TrainSkillCommandHandler>.Instance, audit);
+    }
+
+    // A single "config"-scheme reader/verifier pair, scripted per test — mirrors ClaimVerification's
+    // own construction shape above but with a caller-supplied IClaimVerifier so these tests can
+    // control what the claim about CurrentValue is judged against.
+    private static ClaimVerificationRunner BuildClaimVerification(IClaimVerifier verifier)
+    {
+        var services = new ServiceCollection();
+        services.AddKeyedSingleton<ILocatedArtifactReader>(
+            "config", new RecordingLocatedArtifactReader((_, _) => Task.FromResult<string?>("MaxAttempts = 2")));
+        var provider = services.BuildServiceProvider();
+
+        return new ClaimVerificationRunner(
+            new RuleBasedClaimConsequenceClassifier(),
+            verifier,
+            provider,
+            new StaticOptionsMonitor<AppConfig>(new AppConfig()),
+            NullLogger<ClaimVerificationRunner>.Instance);
+    }
+
+    private sealed class StaticOptionsMonitor<T> : IOptionsMonitor<T>
+    {
+        public StaticOptionsMonitor(T value) { CurrentValue = value; }
+        public T CurrentValue { get; }
+        public T Get(string? name) => CurrentValue;
+        public IDisposable? OnChange(Action<T, string?> listener) => null;
     }
 
     /// <summary>A fence whose registry has been widened to unlock the given prose surfaces (Phase 2).</summary>
@@ -698,6 +746,61 @@ public class TrainSkillCommandHandlerTests
         result.IsSuccess.Should().BeTrue(because: "the suggestion path must never fail a completed run");
         result.Value!.HarnessChangeSuggestions.Should().BeEmpty();
         result.Value.Steps.Should().ContainSingle(because: "the optimization loop ran to completion regardless");
+    }
+
+    // THE CONTROL PAIR (#319 first consumer): byte-identical accepted suggestion, differing only in
+    // what the claim verifier reports about the suggestion's claimed CurrentValue — proving a
+    // confirmed claim leaves Rationale untouched and a contradicted claim annotates it, so the two
+    // cannot silently drift apart.
+    [Fact]
+    public async Task Handle_SuggestionsEnabled_CurrentValueClaimHeld_RationaleUnannotated()
+    {
+        var claimVerification = BuildClaimVerification(
+            new RecordingClaimVerifier((c, _, _) => Task.FromResult(ClaimVerdict.Held(c))));
+        var suggester = new StubSuggester(_ => [RetrySuggestion("3")]);
+        var sut = NewSut(AcceptingRunner(), AppendProposer(), new InMemorySkillTrainingCheckpointStore(),
+            suggester: suggester, claimVerification: claimVerification);
+
+        var result = await sut.Handle(NewCommand(SuggestConfig(emit: true)), CancellationToken.None);
+
+        result.Value!.HarnessChangeSuggestions.Should().ContainSingle()
+            .Which.Rationale.Should().Be("many transient tool failures");
+    }
+
+    [Fact]
+    public async Task Handle_SuggestionsEnabled_CurrentValueClaimBroken_RationaleAnnotatedNotDropped()
+    {
+        var claimVerification = BuildClaimVerification(
+            new RecordingClaimVerifier((c, _, _) => Task.FromResult(ClaimVerdict.Broken(c, "actual value is 5"))));
+        var suggester = new StubSuggester(_ => [RetrySuggestion("3")]);
+        var sut = NewSut(AcceptingRunner(), AppendProposer(), new InMemorySkillTrainingCheckpointStore(),
+            suggester: suggester, claimVerification: claimVerification);
+
+        var result = await sut.Handle(NewCommand(SuggestConfig(emit: true)), CancellationToken.None);
+
+        var surfaced = result.Value!.HarnessChangeSuggestions.Should().ContainSingle().Subject;
+        surfaced.Rationale.Should().Contain("UNVERIFIED CURRENT VALUE");
+        surfaced.Rationale.Should().Contain("actual value is 5");
+        surfaced.Rationale.Should().Contain("many transient tool failures",
+            because: "the original rationale is preserved, not replaced");
+    }
+
+    [Fact]
+    public async Task Handle_SuggestionsEnabled_ClaimVerifierThrows_SurfacesSuggestionUnannotated()
+    {
+        // Advisory-by-design, same tolerance as a faulty suggester: a throwing verifier must never
+        // fail an already-completed run or drop an otherwise-valid suggestion.
+        var claimVerification = BuildClaimVerification(
+            new RecordingClaimVerifier((_, _, _) => throw new InvalidOperationException("verifier boom")));
+        var suggester = new StubSuggester(_ => [RetrySuggestion("3")]);
+        var sut = NewSut(AcceptingRunner(), AppendProposer(), new InMemorySkillTrainingCheckpointStore(),
+            suggester: suggester, claimVerification: claimVerification);
+
+        var result = await sut.Handle(NewCommand(SuggestConfig(emit: true)), CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value!.HarnessChangeSuggestions.Should().ContainSingle()
+            .Which.Rationale.Should().Be("many transient tool failures");
     }
 
     // ── Stubs ────────────────────────────────────────────────────────────────────

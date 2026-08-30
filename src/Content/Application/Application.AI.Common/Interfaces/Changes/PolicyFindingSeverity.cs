@@ -25,6 +25,12 @@ public enum PolicyFindingSeverity
     /// <summary>Material concern. Default threshold treats High as blocking.</summary>
     High = 3,
 
-    /// <summary>Severe finding. Always blocking regardless of threshold configuration.</summary>
+    /// <summary>
+    /// Severe finding. Blocking regardless of threshold configuration — UNLESS the finding also sets
+    /// <see cref="PolicyFinding.RequiresVerification"/>, in which case a model assigned this severity
+    /// to an unconfirmed finding and <c>PolicyGate</c> deliberately does not trust it to block on its
+    /// own (see that field's remarks). A policy that has independently confirmed a Critical finding
+    /// sets <see cref="PolicyFinding.Blocking"/> instead, which always wins.
+    /// </summary>
     Critical = 4
 }

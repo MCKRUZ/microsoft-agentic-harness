@@ -2,8 +2,10 @@ using System.Security.Cryptography;
 using System.Text;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.SkillTraining;
+using Application.AI.Common.Services.ClaimVerification;
 using Application.AI.Common.Services.SkillTraining;
 using Application.AI.Common.Services.SkillTraining.Schedulers;
+using Domain.AI.ClaimVerification;
 using Domain.AI.SkillTraining;
 using Domain.Common;
 using MediatR;
@@ -41,6 +43,8 @@ public sealed class TrainSkillCommandHandler
     private readonly HarnessPatchValidator _fence;
     private readonly IHarnessChangeSuggester _suggester;
     private readonly HarnessChangeSuggestionValidator _suggestionValidator;
+    private readonly ConfigSurfaceConstraint _configSurfaceConstraint;
+    private readonly ClaimVerificationRunner _claimVerificationRunner;
     private readonly ISkillTrainingCheckpointStore _checkpointStore;
     private readonly IMediator _mediator;
     private readonly TimeProvider _time;
@@ -65,6 +69,8 @@ public sealed class TrainSkillCommandHandler
         HarnessPatchValidator fence,
         IHarnessChangeSuggester suggester,
         HarnessChangeSuggestionValidator suggestionValidator,
+        ConfigSurfaceConstraint configSurfaceConstraint,
+        ClaimVerificationRunner claimVerificationRunner,
         ISkillTrainingCheckpointStore checkpointStore,
         IMediator mediator,
         TimeProvider time,
@@ -80,6 +86,8 @@ public sealed class TrainSkillCommandHandler
         ArgumentNullException.ThrowIfNull(fence);
         ArgumentNullException.ThrowIfNull(suggester);
         ArgumentNullException.ThrowIfNull(suggestionValidator);
+        ArgumentNullException.ThrowIfNull(configSurfaceConstraint);
+        ArgumentNullException.ThrowIfNull(claimVerificationRunner);
         ArgumentNullException.ThrowIfNull(checkpointStore);
         ArgumentNullException.ThrowIfNull(mediator);
         ArgumentNullException.ThrowIfNull(time);
@@ -94,6 +102,8 @@ public sealed class TrainSkillCommandHandler
         _fence = fence;
         _suggester = suggester;
         _suggestionValidator = suggestionValidator;
+        _configSurfaceConstraint = configSurfaceConstraint;
+        _claimVerificationRunner = claimVerificationRunner;
         _checkpointStore = checkpointStore;
         _mediator = mediator;
         _time = time;
@@ -505,7 +515,8 @@ public sealed class TrainSkillCommandHandler
         var accepted = new List<HarnessChangeSuggestion>(proposed.Count);
         foreach (var suggestion in proposed)
         {
-            var surfaced = ValidateAndAuditSuggestion(suggestion, request.SkillId, finalStep);
+            var surfaced = await ValidateAndAuditSuggestionAsync(
+                suggestion, request.SkillId, finalStep, cancellationToken).ConfigureAwait(false);
             if (surfaced is not null)
             {
                 accepted.Add(surfaced);
@@ -517,11 +528,13 @@ public sealed class TrainSkillCommandHandler
 
     /// <summary>
     /// Validates one suggestion against the config-surface constraint and audits the outcome. Returns the
-    /// suggestion to surface — with its value replaced by the scrubbed canonical form — when allowed, or
+    /// suggestion to surface — with its value replaced by the scrubbed canonical form and, when the claimed
+    /// <see cref="HarnessChangeSuggestion.CurrentValue"/> could not be confirmed against live config,
+    /// annotated in <see cref="HarnessChangeSuggestion.Rationale"/> — when allowed, or
     /// <see langword="null"/> when rejected.
     /// </summary>
-    private HarnessChangeSuggestion? ValidateAndAuditSuggestion(
-        HarnessChangeSuggestion suggestion, string skillId, int finalStep)
+    private async Task<HarnessChangeSuggestion?> ValidateAndAuditSuggestionAsync(
+        HarnessChangeSuggestion suggestion, string skillId, int finalStep, CancellationToken cancellationToken)
     {
         var validation = _suggestionValidator.Validate(suggestion);
         if (validation.IsAllowed)
@@ -534,7 +547,8 @@ public sealed class TrainSkillCommandHandler
             SafeAudit(skillId, "skill_training.harness_change_suggested",
                 $"suggest: {suggestion.Surface}.{suggestion.Field}={validation.NormalizedValue}", finalStep);
             // Surface the canonical value too, so consumers of the run result never see raw proposer text.
-            return suggestion with { ProposedValue = validation.NormalizedValue ?? suggestion.ProposedValue };
+            var accepted = suggestion with { ProposedValue = validation.NormalizedValue ?? suggestion.ProposedValue };
+            return await AnnotateWithClaimVerificationAsync(accepted, cancellationToken).ConfigureAwait(false);
         }
 
         // Audit rejections too (audit-everything guardrail). The raw, unvalidated proposer Field and value
@@ -546,6 +560,72 @@ public sealed class TrainSkillCommandHandler
         SafeAudit(skillId, "skill_training.harness_change_rejected",
             $"deny: {suggestion.Surface} reason {validation.RejectionReason}", finalStep);
         return null;
+    }
+
+    /// <summary>
+    /// Checks the accepted suggestion's claimed <see cref="HarnessChangeSuggestion.CurrentValue"/>
+    /// against the live config it names (#319's first consumer). A claim that survives verification
+    /// (held, or genuinely unverifiable/erroring — fail-safe) surfaces the suggestion unchanged; a
+    /// claim the artifact contradicts is never dropped, only annotated — the same "revise, don't
+    /// delete" rule <see cref="ClaimVerdict"/>'s factories apply to the claim itself, extended here
+    /// to the suggestion it backs. Never throws: a faulty or unconfigured verifier must not fail an
+    /// already-completed run, matching <see cref="EmitHarnessChangeSuggestionsAsync"/>'s own
+    /// tolerance for a faulty suggester.
+    /// </summary>
+    private async Task<HarnessChangeSuggestion> AnnotateWithClaimVerificationAsync(
+        HarnessChangeSuggestion suggestion, CancellationToken cancellationToken)
+    {
+        var configPath = _configSurfaceConstraint.ResolveConfigPath(suggestion.Surface, suggestion.Field);
+        if (configPath is null)
+        {
+            // ConfigSurfaceConstraint governs this surface/field (validation above already confirmed
+            // that) but has no known live-config path for it. Nothing to verify against.
+            return suggestion;
+        }
+
+        var claim = new Claim
+        {
+            Text = $"The current value of {suggestion.Surface}.{suggestion.Field} is {suggestion.CurrentValue}.",
+            Location = $"config:{configPath}",
+            ConsequenceSignals = new ClaimConsequenceSignals
+            {
+                CausesWrite = false,
+                // The suggestion is never applied automatically, but a human's accept/reject
+                // decision on it depends on trusting CurrentValue — that dependency is what
+                // "gates a decision" means here.
+                GatesADecision = true
+            }
+        };
+
+        ClaimVerdict verdict;
+        try
+        {
+            var verdicts = await _claimVerificationRunner.RunAsync([claim], cancellationToken).ConfigureAwait(false);
+            verdict = verdicts[0];
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex,
+                "Claim verification threw while checking a harness-change suggestion's current value; surfacing the suggestion unannotated.");
+            return suggestion;
+        }
+
+        if (verdict.Outcome is not (ClaimVerificationOutcome.Broken or ClaimVerificationOutcome.LocationNotFound))
+        {
+            return suggestion;
+        }
+
+        _logger.LogWarning(
+            "Harness-change suggestion's claimed current value could not be confirmed against live config ({Outcome}): {Explanation}",
+            verdict.Outcome, verdict.Explanation);
+        return suggestion with
+        {
+            Rationale = $"[UNVERIFIED CURRENT VALUE — {verdict.Outcome}: {verdict.Explanation}] {suggestion.Rationale}"
+        };
     }
 
     private ILrScheduler ResolveScheduler(string key) => key.ToLowerInvariant() switch

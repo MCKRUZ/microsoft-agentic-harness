@@ -1,10 +1,14 @@
 using Application.AI.Common.CQRS.SkillTraining.TrainSkill;
 using Application.AI.Common.Interfaces.SkillTraining;
+using Application.AI.Common.Services.ClaimVerification;
 using Application.AI.Common.Services.SkillTraining;
 using Domain.AI.SkillTraining;
+using Domain.Common.Config;
 using MediatR;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using Presentation.ConsoleUI.Common.Helpers;
 using Spectre.Console;
 
@@ -89,15 +93,32 @@ public sealed class SkillTrainingExample
         var gate = new GateEvaluator();
         var fence = new HarnessPatchValidator(new EditableSurfaceRegistry());
         var suggester = new NoHarnessChangeSuggester();
-        var suggestionValidator = new HarnessChangeSuggestionValidator(new ConfigSurfaceConstraint());
+        var configSurfaceConstraint = new ConfigSurfaceConstraint();
+        var suggestionValidator = new HarnessChangeSuggestionValidator(configSurfaceConstraint);
         var store = new InMemorySkillTrainingCheckpointStore();
         var runner = new DeterministicRolloutRunner();
         var proposer = new DeterministicProposer();
         ILogger<TrainSkillCommandHandler> logger = NullLogger<TrainSkillCommandHandler>.Instance;
 
+        // Bare service provider — this demo wires everything else by hand, but
+        // ClaimVerificationRunner needs an IServiceProvider for its keyed-reader lookup and an
+        // IOptionsMonitor<AppConfig> for its parallelism/timeout config; a one-line container is
+        // simpler and less error-prone than hand-rolling either. NoHarnessChangeSuggester never
+        // actually produces a suggestion, so this runner is never invoked at runtime in this demo —
+        // it exists here only so the handler's dependency graph is genuinely satisfiable.
+        var services = new ServiceCollection();
+        services.Configure<AppConfig>(_ => { });
+        var provider = services.BuildServiceProvider();
+        var claimVerificationRunner = new ClaimVerificationRunner(
+            new RuleBasedClaimConsequenceClassifier(),
+            new NotConfiguredClaimVerifier(NullLogger<NotConfiguredClaimVerifier>.Instance),
+            provider,
+            provider.GetRequiredService<IOptionsMonitor<AppConfig>>(),
+            NullLogger<ClaimVerificationRunner>.Instance);
+
         return new TrainSkillCommandHandler(
             runner, proposer, aggregator, selector, applier, gate, fence,
-            suggester, suggestionValidator, store,
+            suggester, suggestionValidator, configSurfaceConstraint, claimVerificationRunner, store,
             new NoOpMediator(), TimeProvider.System, logger);
     }
 

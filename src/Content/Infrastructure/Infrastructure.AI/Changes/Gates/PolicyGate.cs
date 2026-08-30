@@ -107,7 +107,14 @@ public sealed class PolicyGate : IChangeProposalGate
             return GateResult.Pass($"{policies.Count} policy(ies) evaluated, no findings");
         }
 
-        var blocking = allFindings.Where(f => f.Severity >= threshold).ToList();
+        // A finding with RequiresVerification set carries a model-assigned severity that has not
+        // been independently confirmed against the artifact it is about — it is excluded from the
+        // severity/threshold comparison entirely (neither blocking nor "passing below threshold";
+        // simply not counted), unless the SAME finding also sets Blocking, meaning a verifier already
+        // confirmed it. Every existing policy leaves both flags at their false default, so this is
+        // byte-identical to the prior `f.Severity >= threshold` check for every finding in the repo
+        // today. See PolicyFinding.RequiresVerification's remarks.
+        var blocking = allFindings.Where(f => f.Blocking || (f.Severity >= threshold && !f.RequiresVerification)).ToList();
         if (blocking.Count > 0)
         {
             var summary = string.Join("; ", blocking.Take(5).Select(f =>

@@ -25,11 +25,15 @@ public sealed class PolicyGateTests
             => throw new InvalidOperationException("policy exploded");
     }
 
-    private static PolicyFinding Finding(string policyKey, PolicyFindingSeverity sev, string msg = "issue") => new()
+    private static PolicyFinding Finding(
+        string policyKey, PolicyFindingSeverity sev, string msg = "issue",
+        bool blocking = false, bool requiresVerification = false) => new()
     {
         PolicyKey = policyKey,
         Severity = sev,
-        Message = msg
+        Message = msg,
+        Blocking = blocking,
+        RequiresVerification = requiresVerification
     };
 
     private static (PolicyGate Gate, string TempDir) Build(params IChangeProposalPolicy[] policies)
@@ -237,6 +241,88 @@ public sealed class PolicyGateTests
 
             result.Action.Should().Be(GateAction.Fail);
             result.Reason.Should().Contain("nit");
+        }
+        finally
+        {
+            try { Directory.Delete(dir, recursive: true); } catch { }
+        }
+    }
+
+    // THE MOST IMPORTANT mutation in Package F (#319): a model-assigned Critical finding that has
+    // NOT been independently confirmed must not block on severity alone. Deleting the
+    // `&& !f.RequiresVerification` clause makes this fail (the gate would block again).
+    [Fact]
+    public async Task EvaluateAsync_CriticalFindingRequiresVerificationNotConfirmed_DoesNotBlock()
+    {
+        var (sut, dir) = Build(new ScriptedPolicy("claim-checker",
+            Finding("claim-checker", PolicyFindingSeverity.Critical, "unconfirmed", requiresVerification: true)));
+        try
+        {
+            var result = await sut.EvaluateAsync(TestProposals.NewProposal(), Ctx(), CancellationToken.None);
+
+            result.Action.Should().Be(GateAction.Pass);
+        }
+        finally
+        {
+            try { Directory.Delete(dir, recursive: true); } catch { }
+        }
+    }
+
+    // The control for the mutation above: the SAME finding, but a verifier has since confirmed it
+    // and the policy re-emits it with Blocking set — it must block regardless of RequiresVerification.
+    [Fact]
+    public async Task EvaluateAsync_RequiresVerificationFindingConfirmedViaBlocking_StillBlocks()
+    {
+        var (sut, dir) = Build(new ScriptedPolicy("claim-checker",
+            Finding("claim-checker", PolicyFindingSeverity.Critical, "confirmed broken",
+                blocking: true, requiresVerification: true)));
+        try
+        {
+            var result = await sut.EvaluateAsync(TestProposals.NewProposal(), Ctx(), CancellationToken.None);
+
+            result.Action.Should().Be(GateAction.Fail);
+            result.Reason.Should().Contain("confirmed broken");
+        }
+        finally
+        {
+            try { Directory.Delete(dir, recursive: true); } catch { }
+        }
+    }
+
+    // Blocking wins independent of severity — an Info-severity finding a policy has independently
+    // confirmed as a hard stop must still block, even though Info never crosses any threshold.
+    [Fact]
+    public async Task EvaluateAsync_BlockingFindingBelowSeverityThreshold_StillBlocks()
+    {
+        var (sut, dir) = Build(new ScriptedPolicy("claim-checker",
+            Finding("claim-checker", PolicyFindingSeverity.Info, "hard stop", blocking: true)));
+        try
+        {
+            var result = await sut.EvaluateAsync(TestProposals.NewProposal(), Ctx(), CancellationToken.None);
+
+            result.Action.Should().Be(GateAction.Fail);
+            result.Reason.Should().Contain("hard stop");
+        }
+        finally
+        {
+            try { Directory.Delete(dir, recursive: true); } catch { }
+        }
+    }
+
+    // Regression pin (#319): every finding above this line in the file leaves Blocking and
+    // RequiresVerification at their false default, and every one of those tests still asserts the
+    // exact pre-#319 behavior — proving `f.Blocking || (f.Severity >= threshold && !f.RequiresVerification)`
+    // is byte-identical to the old `f.Severity >= threshold` whenever both new flags are unset.
+    [Fact]
+    public async Task EvaluateAsync_BothNewFlagsDefaultFalse_BehavesExactlyLikeSeverityThresholdAlone()
+    {
+        var (sut, dir) = Build(new ScriptedPolicy("checkov", Finding("checkov", PolicyFindingSeverity.High, "unflagged")));
+        try
+        {
+            var result = await sut.EvaluateAsync(TestProposals.NewProposal(), Ctx(), CancellationToken.None);
+
+            result.Action.Should().Be(GateAction.Fail);
+            result.Reason.Should().Contain("unflagged");
         }
         finally
         {
