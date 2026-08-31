@@ -61,6 +61,18 @@ public static class StorageSegmentSafety
     /// or has a trailing dot — the three charset-independent shape checks every storage-segment user
     /// must apply in addition to whichever charset it enforces.
     /// </summary>
+    /// <remarks>
+    /// <see cref="Path.IsPathRooted(string)"/> is intentionally platform-relative, not a fixed rule:
+    /// on Windows it measures a bare drive reference like <c>"C:"</c> or <c>"C:foo"</c> as rooted; on
+    /// Linux/macOS it measures only a leading <c>'/'</c> as rooted, and <c>'/'</c> is never charset-legal
+    /// here in the first place, so this check is a no-op for that shape there — not a gap. A build-and-test
+    /// finding on #559-563 (this codebase's Windows-run test suite hard-coded the Windows-only "C:" throws
+    /// expectation, unconditionally, and failed on the Linux CI runner) is the reason this remark exists:
+    /// do not "fix" this method into throwing uniformly across platforms for that shape — the drive-letter
+    /// attack this check exists to close (<see cref="Path.Combine(string, string)"/> discarding every
+    /// earlier segment once a value is rooted) has no equivalent on a platform without drive letters, and
+    /// this check already reflects that correctly for whichever OS it runs on.
+    /// </remarks>
     public static bool HasUnsafeShape(string? value) =>
         IsRelativeDirectoryReference(value) || (value is not null && Path.IsPathRooted(value)) || HasTrailingDot(value);
 }

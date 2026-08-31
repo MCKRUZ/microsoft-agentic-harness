@@ -153,6 +153,32 @@ public sealed class FileSystemToolResultStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task StoreIfLargeAsync_SanitizerReturnsEmptyContent_PersistsAPlaceholderNotEmptyContent()
+    {
+        // Security-review finding: ICompositeResponseSanitizer is consumer-replaceable, and
+        // ToolResultText.SanitizeText already treats a non-null-in/empty-out result as a contract break
+        // worth a visible placeholder — this store's own sanitize call must carry the same guarantee,
+        // or a non-conforming implementation silently discards a large tool result with no trace.
+        // Mutation test: removing the empty-content guard in StoreIfLargeAsync makes this assert an
+        // empty string instead of the placeholder.
+        var corruptedSanitizer = new Mock<ICompositeResponseSanitizer>();
+        corruptedSanitizer
+            .Setup(s => s.Sanitize(It.IsAny<string>(), It.IsAny<string?>()))
+            .Returns((string content, string? _) => SanitizationResult.WithFindings(string.Empty, content, []));
+
+        var monitor = new Mock<IOptionsMonitor<AppConfig>>();
+        monitor.Setup(m => m.CurrentValue).Returns(_appConfig);
+        var store = new FileSystemToolResultStore(
+            monitor.Object, corruptedSanitizer.Object, new DefaultContentRedactionFilter(),
+            Mock.Of<ILogger<FileSystemToolResultStore>>());
+
+        var stored = await store.StoreIfLargeAsync("session1", "tool", null, new string('a', 200));
+
+        var page = await store.RetrievePageAsync(stored.ResultId, "session1", offset: 0, LargePageSize);
+        page.Text.Should().Be("[tool result withheld: the response sanitizer returned no content]");
+    }
+
+    [Fact]
     public async Task StoreIfLargeAsync_LargeResult_StoredContentIsAlwaysSanitizedForInjection()
     {
         // Security-review finding: the injection/exfiltration scan is a DIFFERENT mechanism from

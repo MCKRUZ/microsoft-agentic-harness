@@ -2,7 +2,6 @@ using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Bundles;
 using Application.AI.Common.Interfaces.Escalation;
-using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Resilience;
 using Domain.Common.Config;
 using Domain.Common.Config.AI.MCP;
@@ -12,6 +11,7 @@ using Infrastructure.AI.Escalation;
 using Infrastructure.AI.KnowledgeGraph;
 using Infrastructure.AI.MCP;
 using Infrastructure.AI.Resilience;
+using Infrastructure.AI.Tests.Planner.StepExecutors;
 using MediatR;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -49,7 +49,7 @@ public sealed class DependencyInjectionTests
         // the same way secret redaction already ran there. Its real implementation is registered by
         // Infrastructure.AI.Governance's own DI module, called separately in the real composition
         // root — mirror that here, same as IMcpSecurityScanner above.
-        services.AddSingleton(new Mock<ICompositeResponseSanitizer>().Object);
+        services.AddSingleton(PermissiveAdmission.PermissiveSanitizer());
         services.AddSingleton<ISender>(new Mock<ISender>().Object);
         services.AddKnowledgeGraphDependencies(config);
 

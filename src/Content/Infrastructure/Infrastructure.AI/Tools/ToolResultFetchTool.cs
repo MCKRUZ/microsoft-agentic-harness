@@ -208,10 +208,13 @@ public sealed class ToolResultFetchTool : ITool
                 .RetrievePageAsync(resultId, executionContext.ToolResultScopeId, offset, maxChars, cancellationToken)
                 .ConfigureAwait(false);
 
-            // Redaction and injection/exfiltration sanitizing (if the originating call required
-            // redaction) already happened once, at spill time, over the complete stored content — see
-            // this type's own remarks for why a page can never safely be treated a second time here.
-            // page.Text is already whatever it needs to be.
+            // Redaction and injection/exfiltration sanitizing both already happened once, unconditionally,
+            // at spill time, over the complete stored content — see this type's own remarks for why a
+            // page can never safely be treated a second time here. page.Text is already whatever it
+            // needs to be. (/code-review finding: an earlier version of this comment said "if the
+            // originating call required redaction", stale from before redaction became unconditional —
+            // do not reintroduce that conditional gate; see FileSystemToolResultStore's own remarks for
+            // the regression that phrase's underlying behavior caused once already.)
             var text = page.Text;
 
             if (!page.HasMore)

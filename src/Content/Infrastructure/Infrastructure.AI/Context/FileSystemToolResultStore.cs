@@ -136,13 +136,46 @@ public sealed class FileSystemToolResultStore : IToolResultStore
         // into requesting a different one — the same "caller can always choose a new split point" shape
         // this codebase already rejected a per-page fix for on the redaction side (see the second
         // revision noted below). Sanitizing here, unconditionally, over the same widened scan region,
-        // before ANY page boundary exists, closes it the same way redaction below is closed: once, over
-        // the whole content, at the one point in this pipeline no future page boundary can split.
+        // before ANY page boundary exists, closes the SPECIFIC bypass this revision targets — a
+        // page-fetch offset the caller chooses can no longer split a pattern that no longer exists in
+        // the stored copy. It does not, by itself, make a pattern's own MATCH window unbounded: a
+        // sanitizer rule that itself requires two markers within one scan (e.g. an opening and closing
+        // HTML comment tag) can still be defeated by padding between them past scanCeiling, the same
+        // scan-window limitation ToolCallAdmissionPipeline's own bounded pre-cut already had before
+        // this revision, just at a much larger default ceiling now (MaxSpillChars, not the model-facing
+        // ceiling). Tracked as a follow-up rather than fixed here: raising the ceiling further trades
+        // directly against unbounded regex scan cost on attacker-controlled input, the same tension
+        // SanitizeThenRedact.MaxScanLength already exists to bound elsewhere, and resolving it properly
+        // means redesigning the affected patterns, not widening this one call site further.
         // Sanitize runs BEFORE redact, mirroring ToolResultText.SanitizeAndRedact's own ordering: an
         // injection payload is stripped before the now-shorter, already-inert text is scanned for
         // secret patterns.
-        var sanitized = _sanitizer.Sanitize(scanRegion, toolName).SanitizedContent;
+        //
+        // Security-review finding: a sanitizer is consumer-replaceable (ICompositeResponseSanitizer),
+        // and ToolResultText.SanitizeText already treats a non-null-in/null-or-empty-out result as a
+        // contract break worth a visible placeholder rather than silently persisting empty content —
+        // this call site did not, so a non-conforming or overly aggressive custom implementation could
+        // silently discard a large tool result with no warning and no recoverable trace of it.
+        var sanitizeResult = _sanitizer.Sanitize(scanRegion, toolName);
+        if (string.IsNullOrEmpty(sanitizeResult.SanitizedContent) && !string.IsNullOrEmpty(scanRegion))
+        {
+            _logger.LogWarning(
+                "ICompositeResponseSanitizer returned empty content for a non-empty tool result from " +
+                "{ToolName}; persisting a placeholder instead of silently discarding it",
+                toolName);
+        }
+        var sanitized = string.IsNullOrEmpty(sanitizeResult.SanitizedContent) && !string.IsNullOrEmpty(scanRegion)
+            ? "[tool result withheld: the response sanitizer returned no content]"
+            : sanitizeResult.SanitizedContent;
 
+        // /simplify finding: this sanitize-then-redact sequence deliberately does not call the shared
+        // SanitizeThenRedact.Apply combinator that every other sanitize-then-redact site in this
+        // codebase shares (#470) — its MaxScanLength (64KB) exists for exactly the ReDoS-cost reason
+        // scanCeiling's own remarks above discuss, but is far smaller than MaxSpillChars (default a
+        // few MB): routing through it here would silently shrink write-time redaction's effective
+        // coverage from the whole spilled result down to its first 64KB, regressing a guarantee that
+        // predates this revision.
+        //
         // Security-review finding, third revision: redaction happens HERE, unconditionally, before the
         // write — never gated on the originating call's own classification, and never at read time.
         // Two prior revisions both regressed a guarantee this repo already had:

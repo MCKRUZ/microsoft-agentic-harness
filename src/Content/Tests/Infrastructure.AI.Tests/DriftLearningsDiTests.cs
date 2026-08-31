@@ -1,6 +1,5 @@
 using Application.AI.Common.Interfaces.DriftDetection;
 using Application.AI.Common.Interfaces.Escalation;
-using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Learnings;
 using MediatR;
 using Domain.Common.Config;
@@ -11,6 +10,7 @@ using FluentAssertions;
 using Infrastructure.AI.DriftDetection;
 using Infrastructure.AI.KnowledgeGraph;
 using Infrastructure.AI.Learnings;
+using Infrastructure.AI.Tests.Planner.StepExecutors;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -217,7 +217,7 @@ public sealed class DriftLearningsDiTests
         // security-review finding on this PR moved the injection/exfiltration scan to write time.
         // Its real implementation is registered by Infrastructure.AI.Governance's own DI module,
         // called separately in the real composition root — mirror that here.
-        services.AddSingleton(new Mock<ICompositeResponseSanitizer>().Object);
+        services.AddSingleton(PermissiveAdmission.PermissiveSanitizer());
 
         // Register knowledge graph (provides IKnowledgeGraphStore for graph-backed stores)
         services.AddKnowledgeGraphDependencies(appConfig);
