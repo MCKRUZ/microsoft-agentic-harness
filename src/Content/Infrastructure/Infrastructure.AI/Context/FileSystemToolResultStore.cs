@@ -17,21 +17,25 @@ public sealed class FileSystemToolResultStore : IToolResultStore
 {
     // Positive allowlist (#560) rather than an ever-growing set of rejected shapes: this is the
     // complete enumeration of characters a legitimate scope id can ever need (durable conversation
-    // ids, plan/run ids, and minted GUIDs all fit it), so anything outside it is refused outright
-    // rather than pattern-matched against known-dangerous cases. Neither '/' nor '\' — the only two
-    // path separators across platforms — are in the set.
+    // ids, plan/run ids, minted GUIDs, and PlanRunKeys.StepConversationId's "{runScope}:{stepId}"
+    // shape all fit it), so anything outside it is refused outright rather than pattern-matched
+    // against known-dangerous cases. Neither '/' nor '\' — the only two path separators across
+    // platforms — are in the set.
     //
-    // Deliberately does NOT include ':' — a security review of this exact allowlist measured
-    // Path.IsPathRooted("C:") and Path.IsPathRooted("C:foo") as TRUE on Windows (a bare drive
-    // reference is rooted, not drive-relative — the opposite of what an earlier version of this
-    // comment claimed), and Path.Combine discards every earlier segment once one is rooted. With ':'
-    // admitted and no rooted-path check of its own, a scope id of "C:foo" wrote OUTSIDE StoragePath
-    // entirely — unswept, unredacted (#563), and on Windows unprotected by CreateDirectoryOwnerOnly
-    // too. SanitizeSessionSegment's own Path.IsPathRooted check below is the actual backstop against
-    // this whole class regardless of what any charset admits; excluding ':' here removes the one
-    // character this store's own callers could supply that made it reachable.
+    // ':' IS admitted, deliberately, after a real regression: an earlier version of this allowlist
+    // excluded it specifically because Path.IsPathRooted("C:") and Path.IsPathRooted("C:foo") measure
+    // TRUE on Windows — but that same exclusion also rejected PlanRunKeys.StepConversationId's
+    // "{runScope}:{stepId}" shape, which every LLM step of every plan run produces, failing every one
+    // of them at RunConversationCommandValidator. Measured directly (Path.IsPathRooted, this SDK):
+    // "C:"/"C:foo"/"D:x" → true, but "conv-1:5"/"abc123:step-5"/"AB:foo" → false — Windows treats a
+    // colon as a drive separator only when it is preceded by EXACTLY one ASCII letter, never when
+    // preceded by two or more characters. A colon used as an internal separator between multi-character
+    // segments therefore cannot produce a rooted path. The charset does not need to encode that
+    // distinction itself: SanitizeSessionSegment's own Path.IsPathRooted check below is the actual,
+    // independent backstop against the single-letter-drive shape, regardless of what this charset
+    // admits — see its remarks.
     private static readonly Regex AllowedSegmentCharset =
-        new("^[A-Za-z0-9_.-]{1,128}$", RegexOptions.Compiled);
+        new("^[A-Za-z0-9_.:-]{1,128}$", RegexOptions.Compiled);
 
     private readonly IOptionsMonitor<AppConfig> _options;
     private readonly ILogger<FileSystemToolResultStore> _logger;
@@ -370,15 +374,16 @@ public sealed class FileSystemToolResultStore : IToolResultStore
         if (!AllowedSegmentCharset.IsMatch(sessionId))
         {
             throw new ArgumentException(
-                "Session ID must be 1-128 characters from [A-Za-z0-9_.-].", paramName);
+                "Session ID must be 1-128 characters from [A-Za-z0-9_.:-].", paramName);
         }
 
-        // Independent of the charset above, deliberately — a security review found that admitting
-        // ':' let "C:" and "C:foo" through as a "drive-relative, not rooted" value the comment there
-        // asserted was safe; Path.IsPathRooted measures both as TRUE on Windows, and Path.Combine
-        // discards every earlier segment once one is rooted, writing outside StoragePath entirely.
-        // This check is what actually enforces "never rooted" regardless of what any charset admits —
-        // including a future charset change that reintroduces the same mistake.
+        // Independent of the charset above, deliberately — see AllowedSegmentCharset's own remarks.
+        // A colon is admitted by the charset (needed for PlanRunKeys.StepConversationId's
+        // "{runScope}:{stepId}" shape), but Path.IsPathRooted still measures a bare drive reference
+        // like "C:" or "C:foo" as TRUE on Windows, and Path.Combine discards every earlier segment
+        // once one is rooted, writing outside StoragePath entirely. This check is what actually
+        // enforces "never rooted" — it does not depend on the charset excluding the character that
+        // makes a rooted form possible, which is what made this reachable the first time.
         if (Path.IsPathRooted(sessionId))
         {
             throw new ArgumentException(

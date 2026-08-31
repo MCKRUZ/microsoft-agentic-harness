@@ -107,12 +107,6 @@ public sealed class ToolOutputCompressionBehavior<TRequest, TResponse>
             return response;
         }
 
-        // #561: the retrieval scope, not ConversationId — the same scope tool_result_fetch reads back
-        // with (IAgentExecutionContext.ToolResultScopeId), and never null by construction, so no
-        // "?? unknown" fallback is needed. Storing under a different key than retrieval reads from
-        // would silently make this behavior's spill unreachable even with a resolvable marker.
-        var sessionId = _executionContext.ToolResultScopeId;
-
         // This behavior runs BEFORE ResponseSanitizationBehavior (registered outer), so the
         // store write would otherwise persist raw, unsanitized tool output to disk — credentials
         // and tokens included — even when the sanitizer later blocks the response. Redact secrets
@@ -136,6 +130,15 @@ public sealed class ToolOutputCompressionBehavior<TRequest, TResponse>
         // file on every compression on this path.
         if (!_executionContext.HasRetrievableToolResultScope)
             return ReplaceToolOutput(response, compressionResult.Output);
+
+        // The retrieval scope, not ConversationId — the same scope tool_result_fetch reads back with
+        // (IAgentExecutionContext.ToolResultScopeId), and never null by construction, so no "?? unknown"
+        // fallback is needed. Storing under a different key than retrieval reads from would silently
+        // make this behavior's spill unreachable even with a resolvable marker. Read here, after the
+        // guard above, rather than at the top of the method: ToolResultScopeId freezes on first read
+        // (#562) and a later Initialize with a differing scope throws, so a read that is then discarded
+        // by an early return is a coupling worth avoiding even though nothing reaches it today.
+        var sessionId = _executionContext.ToolResultScopeId;
 
         var reference = await _resultStore.StoreIfLargeAsync(
             sessionId,

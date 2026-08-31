@@ -13,12 +13,13 @@ public class RunConversationCommandValidator : AbstractValidator<RunConversation
 	// comment rather than a shared constant because the store lives in Infrastructure and this
 	// validator in Application; Application cannot reference Infrastructure. If the store's charset
 	// changes, this must change with it.
-	// No ':' — a security review found FileSystemToolResultStore.SanitizeSessionSegment's matching
-	// allowlist admitted "C:" / "C:foo" as Path.IsPathRooted==true on Windows, escaping StoragePath
-	// entirely once Path.Combine hit a rooted segment. The store's own Path.IsPathRooted check is the
-	// real backstop regardless of what this validator allows; this charset is kept narrow to match it
-	// rather than to be the enforcement point itself.
-	private static readonly Regex AllowedScopeIdCharset = new("^[A-Za-z0-9_.-]{1,128}$", RegexOptions.Compiled);
+	// ':' IS admitted — PlanRunKeys.StepConversationId builds every plan-step conversation id as
+	// "{runScope}:{stepId}", so excluding it here rejects every LLM step of every plan run (a real
+	// regression this branch shipped once already). Path.IsPathRooted still measures a bare drive
+	// reference like "C:" as rooted on Windows; that check lives in the store, not this charset — see
+	// FileSystemToolResultStore.AllowedSegmentCharset's remarks for why the charset does not need to
+	// encode that distinction itself.
+	private static readonly Regex AllowedScopeIdCharset = new("^[A-Za-z0-9_.:-]{1,128}$", RegexOptions.Compiled);
 
 	public RunConversationCommandValidator()
 	{
@@ -45,6 +46,6 @@ public class RunConversationCommandValidator : AbstractValidator<RunConversation
 		// default (a bare GUID) always satisfies this.
 		RuleFor(x => x.ConversationId)
 			.NotEmpty().WithMessage("Conversation id is required for a durable conversation.")
-			.Matches(AllowedScopeIdCharset).WithMessage("Conversation id must be 1-128 characters from [A-Za-z0-9_.-].");
+			.Matches(AllowedScopeIdCharset).WithMessage("Conversation id must be 1-128 characters from [A-Za-z0-9_.:-].");
 	}
 }

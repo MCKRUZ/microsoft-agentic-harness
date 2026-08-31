@@ -95,4 +95,17 @@ public class RunConversationCommandValidatorTests
         result.IsValid.Should().BeFalse();
         result.Errors.Should().ContainSingle(e => e.PropertyName == "ConversationId");
     }
+
+    [Fact]
+    public async Task Validate_ConversationIdShapedLikeAPlanStep_Passes()
+    {
+        // Regression: an earlier version of this validator's charset excluded ':' entirely, which
+        // rejected PlanRunKeys.StepConversationId's own "{runScope}:{stepId}" shape — failing every
+        // LLM step of every plan run. This id is exactly that shape.
+        var command = CreateValidCommand() with { ConversationId = "a1b2c3d4-conv:step-7" };
+
+        var result = await _validator.ValidateAsync(command);
+
+        result.IsValid.Should().BeTrue();
+    }
 }

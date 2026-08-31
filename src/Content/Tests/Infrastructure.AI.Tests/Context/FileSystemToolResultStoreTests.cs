@@ -197,14 +197,6 @@ public sealed class FileSystemToolResultStoreTests : IDisposable
     [InlineData("semi;colon")]
     [InlineData("null\0byte")]
     [InlineData("emoji🙂")]
-    // Security-review regression: ':' was in an earlier version of this allowlist on the (incorrect)
-    // claim that a bare drive reference is "drive-relative, not rooted". Path.IsPathRooted measures
-    // both of these as TRUE on Windows, and Path.Combine discards every earlier path segment once one
-    // is rooted — "C:foo" as a scope id wrote raw, unredacted tool output to <processCWD>\foo\...,
-    // entirely outside StoragePath, unswept and (on Windows) unprotected by directory permissions.
-    [InlineData("C:")]
-    [InlineData("C:foo")]
-    [InlineData("scope:with:colons")]
     public async Task StoreIfLargeAsync_SessionIdOutsideTheAllowedCharset_ThrowsArgumentException(string sessionId)
     {
         var act = () => _sut.StoreIfLargeAsync(sessionId, "tool", null, "data");
@@ -213,24 +205,36 @@ public sealed class FileSystemToolResultStoreTests : IDisposable
             .WithParameterName("sessionId");
     }
 
-    [Fact]
-    public async Task StoreIfLargeAsync_WindowsDriveRootedSessionId_NeverWritesOutsideStoragePath()
+    [Theory]
+    // Regression: an earlier version of this allowlist excluded ':' entirely on the (incorrect) claim
+    // that a bare drive reference is "drive-relative, not rooted" — Path.IsPathRooted measures "C:"
+    // and "C:foo" as TRUE on Windows. But excluding ':' outright also rejected every legitimate id
+    // using it as an internal separator (PlanRunKeys.StepConversationId's "{runScope}:{stepId}"),
+    // failing every LLM step of every plan run. ':' is admitted by the charset; these two cases are
+    // refused instead by SanitizeSessionSegment's independent Path.IsPathRooted check below.
+    [InlineData("C:")]
+    [InlineData("C:foo")]
+    public async Task StoreIfLargeAsync_WindowsDriveRootedSessionId_ThrowsButNeverWritesOutsideStoragePath(string sessionId)
     {
-        // The concrete regression the security review demonstrated: even if a future charset change
-        // re-admits ':', SanitizeSessionSegment's own Path.IsPathRooted check must independently
-        // refuse this — proving containment does not depend on the charset alone.
-        var act = () => _sut.StoreIfLargeAsync("C:foo", "tool", null, "data");
+        var act = () => _sut.StoreIfLargeAsync(sessionId, "tool", null, "data");
 
-        await act.Should().ThrowAsync<ArgumentException>();
+        await act.Should().ThrowAsync<ArgumentException>()
+            .WithParameterName("sessionId");
         Directory.Exists(Path.Combine(_tempDir, "..", "foo")).Should().BeFalse();
     }
 
     [Theory]
     // Negative controls: every character class the allowlist admits, proving the regex above isn't
-    // accidentally rejecting a legitimate id shape while it's busy rejecting the bad ones.
+    // accidentally rejecting a legitimate id shape while it's busy rejecting the bad ones. Includes
+    // ':' used as an internal separator (PlanRunKeys.StepConversationId's actual production shape) and
+    // a two-letter prefix before ':', both of which Path.IsPathRooted measures as NOT rooted — only a
+    // single-letter prefix (a real drive letter) is.
     [InlineData("conversation-id-123")]
     [InlineData("plan_run.42")]
     [InlineData("ABCDEFabcdef0123456789")]
+    [InlineData("scope:with:colons")]
+    [InlineData("conv-1:step-5")]
+    [InlineData("AB:foo")]
     public async Task StoreIfLargeAsync_SessionIdWithinTheAllowedCharset_DoesNotThrow(string sessionId)
     {
         var act = () => _sut.StoreIfLargeAsync(sessionId, "tool", null, "data");
