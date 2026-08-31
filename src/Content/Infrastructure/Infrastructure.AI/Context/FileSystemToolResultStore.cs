@@ -1,4 +1,5 @@
 using Application.AI.Common.Interfaces.Context;
+using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Telemetry;
 using Application.AI.Common.Services.Governance;
 using Domain.AI.Context;
@@ -35,6 +36,7 @@ public sealed class FileSystemToolResultStore : IToolResultStore
     private const int RedactionScanMargin = 8 * 1024;
 
     private readonly IOptionsMonitor<AppConfig> _options;
+    private readonly ICompositeResponseSanitizer _sanitizer;
     private readonly IContentRedactionFilter _redactionFilter;
     private readonly ILogger<FileSystemToolResultStore> _logger;
 
@@ -42,6 +44,12 @@ public sealed class FileSystemToolResultStore : IToolResultStore
     /// Initializes a new instance of the <see cref="FileSystemToolResultStore"/> class.
     /// </summary>
     /// <param name="options">Application configuration for storage thresholds and paths.</param>
+    /// <param name="sanitizer">
+    /// Applied, unconditionally, to every large result's content before it is written to disk, before
+    /// <paramref name="redactionFilter"/> runs — see <see cref="StoreIfLargeAsync"/>'s own remarks for
+    /// why the injection/exfiltration scan this performs must happen here, at write time, and never
+    /// per fetched page.
+    /// </param>
     /// <param name="redactionFilter">
     /// Applied, unconditionally, to every large result's content before it is written to disk — see
     /// <see cref="StoreIfLargeAsync"/>'s own remarks for why this happens at write time, every time,
@@ -50,10 +58,12 @@ public sealed class FileSystemToolResultStore : IToolResultStore
     /// <param name="logger">Logger for storage diagnostics.</param>
     public FileSystemToolResultStore(
         IOptionsMonitor<AppConfig> options,
+        ICompositeResponseSanitizer sanitizer,
         IContentRedactionFilter redactionFilter,
         ILogger<FileSystemToolResultStore> logger)
     {
         _options = options;
+        _sanitizer = sanitizer;
         _redactionFilter = redactionFilter;
         _logger = logger;
     }
@@ -115,6 +125,24 @@ public sealed class FileSystemToolResultStore : IToolResultStore
             : int.MaxValue;
         var (scanRegion, _) = BoundedText.Cap(fullOutput, scanCeiling, marker: "");
 
+        // Security-review finding: the injection/exfiltration scan is a DIFFERENT mechanism from the
+        // secret redaction below, and closing the redaction boundary-split bug (this method's own
+        // remarks) did nothing for it. That scan otherwise runs once per model-facing CALL
+        // (ToolCallAdmissionPipeline), and #563 gave a single logical result many such calls once it
+        // started paginating — a payload straddling the exact character offset one page ends at was
+        // never fully visible to either page's own scan. A read-side fix (overlap the page a caller
+        // resumes from) was tried and rejected: it depends on the CALLER using the offset this store
+        // suggests, and the model is exactly the caller an injection payload could try to manipulate
+        // into requesting a different one — the same "caller can always choose a new split point" shape
+        // this codebase already rejected a per-page fix for on the redaction side (see the second
+        // revision noted below). Sanitizing here, unconditionally, over the same widened scan region,
+        // before ANY page boundary exists, closes it the same way redaction below is closed: once, over
+        // the whole content, at the one point in this pipeline no future page boundary can split.
+        // Sanitize runs BEFORE redact, mirroring ToolResultText.SanitizeAndRedact's own ordering: an
+        // injection payload is stripped before the now-shorter, already-inert text is scanned for
+        // secret patterns.
+        var sanitized = _sanitizer.Sanitize(scanRegion, toolName).SanitizedContent;
+
         // Security-review finding, third revision: redaction happens HERE, unconditionally, before the
         // write — never gated on the originating call's own classification, and never at read time.
         // Two prior revisions both regressed a guarantee this repo already had:
@@ -135,7 +163,7 @@ public sealed class FileSystemToolResultStore : IToolResultStore
         //      plain-allow path. Unconditional, matching the 1st revision, closes both bypasses at once:
         //      no gate for an adversarial classification to sit outside of, and no page boundary for an
         //      adversarial offset to split across.
-        var redacted = _redactionFilter.Redact(scanRegion, RedactionCategories.All);
+        var redacted = _redactionFilter.Redact(sanitized, RedactionCategories.All);
 
         // #563: bound what actually reaches disk to MaxSpillChars, no matter how large the tool's true
         // output was — an unbounded write is the exact "no silent caps" gap this cap exists to close,
