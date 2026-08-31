@@ -93,6 +93,44 @@ public sealed class FileSystemToolResultStoreTests : IDisposable
         page.TotalChars.Should().Be(output.Length);
     }
 
+    // --- RedactOnRetrieve (security-review finding on #563) --------------------------------
+
+    [Fact]
+    public async Task StoreIfLargeAsync_RedactOnRetrieveTrue_RetrievedPageCarriesTheFlag()
+    {
+        var stored = await _sut.StoreIfLargeAsync(
+            "session1", "tool", null, new string('a', 200),
+            cancellationToken: CancellationToken.None, redactOnRetrieve: true);
+
+        var page = await _sut.RetrievePageAsync(stored.ResultId, "session1", offset: 0, LargePageSize);
+
+        page.RedactOnRetrieve.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task StoreIfLargeAsync_RedactOnRetrieveOmitted_RetrievedPageDoesNotCarryTheFlag()
+    {
+        var stored = await _sut.StoreIfLargeAsync("session1", "tool", null, new string('a', 200));
+
+        var page = await _sut.RetrievePageAsync(stored.ResultId, "session1", offset: 0, LargePageSize);
+
+        page.RedactOnRetrieve.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task RetrievePageAsync_RedactOnRetrieveFlag_SurvivesEveryPageOfAMultiPageResult()
+    {
+        var output = new string('a', 500);
+        var stored = await _sut.StoreIfLargeAsync(
+            "session1", "tool", null, output, cancellationToken: CancellationToken.None, redactOnRetrieve: true);
+
+        var first = await _sut.RetrievePageAsync(stored.ResultId, "session1", offset: 0, maxChars: 100);
+        var second = await _sut.RetrievePageAsync(stored.ResultId, "session1", first.NextOffset, maxChars: 100);
+
+        first.RedactOnRetrieve.Should().BeTrue();
+        second.RedactOnRetrieve.Should().BeTrue();
+    }
+
     [Fact]
     public async Task RetrievePageAsync_MissingId_ThrowsKeyNotFoundException()
     {

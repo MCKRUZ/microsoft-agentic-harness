@@ -493,8 +493,14 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
         // not when it is written — one bounded scan per page instead of one unbounded scan per spill.
         // The re-cut below still operates on `treated`, unchanged: the MODEL-facing text for THIS call
         // is exactly as it always was, only the spilled copy's source changed.
+        // #563 security-review finding: the redaction verdict that gates THIS call's own output
+        // (admission.RedactsOutput) must travel with the spilled copy — a later tool_result_fetch call
+        // is classified as itself, not as this tool, and would otherwise default to no redaction on
+        // read regardless of what this call required. See SpillAndBuildMarkerAsync's redactOnRetrieve
+        // parameter and ToolResultPage.RedactOnRetrieve for the full mechanism.
         var marker = await SpillAndBuildMarkerAsync(
-            toolName, ToolResultText.ExtractText(result), effectiveCeiling).ConfigureAwait(false);
+            toolName, ToolResultText.ExtractText(result), effectiveCeiling, admission.RedactsOutput)
+            .ConfigureAwait(false);
         var (reboundedWithId, _) = ToolResultText.Bound(treated, effectiveCeiling, marker);
 
         // A code-review found this residual gap: ToolResultText.Bound/BudgetedCut walks a multi-block
@@ -630,7 +636,11 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
         // from a signal Cap itself never sees. alwaysEmbedMarker covers both: it only cuts as much of
         // processed as is needed to make room for the marker, never more, and never lets the result
         // exceed ceiling.
-        var marker = await SpillAndBuildMarkerAsync(toolName, content!, effectiveCeiling).ConfigureAwait(false);
+        // #563 security-review finding: same as ApplyOutputPolicyAsync's identical comment — the
+        // redaction verdict for THIS call must travel with the spill, since a later tool_result_fetch
+        // is classified as itself, not as this tool.
+        var marker = await SpillAndBuildMarkerAsync(
+            toolName, content!, effectiveCeiling, admission.RedactsOutput).ConfigureAwait(false);
         var (withId, _) = BoundedText.Cap(processed, effectiveCeiling, marker, alwaysEmbedMarker: true);
 
         // #522: correctness-review and security-review finding on the PR that introduced the aggregate
@@ -678,8 +688,20 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
     /// controls landing together: <see cref="Domain.Common.Config.AI.ContextManagement.ToolResultStorageConfig.MaxSpillChars"/>
     /// bounds how much raw text a single spill can ever put on disk, the storage directory gets owner-only
     /// permissions, and a retention sweep prunes what accumulates there (#559, #527). A fetched page is
-    /// sanitized, redacted, and bounded when it is READ — it flows back through this same pipeline like
-    /// any other tool result — rather than once, unconditionally, at write time.
+    /// sanitized and bounded when it is READ — it flows back through this same pipeline like any other
+    /// tool result — rather than once, unconditionally, at write time.
+    /// </para>
+    /// <para>
+    /// <strong>Redaction on read needs <paramref name="redactOnRetrieve"/>, not this call's admission,
+    /// a second time (security-review finding on #563).</strong> The read-time pipeline pass above
+    /// sanitizes every page unconditionally, but its OWN redaction decision is resolved from
+    /// <c>tool_result_fetch</c>'s classification, not from the classification THIS call ran under — a
+    /// fetch of a result that originally required redaction would otherwise reach the model unredacted,
+    /// because <c>tool_result_fetch</c> itself typically resolves to a default-allow classification.
+    /// <paramref name="redactOnRetrieve"/> is this call's own <c>admission.RedactsOutput</c>, persisted
+    /// alongside the content and returned on every future page as
+    /// <see cref="Domain.AI.Context.ToolResultPage.RedactOnRetrieve"/> — the actual, sufficient
+    /// enforcement, not the read-time pipeline pass, which cannot know the origin.
     /// </para>
     /// <para>
     /// A store failure degrades to the plain marker rather than throwing out of a cut every caller of
@@ -704,7 +726,8 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
     /// before.
     /// </para>
     /// </remarks>
-    private async ValueTask<string> SpillAndBuildMarkerAsync(string toolName, string rawFullText, int sizeThreshold)
+    private async ValueTask<string> SpillAndBuildMarkerAsync(
+        string toolName, string rawFullText, int sizeThreshold, bool redactOnRetrieve)
     {
         // #559: a direct tool invocation mints a fresh, call-scoped ToolResultScopeId that dies with
         // the call — nothing durable can ever ask for it again, so a file written here would be
@@ -719,7 +742,7 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
             var reference = await _resultStore
                 .StoreIfLargeAsync(
                     _executionContext.ToolResultScopeId, toolName, operation: null, rawFullText,
-                    sizeThreshold: sizeThreshold, CancellationToken.None)
+                    sizeThreshold: sizeThreshold, CancellationToken.None, redactOnRetrieve)
                 .ConfigureAwait(false);
 
             if (reference.FullContentPath is null)

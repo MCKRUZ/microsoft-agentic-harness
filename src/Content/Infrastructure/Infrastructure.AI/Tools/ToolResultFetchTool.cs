@@ -1,10 +1,12 @@
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Context;
+using Application.AI.Common.Interfaces.Telemetry;
 using Application.AI.Common.Interfaces.Tools;
 using Domain.AI.Changes;
 using Domain.AI.Models;
 using Domain.AI.Sandbox;
+using Domain.AI.Telemetry.Redaction;
 using Domain.Common.Config;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -65,12 +67,21 @@ namespace Infrastructure.AI.Tools;
 /// </para>
 /// <para>
 /// A fetched PAGE is routed through the normal <c>ToolResult.Ok</c> return, so it flows back through
-/// the same admission pipeline as any other tool result — sanitized, redacted, and bounded exactly
-/// like any other tool's output (#563). The page size this tool requests
+/// the same admission pipeline as any other tool result — sanitized and bounded exactly like any other
+/// tool's output (#563). The page size this tool requests
 /// (<see cref="Domain.Common.Config.AI.ContextManagement.ToolResultStorageConfig.PerResultCharLimit"/>
 /// halved) stays comfortably under that ceiling specifically so a page is never itself truncated and
-/// re-spilled by the pipeline it flows back through — sanitizing or redacting a page can only make it
-/// longer, never shorter, so the margin needs to survive that growth too.
+/// re-spilled by the pipeline it flows back through — sanitizing can only make text longer, never
+/// shorter, so the margin needs to survive that growth too.
+/// </para>
+/// <para>
+/// <strong>Redaction is applied here, explicitly, not left to that read-time pipeline pass</strong>
+/// (security-review finding on #563). The pipeline resolves ITS OWN redaction decision from whichever
+/// tool is currently executing — for this tool, that answer is unrelated to whatever the ORIGINATING
+/// call required. <see cref="Domain.AI.Context.ToolResultPage.RedactOnRetrieve"/> carries that original
+/// verdict, persisted alongside the content at spill time; when it is set, this method redacts the
+/// page itself before returning it, rather than trusting the pipeline to reach the same conclusion a
+/// second time from different information.
 /// </para>
 /// </remarks>
 public sealed class ToolResultFetchTool : ITool
@@ -82,21 +93,25 @@ public sealed class ToolResultFetchTool : ITool
     private readonly IToolResultStore _resultStore;
     private readonly IAmbientRequestScope _ambientScope;
     private readonly IOptionsMonitor<AppConfig> _options;
+    private readonly IContentRedactionFilter _redactionFilter;
     private readonly ILogger<ToolResultFetchTool> _logger;
 
     public ToolResultFetchTool(
         IToolResultStore resultStore,
         IAmbientRequestScope ambientScope,
         IOptionsMonitor<AppConfig> options,
+        IContentRedactionFilter redactionFilter,
         ILogger<ToolResultFetchTool> logger)
     {
         ArgumentNullException.ThrowIfNull(resultStore);
         ArgumentNullException.ThrowIfNull(ambientScope);
         ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(redactionFilter);
         ArgumentNullException.ThrowIfNull(logger);
         _resultStore = resultStore;
         _ambientScope = ambientScope;
         _options = options;
+        _redactionFilter = redactionFilter;
         _logger = logger;
     }
 
@@ -176,15 +191,24 @@ public sealed class ToolResultFetchTool : ITool
                 .RetrievePageAsync(resultId, executionContext.ToolResultScopeId, offset, maxChars, cancellationToken)
                 .ConfigureAwait(false);
 
+            // Security-review finding on #563: the pipeline's own read-time pass sanitizes every page
+            // unconditionally but resolves ITS redaction decision from tool_result_fetch's own
+            // classification, not from the classification the ORIGINATING call ran under — that
+            // decision is what page.RedactOnRetrieve carries. Applied here, at the source, rather than
+            // left to the pipeline pass, which structurally cannot know the origin.
+            var text = page.RedactOnRetrieve
+                ? _redactionFilter.Redact(page.Text, RedactionCategories.All)
+                : page.Text;
+
             if (!page.HasMore)
             {
-                return ToolResult.Ok(page.Text);
+                return ToolResult.Ok(text);
             }
 
             var trailer =
                 $"\n[page ends at {page.NextOffset} of {page.TotalChars} chars — call tool_result_fetch " +
                 $"again with id={resultId}, offset={page.NextOffset}]";
-            return ToolResult.Ok(page.Text + trailer);
+            return ToolResult.Ok(text + trailer);
         }
         catch (KeyNotFoundException)
         {

@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using Application.AI.Common.Interfaces.Context;
 using Application.AI.Common.Services.Governance;
@@ -37,6 +38,19 @@ public sealed class FileSystemToolResultStore : IToolResultStore
     private static readonly Regex AllowedSegmentCharset =
         new("^[A-Za-z0-9_.:-]{1,128}$", RegexOptions.Compiled);
 
+    /// <summary>
+    /// The on-disk shape of a persisted result (security-review finding on #563). A bare text file
+    /// cannot carry <see cref="ToolResultPage.RedactOnRetrieve"/> alongside its content, and that flag
+    /// is exactly what closes the redaction-bypass finding — see that property's remarks. Only the
+    /// disk-persisted branch of <see cref="StoreIfLargeAsync"/> uses this; the inline branch returns
+    /// the caller's own string directly and nothing is ever paged back for it.
+    /// </summary>
+    private sealed record StoredResultEnvelope
+    {
+        public required string Content { get; init; }
+        public bool RedactOnRetrieve { get; init; }
+    }
+
     private readonly IOptionsMonitor<AppConfig> _options;
     private readonly ILogger<FileSystemToolResultStore> _logger;
 
@@ -60,7 +74,8 @@ public sealed class FileSystemToolResultStore : IToolResultStore
         string? operation,
         string fullOutput,
         int? sizeThreshold = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        bool redactOnRetrieve = false)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
         ArgumentException.ThrowIfNullOrWhiteSpace(toolName);
@@ -115,7 +130,11 @@ public sealed class FileSystemToolResultStore : IToolResultStore
         var directory = Path.GetDirectoryName(storagePath)!;
         CreateDirectoryOwnerOnly(directory);
 
-        await File.WriteAllTextAsync(storagePath, spillable, cancellationToken);
+        // Security-review finding on #563: wrapped in an envelope, not written as bare text, so
+        // RedactOnRetrieve travels with the content instead of being lost — see StoredResultEnvelope's
+        // own remarks.
+        var envelope = new StoredResultEnvelope { Content = spillable, RedactOnRetrieve = redactOnRetrieve };
+        await File.WriteAllTextAsync(storagePath, JsonSerializer.Serialize(envelope), cancellationToken);
 
         var previewLength = Math.Min(config.PreviewSizeChars, spillable.Length);
         var preview = $"{spillable[..previewLength]}\n... [{spillable.Length} chars persisted to {resultId}]";
@@ -191,7 +210,7 @@ public sealed class FileSystemToolResultStore : IToolResultStore
             "Retrieving page (offset {Offset}, maxChars {MaxChars}) of result {ResultId} from {Path}",
             offset, maxChars, resultId, storagePath);
 
-        string content;
+        StoredResultEnvelope envelope;
         try
         {
             // #563: the whole stored file is read into memory rather than seeking within the stream.
@@ -200,16 +219,21 @@ public sealed class FileSystemToolResultStore : IToolResultStore
             // nothing that matters, and a plain in-memory Substring sidesteps every edge case a
             // character-counting stream-skip would otherwise have to get right (multi-byte encoding,
             // resuming a skip across buffer boundaries) for a bound that is not actually load-bearing.
-            content = await File.ReadAllTextAsync(storagePath, cancellationToken);
+            var raw = await File.ReadAllTextAsync(storagePath, cancellationToken);
+            envelope = JsonSerializer.Deserialize<StoredResultEnvelope>(raw)
+                ?? throw new KeyNotFoundException($"No stored result found for id '{resultId}'.");
         }
-        catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
+        catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException or JsonException)
         {
             // Deliberately the same exception, with the same message shape, whether resultId was never
             // stored at all or was stored under a DIFFERENT scope — see the interface's own remarks on
-            // why "exists but not yours" must read identically to "does not exist".
+            // why "exists but not yours" must read identically to "does not exist". A malformed envelope
+            // (JsonException) is folded into the same refusal for the identical reason: it must not tell
+            // a caller anything more specific than "not found".
             throw new KeyNotFoundException($"No stored result found for id '{resultId}'.");
         }
 
+        var content = envelope.Content;
         var clampedOffset = Math.Min(offset, content.Length);
         var pageEnd = Math.Min(clampedOffset + maxChars, content.Length);
 
@@ -234,7 +258,8 @@ public sealed class FileSystemToolResultStore : IToolResultStore
         {
             Text = content[clampedOffset..pageEnd],
             NextOffset = pageEnd,
-            TotalChars = content.Length
+            TotalChars = content.Length,
+            RedactOnRetrieve = envelope.RedactOnRetrieve
         };
     }
 

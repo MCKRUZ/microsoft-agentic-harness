@@ -123,6 +123,7 @@ public static partial class DependencyInjection
                 sp.GetRequiredService<Application.AI.Common.Interfaces.Context.IToolResultStore>(),
                 sp.GetRequiredService<Application.AI.Common.Interfaces.IAmbientRequestScope>(),
                 sp.GetRequiredService<IOptionsMonitor<Domain.Common.Config.AppConfig>>(),
+                sp.GetRequiredService<Application.AI.Common.Interfaces.Telemetry.IContentRedactionFilter>(),
                 sp.GetRequiredService<ILogger<ToolResultFetchTool>>()));
 
         // Delegation tool — lets a skill hand a self-contained subtask to the capability-matching

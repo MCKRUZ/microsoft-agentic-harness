@@ -87,8 +87,8 @@ internal static class AdmissionHarness
         store
             .Setup(s => s.StoreIfLargeAsync(
                 It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string>(),
-                It.IsAny<int?>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync((string _, string toolName, string? operation, string fullOutput, int? _, CancellationToken _) =>
+                It.IsAny<int?>(), It.IsAny<CancellationToken>(), It.IsAny<bool>()))
+            .ReturnsAsync((string _, string toolName, string? operation, string fullOutput, int? _, CancellationToken _, bool _) =>
                 new ToolResultReference
                 {
                     ResultId = Guid.NewGuid().ToString("N"),
@@ -114,8 +114,8 @@ internal static class AdmissionHarness
         store
             .Setup(s => s.StoreIfLargeAsync(
                 It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string>(),
-                It.IsAny<int?>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync((string scopeId, string toolName, string? operation, string fullOutput, int? _, CancellationToken _) =>
+                It.IsAny<int?>(), It.IsAny<CancellationToken>(), It.IsAny<bool>()))
+            .ReturnsAsync((string scopeId, string toolName, string? operation, string fullOutput, int? _, CancellationToken _, bool _) =>
                 new ToolResultReference
                 {
                     ResultId = Guid.NewGuid().ToString("N"),

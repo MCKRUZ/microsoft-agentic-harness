@@ -31,6 +31,18 @@ public interface IToolResultStore
     /// compared against the store's own configured limit.
     /// </param>
     /// <param name="cancellationToken">Cancellation token.</param>
+    /// <param name="redactOnRetrieve">
+    /// Whether <see cref="ToolResultPage.RedactOnRetrieve"/> must be <see langword="true"/> for every
+    /// page a later <see cref="RetrievePageAsync"/> call returns for this result. Security-review
+    /// finding on #563: the redaction decision that gates a tool's OWN output is resolved from
+    /// whichever tool is currently executing — for a fetch, that is <c>tool_result_fetch</c> itself,
+    /// which typically resolves to a default-allow classification regardless of what the ORIGINATING
+    /// call required. Pass the originating call's own <c>ToolCallAdmission.RedactsOutput</c> here so
+    /// that decision travels with the stored content rather than being silently re-derived (and lost)
+    /// at fetch time. Ignored for a result small enough to stay inline — nothing is ever "retrieved"
+    /// for one; the caller already has it whole. Placed after <paramref name="cancellationToken"/>,
+    /// not before, so every existing positional caller of this method keeps compiling unchanged.
+    /// </param>
     /// <returns>
     /// A <see cref="ToolResultReference"/> containing either the full content as a preview (when
     /// <paramref name="fullOutput"/> is at or under whichever threshold applied) or a truncated preview
@@ -42,7 +54,8 @@ public interface IToolResultStore
         string? operation,
         string fullOutput,
         int? sizeThreshold = null,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default,
+        bool redactOnRetrieve = false);
 
     /// <summary>
     /// Retrieves one bounded page of a previously persisted result, enforced against the scope it was

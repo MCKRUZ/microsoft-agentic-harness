@@ -402,9 +402,9 @@ public sealed class ToolCallAdmissionPipelineTests
         resultStore
             .Setup(s => s.StoreIfLargeAsync(
                 It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string>(),
-                It.IsAny<int?>(), It.IsAny<CancellationToken>()))
-            .Callback<string, string, string?, string, int?, CancellationToken>((_, _, _, text, _, _) => spilledText = text)
-            .ReturnsAsync((string _, string toolName, string? operation, string fullOutput, int? _, CancellationToken _) =>
+                It.IsAny<int?>(), It.IsAny<CancellationToken>(), It.IsAny<bool>()))
+            .Callback<string, string, string?, string, int?, CancellationToken, bool>((_, _, _, text, _, _, _) => spilledText = text)
+            .ReturnsAsync((string _, string toolName, string? operation, string fullOutput, int? _, CancellationToken _, bool _) =>
                 new ToolResultReference
                 {
                     ResultId = Guid.NewGuid().ToString("N"),
@@ -455,7 +455,7 @@ public sealed class ToolCallAdmissionPipelineTests
         resultStore.Verify(
             s => s.StoreIfLargeAsync(
                 It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string>(),
-                It.IsAny<int?>(), It.IsAny<CancellationToken>()),
+                It.IsAny<int?>(), It.IsAny<CancellationToken>(), It.IsAny<bool>()),
             Times.Never,
             "the write itself must be skipped, not just the retrieval id");
     }
@@ -474,9 +474,9 @@ public sealed class ToolCallAdmissionPipelineTests
         resultStore
             .Setup(s => s.StoreIfLargeAsync(
                 It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string>(),
-                It.IsAny<int?>(), It.IsAny<CancellationToken>()))
-            .Callback<string, string, string?, string, int?, CancellationToken>((_, _, _, text, _, _) => spilledText = text)
-            .ReturnsAsync((string _, string toolName, string? operation, string fullOutput, int? _, CancellationToken _) =>
+                It.IsAny<int?>(), It.IsAny<CancellationToken>(), It.IsAny<bool>()))
+            .Callback<string, string, string?, string, int?, CancellationToken, bool>((_, _, _, text, _, _, _) => spilledText = text)
+            .ReturnsAsync((string _, string toolName, string? operation, string fullOutput, int? _, CancellationToken _, bool _) =>
                 new ToolResultReference
                 {
                     ResultId = Guid.NewGuid().ToString("N"),
@@ -508,9 +508,9 @@ public sealed class ToolCallAdmissionPipelineTests
         resultStore
             .Setup(s => s.StoreIfLargeAsync(
                 It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string>(),
-                It.IsAny<int?>(), It.IsAny<CancellationToken>()))
-            .Callback<string, string, string?, string, int?, CancellationToken>((_, _, _, text, _, _) => spilledText = text)
-            .ReturnsAsync((string _, string toolName, string? operation, string fullOutput, int? _, CancellationToken _) =>
+                It.IsAny<int?>(), It.IsAny<CancellationToken>(), It.IsAny<bool>()))
+            .Callback<string, string, string?, string, int?, CancellationToken, bool>((_, _, _, text, _, _, _) => spilledText = text)
+            .ReturnsAsync((string _, string toolName, string? operation, string fullOutput, int? _, CancellationToken _, bool _) =>
                 new ToolResultReference
                 {
                     ResultId = Guid.NewGuid().ToString("N"),
@@ -530,6 +530,84 @@ public sealed class ToolCallAdmissionPipelineTests
         spilledText.Should().Be(originalText,
             "the full 20,000-char original must reach the store, not a copy already cut to the "
             + "200+8192-char scan-cost bound");
+    }
+
+    [Fact]
+    public async Task ApplyOutputPolicy_RedactingAdmission_PassesRedactOnRetrieveTrueToTheStore()
+    {
+        // #563 security-review finding: THIS call's own redaction verdict must reach the store as
+        // redactOnRetrieve, because a later tool_result_fetch is classified as itself, not as this
+        // tool, and would otherwise default to no redaction on read regardless of what this call
+        // required.
+        bool? redactOnRetrieve = null;
+        var resultStore = new Mock<IToolResultStore>();
+        resultStore
+            .Setup(s => s.StoreIfLargeAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string>(),
+                It.IsAny<int?>(), It.IsAny<CancellationToken>(), It.IsAny<bool>()))
+            .Callback<string, string, string?, string, int?, CancellationToken, bool>(
+                (_, _, _, _, _, _, redact) => redactOnRetrieve = redact)
+            .ReturnsAsync((string _, string toolName, string? operation, string fullOutput, int? _, CancellationToken _, bool _) =>
+                new ToolResultReference
+                {
+                    ResultId = Guid.NewGuid().ToString("N"),
+                    ToolName = toolName,
+                    Operation = operation,
+                    PreviewContent = fullOutput,
+                    FullContentPath = "/fake/persisted.json",
+                    SizeChars = fullOutput.Length,
+                    Timestamp = DateTimeOffset.UtcNow
+                });
+
+        var classificationGate = new Mock<IToolClassificationGate>();
+        classificationGate
+            .Setup(g => g.RedactResult(It.IsAny<string>(), It.IsAny<object?>()))
+            .Returns((string _, object? result) => result);
+
+        var pipeline = AdmissionHarness.Pipeline(
+            outputCeiling: 200, resultStore: resultStore.Object, classificationGate: classificationGate.Object);
+
+        await pipeline.ApplyOutputPolicyAsync(
+            ToolCallAdmission.AllowWithOutputRedaction(), Tool, new string('x', 20_000), CancellationToken.None);
+
+        redactOnRetrieve.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task TryApplyTextOutputPolicy_RedactingAdmission_PassesRedactOnRetrieveTrueToTheStore()
+    {
+        bool? redactOnRetrieve = null;
+        var resultStore = new Mock<IToolResultStore>();
+        resultStore
+            .Setup(s => s.StoreIfLargeAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string>(),
+                It.IsAny<int?>(), It.IsAny<CancellationToken>(), It.IsAny<bool>()))
+            .Callback<string, string, string?, string, int?, CancellationToken, bool>(
+                (_, _, _, _, _, _, redact) => redactOnRetrieve = redact)
+            .ReturnsAsync((string _, string toolName, string? operation, string fullOutput, int? _, CancellationToken _, bool _) =>
+                new ToolResultReference
+                {
+                    ResultId = Guid.NewGuid().ToString("N"),
+                    ToolName = toolName,
+                    Operation = operation,
+                    PreviewContent = fullOutput,
+                    FullContentPath = "/fake/persisted.json",
+                    SizeChars = fullOutput.Length,
+                    Timestamp = DateTimeOffset.UtcNow
+                });
+
+        var classificationGate = new Mock<IToolClassificationGate>();
+        classificationGate
+            .Setup(g => g.RedactResult(It.IsAny<string>(), It.IsAny<string?>()))
+            .Returns((string _, string? content) => content);
+
+        var pipeline = AdmissionHarness.Pipeline(
+            outputCeiling: 200, resultStore: resultStore.Object, classificationGate: classificationGate.Object);
+
+        await pipeline.TryApplyTextOutputPolicyAsync(
+            ToolCallAdmission.AllowWithOutputRedaction(), Tool, new string('x', 20_000), CancellationToken.None);
+
+        redactOnRetrieve.Should().BeTrue();
     }
 
     [Fact]
