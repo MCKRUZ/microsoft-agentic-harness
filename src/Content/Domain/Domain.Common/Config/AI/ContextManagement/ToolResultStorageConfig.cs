@@ -36,6 +36,17 @@ public class ToolResultStorageConfig
     /// Gets or sets the base directory path for storing persisted tool results.
     /// Relative paths are resolved from the working directory.
     /// </summary>
+    /// <remarks>
+    /// <strong>Windows operators: restrict this path's ACL yourselves.</strong> Since #563 the
+    /// spilled copy under this path is the tool's raw, unredacted output, and
+    /// <c>FileSystemToolResultStore</c> creates it owner-only on POSIX
+    /// (<c>UnixFileMode.UserRead | UserWrite | UserExecute</c>) but falls back to whatever ACL the
+    /// parent directory hands it on Windows — a security review flagged this as the one control of
+    /// the three that #563 depends on (spill cap, permissions, retention sweep) that is not actually
+    /// enforced on this project's primary platform. If this deployment's threat model includes other
+    /// local accounts on the host, set an explicit restrictive ACL on this path (or its parent)
+    /// through normal Windows administration; the harness does not do it for you here.
+    /// </remarks>
     public string StoragePath { get; set; } = ".agent-sessions";
 
     /// <summary>

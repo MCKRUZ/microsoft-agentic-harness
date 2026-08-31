@@ -123,6 +123,20 @@ public sealed class ToolOutputCompressionBehavior<TRequest, TResponse>
         // fail-closed rule this helper enforces at every other redaction boundary.
         var redactedOutput = ToolPayloadRedactor.Redact(toolOutput, _secretRedactor);
 
+        var compressionResult = await _compressor.CompressAsync(
+            redactedOutput,
+            category: null,
+            _config.DefaultTokenThreshold,
+            cancellationToken);
+
+        // #559: a direct tool invocation mints a fresh, call-scoped ToolResultScopeId that dies with
+        // the call — nothing durable can ever ask for it again. Skip the write itself here too, the
+        // same guard ToolCallAdmissionPipeline.SpillAndBuildMarkerAsync applies — this sibling path
+        // was left open when that guard was added and would otherwise still persist an unreachable
+        // file on every compression on this path.
+        if (!_executionContext.HasRetrievableToolResultScope)
+            return ReplaceToolOutput(response, compressionResult.Output);
+
         var reference = await _resultStore.StoreIfLargeAsync(
             sessionId,
             toolRequest.ToolName,
@@ -130,19 +144,16 @@ public sealed class ToolOutputCompressionBehavior<TRequest, TResponse>
             redactedOutput,
             cancellationToken: cancellationToken);
 
-        var compressionResult = await _compressor.CompressAsync(
-            redactedOutput,
-            category: null,
-            _config.DefaultTokenThreshold,
-            cancellationToken);
-
-        // #561: the SAME marker shape ToolCallAdmissionPipeline emits and ToolResultFetchTool
-        // recognizes — this behavior used to hand-roll its own "result://{id}" phrase, a shape nothing
-        // ever resolved, so the retrieval id it advertised was permanently dead. Sharing the constant
-        // means the two can never drift apart again the way they already had once.
-        var compressedWithRef =
-            compressionResult.Output
-            + string.Format(ToolCallAdmissionPipeline.SpilledResultMarkerFormat, reference.ResultId);
+        // #561/correctness: StoreIfLargeAsync keeps small content inline (FullContentPath null, no
+        // file written) whenever redactedOutput is at or under PerResultCharLimit — reachable here
+        // because this behavior's OWN threshold is token-based (DefaultTokenThreshold, ~2000 tokens)
+        // and can trip well below that char limit. Appending the retrieval marker unconditionally, as
+        // an earlier version of this fix did, advertised an id tool_result_fetch could never resolve
+        // for every output in that band. Mirrors SpillAndBuildMarkerAsync's identical guard.
+        var compressedWithRef = reference.FullContentPath is null
+            ? compressionResult.Output
+            : compressionResult.Output
+                + string.Format(ToolCallAdmissionPipeline.SpilledResultMarkerFormat, reference.ResultId);
 
         _logger.LogInformation(
             "Compressed tool {ToolName} output from {OriginalTokens} to {CompressedTokens} tokens (strategy: {Strategy}, ref: {ResultId})",

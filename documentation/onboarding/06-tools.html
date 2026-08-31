@@ -389,10 +389,12 @@ services.AddKeyedSingleton&lt;ITool&gt;(RestrictedSearchTool.ToolName, (sp, _) =
                             <p style="margin: 0">
                                 Compression is a best-effort shrink, not a guarantee. Output still over the final
                                 character ceiling after compression is truncated by <code>ToolCallAdmissionPipeline</code>
-                                and marked with <code>[tool output truncated — full output available via
-                                tool_result_fetch, id=...]</code>. The agent can call the <code>tool_result_fetch</code>
-                                tool with that id to retrieve the rest, scoped to its own conversation — a different
-                                conversation's id always reads back as "not found."
+                                and marked with <code>[tool output truncated — retrieve the rest in pages with
+                                tool_result_fetch, id=...]</code>. The agent calls <code>tool_result_fetch</code> with
+                                that id to page through the rest — each call returns one bounded page, scoped to its
+                                own conversation, and a page that isn't the last one carries its own trailer naming
+                                the <code>offset</code> to pass on the next call. A different conversation's id always
+                                reads back as "not found."
                             </p>
                         </div>
                     </div>

@@ -197,6 +197,14 @@ public sealed class FileSystemToolResultStoreTests : IDisposable
     [InlineData("semi;colon")]
     [InlineData("null\0byte")]
     [InlineData("emoji🙂")]
+    // Security-review regression: ':' was in an earlier version of this allowlist on the (incorrect)
+    // claim that a bare drive reference is "drive-relative, not rooted". Path.IsPathRooted measures
+    // both of these as TRUE on Windows, and Path.Combine discards every earlier path segment once one
+    // is rooted — "C:foo" as a scope id wrote raw, unredacted tool output to <processCWD>\foo\...,
+    // entirely outside StoragePath, unswept and (on Windows) unprotected by directory permissions.
+    [InlineData("C:")]
+    [InlineData("C:foo")]
+    [InlineData("scope:with:colons")]
     public async Task StoreIfLargeAsync_SessionIdOutsideTheAllowedCharset_ThrowsArgumentException(string sessionId)
     {
         var act = () => _sut.StoreIfLargeAsync(sessionId, "tool", null, "data");
@@ -205,12 +213,23 @@ public sealed class FileSystemToolResultStoreTests : IDisposable
             .WithParameterName("sessionId");
     }
 
+    [Fact]
+    public async Task StoreIfLargeAsync_WindowsDriveRootedSessionId_NeverWritesOutsideStoragePath()
+    {
+        // The concrete regression the security review demonstrated: even if a future charset change
+        // re-admits ':', SanitizeSessionSegment's own Path.IsPathRooted check must independently
+        // refuse this — proving containment does not depend on the charset alone.
+        var act = () => _sut.StoreIfLargeAsync("C:foo", "tool", null, "data");
+
+        await act.Should().ThrowAsync<ArgumentException>();
+        Directory.Exists(Path.Combine(_tempDir, "..", "foo")).Should().BeFalse();
+    }
+
     [Theory]
     // Negative controls: every character class the allowlist admits, proving the regex above isn't
     // accidentally rejecting a legitimate id shape while it's busy rejecting the bad ones.
     [InlineData("conversation-id-123")]
     [InlineData("plan_run.42")]
-    [InlineData("scope:with:colons")]
     [InlineData("ABCDEFabcdef0123456789")]
     public async Task StoreIfLargeAsync_SessionIdWithinTheAllowedCharset_DoesNotThrow(string sessionId)
     {

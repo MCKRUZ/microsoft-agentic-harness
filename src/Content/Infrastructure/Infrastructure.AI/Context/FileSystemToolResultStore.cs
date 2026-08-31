@@ -19,13 +19,19 @@ public sealed class FileSystemToolResultStore : IToolResultStore
     // complete enumeration of characters a legitimate scope id can ever need (durable conversation
     // ids, plan/run ids, and minted GUIDs all fit it), so anything outside it is refused outright
     // rather than pattern-matched against known-dangerous cases. Neither '/' nor '\' — the only two
-    // path separators across platforms — are in the set, which is what actually closes the
-    // traversal/UNC-egress class this guards against; a rooted absolute path also cannot match
-    // (no leading '/' , and a bare drive letter like "C:" is drive-relative, not rooted, and is not
-    // a valid Windows path segment either way). The 128-char cap bounds an otherwise-unbounded
-    // caller-supplied string before it becomes a directory name.
+    // path separators across platforms — are in the set.
+    //
+    // Deliberately does NOT include ':' — a security review of this exact allowlist measured
+    // Path.IsPathRooted("C:") and Path.IsPathRooted("C:foo") as TRUE on Windows (a bare drive
+    // reference is rooted, not drive-relative — the opposite of what an earlier version of this
+    // comment claimed), and Path.Combine discards every earlier segment once one is rooted. With ':'
+    // admitted and no rooted-path check of its own, a scope id of "C:foo" wrote OUTSIDE StoragePath
+    // entirely — unswept, unredacted (#563), and on Windows unprotected by CreateDirectoryOwnerOnly
+    // too. SanitizeSessionSegment's own Path.IsPathRooted check below is the actual backstop against
+    // this whole class regardless of what any charset admits; excluding ':' here removes the one
+    // character this store's own callers could supply that made it reachable.
     private static readonly Regex AllowedSegmentCharset =
-        new("^[A-Za-z0-9_.:-]{1,128}$", RegexOptions.Compiled);
+        new("^[A-Za-z0-9_.-]{1,128}$", RegexOptions.Compiled);
 
     private readonly IOptionsMonitor<AppConfig> _options;
     private readonly ILogger<FileSystemToolResultStore> _logger;
@@ -210,6 +216,14 @@ public sealed class FileSystemToolResultStore : IToolResultStore
         if (pageEnd > clampedOffset && char.IsHighSurrogate(content[pageEnd - 1]))
         {
             pageEnd--;
+
+            // Correctness-review finding: pulling back must never leave zero progress while content
+            // remains, or a caller retrying with the returned NextOffset (== the offset it just sent)
+            // gets the identical empty page forever. Reachable at maxChars as small as 1 landing
+            // exactly on a pair's high surrogate. Push forward past the whole pair instead — the one
+            // situation where a page is allowed to exceed maxChars, and only by one character.
+            if (pageEnd == clampedOffset)
+                pageEnd = Math.Min(clampedOffset + 2, content.Length);
         }
 
         return new ToolResultPage
@@ -233,26 +247,41 @@ public sealed class FileSystemToolResultStore : IToolResultStore
         var cutoffUtc = DateTime.UtcNow - gracePeriod;
         var removed = 0;
 
-        foreach (var filePath in Directory.EnumerateFiles(storagePath, "*.json", SearchOption.AllDirectories))
+        // Correctness-review finding: StoragePath defaults to ".agent-sessions", the harness's whole
+        // shared state root (governance/egress/escalation/changes/delegations all live under it,
+        // per FoundryHostBootstrap) — NOT a directory this store owns exclusively. Enumerating
+        // "*.json" with AllDirectories under that root would delete any *.json a future consumer adds
+        // anywhere in that tree. Only ever descend into the exact shape StoreIfLargeAsync writes:
+        // {StoragePath}/{scope}/tool-results/{resultId}.json — one level of scope directories, each
+        // with exactly one "tool-results" child.
+        foreach (var scopeDir in Directory.EnumerateDirectories(storagePath))
         {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            if (File.GetLastWriteTimeUtc(filePath) >= cutoffUtc)
+            var toolResultsDir = Path.Combine(scopeDir, "tool-results");
+            if (!Directory.Exists(toolResultsDir))
                 continue;
 
-            try
+            foreach (var filePath in Directory.EnumerateFiles(toolResultsDir, "*.json"))
             {
-                File.Delete(filePath);
-                removed++;
-                RemoveIfEmpty(Path.GetDirectoryName(filePath));
+                cancellationToken.ThrowIfCancellationRequested();
+
+                if (File.GetLastWriteTimeUtc(filePath) >= cutoffUtc)
+                    continue;
+
+                try
+                {
+                    File.Delete(filePath);
+                    removed++;
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    // One file's deletion failing (concurrently deleted, permissions) must not stop
+                    // the sweep from reclaiming everything else it can — the same must-not-throw
+                    // discipline ToolCallAdmissionPipeline applies to a spill failure.
+                    _logger.LogWarning(ex, "Failed to delete expired tool result at {Path}; will retry on the next sweep.", filePath);
+                }
             }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-            {
-                // One file's deletion failing (concurrently deleted, permissions) must not stop the
-                // sweep from reclaiming everything else it can — the same must-not-throw discipline
-                // ToolCallAdmissionPipeline applies to a spill failure.
-                _logger.LogWarning(ex, "Failed to delete expired tool result at {Path}; will retry on the next sweep.", filePath);
-            }
+
+            RemoveIfEmptyUpTo(toolResultsDir, storagePath);
         }
 
         return Task.FromResult(removed);
@@ -260,11 +289,19 @@ public sealed class FileSystemToolResultStore : IToolResultStore
 
     /// <summary>
     /// Removes <paramref name="directory"/>, and its parent if that too is now empty, so a fully
-    /// swept scope does not leave empty <c>tool-results</c>/scope directories behind forever.
+    /// swept scope does not leave empty <c>tool-results</c>/scope directories behind forever. Never
+    /// climbs to or above <paramref name="root"/> — a security-review finding on an earlier version
+    /// of this method noted its only stop condition was "the directory is empty", so once the last
+    /// spilled file anywhere was reclaimed it would keep deleting empty ancestors past the storage
+    /// root the caller never asked it to touch.
     /// </summary>
-    private static void RemoveIfEmpty(string? directory)
+    private static void RemoveIfEmptyUpTo(string directory, string root)
     {
-        while (directory is not null && Directory.Exists(directory) && !Directory.EnumerateFileSystemEntries(directory).Any())
+        var rootFullPath = Path.GetFullPath(root);
+
+        while (!string.Equals(Path.GetFullPath(directory), rootFullPath, StringComparison.OrdinalIgnoreCase)
+            && Directory.Exists(directory)
+            && !Directory.EnumerateFileSystemEntries(directory).Any())
         {
             try
             {
@@ -277,7 +314,10 @@ public sealed class FileSystemToolResultStore : IToolResultStore
                 return;
             }
 
-            directory = Path.GetDirectoryName(directory);
+            var parent = Path.GetDirectoryName(directory);
+            if (parent is null)
+                return;
+            directory = parent;
         }
     }
 
@@ -324,13 +364,25 @@ public sealed class FileSystemToolResultStore : IToolResultStore
         // scope id (durable conversation ids, plan/run ids, minted GUIDs, and any future caller) is
         // covered by construction — not just the specific traversal strings a prior review happened
         // to find — because anything outside this charset is refused outright. Neither path
-        // separator is in the set, which is what closes traversal and UNC egress; a rooted absolute
-        // path cannot match either. Checked first so a malformed id gets one clear rejection reason
-        // rather than falling through to a more specific but less informative message below.
+        // separator is in the set, which is what closes traversal and UNC egress. Checked first so a
+        // malformed id gets one clear rejection reason rather than falling through to a more specific
+        // but less informative message below.
         if (!AllowedSegmentCharset.IsMatch(sessionId))
         {
             throw new ArgumentException(
-                "Session ID must be 1-128 characters from [A-Za-z0-9_.:-].", paramName);
+                "Session ID must be 1-128 characters from [A-Za-z0-9_.-].", paramName);
+        }
+
+        // Independent of the charset above, deliberately — a security review found that admitting
+        // ':' let "C:" and "C:foo" through as a "drive-relative, not rooted" value the comment there
+        // asserted was safe; Path.IsPathRooted measures both as TRUE on Windows, and Path.Combine
+        // discards every earlier segment once one is rooted, writing outside StoragePath entirely.
+        // This check is what actually enforces "never rooted" regardless of what any charset admits —
+        // including a future charset change that reintroduces the same mistake.
+        if (Path.IsPathRooted(sessionId))
+        {
+            throw new ArgumentException(
+                "Session ID must not be an absolute or drive-rooted path.", paramName);
         }
 
         // "." and ".." are within the allowed charset but resolve to the storage root or a parent
