@@ -86,10 +86,35 @@ namespace Infrastructure.AI.Tools;
 /// unconditionally, before the write: whatever this tool reads back is already safe, and a page is
 /// just a slice of it.
 /// </para>
+/// <para>
+/// <strong>The injection/exfiltration scan is a DIFFERENT mechanism from redaction above, and is NOT
+/// closed by write-time redaction.</strong> (Security-review finding.) That scan is not something the
+/// store persists ahead of time — it runs once per CALL, on whatever text a call returns, as part of
+/// the generic admission pipeline every tool result flows through (the last remark above). Before
+/// pagination existed, "once per call" and "once for the whole result" were the same thing; #563 made
+/// them different, since a single logical result now returns across many calls, each scanned in
+/// isolation. A payload straddling the exact character offset one page ends at is therefore never
+/// fully visible to either page's own scan. <see cref="ExecuteAsync"/> closes this the same way this
+/// codebase closes every other "a cut boundary defeats a pattern match" case (compare
+/// <c>FileSystemToolResultStore.RedactionScanMargin</c>, <c>ToolCallAdmissionPipeline.ScrubOverlapMargin</c>):
+/// the offset it tells the model to resume from is pulled back by <see cref="PageScanOverlapMargin"/>
+/// characters from where the page actually ended, so the NEXT call's own independent scan re-covers
+/// this page's tail in full — any pattern up to that length crossing the true boundary is guaranteed
+/// (standard overlapping-window argument) to be wholly contained in at least one of the two calls' own
+/// scanned text, and can be caught there before that call's text is ever returned. The cost is a small,
+/// fixed slice of text shown twice across two calls; there is no fix that avoids this while still
+/// scanning strictly one page per call, the constraint every design in this subsystem preserves.
+/// </para>
 /// </remarks>
 public sealed class ToolResultFetchTool : ITool
 {
     public const string ToolName = "tool_result_fetch";
+
+    // Security-review finding: same 8KB value as FileSystemToolResultStore.RedactionScanMargin and
+    // ToolCallAdmissionPipeline.ScrubOverlapMargin — comfortably exceeds every pattern the injection/
+    // exfiltration sanitizer (or the redaction filter, defense in depth) matches. See this type's own
+    // remarks and ExecuteAsync for the overlapping-window argument this margin makes correct.
+    private const int PageScanOverlapMargin = 8 * 1024;
 
     private static readonly IReadOnlyList<string> Operations = ["fetch"];
 
@@ -200,9 +225,16 @@ public sealed class ToolResultFetchTool : ITool
                 return ToolResult.Ok(text);
             }
 
+            // Security-review finding: the resumption offset told to the model is pulled back by
+            // PageScanOverlapMargin from where the page actually ended (page.NextOffset), not that
+            // value itself — see this type's own remarks for the overlapping-window argument this
+            // makes correct. Math.Max keeps forward progress even if maxChars is configured smaller
+            // than the margin, mirroring RetrievePageAsync's own "never leave zero progress" guard.
+            var resumeOffset = Math.Max(offset + 1, page.NextOffset - PageScanOverlapMargin);
+
             var trailer =
                 $"\n[page ends at {page.NextOffset} of {page.TotalChars} chars — call tool_result_fetch " +
-                $"again with id={resultId}, offset={page.NextOffset}]";
+                $"again with id={resultId}, offset={resumeOffset}]";
             return ToolResult.Ok(text + trailer);
         }
         catch (KeyNotFoundException)

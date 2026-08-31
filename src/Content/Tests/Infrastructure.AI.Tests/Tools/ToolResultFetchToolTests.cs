@@ -67,20 +67,70 @@ public sealed class ToolResultFetchToolTests
     [Fact]
     public async Task ExecuteAsync_PageWithMoreAvailable_TrailerFollowsTheText()
     {
+        // NextOffset comfortably exceeds PageScanOverlapMargin (8KB) so the trailer's resumption
+        // offset (pulled back by that margin — see ExecuteAsync_PageWithMoreAvailable_ below) still
+        // reflects real forward progress rather than being swallowed by the margin's own Math.Max
+        // floor, which small numbers like the old NextOffset=11 always trigger.
         _resultStore
             .Setup(s => s.RetrievePageAsync("result-1", "scope-1", 0, It.IsAny<int>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new ToolResultPage
             {
                 Text = "page-prefix",
-                NextOffset = 11,
-                TotalChars = 100
+                NextOffset = 50_000,
+                TotalChars = 500_000
             });
 
         var tool = BuildTool();
         var result = await tool.ExecuteAsync("fetch", Params(("resultId", "result-1")));
 
         result.Output.Should().StartWith("page-prefix");
-        result.Output.Should().Contain("offset=11");
+        result.Output.Should().Contain("offset=41808");
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_PageWithMoreAvailable_TrailerOffsetIsPulledBackByTheScanOverlapMargin()
+    {
+        // Security-review finding: the injection/exfiltration sanitizer scans one page's text per call
+        // (#563 made a single logical result span many calls, each scanned in isolation), so a payload
+        // straddling the exact offset a page ends at is never fully visible to either page's own scan.
+        // Telling the model to resume PageScanOverlapMargin (8KB) chars before that boundary means the
+        // NEXT call's own scan re-covers this page's tail in full, closing the gap. Mutation test:
+        // reverting the trailer to use page.NextOffset directly makes this assert 50000, not 41808.
+        _resultStore
+            .Setup(s => s.RetrievePageAsync("result-1", "scope-1", 0, It.IsAny<int>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ToolResultPage
+            {
+                Text = "page-prefix",
+                NextOffset = 50_000,
+                TotalChars = 500_000
+            });
+
+        var tool = BuildTool();
+        var result = await tool.ExecuteAsync("fetch", Params(("resultId", "result-1")));
+
+        result.Output.Should().Contain("offset=41808");
+        result.Output.Should().NotContain("offset=50000");
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_PageWithMoreAvailable_ResumeOffsetNeverGoesBackwardOfTheRequestedOffset()
+    {
+        // Guards the Math.Max floor: a page smaller than the overlap margin must still make forward
+        // progress (offset + 1), never resume at or before the offset this very call was given —
+        // otherwise a caller retrying with the returned offset would re-read the same page forever.
+        _resultStore
+            .Setup(s => s.RetrievePageAsync("result-1", "scope-1", 100, It.IsAny<int>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ToolResultPage
+            {
+                Text = "short",
+                NextOffset = 105,
+                TotalChars = 1_000_000
+            });
+
+        var tool = BuildTool();
+        var result = await tool.ExecuteAsync("fetch", Params(("resultId", "result-1"), ("offset", 100)));
+
+        result.Output.Should().Contain("offset=101");
     }
 
     [Fact]

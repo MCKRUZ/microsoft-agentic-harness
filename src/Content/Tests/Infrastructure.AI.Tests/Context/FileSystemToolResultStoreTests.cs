@@ -279,10 +279,26 @@ public sealed class FileSystemToolResultStoreTests : IDisposable
     [InlineData("C:foo")]
     public async Task StoreIfLargeAsync_WindowsDriveRootedSessionId_ThrowsButNeverWritesOutsideStoragePath(string sessionId)
     {
-        var act = () => _sut.StoreIfLargeAsync(sessionId, "tool", null, "data");
+        // Build-and-test finding: Path.IsPathRooted's drive-letter semantics are Windows-only —
+        // Path.IsPathRooted("C:") is true on Windows (what SanitizeSessionSegment rejects here) but
+        // false on Linux/macOS, where a leading '/' is the only rooted shape and the allowed charset
+        // already excludes '/' entirely. This shape poses no escape risk outside Windows: it becomes an
+        // ordinary, contained subdirectory name there, asserted below on both platforms alike — the
+        // invariant that must hold everywhere is "never escapes the storage root", not "always throws".
+        var output = new string('x', 200);
+        var act = () => _sut.StoreIfLargeAsync(sessionId, "tool", null, output);
 
-        await act.Should().ThrowAsync<ArgumentException>()
-            .WithParameterName("sessionId");
+        if (OperatingSystem.IsWindows())
+        {
+            await act.Should().ThrowAsync<ArgumentException>()
+                .WithParameterName("sessionId");
+        }
+        else
+        {
+            await act.Should().NotThrowAsync();
+            Directory.Exists(Path.Combine(_tempDir, sessionId)).Should().BeTrue();
+        }
+
         Directory.Exists(Path.Combine(_tempDir, "..", "foo")).Should().BeFalse();
     }
 

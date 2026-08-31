@@ -89,8 +89,15 @@ public sealed class ToolResultFetchToolCompositionTests
                 // 25 chars — always strictly smaller than whatever was large enough to spill in the
                 // first place), so proving end-to-end retrieval means walking every page the way the
                 // model itself would, following each page's own "call again with offset=N" trailer.
+                // Security-review fix: consecutive pages deliberately overlap by up to
+                // PageScanOverlapMargin raw characters at the seam (see ToolResultFetchTool's own
+                // remarks on the injection/exfiltration scan gap this closes) — the offset each
+                // trailer names to resume from is pulled back from where the page's raw read actually
+                // ended ("page ends at N"), so a walker must skip that already-seen prefix rather than
+                // assume pages abut exactly, or the reassembled text would contain duplicated content.
                 var retrieved = "";
                 var offset = 0;
+                var previousPageRawEnd = 0;
                 while (true)
                 {
                     var result = await tool.ExecuteAsync(
@@ -103,14 +110,17 @@ public sealed class ToolResultFetchToolCompositionTests
 
                     var pageText = result.Output!;
                     var trailerStart = pageText.IndexOf("\n[page ends at", StringComparison.Ordinal);
-                    if (trailerStart < 0)
-                    {
-                        retrieved += pageText;
-                        break;
-                    }
+                    var body = trailerStart < 0 ? pageText : pageText[..trailerStart];
 
-                    retrieved += pageText[..trailerStart];
+                    var overlap = Math.Min(Math.Max(0, previousPageRawEnd - offset), body.Length);
+                    retrieved += body[overlap..];
+
+                    if (trailerStart < 0)
+                        break;
+
                     var trailer = pageText[trailerStart..];
+                    previousPageRawEnd = int.Parse(
+                        trailer["\n[page ends at ".Length..trailer.IndexOf(" of ", StringComparison.Ordinal)]);
                     offset = int.Parse(
                         trailer[(trailer.LastIndexOf("offset=", StringComparison.Ordinal) + 7)..].TrimEnd(']'));
                 }
