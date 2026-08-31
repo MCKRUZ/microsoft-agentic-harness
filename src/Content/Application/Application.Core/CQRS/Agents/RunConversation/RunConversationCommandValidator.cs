@@ -35,7 +35,15 @@ public class RunConversationCommandValidator : AbstractValidator<RunConversation
 		// its independent rooted-path / "." / ".." / trailing-dot checks — see its own remarks for why
 		// each of those matters beyond the charset alone, and for the history of this exact check being
 		// hand-copied (and drifting) across four call sites before being extracted here.
+		// /code-review finding: Cascade(Stop) so a null ConversationId — CLR nullable-reference
+		// annotations do not stop a lenient JSON deserializer from setting a non-nullable string
+		// property to null at runtime — gets exactly the one clear "required" error instead of
+		// FluentValidation's default Continue cascade running every subsequent rule (Matches, Must)
+		// against that same null value. StorageSegmentSafety's own checks are null-safe as a second,
+		// independent layer, but this is the correct place to stop: nothing past NotEmpty is
+		// meaningful to evaluate on a value that already failed it.
 		RuleFor(x => x.ConversationId)
+			.Cascade(CascadeMode.Stop)
 			.NotEmpty().WithMessage("Conversation id is required for a durable conversation.")
 			.Matches(StorageSegmentSafety.AllowedCharset)
 				.WithMessage("Conversation id must be 1-200 characters from [A-Za-z0-9_.:-].")

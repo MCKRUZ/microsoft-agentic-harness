@@ -75,12 +75,33 @@ public class RunConversationCommandValidatorTests
     [Fact]
     public async Task Validate_BlankConversationId_WithNoOwnerId_Fails()
     {
-        // A blank value fails both the NotEmpty and the charset rule — two legitimate errors on
-        // one property, not a bug — so this asserts at least one fires rather than exactly one.
+        // /code-review finding: the ConversationId chain now runs Cascade(Stop), so a blank value
+        // fails only NotEmpty — the charset/shape rules never run against it. Asserts "at least one"
+        // rather than "exactly one" so this test doesn't depend on that cascade detail either way.
         var command = CreateValidCommand() with { ConversationId = "", ConversationOwnerId = null };
 
         var result = await _validator.ValidateAsync(command);
 
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.PropertyName == "ConversationId");
+    }
+
+    [Fact]
+    public async Task Validate_NullConversationId_FailsCleanlyRatherThanThrowing()
+    {
+        // /code-review finding, empirically reproduced: ConversationId is a non-nullable C# string,
+        // but CLR nullable-reference annotations do not stop a lenient JSON deserializer from setting
+        // it to null at runtime, and FluentValidation's default Continue cascade ran the Matches/Must
+        // rules against that null anyway — StorageSegmentSafety.HasTrailingDot's unguarded
+        // value.EndsWith('.') threw a raw NullReferenceException out of ValidateAsync entirely instead
+        // of a clean ValidationFailure. Fixed with Cascade(Stop) plus null-safe checks in
+        // StorageSegmentSafety itself, in depth.
+        var command = CreateValidCommand() with { ConversationId = null! };
+
+        var act = () => _validator.ValidateAsync(command);
+
+        await act.Should().NotThrowAsync();
+        var result = await act();
         result.IsValid.Should().BeFalse();
         result.Errors.Should().Contain(e => e.PropertyName == "ConversationId");
     }

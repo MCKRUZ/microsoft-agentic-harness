@@ -115,6 +115,16 @@ public sealed class ToolOutputCompressionBehavior<TRequest, TResponse>
         // Routed through ToolPayloadRedactor.Redact (not a bare `?? toolOutput`) so a redaction-contract
         // violation fails loudly instead of silently persisting the raw, unredacted output — the same
         // fail-closed rule this helper enforces at every other redaction boundary.
+        //
+        // /code-review finding, investigated and NOT changed: redactedOutput is redacted again,
+        // unconditionally, inside StoreIfLargeAsync below (FileSystemToolResultStore's third-revision
+        // fix). That second pass is deliberate defense in depth, not accidental duplication — the
+        // whole point of making the store's own redaction unconditional was "no gate for ANY caller to
+        // sit outside of, regardless of what it thinks it already did," specifically so a gap or
+        // misconfiguration in ONE redactor (ISecretRedactor here, DefaultContentRedactionFilter there)
+        // does not become a silent bypass. Skipping the store's pass for "already redacted" callers
+        // would reopen exactly the caller-trust-based gate this codebase spent multiple review rounds
+        // closing. The extra regex pass is the accepted cost of that guarantee, not a bug to fix.
         var redactedOutput = ToolPayloadRedactor.Redact(toolOutput, _secretRedactor);
 
         var compressionResult = await _compressor.CompressAsync(

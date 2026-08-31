@@ -32,7 +32,12 @@ public class RunOrchestratedTaskCommandValidator : AbstractValidator<RunOrchestr
 		// RunConversationCommandValidator's identical rule; see that type's remarks for why a value
 		// clearing only the charset still reaches the store as a raw, silently-downgraded
 		// ArgumentException.
+		// /code-review finding: Cascade(Stop) — see RunConversationCommandValidator's identical
+		// addition for why a null ConversationId (a lenient JSON deserializer can set a non-nullable
+		// string property to null at runtime, past what CLR nullable-reference annotations catch)
+		// must stop this chain at NotEmpty rather than continuing into Matches/Must against null.
 		RuleFor(x => x.ConversationId)
+			.Cascade(CascadeMode.Stop)
 			.NotEmpty().WithMessage("Conversation id is required.")
 			.Matches(StorageSegmentSafety.AllowedCharset)
 				.WithMessage("Conversation id must be 1-200 characters from [A-Za-z0-9_.:-].")

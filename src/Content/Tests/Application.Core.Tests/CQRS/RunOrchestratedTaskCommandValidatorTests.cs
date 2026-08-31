@@ -101,12 +101,28 @@ public class RunOrchestratedTaskCommandValidatorTests
     [Fact]
     public async Task Validate_BlankConversationId_Fails()
     {
-        // A blank value fails both the NotEmpty and the charset rule — two legitimate errors on
-        // one property, not a bug — so this asserts at least one fires rather than exactly one.
+        // /code-review finding: the ConversationId chain now runs Cascade(Stop), so a blank value
+        // fails only NotEmpty — the charset/shape rules never run against it. Asserts "at least one"
+        // rather than "exactly one" so this test doesn't depend on that cascade detail either way.
         var command = CreateValidCommand() with { ConversationId = "" };
 
         var result = await _validator.ValidateAsync(command);
 
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.PropertyName == "ConversationId");
+    }
+
+    [Fact]
+    public async Task Validate_NullConversationId_FailsCleanlyRatherThanThrowing()
+    {
+        // /code-review finding — see RunConversationCommandValidatorTests' identical addition for
+        // the full empirically-reproduced NullReferenceException this guards against.
+        var command = CreateValidCommand() with { ConversationId = null! };
+
+        var act = () => _validator.ValidateAsync(command);
+
+        await act.Should().NotThrowAsync();
+        var result = await act();
         result.IsValid.Should().BeFalse();
         result.Errors.Should().Contain(e => e.PropertyName == "ConversationId");
     }

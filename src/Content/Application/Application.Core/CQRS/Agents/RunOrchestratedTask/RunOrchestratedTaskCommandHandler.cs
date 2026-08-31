@@ -128,6 +128,18 @@ public class RunOrchestratedTaskCommandHandler : IRequestHandler<RunOrchestrated
 				await using (var scope = _scopeFactory.CreateAsyncScope())
 				{
 					var mediator = scope.ServiceProvider.GetRequiredService<IMediator>();
+					// /code-review finding, investigated and NOT a bug: ConversationId = the
+					// ORCHESTRATOR's own id, shared by every sub-agent this loop dispatches — which
+					// also becomes their shared IToolResultStore scope (#559-563), meaning sub-agent B
+					// can tool_result_fetch a result sub-agent A spilled. That is the intended
+					// collaboration model for one orchestration, not an isolation gap: the same
+					// scope-sharing already applies, by design, to every tool call WITHIN one ordinary
+					// conversation (tool_result_fetch's whole purpose is fetching a PRIOR call's own
+					// spilled result) and to a plan run's own sub-plan steps (SubPlanStepExecutor
+					// inherits its parent's scope for the identical reason). The isolation boundary
+					// ToolResultScopeId enforces is between DIFFERENT conversations/callers, not
+					// between sub-agents collaborating on one orchestrated task under one conversation
+					// id — that boundary was never claimed to exist here.
 					conversationResult = await mediator.Send(new RunConversationCommand
 					{
 						AgentName = agentName,

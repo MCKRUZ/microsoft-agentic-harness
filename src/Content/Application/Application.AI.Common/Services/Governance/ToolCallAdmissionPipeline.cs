@@ -745,14 +745,19 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
         if (!_executionContext.HasRetrievableToolResultScope)
             return OutputTruncationMarker;
 
-        // /simplify finding: rawFullText is supplied as a factory, not a plain string, so a caller
-        // whose text requires real work to produce (ApplyOutputPolicyAsync's ToolResultText.ExtractText
-        // walks and rejoins every block of a potentially multi-block, unbounded — post-#563 — result)
-        // never pays that cost on the direct-invoke path the guard above already rejects.
-        var rawFullText = rawFullTextFactory();
-
         try
         {
+            // /simplify finding: rawFullText is supplied as a factory, not a plain string, so a caller
+            // whose text requires real work to produce (ApplyOutputPolicyAsync's
+            // ToolResultText.ExtractText walks and rejoins every block of a potentially multi-block,
+            // unbounded — post-#563 — result) never pays that cost on the direct-invoke path the guard
+            // above already rejects. Invoked INSIDE the try, not before it — /code-review finding: this
+            // method's whole contract is "never throws", and ExtractText's own circular-reference
+            // fallback (a JsonSerializer.Serialize call with no cycle handling) can throw; evaluating
+            // the factory before the try would let that escape uncaught instead of degrading to the
+            // plain marker like every other failure on this path.
+            var rawFullText = rawFullTextFactory();
+
             var reference = await _resultStore
                 .StoreIfLargeAsync(
                     _executionContext.ToolResultScopeId, toolName, operation: null, rawFullText,

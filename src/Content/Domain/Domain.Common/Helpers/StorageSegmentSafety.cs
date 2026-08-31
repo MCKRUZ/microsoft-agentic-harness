@@ -41,19 +41,26 @@ public static class StorageSegmentSafety
     public static readonly Regex AllowedCharset = new(@"\A[A-Za-z0-9_.:-]{1,200}\z", RegexOptions.Compiled);
 
     /// <summary>Whether <paramref name="value"/> is exactly <c>"."</c> or <c>".."</c> — within the
-    /// allowed charset but resolving to the current or parent directory once combined into a path.</summary>
-    public static bool IsRelativeDirectoryReference(string value) => value is "." or "..";
+    /// allowed charset but resolving to the current or parent directory once combined into a path.
+    /// <see langword="null"/> is never a relative directory reference — a caller pairing this with
+    /// <see cref="AllowedCharset"/> already refuses null/empty separately with a clearer message.</summary>
+    public static bool IsRelativeDirectoryReference(string? value) => value is "." or "..";
 
     /// <summary>Whether <paramref name="value"/> ends in a dot — within the allowed charset, but
     /// Windows silently strips a trailing dot from a path segment, so two different-looking values
-    /// could otherwise collide onto the same directory.</summary>
-    public static bool HasTrailingDot(string value) => value.EndsWith('.');
+    /// could otherwise collide onto the same directory. Null-safe (returns <see langword="false"/> for
+    /// <see langword="null"/>), matching this type's other two checks — /code-review finding: an
+    /// earlier version took a non-nullable <see langword="string"/> here, which crashed with a
+    /// <see cref="NullReferenceException"/> when reached through a FluentValidation <c>.Must()</c> on
+    /// a property that CLR nullable-reference annotations do not stop a lenient JSON deserializer from
+    /// setting to <see langword="null"/> at runtime.</summary>
+    public static bool HasTrailingDot(string? value) => value is not null && value.EndsWith('.');
 
     /// <summary>
     /// True when <paramref name="value"/> is a relative directory reference, a rooted/absolute path,
     /// or has a trailing dot — the three charset-independent shape checks every storage-segment user
     /// must apply in addition to whichever charset it enforces.
     /// </summary>
-    public static bool HasUnsafeShape(string value) =>
-        IsRelativeDirectoryReference(value) || Path.IsPathRooted(value) || HasTrailingDot(value);
+    public static bool HasUnsafeShape(string? value) =>
+        IsRelativeDirectoryReference(value) || (value is not null && Path.IsPathRooted(value)) || HasTrailingDot(value);
 }

@@ -143,8 +143,14 @@ public sealed class FileSystemToolResultStore : IToolResultStore
         // text (see the widen-then-redact-then-shrink remark above for why this order matters).
         // BoundedText.Cap with an empty marker reuses its surrogate-pair-safe cut rather than a
         // hand-rolled Substring, and is a no-op whenever the redacted region is already within the cap.
-        var (spillable, _) = BoundedText.Cap(redacted, config.MaxSpillChars, marker: "");
-        var spillTruncated = fullOutput.Length > config.MaxSpillChars;
+        // /code-review finding: this flag drives an operator warning only (it never affects what gets
+        // persisted or returned), but must reflect whatever Cap actually cut, not a re-derived
+        // approximation. fullOutput.Length > MaxSpillChars looks equivalent but isn't: redaction can
+        // INFLATE length (a secret becomes a longer placeholder), so content that was under
+        // MaxSpillChars raw could still get real content cut here after redaction grew it past the
+        // cap — a case the re-derived check would silently miss, suppressing a warning that should
+        // have fired.
+        var (spillable, spillTruncated) = BoundedText.Cap(redacted, config.MaxSpillChars, marker: "");
         if (spillTruncated)
         {
             _logger.LogWarning(
@@ -421,6 +427,16 @@ public sealed class FileSystemToolResultStore : IToolResultStore
     /// </exception>
     private static string SanitizeSessionSegment(string sessionId, string paramName)
     {
+        // /code-review finding: this method calls StorageSegmentSafety's three shape checks
+        // INDIVIDUALLY rather than through the combined HasUnsafeShape — deliberately, not an
+        // oversight: each check here throws its own distinct ArgumentException message, which
+        // HasUnsafeShape's single boolean cannot express. PlanRunExecutor's RunId check uses
+        // HasUnsafeShape directly because it only needs one generic rejection outcome. A future shape
+        // rule added to HasUnsafeShape must also be added HERE (and to both command validators'
+        // identical .Must() chains) for the same reason — this is exactly the "shared logic, per-site
+        // wiring" shape that has already drifted twice on this allowlist; do not assume adding a rule
+        // to HasUnsafeShape alone is sufficient.
+        //
         // #560: a positive allowlist, not a growing list of rejected shapes. Every producer of a
         // scope id (durable conversation ids, plan/run ids, minted GUIDs, and any future caller) is
         // covered by construction — not just the specific traversal strings a prior review happened
