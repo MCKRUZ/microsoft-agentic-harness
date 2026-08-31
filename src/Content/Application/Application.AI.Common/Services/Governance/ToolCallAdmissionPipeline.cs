@@ -298,8 +298,16 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
     /// hand-copying the phrase, so the tool's own self-description can never silently drift from the
     /// marker text it actually needs to recognize (a reuse finding from this package's `/simplify` pass).
     /// </summary>
+    /// <remarks>
+    /// Says "in pages", not "full output" (#563): what is spilled can itself exceed
+    /// <c>ToolResultStorageConfig.MaxSpillChars</c> and be capped there too, and even within that cap
+    /// <c>tool_result_fetch</c> only ever returns one bounded page at a time — the same scan-cost bound
+    /// this pipeline applies to every other tool result applies to a fetched page as well, since a page
+    /// flows back through this same pipeline like any other tool output. "Full output" was true of
+    /// neither case and is no longer promised.
+    /// </remarks>
     public const string SpilledResultMarkerFormat =
-        "\n[tool output truncated — full output available via tool_result_fetch, id={0}]";
+        "\n[tool output truncated — retrieve the rest in pages with tool_result_fetch, id={0}]";
 
     /// <summary>
     /// How much beyond <see cref="OutputCeiling"/> is kept while sanitizing and redacting, so a secret
@@ -475,17 +483,18 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
             return bounded;
         }
 
-        // #521: treated (not preCut) is spilled — sanitized/redacted, but not yet cut to ceiling,
-        // preserving the existing "redacted before it ever touches disk" property. The id-carrying
-        // marker is longer than OutputTruncationMarker, so it is never swapped into the
-        // already-ceiling-respecting `bounded` string after the fact — that would silently overshoot
-        // the ceiling by the length difference between the two markers (caught by
-        // ApplyOutputPolicy_OversizedText_IsBoundedAndMarked). Re-cutting treated against the real
-        // marker instead makes ToolResultText.Bound reserve room for it directly; dropped==true here
-        // guarantees treated's TOTAL length is still over ceiling, so the re-cut always drops
-        // something — but for a multi-block AIContent[] result, that guarantee is total-length only.
+        // #563: the ORIGINAL result — before the scan-cost pre-cut, before sanitize/redact — is what
+        // gets spilled, not `treated`. Spilling treated (as before #563) meant the stored copy was
+        // already cut to the scan-cost bound (ceiling + ScrubOverlapMargin), so tool_result_fetch could
+        // never actually return more than that regardless of how large the tool's real output was — the
+        // "full output available" marker overpromised for anything past roughly 58KB at shipped
+        // defaults. Spilling the untreated original instead means a fetched page is sanitized/redacted
+        // when it is READ (that page flows back through this same pipeline like any other tool result),
+        // not when it is written — one bounded scan per page instead of one unbounded scan per spill.
+        // The re-cut below still operates on `treated`, unchanged: the MODEL-facing text for THIS call
+        // is exactly as it always was, only the spilled copy's source changed.
         var marker = await SpillAndBuildMarkerAsync(
-            toolName, ToolResultText.ExtractText(treated), effectiveCeiling).ConfigureAwait(false);
+            toolName, ToolResultText.ExtractText(result), effectiveCeiling).ConfigureAwait(false);
         var (reboundedWithId, _) = ToolResultText.Bound(treated, effectiveCeiling, marker);
 
         // A code-review found this residual gap: ToolResultText.Bound/BudgetedCut walks a multi-block
@@ -603,15 +612,25 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
             return new TextOutputPolicyResult(Success: true, Result: bounded, WasTruncated: false);
         }
 
-        // #521: processed (not preCut) is spilled — sanitized/redacted, but not yet cut to ceiling. The
-        // id-carrying marker is longer than OutputTruncationMarker, so neither a post-hoc replace nor an
-        // unconditional append is safe here: cutAfterProcessing==true means processed is already known
-        // to exceed ceiling, but droppedByPreCut-only means processed is UNDER ceiling — Cap's normal
-        // "nothing to cut, marker not embedded" default would silently drop the id, since this branch
-        // (unlike ApplyOutputPolicyAsync's) already knows wasTruncated=true from a signal Cap itself
-        // never sees. alwaysEmbedMarker covers both: it only cuts as much of processed as is needed to
-        // make room for the marker, never more, and never lets the result exceed ceiling.
-        var marker = await SpillAndBuildMarkerAsync(toolName, processed, effectiveCeiling).ConfigureAwait(false);
+        // #563: the ORIGINAL content — before the scan-cost pre-cut, before sanitize/redact — is what
+        // gets spilled, not `processed`. See ApplyOutputPolicyAsync's identical comment for why: the
+        // stored copy used to be cut to the scan-cost bound before it ever reached disk, so a fetched
+        // page could never exceed that bound regardless of the tool's true output size. `content` is
+        // non-null on every path a well-behaved classification gate can produce — see the null branch
+        // above — and SpillAndBuildMarkerAsync's own catch-all degrades to the plain marker rather than
+        // throwing on the one path a gate that violates its own null-in/null-out contract could still
+        // reach this line with content actually null.
+        //
+        // The re-cut below still operates on `processed`, unchanged: the MODEL-facing text for THIS
+        // call is exactly as it always was. The id-carrying marker is longer than OutputTruncationMarker,
+        // so neither a post-hoc replace nor an unconditional append is safe here: cutAfterProcessing==true
+        // means processed is already known to exceed ceiling, but droppedByPreCut-only means processed is
+        // UNDER ceiling — Cap's normal "nothing to cut, marker not embedded" default would silently drop
+        // the id, since this branch (unlike ApplyOutputPolicyAsync's) already knows wasTruncated=true
+        // from a signal Cap itself never sees. alwaysEmbedMarker covers both: it only cuts as much of
+        // processed as is needed to make room for the marker, never more, and never lets the result
+        // exceed ceiling.
+        var marker = await SpillAndBuildMarkerAsync(toolName, content!, effectiveCeiling).ConfigureAwait(false);
         var (withId, _) = BoundedText.Cap(processed, effectiveCeiling, marker, alwaysEmbedMarker: true);
 
         // #522: correctness-review and security-review finding on the PR that introduced the aggregate
@@ -636,25 +655,31 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
     }
 
     /// <summary>
-    /// Spills <paramref name="fullTreatedText"/> — already sanitized/redacted for the MODEL-facing copy,
-    /// not yet cut to the tool-output ceiling — to <see cref="_resultStore"/> under this execution's
+    /// Spills <paramref name="rawFullText"/> — the tool's original, untreated output, not yet
+    /// sanitized, redacted, or cut — to <see cref="_resultStore"/> under this execution's
     /// <see cref="IAgentExecutionContext.ToolResultScopeId"/>, and returns the marker to substitute for
     /// the plain <see cref="OutputTruncationMarker"/>, carrying the resulting id so a later
-    /// <c>tool_result_fetch</c> call can retrieve the rest (#521).
+    /// <c>tool_result_fetch</c> call can retrieve the rest, one page at a time (#521, #563).
     /// </summary>
     /// <remarks>
     /// <para>
-    /// The AT-REST copy is redacted with <see cref="RedactionCategories.All"/> regardless of
-    /// <see cref="ToolCallAdmission.RedactsOutput"/> — <paramref name="fullTreatedText"/> has only been
-    /// through <see cref="_sanitizer"/> (an injection scrubber, unconditional) on the plain-allow path;
-    /// <see cref="_redactionFilter"/> only ran if the classification gate demanded it. Persisting to
-    /// disk is a stronger exposure than showing the model its own tool's output, so this is not
-    /// optional the way the model-facing redaction decision is — matching the same
-    /// "redact immediately before persistence so secrets never land at rest" rule
-    /// <c>ToolOutputCompressionBehavior</c> already applies at its own persistence boundary. The
-    /// MODEL-facing text (already cut and marked by the caller) is never touched by this — a security
-    /// review found and closed a #521 residual gap: a plain-allow call was writing unredacted secrets
-    /// to disk on every truncation.
+    /// <strong>Raw, not treated, and no longer redacted at rest (#563).</strong> Before #563 this spilled
+    /// <paramref name="rawFullText"/> already sanitized and, on the plain-allow path, additionally
+    /// redacted with <see cref="RedactionCategories.All"/> before writing — but that copy had also
+    /// already been through <see cref="ToolResultText.PreCutForScan(object?, int, int, string)"/>'s
+    /// scan-cost bound, so it could never actually hold more than roughly
+    /// <see cref="OutputCeiling"/> + <see cref="ScrubOverlapMargin"/> characters: the "full output
+    /// available via tool_result_fetch" marker overpromised for anything past that, permanently. Spilling
+    /// the original instead — capped only by
+    /// <see cref="Domain.Common.Config.AI.ContextManagement.ToolResultStorageConfig.MaxSpillChars"/> in
+    /// <see cref="_resultStore"/>, a much larger bound meant for disk rather than a single scan pass —
+    /// makes a genuinely larger retrievable range possible, at the cost of storing text this pipeline has
+    /// not yet scanned for secrets or injected content. That is an acceptable trade only because of three
+    /// controls landing together: <see cref="Domain.Common.Config.AI.ContextManagement.ToolResultStorageConfig.MaxSpillChars"/>
+    /// bounds how much raw text a single spill can ever put on disk, the storage directory gets owner-only
+    /// permissions, and a retention sweep prunes what accumulates there (#559, #527). A fetched page is
+    /// sanitized, redacted, and bounded when it is READ — it flows back through this same pipeline like
+    /// any other tool result — rather than once, unconditionally, at write time.
     /// </para>
     /// <para>
     /// A store failure degrades to the plain marker rather than throwing out of a cut every caller of
@@ -669,24 +694,23 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
     /// config-derived <c>PerResultCharLimit</c>. This method is only ever reached when a caller's own
     /// cut already dropped content against that exact threshold — which, since the aggregate
     /// per-message budget can shrink the ceiling a single result is cut to well below
-    /// <c>PerResultCharLimit</c>, no longer implies <paramref name="fullTreatedText"/> itself exceeds
+    /// <c>PerResultCharLimit</c>, no longer implies <paramref name="rawFullText"/> itself exceeds
     /// the store's own configured limit. Comparing against the caller's real threshold instead of the
     /// store's keeps this a genuine size check rather than an unconditional bypass: a normal-sized
     /// result cut only by the aggregate budget still gets persisted (fixing the gap where the store
     /// judged it too small and returned the plain marker for content that was, in fact, fully
     /// available and recoverable), while nothing here can force disk I/O for content the caller never
-    /// actually decided needed spilling. A store failure, or a redacted result that genuinely still
-    /// can't be written, degrades to the plain marker below exactly as before.
+    /// actually decided needed spilling. A store failure degrades to the plain marker below exactly as
+    /// before.
     /// </para>
     /// </remarks>
-    private async ValueTask<string> SpillAndBuildMarkerAsync(string toolName, string fullTreatedText, int sizeThreshold)
+    private async ValueTask<string> SpillAndBuildMarkerAsync(string toolName, string rawFullText, int sizeThreshold)
     {
         try
         {
-            var atRest = _redactionFilter.Redact(fullTreatedText, RedactionCategories.All);
             var reference = await _resultStore
                 .StoreIfLargeAsync(
-                    _executionContext.ToolResultScopeId, toolName, operation: null, atRest,
+                    _executionContext.ToolResultScopeId, toolName, operation: null, rawFullText,
                     sizeThreshold: sizeThreshold, CancellationToken.None)
                 .ConfigureAwait(false);
 

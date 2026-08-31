@@ -37,4 +37,25 @@ public class ToolResultStorageConfig
     /// Relative paths are resolved from the working directory.
     /// </summary>
     public string StoragePath { get; set; } = ".agent-sessions";
+
+    /// <summary>
+    /// Gets or sets the maximum number of characters of a tool's original output that may ever be
+    /// spilled to disk for later retrieval via <c>tool_result_fetch</c> (#563). Anything beyond this
+    /// is genuinely unrecoverable — the same "no silent caps" convention this file's other limits
+    /// follow, made explicit here because this cap, unlike the others, bounds disk rather than the
+    /// model's context window.
+    /// </summary>
+    /// <remarks>
+    /// The spilled copy is the tool's raw output — not sanitized, not redacted — so that a page can
+    /// be scanned and cleaned on demand, one bounded page at a time, instead of the whole result
+    /// needing an unbounded scan before any of it could be stored (#563; the sanitizer has no
+    /// per-pattern match timeout — #497 — so an unbounded scan is a real cost concern, not a
+    /// theoretical one). Storing raw is a real step back from redacting at rest, which this store's
+    /// spill path always did before #563; this cap is what keeps that acceptable — bounded disk
+    /// exposure, owner-only directory permissions, and a retention sweep are the three controls that
+    /// together make raw-at-rest a deliberate trade-off rather than an oversight. 5,000,000 (~5 MB,
+    /// ~1.25M tokens) comfortably holds a full build log or a large file read while still bounding
+    /// what one runaway tool call can put on disk before the retention sweep reclaims it.
+    /// </remarks>
+    public int MaxSpillChars { get; set; } = 5_000_000;
 }

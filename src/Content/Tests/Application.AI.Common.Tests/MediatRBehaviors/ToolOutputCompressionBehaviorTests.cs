@@ -40,7 +40,10 @@ public sealed class ToolOutputCompressionBehaviorTests
         ToolOutputCompressionConfig? config = null)
     {
         var options = Options.Create(config ?? _config);
+        // #561: sourced from ToolResultScopeId, not ConversationId — the same scope tool_result_fetch
+        // reads back with. Both setups kept so a test asserting on either property still gets a value.
         _executionContext.Setup(x => x.ConversationId).Returns("session-1");
+        _executionContext.Setup(x => x.ToolResultScopeId).Returns("session-1");
         return new ToolOutputCompressionBehavior<ToolTestRequest, Result<ToolTestResponse>>(
             _compressor.Object,
             _resultStore.Object,
@@ -127,7 +130,13 @@ public sealed class ToolOutputCompressionBehaviorTests
 
         Assert.True(result.IsSuccess);
         Assert.Contains("compressed summary", result.Value!.ToolOutput);
-        Assert.Contains("[Full output: result://ref-123]", result.Value!.ToolOutput);
+        // #561: the same marker shape ToolCallAdmissionPipeline emits and ToolResultFetchTool
+        // recognizes — this behavior used to hand-roll its own "result://" phrase that nothing resolved.
+        Assert.Contains(
+            string.Format(
+                Application.AI.Common.Services.Governance.ToolCallAdmissionPipeline.SpilledResultMarkerFormat,
+                "ref-123"),
+            result.Value!.ToolOutput);
 
         _resultStore.Verify(
             x => x.StoreIfLargeAsync("session-1", "test_tool", null, largeOutput, It.IsAny<int?>(), It.IsAny<CancellationToken>()),
@@ -135,6 +144,48 @@ public sealed class ToolOutputCompressionBehaviorTests
         _compressor.Verify(
             x => x.CompressAsync(largeOutput, null, 2000, It.IsAny<CancellationToken>()),
             Times.Once);
+    }
+
+    [Fact]
+    public async Task CompressIfNeeded_SpilledResult_EmitsTheSameMarkerShapeToolResultFetchAdvertises()
+    {
+        // #561: pins the marker shape directly against the pipeline's own constant, so this behavior
+        // and ToolResultFetchTool can never silently drift apart the way they already had once.
+        var largeOutput = new string('x', 9000);
+        var output = new ToolTestResponse(largeOutput);
+        var behavior = CreateBehavior();
+
+        var reference = new ToolResultReference
+        {
+            ResultId = "ref-789",
+            ToolName = "test_tool",
+            PreviewContent = "preview...",
+            SizeChars = 9000,
+            Timestamp = DateTimeOffset.UtcNow
+        };
+
+        _resultStore.Setup(x => x.StoreIfLargeAsync("session-1", "test_tool", null, largeOutput, It.IsAny<int?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(reference);
+        _compressor.Setup(x => x.CompressAsync(largeOutput, null, 2000, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new CompressionResult
+            {
+                Output = "compressed summary",
+                OriginalTokens = 2250,
+                CompressedTokens = 5,
+                Strategy = "Json",
+                WasCompressed = true
+            });
+
+        var result = await behavior.Handle(
+            new ToolTestRequest("test_tool"),
+            () => Task.FromResult(Result<ToolTestResponse>.Success(output)),
+            CancellationToken.None);
+
+        Assert.Contains(
+            string.Format(
+                Application.AI.Common.Services.Governance.ToolCallAdmissionPipeline.SpilledResultMarkerFormat,
+                "ref-789"),
+            result.Value!.ToolOutput);
     }
 
     [Fact]

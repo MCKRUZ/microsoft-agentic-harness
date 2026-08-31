@@ -106,4 +106,46 @@ public class ToolResultStorageConfigValidatorTests
         result.IsValid.Should().BeFalse();
         result.Errors.Should().Contain(e => e.PropertyName == nameof(ToolResultStorageConfig.StoragePath));
     }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public async Task Validate_NonPositiveMaxSpillChars_HasError(int limit)
+    {
+        var config = new ToolResultStorageConfig { MaxSpillChars = limit };
+
+        var result = await _validator.ValidateAsync(config);
+
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.PropertyName == nameof(ToolResultStorageConfig.MaxSpillChars));
+    }
+
+    [Fact]
+    public async Task Validate_MaxSpillCharsBelowPerResultLimit_HasError()
+    {
+        // #563: a spill cap smaller than the ceiling that triggers spilling would refuse to persist
+        // the very results it exists to make retrievable.
+        var config = new ToolResultStorageConfig { PerResultCharLimit = 50_000, MaxSpillChars = 10_000 };
+
+        var result = await _validator.ValidateAsync(config);
+
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.PropertyName == nameof(ToolResultStorageConfig.MaxSpillChars));
+    }
+
+    [Fact]
+    public async Task Validate_MaxSpillCharsEqualToPerResultLimit_NoErrors()
+    {
+        var config = new ToolResultStorageConfig
+        {
+            PerResultCharLimit = 1_000,
+            PreviewSizeChars = 1_000,
+            AggregatePerMessageCharLimit = 1_000,
+            MaxSpillChars = 1_000
+        };
+
+        var result = await _validator.ValidateAsync(config);
+
+        result.IsValid.Should().BeTrue();
+    }
 }

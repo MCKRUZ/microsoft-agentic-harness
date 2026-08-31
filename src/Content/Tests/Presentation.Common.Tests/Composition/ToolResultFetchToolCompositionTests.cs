@@ -58,8 +58,8 @@ public sealed class ToolResultFetchToolCompositionTests
         try
         {
             // Below the shipped 50,000-char default, StoreIfLargeAsync keeps content inline and never
-            // writes a file — RetrieveFullContentAsync would then correctly report "not found" for
-            // content that was never persisted. Lower the threshold so a small test string still spills.
+            // writes a file — RetrievePageAsync would then correctly report "not found" for content
+            // that was never persisted. Lower the threshold so a small test string still spills.
             using var provider = CompositionRootTestHost.BuildProvider(new Dictionary<string, string?>
             {
                 ["AppConfig:AI:ContextManagement:ToolResultStorage:PerResultCharLimit"] = "50",
@@ -81,13 +81,37 @@ public sealed class ToolResultFetchToolCompositionTests
             var ambientScope = provider.GetRequiredService<IAmbientRequestScope>();
             using (ambientScope.BeginScope(requestScope.ServiceProvider))
             {
-                var result = await tool.ExecuteAsync(
-                    "fetch", new Dictionary<string, object?> { ["resultId"] = stored.ResultId });
+                // #563: the tool returns one bounded page per call (half of PerResultCharLimit here —
+                // 25 chars — always strictly smaller than whatever was large enough to spill in the
+                // first place), so proving end-to-end retrieval means walking every page the way the
+                // model itself would, following each page's own "call again with offset=N" trailer.
+                var retrieved = "";
+                var offset = 0;
+                while (true)
+                {
+                    var result = await tool.ExecuteAsync(
+                        "fetch",
+                        new Dictionary<string, object?> { ["resultId"] = stored.ResultId, ["offset"] = offset });
 
-                result.Success.Should().BeTrue(
-                    "the singleton tool must resolve the CALLING request's own scope via the ambient " +
-                    "request scope, not fail just because it isn't constructor-injected anymore");
-                result.Output.Should().Be(storedText);
+                    result.Success.Should().BeTrue(
+                        "the singleton tool must resolve the CALLING request's own scope via the ambient " +
+                        "request scope, not fail just because it isn't constructor-injected anymore");
+
+                    var pageText = result.Output!;
+                    var trailerStart = pageText.IndexOf("\n[page ends at", StringComparison.Ordinal);
+                    if (trailerStart < 0)
+                    {
+                        retrieved += pageText;
+                        break;
+                    }
+
+                    retrieved += pageText[..trailerStart];
+                    var trailer = pageText[trailerStart..];
+                    offset = int.Parse(
+                        trailer[(trailer.LastIndexOf("offset=", StringComparison.Ordinal) + 7)..].TrimEnd(']'));
+                }
+
+                retrieved.Should().Be(storedText);
             }
         }
         finally

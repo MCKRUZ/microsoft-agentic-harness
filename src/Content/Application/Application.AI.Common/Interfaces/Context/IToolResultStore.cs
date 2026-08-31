@@ -45,9 +45,19 @@ public interface IToolResultStore
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Retrieves the full content of a previously persisted result, enforced against the scope it was
-    /// stored under (#521).
+    /// Retrieves one bounded page of a previously persisted result, enforced against the scope it was
+    /// stored under (#521), starting at <paramref name="offset"/> and reading up to
+    /// <paramref name="maxChars"/> characters.
     /// </summary>
+    /// <remarks>
+    /// There is deliberately no whole-file read on this interface (#563). The stored copy is the
+    /// tool's raw, untreated output — up to <c>ToolResultStorageConfig.MaxSpillChars</c> characters —
+    /// so a caller must sanitize, redact, and bound whatever a page returns before it reaches a model,
+    /// exactly as it would for any other tool result; a whole-file read would tempt a caller to hand an
+    /// unscanned, unbounded string onward instead. Paging also lets each read stay a bounded scan
+    /// regardless of how large the stored result is, which a whole-file read could not offer without
+    /// scanning the whole thing first.
+    /// </remarks>
     /// <param name="resultId">The unique identifier of the stored result.</param>
     /// <param name="scopeId">
     /// The caller's own isolation boundary — <see cref="Agent.IAgentExecutionContext.ToolResultScopeId"/>
@@ -56,8 +66,15 @@ public interface IToolResultStore
     /// left to each call site — the same rule <c>IConversationStore</c> applies to conversation
     /// ownership, for the identical reason: a check a caller could forget is not a check.
     /// </param>
+    /// <param name="offset">
+    /// The character offset to start reading from — <see cref="ToolResultPage.NextOffset"/> from a
+    /// prior page, or <c>0</c> for the first page. An offset at or beyond the stored length returns an
+    /// empty page with <see cref="ToolResultPage.HasMore"/> false, not an error — the caller may not
+    /// know the exact length in advance.
+    /// </param>
+    /// <param name="maxChars">The maximum number of characters to return in this page.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
-    /// <returns>The full content that was persisted to disk.</returns>
+    /// <returns>The requested page.</returns>
     /// <exception cref="KeyNotFoundException">
     /// Thrown when <paramref name="resultId"/> is not found <em>under <paramref name="scopeId"/></em> —
     /// indistinguishable from "does not exist at all" on purpose. A result that exists under a
@@ -65,8 +82,10 @@ public interface IToolResultStore
     /// but not yours" would tell an unauthorized caller that guessing worked, which is the same
     /// information a Denied vs. NotFound split would leak on a conversation lookup.
     /// </exception>
-    Task<string> RetrieveFullContentAsync(
+    Task<ToolResultPage> RetrievePageAsync(
         string resultId,
         string scopeId,
+        int offset,
+        int maxChars,
         CancellationToken cancellationToken = default);
 }

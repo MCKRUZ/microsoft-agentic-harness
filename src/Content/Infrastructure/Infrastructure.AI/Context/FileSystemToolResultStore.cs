@@ -1,5 +1,6 @@
 using System.Text.RegularExpressions;
 using Application.AI.Common.Interfaces.Context;
+using Application.AI.Common.Services.Governance;
 using Domain.AI.Context;
 using Domain.Common.Config;
 using Microsoft.Extensions.Logging;
@@ -83,18 +84,35 @@ public sealed class FileSystemToolResultStore : IToolResultStore
             };
         }
 
+        // #563: bound what actually reaches disk to MaxSpillChars, no matter how large the tool's true
+        // output was — an unbounded write is the exact "no silent caps" gap this cap exists to close,
+        // just at the disk boundary instead of the context-window one. BoundedText.Cap with an empty
+        // marker reuses its surrogate-pair-safe cut rather than a hand-rolled Substring, and is a no-op
+        // whenever fullOutput is already within the cap. Enforced here, in the store, rather than by
+        // every caller of StoreIfLargeAsync — the same "check a caller could forget is not a check"
+        // reasoning SanitizeSessionSegment's own remarks already apply to scope enforcement.
+        var (spillable, spillTruncated) = BoundedText.Cap(fullOutput, config.MaxSpillChars, marker: "");
+        if (spillTruncated)
+        {
+            _logger.LogWarning(
+                "Tool result {ResultId} from {ToolName} is {Length} chars, exceeding MaxSpillChars "
+                + "({MaxSpillChars}) — only the first {MaxSpillChars} chars are persisted and "
+                + "retrievable; the rest is unrecoverable",
+                resultId, toolName, fullOutput.Length, config.MaxSpillChars);
+        }
+
         var storagePath = Path.Combine(config.StoragePath, safeSessionId, "tool-results", $"{resultId}.json");
         var directory = Path.GetDirectoryName(storagePath)!;
         Directory.CreateDirectory(directory);
 
-        await File.WriteAllTextAsync(storagePath, fullOutput, cancellationToken);
+        await File.WriteAllTextAsync(storagePath, spillable, cancellationToken);
 
-        var previewLength = Math.Min(config.PreviewSizeChars, fullOutput.Length);
-        var preview = $"{fullOutput[..previewLength]}\n... [{fullOutput.Length} chars persisted to {resultId}]";
+        var previewLength = Math.Min(config.PreviewSizeChars, spillable.Length);
+        var preview = $"{spillable[..previewLength]}\n... [{spillable.Length} chars persisted to {resultId}]";
 
         _logger.LogInformation(
             "Tool result {ResultId} from {ToolName} persisted to disk: {Length} chars at {Path}",
-            resultId, toolName, fullOutput.Length, storagePath);
+            resultId, toolName, spillable.Length, storagePath);
 
         return new ToolResultReference
         {
@@ -103,19 +121,23 @@ public sealed class FileSystemToolResultStore : IToolResultStore
             Operation = operation,
             PreviewContent = preview,
             FullContentPath = storagePath,
-            SizeChars = fullOutput.Length,
+            SizeChars = spillable.Length,
             Timestamp = timestamp
         };
     }
 
     /// <inheritdoc />
-    public async Task<string> RetrieveFullContentAsync(
+    public async Task<ToolResultPage> RetrievePageAsync(
         string resultId,
         string scopeId,
+        int offset,
+        int maxChars,
         CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(resultId);
         ArgumentException.ThrowIfNullOrWhiteSpace(scopeId);
+        ArgumentOutOfRangeException.ThrowIfNegative(offset);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxChars);
 
         // resultId is MODEL-SUPPLIED (ToolResultFetchTool passes the LLM's own 'resultId' argument
         // straight through) and is interpolated into a path below, so it is sanitized here before it
@@ -137,14 +159,14 @@ public sealed class FileSystemToolResultStore : IToolResultStore
         }
 
         // Reconstructed deterministically from (scopeId, resultId) — the exact shape StoreIfLargeAsync
-        // writes to — rather than trusted from _resultPaths, for two reasons at once (#521):
+        // writes to — rather than trusted from an in-memory index, for two reasons at once (#521):
         //   1. Ownership: a caller supplying a DIFFERENT scopeId than the one this result was stored
         //      under can never reach it, because the reconstructed path simply lands in that OTHER
         //      caller's own directory, which does not contain this resultId's file. No separate
         //      "does scopeId match what I recorded" check is needed or possible to skip.
-        //   2. Durability: _resultPaths is in-memory only and empties on every process restart, even
-        //      though the file itself is still on disk — reconstructing the path means a restart no
-        //      longer makes an already-spilled result unrecoverable.
+        //   2. Durability: an in-memory index empties on every process restart, even though the file
+        //      itself is still on disk — reconstructing the path means a restart no longer makes an
+        //      already-spilled result unrecoverable.
         // SanitizeSessionSegment applies to scopeId for the identical path-traversal reason it already
         // applies to StoreIfLargeAsync's sessionId — this is the same path segment, read back.
         // Residual gap accepted (found in /simplify's review): reconstructing from CurrentValue rather
@@ -155,22 +177,47 @@ public sealed class FileSystemToolResultStore : IToolResultStore
         var config = _options.CurrentValue.AI.ContextManagement.ToolResultStorage;
         var storagePath = Path.Combine(config.StoragePath, safeScopeId, "tool-results", $"{resultId}.json");
 
-        _logger.LogDebug("Retrieving full content for result {ResultId} from {Path}", resultId, storagePath);
+        _logger.LogDebug(
+            "Retrieving page (offset {Offset}, maxChars {MaxChars}) of result {ResultId} from {Path}",
+            offset, maxChars, resultId, storagePath);
 
+        string content;
         try
         {
-            return await File.ReadAllTextAsync(storagePath, cancellationToken);
+            // #563: the whole stored file is read into memory rather than seeking within the stream.
+            // Deliberately simple over deliberately fast: the file is already bounded to MaxSpillChars
+            // by StoreIfLargeAsync (a few MB at the shipped default), so reading it whole per page costs
+            // nothing that matters, and a plain in-memory Substring sidesteps every edge case a
+            // character-counting stream-skip would otherwise have to get right (multi-byte encoding,
+            // resuming a skip across buffer boundaries) for a bound that is not actually load-bearing.
+            content = await File.ReadAllTextAsync(storagePath, cancellationToken);
         }
         catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
         {
-            // One filesystem round-trip instead of File.Exists + ReadAllTextAsync (a /simplify
-            // efficiency finding) — this also closes the check-then-read race the two-call version had
-            // (the file could vanish between the check and the read). Deliberately the same exception,
-            // with the same message shape, whether resultId was never stored at all or was stored under
-            // a DIFFERENT scope — see the interface's own remarks on why "exists but not yours" must
-            // read identically to "does not exist".
+            // Deliberately the same exception, with the same message shape, whether resultId was never
+            // stored at all or was stored under a DIFFERENT scope — see the interface's own remarks on
+            // why "exists but not yours" must read identically to "does not exist".
             throw new KeyNotFoundException($"No stored result found for id '{resultId}'.");
         }
+
+        var clampedOffset = Math.Min(offset, content.Length);
+        var pageEnd = Math.Min(clampedOffset + maxChars, content.Length);
+
+        // Never split a surrogate pair across a page boundary — the same guard BoundedText.Cap applies
+        // when it cuts text, applied here because pagination cuts text the same way a single truncation
+        // does, just repeatedly. Safe to apply unconditionally: a page's start offset is always either 0
+        // or a prior page's NextOffset, which this same rule already guaranteed never lands mid-pair.
+        if (pageEnd > clampedOffset && char.IsHighSurrogate(content[pageEnd - 1]))
+        {
+            pageEnd--;
+        }
+
+        return new ToolResultPage
+        {
+            Text = content[clampedOffset..pageEnd],
+            NextOffset = pageEnd,
+            TotalChars = content.Length
+        };
     }
 
     /// <summary>
@@ -182,7 +229,7 @@ public sealed class FileSystemToolResultStore : IToolResultStore
     /// <param name="paramName">
     /// The CALLING method's own parameter name to report in a thrown <see cref="ArgumentException"/> —
     /// this helper is shared by <see cref="StoreIfLargeAsync"/> (parameter <c>sessionId</c>) and
-    /// <see cref="RetrieveFullContentAsync"/> (parameter <c>scopeId</c>); a hardcoded <c>nameof(sessionId)</c>
+    /// <see cref="RetrievePageAsync"/> (parameter <c>scopeId</c>); a hardcoded <c>nameof(sessionId)</c>
     /// would misreport the latter (a /code-review finding).
     /// </param>
     /// <returns>The validated session identifier, guaranteed to be a single path segment.</returns>

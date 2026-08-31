@@ -75,8 +75,21 @@ public sealed class ToolCallAdmissionPipelineAggregateBudgetCompositionTests
 
             var resultId = marker[(marker.LastIndexOf("id=", StringComparison.Ordinal) + 3)..].TrimEnd(']');
             var resultStore = requestScope.ServiceProvider.GetRequiredService<IToolResultStore>();
-            var retrieved = await resultStore.RetrieveFullContentAsync(
-                resultId, executionContext.ToolResultScopeId, CancellationToken.None);
+
+            // #563: retrieval is now paged, not a single whole-file read — walk every page so this test
+            // still proves the fix's whole point end to end: content cut purely by the aggregate budget
+            // must be fully recoverable via tool_result_fetch, exactly as content cut by the per-result
+            // ceiling already was, one page at a time.
+            var retrieved = "";
+            var offset = 0;
+            while (true)
+            {
+                var page = await resultStore.RetrievePageAsync(
+                    resultId, executionContext.ToolResultScopeId, offset, maxChars: 5_000, CancellationToken.None);
+                retrieved += page.Text;
+                if (!page.HasMore) break;
+                offset = page.NextOffset;
+            }
 
             retrieved.Should().Be(originalText,
                 "the fix's whole point: content cut purely by the aggregate budget must still be fully "

@@ -4,6 +4,7 @@ using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Compression;
 using Application.AI.Common.Interfaces.Context;
 using Application.AI.Common.Interfaces.MediatR;
+using Application.AI.Common.Services.Governance;
 using Domain.Common;
 using Domain.Common.Config.AI;
 using MediatR;
@@ -106,7 +107,11 @@ public sealed class ToolOutputCompressionBehavior<TRequest, TResponse>
             return response;
         }
 
-        var sessionId = _executionContext.ConversationId ?? "unknown";
+        // #561: the retrieval scope, not ConversationId — the same scope tool_result_fetch reads back
+        // with (IAgentExecutionContext.ToolResultScopeId), and never null by construction, so no
+        // "?? unknown" fallback is needed. Storing under a different key than retrieval reads from
+        // would silently make this behavior's spill unreachable even with a resolvable marker.
+        var sessionId = _executionContext.ToolResultScopeId;
 
         // This behavior runs BEFORE ResponseSanitizationBehavior (registered outer), so the
         // store write would otherwise persist raw, unsanitized tool output to disk — credentials
@@ -131,7 +136,13 @@ public sealed class ToolOutputCompressionBehavior<TRequest, TResponse>
             _config.DefaultTokenThreshold,
             cancellationToken);
 
-        var compressedWithRef = $"{compressionResult.Output}\n[Full output: result://{reference.ResultId}]";
+        // #561: the SAME marker shape ToolCallAdmissionPipeline emits and ToolResultFetchTool
+        // recognizes — this behavior used to hand-roll its own "result://{id}" phrase, a shape nothing
+        // ever resolved, so the retrieval id it advertised was permanently dead. Sharing the constant
+        // means the two can never drift apart again the way they already had once.
+        var compressedWithRef =
+            compressionResult.Output
+            + string.Format(ToolCallAdmissionPipeline.SpilledResultMarkerFormat, reference.ResultId);
 
         _logger.LogInformation(
             "Compressed tool {ToolName} output from {OriginalTokens} to {CompressedTokens} tokens (strategy: {Strategy}, ref: {ResultId})",

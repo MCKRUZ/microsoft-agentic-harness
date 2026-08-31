@@ -11,6 +11,8 @@ namespace Infrastructure.AI.Tests.Context;
 
 public sealed class FileSystemToolResultStoreTests : IDisposable
 {
+    private const int LargePageSize = 10_000;
+
     private readonly FileSystemToolResultStore _sut;
     private readonly AppConfig _appConfig;
     private readonly string _tempDir;
@@ -63,41 +65,59 @@ public sealed class FileSystemToolResultStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task StoreIfLargeAsync_OutputLargerThanMaxSpillChars_TruncatesAtTheCap()
+    {
+        // #563: MaxSpillChars bounds disk, independent of PerResultCharLimit — an unbounded write
+        // here would be the same "no silent caps" gap this cap exists to close, one layer down.
+        _appConfig.AI.ContextManagement.ToolResultStorage.MaxSpillChars = 150;
+        var output = new string('x', 500);
+
+        var result = await _sut.StoreIfLargeAsync("session1", "search", null, output);
+
+        result.SizeChars.Should().Be(150);
+        var page = await _sut.RetrievePageAsync(result.ResultId, "session1", offset: 0, LargePageSize);
+        page.Text.Should().Be(new string('x', 150));
+        page.HasMore.Should().BeFalse();
+    }
+
+    [Fact]
     public async Task StoreAndRetrieve_RoundTrips()
     {
         var output = new string('a', 200);
         var stored = await _sut.StoreIfLargeAsync("session1", "tool", null, output);
 
-        var retrieved = await _sut.RetrieveFullContentAsync(stored.ResultId, "session1");
+        var page = await _sut.RetrievePageAsync(stored.ResultId, "session1", offset: 0, LargePageSize);
 
-        retrieved.Should().Be(output);
+        page.Text.Should().Be(output);
+        page.HasMore.Should().BeFalse();
+        page.TotalChars.Should().Be(output.Length);
     }
 
     [Fact]
-    public async Task RetrieveFullContentAsync_MissingId_ThrowsKeyNotFoundException()
+    public async Task RetrievePageAsync_MissingId_ThrowsKeyNotFoundException()
     {
-        var act = () => _sut.RetrieveFullContentAsync("nonexistent-id", "session1");
+        var act = () => _sut.RetrievePageAsync("nonexistent-id", "session1", offset: 0, LargePageSize);
 
         await act.Should().ThrowAsync<KeyNotFoundException>();
     }
 
     [Fact]
-    public async Task RetrieveFullContentAsync_CorrectIdWrongScope_ThrowsKeyNotFoundException()
+    public async Task RetrievePageAsync_WrongScope_ThrowsKeyNotFoundException()
     {
         // #521: the retrieval scope must match the write scope. A different (but otherwise valid)
         // scopeId must be refused identically to a resultId that was never stored at all — see
-        // IToolResultStore.RetrieveFullContentAsync's own remarks for why the two must be
-        // indistinguishable from outside the store.
+        // IToolResultStore.RetrievePageAsync's own remarks for why the two must be indistinguishable
+        // from outside the store.
         var output = new string('a', 200);
         var stored = await _sut.StoreIfLargeAsync("session1", "tool", null, output);
 
-        var act = () => _sut.RetrieveFullContentAsync(stored.ResultId, "session2");
+        var act = () => _sut.RetrievePageAsync(stored.ResultId, "session2", offset: 0, LargePageSize);
 
         await act.Should().ThrowAsync<KeyNotFoundException>();
     }
 
     [Fact]
-    public async Task RetrieveFullContentAsync_AfterANewStoreInstance_StillFindsTheResult()
+    public async Task RetrievePageAsync_AfterANewStoreInstance_StillFindsTheResult()
     {
         // #521: the path is reconstructed deterministically from (scopeId, resultId), not trusted from
         // an in-memory index — proving this needs a genuinely SEPARATE store instance (a fresh process
@@ -109,9 +129,9 @@ public sealed class FileSystemToolResultStoreTests : IDisposable
         monitor.Setup(m => m.CurrentValue).Returns(_appConfig);
         var freshInstance = new FileSystemToolResultStore(monitor.Object, Mock.Of<ILogger<FileSystemToolResultStore>>());
 
-        var retrieved = await freshInstance.RetrieveFullContentAsync(stored.ResultId, "session1");
+        var page = await freshInstance.RetrievePageAsync(stored.ResultId, "session1", offset: 0, LargePageSize);
 
-        retrieved.Should().Be(output);
+        page.Text.Should().Be(output);
     }
 
     [Theory]
@@ -124,18 +144,19 @@ public sealed class FileSystemToolResultStoreTests : IDisposable
     [InlineData("\\\\attacker\\share\\payload")]
     // Not a traversal, just not an id this store ever mints — refused for the same reason.
     [InlineData("nonexistent-id")]
-    public async Task RetrieveFullContentAsync_ResultIdThatIsNotAMintedId_ThrowsKeyNotFoundException(string resultId)
+    public async Task RetrievePageAsync_ResultIdThatIsNotAMintedId_ThrowsKeyNotFoundException(string resultId)
     {
         // resultId is model-supplied (ToolResultFetchTool hands the LLM's own argument straight to this
         // method), so an unsanitized one is a path-traversal sink: sanitizing scopeId alone leaves the
         // isolation boundary reachable by writing the traversal into the OTHER path segment instead.
-        // Mutation test: delete the Guid.TryParseExact guard in RetrieveFullContentAsync and the first
-        // two cases retrieve session1's data from session2's scope.
+        // Mutation test: delete the Guid.TryParseExact guard in RetrievePageAsync and the first two
+        // cases retrieve session1's data from session2's scope.
         var output = new string('a', 200);
         var stored = await _sut.StoreIfLargeAsync("session1", "tool", null, output);
 
-        var act = () => _sut.RetrieveFullContentAsync(
-            resultId.Replace("PLACEHOLDER", stored.ResultId, StringComparison.Ordinal), "session2");
+        var act = () => _sut.RetrievePageAsync(
+            resultId.Replace("PLACEHOLDER", stored.ResultId, StringComparison.Ordinal),
+            "session2", offset: 0, LargePageSize);
 
         // KeyNotFoundException, not ArgumentException: a caller must not learn from the exception type
         // which of its guesses was better-formed — see the interface's remarks on why "exists but not
@@ -199,12 +220,12 @@ public sealed class FileSystemToolResultStoreTests : IDisposable
     }
 
     [Fact]
-    public async Task RetrieveFullContentAsync_TrailingSpaceInScopeId_ThrowsArgumentExceptionNamingScopeId()
+    public async Task RetrievePageAsync_TrailingSpaceInScopeId_ThrowsArgumentExceptionNamingScopeId()
     {
         // Same collision guard, exercised through the retrieval side — and confirms the exception names
         // the CALLING method's own parameter (scopeId), not a copy-pasted "sessionId" from the sibling
         // method that shares this validation helper (a /code-review finding).
-        var act = () => _sut.RetrieveFullContentAsync(Guid.NewGuid().ToString("N"), "session1 ");
+        var act = () => _sut.RetrievePageAsync(Guid.NewGuid().ToString("N"), "session1 ", offset: 0, LargePageSize);
 
         await act.Should().ThrowAsync<ArgumentException>()
             .WithParameterName("scopeId");
@@ -224,6 +245,61 @@ public sealed class FileSystemToolResultStoreTests : IDisposable
         var act = () => _sut.StoreIfLargeAsync("", "tool", null, "data");
 
         await act.Should().ThrowAsync<ArgumentException>();
+    }
+
+    // --- Pagination (#563) -----------------------------------------------------------------
+
+    [Fact]
+    public async Task RetrievePageAsync_OffsetBeyondTheEnd_ReturnsEmptyWithHasMoreFalse()
+    {
+        // Must exceed this fixture's 100-char PerResultCharLimit or StoreIfLargeAsync keeps it inline
+        // and there is no file for RetrievePageAsync to read.
+        var output = new string('a', 150);
+        var stored = await _sut.StoreIfLargeAsync("session1", "tool", null, output);
+
+        var page = await _sut.RetrievePageAsync(stored.ResultId, "session1", offset: 1_000, maxChars: 10);
+
+        page.Text.Should().BeEmpty();
+        page.HasMore.Should().BeFalse();
+        page.TotalChars.Should().Be(150);
+    }
+
+    [Fact]
+    public async Task RetrievePageAsync_WalkingEveryPage_ReassemblesTextIdenticalToWhatWasStored()
+    {
+        var output = string.Concat(Enumerable.Range(0, 500).Select(i => (char)('a' + i % 26)));
+        var stored = await _sut.StoreIfLargeAsync("session1", "tool", null, output);
+
+        var reassembled = "";
+        var offset = 0;
+        var pageCount = 0;
+        while (true)
+        {
+            var page = await _sut.RetrievePageAsync(stored.ResultId, "session1", offset, maxChars: 37);
+            reassembled += page.Text;
+            pageCount++;
+            if (!page.HasMore) break;
+            offset = page.NextOffset;
+        }
+
+        reassembled.Should().Be(output);
+        pageCount.Should().BeGreaterThan(1, "the test is meaningless if one page already covered everything");
+    }
+
+    [Fact]
+    public async Task RetrievePageAsync_MultiByteCharacterOnAPageBoundary_IsNotSplit()
+    {
+        // U+1F642 (🙂) is a UTF-16 surrogate pair, placed so a naive char-count cut at maxChars=91
+        // would land exactly between the high and low surrogate. Padded past this fixture's 100-char
+        // PerResultCharLimit or StoreIfLargeAsync keeps it inline and there is no file to page-read.
+        var output = new string('a', 90) + "\U0001F642" + new string('b', 10);
+        var stored = await _sut.StoreIfLargeAsync("session1", "tool", null, output);
+
+        var first = await _sut.RetrievePageAsync(stored.ResultId, "session1", offset: 0, maxChars: 91);
+        var second = await _sut.RetrievePageAsync(stored.ResultId, "session1", first.NextOffset, maxChars: 100);
+
+        (first.Text + second.Text).Should().Be(output);
+        first.Text.Should().NotEndWith("\uD83D"); // lone high surrogate would prove the pair was split
     }
 
     public void Dispose()
