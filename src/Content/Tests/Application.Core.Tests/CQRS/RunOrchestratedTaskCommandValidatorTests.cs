@@ -133,4 +133,31 @@ public class RunOrchestratedTaskCommandValidatorTests
 
         result.IsValid.Should().BeTrue();
     }
+
+    [Fact]
+    public async Task Validate_ConversationIdAtTheWorstCasePlanStepLength_Passes()
+    {
+        // Regression: an earlier version of this validator bounded length at 128 to match
+        // IPlanRunExecutor.MaxAgentIdLength, but PlanRunKeys.StepConversationId derives
+        // "{runScope}:{stepId}" from that value, up to 128 + 1 + 36 = 165 characters.
+        var derivedId = $"{new string('a', 128)}:{Guid.NewGuid()}";
+        derivedId.Length.Should().Be(165);
+
+        var command = CreateValidCommand() with { ConversationId = derivedId };
+        var result = await _validator.ValidateAsync(command);
+
+        result.IsValid.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Validate_ConversationIdEndingInNewline_Fails()
+    {
+        // Security-review finding: "$" matches immediately before a trailing '\n' in .NET regex, not
+        // only at the true end of the string. Fixed by anchoring with \A/\z instead.
+        var command = CreateValidCommand() with { ConversationId = "conv-1\n" };
+
+        var result = await _validator.ValidateAsync(command);
+
+        result.IsValid.Should().BeFalse();
+    }
 }

@@ -19,7 +19,12 @@ public class RunConversationCommandValidator : AbstractValidator<RunConversation
 	// reference like "C:" as rooted on Windows; that check lives in the store, not this charset — see
 	// FileSystemToolResultStore.AllowedSegmentCharset's remarks for why the charset does not need to
 	// encode that distinction itself.
-	private static readonly Regex AllowedScopeIdCharset = new("^[A-Za-z0-9_.:-]{1,128}$", RegexOptions.Compiled);
+	// Length bound is 200, not 128 — a second real regression on this same rule: 128 matched
+	// IPlanRunExecutor.MaxAgentIdLength (the cap on a bare run scope), but the derived
+	// "{runScope}:{stepId}" shape above can reach 128 + 1 + 36 = 165 characters, which the OLD
+	// 128-char bound rejected outright. See FileSystemToolResultStore.AllowedSegmentCharset's remarks
+	// for the exact arithmetic. Anchored with \A/\z, not ^/$ — $ matches before a trailing '\n' too.
+	private static readonly Regex AllowedScopeIdCharset = new(@"\A[A-Za-z0-9_.:-]{1,200}\z", RegexOptions.Compiled);
 
 	public RunConversationCommandValidator()
 	{
@@ -46,6 +51,6 @@ public class RunConversationCommandValidator : AbstractValidator<RunConversation
 		// default (a bare GUID) always satisfies this.
 		RuleFor(x => x.ConversationId)
 			.NotEmpty().WithMessage("Conversation id is required for a durable conversation.")
-			.Matches(AllowedScopeIdCharset).WithMessage("Conversation id must be 1-128 characters from [A-Za-z0-9_.:-].");
+			.Matches(AllowedScopeIdCharset).WithMessage("Conversation id must be 1-200 characters from [A-Za-z0-9_.:-].");
 	}
 }

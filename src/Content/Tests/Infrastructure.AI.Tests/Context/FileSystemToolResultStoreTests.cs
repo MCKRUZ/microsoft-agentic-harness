@@ -281,6 +281,37 @@ public sealed class FileSystemToolResultStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task StoreIfLargeAsync_SessionIdAtTheWorstCasePlanStepLength_DoesNotThrow()
+    {
+        // Regression: an earlier version of this allowlist bounded length at 128 to match
+        // IPlanRunExecutor.MaxAgentIdLength (the cap on a bare run scope), but
+        // PlanRunKeys.StepConversationId derives "{runScope}:{stepId}" from that value, up to
+        // 128 + 1 (':') + 36 (a Guid's default ToString length) = 165 characters — which the
+        // 128-char bound rejected outright for any run scope over 91 characters.
+        var derivedId = $"{new string('a', 128)}:{Guid.NewGuid()}";
+        derivedId.Length.Should().Be(165, "the test must exercise the actual worst case, not an approximation");
+
+        var act = () => _sut.StoreIfLargeAsync(derivedId, "tool", null, "data");
+
+        await act.Should().NotThrowAsync();
+    }
+
+    [Fact]
+    public async Task StoreIfLargeAsync_SessionIdEndingInNewline_ThrowsArgumentException()
+    {
+        // Security-review finding: "$" in .NET regex matches immediately before a trailing '\n', not
+        // only at the true end of the string, so "^[...]+$" admitted a value ending in a newline — a
+        // caller-supplied id that becomes a directory name and a log line. The rest of the id ("conv-1")
+        // is otherwise entirely within the charset, so this isolates the anchor fix specifically rather
+        // than incidentally failing on the space character a less careful test string would introduce.
+        // Fixed by anchoring with \A/\z instead.
+        var act = () => _sut.StoreIfLargeAsync("conv-1\n", "tool", null, "data");
+
+        await act.Should().ThrowAsync<ArgumentException>()
+            .WithParameterName("sessionId");
+    }
+
+    [Fact]
     public async Task RetrievePageAsync_TrailingSpaceInScopeId_ThrowsArgumentExceptionNamingScopeId()
     {
         // Same collision guard, exercised through the retrieval side — and confirms the exception names

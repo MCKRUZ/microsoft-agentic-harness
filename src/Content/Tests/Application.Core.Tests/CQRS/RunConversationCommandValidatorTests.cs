@@ -108,4 +108,36 @@ public class RunConversationCommandValidatorTests
 
         result.IsValid.Should().BeTrue();
     }
+
+    [Fact]
+    public async Task Validate_ConversationIdAtTheWorstCasePlanStepLength_Passes()
+    {
+        // Regression: an earlier version of this validator bounded length at 128 to match
+        // IPlanRunExecutor.MaxAgentIdLength (the cap on a bare run scope) — but
+        // PlanRunKeys.StepConversationId derives "{runScope}:{stepId}" from that value, up to
+        // 128 + 1 (':') + 36 (a Guid's default ToString length) = 165 characters, which the 128-char
+        // bound rejected outright for any run scope over 91 characters.
+        var runScope = new string('a', 128);
+        var stepId = Guid.NewGuid().ToString();
+        var derivedId = $"{runScope}:{stepId}";
+        derivedId.Length.Should().Be(165, "the test must exercise the actual worst case, not an approximation");
+
+        var command = CreateValidCommand() with { ConversationId = derivedId };
+        var result = await _validator.ValidateAsync(command);
+
+        result.IsValid.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Validate_ConversationIdEndingInNewline_Fails()
+    {
+        // Security-review finding: "$" in .NET regex matches immediately before a trailing '\n', not
+        // only at the true end of the string, so "^[...]+$" admits a value ending in a newline. Fixed
+        // by anchoring with \A/\z instead.
+        var command = CreateValidCommand() with { ConversationId = "conv-1\n" };
+
+        var result = await _validator.ValidateAsync(command);
+
+        result.IsValid.Should().BeFalse();
+    }
 }

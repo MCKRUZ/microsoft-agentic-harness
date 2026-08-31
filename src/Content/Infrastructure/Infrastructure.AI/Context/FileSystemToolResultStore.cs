@@ -35,8 +35,21 @@ public sealed class FileSystemToolResultStore : IToolResultStore
     // distinction itself: SanitizeSessionSegment's own Path.IsPathRooted check below is the actual,
     // independent backstop against the single-letter-drive shape, regardless of what this charset
     // admits — see its remarks.
+    //
+    // Length bound is 200, not 128 — a second real regression on the same allowlist. 128 matched
+    // IPlanRunExecutor.MaxAgentIdLength, the cap on a bare ConversationId/RunId, but
+    // PlanRunKeys.StepConversationId derives "{runScope}:{stepId}" from that value — up to
+    // 128 + 1 + 36 (a Guid's default ToString length) = 165 characters — so a legal 92+ char run
+    // scope produced a derived id this allowlist itself rejected. 200 covers the exact 165-char
+    // worst case with margin, while staying well under typical single-path-segment filesystem limits.
+    //
+    // Anchored with \z, not $ — $ in .NET regex matches immediately before a trailing '\n' as well as
+    // at the true end of the string, so "abc\n" would otherwise pass this pattern (a security-review
+    // finding: a caller-supplied id ending in a newline becoming a directory name and then a log line,
+    // the exact shape IsWellFormedAgentId's own per-character check avoids by construction). \z matches
+    // only the absolute end.
     private static readonly Regex AllowedSegmentCharset =
-        new("^[A-Za-z0-9_.:-]{1,128}$", RegexOptions.Compiled);
+        new(@"\A[A-Za-z0-9_.:-]{1,200}\z", RegexOptions.Compiled);
 
     /// <summary>
     /// The on-disk shape of a persisted result (security-review finding on #563). A bare text file
@@ -399,7 +412,7 @@ public sealed class FileSystemToolResultStore : IToolResultStore
         if (!AllowedSegmentCharset.IsMatch(sessionId))
         {
             throw new ArgumentException(
-                "Session ID must be 1-128 characters from [A-Za-z0-9_.:-].", paramName);
+                "Session ID must be 1-200 characters from [A-Za-z0-9_.:-].", paramName);
         }
 
         // Independent of the charset above, deliberately — see AllowedSegmentCharset's own remarks.
