@@ -156,15 +156,22 @@ public sealed class FileSystemToolResultStore : IToolResultStore
         // contract break worth a visible placeholder rather than silently persisting empty content —
         // this call site did not, so a non-conforming or overly aggressive custom implementation could
         // silently discard a large tool result with no warning and no recoverable trace of it.
+        // /simplify finding: the same placeholder text as ToolResultText.CorruptedSanitizerOutputPlaceholder
+        // — not literally shared (that constant is internal to a different assembly, and the shared
+        // SanitizeThenRedact.Apply combinator that also carries this guard hardcodes a 64KB scan ceiling
+        // this call site cannot use — see the scanCeiling remarks above) — kept in identical wording so
+        // the two are recognizable as the same guarantee if either one changes.
         var sanitizeResult = _sanitizer.Sanitize(scanRegion, toolName);
-        if (string.IsNullOrEmpty(sanitizeResult.SanitizedContent) && !string.IsNullOrEmpty(scanRegion))
+        var sanitizerReturnedEmpty =
+            string.IsNullOrEmpty(sanitizeResult.SanitizedContent) && !string.IsNullOrEmpty(scanRegion);
+        if (sanitizerReturnedEmpty)
         {
             _logger.LogWarning(
                 "ICompositeResponseSanitizer returned empty content for a non-empty tool result from " +
                 "{ToolName}; persisting a placeholder instead of silently discarding it",
                 toolName);
         }
-        var sanitized = string.IsNullOrEmpty(sanitizeResult.SanitizedContent) && !string.IsNullOrEmpty(scanRegion)
+        var sanitized = sanitizerReturnedEmpty
             ? "[tool result withheld: the response sanitizer returned no content]"
             : sanitizeResult.SanitizedContent;
 

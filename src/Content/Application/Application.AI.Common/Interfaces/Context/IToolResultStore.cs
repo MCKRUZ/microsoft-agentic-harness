@@ -49,6 +49,15 @@ public interface IToolResultStore
     /// unclassified case). Redacting the complete, already <c>MaxSpillChars</c>-capped content once,
     /// here, before any page boundary exists, is also what closes the read-time page-splitting bypass a
     /// still-earlier revision had: no per-page redaction remains anywhere in this system to defeat.
+    /// <para>
+    /// The same guarantee applies to injection/exfiltration sanitizing, unconditionally, before redaction
+    /// — a security-review finding on the same PR that gave this store pagination (#563): that scan
+    /// otherwise runs once per model-facing call, and a single logical result spanning many such calls
+    /// once pagination existed meant a payload straddling a page boundary was never fully visible to
+    /// either page's own scan. Any implementation of this interface must sanitize before persisting, not
+    /// rely on a caller (or a later page fetch) to do it — <see cref="RetrievePageAsync"/>'s own remarks
+    /// depend on this.
+    /// </para>
     /// </remarks>
     Task<ToolResultReference> StoreIfLargeAsync(
         string sessionId,
@@ -64,11 +73,11 @@ public interface IToolResultStore
     /// <paramref name="maxChars"/> characters.
     /// </summary>
     /// <remarks>
-    /// There is deliberately no whole-file read on this interface (#563). The stored copy is the
-    /// tool's raw, untreated output — up to <c>ToolResultStorageConfig.MaxSpillChars</c> characters —
-    /// so a caller must sanitize, redact, and bound whatever a page returns before it reaches a model,
-    /// exactly as it would for any other tool result; a whole-file read would tempt a caller to hand an
-    /// unscanned, unbounded string onward instead. Paging also lets each read stay a bounded scan
+    /// There is deliberately no whole-file read on this interface (#563). The stored copy is already
+    /// sanitized and redacted (see <see cref="StoreIfLargeAsync"/>'s own remarks) — up to
+    /// <c>ToolResultStorageConfig.MaxSpillChars</c> characters — so a caller still bounds whatever a
+    /// page returns before it reaches a model, exactly as it would for any other tool result, but does
+    /// not need to sanitize or redact it a second time. Paging also lets each read stay a bounded scan
     /// regardless of how large the stored result is, which a whole-file read could not offer without
     /// scanning the whole thing first.
     /// </remarks>
