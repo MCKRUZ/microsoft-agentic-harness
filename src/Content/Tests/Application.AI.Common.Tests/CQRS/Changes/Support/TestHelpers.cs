@@ -194,6 +194,7 @@ internal static class TestHelpers
         public int? TurnNumber { get; private set; }
         public string? CallOnceScopeId { get; private set; }
         public string ToolResultScopeId => CallOnceScopeId ?? _fallbackToolResultScopeId;
+        public bool HasRetrievableToolResultScope => CallOnceScopeId is not null;
         public AgentIdentity? AgentIdentity { get; private set; }
 
         private readonly string _fallbackToolResultScopeId = Guid.NewGuid().ToString("N");

@@ -63,6 +63,9 @@ public sealed class AgentExecutionContext : IAgentExecutionContext
     }
 
     /// <inheritdoc />
+    public bool HasRetrievableToolResultScope => CallOnceScopeId is not null;
+
+    /// <inheritdoc />
     public AgentIdentity? AgentIdentity { get; private set; }
 
     /// <inheritdoc />

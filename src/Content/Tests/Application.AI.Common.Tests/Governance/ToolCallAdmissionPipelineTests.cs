@@ -433,6 +433,34 @@ public sealed class ToolCallAdmissionPipelineTests
     }
 
     [Fact]
+    public async Task SpillAndBuildMarkerAsync_WithNoRetrievableScope_WritesNoFileAndReturnsThePlainMarker()
+    {
+        // #559: a direct tool invocation mints a fresh, call-scoped ToolResultScopeId that dies with
+        // the call — nothing durable can ever ask the store for it again. Spilling anyway would still
+        // write an orphaned file to disk, forever, with zero retrieval benefit and a marker telling the
+        // model to fetch something it never can.
+        var resultStore = new Mock<IToolResultStore>();
+        var pipeline = AdmissionHarness.Pipeline(
+            outputCeiling: 200,
+            resultStore: resultStore.Object,
+            executionContext: AdmissionHarness.StubExecutionContext(hasRetrievableToolResultScope: false));
+
+        var result = await pipeline.ApplyOutputPolicyAsync(
+            ToolCallAdmission.Allow(), Tool, new string('x', 5000), CancellationToken.None);
+
+        result.As<string>().Should().Be(
+            new string('x', 200 - ToolCallAdmissionPipeline.OutputTruncationMarker.Length)
+                + ToolCallAdmissionPipeline.OutputTruncationMarker,
+            "no retrievable scope means the plain marker, never an id the model could never resolve");
+        resultStore.Verify(
+            s => s.StoreIfLargeAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string>(),
+                It.IsAny<int?>(), It.IsAny<CancellationToken>()),
+            Times.Never,
+            "the write itself must be skipped, not just the retrieval id");
+    }
+
+    [Fact]
     public async Task ApplyOutputPolicy_OutputLargerThanTheScanCeiling_SpillsTheUntruncatedOriginal()
     {
         // #563: the core regression. Before this fix, the spilled copy had already been cut to the

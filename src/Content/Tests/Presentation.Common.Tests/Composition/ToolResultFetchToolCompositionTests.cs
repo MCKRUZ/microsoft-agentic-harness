@@ -69,7 +69,11 @@ public sealed class ToolResultFetchToolCompositionTests
 
             using var requestScope = provider.CreateScope();
             var executionContext = requestScope.ServiceProvider.GetRequiredService<IAgentExecutionContext>();
-            executionContext.Initialize(agentId: "test-agent", conversationId: "conv-1", turnNumber: 1);
+            // #559: callOnceScopeId supplied, matching AgentContextPropagationBehavior's real call shape
+            // — without it, HasRetrievableToolResultScope is false and StoreIfLargeAsync below would be
+            // exercising a scenario no real agent-turn caller of this tool can actually reach.
+            executionContext.Initialize(
+                agentId: "test-agent", conversationId: "conv-1", turnNumber: 1, callOnceScopeId: "conv-1");
 
             var resultStore = provider.GetRequiredService<IToolResultStore>();
             var storedText = new string('x', 200);

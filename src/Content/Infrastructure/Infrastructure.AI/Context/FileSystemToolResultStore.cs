@@ -98,12 +98,12 @@ public sealed class FileSystemToolResultStore : IToolResultStore
                 "Tool result {ResultId} from {ToolName} is {Length} chars, exceeding MaxSpillChars "
                 + "({MaxSpillChars}) — only the first {MaxSpillChars} chars are persisted and "
                 + "retrievable; the rest is unrecoverable",
-                resultId, toolName, fullOutput.Length, config.MaxSpillChars);
+                resultId, toolName, fullOutput.Length, config.MaxSpillChars, config.MaxSpillChars);
         }
 
         var storagePath = Path.Combine(config.StoragePath, safeSessionId, "tool-results", $"{resultId}.json");
         var directory = Path.GetDirectoryName(storagePath)!;
-        Directory.CreateDirectory(directory);
+        CreateDirectoryOwnerOnly(directory);
 
         await File.WriteAllTextAsync(storagePath, spillable, cancellationToken);
 
@@ -218,6 +218,86 @@ public sealed class FileSystemToolResultStore : IToolResultStore
             NextOffset = pageEnd,
             TotalChars = content.Length
         };
+    }
+
+    /// <inheritdoc />
+    public Task<int> PruneExpiredAsync(TimeSpan gracePeriod, CancellationToken cancellationToken = default)
+    {
+        var storagePath = _options.CurrentValue.AI.ContextManagement.ToolResultStorage.StoragePath;
+        if (!Directory.Exists(storagePath))
+            return Task.FromResult(0);
+
+        // Age, not "is the owning scope gone" — this store has no way to ask that question (it does
+        // not know what a conversation or a plan run is). See IToolResultStore.PruneExpiredAsync's own
+        // remarks for why that is an acceptable trade here, unlike for a conversation budget row.
+        var cutoffUtc = DateTime.UtcNow - gracePeriod;
+        var removed = 0;
+
+        foreach (var filePath in Directory.EnumerateFiles(storagePath, "*.json", SearchOption.AllDirectories))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (File.GetLastWriteTimeUtc(filePath) >= cutoffUtc)
+                continue;
+
+            try
+            {
+                File.Delete(filePath);
+                removed++;
+                RemoveIfEmpty(Path.GetDirectoryName(filePath));
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // One file's deletion failing (concurrently deleted, permissions) must not stop the
+                // sweep from reclaiming everything else it can — the same must-not-throw discipline
+                // ToolCallAdmissionPipeline applies to a spill failure.
+                _logger.LogWarning(ex, "Failed to delete expired tool result at {Path}; will retry on the next sweep.", filePath);
+            }
+        }
+
+        return Task.FromResult(removed);
+    }
+
+    /// <summary>
+    /// Removes <paramref name="directory"/>, and its parent if that too is now empty, so a fully
+    /// swept scope does not leave empty <c>tool-results</c>/scope directories behind forever.
+    /// </summary>
+    private static void RemoveIfEmpty(string? directory)
+    {
+        while (directory is not null && Directory.Exists(directory) && !Directory.EnumerateFileSystemEntries(directory).Any())
+        {
+            try
+            {
+                Directory.Delete(directory);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // Best-effort tidiness only — a directory that resists deletion (e.g. a concurrent
+                // writer just claimed it) is not a reclaim failure; the files inside are already gone.
+                return;
+            }
+
+            directory = Path.GetDirectoryName(directory);
+        }
+    }
+
+    /// <summary>
+    /// Creates <paramref name="directory"/> (and any missing parents) with owner-only access on POSIX
+    /// (#559, pairs with #527) — the directory a spilled result's raw, unredacted-since-#563 output
+    /// lands in. Windows is left to its inherited ACL, matching the only other place in this codebase
+    /// that restricts filesystem permissions (<c>SandboxWorkspace</c>) rather than inventing a second,
+    /// untested ACL-setting path.
+    /// </summary>
+    private static void CreateDirectoryOwnerOnly(string directory)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            Directory.CreateDirectory(directory);
+            return;
+        }
+
+        Directory.CreateDirectory(
+            directory, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
     }
 
     /// <summary>

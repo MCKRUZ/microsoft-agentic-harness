@@ -302,6 +302,70 @@ public sealed class FileSystemToolResultStoreTests : IDisposable
         first.Text.Should().NotEndWith("\uD83D"); // lone high surrogate would prove the pair was split
     }
 
+    // --- Retention sweep (#559) -------------------------------------------------------------
+
+    [Fact]
+    public async Task PruneExpiredAsync_FileOlderThanGracePeriod_IsDeleted()
+    {
+        var stored = await _sut.StoreIfLargeAsync("session1", "tool", null, new string('a', 200));
+        File.SetLastWriteTimeUtc(stored.FullContentPath!, DateTime.UtcNow - TimeSpan.FromDays(2));
+
+        var removed = await _sut.PruneExpiredAsync(TimeSpan.FromDays(1));
+
+        removed.Should().Be(1);
+        File.Exists(stored.FullContentPath!).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task PruneExpiredAsync_FileWithinGracePeriod_IsKept()
+    {
+        var stored = await _sut.StoreIfLargeAsync("session1", "tool", null, new string('a', 200));
+
+        var removed = await _sut.PruneExpiredAsync(TimeSpan.FromDays(1));
+
+        removed.Should().Be(0, "the file was just written — well within a one-day grace period");
+        File.Exists(stored.FullContentPath!).Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task PruneExpiredAsync_RemovesTheNowEmptyScopeAndToolResultsDirectories()
+    {
+        var stored = await _sut.StoreIfLargeAsync("session1", "tool", null, new string('a', 200));
+        File.SetLastWriteTimeUtc(stored.FullContentPath!, DateTime.UtcNow - TimeSpan.FromDays(2));
+        var toolResultsDir = Path.GetDirectoryName(stored.FullContentPath!)!;
+        var scopeDir = Path.GetDirectoryName(toolResultsDir)!;
+
+        await _sut.PruneExpiredAsync(TimeSpan.FromDays(1));
+
+        Directory.Exists(toolResultsDir).Should().BeFalse(
+            "a fully swept scope must not leave an empty tool-results directory behind forever");
+        Directory.Exists(scopeDir).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task PruneExpiredAsync_MixOfOldAndFreshFiles_KeepsOnlyTheFreshOnes()
+    {
+        var stale = await _sut.StoreIfLargeAsync("session1", "tool", null, new string('a', 200));
+        File.SetLastWriteTimeUtc(stale.FullContentPath!, DateTime.UtcNow - TimeSpan.FromDays(2));
+        var fresh = await _sut.StoreIfLargeAsync("session2", "tool", null, new string('b', 200));
+
+        var removed = await _sut.PruneExpiredAsync(TimeSpan.FromDays(1));
+
+        removed.Should().Be(1);
+        File.Exists(stale.FullContentPath!).Should().BeFalse();
+        File.Exists(fresh.FullContentPath!).Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task PruneExpiredAsync_StoragePathDoesNotExist_ReturnsZeroWithoutThrowing()
+    {
+        Directory.Delete(_tempDir, recursive: true);
+
+        var removed = await _sut.PruneExpiredAsync(TimeSpan.FromDays(1));
+
+        removed.Should().Be(0);
+    }
+
     public void Dispose()
     {
         try

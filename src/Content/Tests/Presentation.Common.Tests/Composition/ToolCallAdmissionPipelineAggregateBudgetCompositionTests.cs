@@ -51,7 +51,10 @@ public sealed class ToolCallAdmissionPipelineAggregateBudgetCompositionTests
 
             using var requestScope = provider.CreateScope();
             var executionContext = requestScope.ServiceProvider.GetRequiredService<IAgentExecutionContext>();
-            executionContext.Initialize(agentId: "test-agent", conversationId: "conv-1", turnNumber: 1);
+            // #559: callOnceScopeId supplied, matching AgentContextPropagationBehavior's real call shape
+            // — without it, HasRetrievableToolResultScope is false and this call spills nothing at all.
+            executionContext.Initialize(
+                agentId: "test-agent", conversationId: "conv-1", turnNumber: 1, callOnceScopeId: "conv-1");
 
             var pipeline = requestScope.ServiceProvider.GetRequiredService<IToolCallAdmissionPipeline>();
             // Cycling plain English words, no digits or punctuation shapes: varied enough that the real

@@ -706,6 +706,14 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
     /// </remarks>
     private async ValueTask<string> SpillAndBuildMarkerAsync(string toolName, string rawFullText, int sizeThreshold)
     {
+        // #559: a direct tool invocation mints a fresh, call-scoped ToolResultScopeId that dies with
+        // the call — nothing durable can ever ask for it again, so a file written here would be
+        // unreachable the instant this method returns. Skip the write itself, not just the id: the
+        // prior behavior still persisted an orphaned file to disk on every truncation on this path,
+        // forever, with no sweep to reclaim it and zero retrieval benefit.
+        if (!_executionContext.HasRetrievableToolResultScope)
+            return OutputTruncationMarker;
+
         try
         {
             var reference = await _resultStore

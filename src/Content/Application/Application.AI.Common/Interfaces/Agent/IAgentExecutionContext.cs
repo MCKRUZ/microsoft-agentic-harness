@@ -76,6 +76,23 @@ public interface IAgentExecutionContext
     string ToolResultScopeId { get; }
 
     /// <summary>
+    /// Gets whether a result spilled under <see cref="ToolResultScopeId"/> during this execution can
+    /// ever actually be retrieved by a later call (#559).
+    /// </summary>
+    /// <remarks>
+    /// <see cref="ToolResultScopeId"/> is never null — see its own remarks — but on the fallback path
+    /// (<see cref="CallOnceScopeId"/> is null) it resolves to a fresh id unique to THIS
+    /// <see cref="IAgentExecutionContext"/> instance, which dies with the call that created it. A
+    /// direct tool invocation is exactly that case: nothing durable outlives the call to ask for the
+    /// scope again, so a result spilled there is unreachable by construction, not merely unlikely to
+    /// be fetched. Spilling anyway would still write the file — accumulating on disk forever with
+    /// zero retrieval benefit — and would tell the model to fetch something that can never come back.
+    /// <c>true</c> exactly when <see cref="CallOnceScopeId"/> is non-null, i.e. the scope is durable
+    /// enough that a later call in the same logical execution could plausibly reuse it.
+    /// </remarks>
+    bool HasRetrievableToolResultScope { get; }
+
+    /// <summary>
     /// Gets the workload identity of the executing agent, or <c>null</c> when identity
     /// is disabled (<c>AppConfig.AI.Identity.Enabled</c> is false), the call is outside
     /// any agent execution, or the identity has not yet been resolved by

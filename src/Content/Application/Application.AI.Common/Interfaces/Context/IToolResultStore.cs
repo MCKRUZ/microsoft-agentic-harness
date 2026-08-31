@@ -88,4 +88,24 @@ public interface IToolResultStore
         int offset,
         int maxChars,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Deletes every spilled result older than <paramref name="gracePeriod"/> (#559).
+    /// </summary>
+    /// <remarks>
+    /// Nothing else ever removes a spilled file — <see cref="StoreIfLargeAsync"/> only ever adds one,
+    /// and a scope whose owning conversation or run has long since ended leaves no other signal behind
+    /// that its files are safe to reclaim. Age is a coarser test than "the owning scope is gone" would
+    /// be, but the store has no way to ask that question — it does not know what a conversation or a
+    /// plan run is — and unlike <c>ConversationBudgetRetentionConfig</c>'s reasoning against an
+    /// age-only rule (deleting a budget row resets a ceiling), deleting a stale spilled result merely
+    /// means a very old <c>tool_result_fetch</c> call fails instead of succeeding — a retrieval
+    /// convenience, not an enforcement boundary.
+    /// </remarks>
+    /// <param name="gracePeriod">
+    /// How long a spilled file must sit untouched, by last-write time, before it is reclaimed.
+    /// </param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The number of files removed.</returns>
+    Task<int> PruneExpiredAsync(TimeSpan gracePeriod, CancellationToken cancellationToken = default);
 }

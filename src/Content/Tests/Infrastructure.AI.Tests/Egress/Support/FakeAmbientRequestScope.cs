@@ -33,6 +33,7 @@ internal sealed class FakeAmbientRequestScope : IAmbientRequestScope
         public int? TurnNumber => null;
         public string? CallOnceScopeId => null;
         public string ToolResultScopeId { get; } = Guid.NewGuid().ToString("N");
+        public bool HasRetrievableToolResultScope => false;
         public AgentIdentity? AgentIdentity { get; private set; }
 
         public void Initialize(string agentId, string conversationId, int turnNumber, string? callOnceScopeId = null)

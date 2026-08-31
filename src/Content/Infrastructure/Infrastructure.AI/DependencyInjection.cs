@@ -109,10 +109,16 @@ public static partial class DependencyInjection
         // Execution trace store — filesystem-backed per-run trace artifact persistence
         services.AddSingleton<IExecutionTraceStore, FileSystemExecutionTraceStore>();
 
-        // Tool result store — used by ToolOutputCompressionBehavior to off-load large
-        // tool results so they don't dominate the context window. Filesystem-backed by
+        // Tool result store — used by ToolCallAdmissionPipeline and ToolOutputCompressionBehavior to
+        // off-load large tool results so they don't dominate the context window. Filesystem-backed by
         // default; consumers can override with a different IToolResultStore after this call.
         services.AddSingleton<IToolResultStore, Context.FileSystemToolResultStore>();
+
+        // Retention sweep for the store above (#559) — unconditional registration, Enabled read live
+        // per tick, matching ConversationBudgetRetentionService's own registration convention. A
+        // consumer that overrides IToolResultStore above still gets a sweeper; it simply prunes
+        // whatever that implementation considers expired.
+        services.AddHostedService<Context.ToolResultRetentionService>();
 
         // --- Tools and AI clients ---
 
