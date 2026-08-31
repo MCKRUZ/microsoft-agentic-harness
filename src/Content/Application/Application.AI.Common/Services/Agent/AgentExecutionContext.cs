@@ -63,7 +63,20 @@ public sealed class AgentExecutionContext : IAgentExecutionContext
     }
 
     /// <inheritdoc />
-    public bool HasRetrievableToolResultScope => CallOnceScopeId is not null;
+    public bool HasRetrievableToolResultScope
+    {
+        get
+        {
+            // Correctness-review advisory: read under the same _gate as ToolResultScopeId and
+            // Initialize, not bare — CallOnceScopeId is written inside Initialize's lock, and a
+            // lock-free read here would be the one place in this type that doesn't honor its own
+            // documented "overlapping async contexts" thread-safety contract.
+            lock (_gate)
+            {
+                return CallOnceScopeId is not null;
+            }
+        }
+    }
 
     /// <inheritdoc />
     public AgentIdentity? AgentIdentity { get; private set; }

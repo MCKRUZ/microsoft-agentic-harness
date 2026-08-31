@@ -339,9 +339,20 @@ public sealed class FileSystemToolResultStore : IToolResultStore
     /// </summary>
     private static void RemoveIfEmptyUpTo(string directory, string root)
     {
-        var rootFullPath = Path.GetFullPath(root);
+        // Security-review finding: Path.GetFullPath preserves a trailing separator on its input but
+        // Path.GetDirectoryName (what advances "directory" each iteration below) always strips one —
+        // measured directly against this SDK: GetFullPath("C:/temp/spills/") is "C:\temp\spills\" while
+        // GetFullPath("C:/temp/spills") is "C:\temp\spills". A StoragePath configured WITH a trailing
+        // separator therefore never string-equals any ancestor this loop climbs to, so the "never climbs
+        // to or above root" guard this method's own remarks promise would silently never fire. Trimming
+        // both sides makes the comparison independent of how the caller happened to write the config
+        // value.
+        var rootFullPath = Path.TrimEndingDirectorySeparator(Path.GetFullPath(root));
 
-        while (!string.Equals(Path.GetFullPath(directory), rootFullPath, StringComparison.OrdinalIgnoreCase)
+        while (!string.Equals(
+                Path.TrimEndingDirectorySeparator(Path.GetFullPath(directory)),
+                rootFullPath,
+                StringComparison.OrdinalIgnoreCase)
             && Directory.Exists(directory)
             && !Directory.EnumerateFileSystemEntries(directory).Any())
         {
@@ -446,6 +457,17 @@ public sealed class FileSystemToolResultStore : IToolResultStore
                 "Session ID must not have a trailing dot.", paramName);
         }
 
-        return sessionId;
+        // Correctness-review finding: ':' passes the charset above (needed for
+        // PlanRunKeys.StepConversationId's "{runScope}:{stepId}" shape — see AllowedSegmentCharset's
+        // remarks) but Windows refuses it as a directory-NAME character outside the single-letter
+        // drive-separator position the Path.IsPathRooted check above already excludes. Measured
+        // directly against this SDK: Directory.CreateDirectory("conv-1:5") throws IOException
+        // ("The directory name is invalid") on Windows, so every plan-step spill silently degraded to
+        // a plain truncation marker there — the exact platform this repo develops on. '~' can never
+        // appear in a value that already passed the charset check (it isn't in AllowedSegmentCharset),
+        // so this 1:1 substitution is unambiguous with no reverse mapping needed: the same scope id
+        // always encodes to the same directory name, on both the store and retrieve paths that both
+        // call this method, and the substitution changes neither length nor legality on either OS.
+        return sessionId.Replace(':', '~');
     }
 }

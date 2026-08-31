@@ -275,7 +275,14 @@ public sealed class FileSystemToolResultStoreTests : IDisposable
     [InlineData("AB:foo")]
     public async Task StoreIfLargeAsync_SessionIdWithinTheAllowedCharset_DoesNotThrow(string sessionId)
     {
-        var act = () => _sut.StoreIfLargeAsync(sessionId, "tool", null, "data");
+        // Correctness-review finding: content must exceed this fixture's 100-char PerResultCharLimit
+        // so StoreIfLargeAsync actually reaches CreateDirectoryOwnerOnly/Path.Combine. A short "data"
+        // payload stays inline and never touches the filesystem, so a colon-in-the-charset id would
+        // pass this test even on a build where Directory.CreateDirectory("conv-1:step-5") throws
+        // IOException on Windows — which the pre-fix code did.
+        var output = new string('x', 200);
+
+        var act = () => _sut.StoreIfLargeAsync(sessionId, "tool", null, output);
 
         await act.Should().NotThrowAsync();
     }
@@ -291,9 +298,13 @@ public sealed class FileSystemToolResultStoreTests : IDisposable
         var derivedId = $"{new string('a', 128)}:{Guid.NewGuid()}";
         derivedId.Length.Should().Be(165, "the test must exercise the actual worst case, not an approximation");
 
-        var act = () => _sut.StoreIfLargeAsync(derivedId, "tool", null, "data");
+        // Must exceed PerResultCharLimit — see the allowed-charset theory above for why a short
+        // payload would silently skip the disk write this test exists to exercise.
+        var output = new string('x', 200);
 
-        await act.Should().NotThrowAsync();
+        var result = await _sut.StoreIfLargeAsync(derivedId, "tool", null, output);
+
+        result.IsPersistedToDisk.Should().BeTrue();
     }
 
     [Fact]
@@ -456,6 +467,29 @@ public sealed class FileSystemToolResultStoreTests : IDisposable
         var removed = await _sut.PruneExpiredAsync(TimeSpan.FromDays(1));
 
         removed.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task PruneExpiredAsync_StoragePathHasTrailingSeparator_DoesNotClimbPastTheConfiguredRoot()
+    {
+        // Security-review finding: Path.GetFullPath preserves a trailing separator on its input but
+        // Path.GetDirectoryName (what RemoveIfEmptyUpTo climbs with) always strips one — measured
+        // directly against this SDK (GetFullPath("C:/a/") keeps the trailing '\', GetFullPath("C:/a")
+        // does not) — so a StoragePath configured WITH a trailing separator made the "never climbs to
+        // or above root" equality check never fire, and a fully-swept scope kept deleting empty
+        // ancestors past the root the caller configured, including the root itself.
+        var storageRoot = Path.Combine(_tempDir, "with-trailing-sep");
+        Directory.CreateDirectory(storageRoot);
+        _appConfig.AI.ContextManagement.ToolResultStorage.StoragePath = storageRoot + Path.DirectorySeparatorChar;
+
+        var stored = await _sut.StoreIfLargeAsync("session1", "tool", null, new string('a', 200));
+        File.SetLastWriteTimeUtc(stored.FullContentPath!, DateTime.UtcNow - TimeSpan.FromDays(2));
+
+        await _sut.PruneExpiredAsync(TimeSpan.FromDays(1));
+
+        Directory.Exists(storageRoot).Should().BeTrue(
+            "the sweep must stop at the configured storage root, not climb past it just because the " +
+            "config value happened to carry a trailing separator");
     }
 
     public void Dispose()
