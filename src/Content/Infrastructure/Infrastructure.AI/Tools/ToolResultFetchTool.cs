@@ -74,15 +74,17 @@ namespace Infrastructure.AI.Tools;
 /// </para>
 /// <para>
 /// <strong>Redaction happens once, at spill time, over the complete stored content — never here, per
-/// page.</strong> (Security-review finding, #563 second revision.) An earlier version of this tool
-/// redacted each page individually, gated by a flag persisted alongside the content. That was broken:
-/// a page boundary is a character offset the CALLER chooses (the model's own <c>offset</c> argument),
-/// so a caller could split a secret across two page boundaries and recover both halves unredacted —
-/// neither page alone contains a complete pattern for a redaction filter to match. There is no fix for
-/// that which still redacts per page, because the caller can always choose a new split point. Redacting
-/// once, before any page boundary exists — <c>FileSystemToolResultStore.StoreIfLargeAsync</c>'s
-/// <c>redactBeforeStoring</c> parameter — removes the boundary an adversarial offset could ever
-/// exploit: whatever this tool reads back is already safe, and a page is just a slice of it.
+/// page.</strong> (Security-review finding, now on its third revision.) An earlier version of this
+/// tool redacted each page individually, gated by a flag persisted alongside the content. That was
+/// broken: a page boundary is a character offset the CALLER chooses (the model's own <c>offset</c>
+/// argument), so a caller could split a secret across two page boundaries and recover both halves
+/// unredacted — neither page alone contains a complete pattern for a redaction filter to match. There
+/// is no fix for that which still redacts per page, because the caller can always choose a new split
+/// point. A later revision moved redaction to write time but gated it on the originating call's own
+/// classification — also broken, because a plain-allow call spilled raw, unscanned content.
+/// <c>FileSystemToolResultStore.StoreIfLargeAsync</c> now redacts everything it persists,
+/// unconditionally, before the write: whatever this tool reads back is already safe, and a page is
+/// just a slice of it.
 /// </para>
 /// </remarks>
 public sealed class ToolResultFetchTool : ITool

@@ -1,8 +1,8 @@
-using Application.AI.Common.Interfaces.Telemetry;
 using Domain.Common.Config;
 using Domain.Common.Config.AI.ContextManagement;
 using FluentAssertions;
 using Infrastructure.AI.Context;
+using Infrastructure.AI.Telemetry.Redaction;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Moq;
@@ -41,7 +41,7 @@ public sealed class FileSystemToolResultStoreSolutionReviewFixTests : IDisposabl
 
         _sut = new FileSystemToolResultStore(
             monitor.Object,
-            Mock.Of<IContentRedactionFilter>(),
+            new DefaultContentRedactionFilter(),
             Mock.Of<ILogger<FileSystemToolResultStore>>());
     }
 
