@@ -57,6 +57,28 @@ public sealed class ToolOutputCompressionBehaviorTests
             _logger.Object);
     }
 
+    // /simplify finding: the 5 fields on each of these varied by at most 3 across every call site in
+    // this file — factored out so a test only states what actually distinguishes it.
+    private static ToolResultReference Reference(
+        string resultId, string previewContent, string? fullContentPath = null) => new()
+    {
+        ResultId = resultId,
+        ToolName = "test_tool",
+        PreviewContent = previewContent,
+        FullContentPath = fullContentPath,
+        SizeChars = 9000,
+        Timestamp = DateTimeOffset.UtcNow
+    };
+
+    private static CompressionResult Compressed(string output = "compressed summary") => new()
+    {
+        Output = output,
+        OriginalTokens = 2250,
+        CompressedTokens = 5,
+        Strategy = "Json",
+        WasCompressed = true
+    };
+
     [Fact]
     public async Task Handle_NonToolRequest_PassesThrough()
     {
@@ -105,28 +127,13 @@ public sealed class ToolOutputCompressionBehaviorTests
         var output = new ToolTestResponse(largeOutput);
         var behavior = CreateBehavior();
 
-        var reference = new ToolResultReference
-        {
-            ResultId = "ref-123",
-            ToolName = "test_tool",
-            PreviewContent = "preview...",
-            FullContentPath = "/fake/persisted.json",
-            SizeChars = 9000,
-            Timestamp = DateTimeOffset.UtcNow
-        };
+        var reference = Reference("ref-123", "preview...", "/fake/persisted.json");
 
         _resultStore.Setup(x => x.StoreIfLargeAsync("session-1", "test_tool", null, largeOutput, It.IsAny<int?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(reference);
 
         _compressor.Setup(x => x.CompressAsync(largeOutput, null, 2000, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new CompressionResult
-            {
-                Output = "compressed summary",
-                OriginalTokens = 2250,
-                CompressedTokens = 5,
-                Strategy = "Json",
-                WasCompressed = true
-            });
+            .ReturnsAsync(Compressed());
 
         var result = await behavior.Handle(
             new ToolTestRequest("test_tool"),
@@ -160,27 +167,12 @@ public sealed class ToolOutputCompressionBehaviorTests
         var output = new ToolTestResponse(largeOutput);
         var behavior = CreateBehavior();
 
-        var reference = new ToolResultReference
-        {
-            ResultId = "ref-789",
-            ToolName = "test_tool",
-            PreviewContent = "preview...",
-            FullContentPath = "/fake/persisted.json",
-            SizeChars = 9000,
-            Timestamp = DateTimeOffset.UtcNow
-        };
+        var reference = Reference("ref-789", "preview...", "/fake/persisted.json");
 
         _resultStore.Setup(x => x.StoreIfLargeAsync("session-1", "test_tool", null, largeOutput, It.IsAny<int?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(reference);
         _compressor.Setup(x => x.CompressAsync(largeOutput, null, 2000, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new CompressionResult
-            {
-                Output = "compressed summary",
-                OriginalTokens = 2250,
-                CompressedTokens = 5,
-                Strategy = "Json",
-                WasCompressed = true
-            });
+            .ReturnsAsync(Compressed());
 
         var result = await behavior.Handle(
             new ToolTestRequest("test_tool"),
@@ -207,27 +199,12 @@ public sealed class ToolOutputCompressionBehaviorTests
         var output = new ToolTestResponse(largeOutput);
         var behavior = CreateBehavior();
 
-        var reference = new ToolResultReference
-        {
-            ResultId = "ref-inline",
-            ToolName = "test_tool",
-            PreviewContent = largeOutput,
-            FullContentPath = null,
-            SizeChars = 9000,
-            Timestamp = DateTimeOffset.UtcNow
-        };
+        var reference = Reference("ref-inline", largeOutput, fullContentPath: null);
 
         _resultStore.Setup(x => x.StoreIfLargeAsync("session-1", "test_tool", null, largeOutput, It.IsAny<int?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(reference);
         _compressor.Setup(x => x.CompressAsync(largeOutput, null, 2000, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new CompressionResult
-            {
-                Output = "compressed summary",
-                OriginalTokens = 2250,
-                CompressedTokens = 5,
-                Strategy = "Json",
-                WasCompressed = true
-            });
+            .ReturnsAsync(Compressed());
 
         var result = await behavior.Handle(
             new ToolTestRequest("test_tool"),
@@ -252,14 +229,7 @@ public sealed class ToolOutputCompressionBehaviorTests
         _executionContext.Setup(x => x.HasRetrievableToolResultScope).Returns(false);
 
         _compressor.Setup(x => x.CompressAsync(largeOutput, null, 2000, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new CompressionResult
-            {
-                Output = "compressed summary",
-                OriginalTokens = 2250,
-                CompressedTokens = 5,
-                Strategy = "Json",
-                WasCompressed = true
-            });
+            .ReturnsAsync(Compressed());
 
         var result = await behavior.Handle(
             new ToolTestRequest("test_tool"),
@@ -300,14 +270,7 @@ public sealed class ToolOutputCompressionBehaviorTests
         var output = new ToolTestResponse(largeOutput);
         var behavior = CreateBehavior();
 
-        var reference = new ToolResultReference
-        {
-            ResultId = "ref-456",
-            ToolName = "test_tool",
-            PreviewContent = "preview...",
-            SizeChars = 9000,
-            Timestamp = DateTimeOffset.UtcNow
-        };
+        var reference = Reference("ref-456", "preview...");
 
         _resultStore.Setup(x => x.StoreIfLargeAsync("session-1", "test_tool", null, largeOutput, It.IsAny<int?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(reference);

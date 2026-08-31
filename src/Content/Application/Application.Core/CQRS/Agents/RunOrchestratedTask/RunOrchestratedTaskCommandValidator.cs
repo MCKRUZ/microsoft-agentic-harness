@@ -1,4 +1,4 @@
-using System.Text.RegularExpressions;
+using Domain.Common.Helpers;
 using FluentValidation;
 
 namespace Application.Core.CQRS.Agents.RunOrchestratedTask;
@@ -8,14 +8,6 @@ namespace Application.Core.CQRS.Agents.RunOrchestratedTask;
 /// </summary>
 public class RunOrchestratedTaskCommandValidator : AbstractValidator<RunOrchestratedTaskCommand>
 {
-	// #560: kept in sync by comment with FileSystemToolResultStore's own allowlist and
-	// RunConversationCommandValidator's copy — see the latter's remarks for why this can't be a
-	// shared constant across the Application/Infrastructure boundary, why ':' is admitted
-	// (PlanRunKeys.StepConversationId's "{runScope}:{stepId}" shape) with Path.IsPathRooted, not this
-	// charset, as the actual backstop against a drive-rooted id, and why the length bound is 200
-	// (the derived shape can reach 165 characters) rather than the 128 an earlier version used.
-	private static readonly Regex AllowedScopeIdCharset = new(@"\A[A-Za-z0-9_.:-]{1,200}\z", RegexOptions.Compiled);
-
 	public RunOrchestratedTaskCommandValidator()
 	{
 		RuleFor(x => x.OrchestratorName)
@@ -35,19 +27,20 @@ public class RunOrchestratedTaskCommandValidator : AbstractValidator<RunOrchestr
 		// conversation id AND the tool-result retrieval scope (RunOrchestratedTaskCommandHandler ->
 		// AgentExecutionContext.Initialize(..., callOnceScopeId: request.ConversationId)) with no
 		// validation at all until now. The command's own default (a bare GUID) always satisfies this.
-		// /code-review finding: mirrors RunConversationCommandValidator's identical addition — the
-		// charset alone is not what FileSystemToolResultStore.SanitizeSessionSegment enforces; it also
-		// independently rejects a rooted path, "." / "..", and a trailing dot. See that validator's
-		// remarks for why a value clearing only the charset still reaches the store as a raw,
-		// silently-downgraded ArgumentException.
+		// StorageSegmentSafety (Domain.Common.Helpers) is the single shared home for this charset and
+		// its independent rooted-path / "." / ".." / trailing-dot checks — mirrors
+		// RunConversationCommandValidator's identical rule; see that type's remarks for why a value
+		// clearing only the charset still reaches the store as a raw, silently-downgraded
+		// ArgumentException.
 		RuleFor(x => x.ConversationId)
 			.NotEmpty().WithMessage("Conversation id is required.")
-			.Matches(AllowedScopeIdCharset).WithMessage("Conversation id must be 1-200 characters from [A-Za-z0-9_.:-].")
-			.Must(id => id is not ("." or ".."))
+			.Matches(StorageSegmentSafety.AllowedCharset)
+				.WithMessage("Conversation id must be 1-200 characters from [A-Za-z0-9_.:-].")
+			.Must(id => !StorageSegmentSafety.IsRelativeDirectoryReference(id))
 				.WithMessage("Conversation id must not be a relative directory reference.")
 			.Must(id => !Path.IsPathRooted(id))
 				.WithMessage("Conversation id must not be an absolute or drive-rooted path.")
-			.Must(id => !id.EndsWith('.'))
+			.Must(id => !StorageSegmentSafety.HasTrailingDot(id))
 				.WithMessage("Conversation id must not have a trailing dot.");
 	}
 }

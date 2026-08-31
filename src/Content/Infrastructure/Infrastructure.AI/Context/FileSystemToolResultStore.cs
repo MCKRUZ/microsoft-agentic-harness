@@ -1,10 +1,10 @@
-using System.Text.RegularExpressions;
 using Application.AI.Common.Interfaces.Context;
 using Application.AI.Common.Interfaces.Telemetry;
 using Application.AI.Common.Services.Governance;
 using Domain.AI.Context;
 using Domain.AI.Telemetry.Redaction;
 using Domain.Common.Config;
+using Domain.Common.Helpers;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -17,40 +17,14 @@ namespace Infrastructure.AI.Context;
 /// </summary>
 public sealed class FileSystemToolResultStore : IToolResultStore
 {
-    // Positive allowlist (#560) rather than an ever-growing set of rejected shapes: this is the
-    // complete enumeration of characters a legitimate scope id can ever need (durable conversation
-    // ids, plan/run ids, minted GUIDs, and PlanRunKeys.StepConversationId's "{runScope}:{stepId}"
-    // shape all fit it), so anything outside it is refused outright rather than pattern-matched
-    // against known-dangerous cases. Neither '/' nor '\' — the only two path separators across
-    // platforms — are in the set.
-    //
-    // ':' IS admitted, deliberately, after a real regression: an earlier version of this allowlist
-    // excluded it specifically because Path.IsPathRooted("C:") and Path.IsPathRooted("C:foo") measure
-    // TRUE on Windows — but that same exclusion also rejected PlanRunKeys.StepConversationId's
-    // "{runScope}:{stepId}" shape, which every LLM step of every plan run produces, failing every one
-    // of them at RunConversationCommandValidator. Measured directly (Path.IsPathRooted, this SDK):
-    // "C:"/"C:foo"/"D:x" → true, but "conv-1:5"/"abc123:step-5"/"AB:foo" → false — Windows treats a
-    // colon as a drive separator only when it is preceded by EXACTLY one ASCII letter, never when
-    // preceded by two or more characters. A colon used as an internal separator between multi-character
-    // segments therefore cannot produce a rooted path. The charset does not need to encode that
-    // distinction itself: SanitizeSessionSegment's own Path.IsPathRooted check below is the actual,
-    // independent backstop against the single-letter-drive shape, regardless of what this charset
-    // admits — see its remarks.
-    //
-    // Length bound is 200, not 128 — a second real regression on the same allowlist. 128 matched
-    // IPlanRunExecutor.MaxAgentIdLength, the cap on a bare ConversationId/RunId, but
-    // PlanRunKeys.StepConversationId derives "{runScope}:{stepId}" from that value — up to
-    // 128 + 1 + 36 (a Guid's default ToString length) = 165 characters — so a legal 92+ char run
-    // scope produced a derived id this allowlist itself rejected. 200 covers the exact 165-char
-    // worst case with margin, while staying well under typical single-path-segment filesystem limits.
-    //
-    // Anchored with \z, not $ — $ in .NET regex matches immediately before a trailing '\n' as well as
-    // at the true end of the string, so "abc\n" would otherwise pass this pattern (a security-review
-    // finding: a caller-supplied id ending in a newline becoming a directory name and then a log line,
-    // the exact shape IsWellFormedAgentId's own per-character check avoids by construction). \z matches
-    // only the absolute end.
-    private static readonly Regex AllowedSegmentCharset =
-        new(@"\A[A-Za-z0-9_.:-]{1,200}\z", RegexOptions.Compiled);
+    // /code-review + /simplify findings: the charset and shape checks below now live in
+    // Domain.Common.Helpers.StorageSegmentSafety, shared with RunConversationCommandValidator and
+    // RunOrchestratedTaskCommandValidator — see that type's own remarks for the ':'-admission and
+    // 200-char-length history, and for why this is the fourth-and-hopefully-last hand-copy of this
+    // check to exist. ':' is still admitted, deliberately, for PlanRunKeys.StepConversationId's
+    // "{runScope}:{stepId}" shape; SanitizeSessionSegment's own Path.IsPathRooted check below (via
+    // StorageSegmentSafety.HasUnsafeShape) remains the actual, independent backstop against the
+    // single-letter-drive shape a bare ':' could otherwise produce.
 
     // /code-review finding: how far past MaxSpillChars a scan reads before redacting, so a secret whose
     // match starts before the true limit but extends past it is still fully present for the redaction
@@ -454,13 +428,13 @@ public sealed class FileSystemToolResultStore : IToolResultStore
         // separator is in the set, which is what closes traversal and UNC egress. Checked first so a
         // malformed id gets one clear rejection reason rather than falling through to a more specific
         // but less informative message below.
-        if (!AllowedSegmentCharset.IsMatch(sessionId))
+        if (!StorageSegmentSafety.AllowedCharset.IsMatch(sessionId))
         {
             throw new ArgumentException(
                 "Session ID must be 1-200 characters from [A-Za-z0-9_.:-].", paramName);
         }
 
-        // Independent of the charset above, deliberately — see AllowedSegmentCharset's own remarks.
+        // Independent of the charset above, deliberately — see StorageSegmentSafety's own remarks.
         // A colon is admitted by the charset (needed for PlanRunKeys.StepConversationId's
         // "{runScope}:{stepId}" shape), but Path.IsPathRooted still measures a bare drive reference
         // like "C:" or "C:foo" as TRUE on Windows, and Path.Combine discards every earlier segment
@@ -475,7 +449,7 @@ public sealed class FileSystemToolResultStore : IToolResultStore
 
         // "." and ".." are within the allowed charset but resolve to the storage root or a parent
         // when combined, so reject them explicitly.
-        if (sessionId is "." or "..")
+        if (StorageSegmentSafety.IsRelativeDirectoryReference(sessionId))
         {
             throw new ArgumentException(
                 "Session ID must not be a relative directory reference.", paramName);
@@ -485,7 +459,7 @@ public sealed class FileSystemToolResultStore : IToolResultStore
         // the SAME directory there even though they compare unequal as strings — two different
         // scopes could collide onto one storage directory (a security-review finding). The allowed
         // charset permits a trailing dot, so this still needs its own check.
-        if (sessionId.EndsWith('.'))
+        if (StorageSegmentSafety.HasTrailingDot(sessionId))
         {
             throw new ArgumentException(
                 "Session ID must not have a trailing dot.", paramName);

@@ -501,7 +501,7 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
         // See StoreIfLargeAsync's own remarks for the full history and why unconditional is what
         // finally closes both bypasses at once.
         var marker = await SpillAndBuildMarkerAsync(
-            toolName, ToolResultText.ExtractText(result), effectiveCeiling)
+            toolName, () => ToolResultText.ExtractText(result), effectiveCeiling)
             .ConfigureAwait(false);
         var (reboundedWithId, _) = ToolResultText.Bound(treated, effectiveCeiling, marker);
 
@@ -641,7 +641,7 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
         // Security-review finding: same as ApplyOutputPolicyAsync's identical comment — the store
         // redacts the spill unconditionally, not gated on this call's own admission.
         var marker = await SpillAndBuildMarkerAsync(
-            toolName, content!, effectiveCeiling).ConfigureAwait(false);
+            toolName, () => content!, effectiveCeiling).ConfigureAwait(false);
         var (withId, _) = BoundedText.Cap(processed, effectiveCeiling, marker, alwaysEmbedMarker: true);
 
         // #522: correctness-review and security-review finding on the PR that introduced the aggregate
@@ -666,7 +666,7 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
     }
 
     /// <summary>
-    /// Spills <paramref name="rawFullText"/> — the tool's original, untreated output, not yet
+    /// Spills <paramref name="rawFullTextFactory"/> — the tool's original, untreated output, not yet
     /// sanitized, cut, or (model-facing) redacted — to <see cref="_resultStore"/> under this
     /// execution's <see cref="IAgentExecutionContext.ToolResultScopeId"/>, and returns the marker to
     /// substitute for the plain <see cref="OutputTruncationMarker"/>, carrying the resulting id so a
@@ -675,7 +675,7 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
     /// <remarks>
     /// <para>
     /// <strong>Capped only by MaxSpillChars, not by the scan-cost bound (#563).</strong> Before #563
-    /// this spilled <paramref name="rawFullText"/> already cut to
+    /// this spilled <paramref name="rawFullTextFactory"/> already cut to
     /// <see cref="ToolResultText.PreCutForScan(object?, int, int, string)"/>'s scan-cost bound, so it
     /// could never actually hold more than roughly <see cref="OutputCeiling"/> +
     /// <see cref="ScrubOverlapMargin"/> characters: the "full output available via tool_result_fetch"
@@ -724,7 +724,7 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
     /// config-derived <c>PerResultCharLimit</c>. This method is only ever reached when a caller's own
     /// cut already dropped content against that exact threshold — which, since the aggregate
     /// per-message budget can shrink the ceiling a single result is cut to well below
-    /// <c>PerResultCharLimit</c>, no longer implies <paramref name="rawFullText"/> itself exceeds
+    /// <c>PerResultCharLimit</c>, no longer implies <paramref name="rawFullTextFactory"/> itself exceeds
     /// the store's own configured limit. Comparing against the caller's real threshold instead of the
     /// store's keeps this a genuine size check rather than an unconditional bypass: a normal-sized
     /// result cut only by the aggregate budget still gets persisted (fixing the gap where the store
@@ -735,7 +735,7 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
     /// </para>
     /// </remarks>
     private async ValueTask<string> SpillAndBuildMarkerAsync(
-        string toolName, string rawFullText, int sizeThreshold)
+        string toolName, Func<string> rawFullTextFactory, int sizeThreshold)
     {
         // #559: a direct tool invocation mints a fresh, call-scoped ToolResultScopeId that dies with
         // the call — nothing durable can ever ask for it again, so a file written here would be
@@ -744,6 +744,12 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
         // forever, with no sweep to reclaim it and zero retrieval benefit.
         if (!_executionContext.HasRetrievableToolResultScope)
             return OutputTruncationMarker;
+
+        // /simplify finding: rawFullText is supplied as a factory, not a plain string, so a caller
+        // whose text requires real work to produce (ApplyOutputPolicyAsync's ToolResultText.ExtractText
+        // walks and rejoins every block of a potentially multi-block, unbounded — post-#563 — result)
+        // never pays that cost on the direct-invoke path the guard above already rejects.
+        var rawFullText = rawFullTextFactory();
 
         try
         {
