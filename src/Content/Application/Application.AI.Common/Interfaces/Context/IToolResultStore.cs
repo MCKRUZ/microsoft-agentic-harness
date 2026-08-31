@@ -76,10 +76,13 @@ public interface IToolResultStore
     /// There is deliberately no whole-file read on this interface (#563). The stored copy is already
     /// sanitized and redacted (see <see cref="StoreIfLargeAsync"/>'s own remarks) — up to
     /// <c>ToolResultStorageConfig.MaxSpillChars</c> characters — so a caller still bounds whatever a
-    /// page returns before it reaches a model, exactly as it would for any other tool result, but does
-    /// not need to sanitize or redact it a second time. Paging also lets each read stay a bounded scan
-    /// regardless of how large the stored result is, which a whole-file read could not offer without
-    /// scanning the whole thing first.
+    /// page returns before it reaches a model, exactly as it would for any other tool result. Security
+    /// review finding: this does NOT mean the model-facing admission pipeline's own sanitize/redact pass
+    /// on a fetched page is redundant to remove — that pass is defense in depth covering what write-time
+    /// treatment cannot: a result spilled by a build predating this guarantee, or a mis-scoped write. Do
+    /// not delete the read-side pass on the strength of this remark. Paging also lets each read stay a
+    /// bounded scan regardless of how large the stored result is, which a whole-file read could not
+    /// offer without scanning the whole thing first.
     /// </remarks>
     /// <param name="resultId">The unique identifier of the stored result.</param>
     /// <param name="scopeId">
