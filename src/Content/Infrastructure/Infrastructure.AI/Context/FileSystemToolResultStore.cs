@@ -1,8 +1,9 @@
-using System.Text.Json;
 using System.Text.RegularExpressions;
 using Application.AI.Common.Interfaces.Context;
+using Application.AI.Common.Interfaces.Telemetry;
 using Application.AI.Common.Services.Governance;
 using Domain.AI.Context;
+using Domain.AI.Telemetry.Redaction;
 using Domain.Common.Config;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -51,32 +52,28 @@ public sealed class FileSystemToolResultStore : IToolResultStore
     private static readonly Regex AllowedSegmentCharset =
         new(@"\A[A-Za-z0-9_.:-]{1,200}\z", RegexOptions.Compiled);
 
-    /// <summary>
-    /// The on-disk shape of a persisted result (security-review finding on #563). A bare text file
-    /// cannot carry <see cref="ToolResultPage.RedactOnRetrieve"/> alongside its content, and that flag
-    /// is exactly what closes the redaction-bypass finding — see that property's remarks. Only the
-    /// disk-persisted branch of <see cref="StoreIfLargeAsync"/> uses this; the inline branch returns
-    /// the caller's own string directly and nothing is ever paged back for it.
-    /// </summary>
-    private sealed record StoredResultEnvelope
-    {
-        public required string Content { get; init; }
-        public bool RedactOnRetrieve { get; init; }
-    }
-
     private readonly IOptionsMonitor<AppConfig> _options;
+    private readonly IContentRedactionFilter _redactionFilter;
     private readonly ILogger<FileSystemToolResultStore> _logger;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="FileSystemToolResultStore"/> class.
     /// </summary>
     /// <param name="options">Application configuration for storage thresholds and paths.</param>
+    /// <param name="redactionFilter">
+    /// Applied to content before it is written to disk when a caller's <c>redactBeforeStoring</c> is
+    /// <see langword="true"/> (security-review finding, #563 second revision) — see
+    /// <see cref="StoreIfLargeAsync"/>'s own remarks for why this happens at write time and never at
+    /// read time.
+    /// </param>
     /// <param name="logger">Logger for storage diagnostics.</param>
     public FileSystemToolResultStore(
         IOptionsMonitor<AppConfig> options,
+        IContentRedactionFilter redactionFilter,
         ILogger<FileSystemToolResultStore> logger)
     {
         _options = options;
+        _redactionFilter = redactionFilter;
         _logger = logger;
     }
 
@@ -88,7 +85,7 @@ public sealed class FileSystemToolResultStore : IToolResultStore
         string fullOutput,
         int? sizeThreshold = null,
         CancellationToken cancellationToken = default,
-        bool redactOnRetrieve = false)
+        bool redactBeforeStoring = false)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
         ArgumentException.ThrowIfNullOrWhiteSpace(toolName);
@@ -139,15 +136,25 @@ public sealed class FileSystemToolResultStore : IToolResultStore
                 resultId, toolName, fullOutput.Length, config.MaxSpillChars, config.MaxSpillChars);
         }
 
-        var storagePath = Path.Combine(config.StoragePath, safeSessionId, "tool-results", $"{resultId}.json");
+        // Security-review finding on #563, second revision: redacting happens HERE, before the write,
+        // never at read time. The first revision left content raw at rest and redacted each page
+        // independently when read — but a page boundary is a character offset the CALLER chooses
+        // (tool_result_fetch's own model-supplied 'offset' argument), so a caller could split a secret
+        // across two page boundaries and recover both halves unredacted, since neither page alone
+        // contains a complete pattern for the filter to match. There is no page-boundary-based fix for
+        // that, because the caller can always choose a new split point. Redacting the complete
+        // (already MaxSpillChars-capped) content once, before any page boundary exists, removes the
+        // boundary an adversarial offset could ever exploit.
+        if (redactBeforeStoring)
+        {
+            spillable = _redactionFilter.Redact(spillable, RedactionCategories.All);
+        }
+
+        var storagePath = Path.Combine(config.StoragePath, safeSessionId, "tool-results", $"{resultId}.txt");
         var directory = Path.GetDirectoryName(storagePath)!;
         CreateDirectoryOwnerOnly(directory);
 
-        // Security-review finding on #563: wrapped in an envelope, not written as bare text, so
-        // RedactOnRetrieve travels with the content instead of being lost — see StoredResultEnvelope's
-        // own remarks.
-        var envelope = new StoredResultEnvelope { Content = spillable, RedactOnRetrieve = redactOnRetrieve };
-        await File.WriteAllTextAsync(storagePath, JsonSerializer.Serialize(envelope), cancellationToken);
+        await File.WriteAllTextAsync(storagePath, spillable, cancellationToken);
 
         var previewLength = Math.Min(config.PreviewSizeChars, spillable.Length);
         var preview = $"{spillable[..previewLength]}\n... [{spillable.Length} chars persisted to {resultId}]";
@@ -217,13 +224,13 @@ public sealed class FileSystemToolResultStore : IToolResultStore
         // fixed — StoragePath is not a value anyone realistically hot-reloads mid-process.
         var safeScopeId = SanitizeSessionSegment(scopeId, nameof(scopeId));
         var config = _options.CurrentValue.AI.ContextManagement.ToolResultStorage;
-        var storagePath = Path.Combine(config.StoragePath, safeScopeId, "tool-results", $"{resultId}.json");
+        var storagePath = Path.Combine(config.StoragePath, safeScopeId, "tool-results", $"{resultId}.txt");
 
         _logger.LogDebug(
             "Retrieving page (offset {Offset}, maxChars {MaxChars}) of result {ResultId} from {Path}",
             offset, maxChars, resultId, storagePath);
 
-        StoredResultEnvelope envelope;
+        string content;
         try
         {
             // #563: the whole stored file is read into memory rather than seeking within the stream.
@@ -232,21 +239,19 @@ public sealed class FileSystemToolResultStore : IToolResultStore
             // nothing that matters, and a plain in-memory Substring sidesteps every edge case a
             // character-counting stream-skip would otherwise have to get right (multi-byte encoding,
             // resuming a skip across buffer boundaries) for a bound that is not actually load-bearing.
-            var raw = await File.ReadAllTextAsync(storagePath, cancellationToken);
-            envelope = JsonSerializer.Deserialize<StoredResultEnvelope>(raw)
-                ?? throw new KeyNotFoundException($"No stored result found for id '{resultId}'.");
+            // Bare text, not a JSON envelope — #563's second revision moved redaction to write time
+            // (see StoreIfLargeAsync's own remarks), so nothing besides the content itself ever needs
+            // to travel alongside it on disk.
+            content = await File.ReadAllTextAsync(storagePath, cancellationToken);
         }
-        catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException or JsonException)
+        catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
         {
             // Deliberately the same exception, with the same message shape, whether resultId was never
             // stored at all or was stored under a DIFFERENT scope — see the interface's own remarks on
-            // why "exists but not yours" must read identically to "does not exist". A malformed envelope
-            // (JsonException) is folded into the same refusal for the identical reason: it must not tell
-            // a caller anything more specific than "not found".
+            // why "exists but not yours" must read identically to "does not exist".
             throw new KeyNotFoundException($"No stored result found for id '{resultId}'.");
         }
 
-        var content = envelope.Content;
         var clampedOffset = Math.Min(offset, content.Length);
         var pageEnd = Math.Min(clampedOffset + maxChars, content.Length);
 
@@ -271,8 +276,7 @@ public sealed class FileSystemToolResultStore : IToolResultStore
         {
             Text = content[clampedOffset..pageEnd],
             NextOffset = pageEnd,
-            TotalChars = content.Length,
-            RedactOnRetrieve = envelope.RedactOnRetrieve
+            TotalChars = content.Length
         };
     }
 
@@ -292,9 +296,9 @@ public sealed class FileSystemToolResultStore : IToolResultStore
         // Correctness-review finding: StoragePath defaults to ".agent-sessions", the harness's whole
         // shared state root (governance/egress/escalation/changes/delegations all live under it,
         // per FoundryHostBootstrap) — NOT a directory this store owns exclusively. Enumerating
-        // "*.json" with AllDirectories under that root would delete any *.json a future consumer adds
+        // "*.txt" with AllDirectories under that root would delete any *.txt a future consumer adds
         // anywhere in that tree. Only ever descend into the exact shape StoreIfLargeAsync writes:
-        // {StoragePath}/{scope}/tool-results/{resultId}.json — one level of scope directories, each
+        // {StoragePath}/{scope}/tool-results/{resultId}.txt — one level of scope directories, each
         // with exactly one "tool-results" child.
         foreach (var scopeDir in Directory.EnumerateDirectories(storagePath))
         {
@@ -302,7 +306,7 @@ public sealed class FileSystemToolResultStore : IToolResultStore
             if (!Directory.Exists(toolResultsDir))
                 continue;
 
-            foreach (var filePath in Directory.EnumerateFiles(toolResultsDir, "*.json"))
+            foreach (var filePath in Directory.EnumerateFiles(toolResultsDir, "*.txt"))
             {
                 cancellationToken.ThrowIfCancellationRequested();
 

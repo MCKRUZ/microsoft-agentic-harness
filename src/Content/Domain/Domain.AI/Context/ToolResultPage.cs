@@ -26,19 +26,4 @@ public sealed record ToolResultPage
 
     /// <summary>Whether calling again with <see cref="NextOffset"/> would return more text.</summary>
     public bool HasMore => NextOffset < TotalChars;
-
-    /// <summary>
-    /// Whether the caller reading this page must redact it before showing it to a model (security
-    /// review finding on #563). The classification decision that gates a tool's own output
-    /// (<c>ToolCallAdmission.RedactsOutput</c>) is resolved from <em>whichever tool is currently
-    /// executing</em> — for a fetch, that is <c>tool_result_fetch</c> itself, not the tool whose
-    /// output was originally spilled. <c>tool_result_fetch</c>'s own arguments resolve to no known
-    /// asset, which a data-classification policy typically treats as "allow" by default — so without
-    /// this flag, a result that was correctly redacted going TO the model on its first call would
-    /// reach the model unredacted on a later <c>tool_result_fetch</c> call for the very same content.
-    /// Set from the originating call's own redaction verdict at spill time and carried with the
-    /// stored bytes, so the decision travels with the data instead of being re-derived from a caller
-    /// identity that cannot know it.
-    /// </summary>
-    public bool RedactOnRetrieve { get; init; }
 }

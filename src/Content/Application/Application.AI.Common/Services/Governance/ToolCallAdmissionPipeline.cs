@@ -8,7 +8,6 @@ using Application.AI.Common.Interfaces.Telemetry;
 using Application.AI.Common.Services.Tools;
 using Domain.AI.Escalation;
 using Domain.AI.Governance;
-using Domain.AI.Telemetry.Redaction;
 using Domain.Common.Config;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -120,8 +119,9 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
     /// plain constructor injection is correct here; no ambient lookup needed.
     /// </param>
     /// <param name="resultStore">
-    /// Where a truncated result's full, already-sanitized/redacted text is spilled so a later
-    /// <c>tool_result_fetch</c> call can retrieve it (#521).
+    /// Where a truncated result's full raw text is spilled so a later <c>tool_result_fetch</c> call
+    /// can retrieve it (#521) — redacted by the store itself, before the write, when this call's own
+    /// admission required it (#563; see <see cref="SpillAndBuildMarkerAsync"/>'s own remarks).
     /// </param>
     public ToolCallAdmissionPipeline(
         IAgentToolAuthorizationGate authorizationGate,
@@ -488,16 +488,18 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
         // already cut to the scan-cost bound (ceiling + ScrubOverlapMargin), so tool_result_fetch could
         // never actually return more than that regardless of how large the tool's real output was — the
         // "full output available" marker overpromised for anything past roughly 58KB at shipped
-        // defaults. Spilling the untreated original instead means a fetched page is sanitized/redacted
-        // when it is READ (that page flows back through this same pipeline like any other tool result),
-        // not when it is written — one bounded scan per page instead of one unbounded scan per spill.
-        // The re-cut below still operates on `treated`, unchanged: the MODEL-facing text for THIS call
-        // is exactly as it always was, only the spilled copy's source changed.
-        // #563 security-review finding: the redaction verdict that gates THIS call's own output
-        // (admission.RedactsOutput) must travel with the spilled copy — a later tool_result_fetch call
-        // is classified as itself, not as this tool, and would otherwise default to no redaction on
-        // read regardless of what this call required. See SpillAndBuildMarkerAsync's redactOnRetrieve
-        // parameter and ToolResultPage.RedactOnRetrieve for the full mechanism.
+        // defaults. The re-cut below still operates on `treated`, unchanged: the MODEL-facing text for
+        // THIS call is exactly as it always was, only the spilled copy's source changed.
+        // #563 security-review finding, second revision: the redaction verdict that gates THIS call's
+        // own output (admission.RedactsOutput) must travel with the spilled copy, since a later
+        // tool_result_fetch call is classified as itself and would otherwise default to no redaction.
+        // The FIRST revision carried that verdict as a flag and redacted each fetched PAGE at read
+        // time — broken, because a page boundary is a character offset the model chooses freely via
+        // tool_result_fetch's own 'offset' argument, so a secret could be split across two page
+        // boundaries and recovered unredacted from both halves. Redaction now happens once, inside
+        // SpillAndBuildMarkerAsync's call to the store, over the complete (MaxSpillChars-capped)
+        // content, before any page boundary exists — see StoreIfLargeAsync's redactBeforeStoring
+        // parameter for the mechanism.
         var marker = await SpillAndBuildMarkerAsync(
             toolName, ToolResultText.ExtractText(result), effectiveCeiling, admission.RedactsOutput)
             .ConfigureAwait(false);
@@ -673,35 +675,40 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
     /// </summary>
     /// <remarks>
     /// <para>
-    /// <strong>Raw, not treated, and no longer redacted at rest (#563).</strong> Before #563 this spilled
-    /// <paramref name="rawFullText"/> already sanitized and, on the plain-allow path, additionally
-    /// redacted with <see cref="RedactionCategories.All"/> before writing — but that copy had also
-    /// already been through <see cref="ToolResultText.PreCutForScan(object?, int, int, string)"/>'s
-    /// scan-cost bound, so it could never actually hold more than roughly
-    /// <see cref="OutputCeiling"/> + <see cref="ScrubOverlapMargin"/> characters: the "full output
-    /// available via tool_result_fetch" marker overpromised for anything past that, permanently. Spilling
-    /// the original instead — capped only by
+    /// <strong>Raw, capped only by MaxSpillChars, not by the scan-cost bound (#563).</strong> Before
+    /// #563 this spilled <paramref name="rawFullText"/> already sanitized/redacted AND already cut to
+    /// <see cref="ToolResultText.PreCutForScan(object?, int, int, string)"/>'s scan-cost bound, so it
+    /// could never actually hold more than roughly <see cref="OutputCeiling"/> +
+    /// <see cref="ScrubOverlapMargin"/> characters: the "full output available via tool_result_fetch"
+    /// marker overpromised for anything past that, permanently. Spilling the original instead — capped
+    /// only by
     /// <see cref="Domain.Common.Config.AI.ContextManagement.ToolResultStorageConfig.MaxSpillChars"/> in
     /// <see cref="_resultStore"/>, a much larger bound meant for disk rather than a single scan pass —
-    /// makes a genuinely larger retrievable range possible, at the cost of storing text this pipeline has
-    /// not yet scanned for secrets or injected content. That is an acceptable trade only because of three
-    /// controls landing together: <see cref="Domain.Common.Config.AI.ContextManagement.ToolResultStorageConfig.MaxSpillChars"/>
-    /// bounds how much raw text a single spill can ever put on disk, the storage directory gets owner-only
-    /// permissions, and a retention sweep prunes what accumulates there (#559, #527). A fetched page is
-    /// sanitized and bounded when it is READ — it flows back through this same pipeline like any other
-    /// tool result — rather than once, unconditionally, at write time.
+    /// makes a genuinely larger retrievable range possible.
     /// </para>
     /// <para>
-    /// <strong>Redaction on read needs <paramref name="redactOnRetrieve"/>, not this call's admission,
-    /// a second time (security-review finding on #563).</strong> The read-time pipeline pass above
-    /// sanitizes every page unconditionally, but its OWN redaction decision is resolved from
-    /// <c>tool_result_fetch</c>'s classification, not from the classification THIS call ran under — a
-    /// fetch of a result that originally required redaction would otherwise reach the model unredacted,
-    /// because <c>tool_result_fetch</c> itself typically resolves to a default-allow classification.
-    /// <paramref name="redactOnRetrieve"/> is this call's own <c>admission.RedactsOutput</c>, persisted
-    /// alongside the content and returned on every future page as
-    /// <see cref="Domain.AI.Context.ToolResultPage.RedactOnRetrieve"/> — the actual, sufficient
-    /// enforcement, not the read-time pipeline pass, which cannot know the origin.
+    /// <strong>Redaction, when required, happens inside the store's write — not here, and never on
+    /// read (security-review finding on #563, second revision).</strong> The FIRST revision left
+    /// content raw at rest and redacted each fetched PAGE independently, gated by a flag carried
+    /// alongside the content. That was broken: a page boundary is a character offset the model chooses
+    /// freely via <c>tool_result_fetch</c>'s own <c>offset</c> argument, so a caller could split a
+    /// secret across two page boundaries and recover both halves unredacted, since neither page alone
+    /// contains a complete pattern for a redaction filter to match — no per-page fix closes that,
+    /// because the caller can always choose a new split point. <paramref name="redactBeforeStoring"/>
+    /// is this call's own <c>admission.RedactsOutput</c>, passed straight through to
+    /// <c>IToolResultStore.StoreIfLargeAsync</c>, which redacts the complete (already
+    /// <c>MaxSpillChars</c>-capped) content once, before it is written — removing the boundary an
+    /// adversarial offset could ever exploit, because no boundary exists yet at redaction time.
+    /// </para>
+    /// <para>
+    /// That write-time redaction is an acceptable scan cost only because of three controls landing
+    /// together:
+    /// <see cref="Domain.Common.Config.AI.ContextManagement.ToolResultStorageConfig.MaxSpillChars"/>
+    /// bounds how much raw text a single spill (and therefore a single redaction pass) can ever cover,
+    /// the storage directory gets owner-only permissions, and a retention sweep prunes what
+    /// accumulates there (#559, #527). A fetched page is still sanitized and bounded when it is READ —
+    /// it flows back through this same pipeline like any other tool result — sanitize is a different,
+    /// unconditional pass this method does not touch.
     /// </para>
     /// <para>
     /// A store failure degrades to the plain marker rather than throwing out of a cut every caller of
@@ -727,7 +734,7 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
     /// </para>
     /// </remarks>
     private async ValueTask<string> SpillAndBuildMarkerAsync(
-        string toolName, string rawFullText, int sizeThreshold, bool redactOnRetrieve)
+        string toolName, string rawFullText, int sizeThreshold, bool redactBeforeStoring)
     {
         // #559: a direct tool invocation mints a fresh, call-scoped ToolResultScopeId that dies with
         // the call — nothing durable can ever ask for it again, so a file written here would be
@@ -742,7 +749,7 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
             var reference = await _resultStore
                 .StoreIfLargeAsync(
                     _executionContext.ToolResultScopeId, toolName, operation: null, rawFullText,
-                    sizeThreshold: sizeThreshold, CancellationToken.None, redactOnRetrieve)
+                    sizeThreshold: sizeThreshold, CancellationToken.None, redactBeforeStoring)
                 .ConfigureAwait(false);
 
             if (reference.FullContentPath is null)

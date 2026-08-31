@@ -533,20 +533,20 @@ public sealed class ToolCallAdmissionPipelineTests
     }
 
     [Fact]
-    public async Task ApplyOutputPolicy_RedactingAdmission_PassesRedactOnRetrieveTrueToTheStore()
+    public async Task ApplyOutputPolicy_RedactingAdmission_PassesRedactBeforeStoringTrueToTheStore()
     {
         // #563 security-review finding: THIS call's own redaction verdict must reach the store as
-        // redactOnRetrieve, because a later tool_result_fetch is classified as itself, not as this
-        // tool, and would otherwise default to no redaction on read regardless of what this call
-        // required.
-        bool? redactOnRetrieve = null;
+        // redactBeforeStoring, because a later tool_result_fetch is classified as itself, not as this
+        // tool, and would otherwise default to no redaction if the decision were re-derived at fetch
+        // time instead of applied once, here, before the write.
+        bool? redactBeforeStoring = null;
         var resultStore = new Mock<IToolResultStore>();
         resultStore
             .Setup(s => s.StoreIfLargeAsync(
                 It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string>(),
                 It.IsAny<int?>(), It.IsAny<CancellationToken>(), It.IsAny<bool>()))
             .Callback<string, string, string?, string, int?, CancellationToken, bool>(
-                (_, _, _, _, _, _, redact) => redactOnRetrieve = redact)
+                (_, _, _, _, _, _, redact) => redactBeforeStoring = redact)
             .ReturnsAsync((string _, string toolName, string? operation, string fullOutput, int? _, CancellationToken _, bool _) =>
                 new ToolResultReference
                 {
@@ -570,20 +570,20 @@ public sealed class ToolCallAdmissionPipelineTests
         await pipeline.ApplyOutputPolicyAsync(
             ToolCallAdmission.AllowWithOutputRedaction(), Tool, new string('x', 20_000), CancellationToken.None);
 
-        redactOnRetrieve.Should().BeTrue();
+        redactBeforeStoring.Should().BeTrue();
     }
 
     [Fact]
-    public async Task TryApplyTextOutputPolicy_RedactingAdmission_PassesRedactOnRetrieveTrueToTheStore()
+    public async Task TryApplyTextOutputPolicy_RedactingAdmission_PassesRedactBeforeStoringTrueToTheStore()
     {
-        bool? redactOnRetrieve = null;
+        bool? redactBeforeStoring = null;
         var resultStore = new Mock<IToolResultStore>();
         resultStore
             .Setup(s => s.StoreIfLargeAsync(
                 It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string>(),
                 It.IsAny<int?>(), It.IsAny<CancellationToken>(), It.IsAny<bool>()))
             .Callback<string, string, string?, string, int?, CancellationToken, bool>(
-                (_, _, _, _, _, _, redact) => redactOnRetrieve = redact)
+                (_, _, _, _, _, _, redact) => redactBeforeStoring = redact)
             .ReturnsAsync((string _, string toolName, string? operation, string fullOutput, int? _, CancellationToken _, bool _) =>
                 new ToolResultReference
                 {
@@ -607,7 +607,7 @@ public sealed class ToolCallAdmissionPipelineTests
         await pipeline.TryApplyTextOutputPolicyAsync(
             ToolCallAdmission.AllowWithOutputRedaction(), Tool, new string('x', 20_000), CancellationToken.None);
 
-        redactOnRetrieve.Should().BeTrue();
+        redactBeforeStoring.Should().BeTrue();
     }
 
     [Fact]

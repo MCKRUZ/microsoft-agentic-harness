@@ -2,6 +2,7 @@ using Domain.Common.Config;
 using Domain.Common.Config.AI.ContextManagement;
 using FluentAssertions;
 using Infrastructure.AI.Context;
+using Infrastructure.AI.Telemetry.Redaction;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Moq;
@@ -35,6 +36,7 @@ public sealed class FileSystemToolResultStoreTests : IDisposable
 
         _sut = new FileSystemToolResultStore(
             monitor.Object,
+            new DefaultContentRedactionFilter(),
             Mock.Of<ILogger<FileSystemToolResultStore>>());
     }
 
@@ -93,42 +95,55 @@ public sealed class FileSystemToolResultStoreTests : IDisposable
         page.TotalChars.Should().Be(output.Length);
     }
 
-    // --- RedactOnRetrieve (security-review finding on #563) --------------------------------
+    // --- redactBeforeStoring (security-review finding on #563, second revision) -------------
+    //
+    // The first revision redacted each fetched PAGE independently, gated by a flag carried
+    // alongside the content — HIGH security finding: a page boundary is a character offset the
+    // caller (tool_result_fetch's own model-supplied 'offset') chooses freely, so a secret split
+    // across two page boundaries matched no pattern in either page and both halves came back
+    // verbatim. Redaction now happens once, before the write, over the complete content, so no
+    // page boundary — however chosen — can ever expose an unredacted fragment.
+
+    private const string AwsKeyShapedSecret = "AKIAIOSFODNN7EXAMPLE";
 
     [Fact]
-    public async Task StoreIfLargeAsync_RedactOnRetrieveTrue_RetrievedPageCarriesTheFlag()
+    public async Task StoreIfLargeAsync_RedactBeforeStoringTrue_StoredContentIsRedacted()
     {
+        var content = new string(' ', 90) + AwsKeyShapedSecret + new string(' ', 90);
         var stored = await _sut.StoreIfLargeAsync(
-            "session1", "tool", null, new string('a', 200),
-            cancellationToken: CancellationToken.None, redactOnRetrieve: true);
+            "session1", "tool", null, content,
+            cancellationToken: CancellationToken.None, redactBeforeStoring: true);
 
         var page = await _sut.RetrievePageAsync(stored.ResultId, "session1", offset: 0, LargePageSize);
 
-        page.RedactOnRetrieve.Should().BeTrue();
+        page.Text.Should().NotContain(AwsKeyShapedSecret);
     }
 
     [Fact]
-    public async Task StoreIfLargeAsync_RedactOnRetrieveOmitted_RetrievedPageDoesNotCarryTheFlag()
+    public async Task StoreIfLargeAsync_RedactBeforeStoringOmitted_StoredContentIsRaw()
     {
-        var stored = await _sut.StoreIfLargeAsync("session1", "tool", null, new string('a', 200));
+        var content = new string(' ', 90) + AwsKeyShapedSecret + new string(' ', 90);
+        var stored = await _sut.StoreIfLargeAsync("session1", "tool", null, content);
 
         var page = await _sut.RetrievePageAsync(stored.ResultId, "session1", offset: 0, LargePageSize);
 
-        page.RedactOnRetrieve.Should().BeFalse();
+        page.Text.Should().Contain(AwsKeyShapedSecret);
     }
 
     [Fact]
-    public async Task RetrievePageAsync_RedactOnRetrieveFlag_SurvivesEveryPageOfAMultiPageResult()
+    public async Task RetrievePageAsync_RedactBeforeStoring_SecretAtAPageBoundary_NeverAppearsAcrossEitherPage()
     {
-        var output = new string('a', 500);
+        // The secret occupies content[90..110) — offset 100 (the page split below) lands squarely
+        // inside it, the exact shape that defeated per-page redaction in the first revision.
+        var content = new string(' ', 90) + AwsKeyShapedSecret + new string(' ', 90);
         var stored = await _sut.StoreIfLargeAsync(
-            "session1", "tool", null, output, cancellationToken: CancellationToken.None, redactOnRetrieve: true);
+            "session1", "tool", null, content,
+            cancellationToken: CancellationToken.None, redactBeforeStoring: true);
 
         var first = await _sut.RetrievePageAsync(stored.ResultId, "session1", offset: 0, maxChars: 100);
         var second = await _sut.RetrievePageAsync(stored.ResultId, "session1", first.NextOffset, maxChars: 100);
 
-        first.RedactOnRetrieve.Should().BeTrue();
-        second.RedactOnRetrieve.Should().BeTrue();
+        (first.Text + second.Text).Should().NotContain(AwsKeyShapedSecret);
     }
 
     [Fact]
@@ -165,7 +180,8 @@ public sealed class FileSystemToolResultStoreTests : IDisposable
 
         var monitor = new Mock<IOptionsMonitor<AppConfig>>();
         monitor.Setup(m => m.CurrentValue).Returns(_appConfig);
-        var freshInstance = new FileSystemToolResultStore(monitor.Object, Mock.Of<ILogger<FileSystemToolResultStore>>());
+        var freshInstance = new FileSystemToolResultStore(
+            monitor.Object, new DefaultContentRedactionFilter(), Mock.Of<ILogger<FileSystemToolResultStore>>());
 
         var page = await freshInstance.RetrievePageAsync(stored.ResultId, "session1", offset: 0, LargePageSize);
 

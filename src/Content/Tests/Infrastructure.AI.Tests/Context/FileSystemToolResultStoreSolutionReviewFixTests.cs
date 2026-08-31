@@ -1,3 +1,4 @@
+using Application.AI.Common.Interfaces.Telemetry;
 using Domain.Common.Config;
 using Domain.Common.Config.AI.ContextManagement;
 using FluentAssertions;
@@ -40,6 +41,7 @@ public sealed class FileSystemToolResultStoreSolutionReviewFixTests : IDisposabl
 
         _sut = new FileSystemToolResultStore(
             monitor.Object,
+            Mock.Of<IContentRedactionFilter>(),
             Mock.Of<ILogger<FileSystemToolResultStore>>());
     }
 
