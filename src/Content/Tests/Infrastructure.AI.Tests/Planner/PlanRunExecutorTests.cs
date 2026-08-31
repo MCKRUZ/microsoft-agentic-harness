@@ -185,6 +185,23 @@ public sealed class PlanRunExecutorTests
         Assert.Equal(0, _capture.Invocations);
     }
 
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("run id")]
+    [InlineData("run*")]
+    public async Task ExecuteAsync_MalformedRunId_FailsClosedWithoutExecuting(string runId)
+    {
+        // #560: RunId becomes CallOnceScopeId, which is exactly what ToolResultScopeId resolves to —
+        // the same directory-name role ConversationId's own check above already guards. Mirrors
+        // ExecuteAsync_MalformedConversationId_FailsClosedWithoutExecuting for the sibling field.
+        var result = await _sut.ExecuteAsync(Request(runId: runId), CancellationToken.None);
+
+        Assert.False(result.IsSuccess);
+        Assert.Contains("plan_run.run_id_invalid", result.Errors);
+        Assert.Equal(0, _capture.Invocations);
+    }
+
     [Fact]
     public async Task ExecuteAsync_NullConversationId_IsAcceptedAndDerivesScopeFromThePlan()
     {

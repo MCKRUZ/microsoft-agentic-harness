@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using Application.AI.Common.Interfaces.Context;
 using Domain.AI.Context;
 using Domain.Common.Config;
@@ -13,6 +14,18 @@ namespace Infrastructure.AI.Context;
 /// </summary>
 public sealed class FileSystemToolResultStore : IToolResultStore
 {
+    // Positive allowlist (#560) rather than an ever-growing set of rejected shapes: this is the
+    // complete enumeration of characters a legitimate scope id can ever need (durable conversation
+    // ids, plan/run ids, and minted GUIDs all fit it), so anything outside it is refused outright
+    // rather than pattern-matched against known-dangerous cases. Neither '/' nor '\' — the only two
+    // path separators across platforms — are in the set, which is what actually closes the
+    // traversal/UNC-egress class this guards against; a rooted absolute path also cannot match
+    // (no leading '/' , and a bare drive letter like "C:" is drive-relative, not rooted, and is not
+    // a valid Windows path segment either way). The 128-char cap bounds an otherwise-unbounded
+    // caller-supplied string before it becomes a directory name.
+    private static readonly Regex AllowedSegmentCharset =
+        new("^[A-Za-z0-9_.:-]{1,128}$", RegexOptions.Compiled);
+
     private readonly IOptionsMonitor<AppConfig> _options;
     private readonly ILogger<FileSystemToolResultStore> _logger;
 
@@ -174,37 +187,41 @@ public sealed class FileSystemToolResultStore : IToolResultStore
     /// </param>
     /// <returns>The validated session identifier, guaranteed to be a single path segment.</returns>
     /// <exception cref="ArgumentException">
-    /// Thrown when <paramref name="sessionId"/> contains path separators, is rooted, is a relative
-    /// directory reference ("." or ".."), or has trailing dots/spaces Windows would silently strip.
+    /// Thrown when <paramref name="sessionId"/> contains a character outside the allowed
+    /// segment charset, is a relative directory reference ("." or ".."), or has a trailing dot
+    /// Windows would silently strip.
     /// </exception>
     private static string SanitizeSessionSegment(string sessionId, string paramName)
     {
-        // Reject any path separator from EITHER platform, a rooted path, or a relative
-        // directory reference. Path.GetFileName / Path.IsPathRooted are OS-specific — on
-        // Linux '\' is an ordinary character, so a Windows-style "..\escape" slips through
-        // GetFileName unchanged. Check both separators explicitly so the guard behaves
-        // identically on every platform.
-        if (sessionId.Contains('/') || sessionId.Contains('\\') || Path.IsPathRooted(sessionId))
+        // #560: a positive allowlist, not a growing list of rejected shapes. Every producer of a
+        // scope id (durable conversation ids, plan/run ids, minted GUIDs, and any future caller) is
+        // covered by construction — not just the specific traversal strings a prior review happened
+        // to find — because anything outside this charset is refused outright. Neither path
+        // separator is in the set, which is what closes traversal and UNC egress; a rooted absolute
+        // path cannot match either. Checked first so a malformed id gets one clear rejection reason
+        // rather than falling through to a more specific but less informative message below.
+        if (!AllowedSegmentCharset.IsMatch(sessionId))
         {
             throw new ArgumentException(
-                "Session ID must be a single path segment without separators.", paramName);
+                "Session ID must be 1-128 characters from [A-Za-z0-9_.:-].", paramName);
         }
 
-        // "." and ".." resolve to the storage root or a parent when combined, so reject them.
+        // "." and ".." are within the allowed charset but resolve to the storage root or a parent
+        // when combined, so reject them explicitly.
         if (sessionId is "." or "..")
         {
             throw new ArgumentException(
                 "Session ID must not be a relative directory reference.", paramName);
         }
 
-        // Windows silently trims trailing dots/spaces off a path segment, so "<id>" and "<id> " (or
-        // "<id>.") resolve to the SAME directory there even though they compare unequal as strings —
-        // two different scopes could collide onto one storage directory (a security-review finding).
-        // Comparing against the OS-trimmed form works identically, and harmlessly, on every platform.
-        if (sessionId != sessionId.TrimEnd(' ', '.'))
+        // Windows silently trims a trailing dot off a path segment, so "<id>" and "<id>." resolve to
+        // the SAME directory there even though they compare unequal as strings — two different
+        // scopes could collide onto one storage directory (a security-review finding). The allowed
+        // charset permits a trailing dot, so this still needs its own check.
+        if (sessionId.EndsWith('.'))
         {
             throw new ArgumentException(
-                "Session ID must not have trailing dots or spaces.", paramName);
+                "Session ID must not have a trailing dot.", paramName);
         }
 
         return sessionId;

@@ -167,6 +167,37 @@ public sealed class FileSystemToolResultStoreTests : IDisposable
             .WithParameterName("sessionId");
     }
 
+    [Theory]
+    // #560: the allowlist closes this for every producer of a scope id, not just the two paths a
+    // prior review happened to find — a caller-controlled conversation id or run id with any of
+    // these shapes must be refused before it ever becomes a directory name.
+    [InlineData("has space")]
+    [InlineData("percent%20encoded")]
+    [InlineData("semi;colon")]
+    [InlineData("null\0byte")]
+    [InlineData("emoji🙂")]
+    public async Task StoreIfLargeAsync_SessionIdOutsideTheAllowedCharset_ThrowsArgumentException(string sessionId)
+    {
+        var act = () => _sut.StoreIfLargeAsync(sessionId, "tool", null, "data");
+
+        await act.Should().ThrowAsync<ArgumentException>()
+            .WithParameterName("sessionId");
+    }
+
+    [Theory]
+    // Negative controls: every character class the allowlist admits, proving the regex above isn't
+    // accidentally rejecting a legitimate id shape while it's busy rejecting the bad ones.
+    [InlineData("conversation-id-123")]
+    [InlineData("plan_run.42")]
+    [InlineData("scope:with:colons")]
+    [InlineData("ABCDEFabcdef0123456789")]
+    public async Task StoreIfLargeAsync_SessionIdWithinTheAllowedCharset_DoesNotThrow(string sessionId)
+    {
+        var act = () => _sut.StoreIfLargeAsync(sessionId, "tool", null, "data");
+
+        await act.Should().NotThrowAsync();
+    }
+
     [Fact]
     public async Task RetrieveFullContentAsync_TrailingSpaceInScopeId_ThrowsArgumentExceptionNamingScopeId()
     {

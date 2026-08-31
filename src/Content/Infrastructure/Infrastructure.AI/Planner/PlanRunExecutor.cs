@@ -97,6 +97,19 @@ public sealed class PlanRunExecutor : IPlanRunExecutor
             return Result<PlanExecutionSummary>.Fail("plan_run.agent_identity_invalid");
         }
 
+        // #560: RunId becomes IAgentExecutionContext.CallOnceScopeId below, which is exactly what
+        // ToolResultScopeId resolves to — the same directory-name role ConversationId's check above
+        // already guards. The one production caller (WorkflowRunKindExecutor) always supplies a
+        // minted GUID, but this is a public interface; nothing else enforces this shape on it, so the
+        // check belongs at this chokepoint rather than on whichever caller happens to exist today.
+        if (request.RunId is not null && !PlanRunRequest.IsWellFormedAgentId(request.RunId))
+        {
+            _logger.LogWarning(
+                "Plan run {PlanId} rejected: run id is malformed (length {Length})",
+                request.PlanId, request.RunId.Length);
+            return Result<PlanExecutionSummary>.Fail("plan_run.run_id_invalid");
+        }
+
         await using var scope = _scopeFactory.CreateAsyncScope();
 
         var runScope = request.ConversationId ?? request.PlanId.Value.ToString();

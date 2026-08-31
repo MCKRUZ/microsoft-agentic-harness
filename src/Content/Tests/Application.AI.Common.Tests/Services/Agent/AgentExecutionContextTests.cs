@@ -344,6 +344,53 @@ public class AgentExecutionContextTests
         context.AgentIdentity.Should().Be(identityTemplate);
     }
 
+    // --- ToolResultScopeId freeze-on-first-read (regression: GitHub #562) ---------
+    // CallOnceScopeId ?? _fallbackToolResultScopeId flips the moment Initialize supplies a
+    // non-null call-once scope. A reader that observes the fallback before Initialize runs,
+    // then reads again after, must not see the value change underneath it — a result spilled
+    // under the first value would become permanently unfindable under the second.
+
+    [Fact]
+    public void ToolResultScopeId_ReadTwiceWithNoInitializeBetween_ReturnsTheSameValue()
+    {
+        var context = new AgentExecutionContext();
+
+        var first = context.ToolResultScopeId;
+        var second = context.ToolResultScopeId;
+
+        second.Should().Be(first);
+    }
+
+    [Fact]
+    public void ToolResultScopeId_ReadBeforeInitialize_ThenInitializeWithNoCallOnceScope_ReturnsTheSameValue()
+    {
+        // The fallback GUID is what ToolResultScopeId already resolved to; Initialize with no
+        // call-once scope reproduces exactly that value, so this is the one realistic case
+        // where reading early does not conflict with what Initialize later supplies.
+        var context = new AgentExecutionContext();
+
+        var beforeInitialize = context.ToolResultScopeId;
+        context.Initialize("planner", "conv-1", 1);
+        var afterInitialize = context.ToolResultScopeId;
+
+        afterInitialize.Should().Be(beforeInitialize);
+    }
+
+    [Fact]
+    public void Initialize_AfterScopeIdWasObserved_WithADifferentCallOnceScopeId_Throws()
+    {
+        // Reading before Initialize observes the fallback GUID; supplying a real call-once
+        // scope afterward would silently change what ToolResultScopeId means to that reader,
+        // orphaning anything already spilled under the fallback. Must fail loudly instead.
+        var context = new AgentExecutionContext();
+        _ = context.ToolResultScopeId;
+
+        var act = () => context.Initialize("planner", "conv-1", 1, callOnceScopeId: "conv-1");
+
+        act.Should().Throw<InvalidOperationException>()
+            .WithMessage("*ToolResultScopeId was already read*");
+    }
+
     // --- Per-run DI scoping contract (regression: GitHub #19) ---------------------
     // ResearchAgentExample reused a root-scoped ISender across runs, so the scoped
     // IAgentExecutionContext was bound on the first turn and collided on the second

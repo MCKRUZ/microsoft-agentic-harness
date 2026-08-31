@@ -94,4 +94,31 @@ public class RunOrchestratedTaskCommandValidatorTests
         result.IsValid.Should().BeTrue();
         result.Errors.Should().BeEmpty();
     }
+
+    // #560: this command's ConversationId flows straight through to the tool-result retrieval
+    // scope (RunOrchestratedTaskCommandHandler -> AgentExecutionContext.Initialize) but had zero
+    // rules before this fix — previously untested gap, unlike its RunConversationCommand sibling.
+    [Fact]
+    public async Task Validate_BlankConversationId_Fails()
+    {
+        // A blank value fails both the NotEmpty and the charset rule — two legitimate errors on
+        // one property, not a bug — so this asserts at least one fires rather than exactly one.
+        var command = CreateValidCommand() with { ConversationId = "" };
+
+        var result = await _validator.ValidateAsync(command);
+
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.PropertyName == "ConversationId");
+    }
+
+    [Fact]
+    public async Task Validate_ConversationIdWithPathSeparator_Fails()
+    {
+        var command = CreateValidCommand() with { ConversationId = "../escape" };
+
+        var result = await _validator.ValidateAsync(command);
+
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().ContainSingle(e => e.PropertyName == "ConversationId");
+    }
 }

@@ -69,4 +69,30 @@ public class RunConversationCommandValidatorTests
         result.IsValid.Should().BeTrue();
         result.Errors.Should().BeEmpty();
     }
+
+    // #560: ConversationId becomes a tool-result storage scope on every path, owner or not, so the
+    // rule must not be gated on ConversationOwnerId being present — previously untested gap.
+    [Fact]
+    public async Task Validate_BlankConversationId_WithNoOwnerId_Fails()
+    {
+        // A blank value fails both the NotEmpty and the charset rule — two legitimate errors on
+        // one property, not a bug — so this asserts at least one fires rather than exactly one.
+        var command = CreateValidCommand() with { ConversationId = "", ConversationOwnerId = null };
+
+        var result = await _validator.ValidateAsync(command);
+
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.PropertyName == "ConversationId");
+    }
+
+    [Fact]
+    public async Task Validate_ConversationIdWithPathSeparator_Fails()
+    {
+        var command = CreateValidCommand() with { ConversationId = "../escape" };
+
+        var result = await _validator.ValidateAsync(command);
+
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().ContainSingle(e => e.PropertyName == "ConversationId");
+    }
 }

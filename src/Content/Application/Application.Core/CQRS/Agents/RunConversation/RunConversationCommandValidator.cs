@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using FluentValidation;
 
 namespace Application.Core.CQRS.Agents.RunConversation;
@@ -7,6 +8,13 @@ namespace Application.Core.CQRS.Agents.RunConversation;
 /// </summary>
 public class RunConversationCommandValidator : AbstractValidator<RunConversationCommand>
 {
+	// #560: ConversationId becomes a directory name via IAgentExecutionContext.ToolResultScopeId ->
+	// FileSystemToolResultStore. Must match that store's own allowlist exactly — kept in sync by
+	// comment rather than a shared constant because the store lives in Infrastructure and this
+	// validator in Application; Application cannot reference Infrastructure. If the store's charset
+	// changes, this must change with it.
+	private static readonly Regex AllowedScopeIdCharset = new("^[A-Za-z0-9_.:-]{1,128}$", RegexOptions.Compiled);
+
 	public RunConversationCommandValidator()
 	{
 		RuleFor(x => x.AgentName)
@@ -25,10 +33,13 @@ public class RunConversationCommandValidator : AbstractValidator<RunConversation
 			.NotEmpty().WithMessage("Conversation owner id must not be blank when supplied.")
 			.When(x => x.ConversationOwnerId is not null);
 
-		// A durable conversation is addressed by this id, so it has to name something. The default is a
-		// fresh GUID, which is fine for a throwaway run and meaningless for a continuing one.
+		// Unconditional, not gated on ConversationOwnerId being present (#560): this id becomes a
+		// tool-result storage scope on every path, owner or not, so a caller-supplied value with a
+		// path separator or other unsafe character must be rejected here rather than reaching
+		// FileSystemToolResultStore as a late, less legible ArgumentException. The command's own
+		// default (a bare GUID) always satisfies this.
 		RuleFor(x => x.ConversationId)
 			.NotEmpty().WithMessage("Conversation id is required for a durable conversation.")
-			.When(x => x.ConversationOwnerId is not null);
+			.Matches(AllowedScopeIdCharset).WithMessage("Conversation id must be 1-128 characters from [A-Za-z0-9_.:-].");
 	}
 }
