@@ -49,8 +49,22 @@ public class RunConversationCommandValidator : AbstractValidator<RunConversation
 		// path separator or other unsafe character must be rejected here rather than reaching
 		// FileSystemToolResultStore as a late, less legible ArgumentException. The command's own
 		// default (a bare GUID) always satisfies this.
+		// /code-review finding: the charset alone is not what FileSystemToolResultStore.SanitizeSessionSegment
+		// enforces — it also independently rejects a rooted path (a bare "C:" passes this charset but
+		// Path.IsPathRooted measures it as drive-rooted on Windows), "." / "..", and a trailing dot
+		// (which Windows silently strips, letting two different-looking ids collide onto one directory).
+		// Without these here too, a value that clears this validator still throws a raw ArgumentException
+		// deep in FileSystemToolResultStore on first spill — caught by the pipeline's own must-not-throw
+		// handling and silently downgraded to a plain truncation marker, exactly the "late, illegible
+		// failure" this validator exists to prevent for every OTHER unsafe shape.
 		RuleFor(x => x.ConversationId)
 			.NotEmpty().WithMessage("Conversation id is required for a durable conversation.")
-			.Matches(AllowedScopeIdCharset).WithMessage("Conversation id must be 1-200 characters from [A-Za-z0-9_.:-].");
+			.Matches(AllowedScopeIdCharset).WithMessage("Conversation id must be 1-200 characters from [A-Za-z0-9_.:-].")
+			.Must(id => id is not ("." or ".."))
+				.WithMessage("Conversation id must not be a relative directory reference.")
+			.Must(id => !Path.IsPathRooted(id))
+				.WithMessage("Conversation id must not be an absolute or drive-rooted path.")
+			.Must(id => !id.EndsWith('.'))
+				.WithMessage("Conversation id must not have a trailing dot.");
 	}
 }

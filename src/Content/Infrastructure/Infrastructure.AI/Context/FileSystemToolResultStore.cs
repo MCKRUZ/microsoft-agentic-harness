@@ -52,6 +52,14 @@ public sealed class FileSystemToolResultStore : IToolResultStore
     private static readonly Regex AllowedSegmentCharset =
         new(@"\A[A-Za-z0-9_.:-]{1,200}\z", RegexOptions.Compiled);
 
+    // /code-review finding: how far past MaxSpillChars a scan reads before redacting, so a secret whose
+    // match starts before the true limit but extends past it is still fully present for the redaction
+    // filter to match in full — see StoreIfLargeAsync's own remarks for the exact bug this closes.
+    // 8KB mirrors ToolCallAdmissionPipeline.ScrubOverlapMargin's identical value and reasoning for the
+    // model-facing ceiling; not literally shared (that constant is internal to a different assembly),
+    // but the same margin comfortably exceeds every pattern DefaultContentRedactionFilter matches.
+    private const int RedactionScanMargin = 8 * 1024;
+
     private readonly IOptionsMonitor<AppConfig> _options;
     private readonly IContentRedactionFilter _redactionFilter;
     private readonly ILogger<FileSystemToolResultStore> _logger;
@@ -117,22 +125,21 @@ public sealed class FileSystemToolResultStore : IToolResultStore
             };
         }
 
-        // #563: bound what actually reaches disk to MaxSpillChars, no matter how large the tool's true
-        // output was — an unbounded write is the exact "no silent caps" gap this cap exists to close,
-        // just at the disk boundary instead of the context-window one. BoundedText.Cap with an empty
-        // marker reuses its surrogate-pair-safe cut rather than a hand-rolled Substring, and is a no-op
-        // whenever fullOutput is already within the cap. Enforced here, in the store, rather than by
-        // every caller of StoreIfLargeAsync — the same "check a caller could forget is not a check"
-        // reasoning SanitizeSessionSegment's own remarks already apply to scope enforcement.
-        var (spillable, spillTruncated) = BoundedText.Cap(fullOutput, config.MaxSpillChars, marker: "");
-        if (spillTruncated)
-        {
-            _logger.LogWarning(
-                "Tool result {ResultId} from {ToolName} is {Length} chars, exceeding MaxSpillChars "
-                + "({MaxSpillChars}) — only the first {MaxSpillChars} chars are persisted and "
-                + "retrievable; the rest is unrecoverable",
-                resultId, toolName, fullOutput.Length, config.MaxSpillChars, config.MaxSpillChars);
-        }
+        // /code-review finding, fourth revision: the third revision capped to MaxSpillChars BEFORE
+        // redacting, so a secret whose match straddled that exact cut point lost its tail before the
+        // redaction filter ever saw it — the identical "boundary a cut creates defeats a pattern match"
+        // shape as the page-splitting bypass the third revision closed, just moved to the write-side
+        // truncation boundary instead of a read-side page boundary. Fixed the same way this codebase's
+        // own ToolCallAdmissionPipeline.PreCutForScan/ScrubOverlapMargin already fixes it for the
+        // model-facing ceiling: cap to a WIDER region first (MaxSpillChars + RedactionScanMargin) so a
+        // secret near the true limit is still fully present for the filter to match in full, redact
+        // that whole region, then cut the ALREADY-REDACTED text down to the true MaxSpillChars. The
+        // final cut can never re-expose a raw secret, because redaction has already replaced it with a
+        // placeholder before that cut ever runs.
+        var scanCeiling = config.MaxSpillChars <= int.MaxValue - RedactionScanMargin
+            ? config.MaxSpillChars + RedactionScanMargin
+            : int.MaxValue;
+        var (scanRegion, _) = BoundedText.Cap(fullOutput, scanCeiling, marker: "");
 
         // Security-review finding, third revision: redaction happens HERE, unconditionally, before the
         // write — never gated on the originating call's own classification, and never at read time.
@@ -154,7 +161,24 @@ public sealed class FileSystemToolResultStore : IToolResultStore
         //      plain-allow path. Unconditional, matching the 1st revision, closes both bypasses at once:
         //      no gate for an adversarial classification to sit outside of, and no page boundary for an
         //      adversarial offset to split across.
-        spillable = _redactionFilter.Redact(spillable, RedactionCategories.All);
+        var redacted = _redactionFilter.Redact(scanRegion, RedactionCategories.All);
+
+        // #563: bound what actually reaches disk to MaxSpillChars, no matter how large the tool's true
+        // output was — an unbounded write is the exact "no silent caps" gap this cap exists to close,
+        // just at the disk boundary instead of the context-window one. Cut here, on the ALREADY-REDACTED
+        // text (see the widen-then-redact-then-shrink remark above for why this order matters).
+        // BoundedText.Cap with an empty marker reuses its surrogate-pair-safe cut rather than a
+        // hand-rolled Substring, and is a no-op whenever the redacted region is already within the cap.
+        var (spillable, _) = BoundedText.Cap(redacted, config.MaxSpillChars, marker: "");
+        var spillTruncated = fullOutput.Length > config.MaxSpillChars;
+        if (spillTruncated)
+        {
+            _logger.LogWarning(
+                "Tool result {ResultId} from {ToolName} is {Length} chars, exceeding MaxSpillChars "
+                + "({MaxSpillChars}) — only the first {MaxSpillChars} chars are persisted and "
+                + "retrievable; the rest is unrecoverable",
+                resultId, toolName, fullOutput.Length, config.MaxSpillChars, config.MaxSpillChars);
+        }
 
         var storagePath = Path.Combine(config.StoragePath, safeSessionId, "tool-results", $"{resultId}.txt");
         var directory = Path.GetDirectoryName(storagePath)!;

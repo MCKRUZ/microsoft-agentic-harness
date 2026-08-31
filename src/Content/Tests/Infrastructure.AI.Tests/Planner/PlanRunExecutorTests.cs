@@ -190,6 +190,14 @@ public sealed class PlanRunExecutorTests
     [InlineData("   ")]
     [InlineData("run id")]
     [InlineData("run*")]
+    // /code-review finding: these three clear IsWellFormedAgentId's charset entirely — "C:" is
+    // drive-rooted on Windows despite every individual character being allowed, and "." / ".." /
+    // a trailing dot are all directory-traversal or Windows-dot-stripping shapes the charset alone
+    // cannot exclude. See PlanRunExecutor's own remarks on this check for the full rationale.
+    [InlineData(".")]
+    [InlineData("..")]
+    [InlineData("C:")]
+    [InlineData("run-id.")]
     public async Task ExecuteAsync_MalformedRunId_FailsClosedWithoutExecuting(string runId)
     {
         // #560: RunId becomes CallOnceScopeId, which is exactly what ToolResultScopeId resolves to —

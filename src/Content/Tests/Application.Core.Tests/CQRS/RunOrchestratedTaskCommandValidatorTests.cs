@@ -122,6 +122,23 @@ public class RunOrchestratedTaskCommandValidatorTests
         result.Errors.Should().ContainSingle(e => e.PropertyName == "ConversationId");
     }
 
+    [Theory]
+    // /code-review finding: each of these clears the AllowedScopeIdCharset regex entirely — see
+    // RunConversationCommandValidatorTests' identical addition for the full rationale.
+    [InlineData(".")]
+    [InlineData("..")]
+    [InlineData("C:")]
+    [InlineData("conv-1.")]
+    public async Task Validate_ConversationIdClearsCharsetButUnsafeShape_Fails(string conversationId)
+    {
+        var command = CreateValidCommand() with { ConversationId = conversationId };
+
+        var result = await _validator.ValidateAsync(command);
+
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.PropertyName == "ConversationId");
+    }
+
     [Fact]
     public async Task Validate_ConversationIdShapedLikeAPlanStep_Passes()
     {

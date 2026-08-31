@@ -136,6 +136,26 @@ public sealed class FileSystemToolResultStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task StoreIfLargeAsync_SecretStraddlingTheMaxSpillCharsCutoff_IsStillRedacted()
+    {
+        // /code-review finding: redaction used to run AFTER the MaxSpillChars cut, so a secret whose
+        // match started before the cutoff but extended past it lost its tail before the redaction
+        // filter ever saw it — the same "boundary a cut creates defeats a pattern match" shape as the
+        // page-splitting bypass above, just at the write-side truncation boundary instead of a
+        // read-side page boundary. MaxSpillChars=100 here puts the cutoff at char 100 -- squarely
+        // inside the secret occupying content[90..110).
+        _appConfig.AI.ContextManagement.ToolResultStorage.MaxSpillChars = 100;
+        var content = new string(' ', 90) + AwsKeyShapedSecret;
+
+        var stored = await _sut.StoreIfLargeAsync("session1", "tool", null, content);
+
+        var page = await _sut.RetrievePageAsync(stored.ResultId, "session1", offset: 0, LargePageSize);
+        page.Text.Should().NotContain(AwsKeyShapedSecret);
+        page.Text.Should().NotContain("AKIAIOSFOD",
+            "no raw fragment of the secret's first half may survive the cut unredacted either");
+    }
+
+    [Fact]
     public async Task RetrievePageAsync_MissingId_ThrowsKeyNotFoundException()
     {
         var act = () => _sut.RetrievePageAsync("nonexistent-id", "session1", offset: 0, LargePageSize);
