@@ -380,31 +380,27 @@ public sealed class ToolCallAdmissionPipelineTests
     }
 
     [Fact]
-    public async Task SpillAndBuildMarkerAsync_DoesNotRedactAtRest_TheStoredCopyMatchesTheToolsOriginalOutput()
+    public async Task SpillAndBuildMarkerAsync_SpillsTheToolsOriginalOutput_UntouchedByThisPipeline()
     {
-        // #563: pins the deliberate behaviour change so a future reader cannot mistake it for an
-        // oversight. Before #563, the spilled copy was always redacted with RedactionCategories.All
-        // regardless of the model-facing redaction decision — but that copy had ALSO already been cut
-        // to the scan-cost bound (ceiling + ScrubOverlapMargin), so a fetched page could never actually
-        // exceed that bound. Spilling the tool's raw, untreated output instead — capped only by
-        // MaxSpillChars, not redacted at write time — is what makes a genuinely larger retrievable
-        // range possible; the trade is scanning (sanitizing, redacting, bounding) a page when it is
-        // READ instead of once at write time. See SpillAndBuildMarkerAsync's own remarks for the three
-        // controls (spill size cap, directory permissions, retention sweep) that make this acceptable.
-        var redactionFilter = new Mock<IContentRedactionFilter>();
-        redactionFilter
-            .Setup(f => f.Redact(It.IsAny<string>(), It.IsAny<IReadOnlyList<Domain.AI.Telemetry.Redaction.RedactionCategory>>()))
-            .Returns("REDACTED-AT-REST"); // must never be called on this path — proven below
-
+        // #563: the pipeline hands the store the RAW, untreated output — not sanitized, redacted, or
+        // cut — so the store can persist up to MaxSpillChars, far more than the scan-cost bound this
+        // pipeline cuts the MODEL-facing copy to. Security-review finding, third revision: the pipeline
+        // itself no longer makes any redaction decision for the spill at all (an earlier revision
+        // passed admission.RedactsOutput through to a redactBeforeStoring parameter that no longer
+        // exists) — IToolResultStore.StoreIfLargeAsync redacts everything it persists, unconditionally,
+        // on its own, which is exactly why a MOCKED store here (unlike the real
+        // FileSystemToolResultStore) never redacts anything: this test proves what the PIPELINE hands
+        // over, not what ends up on disk — see FileSystemToolResultStoreTests' own
+        // redactBeforeStoring-equivalent coverage for that half.
         var originalText = new string('x', 5000);
         string? spilledText = null;
         var resultStore = new Mock<IToolResultStore>();
         resultStore
             .Setup(s => s.StoreIfLargeAsync(
                 It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string>(),
-                It.IsAny<int?>(), It.IsAny<CancellationToken>(), It.IsAny<bool>()))
-            .Callback<string, string, string?, string, int?, CancellationToken, bool>((_, _, _, text, _, _, _) => spilledText = text)
-            .ReturnsAsync((string _, string toolName, string? operation, string fullOutput, int? _, CancellationToken _, bool _) =>
+                It.IsAny<int?>(), It.IsAny<CancellationToken>()))
+            .Callback<string, string, string?, string, int?, CancellationToken>((_, _, _, text, _, _) => spilledText = text)
+            .ReturnsAsync((string _, string toolName, string? operation, string fullOutput, int? _, CancellationToken _) =>
                 new ToolResultReference
                 {
                     ResultId = Guid.NewGuid().ToString("N"),
@@ -416,20 +412,14 @@ public sealed class ToolCallAdmissionPipelineTests
                     Timestamp = DateTimeOffset.UtcNow
                 });
 
-        var pipeline = AdmissionHarness.Pipeline(
-            redactionFilter: redactionFilter.Object, outputCeiling: 200, resultStore: resultStore.Object);
+        var pipeline = AdmissionHarness.Pipeline(outputCeiling: 200, resultStore: resultStore.Object);
 
-        var result = await pipeline.ApplyOutputPolicyAsync(
+        await pipeline.ApplyOutputPolicyAsync(
             ToolCallAdmission.Allow(), Tool, originalText, CancellationToken.None);
 
         spilledText.Should().Be(originalText,
-            "the stored copy is the tool's original output, not sanitized, redacted, or cut");
-        result.As<string>().Should().NotContain("REDACTED-AT-REST",
-            "the redaction filter must never be invoked on this path any more");
-        redactionFilter.Verify(
-            f => f.Redact(It.IsAny<string>(), It.IsAny<IReadOnlyList<Domain.AI.Telemetry.Redaction.RedactionCategory>>()),
-            Times.Never,
-            "spilling the raw output means no at-rest redaction pass runs at all on this path");
+            "the stored copy must be the tool's original output, not sanitized, redacted, or cut — "
+            + "whatever happens to it before it lands on disk is the store's job, not this pipeline's");
     }
 
     [Fact]
@@ -455,7 +445,7 @@ public sealed class ToolCallAdmissionPipelineTests
         resultStore.Verify(
             s => s.StoreIfLargeAsync(
                 It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string>(),
-                It.IsAny<int?>(), It.IsAny<CancellationToken>(), It.IsAny<bool>()),
+                It.IsAny<int?>(), It.IsAny<CancellationToken>()),
             Times.Never,
             "the write itself must be skipped, not just the retrieval id");
     }
@@ -474,9 +464,9 @@ public sealed class ToolCallAdmissionPipelineTests
         resultStore
             .Setup(s => s.StoreIfLargeAsync(
                 It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string>(),
-                It.IsAny<int?>(), It.IsAny<CancellationToken>(), It.IsAny<bool>()))
-            .Callback<string, string, string?, string, int?, CancellationToken, bool>((_, _, _, text, _, _, _) => spilledText = text)
-            .ReturnsAsync((string _, string toolName, string? operation, string fullOutput, int? _, CancellationToken _, bool _) =>
+                It.IsAny<int?>(), It.IsAny<CancellationToken>()))
+            .Callback<string, string, string?, string, int?, CancellationToken>((_, _, _, text, _, _) => spilledText = text)
+            .ReturnsAsync((string _, string toolName, string? operation, string fullOutput, int? _, CancellationToken _) =>
                 new ToolResultReference
                 {
                     ResultId = Guid.NewGuid().ToString("N"),
@@ -508,9 +498,9 @@ public sealed class ToolCallAdmissionPipelineTests
         resultStore
             .Setup(s => s.StoreIfLargeAsync(
                 It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string>(),
-                It.IsAny<int?>(), It.IsAny<CancellationToken>(), It.IsAny<bool>()))
-            .Callback<string, string, string?, string, int?, CancellationToken, bool>((_, _, _, text, _, _, _) => spilledText = text)
-            .ReturnsAsync((string _, string toolName, string? operation, string fullOutput, int? _, CancellationToken _, bool _) =>
+                It.IsAny<int?>(), It.IsAny<CancellationToken>()))
+            .Callback<string, string, string?, string, int?, CancellationToken>((_, _, _, text, _, _) => spilledText = text)
+            .ReturnsAsync((string _, string toolName, string? operation, string fullOutput, int? _, CancellationToken _) =>
                 new ToolResultReference
                 {
                     ResultId = Guid.NewGuid().ToString("N"),
@@ -530,84 +520,6 @@ public sealed class ToolCallAdmissionPipelineTests
         spilledText.Should().Be(originalText,
             "the full 20,000-char original must reach the store, not a copy already cut to the "
             + "200+8192-char scan-cost bound");
-    }
-
-    [Fact]
-    public async Task ApplyOutputPolicy_RedactingAdmission_PassesRedactBeforeStoringTrueToTheStore()
-    {
-        // #563 security-review finding: THIS call's own redaction verdict must reach the store as
-        // redactBeforeStoring, because a later tool_result_fetch is classified as itself, not as this
-        // tool, and would otherwise default to no redaction if the decision were re-derived at fetch
-        // time instead of applied once, here, before the write.
-        bool? redactBeforeStoring = null;
-        var resultStore = new Mock<IToolResultStore>();
-        resultStore
-            .Setup(s => s.StoreIfLargeAsync(
-                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string>(),
-                It.IsAny<int?>(), It.IsAny<CancellationToken>(), It.IsAny<bool>()))
-            .Callback<string, string, string?, string, int?, CancellationToken, bool>(
-                (_, _, _, _, _, _, redact) => redactBeforeStoring = redact)
-            .ReturnsAsync((string _, string toolName, string? operation, string fullOutput, int? _, CancellationToken _, bool _) =>
-                new ToolResultReference
-                {
-                    ResultId = Guid.NewGuid().ToString("N"),
-                    ToolName = toolName,
-                    Operation = operation,
-                    PreviewContent = fullOutput,
-                    FullContentPath = "/fake/persisted.json",
-                    SizeChars = fullOutput.Length,
-                    Timestamp = DateTimeOffset.UtcNow
-                });
-
-        var classificationGate = new Mock<IToolClassificationGate>();
-        classificationGate
-            .Setup(g => g.RedactResult(It.IsAny<string>(), It.IsAny<object?>()))
-            .Returns((string _, object? result) => result);
-
-        var pipeline = AdmissionHarness.Pipeline(
-            outputCeiling: 200, resultStore: resultStore.Object, classificationGate: classificationGate.Object);
-
-        await pipeline.ApplyOutputPolicyAsync(
-            ToolCallAdmission.AllowWithOutputRedaction(), Tool, new string('x', 20_000), CancellationToken.None);
-
-        redactBeforeStoring.Should().BeTrue();
-    }
-
-    [Fact]
-    public async Task TryApplyTextOutputPolicy_RedactingAdmission_PassesRedactBeforeStoringTrueToTheStore()
-    {
-        bool? redactBeforeStoring = null;
-        var resultStore = new Mock<IToolResultStore>();
-        resultStore
-            .Setup(s => s.StoreIfLargeAsync(
-                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string>(),
-                It.IsAny<int?>(), It.IsAny<CancellationToken>(), It.IsAny<bool>()))
-            .Callback<string, string, string?, string, int?, CancellationToken, bool>(
-                (_, _, _, _, _, _, redact) => redactBeforeStoring = redact)
-            .ReturnsAsync((string _, string toolName, string? operation, string fullOutput, int? _, CancellationToken _, bool _) =>
-                new ToolResultReference
-                {
-                    ResultId = Guid.NewGuid().ToString("N"),
-                    ToolName = toolName,
-                    Operation = operation,
-                    PreviewContent = fullOutput,
-                    FullContentPath = "/fake/persisted.json",
-                    SizeChars = fullOutput.Length,
-                    Timestamp = DateTimeOffset.UtcNow
-                });
-
-        var classificationGate = new Mock<IToolClassificationGate>();
-        classificationGate
-            .Setup(g => g.RedactResult(It.IsAny<string>(), It.IsAny<string?>()))
-            .Returns((string _, string? content) => content);
-
-        var pipeline = AdmissionHarness.Pipeline(
-            outputCeiling: 200, resultStore: resultStore.Object, classificationGate: classificationGate.Object);
-
-        await pipeline.TryApplyTextOutputPolicyAsync(
-            ToolCallAdmission.AllowWithOutputRedaction(), Tool, new string('x', 20_000), CancellationToken.None);
-
-        redactBeforeStoring.Should().BeTrue();
     }
 
     [Fact]

@@ -61,10 +61,9 @@ public sealed class FileSystemToolResultStore : IToolResultStore
     /// </summary>
     /// <param name="options">Application configuration for storage thresholds and paths.</param>
     /// <param name="redactionFilter">
-    /// Applied to content before it is written to disk when a caller's <c>redactBeforeStoring</c> is
-    /// <see langword="true"/> (security-review finding, #563 second revision) — see
-    /// <see cref="StoreIfLargeAsync"/>'s own remarks for why this happens at write time and never at
-    /// read time.
+    /// Applied, unconditionally, to every large result's content before it is written to disk — see
+    /// <see cref="StoreIfLargeAsync"/>'s own remarks for why this happens at write time, every time,
+    /// and never at read time.
     /// </param>
     /// <param name="logger">Logger for storage diagnostics.</param>
     public FileSystemToolResultStore(
@@ -84,8 +83,7 @@ public sealed class FileSystemToolResultStore : IToolResultStore
         string? operation,
         string fullOutput,
         int? sizeThreshold = null,
-        CancellationToken cancellationToken = default,
-        bool redactBeforeStoring = false)
+        CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
         ArgumentException.ThrowIfNullOrWhiteSpace(toolName);
@@ -136,19 +134,27 @@ public sealed class FileSystemToolResultStore : IToolResultStore
                 resultId, toolName, fullOutput.Length, config.MaxSpillChars, config.MaxSpillChars);
         }
 
-        // Security-review finding on #563, second revision: redacting happens HERE, before the write,
-        // never at read time. The first revision left content raw at rest and redacted each page
-        // independently when read — but a page boundary is a character offset the CALLER chooses
-        // (tool_result_fetch's own model-supplied 'offset' argument), so a caller could split a secret
-        // across two page boundaries and recover both halves unredacted, since neither page alone
-        // contains a complete pattern for the filter to match. There is no page-boundary-based fix for
-        // that, because the caller can always choose a new split point. Redacting the complete
-        // (already MaxSpillChars-capped) content once, before any page boundary exists, removes the
-        // boundary an adversarial offset could ever exploit.
-        if (redactBeforeStoring)
-        {
-            spillable = _redactionFilter.Redact(spillable, RedactionCategories.All);
-        }
+        // Security-review finding, third revision: redaction happens HERE, unconditionally, before the
+        // write — never gated on the originating call's own classification, and never at read time.
+        // Two prior revisions both regressed a guarantee this repo already had:
+        //   1st revision (pre-#563, on main): redacted the disk copy unconditionally with
+        //      RedactionCategories.All, on the reasoning that persisting to disk is a stronger exposure
+        //      than showing a model its own tool's output, so it is not optional the way the
+        //      model-facing decision is.
+        //   2nd revision (#563): stopped redacting at rest at all, and instead redacted each fetched
+        //      PAGE independently at READ time, gated by a flag carried alongside the content — broken,
+        //      because a page boundary is a character offset the CALLER chooses (tool_result_fetch's
+        //      own model-supplied 'offset'), so a secret split across two page boundaries came back
+        //      unredacted from both halves; no per-page fix closes that, since the caller can always
+        //      choose a new split point.
+        //   3rd revision (this one, security-review finding on the 2nd): moved redaction back to write
+        //      time — closing the page-boundary bypass, since no boundary exists yet when this runs —
+        //      but initially GATED it on the originating call's own admission.RedactsOutput, which
+        //      regressed the 1st revision's unconditional guarantee for the common, unclassified
+        //      plain-allow path. Unconditional, matching the 1st revision, closes both bypasses at once:
+        //      no gate for an adversarial classification to sit outside of, and no page boundary for an
+        //      adversarial offset to split across.
+        spillable = _redactionFilter.Redact(spillable, RedactionCategories.All);
 
         var storagePath = Path.Combine(config.StoragePath, safeSessionId, "tool-results", $"{resultId}.txt");
         var directory = Path.GetDirectoryName(storagePath)!;

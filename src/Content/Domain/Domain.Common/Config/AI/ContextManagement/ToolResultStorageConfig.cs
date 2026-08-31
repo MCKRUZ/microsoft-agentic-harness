@@ -57,16 +57,20 @@ public class ToolResultStorageConfig
     /// model's context window.
     /// </summary>
     /// <remarks>
-    /// The spilled copy is the tool's raw output — not sanitized, not redacted — so that a page can
-    /// be scanned and cleaned on demand, one bounded page at a time, instead of the whole result
-    /// needing an unbounded scan before any of it could be stored (#563; the sanitizer has no
-    /// per-pattern match timeout — #497 — so an unbounded scan is a real cost concern, not a
-    /// theoretical one). Storing raw is a real step back from redacting at rest, which this store's
-    /// spill path always did before #563; this cap is what keeps that acceptable — bounded disk
-    /// exposure, owner-only directory permissions, and a retention sweep are the three controls that
-    /// together make raw-at-rest a deliberate trade-off rather than an oversight. 5,000,000 (~5 MB,
-    /// ~1.25M tokens) comfortably holds a full build log or a large file read while still bounding
-    /// what one runaway tool call can put on disk before the retention sweep reclaims it.
+    /// The spilled copy is redacted — unconditionally, with every <c>RedactionCategory</c> — but NOT
+    /// sanitized for prompt
+    /// injection before it is written; sanitizing is instead applied per page, when a page is READ
+    /// back and flows through the normal admission pipeline like any other tool result. Redaction
+    /// cannot be deferred that way (a page boundary is a character offset a caller can choose freely,
+    /// so a secret split across two page boundaries would come back unredacted from both halves — a
+    /// security-review finding), so it runs once, here, over the complete content, bounded by this
+    /// cap rather than left unbounded (#563; the sanitizer/redaction filter has no per-pattern match
+    /// timeout — #497 — so an unbounded scan is a real cost concern, not a theoretical one). This cap
+    /// is also what keeps that scan affordable: bounded disk exposure, owner-only directory
+    /// permissions, and a retention sweep are the three controls that together make a MaxSpillChars-
+    /// sized redaction pass on every spill acceptable. 5,000,000 (~5 MB, ~1.25M tokens) comfortably
+    /// holds a full build log or a large file read while still bounding what one runaway tool call can
+    /// put on disk (and therefore scan) before the retention sweep reclaims it.
     /// </remarks>
     public int MaxSpillChars { get; set; } = 5_000_000;
 }

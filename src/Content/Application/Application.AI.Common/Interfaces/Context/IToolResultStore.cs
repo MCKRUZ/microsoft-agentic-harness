@@ -31,36 +31,32 @@ public interface IToolResultStore
     /// compared against the store's own configured limit.
     /// </param>
     /// <param name="cancellationToken">Cancellation token.</param>
-    /// <param name="redactBeforeStoring">
-    /// Whether the content must be redacted <em>before</em> it is written to disk, rather than left raw
-    /// at rest. Security-review finding on #563, second revision: the original design redacted a page
-    /// at RETRIEVE time instead, gated by a flag that traveled with the stored content — but a page is
-    /// cut at an offset the caller (a model, via <c>tool_result_fetch</c>) chooses freely, so a caller
-    /// could split a secret across two page boundaries and recover both halves unredacted, since neither
-    /// page alone contains a complete pattern for the redaction filter to match. Redacting once, over
-    /// the complete (if <c>MaxSpillChars</c>-capped) content, before any page boundary exists, removes
-    /// the boundary an adversarial offset could exploit — there is no longer a "retrieve time" at which
-    /// an incomplete fragment could ever be produced. Pass the originating call's own
-    /// <c>ToolCallAdmission.RedactsOutput</c> here; the decision must travel with the write, because a
-    /// later <c>tool_result_fetch</c> call is classified as itself, not as the originating tool, and
-    /// resolves to a default-allow verdict of its own that must not govern this decision. Ignored for a
-    /// result small enough to stay inline — nothing is ever "retrieved" for one; the caller already has
-    /// it whole. Placed after <paramref name="cancellationToken"/>, not before, so every existing
-    /// positional caller of this method keeps compiling unchanged.
-    /// </param>
     /// <returns>
     /// A <see cref="ToolResultReference"/> containing either the full content as a preview (when
     /// <paramref name="fullOutput"/> is at or under whichever threshold applied) or a truncated preview
     /// with a disk path (when it exceeds that threshold).
     /// </returns>
+    /// <remarks>
+    /// Whatever is persisted to disk (the large-result branch only — the inline branch returns the
+    /// caller's own string untouched) is unconditionally redacted with every
+    /// <see cref="Domain.AI.Telemetry.Redaction.RedactionCategory"/> before the write, regardless of
+    /// whether the ORIGINATING call's own classification required redaction for its model-facing copy.
+    /// This is not optional the way that model-facing decision is: persisting to disk is a strictly
+    /// stronger exposure than showing a model its own tool's output, so a plain-allow call's secrets
+    /// must not reach disk in cleartext just because nothing flagged that particular call as sensitive
+    /// (security-review finding — an earlier revision of this contract gated at-rest redaction on the
+    /// originating call's own verdict, which regressed exactly this guarantee for the common,
+    /// unclassified case). Redacting the complete, already <c>MaxSpillChars</c>-capped content once,
+    /// here, before any page boundary exists, is also what closes the read-time page-splitting bypass a
+    /// still-earlier revision had: no per-page redaction remains anywhere in this system to defeat.
+    /// </remarks>
     Task<ToolResultReference> StoreIfLargeAsync(
         string sessionId,
         string toolName,
         string? operation,
         string fullOutput,
         int? sizeThreshold = null,
-        CancellationToken cancellationToken = default,
-        bool redactBeforeStoring = false);
+        CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Retrieves one bounded page of a previously persisted result, enforced against the scope it was

@@ -270,7 +270,7 @@ public sealed class ToolOutputCompressionBehaviorTests
         _resultStore.Verify(
             x => x.StoreIfLargeAsync(
                 It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string>(),
-                It.IsAny<int?>(), It.IsAny<CancellationToken>(), It.IsAny<bool>()),
+                It.IsAny<int?>(), It.IsAny<CancellationToken>()),
             Times.Never,
             "the write itself must be skipped, not just the retrieval id");
     }

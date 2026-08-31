@@ -95,24 +95,26 @@ public sealed class FileSystemToolResultStoreTests : IDisposable
         page.TotalChars.Should().Be(output.Length);
     }
 
-    // --- redactBeforeStoring (security-review finding on #563, second revision) -------------
+    // --- Unconditional at-rest redaction (security-review finding on #563, third revision) ---
     //
-    // The first revision redacted each fetched PAGE independently, gated by a flag carried
-    // alongside the content — HIGH security finding: a page boundary is a character offset the
-    // caller (tool_result_fetch's own model-supplied 'offset') chooses freely, so a secret split
-    // across two page boundaries matched no pattern in either page and both halves came back
-    // verbatim. Redaction now happens once, before the write, over the complete content, so no
-    // page boundary — however chosen — can ever expose an unredacted fragment.
+    // Two earlier revisions each regressed a different guarantee. The first redacted each fetched
+    // PAGE independently, gated by a flag carried alongside the content — HIGH security finding: a
+    // page boundary is a character offset the caller (tool_result_fetch's own model-supplied
+    // 'offset') chooses freely, so a secret split across two page boundaries matched no pattern in
+    // either page and both halves came back verbatim. The second moved redaction to write time but
+    // gated it on the ORIGINATING call's own classification — also HIGH, because a plain-allow call
+    // (the common case) spilled raw, unscanned content, regressing the unconditional at-rest
+    // redaction this store did before #563 existed at all. Redaction now happens once, always,
+    // before the write, over the complete content — no gate for an adversarial classification to
+    // sit outside of, and no page boundary for an adversarial offset to split across.
 
     private const string AwsKeyShapedSecret = "AKIAIOSFODNN7EXAMPLE";
 
     [Fact]
-    public async Task StoreIfLargeAsync_RedactBeforeStoringTrue_StoredContentIsRedacted()
+    public async Task StoreIfLargeAsync_LargeResult_StoredContentIsAlwaysRedacted()
     {
         var content = new string(' ', 90) + AwsKeyShapedSecret + new string(' ', 90);
-        var stored = await _sut.StoreIfLargeAsync(
-            "session1", "tool", null, content,
-            cancellationToken: CancellationToken.None, redactBeforeStoring: true);
+        var stored = await _sut.StoreIfLargeAsync("session1", "tool", null, content);
 
         var page = await _sut.RetrievePageAsync(stored.ResultId, "session1", offset: 0, LargePageSize);
 
@@ -120,25 +122,12 @@ public sealed class FileSystemToolResultStoreTests : IDisposable
     }
 
     [Fact]
-    public async Task StoreIfLargeAsync_RedactBeforeStoringOmitted_StoredContentIsRaw()
-    {
-        var content = new string(' ', 90) + AwsKeyShapedSecret + new string(' ', 90);
-        var stored = await _sut.StoreIfLargeAsync("session1", "tool", null, content);
-
-        var page = await _sut.RetrievePageAsync(stored.ResultId, "session1", offset: 0, LargePageSize);
-
-        page.Text.Should().Contain(AwsKeyShapedSecret);
-    }
-
-    [Fact]
-    public async Task RetrievePageAsync_RedactBeforeStoring_SecretAtAPageBoundary_NeverAppearsAcrossEitherPage()
+    public async Task RetrievePageAsync_SecretAtAPageBoundary_NeverAppearsAcrossEitherPage()
     {
         // The secret occupies content[90..110) — offset 100 (the page split below) lands squarely
         // inside it, the exact shape that defeated per-page redaction in the first revision.
         var content = new string(' ', 90) + AwsKeyShapedSecret + new string(' ', 90);
-        var stored = await _sut.StoreIfLargeAsync(
-            "session1", "tool", null, content,
-            cancellationToken: CancellationToken.None, redactBeforeStoring: true);
+        var stored = await _sut.StoreIfLargeAsync("session1", "tool", null, content);
 
         var first = await _sut.RetrievePageAsync(stored.ResultId, "session1", offset: 0, maxChars: 100);
         var second = await _sut.RetrievePageAsync(stored.ResultId, "session1", first.NextOffset, maxChars: 100);
