@@ -185,6 +185,53 @@ public sealed class PlanRunExecutorTests
         Assert.Equal(0, _capture.Invocations);
     }
 
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("run id")]
+    [InlineData("run*")]
+    // /code-review finding: these clear IsWellFormedAgentId's charset entirely — "." / ".." / a
+    // trailing dot are all directory-traversal or Windows-dot-stripping shapes the charset alone
+    // cannot exclude. See PlanRunExecutor's own remarks on this check for the full rationale. "C:" is
+    // covered separately below — its rejection is Windows-specific, not universal (build-and-test
+    // finding; see that test's own remarks).
+    [InlineData(".")]
+    [InlineData("..")]
+    [InlineData("run-id.")]
+    public async Task ExecuteAsync_MalformedRunId_FailsClosedWithoutExecuting(string runId)
+    {
+        // #560: RunId becomes CallOnceScopeId, which is exactly what ToolResultScopeId resolves to —
+        // the same directory-name role ConversationId's own check above already guards. Mirrors
+        // ExecuteAsync_MalformedConversationId_FailsClosedWithoutExecuting for the sibling field.
+        var result = await _sut.ExecuteAsync(Request(runId: runId), CancellationToken.None);
+
+        Assert.False(result.IsSuccess);
+        Assert.Contains("plan_run.run_id_invalid", result.Errors);
+        Assert.Equal(0, _capture.Invocations);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_WindowsDriveRootedRunId_FailsClosedOnlyOnWindows()
+    {
+        // Build-and-test finding: Path.IsPathRooted("C:") is true (drive-rooted) only on Windows —
+        // StorageSegmentSafety.HasUnsafeShape correctly measures it as NOT rooted on Linux/macOS,
+        // where drive letters do not exist and the allowed charset already excludes the only character
+        // ('/') that IS rooted there. See FileSystemToolResultStoreTests' identical-shaped test for the
+        // same reasoning applied to the sibling sessionId check.
+        var result = await _sut.ExecuteAsync(Request(runId: "C:"), CancellationToken.None);
+
+        if (OperatingSystem.IsWindows())
+        {
+            Assert.False(result.IsSuccess);
+            Assert.Contains("plan_run.run_id_invalid", result.Errors);
+            Assert.Equal(0, _capture.Invocations);
+        }
+        else
+        {
+            Assert.True(result.IsSuccess);
+        }
+    }
+
     [Fact]
     public async Task ExecuteAsync_NullConversationId_IsAcceptedAndDerivesScopeFromThePlan()
     {

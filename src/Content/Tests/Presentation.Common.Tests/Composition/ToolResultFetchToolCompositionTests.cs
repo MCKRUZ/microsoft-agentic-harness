@@ -58,8 +58,8 @@ public sealed class ToolResultFetchToolCompositionTests
         try
         {
             // Below the shipped 50,000-char default, StoreIfLargeAsync keeps content inline and never
-            // writes a file — RetrieveFullContentAsync would then correctly report "not found" for
-            // content that was never persisted. Lower the threshold so a small test string still spills.
+            // writes a file — RetrievePageAsync would then correctly report "not found" for content
+            // that was never persisted. Lower the threshold so a small test string still spills.
             using var provider = CompositionRootTestHost.BuildProvider(new Dictionary<string, string?>
             {
                 ["AppConfig:AI:ContextManagement:ToolResultStorage:PerResultCharLimit"] = "50",
@@ -69,10 +69,20 @@ public sealed class ToolResultFetchToolCompositionTests
 
             using var requestScope = provider.CreateScope();
             var executionContext = requestScope.ServiceProvider.GetRequiredService<IAgentExecutionContext>();
-            executionContext.Initialize(agentId: "test-agent", conversationId: "conv-1", turnNumber: 1);
+            // #559: callOnceScopeId supplied, matching AgentContextPropagationBehavior's real call shape
+            // — without it, HasRetrievableToolResultScope is false and StoreIfLargeAsync below would be
+            // exercising a scenario no real agent-turn caller of this tool can actually reach.
+            executionContext.Initialize(
+                agentId: "test-agent", conversationId: "conv-1", turnNumber: 1, callOnceScopeId: "conv-1");
 
             var resultStore = provider.GetRequiredService<IToolResultStore>();
-            var storedText = new string('x', 200);
+            // Ordinary prose, not a repeated single character: this test now exercises the REAL
+            // registered ICompositeResponseSanitizer (StoreIfLargeAsync sanitizes unconditionally at
+            // write time — a security-review finding on this PR) rather than a mock, and a long run of
+            // one repeated character trips the real injection/flood heuristic, mangling the round-trip
+            // this test is actually about. Natural language content of the same length round-trips
+            // clean through the real detector while still exceeding this fixture's spill threshold.
+            var storedText = string.Concat(Enumerable.Repeat("The quick brown fox jumps over lazy dogs. ", 5));
             var stored = await resultStore.StoreIfLargeAsync(
                 executionContext.ToolResultScopeId, "some_tool", operation: null, storedText);
             stored.FullContentPath.Should().NotBeNull(
@@ -81,13 +91,37 @@ public sealed class ToolResultFetchToolCompositionTests
             var ambientScope = provider.GetRequiredService<IAmbientRequestScope>();
             using (ambientScope.BeginScope(requestScope.ServiceProvider))
             {
-                var result = await tool.ExecuteAsync(
-                    "fetch", new Dictionary<string, object?> { ["resultId"] = stored.ResultId });
+                // #563: the tool returns one bounded page per call (half of PerResultCharLimit here —
+                // 25 chars — always strictly smaller than whatever was large enough to spill in the
+                // first place), so proving end-to-end retrieval means walking every page the way the
+                // model itself would, following each page's own "call again with offset=N" trailer.
+                var retrieved = "";
+                var offset = 0;
+                while (true)
+                {
+                    var result = await tool.ExecuteAsync(
+                        "fetch",
+                        new Dictionary<string, object?> { ["resultId"] = stored.ResultId, ["offset"] = offset });
 
-                result.Success.Should().BeTrue(
-                    "the singleton tool must resolve the CALLING request's own scope via the ambient " +
-                    "request scope, not fail just because it isn't constructor-injected anymore");
-                result.Output.Should().Be(storedText);
+                    result.Success.Should().BeTrue(
+                        "the singleton tool must resolve the CALLING request's own scope via the ambient " +
+                        "request scope, not fail just because it isn't constructor-injected anymore");
+
+                    var pageText = result.Output!;
+                    var trailerStart = pageText.IndexOf("\n[page ends at", StringComparison.Ordinal);
+                    if (trailerStart < 0)
+                    {
+                        retrieved += pageText;
+                        break;
+                    }
+
+                    retrieved += pageText[..trailerStart];
+                    var trailer = pageText[trailerStart..];
+                    offset = int.Parse(
+                        trailer[(trailer.LastIndexOf("offset=", StringComparison.Ordinal) + 7)..].TrimEnd(']'));
+                }
+
+                retrieved.Should().Be(storedText);
             }
         }
         finally

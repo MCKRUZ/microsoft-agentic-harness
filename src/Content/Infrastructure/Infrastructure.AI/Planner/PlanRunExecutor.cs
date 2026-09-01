@@ -4,6 +4,7 @@ using Application.AI.Common.Interfaces.Planner;
 using Application.AI.Common.Services.Governance;
 using Domain.AI.Planner;
 using Domain.Common;
+using Domain.Common.Helpers;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
@@ -95,6 +96,28 @@ public sealed class PlanRunExecutor : IPlanRunExecutor
                 "Plan run {PlanId} rejected: agent identity is malformed (length {Length})",
                 request.PlanId, request.AgentId.Length);
             return Result<PlanExecutionSummary>.Fail("plan_run.agent_identity_invalid");
+        }
+
+        // #560: RunId becomes IAgentExecutionContext.CallOnceScopeId below, which is exactly what
+        // ToolResultScopeId resolves to — the same directory-name role ConversationId's check above
+        // already guards. The one production caller (WorkflowRunKindExecutor) always supplies a
+        // minted GUID, but this is a public interface; nothing else enforces this shape on it, so the
+        // check belongs at this chokepoint rather than on whichever caller happens to exist today.
+        // /code-review + /simplify findings: IsWellFormedAgentId's charset alone admits shapes
+        // FileSystemToolResultStore.SanitizeSessionSegment still rejects independently — a bare "C:"
+        // (drive-rooted on Windows) and "." / ".." both pass every character in this allowlist. Not
+        // widened on IsWellFormedAgentId itself, which many older, non-path callers also share and
+        // which uses its own, narrower, 128-char charset — StorageSegmentSafety.HasUnsafeShape shares
+        // only the charset-INDEPENDENT shape checks with the two command validators' identical
+        // ConversationId rule, since this call site's charset differs from theirs.
+        if (request.RunId is not null
+            && (!PlanRunRequest.IsWellFormedAgentId(request.RunId)
+                || StorageSegmentSafety.HasUnsafeShape(request.RunId)))
+        {
+            _logger.LogWarning(
+                "Plan run {PlanId} rejected: run id is malformed (length {Length})",
+                request.PlanId, request.RunId.Length);
+            return Result<PlanExecutionSummary>.Fail("plan_run.run_id_invalid");
         }
 
         await using var scope = _scopeFactory.CreateAsyncScope();

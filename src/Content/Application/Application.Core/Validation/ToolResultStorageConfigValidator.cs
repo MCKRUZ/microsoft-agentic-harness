@@ -65,5 +65,16 @@ public sealed class ToolResultStorageConfigValidator : AbstractValidator<ToolRes
         RuleFor(x => x.StoragePath)
             .NotEmpty()
             .WithMessage("ToolResultStorage.StoragePath must not be empty.");
+
+        RuleFor(x => x.MaxSpillChars)
+            .GreaterThan(0)
+            .WithMessage("ToolResultStorage.MaxSpillChars must be greater than zero.");
+
+        RuleFor(x => x.MaxSpillChars)
+            .GreaterThanOrEqualTo(x => x.PerResultCharLimit)
+            .WithMessage(
+                "ToolResultStorage.MaxSpillChars must be at least PerResultCharLimit — a spill cap "
+                + "smaller than the ceiling that triggers spilling would refuse to persist the very "
+                + "results it exists to make retrievable.");
     }
 }

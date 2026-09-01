@@ -63,8 +63,17 @@ internal static class AdmissionHarness
     /// implementation's fallback is a fresh GUID per instance and a test asserting round-trip spill/
     /// retrieve behavior needs the SAME scope on both sides of that round trip.
     /// </summary>
-    public static IAgentExecutionContext StubExecutionContext(string toolResultScopeId = "test-scope") =>
-        Mock.Of<IAgentExecutionContext>(c => c.ToolResultScopeId == toolResultScopeId);
+    /// <param name="toolResultScopeId">The scope every spill/retrieve call in the test should share.</param>
+    /// <param name="hasRetrievableToolResultScope">
+    /// Defaults to <see langword="true"/> (#559) — most tests using this stub ARE exercising the spill
+    /// path and need <c>SpillAndBuildMarkerAsync</c> to actually write, not silently no-op. A test
+    /// specifically proving the no-op-when-unretrievable guard passes <see langword="false"/>.
+    /// </param>
+    public static IAgentExecutionContext StubExecutionContext(
+        string toolResultScopeId = "test-scope", bool hasRetrievableToolResultScope = true) =>
+        Mock.Of<IAgentExecutionContext>(c =>
+            c.ToolResultScopeId == toolResultScopeId
+            && c.HasRetrievableToolResultScope == hasRetrievableToolResultScope);
 
     /// <summary>
     /// A result store that answers every store request as if the result were small enough to keep

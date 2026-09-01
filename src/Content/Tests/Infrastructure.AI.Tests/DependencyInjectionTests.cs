@@ -11,6 +11,7 @@ using Infrastructure.AI.Escalation;
 using Infrastructure.AI.KnowledgeGraph;
 using Infrastructure.AI.MCP;
 using Infrastructure.AI.Resilience;
+using Infrastructure.AI.Tests.Planner.StepExecutors;
 using MediatR;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -42,6 +43,13 @@ public sealed class DependencyInjectionTests
         // composition root registers it via AddGovernanceDependencies / AddGovernanceNoOpDependencies,
         // called separately from AddInfrastructureAIDependencies — mirror that here.
         services.AddSingleton(TestMcpSecurityScanner.AlwaysSafe());
+        // FileSystemToolResultStore (registered below, constructed eagerly by the hosted-service
+        // enumeration several tests below perform) depends on ICompositeResponseSanitizer — a
+        // security-review finding on this PR moved the injection/exfiltration scan to write time,
+        // the same way secret redaction already ran there. Its real implementation is registered by
+        // Infrastructure.AI.Governance's own DI module, called separately in the real composition
+        // root — mirror that here, same as IMcpSecurityScanner above.
+        services.AddSingleton(PermissiveAdmission.PermissiveSanitizer());
         services.AddSingleton<ISender>(new Mock<ISender>().Object);
         services.AddKnowledgeGraphDependencies(config);
 

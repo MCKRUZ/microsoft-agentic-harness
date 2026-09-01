@@ -10,6 +10,7 @@ using FluentAssertions;
 using Infrastructure.AI.DriftDetection;
 using Infrastructure.AI.KnowledgeGraph;
 using Infrastructure.AI.Learnings;
+using Infrastructure.AI.Tests.Planner.StepExecutors;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -211,6 +212,12 @@ public sealed class DriftLearningsDiTests
         services.AddSingleton<IOptionsMonitor<LearningsConfig>>(
             new LearningsConfigMonitorStub(appConfig.AI.Learnings));
         services.AddSingleton<ISender>(new Mock<ISender>().Object);
+        // FileSystemToolResultStore (registered by AddInfrastructureAIDependencies, constructed
+        // eagerly by enumerating IHostedService below) depends on ICompositeResponseSanitizer — a
+        // security-review finding on this PR moved the injection/exfiltration scan to write time.
+        // Its real implementation is registered by Infrastructure.AI.Governance's own DI module,
+        // called separately in the real composition root — mirror that here.
+        services.AddSingleton(PermissiveAdmission.PermissiveSanitizer());
 
         // Register knowledge graph (provides IKnowledgeGraphStore for graph-backed stores)
         services.AddKnowledgeGraphDependencies(appConfig);

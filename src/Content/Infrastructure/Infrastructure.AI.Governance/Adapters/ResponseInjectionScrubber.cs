@@ -60,21 +60,24 @@ internal sealed partial class ResponseInjectionScrubber : IResponseSanitizer
     /// scans tool <em>descriptions</em> rather than tool <em>output</em> — must not drift apart on
     /// it a second time.
     /// </summary>
-    [GeneratedRegex(InvisibleCharacters.Pattern)]
+    // Security-review finding: same rationale as CredentialRedactor's identical remark — this chain
+    // now also runs over up to several MB of attacker-influenceable content at write time
+    // (FileSystemToolResultStore.StoreIfLargeAsync), not only the smaller model-facing ceiling.
+    [GeneratedRegex(InvisibleCharacters.Pattern, RegexOptions.None, matchTimeoutMilliseconds: 2000)]
     private static partial Regex ZeroWidthPattern();
 
-    [GeneratedRegex(@"<\s*/?\s*system\s*>", RegexOptions.IgnoreCase)]
+    [GeneratedRegex(@"<\s*/?\s*system\s*>", RegexOptions.IgnoreCase, matchTimeoutMilliseconds: 2000)]
     private static partial Regex SystemTagPattern();
 
-    [GeneratedRegex(@"\b(?:ignore|override|disregard|forget)\b.{0,30}\b(?:previous|above|prior|system|instructions?|prompt)\b", RegexOptions.IgnoreCase)]
+    [GeneratedRegex(@"\b(?:ignore|override|disregard|forget)\b.{0,30}\b(?:previous|above|prior|system|instructions?|prompt)\b", RegexOptions.IgnoreCase, matchTimeoutMilliseconds: 2000)]
     private static partial Regex InstructionOverridePattern();
 
-    [GeneratedRegex(@"(?:^|\n)(?:assistant|system|user)\s*:", RegexOptions.IgnoreCase)]
+    [GeneratedRegex(@"(?:^|\n)(?:assistant|system|user)\s*:", RegexOptions.IgnoreCase, matchTimeoutMilliseconds: 2000)]
     private static partial Regex RoleSwitchPattern();
 
-    [GeneratedRegex(@"<!--\s*(?:.*?(?:ignore|override|disregard|must|should|always|bypass|reveal|secret|inject)\b.*?)-->", RegexOptions.IgnoreCase | RegexOptions.Singleline)]
+    [GeneratedRegex(@"<!--\s*(?:.*?(?:ignore|override|disregard|must|should|always|bypass|reveal|secret|inject)\b.*?)-->", RegexOptions.IgnoreCase | RegexOptions.Singleline, matchTimeoutMilliseconds: 2000)]
     private static partial Regex HiddenDirectiveCommentPattern();
 
-    [GeneratedRegex(@"[A-Za-z0-9+/]{40,}={0,2}")]
+    [GeneratedRegex(@"[A-Za-z0-9+/]{40,}={0,2}", RegexOptions.None, matchTimeoutMilliseconds: 2000)]
     private static partial Regex Base64BlockPattern();
 }

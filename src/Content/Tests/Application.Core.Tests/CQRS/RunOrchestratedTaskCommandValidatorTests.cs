@@ -94,4 +94,126 @@ public class RunOrchestratedTaskCommandValidatorTests
         result.IsValid.Should().BeTrue();
         result.Errors.Should().BeEmpty();
     }
+
+    // #560: this command's ConversationId flows straight through to the tool-result retrieval
+    // scope (RunOrchestratedTaskCommandHandler -> AgentExecutionContext.Initialize) but had zero
+    // rules before this fix — previously untested gap, unlike its RunConversationCommand sibling.
+    [Fact]
+    public async Task Validate_BlankConversationId_Fails()
+    {
+        // /code-review finding: the ConversationId chain now runs Cascade(Stop), so a blank value
+        // fails only NotEmpty — the charset/shape rules never run against it. Asserts "at least one"
+        // rather than "exactly one" so this test doesn't depend on that cascade detail either way.
+        var command = CreateValidCommand() with { ConversationId = "" };
+
+        var result = await _validator.ValidateAsync(command);
+
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.PropertyName == "ConversationId");
+    }
+
+    [Fact]
+    public async Task Validate_NullConversationId_FailsCleanlyRatherThanThrowing()
+    {
+        // /code-review finding — see RunConversationCommandValidatorTests' identical addition for
+        // the full empirically-reproduced NullReferenceException this guards against.
+        var command = CreateValidCommand() with { ConversationId = null! };
+
+        var act = () => _validator.ValidateAsync(command);
+
+        await act.Should().NotThrowAsync();
+        var result = await act();
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.PropertyName == "ConversationId");
+    }
+
+    [Fact]
+    public async Task Validate_ConversationIdWithPathSeparator_Fails()
+    {
+        var command = CreateValidCommand() with { ConversationId = "../escape" };
+
+        var result = await _validator.ValidateAsync(command);
+
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().ContainSingle(e => e.PropertyName == "ConversationId");
+    }
+
+    [Theory]
+    // /code-review finding: each of these clears the AllowedScopeIdCharset regex entirely — see
+    // RunConversationCommandValidatorTests' identical addition for the full rationale. "C:" is
+    // covered separately below — its rejection is Windows-specific, not universal (build-and-test
+    // finding; see that test's own remarks).
+    [InlineData(".")]
+    [InlineData("..")]
+    [InlineData("conv-1.")]
+    public async Task Validate_ConversationIdClearsCharsetButUnsafeShape_Fails(string conversationId)
+    {
+        var command = CreateValidCommand() with { ConversationId = conversationId };
+
+        var result = await _validator.ValidateAsync(command);
+
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.PropertyName == "ConversationId");
+    }
+
+    [Fact]
+    public async Task Validate_WindowsDriveRootedConversationId_FailsOnlyOnWindows()
+    {
+        // Build-and-test finding: Path.IsPathRooted("C:") is true (drive-rooted) only on Windows —
+        // StorageSegmentSafety.HasUnsafeShape correctly measures it as NOT rooted on Linux/macOS,
+        // where drive letters do not exist and the allowed charset already excludes the only character
+        // ('/') that IS rooted there. See RunConversationCommandValidatorTests' identical addition.
+        var command = CreateValidCommand() with { ConversationId = "C:" };
+
+        var result = await _validator.ValidateAsync(command);
+
+        if (OperatingSystem.IsWindows())
+        {
+            result.IsValid.Should().BeFalse();
+            result.Errors.Should().Contain(e => e.PropertyName == "ConversationId");
+        }
+        else
+        {
+            result.IsValid.Should().BeTrue();
+        }
+    }
+
+    [Fact]
+    public async Task Validate_ConversationIdShapedLikeAPlanStep_Passes()
+    {
+        // Regression: an earlier version of this validator's charset excluded ':' entirely, which
+        // rejected PlanRunKeys.StepConversationId's own "{runScope}:{stepId}" shape.
+        var command = CreateValidCommand() with { ConversationId = "a1b2c3d4-conv:step-7" };
+
+        var result = await _validator.ValidateAsync(command);
+
+        result.IsValid.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Validate_ConversationIdAtTheWorstCasePlanStepLength_Passes()
+    {
+        // Regression: an earlier version of this validator bounded length at 128 to match
+        // IPlanRunExecutor.MaxAgentIdLength, but PlanRunKeys.StepConversationId derives
+        // "{runScope}:{stepId}" from that value, up to 128 + 1 + 36 = 165 characters.
+        var derivedId = $"{new string('a', 128)}:{Guid.NewGuid()}";
+        derivedId.Length.Should().Be(165);
+
+        var command = CreateValidCommand() with { ConversationId = derivedId };
+        var result = await _validator.ValidateAsync(command);
+
+        result.IsValid.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Validate_ConversationIdEndingInNewline_Fails()
+    {
+        // Security-review finding: "$" matches immediately before a trailing '\n' in .NET regex, not
+        // only at the true end of the string. Fixed by anchoring with \A/\z instead.
+        var command = CreateValidCommand() with { ConversationId = "conv-1\n" };
+
+        var result = await _validator.ValidateAsync(command);
+
+        result.IsValid.Should().BeFalse();
+    }
 }

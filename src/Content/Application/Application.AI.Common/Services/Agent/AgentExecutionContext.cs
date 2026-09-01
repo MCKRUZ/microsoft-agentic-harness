@@ -29,6 +29,15 @@ public sealed class AgentExecutionContext : IAgentExecutionContext
     // must not throw or return null just because initialization hasn't happened yet).
     private readonly string _fallbackToolResultScopeId = Guid.NewGuid().ToString("N");
 
+    // Freezes ToolResultScopeId's answer on first read (#562). Without this, a read before
+    // Initialize() and a read after it can observe two different values — CallOnceScopeId ??
+    // _fallbackToolResultScopeId flips the moment Initialize supplies a non-null scope — and
+    // anything spilled under the first value becomes permanently unfindable under the second,
+    // silently: the tool-result store makes "wrong scope" indistinguishable from "never existed".
+    // Not reachable today (every Initialize call site runs before any tool call), but nothing
+    // enforced that ordering; this makes the guarantee explicit instead of incidental.
+    private string? _observedToolResultScopeId;
+
     /// <inheritdoc />
     public string? AgentId { get; private set; }
 
@@ -42,7 +51,32 @@ public sealed class AgentExecutionContext : IAgentExecutionContext
     public string? CallOnceScopeId { get; private set; }
 
     /// <inheritdoc />
-    public string ToolResultScopeId => CallOnceScopeId ?? _fallbackToolResultScopeId;
+    public string ToolResultScopeId
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _observedToolResultScopeId ??= CallOnceScopeId ?? _fallbackToolResultScopeId;
+            }
+        }
+    }
+
+    /// <inheritdoc />
+    public bool HasRetrievableToolResultScope
+    {
+        get
+        {
+            // Correctness-review advisory: read under the same _gate as ToolResultScopeId and
+            // Initialize, not bare — CallOnceScopeId is written inside Initialize's lock, and a
+            // lock-free read here would be the one place in this type that doesn't honor its own
+            // documented "overlapping async contexts" thread-safety contract.
+            lock (_gate)
+            {
+                return CallOnceScopeId is not null;
+            }
+        }
+    }
 
     /// <inheritdoc />
     public AgentIdentity? AgentIdentity { get; private set; }
@@ -62,6 +96,17 @@ public sealed class AgentExecutionContext : IAgentExecutionContext
                     $"conversation '{ConversationId}' / call-once scope '{CallOnceScopeId}', cannot " +
                     $"re-initialize with agent '{agentId}' / conversation '{conversationId}' / " +
                     $"call-once scope '{callOnceScopeId}'.");
+
+            // ToolResultScopeId was already read (and, per the guard above, this is either the
+            // first Initialize call or a value-identical re-initialize) — if the scope id it
+            // observed no longer matches what CallOnceScopeId is about to become, that observer
+            // is now holding a stale scope. Fail loudly rather than let a spill become orphaned.
+            if (_observedToolResultScopeId is not null
+                && _observedToolResultScopeId != (callOnceScopeId ?? _fallbackToolResultScopeId))
+                throw new InvalidOperationException(
+                    $"AgentExecutionContext scope conflict: ToolResultScopeId was already read as " +
+                    $"'{_observedToolResultScopeId}' before Initialize supplied call-once scope " +
+                    $"'{callOnceScopeId}'. ToolResultScopeId must not be read before Initialize().");
 
             AgentId = agentId;
             ConversationId = conversationId;

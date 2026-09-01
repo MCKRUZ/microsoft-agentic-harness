@@ -9,10 +9,11 @@ namespace Domain.Common.Config.AI.ContextManagement;
 /// Configuration hierarchy:
 /// <code>
 /// AppConfig.AI.ContextManagement
-/// ├── Compaction        — Auto-compact triggers, circuit breaker, strategy limits
-/// ├── ToolResultStorage — Disk persistence thresholds for large tool results
-/// ├── Budget            — Diminishing returns detection and completion thresholds
-/// └── PromptComposition — Authoritative section-based static system-prompt builder (off by default)
+/// ├── Compaction          — Auto-compact triggers, circuit breaker, strategy limits
+/// ├── ToolResultStorage   — Disk persistence thresholds for large tool results
+/// ├── ToolResultRetention — Sweep that reclaims spilled tool-result files by age (#559)
+/// ├── Budget              — Diminishing returns detection and completion thresholds
+/// └── PromptComposition   — Authoritative section-based static system-prompt builder (off by default)
 /// </code>
 /// </para>
 /// </remarks>
@@ -29,6 +30,11 @@ public class ContextManagementConfig
     /// of large tool outputs.
     /// </summary>
     public ToolResultStorageConfig ToolResultStorage { get; set; } = new();
+
+    /// <summary>
+    /// Gets or sets the retention sweep that reclaims spilled tool-result files by age (#559).
+    /// </summary>
+    public ToolResultRetentionConfig ToolResultRetention { get; set; } = new();
 
     /// <summary>
     /// Gets or sets the budget configuration for diminishing returns detection

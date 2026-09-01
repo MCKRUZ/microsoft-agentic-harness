@@ -5,23 +5,34 @@ using Application.AI.Common.Interfaces.Tools;
 using Domain.AI.Changes;
 using Domain.AI.Models;
 using Domain.AI.Sandbox;
+using Domain.Common.Config;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace Infrastructure.AI.Tools;
 
 /// <summary>
-/// Retrieves the full text of a tool result that was truncated and spilled to
-/// <see cref="IToolResultStore"/> (#521) — the model's way to ask for the rest of a result it was
-/// only shown a cut-down version of.
+/// Retrieves one bounded page of a tool result that was truncated and spilled to
+/// <see cref="IToolResultStore"/> (#521, #563) — the model's way to ask for the rest of a result it
+/// was only shown a cut-down version of, one page at a time.
 /// </summary>
 /// <remarks>
 /// <para>
+/// <strong>Pages, not a single "full output" read (#563).</strong> A spilled result can be
+/// considerably larger than what any single response to the model should carry, so this tool never
+/// returns more than one bounded page per call — the same reasoning that bounds every other tool
+/// result reaching the model applies to a fetched page too, since a page flows back through the
+/// normal admission pipeline like any other tool output (see the last remark below). An optional
+/// <c>offset</c> parameter (character offset, default <c>0</c>) selects where the next page starts;
+/// a page whose read left more of the result unread carries a trailer naming the offset to pass next.
+/// </para>
+/// <para>
 /// <strong>The retrieval scope comes from the CALLING request's own <see cref="IAgentExecutionContext"/>,
 /// resolved per invocation, never from a caller-supplied parameter.</strong> A model-facing
-/// <c>resultId</c> is the only argument this tool accepts; widening that to also accept a scope id
-/// would let the model simply state whose data it wants to read, defeating the isolation boundary
-/// <see cref="IToolResultStore"/> enforces.
+/// <c>resultId</c> (plus the optional <c>offset</c>) are the only arguments this tool accepts;
+/// widening that to also accept a scope id would let the model simply state whose data it wants to
+/// read, defeating the isolation boundary <see cref="IToolResultStore"/> enforces.
 /// </para>
 /// <para>
 /// <strong>Registered <c>Singleton</c>, like every other keyed tool — NOT <c>Scoped</c>.</strong> An
@@ -53,9 +64,45 @@ namespace Infrastructure.AI.Tools;
 /// scope, so <see cref="IAmbientRequestScope.Current"/> would be null there regardless.
 /// </para>
 /// <para>
-/// A fetched result is routed through the normal <c>ToolResult.Ok</c> return, so it flows back through
-/// the same admission pipeline as any other tool result — the same size threshold applies, and a
-/// result still too large to fit spills again under a fresh id, exactly like any other tool's output.
+/// A fetched PAGE is routed through the normal <c>ToolResult.Ok</c> return, so it flows back through
+/// the same admission pipeline as any other tool result — sanitized and bounded exactly like any other
+/// tool's output (#563). The page size this tool requests
+/// (<see cref="Domain.Common.Config.AI.ContextManagement.ToolResultStorageConfig.PerResultCharLimit"/>
+/// halved) stays comfortably under that ceiling specifically so a page is never itself truncated and
+/// re-spilled by the pipeline it flows back through — sanitizing can only make text longer, never
+/// shorter, so the margin needs to survive that growth too.
+/// </para>
+/// <para>
+/// <strong>Redaction happens once, at spill time, over the complete stored content — never here, per
+/// page.</strong> (Security-review finding, now on its third revision.) An earlier version of this
+/// tool redacted each page individually, gated by a flag persisted alongside the content. That was
+/// broken: a page boundary is a character offset the CALLER chooses (the model's own <c>offset</c>
+/// argument), so a caller could split a secret across two page boundaries and recover both halves
+/// unredacted — neither page alone contains a complete pattern for a redaction filter to match. There
+/// is no fix for that which still redacts per page, because the caller can always choose a new split
+/// point. A later revision moved redaction to write time but gated it on the originating call's own
+/// classification — also broken, because a plain-allow call spilled raw, unscanned content.
+/// <c>FileSystemToolResultStore.StoreIfLargeAsync</c> now redacts everything it persists,
+/// unconditionally, before the write: whatever this tool reads back is already safe, and a page is
+/// just a slice of it.
+/// </para>
+/// <para>
+/// <strong>The injection/exfiltration scan is a DIFFERENT mechanism from redaction above, and moved
+/// to write time for the same reason.</strong> (Security-review finding, now on its second revision.)
+/// That scan otherwise runs once per model-facing CALL, as part of the generic admission pipeline
+/// every tool result flows through — before pagination existed, "once per call" and "once for the
+/// whole result" were the same thing, but #563 made them different, since a single logical result now
+/// returns across many calls, each scanned in isolation. A payload straddling the exact character
+/// offset one page ends at was therefore never fully visible to either page's own scan. A first fix
+/// pulled the offset this tool tells the model to resume from back by a fixed margin, so the next
+/// call's own scan would re-cover the prior page's tail — rejected on review: it is cooperative, not
+/// enforced, and the model is exactly the caller an injection payload embedded in the FIRST half could
+/// try to manipulate into requesting a different offset, reproducing the identical "caller can always
+/// choose a new split point" shape this codebase already rejected a per-page fix for on the redaction
+/// side. <c>FileSystemToolResultStore.StoreIfLargeAsync</c> now sanitizes everything it persists,
+/// unconditionally, before the write, the same way it already redacts: whatever this tool reads back
+/// is already safe, and a page is just a slice of it — no page boundary, chosen by anyone, can split a
+/// pattern that no longer exists in the stored copy.
 /// </para>
 /// </remarks>
 public sealed class ToolResultFetchTool : ITool
@@ -66,18 +113,22 @@ public sealed class ToolResultFetchTool : ITool
 
     private readonly IToolResultStore _resultStore;
     private readonly IAmbientRequestScope _ambientScope;
+    private readonly IOptionsMonitor<AppConfig> _options;
     private readonly ILogger<ToolResultFetchTool> _logger;
 
     public ToolResultFetchTool(
         IToolResultStore resultStore,
         IAmbientRequestScope ambientScope,
+        IOptionsMonitor<AppConfig> options,
         ILogger<ToolResultFetchTool> logger)
     {
         ArgumentNullException.ThrowIfNull(resultStore);
         ArgumentNullException.ThrowIfNull(ambientScope);
+        ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(logger);
         _resultStore = resultStore;
         _ambientScope = ambientScope;
+        _options = options;
         _logger = logger;
     }
 
@@ -86,9 +137,10 @@ public sealed class ToolResultFetchTool : ITool
 
     /// <inheritdoc />
     public string Description =>
-        "Retrieves the full text of a tool result that was truncated. Pass the id from the " +
+        "Retrieves one page of a tool result that was truncated. Pass the id from the " +
         $"\"{string.Format(Application.AI.Common.Services.Governance.ToolCallAdmissionPipeline.SpilledResultMarkerFormat, "...").Trim()}\" " +
-        "marker as the 'resultId' parameter.";
+        "marker as the 'resultId' parameter. If the page returned says more is available, call again " +
+        "with the same 'resultId' and the 'offset' the page names to continue reading.";
 
     /// <inheritdoc />
     public IReadOnlyList<string> SupportedOperations => Operations;
@@ -126,6 +178,11 @@ public sealed class ToolResultFetchTool : ITool
             return ToolResult.Fail("A non-empty 'resultId' parameter is required.");
         }
 
+        if (!TryGetOffset(parameters, out var offset))
+        {
+            return ToolResult.Fail("The 'offset' parameter, when supplied, must be a non-negative integer.");
+        }
+
         // Resolved here, not at construction — this instance is a process-lifetime singleton and the
         // execution context is scoped to the calling request. See this type's own remarks for why.
         var executionContext = _ambientScope.Current?.GetService<IAgentExecutionContext>();
@@ -137,17 +194,43 @@ public sealed class ToolResultFetchTool : ITool
             return ToolResult.Fail("Unable to retrieve stored results outside an active agent turn.");
         }
 
+        // #563: half PerResultCharLimit, read fresh per call rather than cached — a page this size stays
+        // comfortably under the ceiling this tool's own result is about to be bounded to on the way back
+        // out, even after sanitizing/redacting can only grow it. See this type's own remarks for why
+        // that margin matters (a page that overflows the ceiling would itself be truncated and spilled
+        // again, under a fresh id, rather than reaching the model as the page the caller asked for).
+        var maxChars = Math.Max(
+            1, _options.CurrentValue.AI.ContextManagement.ToolResultStorage.PerResultCharLimit / 2);
+
         try
         {
-            var content = await _resultStore
-                .RetrieveFullContentAsync(resultId, executionContext.ToolResultScopeId, cancellationToken)
+            var page = await _resultStore
+                .RetrievePageAsync(resultId, executionContext.ToolResultScopeId, offset, maxChars, cancellationToken)
                 .ConfigureAwait(false);
-            return ToolResult.Ok(content);
+
+            // Redaction and injection/exfiltration sanitizing both already happened once, unconditionally,
+            // at spill time, over the complete stored content — see this type's own remarks for why a
+            // page can never safely be treated a second time here. page.Text is already whatever it
+            // needs to be. (/code-review finding: an earlier version of this comment said "if the
+            // originating call required redaction", stale from before redaction became unconditional —
+            // do not reintroduce that conditional gate; see FileSystemToolResultStore's own remarks for
+            // the regression that phrase's underlying behavior caused once already.)
+            var text = page.Text;
+
+            if (!page.HasMore)
+            {
+                return ToolResult.Ok(text);
+            }
+
+            var trailer =
+                $"\n[page ends at {page.NextOffset} of {page.TotalChars} chars — call tool_result_fetch " +
+                $"again with id={resultId}, offset={page.NextOffset}]";
+            return ToolResult.Ok(text + trailer);
         }
         catch (KeyNotFoundException)
         {
-            // Deliberately generic — see IToolResultStore.RetrieveFullContentAsync's own remarks for
-            // why "wrong scope" and "never existed" must be indistinguishable from outside the store.
+            // Deliberately generic — see IToolResultStore.RetrievePageAsync's own remarks for why
+            // "wrong scope" and "never existed" must be indistinguishable from outside the store.
             return ToolResult.Fail($"No stored result found for id '{resultId}'.");
         }
         catch (Exception ex) when (ex is ArgumentException or IOException or UnauthorizedAccessException
@@ -160,5 +243,37 @@ public sealed class ToolResultFetchTool : ITool
             _logger.LogWarning(ex, "Failed to retrieve tool result {ResultId}", resultId);
             return ToolResult.Fail($"No stored result found for id '{resultId}'.");
         }
+    }
+
+    /// <summary>
+    /// Parses the optional, model-supplied <c>offset</c> parameter. Missing means "start from the
+    /// beginning" (<c>0</c>); present but not a well-formed non-negative integer is refused outright
+    /// rather than silently treated as omitted — a model that got the offset wrong should be told so,
+    /// not have its request silently restarted from the beginning.
+    /// </summary>
+    private static bool TryGetOffset(IReadOnlyDictionary<string, object?> parameters, out int offset)
+    {
+        if (!parameters.TryGetValue("offset", out var raw) || raw is null)
+        {
+            offset = 0;
+            return true;
+        }
+
+        var parsed = raw switch
+        {
+            int i => i,
+            long l and >= 0 and <= int.MaxValue => (int)l,
+            string s when int.TryParse(s, out var fromString) => fromString,
+            _ => (int?)null
+        };
+
+        if (parsed is not { } value || value < 0)
+        {
+            offset = 0;
+            return false;
+        }
+
+        offset = value;
+        return true;
     }
 }

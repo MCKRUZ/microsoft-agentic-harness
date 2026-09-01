@@ -1,3 +1,5 @@
+using System.Reflection;
+using System.Text.RegularExpressions;
 using Domain.AI.Governance;
 using Domain.Common.Config.AI;
 using Infrastructure.AI.Governance.Adapters;
@@ -8,6 +10,24 @@ namespace Infrastructure.AI.Governance.Tests.Adapters;
 public sealed class CredentialRedactorTests
 {
     private readonly CredentialRedactor _redactor = new();
+
+    [Fact]
+    public void GeneratedPatterns_AllHaveAFiniteMatchTimeout()
+    {
+        // Security-review finding: FileSystemToolResultStore's write-time scan (#559-563) runs this
+        // sanitizer over up to several MB of attacker-influenceable tool output. [GeneratedRegex]'s
+        // default MatchTimeout is Regex.InfiniteMatchTimeout, turning a pathological pattern into an
+        // unbounded hang rather than a bounded RegexMatchTimeoutException. Mutation test: remove
+        // matchTimeoutMilliseconds from any [GeneratedRegex] attribute on CredentialRedactor and this
+        // fails for that one pattern.
+        foreach (var method in typeof(CredentialRedactor)
+            .GetMethods(BindingFlags.NonPublic | BindingFlags.Static)
+            .Where(m => m.ReturnType == typeof(Regex) && m.GetParameters().Length == 0))
+        {
+            var regex = (Regex)method.Invoke(null, null)!;
+            Assert.NotEqual(Regex.InfiniteMatchTimeout, regex.MatchTimeout);
+        }
+    }
 
     [Fact]
     public void Sanitize_CleanText_ReturnsClean()

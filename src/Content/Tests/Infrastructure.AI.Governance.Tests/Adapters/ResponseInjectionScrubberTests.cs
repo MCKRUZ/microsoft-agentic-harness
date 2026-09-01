@@ -1,3 +1,5 @@
+using System.Reflection;
+using System.Text.RegularExpressions;
 using Domain.AI.Governance;
 using Domain.Common.Config.AI;
 using Infrastructure.AI.Governance.Adapters;
@@ -8,6 +10,22 @@ namespace Infrastructure.AI.Governance.Tests.Adapters;
 public sealed class ResponseInjectionScrubberTests
 {
     private readonly ResponseInjectionScrubber _scrubber = new();
+
+    [Fact]
+    public void GeneratedPatterns_AllHaveAFiniteMatchTimeout()
+    {
+        // Security-review finding: same rationale as CredentialRedactorTests' identical test — see
+        // that type's own remarks. HiddenDirectiveCommentPattern's lazy [\s\S]*? is the pattern this
+        // check most directly guards: the compiled source emits its backtrack-timeout check inside
+        // the lazy-loop backtrack label itself, not just around the call.
+        foreach (var method in typeof(ResponseInjectionScrubber)
+            .GetMethods(BindingFlags.NonPublic | BindingFlags.Static)
+            .Where(m => m.ReturnType == typeof(Regex) && m.GetParameters().Length == 0))
+        {
+            var regex = (Regex)method.Invoke(null, null)!;
+            Assert.NotEqual(Regex.InfiniteMatchTimeout, regex.MatchTimeout);
+        }
+    }
 
     [Fact]
     public void Sanitize_CleanText_ReturnsClean()

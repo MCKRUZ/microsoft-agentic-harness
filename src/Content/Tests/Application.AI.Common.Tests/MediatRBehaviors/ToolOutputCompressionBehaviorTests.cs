@@ -40,7 +40,14 @@ public sealed class ToolOutputCompressionBehaviorTests
         ToolOutputCompressionConfig? config = null)
     {
         var options = Options.Create(config ?? _config);
+        // #561: sourced from ToolResultScopeId, not ConversationId — the same scope tool_result_fetch
+        // reads back with. Both setups kept so a test asserting on either property still gets a value.
         _executionContext.Setup(x => x.ConversationId).Returns("session-1");
+        _executionContext.Setup(x => x.ToolResultScopeId).Returns("session-1");
+        // #559: most tests using this factory ARE exercising the spill path and need the write to
+        // actually happen; a test specifically proving the no-op-when-unretrievable guard overrides
+        // this on its own mock instead of going through CreateBehavior.
+        _executionContext.Setup(x => x.HasRetrievableToolResultScope).Returns(true);
         return new ToolOutputCompressionBehavior<ToolTestRequest, Result<ToolTestResponse>>(
             _compressor.Object,
             _resultStore.Object,
@@ -49,6 +56,28 @@ public sealed class ToolOutputCompressionBehaviorTests
             options,
             _logger.Object);
     }
+
+    // /simplify finding: the 5 fields on each of these varied by at most 3 across every call site in
+    // this file — factored out so a test only states what actually distinguishes it.
+    private static ToolResultReference Reference(
+        string resultId, string previewContent, string? fullContentPath = null) => new()
+    {
+        ResultId = resultId,
+        ToolName = "test_tool",
+        PreviewContent = previewContent,
+        FullContentPath = fullContentPath,
+        SizeChars = 9000,
+        Timestamp = DateTimeOffset.UtcNow
+    };
+
+    private static CompressionResult Compressed(string output = "compressed summary") => new()
+    {
+        Output = output,
+        OriginalTokens = 2250,
+        CompressedTokens = 5,
+        Strategy = "Json",
+        WasCompressed = true
+    };
 
     [Fact]
     public async Task Handle_NonToolRequest_PassesThrough()
@@ -98,27 +127,13 @@ public sealed class ToolOutputCompressionBehaviorTests
         var output = new ToolTestResponse(largeOutput);
         var behavior = CreateBehavior();
 
-        var reference = new ToolResultReference
-        {
-            ResultId = "ref-123",
-            ToolName = "test_tool",
-            PreviewContent = "preview...",
-            SizeChars = 9000,
-            Timestamp = DateTimeOffset.UtcNow
-        };
+        var reference = Reference("ref-123", "preview...", "/fake/persisted.json");
 
         _resultStore.Setup(x => x.StoreIfLargeAsync("session-1", "test_tool", null, largeOutput, It.IsAny<int?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(reference);
 
         _compressor.Setup(x => x.CompressAsync(largeOutput, null, 2000, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new CompressionResult
-            {
-                Output = "compressed summary",
-                OriginalTokens = 2250,
-                CompressedTokens = 5,
-                Strategy = "Json",
-                WasCompressed = true
-            });
+            .ReturnsAsync(Compressed());
 
         var result = await behavior.Handle(
             new ToolTestRequest("test_tool"),
@@ -127,7 +142,13 @@ public sealed class ToolOutputCompressionBehaviorTests
 
         Assert.True(result.IsSuccess);
         Assert.Contains("compressed summary", result.Value!.ToolOutput);
-        Assert.Contains("[Full output: result://ref-123]", result.Value!.ToolOutput);
+        // #561: the same marker shape ToolCallAdmissionPipeline emits and ToolResultFetchTool
+        // recognizes — this behavior used to hand-roll its own "result://" phrase that nothing resolved.
+        Assert.Contains(
+            string.Format(
+                Application.AI.Common.Services.Governance.ToolCallAdmissionPipeline.SpilledResultMarkerFormat,
+                "ref-123"),
+            result.Value!.ToolOutput);
 
         _resultStore.Verify(
             x => x.StoreIfLargeAsync("session-1", "test_tool", null, largeOutput, It.IsAny<int?>(), It.IsAny<CancellationToken>()),
@@ -135,6 +156,93 @@ public sealed class ToolOutputCompressionBehaviorTests
         _compressor.Verify(
             x => x.CompressAsync(largeOutput, null, 2000, It.IsAny<CancellationToken>()),
             Times.Once);
+    }
+
+    [Fact]
+    public async Task CompressIfNeeded_SpilledResult_EmitsTheSameMarkerShapeToolResultFetchAdvertises()
+    {
+        // #561: pins the marker shape directly against the pipeline's own constant, so this behavior
+        // and ToolResultFetchTool can never silently drift apart the way they already had once.
+        var largeOutput = new string('x', 9000);
+        var output = new ToolTestResponse(largeOutput);
+        var behavior = CreateBehavior();
+
+        var reference = Reference("ref-789", "preview...", "/fake/persisted.json");
+
+        _resultStore.Setup(x => x.StoreIfLargeAsync("session-1", "test_tool", null, largeOutput, It.IsAny<int?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(reference);
+        _compressor.Setup(x => x.CompressAsync(largeOutput, null, 2000, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Compressed());
+
+        var result = await behavior.Handle(
+            new ToolTestRequest("test_tool"),
+            () => Task.FromResult(Result<ToolTestResponse>.Success(output)),
+            CancellationToken.None);
+
+        Assert.Contains(
+            string.Format(
+                Application.AI.Common.Services.Governance.ToolCallAdmissionPipeline.SpilledResultMarkerFormat,
+                "ref-789"),
+            result.Value!.ToolOutput);
+    }
+
+    [Fact]
+    public async Task CompressIfNeeded_StoreKeptContentInline_DoesNotAdvertiseAnUnfetchableMarker()
+    {
+        // Correctness-review finding: this behavior's own threshold is token-based (~2000 tokens,
+        // ~8000 chars) while StoreIfLargeAsync's spill decision is char-based (PerResultCharLimit,
+        // 50,000 by default) — an output can trip compression without exceeding the store's own
+        // threshold, in which case StoreIfLargeAsync keeps it inline (FullContentPath null, no file
+        // written). Appending the retrieval marker unconditionally, as an earlier version of this fix
+        // did, advertised an id tool_result_fetch could never resolve for every output in that band.
+        var largeOutput = new string('x', 9000);
+        var output = new ToolTestResponse(largeOutput);
+        var behavior = CreateBehavior();
+
+        var reference = Reference("ref-inline", largeOutput, fullContentPath: null);
+
+        _resultStore.Setup(x => x.StoreIfLargeAsync("session-1", "test_tool", null, largeOutput, It.IsAny<int?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(reference);
+        _compressor.Setup(x => x.CompressAsync(largeOutput, null, 2000, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Compressed());
+
+        var result = await behavior.Handle(
+            new ToolTestRequest("test_tool"),
+            () => Task.FromResult(Result<ToolTestResponse>.Success(output)),
+            CancellationToken.None);
+
+        Assert.Equal("compressed summary", result.Value!.ToolOutput);
+        Assert.DoesNotContain("tool_result_fetch", result.Value!.ToolOutput);
+    }
+
+    [Fact]
+    public async Task CompressIfNeeded_WithNoRetrievableScope_SkipsTheStoreWriteEntirely()
+    {
+        // #559: mirrors ToolCallAdmissionPipeline.SpillAndBuildMarkerAsync's identical guard — a
+        // direct tool invocation mints a fresh, call-scoped ToolResultScopeId that dies with the
+        // call, so a file written here would be unreachable the instant this method returns.
+        var largeOutput = new string('x', 9000);
+        var output = new ToolTestResponse(largeOutput);
+        var behavior = CreateBehavior();
+        // Must override AFTER CreateBehavior — it sets this mock to true, and Moq honors the LAST
+        // matching setup.
+        _executionContext.Setup(x => x.HasRetrievableToolResultScope).Returns(false);
+
+        _compressor.Setup(x => x.CompressAsync(largeOutput, null, 2000, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Compressed());
+
+        var result = await behavior.Handle(
+            new ToolTestRequest("test_tool"),
+            () => Task.FromResult(Result<ToolTestResponse>.Success(output)),
+            CancellationToken.None);
+
+        Assert.Equal("compressed summary", result.Value!.ToolOutput);
+        _resultStore.Verify(
+            x => x.StoreIfLargeAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string>(),
+                It.IsAny<int?>(), It.IsAny<CancellationToken>()),
+            Times.Never,
+            "the write itself must be skipped, not just the retrieval id");
     }
 
     [Fact]
@@ -162,14 +270,7 @@ public sealed class ToolOutputCompressionBehaviorTests
         var output = new ToolTestResponse(largeOutput);
         var behavior = CreateBehavior();
 
-        var reference = new ToolResultReference
-        {
-            ResultId = "ref-456",
-            ToolName = "test_tool",
-            PreviewContent = "preview...",
-            SizeChars = 9000,
-            Timestamp = DateTimeOffset.UtcNow
-        };
+        var reference = Reference("ref-456", "preview...");
 
         _resultStore.Setup(x => x.StoreIfLargeAsync("session-1", "test_tool", null, largeOutput, It.IsAny<int?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(reference);

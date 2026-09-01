@@ -4,6 +4,7 @@ using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Compression;
 using Application.AI.Common.Interfaces.Context;
 using Application.AI.Common.Interfaces.MediatR;
+using Application.AI.Common.Services.Governance;
 using Domain.Common;
 using Domain.Common.Config.AI;
 using MediatR;
@@ -106,8 +107,6 @@ public sealed class ToolOutputCompressionBehavior<TRequest, TResponse>
             return response;
         }
 
-        var sessionId = _executionContext.ConversationId ?? "unknown";
-
         // This behavior runs BEFORE ResponseSanitizationBehavior (registered outer), so the
         // store write would otherwise persist raw, unsanitized tool output to disk — credentials
         // and tokens included — even when the sanitizer later blocks the response. Redact secrets
@@ -116,7 +115,40 @@ public sealed class ToolOutputCompressionBehavior<TRequest, TResponse>
         // Routed through ToolPayloadRedactor.Redact (not a bare `?? toolOutput`) so a redaction-contract
         // violation fails loudly instead of silently persisting the raw, unredacted output — the same
         // fail-closed rule this helper enforces at every other redaction boundary.
+        //
+        // /code-review finding, investigated and NOT changed: redactedOutput is redacted again,
+        // unconditionally, inside StoreIfLargeAsync below (FileSystemToolResultStore's third-revision
+        // fix). That second pass is deliberate defense in depth, not accidental duplication — the
+        // whole point of making the store's own redaction unconditional was "no gate for ANY caller to
+        // sit outside of, regardless of what it thinks it already did," specifically so a gap or
+        // misconfiguration in ONE redactor (ISecretRedactor here, DefaultContentRedactionFilter there)
+        // does not become a silent bypass. Skipping the store's pass for "already redacted" callers
+        // would reopen exactly the caller-trust-based gate this codebase spent multiple review rounds
+        // closing. The extra regex pass is the accepted cost of that guarantee, not a bug to fix.
         var redactedOutput = ToolPayloadRedactor.Redact(toolOutput, _secretRedactor);
+
+        var compressionResult = await _compressor.CompressAsync(
+            redactedOutput,
+            category: null,
+            _config.DefaultTokenThreshold,
+            cancellationToken);
+
+        // #559: a direct tool invocation mints a fresh, call-scoped ToolResultScopeId that dies with
+        // the call — nothing durable can ever ask for it again. Skip the write itself here too, the
+        // same guard ToolCallAdmissionPipeline.SpillAndBuildMarkerAsync applies — this sibling path
+        // was left open when that guard was added and would otherwise still persist an unreachable
+        // file on every compression on this path.
+        if (!_executionContext.HasRetrievableToolResultScope)
+            return ReplaceToolOutput(response, compressionResult.Output);
+
+        // The retrieval scope, not ConversationId — the same scope tool_result_fetch reads back with
+        // (IAgentExecutionContext.ToolResultScopeId), and never null by construction, so no "?? unknown"
+        // fallback is needed. Storing under a different key than retrieval reads from would silently
+        // make this behavior's spill unreachable even with a resolvable marker. Read here, after the
+        // guard above, rather than at the top of the method: ToolResultScopeId freezes on first read
+        // (#562) and a later Initialize with a differing scope throws, so a read that is then discarded
+        // by an early return is a coupling worth avoiding even though nothing reaches it today.
+        var sessionId = _executionContext.ToolResultScopeId;
 
         var reference = await _resultStore.StoreIfLargeAsync(
             sessionId,
@@ -125,13 +157,16 @@ public sealed class ToolOutputCompressionBehavior<TRequest, TResponse>
             redactedOutput,
             cancellationToken: cancellationToken);
 
-        var compressionResult = await _compressor.CompressAsync(
-            redactedOutput,
-            category: null,
-            _config.DefaultTokenThreshold,
-            cancellationToken);
-
-        var compressedWithRef = $"{compressionResult.Output}\n[Full output: result://{reference.ResultId}]";
+        // #561/correctness: StoreIfLargeAsync keeps small content inline (FullContentPath null, no
+        // file written) whenever redactedOutput is at or under PerResultCharLimit — reachable here
+        // because this behavior's OWN threshold is token-based (DefaultTokenThreshold, ~2000 tokens)
+        // and can trip well below that char limit. Appending the retrieval marker unconditionally, as
+        // an earlier version of this fix did, advertised an id tool_result_fetch could never resolve
+        // for every output in that band. Mirrors SpillAndBuildMarkerAsync's identical guard.
+        var compressedWithRef = reference.FullContentPath is null
+            ? compressionResult.Output
+            : compressionResult.Output
+                + string.Format(ToolCallAdmissionPipeline.SpilledResultMarkerFormat, reference.ResultId);
 
         _logger.LogInformation(
             "Compressed tool {ToolName} output from {OriginalTokens} to {CompressedTokens} tokens (strategy: {Strategy}, ref: {ResultId})",

@@ -380,17 +380,19 @@ public sealed class ToolCallAdmissionPipelineTests
     }
 
     [Fact]
-    public async Task ApplyOutputPolicy_OversizedText_SpilledCopyIsRedactedEvenOnThePlainAllowPath()
+    public async Task SpillAndBuildMarkerAsync_SpillsTheToolsOriginalOutput_UntouchedByThisPipeline()
     {
-        // #521 security finding: on a plain-allow call (RedactsOutput == false), the MODEL-facing text
-        // only goes through the injection sanitizer — IContentRedactionFilter only runs when the
-        // classification gate demanded it. But persisting to disk is a stronger exposure than showing
-        // the model its own tool's output, so the AT-REST spilled copy must be redacted regardless.
-        var redactionFilter = new Mock<IContentRedactionFilter>();
-        redactionFilter
-            .Setup(f => f.Redact(It.IsAny<string>(), It.Is<IReadOnlyList<Domain.AI.Telemetry.Redaction.RedactionCategory>>(c => c.Count > 0)))
-            .Returns("REDACTED-AT-REST");
-
+        // #563: the pipeline hands the store the RAW, untreated output — not sanitized, redacted, or
+        // cut — so the store can persist up to MaxSpillChars, far more than the scan-cost bound this
+        // pipeline cuts the MODEL-facing copy to. Security-review finding, third revision: the pipeline
+        // itself no longer makes any redaction decision for the spill at all (an earlier revision
+        // passed admission.RedactsOutput through to a redactBeforeStoring parameter that no longer
+        // exists) — IToolResultStore.StoreIfLargeAsync redacts everything it persists, unconditionally,
+        // on its own, which is exactly why a MOCKED store here (unlike the real
+        // FileSystemToolResultStore) never redacts anything: this test proves what the PIPELINE hands
+        // over, not what ends up on disk — see FileSystemToolResultStoreTests' own
+        // redactBeforeStoring-equivalent coverage for that half.
+        var originalText = new string('x', 5000);
         string? spilledText = null;
         var resultStore = new Mock<IToolResultStore>();
         resultStore
@@ -410,16 +412,114 @@ public sealed class ToolCallAdmissionPipelineTests
                     Timestamp = DateTimeOffset.UtcNow
                 });
 
+        var pipeline = AdmissionHarness.Pipeline(outputCeiling: 200, resultStore: resultStore.Object);
+
+        await pipeline.ApplyOutputPolicyAsync(
+            ToolCallAdmission.Allow(), Tool, originalText, CancellationToken.None);
+
+        spilledText.Should().Be(originalText,
+            "the stored copy must be the tool's original output, not sanitized, redacted, or cut — "
+            + "whatever happens to it before it lands on disk is the store's job, not this pipeline's");
+    }
+
+    [Fact]
+    public async Task SpillAndBuildMarkerAsync_WithNoRetrievableScope_WritesNoFileAndReturnsThePlainMarker()
+    {
+        // #559: a direct tool invocation mints a fresh, call-scoped ToolResultScopeId that dies with
+        // the call — nothing durable can ever ask the store for it again. Spilling anyway would still
+        // write an orphaned file to disk, forever, with zero retrieval benefit and a marker telling the
+        // model to fetch something it never can.
+        var resultStore = new Mock<IToolResultStore>();
         var pipeline = AdmissionHarness.Pipeline(
-            redactionFilter: redactionFilter.Object, outputCeiling: 200, resultStore: resultStore.Object);
+            outputCeiling: 200,
+            resultStore: resultStore.Object,
+            executionContext: AdmissionHarness.StubExecutionContext(hasRetrievableToolResultScope: false));
 
         var result = await pipeline.ApplyOutputPolicyAsync(
             ToolCallAdmission.Allow(), Tool, new string('x', 5000), CancellationToken.None);
 
-        spilledText.Should().Be("REDACTED-AT-REST",
-            "the spilled copy must be redacted even when the model-facing copy's own redaction decision was 'no'");
-        result.As<string>().Should().NotContain("REDACTED-AT-REST",
-            "redaction applies only to the at-rest copy — the model-facing text is unaffected");
+        result.As<string>().Should().Be(
+            new string('x', 200 - ToolCallAdmissionPipeline.OutputTruncationMarker.Length)
+                + ToolCallAdmissionPipeline.OutputTruncationMarker,
+            "no retrievable scope means the plain marker, never an id the model could never resolve");
+        resultStore.Verify(
+            s => s.StoreIfLargeAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string>(),
+                It.IsAny<int?>(), It.IsAny<CancellationToken>()),
+            Times.Never,
+            "the write itself must be skipped, not just the retrieval id");
+    }
+
+    [Fact]
+    public async Task ApplyOutputPolicy_OutputLargerThanTheScanCeiling_SpillsTheUntruncatedOriginal()
+    {
+        // #563: the core regression. Before this fix, the spilled copy had already been cut to the
+        // scan-cost bound (ceiling + ScrubOverlapMargin) by PreCutForScan, so tool_result_fetch could
+        // never return more than roughly that many characters no matter how large the tool's true
+        // output was — the "full output available" marker overpromised for anything past it. This test
+        // uses text well past that bound (ceiling 200 + margin 8192 = 8392) and proves the FULL original
+        // reaches the store now, not a copy already capped at the old scan-cost bound.
+        string? spilledText = null;
+        var resultStore = new Mock<IToolResultStore>();
+        resultStore
+            .Setup(s => s.StoreIfLargeAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string>(),
+                It.IsAny<int?>(), It.IsAny<CancellationToken>()))
+            .Callback<string, string, string?, string, int?, CancellationToken>((_, _, _, text, _, _) => spilledText = text)
+            .ReturnsAsync((string _, string toolName, string? operation, string fullOutput, int? _, CancellationToken _) =>
+                new ToolResultReference
+                {
+                    ResultId = Guid.NewGuid().ToString("N"),
+                    ToolName = toolName,
+                    Operation = operation,
+                    PreviewContent = fullOutput,
+                    FullContentPath = "/fake/persisted.json",
+                    SizeChars = fullOutput.Length,
+                    Timestamp = DateTimeOffset.UtcNow
+                });
+
+        var originalText = new string('x', 20_000);
+        var pipeline = AdmissionHarness.Pipeline(outputCeiling: 200, resultStore: resultStore.Object);
+
+        await pipeline.ApplyOutputPolicyAsync(ToolCallAdmission.Allow(), Tool, originalText, CancellationToken.None);
+
+        spilledText.Should().Be(originalText,
+            "the full 20,000-char original must reach the store, not a copy already cut to the "
+            + "200+8192-char scan-cost bound");
+    }
+
+    [Fact]
+    public async Task TryApplyTextOutputPolicy_OutputLargerThanTheScanCeiling_SpillsTheUntruncatedOriginal()
+    {
+        // #563: the identical regression on the text-shaped overload — see ApplyOutputPolicy's sibling
+        // test above for the full rationale.
+        string? spilledText = null;
+        var resultStore = new Mock<IToolResultStore>();
+        resultStore
+            .Setup(s => s.StoreIfLargeAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string>(),
+                It.IsAny<int?>(), It.IsAny<CancellationToken>()))
+            .Callback<string, string, string?, string, int?, CancellationToken>((_, _, _, text, _, _) => spilledText = text)
+            .ReturnsAsync((string _, string toolName, string? operation, string fullOutput, int? _, CancellationToken _) =>
+                new ToolResultReference
+                {
+                    ResultId = Guid.NewGuid().ToString("N"),
+                    ToolName = toolName,
+                    Operation = operation,
+                    PreviewContent = fullOutput,
+                    FullContentPath = "/fake/persisted.json",
+                    SizeChars = fullOutput.Length,
+                    Timestamp = DateTimeOffset.UtcNow
+                });
+
+        var originalText = new string('x', 20_000);
+        var pipeline = AdmissionHarness.Pipeline(outputCeiling: 200, resultStore: resultStore.Object);
+
+        await pipeline.TryApplyTextOutputPolicyAsync(ToolCallAdmission.Allow(), Tool, originalText, CancellationToken.None);
+
+        spilledText.Should().Be(originalText,
+            "the full 20,000-char original must reach the store, not a copy already cut to the "
+            + "200+8192-char scan-cost bound");
     }
 
     [Fact]

@@ -51,7 +51,10 @@ public sealed class ToolCallAdmissionPipelineAggregateBudgetCompositionTests
 
             using var requestScope = provider.CreateScope();
             var executionContext = requestScope.ServiceProvider.GetRequiredService<IAgentExecutionContext>();
-            executionContext.Initialize(agentId: "test-agent", conversationId: "conv-1", turnNumber: 1);
+            // #559: callOnceScopeId supplied, matching AgentContextPropagationBehavior's real call shape
+            // — without it, HasRetrievableToolResultScope is false and this call spills nothing at all.
+            executionContext.Initialize(
+                agentId: "test-agent", conversationId: "conv-1", turnNumber: 1, callOnceScopeId: "conv-1");
 
             var pipeline = requestScope.ServiceProvider.GetRequiredService<IToolCallAdmissionPipeline>();
             // Cycling plain English words, no digits or punctuation shapes: varied enough that the real
@@ -75,8 +78,21 @@ public sealed class ToolCallAdmissionPipelineAggregateBudgetCompositionTests
 
             var resultId = marker[(marker.LastIndexOf("id=", StringComparison.Ordinal) + 3)..].TrimEnd(']');
             var resultStore = requestScope.ServiceProvider.GetRequiredService<IToolResultStore>();
-            var retrieved = await resultStore.RetrieveFullContentAsync(
-                resultId, executionContext.ToolResultScopeId, CancellationToken.None);
+
+            // #563: retrieval is now paged, not a single whole-file read — walk every page so this test
+            // still proves the fix's whole point end to end: content cut purely by the aggregate budget
+            // must be fully recoverable via tool_result_fetch, exactly as content cut by the per-result
+            // ceiling already was, one page at a time.
+            var retrieved = "";
+            var offset = 0;
+            while (true)
+            {
+                var page = await resultStore.RetrievePageAsync(
+                    resultId, executionContext.ToolResultScopeId, offset, maxChars: 5_000, CancellationToken.None);
+                retrieved += page.Text;
+                if (!page.HasMore) break;
+                offset = page.NextOffset;
+            }
 
             retrieved.Should().Be(originalText,
                 "the fix's whole point: content cut purely by the aggregate budget must still be fully "
