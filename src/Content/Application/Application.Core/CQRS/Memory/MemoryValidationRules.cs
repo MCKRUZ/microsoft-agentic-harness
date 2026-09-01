@@ -21,7 +21,13 @@ public static class MemoryValidationRules
     /// control characters are excluded for the same id-hygiene reason. Must start with a letter
     /// or digit so ids stay unambiguous after the scope prefix.
     /// </summary>
-    public const string KeyPattern = "^[A-Za-z0-9][A-Za-z0-9._-]*$";
+    /// <remarks>
+    /// #576: anchored with <c>\A</c>/<c>\z</c>, not <c>^</c>/<c>$</c> — <c>$</c> in .NET regex matches
+    /// immediately before a trailing <c>'\n'</c> as well as at the true end of the string, so a
+    /// caller-supplied key ending in a newline would otherwise pass despite this doc's own claim that
+    /// control characters are excluded. <c>\A</c>/<c>\z</c> match only the absolute start/end.
+    /// </remarks>
+    public const string KeyPattern = @"\A[A-Za-z0-9][A-Za-z0-9._-]*\z";
 
     /// <summary>
     /// Maximum accepted fact content size in characters (32 KB). Large enough for any realistic
@@ -38,7 +44,8 @@ public static class MemoryValidationRules
     /// The entity type becomes the graph node's <c>Type</c> and participates in type-filtered
     /// queries, so it gets the same id-hygiene treatment as the key.
     /// </summary>
-    public const string EntityTypePattern = "^[A-Za-z][A-Za-z0-9_-]*$";
+    /// <remarks>#576: <c>\A</c>/<c>\z</c> anchoring — see <see cref="KeyPattern"/>'s identical remark.</remarks>
+    public const string EntityTypePattern = @"\A[A-Za-z][A-Za-z0-9_-]*\z";
 
     /// <summary>Maximum accepted recall query length.</summary>
     public const int MaxQueryLength = 1024;

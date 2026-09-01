@@ -129,7 +129,7 @@ public sealed class ToolOutputCompressionBehaviorTests
 
         var reference = Reference("ref-123", "preview...", "/fake/persisted.json");
 
-        _resultStore.Setup(x => x.StoreIfLargeAsync("session-1", "test_tool", null, largeOutput, It.IsAny<int?>(), It.IsAny<CancellationToken>()))
+        _resultStore.Setup(x => x.StoreIfLargeAsync("session-1", "test_tool", null, largeOutput, true, It.IsAny<int?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(reference);
 
         _compressor.Setup(x => x.CompressAsync(largeOutput, null, 2000, It.IsAny<CancellationToken>()))
@@ -151,7 +151,7 @@ public sealed class ToolOutputCompressionBehaviorTests
             result.Value!.ToolOutput);
 
         _resultStore.Verify(
-            x => x.StoreIfLargeAsync("session-1", "test_tool", null, largeOutput, It.IsAny<int?>(), It.IsAny<CancellationToken>()),
+            x => x.StoreIfLargeAsync("session-1", "test_tool", null, largeOutput, true, It.IsAny<int?>(), It.IsAny<CancellationToken>()),
             Times.Once);
         _compressor.Verify(
             x => x.CompressAsync(largeOutput, null, 2000, It.IsAny<CancellationToken>()),
@@ -169,7 +169,7 @@ public sealed class ToolOutputCompressionBehaviorTests
 
         var reference = Reference("ref-789", "preview...", "/fake/persisted.json");
 
-        _resultStore.Setup(x => x.StoreIfLargeAsync("session-1", "test_tool", null, largeOutput, It.IsAny<int?>(), It.IsAny<CancellationToken>()))
+        _resultStore.Setup(x => x.StoreIfLargeAsync("session-1", "test_tool", null, largeOutput, true, It.IsAny<int?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(reference);
         _compressor.Setup(x => x.CompressAsync(largeOutput, null, 2000, It.IsAny<CancellationToken>()))
             .ReturnsAsync(Compressed());
@@ -201,7 +201,7 @@ public sealed class ToolOutputCompressionBehaviorTests
 
         var reference = Reference("ref-inline", largeOutput, fullContentPath: null);
 
-        _resultStore.Setup(x => x.StoreIfLargeAsync("session-1", "test_tool", null, largeOutput, It.IsAny<int?>(), It.IsAny<CancellationToken>()))
+        _resultStore.Setup(x => x.StoreIfLargeAsync("session-1", "test_tool", null, largeOutput, true, It.IsAny<int?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(reference);
         _compressor.Setup(x => x.CompressAsync(largeOutput, null, 2000, It.IsAny<CancellationToken>()))
             .ReturnsAsync(Compressed());
@@ -240,7 +240,7 @@ public sealed class ToolOutputCompressionBehaviorTests
         _resultStore.Verify(
             x => x.StoreIfLargeAsync(
                 It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string>(),
-                It.IsAny<int?>(), It.IsAny<CancellationToken>()),
+                It.IsAny<bool>(), It.IsAny<int?>(), It.IsAny<CancellationToken>()),
             Times.Never,
             "the write itself must be skipped, not just the retrieval id");
     }
@@ -272,7 +272,7 @@ public sealed class ToolOutputCompressionBehaviorTests
 
         var reference = Reference("ref-456", "preview...");
 
-        _resultStore.Setup(x => x.StoreIfLargeAsync("session-1", "test_tool", null, largeOutput, It.IsAny<int?>(), It.IsAny<CancellationToken>()))
+        _resultStore.Setup(x => x.StoreIfLargeAsync("session-1", "test_tool", null, largeOutput, true, It.IsAny<int?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(reference);
 
         _compressor.Setup(x => x.CompressAsync(largeOutput, null, 2000, It.IsAny<CancellationToken>()))

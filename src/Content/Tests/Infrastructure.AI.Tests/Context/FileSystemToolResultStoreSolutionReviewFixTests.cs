@@ -4,6 +4,7 @@ using FluentAssertions;
 using Infrastructure.AI.Context;
 using Infrastructure.AI.Telemetry.Redaction;
 using Infrastructure.AI.Tests.Planner.StepExecutors;
+using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Moq;
@@ -44,6 +45,7 @@ public sealed class FileSystemToolResultStoreSolutionReviewFixTests : IDisposabl
             monitor.Object,
             PermissiveAdmission.PermissiveSanitizer(),
             new DefaultContentRedactionFilter(),
+            new MemoryCache(new MemoryCacheOptions()),
             Mock.Of<ILogger<FileSystemToolResultStore>>());
     }
 
@@ -55,7 +57,7 @@ public sealed class FileSystemToolResultStoreSolutionReviewFixTests : IDisposabl
         // A large output forces the disk-write path where the traversal would occur.
         var largeOutput = new string('x', 200);
 
-        var act = () => _sut.StoreIfLargeAsync(sessionId, "tool", null, largeOutput);
+        var act = () => _sut.StoreIfLargeAsync(sessionId, "tool", null, largeOutput, scopeIsRetrievable: true);
 
         await act.Should().ThrowAsync<ArgumentException>()
             .WithParameterName("sessionId");
@@ -69,7 +71,7 @@ public sealed class FileSystemToolResultStoreSolutionReviewFixTests : IDisposabl
     {
         var largeOutput = new string('x', 200);
 
-        var act = () => _sut.StoreIfLargeAsync(sessionId, "tool", null, largeOutput);
+        var act = () => _sut.StoreIfLargeAsync(sessionId, "tool", null, largeOutput, scopeIsRetrievable: true);
 
         await act.Should().ThrowAsync<ArgumentException>()
             .WithParameterName("sessionId");
@@ -82,7 +84,7 @@ public sealed class FileSystemToolResultStoreSolutionReviewFixTests : IDisposabl
 
         try
         {
-            await _sut.StoreIfLargeAsync("..", "tool", null, largeOutput);
+            await _sut.StoreIfLargeAsync("..", "tool", null, largeOutput, scopeIsRetrievable: true);
         }
         catch (ArgumentException)
         {
@@ -100,7 +102,8 @@ public sealed class FileSystemToolResultStoreSolutionReviewFixTests : IDisposabl
     {
         var largeOutput = new string('y', 200);
 
-        var result = await _sut.StoreIfLargeAsync("session-abc_123", "tool", null, largeOutput);
+        var result = await _sut.StoreIfLargeAsync(
+            "session-abc_123", "tool", null, largeOutput, scopeIsRetrievable: true);
 
         result.FullContentPath.Should().NotBeNullOrWhiteSpace();
         Path.GetFullPath(result.FullContentPath!)

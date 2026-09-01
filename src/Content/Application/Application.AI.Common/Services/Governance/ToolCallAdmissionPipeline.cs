@@ -483,6 +483,41 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
             return bounded;
         }
 
+        // #577: `dropped` above reflects TREATED (sanitized/redacted) length crossing effectiveCeiling —
+        // but sanitizing and redacting only ever grow text (a secret becomes a longer placeholder), and
+        // FileSystemToolResultStore.StoreIfLargeAsync decides inline-vs-spill from RAW length against
+        // this same ceiling. A result whose raw length was already at or under the ceiling can still
+        // trip `dropped` here purely from that inflation, even though the store would have kept the
+        // very same content inline with no spill needed — spilling it anyway and promising a retrieval
+        // id is dishonest about why the call needed one at all.
+        //
+        // Correctness-review finding on the first cut of this fix: it returned `treated` UNCUT, which
+        // can genuinely exceed effectiveCeiling (that is exactly why `dropped` fired) and broke
+        // SettleAggregateReservation's own documented contract that actualLength never exceeds what was
+        // reserved — passing a larger actualLength doesn't overcharge the tracker, it silently UNDER-
+        // charges it (`unused = reserved - actualLength` goes negative, and the `unused <= 0` guard
+        // no-ops instead of debiting the overage), letting a later call in the same turn see more of
+        // AggregatePerMessageCharLimit than it should. The per-message ceiling is a hard resource bound
+        // and #577 was never about relaxing it — only about not promising a fetch nothing will improve.
+        // `bounded` (computed above, already correctly capped to effectiveCeiling with the plain,
+        // non-retrieval marker) is the right text either way: same answer as the "nothing was truncated"
+        // branch above, just reached from a different guard.
+        //
+        // Also only worth checking when a real spill could actually happen: when the scope isn't
+        // retrievable, SpillAndBuildMarkerAsync (below) already degrades to the plain
+        // OutputTruncationMarker with no disk write — identical to `bounded` — so there is no false
+        // promise to correct on that path, and evaluating ExtractText(result) here would be pure waste
+        // on exactly the path its own factory-laziness (see that method's remarks) exists to avoid
+        // paying for.
+        var rawFullTextCache = (string?)null;
+        string RawFullText() => rawFullTextCache ??= ToolResultText.ExtractText(result);
+
+        if (_executionContext.HasRetrievableToolResultScope && RawFullText().Length <= effectiveCeiling)
+        {
+            SettleAggregateReservation(effectiveCeiling, ToolResultText.ExtractText(bounded).Length);
+            return bounded;
+        }
+
         // #563: the ORIGINAL result — before the scan-cost pre-cut, before sanitize/redact — is what
         // gets spilled, not `treated`. Spilling treated (as before #563) meant the stored copy was
         // already cut to the scan-cost bound (ceiling + ScrubOverlapMargin), so tool_result_fetch could
@@ -500,8 +535,10 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
         // content, regressing the unconditional at-rest redaction this store always did before #563).
         // See StoreIfLargeAsync's own remarks for the full history and why unconditional is what
         // finally closes both bypasses at once.
-        var marker = await SpillAndBuildMarkerAsync(
-            toolName, () => ToolResultText.ExtractText(result), effectiveCeiling)
+        //
+        // RawFullText, not a fresh closure, so a scope-retrievable call that already computed it above
+        // for the #577 check does not walk-and-rejoin every block of `result` a second time.
+        var marker = await SpillAndBuildMarkerAsync(toolName, RawFullText, effectiveCeiling)
             .ConfigureAwait(false);
         var (reboundedWithId, _) = ToolResultText.Bound(treated, effectiveCeiling, marker);
 
@@ -613,6 +650,47 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
         // remains — this cut's own flag alone would under-report what was actually lost (#487/#493,
         // the same reasoning DirectToolInvoker's now-retired ScrubAndBound used to carry by hand).
         var wasTruncated = droppedByPreCut || cutAfterProcessing;
+
+        // #577: same fix as ApplyOutputPolicyAsync's identical comment — cutAfterProcessing alone can
+        // fire purely from sanitize/redact inflation even when the untreated `content` already fit
+        // under effectiveCeiling, disagreeing with FileSystemToolResultStore.StoreIfLargeAsync's own
+        // raw-length-based inline decision. Spilling and promising a retrieval id in that case is
+        // dishonest about why the call needed one at all.
+        //
+        // Correctness-review finding on the first cut of this fix (same defect as ApplyOutputPolicyAsync's
+        // identical corrected comment): it returned `processed` UNCUT, which can genuinely exceed
+        // effectiveCeiling and silently under-charges SettleAggregateReservation's aggregate ledger
+        // (`unused = reserved - actualLength` goes negative and the `unused <= 0` guard no-ops rather
+        // than debiting the overage). `bounded` — already correctly capped, computed above — is the
+        // right text either way.
+        //
+        // The `!droppedByPreCut` conjunct that used to gate this is provably redundant, not merely
+        // simplifiable: effectiveCeiling <= ceiling (ReserveAggregateCeiling's Math.Max/Math.Min both
+        // cap at perResultCeiling) < ceiling + ScrubOverlapMargin (the pre-cut's own threshold), so
+        // content.Length <= effectiveCeiling already implies content.Length is under the pre-cut's
+        // threshold too — droppedByPreCut cannot be true when this branch's own length check passes.
+        // Also only checked when a real spill could actually happen: when the scope isn't retrievable,
+        // SpillAndBuildMarkerAsync (below) already degrades to the plain marker with no disk write —
+        // identical to `bounded` — so there is no false promise to correct on that path.
+        var rawFitsWithNoGenuinePromiseToMake =
+            cutAfterProcessing && content is not null && content.Length <= effectiveCeiling
+            && _executionContext.HasRetrievableToolResultScope;
+
+        // Correctness-review finding on the SECOND cut of this fix: folding this case into the SAME
+        // branch as `!wasTruncated` below and reporting WasTruncated: false was itself wrong — `bounded`
+        // genuinely IS shorter than `processed` here (cutAfterProcessing is true by construction of
+        // this branch's own guard). WasTruncated's contract (see its own XML doc on
+        // TextOutputPolicyResult) is "did the pipeline cut the text to fit its ceiling", full stop — it
+        // says nothing about whether a retrieval id was offered, and DirectToolInvoker publishes it as
+        // an OutputTruncated signal independent of any marker text embedded in Result. Only the
+        // RETRIEVAL PROMISE is what #577 has any business suppressing here, not the truncation fact
+        // itself — caught because CI's correctness-review gate re-derives its own verdict from the
+        // code, not from what a comment claims.
+        if (rawFitsWithNoGenuinePromiseToMake)
+        {
+            SettleAggregateReservation(effectiveCeiling, bounded.Length);
+            return new TextOutputPolicyResult(Success: true, Result: bounded, WasTruncated: true);
+        }
 
         if (!wasTruncated)
         {
@@ -761,6 +839,7 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
             var reference = await _resultStore
                 .StoreIfLargeAsync(
                     _executionContext.ToolResultScopeId, toolName, operation: null, rawFullText,
+                    scopeIsRetrievable: _executionContext.HasRetrievableToolResultScope,
                     sizeThreshold: sizeThreshold, CancellationToken.None)
                 .ConfigureAwait(false);
 

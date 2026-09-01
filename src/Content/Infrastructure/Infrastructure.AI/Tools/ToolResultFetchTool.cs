@@ -2,6 +2,7 @@ using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Context;
 using Application.AI.Common.Interfaces.Tools;
+using Application.AI.Common.Services.Tools;
 using Domain.AI.Changes;
 using Domain.AI.Models;
 using Domain.AI.Sandbox;
@@ -178,10 +179,11 @@ public sealed class ToolResultFetchTool : ITool
             return ToolResult.Fail("A non-empty 'resultId' parameter is required.");
         }
 
-        if (!TryGetOffset(parameters, out var offset))
+        if (!ToolParameters.TryGetOptionalInt(parameters, "offset", out var offsetOrNull, min: 0))
         {
             return ToolResult.Fail("The 'offset' parameter, when supplied, must be a non-negative integer.");
         }
+        var offset = offsetOrNull ?? 0;
 
         // Resolved here, not at construction — this instance is a process-lifetime singleton and the
         // execution context is scoped to the calling request. See this type's own remarks for why.
@@ -243,37 +245,5 @@ public sealed class ToolResultFetchTool : ITool
             _logger.LogWarning(ex, "Failed to retrieve tool result {ResultId}", resultId);
             return ToolResult.Fail($"No stored result found for id '{resultId}'.");
         }
-    }
-
-    /// <summary>
-    /// Parses the optional, model-supplied <c>offset</c> parameter. Missing means "start from the
-    /// beginning" (<c>0</c>); present but not a well-formed non-negative integer is refused outright
-    /// rather than silently treated as omitted — a model that got the offset wrong should be told so,
-    /// not have its request silently restarted from the beginning.
-    /// </summary>
-    private static bool TryGetOffset(IReadOnlyDictionary<string, object?> parameters, out int offset)
-    {
-        if (!parameters.TryGetValue("offset", out var raw) || raw is null)
-        {
-            offset = 0;
-            return true;
-        }
-
-        var parsed = raw switch
-        {
-            int i => i,
-            long l and >= 0 and <= int.MaxValue => (int)l,
-            string s when int.TryParse(s, out var fromString) => fromString,
-            _ => (int?)null
-        };
-
-        if (parsed is not { } value || value < 0)
-        {
-            offset = 0;
-            return false;
-        }
-
-        offset = value;
-        return true;
     }
 }

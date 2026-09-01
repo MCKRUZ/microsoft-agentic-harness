@@ -121,6 +121,7 @@ public class SecureInputValidatorHelperTests
     [InlineData("has spaces")]
     [InlineData("special@char")]
     [InlineData("path/slash")]
+    [InlineData("agent-1\n")] // #576: trailing newline — '$' matches before it, \A/\z do not
     public void ValidateIdentifier_InvalidChars_ReturnsFalse(string id)
     {
         SecureInputValidatorHelper.ValidateIdentifier(id).Should().BeFalse();

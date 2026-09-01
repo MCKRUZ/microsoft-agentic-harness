@@ -18,6 +18,7 @@ using Application.AI.Common.Interfaces.Routing;
 using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Interfaces.Traces;
 using Application.Common.Factories;
+using Microsoft.Extensions.Caching.Memory;
 using Domain.Common.Config;
 using Domain.Common.Workflow;
 using Infrastructure.AI.Agents;
@@ -108,6 +109,18 @@ public static partial class DependencyInjection
 
         // Execution trace store — filesystem-backed per-run trace artifact persistence
         services.AddSingleton<IExecutionTraceStore, FileSystemExecutionTraceStore>();
+
+        // Security-review finding (#574): the page-fetch cache below must NOT be the ambient app-wide
+        // IMemoryCache (AgentConversationCache and any future consumer also share that instance) — a
+        // dedicated, size-bounded cache confines the blast radius of a pathological fetch pattern to
+        // this one store instead of competing for an unbounded shared pool. SizeLimit is in CHARACTERS
+        // (the same unit RetrievePageAsync sets as each entry's Size), not bytes; sized to comfortably
+        // hold several concurrent full-size spills (MaxSpillChars defaults to 5,000,000) without
+        // letting a model-driven fetch loop across many distinct (scopeId, resultId) pairs pin an
+        // unbounded amount of managed memory for the cache's 5-minute sliding window.
+        services.AddKeyedSingleton<IMemoryCache>(
+            "tool-result-page-cache",
+            (_, _) => new MemoryCache(new MemoryCacheOptions { SizeLimit = 50_000_000 }));
 
         // Tool result store — used by ToolCallAdmissionPipeline and ToolOutputCompressionBehavior to
         // off-load large tool results so they don't dominate the context window. Filesystem-backed by

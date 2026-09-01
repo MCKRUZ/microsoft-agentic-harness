@@ -215,16 +215,28 @@ public sealed class DocumentSearchTool : ITool
             ? s
             : null;
 
+    /// <summary>
+    /// Reads an optional positive integer parameter (currently only <c>top_k</c>), routed through the
+    /// shared <see cref="ToolParameters.TryGetOptionalInt"/> coercion (#575).
+    /// </summary>
+    /// <remarks>
+    /// A previous private copy of this coercion did an unchecked <c>(int)someLong</c> narrowing cast,
+    /// silently wrapping an out-of-range value (e.g. <c>3_000_000_000</c>) into an unrelated, possibly
+    /// negative <see langword="int"/> instead of refusing it — the shared helper range-checks before
+    /// narrowing. Throwing <see cref="ArgumentException"/> on a malformed value, rather than returning
+    /// <see langword="null"/> the way the old private copy did, matches <see cref="GetRequiredString"/>'s
+    /// existing convention in this file: <see cref="ExecuteAsync"/>'s own catch already converts it to
+    /// a <c>ToolResult.Fail</c>, so a caller that got <c>top_k</c> wrong is told so, not silently given
+    /// the orchestrator's default.
+    /// </remarks>
     private static int? GetOptionalInt(IReadOnlyDictionary<string, object?> parameters, string key)
     {
-        if (!parameters.TryGetValue(key, out var value)) return null;
-        return value switch
+        if (!ToolParameters.TryGetOptionalInt(parameters, key, out var value, min: 1))
         {
-            int i => i,
-            long l => (int)l,
-            string s when int.TryParse(s, out var parsed) => parsed,
-            _ => null
-        };
+            throw new ArgumentException($"Parameter '{key}' must be a positive integer.");
+        }
+
+        return value;
     }
 
     private static readonly JsonSerializerOptions JsonOptions = new()

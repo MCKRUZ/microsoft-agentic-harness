@@ -84,7 +84,8 @@ public sealed class ToolResultFetchToolCompositionTests
             // clean through the real detector while still exceeding this fixture's spill threshold.
             var storedText = string.Concat(Enumerable.Repeat("The quick brown fox jumps over lazy dogs. ", 5));
             var stored = await resultStore.StoreIfLargeAsync(
-                executionContext.ToolResultScopeId, "some_tool", operation: null, storedText);
+                executionContext.ToolResultScopeId, "some_tool", operation: null, storedText,
+                scopeIsRetrievable: true);
             stored.FullContentPath.Should().NotBeNull(
                 "the test setup itself must actually spill to disk, or this proves nothing");
 
