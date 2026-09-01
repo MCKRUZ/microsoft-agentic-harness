@@ -483,6 +483,24 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
             return bounded;
         }
 
+        // #577: `dropped` above reflects TREATED (sanitized/redacted) length crossing effectiveCeiling —
+        // but sanitizing and redacting only ever grow text (a secret becomes a longer placeholder), and
+        // FileSystemToolResultStore.StoreIfLargeAsync decides inline-vs-spill from RAW length against
+        // this same ceiling. A result whose raw length was already at or under the ceiling can still
+        // trip `dropped` here purely from that inflation, even though the store would have kept the
+        // very same content inline with no spill needed. Left uncorrected, the model is told this
+        // result was truncated and needs a retrieval id, when the smaller raw content was in fact
+        // already available in full — fail-safe (the marker still resolves, since the store spills
+        // unconditionally once asked) but not honest about why. Measure the SAME signal the store uses
+        // before committing to a spill: if raw fits, return the full treated text uncut, no marker,
+        // matching exactly what the store's own inline decision would have been.
+        var rawLength = ToolResultText.ExtractText(result).Length;
+        if (rawLength <= effectiveCeiling)
+        {
+            SettleAggregateReservation(effectiveCeiling, ToolResultText.ExtractText(treated).Length);
+            return treated;
+        }
+
         // #563: the ORIGINAL result — before the scan-cost pre-cut, before sanitize/redact — is what
         // gets spilled, not `treated`. Spilling treated (as before #563) meant the stored copy was
         // already cut to the scan-cost bound (ceiling + ScrubOverlapMargin), so tool_result_fetch could
@@ -613,6 +631,18 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
         // remains — this cut's own flag alone would under-report what was actually lost (#487/#493,
         // the same reasoning DirectToolInvoker's now-retired ScrubAndBound used to carry by hand).
         var wasTruncated = droppedByPreCut || cutAfterProcessing;
+
+        // #577: same fix as ApplyOutputPolicyAsync's identical comment — cutAfterProcessing alone can
+        // fire purely from sanitize/redact inflation even when the untreated `content` already fit
+        // under effectiveCeiling, disagreeing with FileSystemToolResultStore.StoreIfLargeAsync's own
+        // raw-length-based inline decision. Guarded on !droppedByPreCut: a drop at the much wider
+        // scan-cost pre-cut means raw content genuinely exceeded ceiling+ScrubOverlapMargin, so there is
+        // no ambiguity to resolve in that case — a spill is genuinely needed.
+        if (wasTruncated && !droppedByPreCut && content is not null && content.Length <= effectiveCeiling)
+        {
+            SettleAggregateReservation(effectiveCeiling, processed.Length);
+            return new TextOutputPolicyResult(Success: true, Result: processed, WasTruncated: false);
+        }
 
         if (!wasTruncated)
         {
@@ -761,6 +791,7 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
             var reference = await _resultStore
                 .StoreIfLargeAsync(
                     _executionContext.ToolResultScopeId, toolName, operation: null, rawFullText,
+                    scopeIsRetrievable: _executionContext.HasRetrievableToolResultScope,
                     sizeThreshold: sizeThreshold, CancellationToken.None)
                 .ConfigureAwait(false);
 

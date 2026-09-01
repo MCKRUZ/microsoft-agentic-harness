@@ -72,6 +72,18 @@ public sealed class RunBundleCommandValidatorTests
     }
 
     [Fact]
+    public void Validate_ConversationIdWithTrailingNewline_IsRejected()
+    {
+        // #576: distinct from "conv\n1" above (an EMBEDDED newline, already rejected because '\n' is
+        // outside the charset regardless of anchoring). A TRAILING newline is the anchor-specific bug:
+        // '$' in .NET regex matches immediately before a trailing '\n' as well as at the true end of
+        // the string, so "^[A-Za-z0-9_-]+$" previously accepted "conv-1\n" as if the newline were not
+        // there at all. \A/\z match only the absolute start/end.
+        _validator.Validate(Command("conv-1\n")).IsValid.Should().BeFalse(
+            "a trailing newline must not be silently accepted by the '$' anchor");
+    }
+
+    [Fact]
     public void Validate_ConversationIdAtTheLengthLimit_IsValid()
     {
         var id = new string('a', RunBundleCommandValidator.MaxConversationIdLength);

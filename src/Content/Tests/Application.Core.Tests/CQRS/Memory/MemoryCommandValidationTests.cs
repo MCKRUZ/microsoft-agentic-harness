@@ -39,6 +39,7 @@ public sealed class MemoryCommandValidationTests
     [InlineData("bad\tkey")]
     [InlineData("-leading-dash")] // must start with a letter or digit
     [InlineData("änderung")]      // outside the ASCII-safe charset
+    [InlineData("favorite-color\n")] // #576: trailing newline — '$' matches before it, \A/\z do not
     public void Remember_BadKey_HasError(string key)
         => _rememberValidator.TestValidate(Remember(key: key))
             .ShouldHaveValidationErrorFor(x => x.Key);
@@ -72,6 +73,7 @@ public sealed class MemoryCommandValidationTests
     [InlineData("")]
     [InlineData("1Fact")]        // must start with a letter
     [InlineData("Fact Type")]    // whitespace
+    [InlineData("Fact\n")]       // #576: trailing newline — see Remember_BadKey_HasError's identical case
     public void Remember_BadEntityType_HasError(string entityType)
         => _rememberValidator.TestValidate(Remember(entityType: entityType))
             .ShouldHaveValidationErrorFor(x => x.EntityType);
@@ -114,6 +116,7 @@ public sealed class MemoryCommandValidationTests
     [InlineData("")]
     [InlineData("bad:key")]
     [InlineData("bad key")]
+    [InlineData("favorite-color\n")] // #576: trailing newline — see Remember_BadKey_HasError's identical case
     public void Forget_BadKey_HasError(string key)
         => _forgetValidator.TestValidate(new ForgetMemoryCommand { Key = key })
             .ShouldHaveValidationErrorFor(x => x.Key);

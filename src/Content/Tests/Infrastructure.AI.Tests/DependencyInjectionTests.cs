@@ -50,6 +50,10 @@ public sealed class DependencyInjectionTests
         // Infrastructure.AI.Governance's own DI module, called separately in the real composition
         // root — mirror that here, same as IMcpSecurityScanner above.
         services.AddSingleton(PermissiveAdmission.PermissiveSanitizer());
+        // FileSystemToolResultStore also depends on IMemoryCache (#574's page-fetch cache) —
+        // the real composition root registers this via Application.AI.Common's own DI module,
+        // called separately from AddInfrastructureAIDependencies — mirror that here too.
+        services.AddMemoryCache();
         services.AddSingleton<ISender>(new Mock<ISender>().Object);
         services.AddKnowledgeGraphDependencies(config);
 

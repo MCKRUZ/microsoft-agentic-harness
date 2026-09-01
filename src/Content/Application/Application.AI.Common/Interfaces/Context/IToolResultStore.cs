@@ -17,6 +17,17 @@ public interface IToolResultStore
     /// <param name="toolName">The name of the tool that produced the result.</param>
     /// <param name="operation">The specific operation within the tool, if applicable.</param>
     /// <param name="fullOutput">The complete tool output to evaluate and potentially store.</param>
+    /// <param name="scopeIsRetrievable">
+    /// Whether <paramref name="sessionId"/> is durable enough that a later call could plausibly fetch a
+    /// spilled result back — <see cref="Agent.IAgentExecutionContext.HasRetrievableToolResultScope"/> in
+    /// production (#575). Deliberately required, with no default: <see cref="StoreIfLargeAsync"/> is the
+    /// single place large-result decisions are made, so every caller must state this explicitly rather
+    /// than the store silently assuming a permissive default a future caller forgot to override. When
+    /// <see langword="false"/>, this method writes no file — the same short-circuit two production
+    /// callers already implemented independently before this parameter existed (#559) — and returns the
+    /// same "kept inline" shape it would for content under the size threshold, since nothing could ever
+    /// fetch a spilled file back regardless of size.
+    /// </param>
     /// <param name="sizeThreshold">
     /// The size, in characters, above which <paramref name="fullOutput"/> must be persisted — compared
     /// in place of the store's own configured size limit when supplied. A caller that already cut
@@ -64,6 +75,7 @@ public interface IToolResultStore
         string toolName,
         string? operation,
         string fullOutput,
+        bool scopeIsRetrievable,
         int? sizeThreshold = null,
         CancellationToken cancellationToken = default);
 

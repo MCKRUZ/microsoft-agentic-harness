@@ -6,6 +6,7 @@ using Domain.AI.Context;
 using Domain.AI.Telemetry.Redaction;
 using Domain.Common.Config;
 using Domain.Common.Helpers;
+using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -35,9 +36,24 @@ public sealed class FileSystemToolResultStore : IToolResultStore
     // but the same margin comfortably exceeds every pattern DefaultContentRedactionFilter matches.
     private const int RedactionScanMargin = 8 * 1024;
 
+    // #574: how long a page-fetch sequence's decoded file content stays cached after its most recent
+    // page read, so walking every page of one spilled result costs one disk read instead of one per
+    // page — see RetrievePageAsync's own remarks for the O(fileSize^2) cost this closes. Sized against
+    // realistic back-to-back pagination (a model fetching the next page of the same result within a
+    // few turns), not against how long a result stays retrievable at all — ToolResultRetentionConfig's
+    // GracePeriod already governs that, and this is strictly shorter than it, so a cache miss always
+    // falls back to a fresh, correct disk read rather than ever serving content past that window.
+    // Mirrors AgentConversationCache's identical sliding-expiration shape for the same reason: an
+    // IMemoryCache entry with no activity should give its memory back rather than pin a potentially
+    // multi-megabyte string forever.
+    private static readonly TimeSpan PageCacheSlidingExpiration = TimeSpan.FromMinutes(5);
+
+    private static string PageCacheKey(string scopeId, string resultId) => $"{scopeId}::{resultId}::content";
+
     private readonly IOptionsMonitor<AppConfig> _options;
     private readonly ICompositeResponseSanitizer _sanitizer;
     private readonly IContentRedactionFilter _redactionFilter;
+    private readonly IMemoryCache _pageCache;
     private readonly ILogger<FileSystemToolResultStore> _logger;
 
     /// <summary>
@@ -55,16 +71,22 @@ public sealed class FileSystemToolResultStore : IToolResultStore
     /// <see cref="StoreIfLargeAsync"/>'s own remarks for why this happens at write time, every time,
     /// and never at read time.
     /// </param>
+    /// <param name="pageCache">
+    /// Backs a short-lived decoded-content cache for <see cref="RetrievePageAsync"/> (#574) — see that
+    /// method's own remarks for why re-reading the whole file per page was replaced with this.
+    /// </param>
     /// <param name="logger">Logger for storage diagnostics.</param>
     public FileSystemToolResultStore(
         IOptionsMonitor<AppConfig> options,
         ICompositeResponseSanitizer sanitizer,
         IContentRedactionFilter redactionFilter,
+        IMemoryCache pageCache,
         ILogger<FileSystemToolResultStore> logger)
     {
         _options = options;
         _sanitizer = sanitizer;
         _redactionFilter = redactionFilter;
+        _pageCache = pageCache;
         _logger = logger;
     }
 
@@ -74,6 +96,7 @@ public sealed class FileSystemToolResultStore : IToolResultStore
         string toolName,
         string? operation,
         string fullOutput,
+        bool scopeIsRetrievable,
         int? sizeThreshold = null,
         CancellationToken cancellationToken = default)
     {
@@ -90,6 +113,37 @@ public sealed class FileSystemToolResultStore : IToolResultStore
         var resultId = Guid.NewGuid().ToString("N");
         var timestamp = DateTimeOffset.UtcNow;
         var effectiveThreshold = sizeThreshold ?? config.PerResultCharLimit;
+
+        // #575: the single chokepoint for "can a spilled file here ever be fetched back" — previously
+        // checked independently at each call site (ToolCallAdmissionPipeline.SpillAndBuildMarkerAsync,
+        // ToolOutputCompressionBehavior.Handle both re-derived IAgentExecutionContext.
+        // HasRetrievableToolResultScope and skipped calling this method entirely), leaving a future
+        // third caller to remember to re-derive the same check or silently leak an unreachable file to
+        // disk forever. scopeIsRetrievable has no default value specifically so a new caller cannot
+        // silently inherit a permissive assumption — see this parameter's own interface remarks. Both
+        // production callers ALSO keep their own early return before this method is invoked at all
+        // (a genuine, separate optimization: it avoids building the full output — a factory call, a
+        // redaction pass, a compression pass — for content that would just be discarded here), so this
+        // check is reached today only when a caller has already confirmed it is true; it is the backstop
+        // for whoever does not.
+        if (!scopeIsRetrievable)
+        {
+            _logger.LogDebug(
+                "Tool result {ResultId} from {ToolName} has no retrievable scope — keeping inline " +
+                "regardless of size ({Length} chars)",
+                resultId, toolName, fullOutput.Length);
+
+            return new ToolResultReference
+            {
+                ResultId = resultId,
+                ToolName = toolName,
+                Operation = operation,
+                PreviewContent = fullOutput,
+                FullContentPath = null,
+                SizeChars = fullOutput.Length,
+                Timestamp = timestamp
+            };
+        }
 
         if (fullOutput.Length <= effectiveThreshold)
         {
@@ -308,26 +362,35 @@ public sealed class FileSystemToolResultStore : IToolResultStore
             "Retrieving page (offset {Offset}, maxChars {MaxChars}) of result {ResultId} from {Path}",
             offset, maxChars, resultId, storagePath);
 
-        string content;
-        try
+        // #574: reading the whole stored file into memory on EVERY page was replaced with a short-lived
+        // cache of the decoded content, keyed by (scopeId, resultId) — the same IMemoryCache-plus-
+        // sliding-expiration shape AgentConversationCache already uses. Walking a full MaxSpillChars
+        // spill (a few MB) in maxChars-sized pages previously cost one whole-file read PER page — an
+        // O(fileSize) read repeated once per page, ~O(fileSize^2 / pageSize) total I/O across a full
+        // walk. The first page of a fetch sequence populates the cache; every later page in that same
+        // sequence is a cache hit. A miss (cold cache, or the sliding window lapsed between pages) falls
+        // back to a fresh disk read, so this is purely a cost optimization — correctness never depends
+        // on the cache being warm.
+        var cacheKey = PageCacheKey(scopeId, resultId);
+        if (!_pageCache.TryGetValue(cacheKey, out string? content) || content is null)
         {
-            // #563: the whole stored file is read into memory rather than seeking within the stream.
-            // Deliberately simple over deliberately fast: the file is already bounded to MaxSpillChars
-            // by StoreIfLargeAsync (a few MB at the shipped default), so reading it whole per page costs
-            // nothing that matters, and a plain in-memory Substring sidesteps every edge case a
-            // character-counting stream-skip would otherwise have to get right (multi-byte encoding,
-            // resuming a skip across buffer boundaries) for a bound that is not actually load-bearing.
-            // Bare text, not a JSON envelope — #563's second revision moved redaction to write time
-            // (see StoreIfLargeAsync's own remarks), so nothing besides the content itself ever needs
-            // to travel alongside it on disk.
-            content = await File.ReadAllTextAsync(storagePath, cancellationToken);
-        }
-        catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
-        {
-            // Deliberately the same exception, with the same message shape, whether resultId was never
-            // stored at all or was stored under a DIFFERENT scope — see the interface's own remarks on
-            // why "exists but not yours" must read identically to "does not exist".
-            throw new KeyNotFoundException($"No stored result found for id '{resultId}'.");
+            try
+            {
+                // Bare text, not a JSON envelope — #563's second revision moved redaction to write time
+                // (see StoreIfLargeAsync's own remarks), so nothing besides the content itself ever needs
+                // to travel alongside it on disk.
+                content = await File.ReadAllTextAsync(storagePath, cancellationToken);
+            }
+            catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
+            {
+                // Deliberately the same exception, with the same message shape, whether resultId was
+                // never stored at all or was stored under a DIFFERENT scope — see the interface's own
+                // remarks on why "exists but not yours" must read identically to "does not exist".
+                throw new KeyNotFoundException($"No stored result found for id '{resultId}'.");
+            }
+
+            _pageCache.Set(
+                cacheKey, content, new MemoryCacheEntryOptions { SlidingExpiration = PageCacheSlidingExpiration });
         }
 
         var clampedOffset = Math.Min(offset, content.Length);

@@ -1,6 +1,6 @@
 using Application.AI.Common.Interfaces.Context;
 using Domain.Common.Config;
-using Microsoft.Extensions.Hosting;
+using Infrastructure.AI.BackgroundServices;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -23,7 +23,9 @@ namespace Infrastructure.AI.Context;
 /// unreclaimed files a real cost, not just an untidy one.
 /// </para>
 /// <para>
-/// Modelled on <see cref="Infrastructure.AI.Conversations.ConversationBudgetRetentionService"/>: same
+/// The periodic wait/enabled/grace-period skeleton lives in <see cref="PeriodicSweepService"/> (#575) —
+/// shared with <see cref="Infrastructure.AI.Conversations.ConversationBudgetRetentionService"/>, which
+/// this service was originally modelled on line-for-line before the shared shape was extracted: same
 /// five conventions — interval and grace period read live so a reload takes effect at the end of the
 /// current wait rather than two intervals later, a minimum-interval floor, an injected
 /// <see cref="TimeProvider"/> so the schedule is testable at all, unconditional registration with
@@ -31,7 +33,7 @@ namespace Infrastructure.AI.Context;
 /// the service.
 /// </para>
 /// </remarks>
-internal sealed class ToolResultRetentionService : BackgroundService
+internal sealed class ToolResultRetentionService : PeriodicSweepService
 {
     /// <summary>
     /// Floor on the sweep interval, matching <c>ConversationBudgetRetentionService.MinInterval</c>'s
@@ -42,8 +44,6 @@ internal sealed class ToolResultRetentionService : BackgroundService
 
     private readonly IToolResultStore _resultStore;
     private readonly IOptionsMonitor<AppConfig> _config;
-    private readonly TimeProvider _timeProvider;
-    private readonly ILogger<ToolResultRetentionService> _logger;
 
     /// <summary>Initializes a new <see cref="ToolResultRetentionService"/>.</summary>
     /// <param name="resultStore">Owns the files and the sweep that reclaims them.</param>
@@ -59,68 +59,32 @@ internal sealed class ToolResultRetentionService : BackgroundService
         IOptionsMonitor<AppConfig> config,
         TimeProvider timeProvider,
         ILogger<ToolResultRetentionService> logger)
+        : base(MinInterval, timeProvider, logger)
     {
         ArgumentNullException.ThrowIfNull(resultStore);
         ArgumentNullException.ThrowIfNull(config);
-        ArgumentNullException.ThrowIfNull(timeProvider);
-        ArgumentNullException.ThrowIfNull(logger);
 
         _resultStore = resultStore;
         _config = config;
-        _timeProvider = timeProvider;
-        _logger = logger;
-    }
-
-    /// <inheritdoc />
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
-    {
-        try
-        {
-            while (!stoppingToken.IsCancellationRequested)
-            {
-                var interval = Retention.SweepInterval;
-                if (interval < MinInterval)
-                    interval = MinInterval;
-
-                await Task.Delay(interval, _timeProvider, stoppingToken).ConfigureAwait(false);
-
-                // Read AFTER the wait, not before it — see ConversationBudgetRetentionService's
-                // identical comment for why a value captured before the delay would take an extra
-                // interval to react to a configuration reload.
-                var retention = Retention;
-
-                if (!retention.Enabled)
-                    continue;
-
-                await SweepAsync(retention.GracePeriod).ConfigureAwait(false);
-            }
-        }
-        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-        {
-            // Host is shutting down — expected.
-        }
     }
 
     private RetentionConfig Retention => _config.CurrentValue.AI.ContextManagement.ToolResultRetention;
 
-    private async Task SweepAsync(TimeSpan gracePeriod)
+    /// <inheritdoc />
+    protected override SweepRetentionSnapshot ReadRetention()
     {
-        try
-        {
-            var reclaimed = await _resultStore.PruneExpiredAsync(gracePeriod, CancellationToken.None)
-                .ConfigureAwait(false);
-
-            if (reclaimed > 0)
-            {
-                _logger.LogInformation(
-                    "Tool-result retention sweep reclaimed {Count} expired file(s).", reclaimed);
-            }
-        }
-        catch (Exception ex)
-        {
-            // A failed sweep must not take the service down: the next tick would never come, and
-            // spilled files would resume accumulating without bound for the life of the process.
-            _logger.LogError(ex, "Tool-result retention sweep failed; will retry on the next interval.");
-        }
+        var retention = Retention;
+        return new SweepRetentionSnapshot(retention.Enabled, retention.SweepInterval, retention.GracePeriod);
     }
+
+    /// <inheritdoc />
+    protected override Task<int> SweepAsync(TimeSpan gracePeriod, CancellationToken cancellationToken) =>
+        _resultStore.PruneExpiredAsync(gracePeriod, cancellationToken);
+
+    /// <inheritdoc />
+    protected override string ReclaimedLogMessage => "Tool-result retention sweep reclaimed {Count} expired file(s).";
+
+    /// <inheritdoc />
+    protected override string FailureLogMessage =>
+        "Tool-result retention sweep failed; will retry on the next interval.";
 }

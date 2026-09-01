@@ -54,7 +54,11 @@ public sealed class RunBundleCommandValidator : AbstractValidator<RunBundleComma
                 .NotEmpty().WithMessage("ConversationId must not be blank when supplied.")
                 .MaximumLength(MaxConversationIdLength)
                     .WithMessage($"ConversationId exceeds {MaxConversationIdLength} characters.")
-                .Matches("^[A-Za-z0-9_-]+$")
+                // #576: \A/\z, not ^/$ — $ in .NET regex matches immediately before a trailing '\n' as
+                // well as at the true end of the string, so a conversation id ending in a newline would
+                // otherwise pass this charset check (the same bug class already fixed in
+                // StorageSegmentSafety.AllowedCharset — see that type's own remarks).
+                .Matches(@"\A[A-Za-z0-9_-]+\z")
                     .WithMessage(
                         "ConversationId may contain only letters, digits, hyphens and underscores.");
         });

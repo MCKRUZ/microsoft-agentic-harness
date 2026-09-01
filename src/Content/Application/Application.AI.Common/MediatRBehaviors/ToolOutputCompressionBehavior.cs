@@ -155,6 +155,7 @@ public sealed class ToolOutputCompressionBehavior<TRequest, TResponse>
             toolRequest.ToolName,
             operation: null,
             redactedOutput,
+            scopeIsRetrievable: _executionContext.HasRetrievableToolResultScope,
             cancellationToken: cancellationToken);
 
         // #561/correctness: StoreIfLargeAsync keeps small content inline (FullContentPath null, no

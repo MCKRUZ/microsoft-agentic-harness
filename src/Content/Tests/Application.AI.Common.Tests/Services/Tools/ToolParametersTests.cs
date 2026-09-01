@@ -186,4 +186,124 @@ public sealed class ToolParametersTests
 
     private static IReadOnlyDictionary<string, object?> Parse(string json) =>
         ToolParameters.FromJson(JsonSerializer.Deserialize<JsonElement>(json));
+
+    // ── TryGetOptionalInt (#575) ──
+
+    [Fact]
+    public void TryGetOptionalInt_KeyAbsent_SucceedsWithNullValue()
+    {
+        var succeeded = ToolParameters.TryGetOptionalInt(Parse("{}"), "offset", out var value);
+
+        succeeded.Should().BeTrue();
+        value.Should().BeNull();
+    }
+
+    [Fact]
+    public void TryGetOptionalInt_ExplicitNull_SucceedsWithNullValue()
+    {
+        var succeeded = ToolParameters.TryGetOptionalInt(Parse("""{"offset":null}"""), "offset", out var value);
+
+        succeeded.Should().BeTrue();
+        value.Should().BeNull();
+    }
+
+    [Fact]
+    public void TryGetOptionalInt_PlainInt_Succeeds()
+    {
+        var succeeded = ToolParameters.TryGetOptionalInt(Parse("""{"offset":5}"""), "offset", out var value);
+
+        succeeded.Should().BeTrue();
+        value.Should().Be(5);
+    }
+
+    [Fact]
+    public void TryGetOptionalInt_LongInRange_SucceedsAndNarrows()
+    {
+        // The production shape: ToolParameters.Flatten boxes every whole JSON number as long, so this
+        // is the arm a real model-supplied integer argument actually exercises, not the plain-int arm.
+        var succeeded = ToolParameters.TryGetOptionalInt(Parse("""{"offset":42}"""), "offset", out var value);
+
+        succeeded.Should().BeTrue();
+        value.Should().Be(42);
+    }
+
+    [Fact]
+    public void TryGetOptionalInt_NumericString_Succeeds()
+    {
+        var succeeded = ToolParameters.TryGetOptionalInt(Parse("""{"offset":"7"}"""), "offset", out var value);
+
+        succeeded.Should().BeTrue();
+        value.Should().Be(7);
+    }
+
+    [Fact]
+    public void TryGetOptionalInt_NonNumericString_Fails()
+    {
+        var succeeded = ToolParameters.TryGetOptionalInt(Parse("""{"offset":"abc"}"""), "offset", out var value);
+
+        succeeded.Should().BeFalse();
+        value.Should().BeNull();
+    }
+
+    [Fact]
+    public void TryGetOptionalInt_BelowMin_Fails()
+    {
+        var succeeded = ToolParameters.TryGetOptionalInt(Parse("""{"offset":-1}"""), "offset", out var value, min: 0);
+
+        succeeded.Should().BeFalse();
+        value.Should().BeNull();
+    }
+
+    [Fact]
+    public void TryGetOptionalInt_AtMin_Succeeds()
+    {
+        var succeeded = ToolParameters.TryGetOptionalInt(Parse("""{"offset":0}"""), "offset", out var value, min: 0);
+
+        succeeded.Should().BeTrue();
+        value.Should().Be(0);
+    }
+
+    [Fact]
+    public void TryGetOptionalInt_AboveMax_Fails()
+    {
+        var succeeded = ToolParameters.TryGetOptionalInt(Parse("""{"top_k":11}"""), "top_k", out var value, min: 1, max: 10);
+
+        succeeded.Should().BeFalse();
+        value.Should().BeNull();
+    }
+
+    [Fact]
+    public void TryGetOptionalInt_LongOutOfIntRange_FailsRatherThanSilentlyWrapping()
+    {
+        // The regression this replaces a private copy for: DocumentSearchTool.GetOptionalInt used to do
+        // an unchecked (int)someLong cast, silently wrapping an out-of-range long into an unrelated int
+        // instead of refusing it. 4_294_967_396 (2^32 + 100) is the adversarial case: its low 32 bits
+        // are exactly 100 — a small, ordinary-looking POSITIVE value that would sail straight through a
+        // subsequent `< min`/`> max` check on the wrapped result, masking the wrap entirely. A value
+        // that wraps to something negative (e.g. 3_000_000_000) is not a real test here — it would be
+        // rejected by the min bound below regardless of whether the cast itself is range-checked.
+        var succeeded = ToolParameters.TryGetOptionalInt(
+            Parse("""{"offset":4294967396}"""), "offset", out var value, min: 0);
+
+        succeeded.Should().BeFalse("an out-of-range value must be refused, not silently wrapped into 100");
+        value.Should().BeNull();
+    }
+
+    [Fact]
+    public void TryGetOptionalInt_NegativeLongBelowIntMinValue_FailsRatherThanSilentlyWrapping()
+    {
+        var succeeded = ToolParameters.TryGetOptionalInt(Parse("""{"offset":-3000000000}"""), "offset", out var value);
+
+        succeeded.Should().BeFalse();
+        value.Should().BeNull();
+    }
+
+    [Fact]
+    public void TryGetOptionalInt_UnsupportedType_Fails()
+    {
+        var succeeded = ToolParameters.TryGetOptionalInt(Parse("""{"offset":true}"""), "offset", out var value);
+
+        succeeded.Should().BeFalse();
+        value.Should().BeNull();
+    }
 }

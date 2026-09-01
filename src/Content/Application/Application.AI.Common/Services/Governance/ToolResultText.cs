@@ -212,7 +212,17 @@ internal static class ToolResultText
     /// </summary>
     private static (object? Result, bool Dropped) BudgetedCut(object? result, int ceiling, string marker)
     {
-        var remaining = ceiling;
+        // #565: ExtractText rejoins a multi-block result with Environment.NewLine between blocks, but
+        // this per-block walk previously summed only raw block lengths against `ceiling` — under-
+        // counting the true emitted length (what a caller actually reads via ExtractText) by up to
+        // (blockCount - 1) * Environment.NewLine.Length for a multi-block result. Reserving that cost
+        // up front, out of the SAME budget every block draws from, means the total INCLUDING separators
+        // never exceeds `ceiling` — tightening this method's own "total across blocks is at most
+        // ceiling" guarantee for every caller (Bound, PreCutForScan), not just the aggregate-budget
+        // settlement that originally surfaced the gap. Math.Max floors at 0 rather than going negative
+        // when the reserve alone would exceed the ceiling — every block then gets cut to nothing on
+        // first touch, which is the correct degenerate answer for an unreasonably small ceiling.
+        var remaining = Math.Max(0, ceiling - SeparatorReserve(result));
         var dropped = false;
 
         var transformed = Transform(result, text =>
@@ -230,6 +240,40 @@ internal static class ToolResultText
         });
 
         return (transformed, dropped);
+    }
+
+    /// <summary>
+    /// How many characters <see cref="ExtractText"/> will spend on <see cref="Environment.NewLine"/>
+    /// separators when it later rejoins <paramref name="result"/>'s text-carrying blocks — zero for
+    /// every shape with at most one such block, since a lone block has no neighbor to separate from.
+    /// </summary>
+    private static int SeparatorReserve(object? result)
+    {
+        var textBlockCount = result switch
+        {
+            AIContent[] blocks => blocks.Count(b => b is TextContent),
+            JsonElement { ValueKind: JsonValueKind.Object } element when TryGetContentArray(element, out var content) =>
+                CountTextCarryingBlocks(content),
+            _ => 1
+        };
+
+        return textBlockCount > 1 ? (textBlockCount - 1) * Environment.NewLine.Length : 0;
+    }
+
+    /// <summary>
+    /// Counts the blocks <see cref="ExtractContentArrayText"/> would actually join — the same
+    /// <see cref="IsContentBlock"/>/<see cref="TryGetBlockText"/> recognition it uses, so this count and
+    /// that join can never disagree about how many separators will really be inserted.
+    /// </summary>
+    private static int CountTextCarryingBlocks(JsonElement content)
+    {
+        var count = 0;
+        foreach (var block in content.EnumerateArray())
+        {
+            if (IsContentBlock(block, out var type) && TryGetBlockText(block, type, out _, out _))
+                count++;
+        }
+        return count;
     }
 
     /// <summary>

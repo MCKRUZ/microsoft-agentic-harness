@@ -11,12 +11,17 @@ public static class SecureInputValidatorHelper
     private const int DefaultMaxLength = 1024;
     private const int MaxPathLength = 4096;
 
+    // #576: anchored with \A/\z, not ^/$ — $ in .NET regex matches immediately before a trailing '\n'
+    // as well as at the true end of the string, so a caller-supplied value ending in a newline would
+    // otherwise pass (the same bug class already fixed in StorageSegmentSafety.AllowedCharset; see that
+    // type's own remarks). \A/\z match only the absolute start/end.
     private static readonly Regex SafeGeneralPattern = new(
-        @"^[a-zA-Z0-9\s\-_.:,/\\@T=+()#\[\]{}""'!?]+$",
+        @"\A[a-zA-Z0-9\s\-_.:,/\\@T=+()#\[\]{}""'!?]+\z",
         RegexOptions.Compiled);
 
+    // #576: same \A/\z anchoring fix as SafeGeneralPattern above.
     private static readonly Regex IdentifierPattern = new(
-        @"^[a-zA-Z0-9\-_.:]+$",
+        @"\A[a-zA-Z0-9\-_.:]+\z",
         RegexOptions.Compiled);
 
     private static readonly char[] ShellMetaChars = [';', '|', '`', '$', '>', '<'];

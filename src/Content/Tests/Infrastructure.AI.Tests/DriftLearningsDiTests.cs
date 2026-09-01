@@ -218,6 +218,10 @@ public sealed class DriftLearningsDiTests
         // Its real implementation is registered by Infrastructure.AI.Governance's own DI module,
         // called separately in the real composition root — mirror that here.
         services.AddSingleton(PermissiveAdmission.PermissiveSanitizer());
+        // FileSystemToolResultStore also depends on IMemoryCache (#574's page-fetch cache) —
+        // the real composition root registers this via Application.AI.Common's own DI module,
+        // called separately from AddInfrastructureAIDependencies — mirror that here too.
+        services.AddMemoryCache();
 
         // Register knowledge graph (provides IKnowledgeGraphStore for graph-backed stores)
         services.AddKnowledgeGraphDependencies(appConfig);

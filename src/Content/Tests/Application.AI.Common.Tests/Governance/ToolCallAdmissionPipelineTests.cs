@@ -268,6 +268,47 @@ public sealed class ToolCallAdmissionPipelineTests
     }
 
     [Fact]
+    public async Task ApplyOutputPolicy_RawUnderCeilingButRedactionInflatesPastIt_ReturnsFullTreatedTextUncut()
+    {
+        // #577: FileSystemToolResultStore.StoreIfLargeAsync decides inline-vs-spill from RAW length
+        // against the ceiling. Deciding truncation here from TREATED (post-redaction) length instead
+        // can disagree with the store: raw is 40 chars (under the 50-char ceiling — the store would
+        // keep this inline with no spill), but redaction inflates it to 60 chars (a secret becoming a
+        // longer placeholder), crossing the ceiling on the treated side alone. Left uncorrected, the
+        // model would be told this result was truncated and given a retrieval id, even though the
+        // smaller raw content was already available in full.
+        var raw = new string('a', 40);
+        var redacted = new string('b', 60);
+        var gate = new Mock<IToolClassificationGate>();
+        gate.Setup(g => g.RedactResult(Tool, It.IsAny<object?>())).Returns(redacted);
+        var pipeline = AdmissionHarness.Pipeline(classificationGate: gate.Object, outputCeiling: 50);
+
+        var result = await pipeline.ApplyOutputPolicyAsync(
+            ToolCallAdmission.AllowWithOutputRedaction(), Tool, raw, CancellationToken.None);
+
+        result.Should().Be(redacted,
+            "the raw content fit inline, so the model must see the full treated text, not a truncated one");
+    }
+
+    [Fact]
+    public async Task TryApplyTextOutputPolicy_RawUnderCeilingButRedactionInflatesPastIt_ReturnsFullTreatedTextUncut()
+    {
+        // #577: same fix as ApplyOutputPolicy's identical test above, for the text-typed sibling method.
+        var raw = new string('a', 40);
+        var redacted = new string('b', 60);
+        var gate = new Mock<IToolClassificationGate>();
+        gate.Setup(g => g.RedactResult(Tool, raw)).Returns(redacted);
+        var pipeline = AdmissionHarness.Pipeline(classificationGate: gate.Object, outputCeiling: 50);
+
+        var policy = await pipeline.TryApplyTextOutputPolicyAsync(
+            ToolCallAdmission.AllowWithOutputRedaction(), Tool, raw, CancellationToken.None);
+
+        policy.Success.Should().BeTrue();
+        policy.Result.Should().Be(redacted);
+        policy.WasTruncated.Should().BeFalse("the raw content fit inline; nothing was actually cut");
+    }
+
+    [Fact]
     public async Task ApplyOutputPolicy_PlainAllow_SanitizesTheResultWithoutCallingTheClassificationGate()
     {
         // #469: a plain allow never consults the classification gate — the sanitizer is the only
@@ -398,9 +439,9 @@ public sealed class ToolCallAdmissionPipelineTests
         resultStore
             .Setup(s => s.StoreIfLargeAsync(
                 It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string>(),
-                It.IsAny<int?>(), It.IsAny<CancellationToken>()))
-            .Callback<string, string, string?, string, int?, CancellationToken>((_, _, _, text, _, _) => spilledText = text)
-            .ReturnsAsync((string _, string toolName, string? operation, string fullOutput, int? _, CancellationToken _) =>
+                It.IsAny<bool>(), It.IsAny<int?>(), It.IsAny<CancellationToken>()))
+            .Callback<string, string, string?, string, bool, int?, CancellationToken>((_, _, _, text, _, _, _) => spilledText = text)
+            .ReturnsAsync((string _, string toolName, string? operation, string fullOutput, bool _, int? _, CancellationToken _) =>
                 new ToolResultReference
                 {
                     ResultId = Guid.NewGuid().ToString("N"),
@@ -445,7 +486,7 @@ public sealed class ToolCallAdmissionPipelineTests
         resultStore.Verify(
             s => s.StoreIfLargeAsync(
                 It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string>(),
-                It.IsAny<int?>(), It.IsAny<CancellationToken>()),
+                It.IsAny<bool>(), It.IsAny<int?>(), It.IsAny<CancellationToken>()),
             Times.Never,
             "the write itself must be skipped, not just the retrieval id");
     }
@@ -464,9 +505,9 @@ public sealed class ToolCallAdmissionPipelineTests
         resultStore
             .Setup(s => s.StoreIfLargeAsync(
                 It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string>(),
-                It.IsAny<int?>(), It.IsAny<CancellationToken>()))
-            .Callback<string, string, string?, string, int?, CancellationToken>((_, _, _, text, _, _) => spilledText = text)
-            .ReturnsAsync((string _, string toolName, string? operation, string fullOutput, int? _, CancellationToken _) =>
+                It.IsAny<bool>(), It.IsAny<int?>(), It.IsAny<CancellationToken>()))
+            .Callback<string, string, string?, string, bool, int?, CancellationToken>((_, _, _, text, _, _, _) => spilledText = text)
+            .ReturnsAsync((string _, string toolName, string? operation, string fullOutput, bool _, int? _, CancellationToken _) =>
                 new ToolResultReference
                 {
                     ResultId = Guid.NewGuid().ToString("N"),
@@ -498,9 +539,9 @@ public sealed class ToolCallAdmissionPipelineTests
         resultStore
             .Setup(s => s.StoreIfLargeAsync(
                 It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string>(),
-                It.IsAny<int?>(), It.IsAny<CancellationToken>()))
-            .Callback<string, string, string?, string, int?, CancellationToken>((_, _, _, text, _, _) => spilledText = text)
-            .ReturnsAsync((string _, string toolName, string? operation, string fullOutput, int? _, CancellationToken _) =>
+                It.IsAny<bool>(), It.IsAny<int?>(), It.IsAny<CancellationToken>()))
+            .Callback<string, string, string?, string, bool, int?, CancellationToken>((_, _, _, text, _, _, _) => spilledText = text)
+            .ReturnsAsync((string _, string toolName, string? operation, string fullOutput, bool _, int? _, CancellationToken _) =>
                 new ToolResultReference
                 {
                     ResultId = Guid.NewGuid().ToString("N"),
@@ -620,6 +661,32 @@ public sealed class ToolCallAdmissionPipelineTests
             .Which.OfType<TextContent>().Sum(b => b.Text.Length)
             .Should().BeLessThanOrEqualTo(100,
                 "the budget spans the blocks — a per-block cap would admit 300 characters here");
+    }
+
+    [Fact]
+    public async Task ApplyOutputPolicy_MultiBlockResult_JoinedLengthIncludingSeparatorsNeverExceedsCeiling()
+    {
+        // #565: ToolResultText.ExtractText rejoins blocks with Environment.NewLine between them, but the
+        // per-block walk this test exercises used to sum only raw block lengths against the ceiling —
+        // under-counting true emitted length by (blockCount - 1) * Environment.NewLine.Length. Three
+        // blocks summing to EXACTLY 100 (the ceiling) is the reproducing case: the old, separator-blind
+        // walk sees no individual block overflow the shrinking remaining budget, so it reports nothing
+        // was dropped and returns the blocks untouched — but ExtractText's actual join is then
+        // 100 + 2 separators long, silently exceeding the ceiling this call was supposed to enforce.
+        var pipeline = AdmissionHarness.Pipeline(outputCeiling: 100, resultStore: AdmissionHarness.PersistedResultStore());
+
+        var blocks = new AIContent[]
+        {
+            new TextContent(new string('a', 34)),
+            new TextContent(new string('b', 33)),
+            new TextContent(new string('c', 33)),
+        };
+
+        var result = await pipeline.ApplyOutputPolicyAsync(ToolCallAdmission.Allow(), Tool, blocks, CancellationToken.None);
+
+        ToolResultText.ExtractText(result).Length.Should().BeLessThanOrEqualTo(100,
+            "the true emitted length INCLUDING join separators must respect the ceiling, not just the "
+            + "sum of individual block lengths");
     }
 
     [Fact]

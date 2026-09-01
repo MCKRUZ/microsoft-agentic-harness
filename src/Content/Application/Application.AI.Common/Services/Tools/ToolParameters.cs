@@ -25,6 +25,76 @@ public static class ToolParameters
     public const string RawInputKey = "raw_input";
 
     /// <summary>
+    /// Coerces an optional integer parameter, accepting the three CLR shapes a tool argument can
+    /// actually arrive as (#575).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>Why this exists.</strong> <see cref="Flatten"/> boxes every JSON integral number as
+    /// <see langword="long"/>, so a model-supplied integer argument is a <see langword="long"/> in
+    /// practice, not an <see langword="int"/> — but a tool's own parameter is naturally an
+    /// <see langword="int"/> or <see langword="int"/>?. Two independent, near-identical coercion
+    /// switches existed before this (<c>ToolResultFetchTool.TryGetOffset</c>,
+    /// <c>DocumentSearchTool.GetOptionalInt</c>) and were not equivalent: one range-checked a
+    /// <see langword="long"/> before narrowing it, the other cast unconditionally
+    /// (<c>(int)someLong</c>), silently wrapping an out-of-range value into an unrelated, possibly
+    /// negative <see langword="int"/> instead of refusing it.
+    /// </para>
+    /// <para>
+    /// <c>true</c> with <paramref name="value"/> <see langword="null"/> means "absent — use your own
+    /// default." <c>false</c> means "present, but not a well-formed integer within
+    /// [<paramref name="min"/>, <paramref name="max"/>]" — a caller should refuse the request outright
+    /// rather than silently substituting a default, the same distinction
+    /// <c>ToolResultFetchTool.TryGetOffset</c> already drew for <c>offset</c>: a caller that got an
+    /// argument wrong should be told so, not have its request silently proceed as if it had said
+    /// nothing.
+    /// </para>
+    /// </remarks>
+    /// <param name="parameters">The tool's parameter dictionary.</param>
+    /// <param name="key">The parameter name to look up.</param>
+    /// <param name="value">
+    /// The parsed value, or <see langword="null"/> when <paramref name="key"/> is absent or explicitly
+    /// null. Also <see langword="null"/> when this method returns <see langword="false"/>.
+    /// </param>
+    /// <param name="min">The smallest accepted value, inclusive. Defaults to <see cref="int.MinValue"/>.</param>
+    /// <param name="max">The largest accepted value, inclusive. Defaults to <see cref="int.MaxValue"/>.</param>
+    /// <returns>
+    /// <see langword="false"/> when <paramref name="key"/> is present but is neither an
+    /// <see langword="int"/>, a <see langword="long"/>, nor a numeric string — or is any of those but
+    /// outside [<paramref name="min"/>, <paramref name="max"/>]. <see langword="true"/> otherwise.
+    /// </returns>
+    public static bool TryGetOptionalInt(
+        IReadOnlyDictionary<string, object?> parameters,
+        string key,
+        out int? value,
+        int min = int.MinValue,
+        int max = int.MaxValue)
+    {
+        if (!parameters.TryGetValue(key, out var raw) || raw is null)
+        {
+            value = null;
+            return true;
+        }
+
+        var parsed = raw switch
+        {
+            int i => i,
+            long l and >= int.MinValue and <= int.MaxValue => (int)l,
+            string s when int.TryParse(s, out var fromString) => fromString,
+            _ => (int?)null
+        };
+
+        if (parsed is not { } parsedValue || parsedValue < min || parsedValue > max)
+        {
+            value = null;
+            return false;
+        }
+
+        value = parsedValue;
+        return true;
+    }
+
+    /// <summary>
     /// Parses tool parameters from a JSON element, accepting the three shapes a caller may produce.
     /// </summary>
     /// <param name="parametersJson">

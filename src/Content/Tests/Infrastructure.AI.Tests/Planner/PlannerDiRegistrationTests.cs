@@ -263,6 +263,11 @@ public sealed class PlannerDiRegistrationTests : IDisposable
         // AddInfrastructureAIDependencies.
         services.AddSingleton(TestMcpSecurityScanner.AlwaysSafe());
         services.AddSingleton(TestMcpSecurityScanner.DefaultConfig());
+        // #574: FileSystemToolResultStore (registered by AddInfrastructureAIDependencies below, behind
+        // IToolResultStore — resolved transitively via the admission chain this fixture builds) now
+        // takes IMemoryCache for its page-fetch cache; not registered anywhere else in this hand-rolled
+        // container.
+        services.AddMemoryCache();
         // IAgentExecutionContext comes from Application.AI.Common's DI in production; the
         // knowledge-scope accessor (now consumed by EfCorePlanStateStore for plan ownership)
         // delegates agent identity to it.
