@@ -120,10 +120,11 @@ public class RunConversationCommandValidatorTests
     [Theory]
     // /code-review finding: each of these clears the AllowedScopeIdCharset regex entirely — the
     // charset alone is not what FileSystemToolResultStore.SanitizeSessionSegment enforces, and without
-    // the matching .Must() rules this validator would pass a value the store still throws on.
+    // the matching .Must() rules this validator would pass a value the store still throws on. "C:" is
+    // covered separately below — its rejection is Windows-specific, not universal (build-and-test
+    // finding; see that test's own remarks).
     [InlineData(".")]
     [InlineData("..")]
-    [InlineData("C:")]
     [InlineData("conv-1.")]
     public async Task Validate_ConversationIdClearsCharsetButUnsafeShape_Fails(string conversationId)
     {
@@ -133,6 +134,29 @@ public class RunConversationCommandValidatorTests
 
         result.IsValid.Should().BeFalse();
         result.Errors.Should().Contain(e => e.PropertyName == "ConversationId");
+    }
+
+    [Fact]
+    public async Task Validate_WindowsDriveRootedConversationId_FailsOnlyOnWindows()
+    {
+        // Build-and-test finding: Path.IsPathRooted("C:") is true (drive-rooted) only on Windows —
+        // StorageSegmentSafety.HasUnsafeShape correctly measures it as NOT rooted on Linux/macOS,
+        // where drive letters do not exist and the allowed charset already excludes the only character
+        // ('/') that IS rooted there. See FileSystemToolResultStoreTests' identical-shaped test for the
+        // same reasoning applied to the sibling sessionId check.
+        var command = CreateValidCommand() with { ConversationId = "C:" };
+
+        var result = await _validator.ValidateAsync(command);
+
+        if (OperatingSystem.IsWindows())
+        {
+            result.IsValid.Should().BeFalse();
+            result.Errors.Should().Contain(e => e.PropertyName == "ConversationId");
+        }
+        else
+        {
+            result.IsValid.Should().BeTrue();
+        }
     }
 
     [Fact]
