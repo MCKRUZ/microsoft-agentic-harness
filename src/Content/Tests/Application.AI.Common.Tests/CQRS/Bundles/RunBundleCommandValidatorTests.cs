@@ -62,13 +62,28 @@ public sealed class RunBundleCommandValidatorTests
     [InlineData("conv/../other")]
     [InlineData("conv/nested")]
     [InlineData("conv\\nested")]
-    [InlineData("conv:1")]
+    // "C:" (not "conv:1" — see StorageSegmentSafety.AllowedCharset reuse below): a single-letter-prefix
+    // colon is Windows-drive-rooted and must stay rejected; a multi-character prefix like "conv:1" is
+    // charset-legal and shape-safe under the shared validator now used here, and is covered as a VALID
+    // case below instead.
+    [InlineData("C:")]
     [InlineData("conv id")]
     [InlineData("conv\n1")]
     public void Validate_ConversationIdWithPathOrControlCharacters_IsRejected(string id)
     {
         _validator.Validate(Command(id)).IsValid.Should().BeFalse(
             "an id reaches a store that may turn it into a file name");
+    }
+
+    [Fact]
+    public void Validate_ConversationIdWithMultiCharacterColonPrefix_IsValid()
+    {
+        // #576/reuse fix: this validator now shares Domain.Common.Helpers.StorageSegmentSafety with
+        // RunConversationCommandValidator/RunOrchestratedTaskCommandValidator, which admits ':' for
+        // PlanRunKeys.StepConversationId's "{runScope}:{stepId}" shape — safe because
+        // Path.IsPathRooted only measures a SINGLE-character prefix before ':' as a Windows drive root
+        // (see "C:" in the rejected theory above), not a multi-character one like this.
+        _validator.Validate(Command("conv-1:step-5")).IsValid.Should().BeTrue();
     }
 
     [Fact]

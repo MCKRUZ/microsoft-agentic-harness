@@ -488,17 +488,34 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
         // FileSystemToolResultStore.StoreIfLargeAsync decides inline-vs-spill from RAW length against
         // this same ceiling. A result whose raw length was already at or under the ceiling can still
         // trip `dropped` here purely from that inflation, even though the store would have kept the
-        // very same content inline with no spill needed. Left uncorrected, the model is told this
-        // result was truncated and needs a retrieval id, when the smaller raw content was in fact
-        // already available in full — fail-safe (the marker still resolves, since the store spills
-        // unconditionally once asked) but not honest about why. Measure the SAME signal the store uses
-        // before committing to a spill: if raw fits, return the full treated text uncut, no marker,
-        // matching exactly what the store's own inline decision would have been.
-        var rawLength = ToolResultText.ExtractText(result).Length;
-        if (rawLength <= effectiveCeiling)
+        // very same content inline with no spill needed — spilling it anyway and promising a retrieval
+        // id is dishonest about why the call needed one at all.
+        //
+        // Correctness-review finding on the first cut of this fix: it returned `treated` UNCUT, which
+        // can genuinely exceed effectiveCeiling (that is exactly why `dropped` fired) and broke
+        // SettleAggregateReservation's own documented contract that actualLength never exceeds what was
+        // reserved — passing a larger actualLength doesn't overcharge the tracker, it silently UNDER-
+        // charges it (`unused = reserved - actualLength` goes negative, and the `unused <= 0` guard
+        // no-ops instead of debiting the overage), letting a later call in the same turn see more of
+        // AggregatePerMessageCharLimit than it should. The per-message ceiling is a hard resource bound
+        // and #577 was never about relaxing it — only about not promising a fetch nothing will improve.
+        // `bounded` (computed above, already correctly capped to effectiveCeiling with the plain,
+        // non-retrieval marker) is the right text either way: same answer as the "nothing was truncated"
+        // branch above, just reached from a different guard.
+        //
+        // Also only worth checking when a real spill could actually happen: when the scope isn't
+        // retrievable, SpillAndBuildMarkerAsync (below) already degrades to the plain
+        // OutputTruncationMarker with no disk write — identical to `bounded` — so there is no false
+        // promise to correct on that path, and evaluating ExtractText(result) here would be pure waste
+        // on exactly the path its own factory-laziness (see that method's remarks) exists to avoid
+        // paying for.
+        var rawFullTextCache = (string?)null;
+        string RawFullText() => rawFullTextCache ??= ToolResultText.ExtractText(result);
+
+        if (_executionContext.HasRetrievableToolResultScope && RawFullText().Length <= effectiveCeiling)
         {
-            SettleAggregateReservation(effectiveCeiling, ToolResultText.ExtractText(treated).Length);
-            return treated;
+            SettleAggregateReservation(effectiveCeiling, ToolResultText.ExtractText(bounded).Length);
+            return bounded;
         }
 
         // #563: the ORIGINAL result — before the scan-cost pre-cut, before sanitize/redact — is what
@@ -518,8 +535,10 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
         // content, regressing the unconditional at-rest redaction this store always did before #563).
         // See StoreIfLargeAsync's own remarks for the full history and why unconditional is what
         // finally closes both bypasses at once.
-        var marker = await SpillAndBuildMarkerAsync(
-            toolName, () => ToolResultText.ExtractText(result), effectiveCeiling)
+        //
+        // RawFullText, not a fresh closure, so a scope-retrievable call that already computed it above
+        // for the #577 check does not walk-and-rejoin every block of `result` a second time.
+        var marker = await SpillAndBuildMarkerAsync(toolName, RawFullText, effectiveCeiling)
             .ConfigureAwait(false);
         var (reboundedWithId, _) = ToolResultText.Bound(treated, effectiveCeiling, marker);
 
@@ -635,16 +654,31 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
         // #577: same fix as ApplyOutputPolicyAsync's identical comment — cutAfterProcessing alone can
         // fire purely from sanitize/redact inflation even when the untreated `content` already fit
         // under effectiveCeiling, disagreeing with FileSystemToolResultStore.StoreIfLargeAsync's own
-        // raw-length-based inline decision. Guarded on !droppedByPreCut: a drop at the much wider
-        // scan-cost pre-cut means raw content genuinely exceeded ceiling+ScrubOverlapMargin, so there is
-        // no ambiguity to resolve in that case — a spill is genuinely needed.
-        if (wasTruncated && !droppedByPreCut && content is not null && content.Length <= effectiveCeiling)
-        {
-            SettleAggregateReservation(effectiveCeiling, processed.Length);
-            return new TextOutputPolicyResult(Success: true, Result: processed, WasTruncated: false);
-        }
+        // raw-length-based inline decision. Spilling and promising a retrieval id in that case is
+        // dishonest about why the call needed one at all.
+        //
+        // Correctness-review finding on the first cut of this fix (same defect as ApplyOutputPolicyAsync's
+        // identical corrected comment): it returned `processed` UNCUT, which can genuinely exceed
+        // effectiveCeiling and silently under-charges SettleAggregateReservation's aggregate ledger
+        // (`unused = reserved - actualLength` goes negative and the `unused &lt;= 0` guard no-ops rather
+        // than debiting the overage). `bounded` — already correctly capped, computed above — is the
+        // right text either way, which is also why this collapses into the SAME branch as
+        // `!wasTruncated` below rather than staying a separate one: after this correction the two cases
+        // do the identical thing.
+        //
+        // The `!droppedByPreCut` conjunct that used to gate this is provably redundant, not merely
+        // simplifiable: effectiveCeiling &lt;= ceiling (ReserveAggregateCeiling's Math.Max/Math.Min both
+        // cap at perResultCeiling) &lt; ceiling + ScrubOverlapMargin (the pre-cut's own threshold), so
+        // content.Length &lt;= effectiveCeiling already implies content.Length is under the pre-cut's
+        // threshold too — droppedByPreCut cannot be true when this branch's own length check passes.
+        // Also only checked when a real spill could actually happen: when the scope isn't retrievable,
+        // SpillAndBuildMarkerAsync (below) already degrades to the plain marker with no disk write —
+        // identical to `bounded` — so there is no false promise to correct on that path.
+        var rawFitsWithNoGenuinePromiseToMake =
+            cutAfterProcessing && content is not null && content.Length <= effectiveCeiling
+            && _executionContext.HasRetrievableToolResultScope;
 
-        if (!wasTruncated)
+        if (!wasTruncated || rawFitsWithNoGenuinePromiseToMake)
         {
             SettleAggregateReservation(effectiveCeiling, bounded.Length);
             return new TextOutputPolicyResult(Success: true, Result: bounded, WasTruncated: false);

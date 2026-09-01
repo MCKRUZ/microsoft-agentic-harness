@@ -641,6 +641,25 @@ public sealed class FileSystemToolResultStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task PruneExpiredAsync_DeletesTheBackingFile_AlsoEvictsAnyCachedPage()
+    {
+        // #574 code-review finding: the page-fetch cache (5-minute sliding expiration) is populated by
+        // ANY prior RetrievePageAsync call and was never invalidated when the backing file was later
+        // reclaimed — a fetch within that window could keep serving "reclaimed" content past the point
+        // retention was supposed to make it unrecoverable. Warm the cache first, then prune, then prove
+        // the very next fetch sees the deletion instead of a stale cache hit.
+        var stored = await _sut.StoreIfLargeAsync("session1", "tool", null, new string('a', 200), scopeIsRetrievable: true);
+        await _sut.RetrievePageAsync(stored.ResultId, "session1", offset: 0, LargePageSize); // warms the cache
+        File.SetLastWriteTimeUtc(stored.FullContentPath!, DateTime.UtcNow - TimeSpan.FromDays(2));
+
+        await _sut.PruneExpiredAsync(TimeSpan.FromDays(1));
+
+        var act = () => _sut.RetrievePageAsync(stored.ResultId, "session1", offset: 0, LargePageSize);
+        await act.Should().ThrowAsync<KeyNotFoundException>(
+            "the cache must not keep serving a result whose backing file retention already reclaimed");
+    }
+
+    [Fact]
     public async Task PruneExpiredAsync_FileWithinGracePeriod_IsKept()
     {
         var stored = await _sut.StoreIfLargeAsync("session1", "tool", null, new string('a', 200), scopeIsRetrievable: true);

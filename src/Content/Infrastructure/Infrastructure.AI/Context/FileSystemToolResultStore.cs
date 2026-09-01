@@ -48,8 +48,6 @@ public sealed class FileSystemToolResultStore : IToolResultStore
     // multi-megabyte string forever.
     private static readonly TimeSpan PageCacheSlidingExpiration = TimeSpan.FromMinutes(5);
 
-    private static string PageCacheKey(string scopeId, string resultId) => $"{scopeId}::{resultId}::content";
-
     private readonly IOptionsMonitor<AppConfig> _options;
     private readonly ICompositeResponseSanitizer _sanitizer;
     private readonly IContentRedactionFilter _redactionFilter;
@@ -363,16 +361,28 @@ public sealed class FileSystemToolResultStore : IToolResultStore
             offset, maxChars, resultId, storagePath);
 
         // #574: reading the whole stored file into memory on EVERY page was replaced with a short-lived
-        // cache of the decoded content, keyed by (scopeId, resultId) — the same IMemoryCache-plus-
-        // sliding-expiration shape AgentConversationCache already uses. Walking a full MaxSpillChars
-        // spill (a few MB) in maxChars-sized pages previously cost one whole-file read PER page — an
-        // O(fileSize) read repeated once per page, ~O(fileSize^2 / pageSize) total I/O across a full
-        // walk. The first page of a fetch sequence populates the cache; every later page in that same
-        // sequence is a cache hit. A miss (cold cache, or the sliding window lapsed between pages) falls
-        // back to a fresh disk read, so this is purely a cost optimization — correctness never depends
-        // on the cache being warm.
-        var cacheKey = PageCacheKey(scopeId, resultId);
-        if (!_pageCache.TryGetValue(cacheKey, out string? content) || content is null)
+        // cache of the decoded content — the same IMemoryCache-plus-sliding-expiration shape
+        // AgentConversationCache already uses. Walking a full MaxSpillChars spill (a few MB) in
+        // maxChars-sized pages previously cost one whole-file read PER page — an O(fileSize) read
+        // repeated once per page, ~O(fileSize^2 / pageSize) total I/O across a full walk. The first page
+        // of a fetch sequence populates the cache; every later page in that same sequence is a cache
+        // hit. A miss (cold cache, or the sliding window lapsed between pages) falls back to a fresh
+        // disk read, so this is purely a cost optimization — correctness never depends on the cache
+        // being warm.
+        //
+        // Keyed by the resolved storagePath, not by (scopeId, resultId) directly — a code-review finding
+        // on the first cut of this fix: PruneExpiredAsync only ever has a raw file PATH in hand (from
+        // Directory.EnumerateFiles), never the original pre-sanitization scopeId a (scopeId, resultId)
+        // key would need to evict the matching entry. A scope id containing ':' (PlanRunKeys.
+        // StepConversationId's "{runScope}:{stepId}" shape, admitted by AllowedCharset) is rewritten to
+        // '~' on disk by SanitizeSessionSegment, and that rewrite is one-directional by design — so
+        // reconstructing a (scopeId, resultId) cache key FROM a directory name can silently miss the
+        // real entry for any scope id that used a colon. storagePath has no such ambiguity: it is what
+        // both this method and StoreIfLargeAsync already compute deterministically from the same
+        // sanitized segments, and it is exactly what PruneExpiredAsync's own sweep loop already holds
+        // as `filePath` — see this method's remarks for why reconstructing a path deterministically,
+        // rather than trusting an in-memory index, is this store's standing design already.
+        if (!_pageCache.TryGetValue(storagePath, out string? content) || content is null)
         {
             try
             {
@@ -390,7 +400,7 @@ public sealed class FileSystemToolResultStore : IToolResultStore
             }
 
             _pageCache.Set(
-                cacheKey, content, new MemoryCacheEntryOptions { SlidingExpiration = PageCacheSlidingExpiration });
+                storagePath, content, new MemoryCacheEntryOptions { SlidingExpiration = PageCacheSlidingExpiration });
         }
 
         var clampedOffset = Math.Min(offset, content.Length);
@@ -458,6 +468,16 @@ public sealed class FileSystemToolResultStore : IToolResultStore
                 {
                     File.Delete(filePath);
                     removed++;
+
+                    // #574 code-review finding: the page-fetch cache is keyed by this same storagePath
+                    // (see RetrievePageAsync's own remarks) but nothing evicted it when the backing file
+                    // was reclaimed. Left unevicted, a page fetch within the cache's 5-minute sliding
+                    // window could keep serving "reclaimed" content past the point retention was
+                    // supposed to make it unrecoverable — a real behavioral regression versus reading
+                    // straight from disk every time, which always failed consistently once a file was
+                    // gone. IMemoryCache.Remove is a no-op when the key was never cached, so this is
+                    // safe to call unconditionally rather than checking for a hit first.
+                    _pageCache.Remove(filePath);
                 }
                 catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
                 {

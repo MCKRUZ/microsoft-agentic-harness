@@ -262,19 +262,19 @@ internal static class ToolResultText
 
     /// <summary>
     /// Counts the blocks <see cref="ExtractContentArrayText"/> would actually join — the same
-    /// <see cref="IsContentBlock"/>/<see cref="TryGetBlockText"/> recognition it uses, so this count and
-    /// that join can never disagree about how many separators will really be inserted.
+    /// <see cref="IsContentBlock"/>/<see cref="HasBlockText"/> recognition <see cref="TryGetBlockText"/>
+    /// uses (via the shared <see cref="ResolveTextHolder"/>), so this count and that join can never
+    /// disagree about how many separators will really be inserted.
     /// </summary>
-    private static int CountTextCarryingBlocks(JsonElement content)
-    {
-        var count = 0;
-        foreach (var block in content.EnumerateArray())
-        {
-            if (IsContentBlock(block, out var type) && TryGetBlockText(block, type, out _, out _))
-                count++;
-        }
-        return count;
-    }
+    /// <remarks>
+    /// Efficiency finding (/simplify): an earlier version called <see cref="TryGetBlockText"/> here and
+    /// discarded its extracted text — decoding every block's string via <c>JsonElement.GetString()</c>
+    /// just to count it, then <see cref="Transform"/>'s own walk (via
+    /// <see cref="TransformSerializedContentBlocks"/>) decoded the SAME blocks again to actually use
+    /// them. <see cref="HasBlockText"/> shares the identical structural recognition without extracting.
+    /// </remarks>
+    private static int CountTextCarryingBlocks(JsonElement content) =>
+        content.EnumerateArray().Count(block => IsContentBlock(block, out var type) && HasBlockText(block, type));
 
     /// <summary>
     /// String-typed overload of <see cref="PreCutForScan(object?, int, int, string)"/> for a caller that
@@ -525,15 +525,7 @@ internal static class ToolResultText
     private static bool TryGetBlockText(JsonElement block, string? type, out string text, out bool isEmbeddedResource)
     {
         isEmbeddedResource = type == "resource";
-        var holder = block;
-        if (isEmbeddedResource
-            && (!block.TryGetProperty("resource", out holder) || holder.ValueKind != JsonValueKind.Object))
-        {
-            text = string.Empty;
-            return false;
-        }
-
-        if ((type == "text" || isEmbeddedResource)
+        if (ResolveTextHolder(block, type) is { } holder
             && holder.TryGetProperty("text", out var textProp)
             && textProp.ValueKind == JsonValueKind.String)
         {
@@ -544,6 +536,29 @@ internal static class ToolResultText
         text = string.Empty;
         return false;
     }
+
+    /// <summary>
+    /// Whether a content block carries free text, without extracting or decoding it — the count-only
+    /// sibling of <see cref="TryGetBlockText"/>, sharing the identical <see cref="ResolveTextHolder"/>
+    /// recognition so the two can never disagree about which blocks qualify.
+    /// </summary>
+    private static bool HasBlockText(JsonElement block, string? type) =>
+        ResolveTextHolder(block, type) is { } holder
+        && holder.TryGetProperty("text", out var textProp)
+        && textProp.ValueKind == JsonValueKind.String;
+
+    /// <summary>
+    /// Resolves the JSON object a content block's free text would live under: the block itself for a
+    /// plain <c>"text"</c> block, or its nested <c>resource</c> object for an embedded-resource block —
+    /// or <see langword="null"/> when neither shape matches, or the resource holder is missing/malformed.
+    /// </summary>
+    private static JsonElement? ResolveTextHolder(JsonElement block, string? type) => type switch
+    {
+        "text" => block,
+        "resource" when block.TryGetProperty("resource", out var resource)
+            && resource.ValueKind == JsonValueKind.Object => resource,
+        _ => null
+    };
 
     private static string SanitizeText(string text, ICompositeResponseSanitizer sanitizer, string toolName)
     {

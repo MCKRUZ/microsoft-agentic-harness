@@ -268,44 +268,66 @@ public sealed class ToolCallAdmissionPipelineTests
     }
 
     [Fact]
-    public async Task ApplyOutputPolicy_RawUnderCeilingButRedactionInflatesPastIt_ReturnsFullTreatedTextUncut()
+    public async Task ApplyOutputPolicy_RawUnderCeilingButRedactionInflatesPastIt_StillRespectsCeilingWithNoSpillAttempted()
     {
         // #577: FileSystemToolResultStore.StoreIfLargeAsync decides inline-vs-spill from RAW length
         // against the ceiling. Deciding truncation here from TREATED (post-redaction) length instead
         // can disagree with the store: raw is 40 chars (under the 50-char ceiling — the store would
         // keep this inline with no spill), but redaction inflates it to 60 chars (a secret becoming a
-        // longer placeholder), crossing the ceiling on the treated side alone. Left uncorrected, the
-        // model would be told this result was truncated and given a retrieval id, even though the
-        // smaller raw content was already available in full.
+        // longer placeholder), crossing the ceiling on the treated side alone. The fix is narrower than
+        // "return the full text uncut" — an earlier version of this fix did exactly that and broke
+        // SettleAggregateReservation's contract that actualLength never exceeds what was reserved (see
+        // the pipeline's own corrected #577 comment). The per-message ceiling still applies; what
+        // changes is that no spill is attempted and no retrieval id is promised for content the store
+        // would have kept inline anyway.
         var raw = new string('a', 40);
         var redacted = new string('b', 60);
         var gate = new Mock<IToolClassificationGate>();
         gate.Setup(g => g.RedactResult(Tool, It.IsAny<object?>())).Returns(redacted);
-        var pipeline = AdmissionHarness.Pipeline(classificationGate: gate.Object, outputCeiling: 50);
+        var resultStore = new Mock<IToolResultStore>();
+        var pipeline = AdmissionHarness.Pipeline(
+            classificationGate: gate.Object, outputCeiling: 50, resultStore: resultStore.Object);
 
         var result = await pipeline.ApplyOutputPolicyAsync(
             ToolCallAdmission.AllowWithOutputRedaction(), Tool, raw, CancellationToken.None);
 
-        result.Should().Be(redacted,
-            "the raw content fit inline, so the model must see the full treated text, not a truncated one");
+        ToolResultText.ExtractText(result).Length.Should().BeLessThanOrEqualTo(50,
+            "the aggregate/per-message ceiling must never be exceeded, however the truncation was decided");
+        resultStore.Verify(
+            s => s.StoreIfLargeAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string>(),
+                It.IsAny<bool>(), It.IsAny<int?>(), It.IsAny<CancellationToken>()),
+            Times.Never,
+            "raw content fit inline, so no spill may be attempted and no retrieval id promised");
     }
 
     [Fact]
-    public async Task TryApplyTextOutputPolicy_RawUnderCeilingButRedactionInflatesPastIt_ReturnsFullTreatedTextUncut()
+    public async Task TryApplyTextOutputPolicy_RawUnderCeilingButRedactionInflatesPastIt_StillRespectsCeilingWithNoSpillAttempted()
     {
         // #577: same fix as ApplyOutputPolicy's identical test above, for the text-typed sibling method.
         var raw = new string('a', 40);
         var redacted = new string('b', 60);
         var gate = new Mock<IToolClassificationGate>();
         gate.Setup(g => g.RedactResult(Tool, raw)).Returns(redacted);
-        var pipeline = AdmissionHarness.Pipeline(classificationGate: gate.Object, outputCeiling: 50);
+        var resultStore = new Mock<IToolResultStore>();
+        var pipeline = AdmissionHarness.Pipeline(
+            classificationGate: gate.Object, outputCeiling: 50, resultStore: resultStore.Object);
 
         var policy = await pipeline.TryApplyTextOutputPolicyAsync(
             ToolCallAdmission.AllowWithOutputRedaction(), Tool, raw, CancellationToken.None);
 
         policy.Success.Should().BeTrue();
-        policy.Result.Should().Be(redacted);
-        policy.WasTruncated.Should().BeFalse("the raw content fit inline; nothing was actually cut");
+        policy.Result!.Length.Should().BeLessThanOrEqualTo(50,
+            "the aggregate/per-message ceiling must never be exceeded, however the truncation was decided");
+        policy.WasTruncated.Should().BeFalse(
+            "no spill was attempted, so there is nothing left for a caller to retrieve — reporting " +
+            "truncation would invite a fetch attempt with nothing behind it");
+        resultStore.Verify(
+            s => s.StoreIfLargeAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string>(),
+                It.IsAny<bool>(), It.IsAny<int?>(), It.IsAny<CancellationToken>()),
+            Times.Never,
+            "raw content fit inline, so no spill may be attempted and no retrieval id promised");
     }
 
     [Fact]
