@@ -52,15 +52,17 @@ internal sealed partial class ExfiltrationUrlDetector : IResponseSanitizer
         return pattern.Replace(content, "[REDACTED:exfiltration_url]");
     }
 
-    [GeneratedRegex(@"https?://[^\s]*(?:ngrok\.io|ngrok\.app|requestbin\.com|pipedream\.net|webhook\.site|burpcollaborator\.net|hookbin\.com|beeceptor\.com)[^\s]*", RegexOptions.IgnoreCase)]
+    // Security-review finding: same rationale as CredentialRedactor's identical remark — this chain
+    // now also runs over up to several MB of attacker-influenceable content at write time.
+    [GeneratedRegex(@"https?://[^\s]*(?:ngrok\.io|ngrok\.app|requestbin\.com|pipedream\.net|webhook\.site|burpcollaborator\.net|hookbin\.com|beeceptor\.com)[^\s]*", RegexOptions.IgnoreCase, matchTimeoutMilliseconds: 1000)]
     private static partial Regex KnownExfilServicePattern();
 
-    [GeneratedRegex(@"data:[a-z]+/[a-z0-9+.-]+;base64,[A-Za-z0-9+/]+=*", RegexOptions.IgnoreCase)]
+    [GeneratedRegex(@"data:[a-z]+/[a-z0-9+.-]+;base64,[A-Za-z0-9+/]+=*", RegexOptions.IgnoreCase, matchTimeoutMilliseconds: 1000)]
     private static partial Regex DataUriPattern();
 
-    [GeneratedRegex(@"https?://[^\s?]+\?[^\s]*[=][A-Za-z0-9+/]{40,}={0,2}")]
+    [GeneratedRegex(@"https?://[^\s?]+\?[^\s]*[=][A-Za-z0-9+/]{40,}={0,2}", RegexOptions.None, matchTimeoutMilliseconds: 1000)]
     private static partial Regex Base64QueryParamPattern();
 
-    [GeneratedRegex(@"https?://\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}[^\s]*(?:%[0-9A-Fa-f]{2}){3,}[^\s]*")]
+    [GeneratedRegex(@"https?://\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}[^\s]*(?:%[0-9A-Fa-f]{2}){3,}[^\s]*", RegexOptions.None, matchTimeoutMilliseconds: 1000)]
     private static partial Regex IpUrlEncodedPayloadPattern();
 }

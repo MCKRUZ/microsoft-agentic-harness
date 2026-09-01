@@ -56,30 +56,37 @@ internal sealed partial class CredentialRedactor : IResponseSanitizer
         return pattern.Replace(content, $"[REDACTED:{typeTag}]");
     }
 
-    [GeneratedRegex(@"AKIA[0-9A-Z]{16}")]
+    // Security-review finding: FileSystemToolResultStore's write-time scan (#559-563) runs this chain
+    // over up to MaxSpillChars+8KB of attacker-influenceable tool output — several MB by default, far
+    // past the small strings these patterns were written against. matchTimeoutMilliseconds mirrors the
+    // convention McpSecurityScannerAdapter's own patterns already use (1000ms) — a hang here throws
+    // RegexMatchTimeoutException instead of blocking indefinitely; every caller of this sanitizer chain
+    // (ToolCallAdmissionPipeline.SpillAndBuildMarkerAsync, ToolOutputCompressionBehavior.Handle) already
+    // wraps its call in a catch-all that degrades gracefully rather than faulting the turn.
+    [GeneratedRegex(@"AKIA[0-9A-Z]{16}", RegexOptions.None, matchTimeoutMilliseconds: 1000)]
     private static partial Regex AwsKeyPattern();
 
-    [GeneratedRegex(@"DefaultEndpointsProtocol=\S+AccountKey=\S+")]
+    [GeneratedRegex(@"DefaultEndpointsProtocol=\S+AccountKey=\S+", RegexOptions.None, matchTimeoutMilliseconds: 1000)]
     private static partial Regex AzureConnectionStringPattern();
 
-    [GeneratedRegex(@"eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]+")]
+    [GeneratedRegex(@"eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]+", RegexOptions.None, matchTimeoutMilliseconds: 1000)]
     private static partial Regex JwtPattern();
 
-    [GeneratedRegex(@"ghp_[A-Za-z0-9]{30,}")]
+    [GeneratedRegex(@"ghp_[A-Za-z0-9]{30,}", RegexOptions.None, matchTimeoutMilliseconds: 1000)]
     private static partial Regex GitHubPatPattern();
 
-    [GeneratedRegex(@"sk-[A-Za-z0-9_-]{20,}")]
+    [GeneratedRegex(@"sk-[A-Za-z0-9_-]{20,}", RegexOptions.None, matchTimeoutMilliseconds: 1000)]
     private static partial Regex ApiKeyPattern();
 
-    [GeneratedRegex(@"xoxb-[0-9]{10,}-[A-Za-z0-9]+")]
+    [GeneratedRegex(@"xoxb-[0-9]{10,}-[A-Za-z0-9]+", RegexOptions.None, matchTimeoutMilliseconds: 1000)]
     private static partial Regex SlackTokenPattern();
 
-    [GeneratedRegex(@"-----BEGIN (?:RSA |EC |DSA )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |EC |DSA )?PRIVATE KEY-----")]
+    [GeneratedRegex(@"-----BEGIN (?:RSA |EC |DSA )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |EC |DSA )?PRIVATE KEY-----", RegexOptions.None, matchTimeoutMilliseconds: 1000)]
     private static partial Regex PrivateKeyPattern();
 
-    [GeneratedRegex(@"Basic [A-Za-z0-9+/]{10,}={0,2}")]
+    [GeneratedRegex(@"Basic [A-Za-z0-9+/]{10,}={0,2}", RegexOptions.None, matchTimeoutMilliseconds: 1000)]
     private static partial Regex BasicAuthPattern();
 
-    [GeneratedRegex(@"(?:password|secret|token|api_key)\s*[=:]\s*(?!\[REDACTED)\S+", RegexOptions.IgnoreCase)]
+    [GeneratedRegex(@"(?:password|secret|token|api_key)\s*[=:]\s*(?!\[REDACTED)\S+", RegexOptions.IgnoreCase, matchTimeoutMilliseconds: 1000)]
     private static partial Regex GenericSecretPattern();
 }
