@@ -7,6 +7,7 @@ using Domain.AI.Telemetry.Redaction;
 using Domain.Common.Config;
 using Domain.Common.Helpers;
 using Microsoft.Extensions.Caching.Memory;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -71,14 +72,18 @@ public sealed class FileSystemToolResultStore : IToolResultStore
     /// </param>
     /// <param name="pageCache">
     /// Backs a short-lived decoded-content cache for <see cref="RetrievePageAsync"/> (#574) — see that
-    /// method's own remarks for why re-reading the whole file per page was replaced with this.
+    /// method's own remarks for why re-reading the whole file per page was replaced with this. A
+    /// DEDICATED, size-bounded instance keyed <c>"tool-result-page-cache"</c> (security-review finding)
+    /// — never the ambient app-wide <see cref="IMemoryCache"/> singleton other consumers
+    /// (e.g. <c>AgentConversationCache</c>) share, so a pathological fetch pattern here cannot pin an
+    /// unbounded amount of memory in a cache other subsystems also depend on.
     /// </param>
     /// <param name="logger">Logger for storage diagnostics.</param>
     public FileSystemToolResultStore(
         IOptionsMonitor<AppConfig> options,
         ICompositeResponseSanitizer sanitizer,
         IContentRedactionFilter redactionFilter,
-        IMemoryCache pageCache,
+        [FromKeyedServices("tool-result-page-cache")] IMemoryCache pageCache,
         ILogger<FileSystemToolResultStore> logger)
     {
         _options = options;
@@ -399,8 +404,15 @@ public sealed class FileSystemToolResultStore : IToolResultStore
                 throw new KeyNotFoundException($"No stored result found for id '{resultId}'.");
             }
 
+            // Security-review finding: Size must be set explicitly (in characters, the same unit the
+            // dedicated cache's own SizeLimit is expressed in — see this constructor's own remarks) so
+            // the cache can actually enforce that limit. Without it, every entry costs nothing toward
+            // SizeLimit as far as the cache is concerned, and a SizeLimit with no per-entry Size is not
+            // a bound at all.
             _pageCache.Set(
-                storagePath, content, new MemoryCacheEntryOptions { SlidingExpiration = PageCacheSlidingExpiration });
+                storagePath,
+                content,
+                new MemoryCacheEntryOptions { SlidingExpiration = PageCacheSlidingExpiration, Size = content.Length });
         }
 
         var clampedOffset = Math.Min(offset, content.Length);

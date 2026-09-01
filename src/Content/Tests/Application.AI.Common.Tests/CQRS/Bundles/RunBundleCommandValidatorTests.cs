@@ -62,11 +62,6 @@ public sealed class RunBundleCommandValidatorTests
     [InlineData("conv/../other")]
     [InlineData("conv/nested")]
     [InlineData("conv\\nested")]
-    // "C:" (not "conv:1" — see StorageSegmentSafety.AllowedCharset reuse below): a single-letter-prefix
-    // colon is Windows-drive-rooted and must stay rejected; a multi-character prefix like "conv:1" is
-    // charset-legal and shape-safe under the shared validator now used here, and is covered as a VALID
-    // case below instead.
-    [InlineData("C:")]
     [InlineData("conv id")]
     [InlineData("conv\n1")]
     public void Validate_ConversationIdWithPathOrControlCharacters_IsRejected(string id)
@@ -76,13 +71,36 @@ public sealed class RunBundleCommandValidatorTests
     }
 
     [Fact]
+    public void Validate_WindowsDriveRootedConversationId_FailsOnlyOnWindows()
+    {
+        // Build-and-test finding (the exact bug class this codebase has already been bitten by —
+        // see RunConversationCommandValidatorTests' identical-shaped test): Path.IsPathRooted("C:") is
+        // true (drive-rooted) only on Windows. StorageSegmentSafety correctly measures it as NOT rooted
+        // on Linux/macOS, where drive letters do not exist and the allowed charset already excludes the
+        // only character ('/') that IS rooted there — a single-letter prefix before ':' is not, by
+        // itself, unsafe on that platform. A test asserting unconditional rejection here is exactly the
+        // hardcoded-Windows-assumption CI already failed on once for this shared validator's siblings.
+        var result = _validator.Validate(Command("C:"));
+
+        if (OperatingSystem.IsWindows())
+        {
+            result.IsValid.Should().BeFalse();
+        }
+        else
+        {
+            result.IsValid.Should().BeTrue();
+        }
+    }
+
+    [Fact]
     public void Validate_ConversationIdWithMultiCharacterColonPrefix_IsValid()
     {
         // #576/reuse fix: this validator now shares Domain.Common.Helpers.StorageSegmentSafety with
         // RunConversationCommandValidator/RunOrchestratedTaskCommandValidator, which admits ':' for
         // PlanRunKeys.StepConversationId's "{runScope}:{stepId}" shape — safe because
         // Path.IsPathRooted only measures a SINGLE-character prefix before ':' as a Windows drive root
-        // (see "C:" in the rejected theory above), not a multi-character one like this.
+        // (see Validate_WindowsDriveRootedConversationId_FailsOnlyOnWindows above), not a
+        // multi-character one like this — true on every platform, not just Windows.
         _validator.Validate(Command("conv-1:step-5")).IsValid.Should().BeTrue();
     }
 

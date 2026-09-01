@@ -319,9 +319,12 @@ public sealed class ToolCallAdmissionPipelineTests
         policy.Success.Should().BeTrue();
         policy.Result!.Length.Should().BeLessThanOrEqualTo(50,
             "the aggregate/per-message ceiling must never be exceeded, however the truncation was decided");
-        policy.WasTruncated.Should().BeFalse(
-            "no spill was attempted, so there is nothing left for a caller to retrieve — reporting " +
-            "truncation would invite a fetch attempt with nothing behind it");
+        policy.WasTruncated.Should().BeTrue(
+            "correctness-review finding: the returned text genuinely IS shorter than what redaction " +
+            "produced — WasTruncated reports whether the pipeline cut the text to fit its ceiling, " +
+            "nothing about whether a retrieval id was offered for it. Reporting false here (an earlier " +
+            "version of this fix did) would tell a caller like DirectToolInvoker that nothing was cut " +
+            "when something genuinely was.");
         resultStore.Verify(
             s => s.StoreIfLargeAsync(
                 It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string>(),

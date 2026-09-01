@@ -660,16 +660,14 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
         // Correctness-review finding on the first cut of this fix (same defect as ApplyOutputPolicyAsync's
         // identical corrected comment): it returned `processed` UNCUT, which can genuinely exceed
         // effectiveCeiling and silently under-charges SettleAggregateReservation's aggregate ledger
-        // (`unused = reserved - actualLength` goes negative and the `unused &lt;= 0` guard no-ops rather
+        // (`unused = reserved - actualLength` goes negative and the `unused <= 0` guard no-ops rather
         // than debiting the overage). `bounded` — already correctly capped, computed above — is the
-        // right text either way, which is also why this collapses into the SAME branch as
-        // `!wasTruncated` below rather than staying a separate one: after this correction the two cases
-        // do the identical thing.
+        // right text either way.
         //
         // The `!droppedByPreCut` conjunct that used to gate this is provably redundant, not merely
-        // simplifiable: effectiveCeiling &lt;= ceiling (ReserveAggregateCeiling's Math.Max/Math.Min both
-        // cap at perResultCeiling) &lt; ceiling + ScrubOverlapMargin (the pre-cut's own threshold), so
-        // content.Length &lt;= effectiveCeiling already implies content.Length is under the pre-cut's
+        // simplifiable: effectiveCeiling <= ceiling (ReserveAggregateCeiling's Math.Max/Math.Min both
+        // cap at perResultCeiling) < ceiling + ScrubOverlapMargin (the pre-cut's own threshold), so
+        // content.Length <= effectiveCeiling already implies content.Length is under the pre-cut's
         // threshold too — droppedByPreCut cannot be true when this branch's own length check passes.
         // Also only checked when a real spill could actually happen: when the scope isn't retrievable,
         // SpillAndBuildMarkerAsync (below) already degrades to the plain marker with no disk write —
@@ -678,7 +676,23 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
             cutAfterProcessing && content is not null && content.Length <= effectiveCeiling
             && _executionContext.HasRetrievableToolResultScope;
 
-        if (!wasTruncated || rawFitsWithNoGenuinePromiseToMake)
+        // Correctness-review finding on the SECOND cut of this fix: folding this case into the SAME
+        // branch as `!wasTruncated` below and reporting WasTruncated: false was itself wrong — `bounded`
+        // genuinely IS shorter than `processed` here (cutAfterProcessing is true by construction of
+        // this branch's own guard). WasTruncated's contract (see its own XML doc on
+        // TextOutputPolicyResult) is "did the pipeline cut the text to fit its ceiling", full stop — it
+        // says nothing about whether a retrieval id was offered, and DirectToolInvoker publishes it as
+        // an OutputTruncated signal independent of any marker text embedded in Result. Only the
+        // RETRIEVAL PROMISE is what #577 has any business suppressing here, not the truncation fact
+        // itself — caught because CI's correctness-review gate re-derives its own verdict from the
+        // code, not from what a comment claims.
+        if (rawFitsWithNoGenuinePromiseToMake)
+        {
+            SettleAggregateReservation(effectiveCeiling, bounded.Length);
+            return new TextOutputPolicyResult(Success: true, Result: bounded, WasTruncated: true);
+        }
+
+        if (!wasTruncated)
         {
             SettleAggregateReservation(effectiveCeiling, bounded.Length);
             return new TextOutputPolicyResult(Success: true, Result: bounded, WasTruncated: false);

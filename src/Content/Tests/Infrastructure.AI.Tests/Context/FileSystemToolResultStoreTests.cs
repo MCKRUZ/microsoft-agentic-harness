@@ -156,6 +156,36 @@ public sealed class FileSystemToolResultStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task RetrievePageAsync_CachesAPage_RecordsTheEntrysSizeInCharacters()
+    {
+        // Security-review finding on PR #581: entries were cached with NO Size at all, so the
+        // dedicated cache's SizeLimit (added in the same fix) could never actually be enforced — a
+        // SizeLimit with no per-entry Size accounting is not a bound, it's decoration. TrackStatistics
+        // surfaces CurrentEstimatedSize from the exact same internal accounting SizeLimit itself relies
+        // on, so this proves the wiring directly rather than depending on MemoryCache's internal
+        // eviction-timing implementation details (which proved too flaky to assert against directly).
+        // SizeLimit must be configured, not just TrackStatistics — CurrentEstimatedSize otherwise
+        // reports null, since the cache has no reason to accumulate a running size total at all.
+        var cache = new MemoryCache(new MemoryCacheOptions { TrackStatistics = true, SizeLimit = 1_000_000 });
+        var sut = new FileSystemToolResultStore(
+            OptionsMonitor(),
+            PermissiveAdmission.PermissiveSanitizer(),
+            new DefaultContentRedactionFilter(),
+            cache,
+            Mock.Of<ILogger<FileSystemToolResultStore>>());
+
+        var output = new string('x', 60);
+        var stored = await sut.StoreIfLargeAsync(
+            "session1", "search", null, output, scopeIsRetrievable: true, sizeThreshold: 10);
+
+        await sut.RetrievePageAsync(stored.ResultId, "session1", offset: 0, maxChars: 60);
+
+        cache.GetCurrentStatistics()!.CurrentEstimatedSize.Should().Be(60,
+            "the cache entry's Size must be set to the content length, or a configured SizeLimit on " +
+            "the real production cache could never actually be enforced");
+    }
+
+    [Fact]
     public async Task StoreIfLargeAsync_OutputLargerThanMaxSpillChars_TruncatesAtTheCap()
     {
         // #563: MaxSpillChars bounds disk, independent of PerResultCharLimit — an unbounded write
