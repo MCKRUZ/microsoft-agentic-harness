@@ -1,6 +1,8 @@
 using System.Text.RegularExpressions;
 using Application.AI.Common.Interfaces.Governance;
+using Application.AI.Common.OpenTelemetry.Metrics;
 using Domain.AI.Governance;
+using Domain.AI.Telemetry.Conventions;
 using Domain.Common.Config.AI;
 
 namespace Infrastructure.AI.Governance.Adapters;
@@ -24,10 +26,10 @@ internal sealed partial class ExfiltrationUrlDetector : IResponseSanitizer
         var findings = new List<SanitizationFinding>();
         var sanitized = content;
 
-        sanitized = ScanAndRedact(sanitized, KnownExfilServicePattern(), ThreatLevel.High, 0.90, "URL targets known exfiltration service", findings);
-        sanitized = ScanAndRedact(sanitized, DataUriPattern(), ThreatLevel.High, 0.85, "Data URI with encoded content", findings);
-        sanitized = ScanAndRedact(sanitized, Base64QueryParamPattern(), ThreatLevel.Medium, 0.75, "URL contains large base64-encoded query parameter", findings);
-        sanitized = ScanAndRedact(sanitized, IpUrlEncodedPayloadPattern(), ThreatLevel.Medium, 0.70, "IP-addressed URL with URL-encoded payload", findings);
+        sanitized = ScanAndRedact(sanitized, KnownExfilServicePattern(), ThreatLevel.High, 0.90, "URL targets known exfiltration service", findings, toolName);
+        sanitized = ScanAndRedact(sanitized, DataUriPattern(), ThreatLevel.High, 0.85, "Data URI with encoded content", findings, toolName);
+        sanitized = ScanAndRedact(sanitized, Base64QueryParamPattern(), ThreatLevel.Medium, 0.75, "URL contains large base64-encoded query parameter", findings, toolName);
+        sanitized = ScanAndRedact(sanitized, IpUrlEncodedPayloadPattern(), ThreatLevel.Medium, 0.70, "IP-addressed URL with URL-encoded payload", findings, toolName);
 
         if (findings.Count == 0)
             return SanitizationResult.Clean(content);
@@ -35,12 +37,46 @@ internal sealed partial class ExfiltrationUrlDetector : IResponseSanitizer
         return SanitizationResult.WithFindings(sanitized, content, findings.AsReadOnly());
     }
 
+    /// <summary>
+    /// Security-review finding (HIGH), same shape flagged against <see cref="CredentialRedactor"/> and
+    /// <see cref="ResponseInjectionScrubber"/> — see <see cref="CredentialRedactor"/>'s remarks. Not
+    /// itself part of #580/#578's diff, but the identical defect: a timeout on one of this type's four
+    /// patterns used to unwind the whole method, dropping every other rule's scrub for the same call.
+    /// </summary>
     private static string ScanAndRedact(
         string content, Regex pattern, ThreatLevel threatLevel,
-        double confidence, string description, List<SanitizationFinding> findings)
+        double confidence, string description, List<SanitizationFinding> findings, string? toolName)
     {
-        var matches = pattern.Matches(content);
-        if (matches.Count == 0) return content;
+        MatchCollection matches;
+        try
+        {
+            // MatchCollection is lazy: Matches() itself does no scanning, and a RegexMatchTimeoutException
+            // is only thrown once the collection is actually enumerated or Counted. Forcing that HERE,
+            // inside the try, is load-bearing — see CredentialRedactor.ScanAndRedact's identical remark
+            // for why the first cut of this fix let the timeout escape uncaught.
+            matches = pattern.Matches(content);
+            if (matches.Count == 0) return content;
+        }
+        catch (RegexMatchTimeoutException)
+        {
+            GovernanceMetrics.SanitizerTimeouts.Add(1,
+                new KeyValuePair<string, object?>(GovernanceConventions.SanitizationCategoryTag, SanitizationCategory.ExfiltrationUrl.ToString()),
+                new KeyValuePair<string, object?>(GovernanceConventions.ToolName, toolName ?? "unknown"));
+            return content;
+        }
+
+        string redacted;
+        try
+        {
+            redacted = pattern.Replace(content, "[REDACTED:exfiltration_url]");
+        }
+        catch (RegexMatchTimeoutException)
+        {
+            GovernanceMetrics.SanitizerTimeouts.Add(1,
+                new KeyValuePair<string, object?>(GovernanceConventions.SanitizationCategoryTag, SanitizationCategory.ExfiltrationUrl.ToString()),
+                new KeyValuePair<string, object?>(GovernanceConventions.ToolName, toolName ?? "unknown"));
+            return content;
+        }
 
         foreach (Match match in matches)
         {
@@ -49,7 +85,7 @@ internal sealed partial class ExfiltrationUrlDetector : IResponseSanitizer
                 description, match.Index, match.Length, confidence));
         }
 
-        return pattern.Replace(content, "[REDACTED:exfiltration_url]");
+        return redacted;
     }
 
     // Security-review finding: same rationale as CredentialRedactor's identical remark — this chain

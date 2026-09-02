@@ -333,6 +333,77 @@ public sealed class ToolCallAdmissionPipelineTests
             "raw content fit inline, so no spill may be attempted and no retrieval id promised");
     }
 
+    // ── SanitizeOrRedact degrades on exception rather than faulting the turn (#580 problem 2) ──
+
+    [Fact]
+    public async Task ApplyOutputPolicy_SanitizerThrows_DegradesRatherThanFaultingTheTurn()
+    {
+        // Mutation test: remove SanitizeOrRedact's try/catch and this fails — the exception propagates
+        // out of ApplyOutputPolicyAsync instead of degrading to the pre-cut, unsanitized-by-this-pass
+        // text. A plain allow's baseline sanitize is defense-in-depth against injection, not a promise
+        // about secrets, so degrading here costs a scrub pass, not a leak.
+        var sanitizer = new Mock<ICompositeResponseSanitizer>();
+        sanitizer.Setup(s => s.Sanitize(It.IsAny<string>(), It.IsAny<string?>()))
+            .Throws<RegexMatchTimeoutException>();
+        var pipeline = AdmissionHarness.Pipeline(sanitizer: sanitizer.Object);
+
+        var result = await pipeline.ApplyOutputPolicyAsync(
+            ToolCallAdmission.Allow(), Tool, "harmless output", CancellationToken.None);
+
+        result.Should().Be("harmless output");
+    }
+
+    [Fact]
+    public async Task ApplyOutputPolicy_RedactionGateThrows_WithholdsRatherThanReturningUnredactedText()
+    {
+        // The other half of the same fix, opposite outcome deliberately: a required redaction exists
+        // because the classification gate flagged this call's output as needing scrubbing, so
+        // degrading to the raw text on an exception would silently emit exactly what redaction exists
+        // to withhold. Reuses this method's own existing "gate returned null" handling rather than a
+        // new code path — see SanitizeOrRedact's remarks.
+        var gate = new Mock<IToolClassificationGate>();
+        gate.Setup(g => g.RedactResult(Tool, It.IsAny<object?>())).Throws<RegexMatchTimeoutException>();
+        var pipeline = AdmissionHarness.Pipeline(classificationGate: gate.Object);
+
+        var result = await pipeline.ApplyOutputPolicyAsync(
+            ToolCallAdmission.AllowWithOutputRedaction(), Tool, "top secret value", CancellationToken.None);
+
+        ToolResultText.ExtractText(result).Should().NotContain("top secret value");
+    }
+
+    [Fact]
+    public async Task TryApplyTextOutputPolicy_SanitizerThrows_DegradesRatherThanFaultingTheTurn()
+    {
+        var sanitizer = new Mock<ICompositeResponseSanitizer>();
+        sanitizer.Setup(s => s.Sanitize(It.IsAny<string>(), It.IsAny<string?>()))
+            .Throws<RegexMatchTimeoutException>();
+        var pipeline = AdmissionHarness.Pipeline(sanitizer: sanitizer.Object);
+
+        var policy = await pipeline.TryApplyTextOutputPolicyAsync(
+            ToolCallAdmission.Allow(), Tool, "harmless output", CancellationToken.None);
+
+        policy.Success.Should().BeTrue();
+        policy.Result.Should().Be("harmless output");
+    }
+
+    [Fact]
+    public async Task TryApplyTextOutputPolicy_RedactionGateThrows_FailsClosedRatherThanReturningUnredactedText()
+    {
+        // Reaches the SAME fail-closed branch a null-returning gate already hits a few lines below —
+        // Success: false, Result: null — because SanitizeOrRedact normalizes the exception to null on
+        // the redact-required branch. See the null branch's own comment for why collapsing that
+        // distinction is deliberate.
+        var gate = new Mock<IToolClassificationGate>();
+        gate.Setup(g => g.RedactResult(Tool, It.IsAny<string?>())).Throws<RegexMatchTimeoutException>();
+        var pipeline = AdmissionHarness.Pipeline(classificationGate: gate.Object);
+
+        var policy = await pipeline.TryApplyTextOutputPolicyAsync(
+            ToolCallAdmission.AllowWithOutputRedaction(), Tool, "top secret value", CancellationToken.None);
+
+        policy.Success.Should().BeFalse();
+        policy.Result.Should().BeNull();
+    }
+
     [Fact]
     public async Task ApplyOutputPolicy_PlainAllow_SanitizesTheResultWithoutCallingTheClassificationGate()
     {

@@ -1,5 +1,3 @@
-using System.Reflection;
-using System.Text.RegularExpressions;
 using Domain.AI.Governance;
 using Domain.Common.Config.AI;
 using Infrastructure.AI.Governance.Adapters;
@@ -14,15 +12,7 @@ public sealed class ExfiltrationUrlDetectorTests
     [Fact]
     public void GeneratedPatterns_AllHaveAFiniteMatchTimeout()
     {
-        // Security-review finding: same rationale as CredentialRedactorTests' identical test — see
-        // that type's own remarks.
-        foreach (var method in typeof(ExfiltrationUrlDetector)
-            .GetMethods(BindingFlags.NonPublic | BindingFlags.Static)
-            .Where(m => m.ReturnType == typeof(Regex) && m.GetParameters().Length == 0))
-        {
-            var regex = (Regex)method.Invoke(null, null)!;
-            Assert.NotEqual(Regex.InfiniteMatchTimeout, regex.MatchTimeout);
-        }
+        RegexTimeoutAssertions.AssertAllHaveFiniteMatchTimeout(typeof(ExfiltrationUrlDetector));
     }
 
     [Fact]

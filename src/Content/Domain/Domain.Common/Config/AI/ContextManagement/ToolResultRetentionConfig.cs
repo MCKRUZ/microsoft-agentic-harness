@@ -31,14 +31,22 @@ public sealed class ToolResultRetentionConfig
 
     /// <summary>
     /// How long a spilled file must sit untouched, by last-write time, before it is reclaimed.
-    /// Defaults to 24 hours.
+    /// Defaults to 7 days.
     /// </summary>
     /// <remarks>
     /// Sized against how long a caller plausibly still wants to page through a truncated result, not
     /// against how long a conversation might stay idle — a spilled tool result is a byproduct of one
-    /// turn, not a durable record a caller returns to weeks later the way a conversation is. Raise
-    /// this if a deployment's agents routinely resume very old conversations and expect old spills to
-    /// still be fetchable; nothing else here needs changing to support that.
+    /// turn, not a durable record a caller returns to weeks later the way a conversation is. Even so,
+    /// the model's own <c>tool_result_fetch</c> marker embedded in a conversation transcript makes no
+    /// promise about how soon it expires, and a resumed conversation older than the grace period can
+    /// still contain one: the model believes the id is fetchable and gets a generic "not found"
+    /// indistinguishable from a wrong id (#578). 7 days — up from the original 24 hours — comfortably
+    /// covers realistic same-week conversation resumption without matching
+    /// <c>ConversationBudgetRetentionConfig.GracePeriod</c>'s 30-day window: a budget row is tens of
+    /// bytes, while a spilled tool result can be <c>MaxSpillChars</c>-sized (megabytes), so a 30-day
+    /// default here would be a real and disproportionate disk-growth commitment, not a free match.
+    /// Raise this further if a deployment's agents routinely resume very old conversations and expect
+    /// old spills to still be fetchable; nothing else here needs changing to support that.
     /// </remarks>
-    public TimeSpan GracePeriod { get; set; } = TimeSpan.FromHours(24);
+    public TimeSpan GracePeriod { get; set; } = TimeSpan.FromDays(7);
 }

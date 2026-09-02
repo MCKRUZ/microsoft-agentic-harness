@@ -141,7 +141,9 @@ public sealed class ToolResultFetchTool : ITool
         "Retrieves one page of a tool result that was truncated. Pass the id from the " +
         $"\"{string.Format(Application.AI.Common.Services.Governance.ToolCallAdmissionPipeline.SpilledResultMarkerFormat, "...").Trim()}\" " +
         "marker as the 'resultId' parameter. If the page returned says more is available, call again " +
-        "with the same 'resultId' and the 'offset' the page names to continue reading.";
+        "with the same 'resultId' and the 'offset' the page names to continue reading. Retrieval is " +
+        "only available for a limited time after the result was produced — shorter than the " +
+        "conversation itself may remain active — so an id from an older turn may no longer resolve.";
 
     /// <inheritdoc />
     public IReadOnlyList<string> SupportedOperations => Operations;
