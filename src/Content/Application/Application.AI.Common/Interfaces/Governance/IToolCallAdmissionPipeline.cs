@@ -141,17 +141,29 @@ public interface IToolCallAdmissionPipeline
     /// <see cref="ApplyOutputPolicyAsync"/>'s identical parameter for why.
     /// </param>
     /// <returns>
-    /// See <see cref="TextOutputPolicyResult"/>. <see cref="TextOutputPolicyResult.Success"/> is
-    /// <see langword="false"/> when a redaction was required but did not produce text, in which case
-    /// the caller must <strong>withhold</strong> the result rather than emit the original.
-    /// <see cref="TextOutputPolicyResult.Result"/> is <paramref name="content"/>, run unconditionally
-    /// through the general-purpose sanitizer — the same guarantee <see cref="ApplyOutputPolicyAsync"/>
-    /// carries (#469) — and additionally through
+    /// See <see cref="TextOutputPolicyResult"/>. <see cref="TextOutputPolicyResult.Outcome"/> is
+    /// <see cref="TextOutputPolicyOutcome.Withheld"/> when a redaction was required but did not
+    /// produce text, in which case the caller must <strong>withhold</strong> the result rather than
+    /// emit the original — <see cref="TextOutputPolicyResult.Text"/> is <see cref="string.Empty"/> in
+    /// that case, never the original content. <see cref="TextOutputPolicyOutcome.NothingToAdmit"/>
+    /// means <paramref name="content"/> was null: there was nothing to sanitize or redact, so
+    /// <see cref="TextOutputPolicyResult.Text"/> is <see cref="string.Empty"/> rather than the original
+    /// null — a caller that needs to preserve "no content at all" as distinct from "empty content"
+    /// must branch on <see cref="TextOutputPolicyOutcome.NothingToAdmit"/> itself, not on
+    /// <see cref="TextOutputPolicyResult.Text"/>. Otherwise <see cref="TextOutputPolicyOutcome.Admitted"/>
+    /// with <paramref name="content"/> run unconditionally through the general-purpose sanitizer — the
+    /// same guarantee <see cref="ApplyOutputPolicyAsync"/> carries (#469) — and additionally through
     /// <see cref="IToolClassificationGate.RedactResult(string, string?)"/>'s known-secret-pattern scrub
     /// when a redaction was required (#479 closed the gap where this method sanitized only on that
-    /// second path, unlike its sibling). Null content passes through as null: there is nothing to
-    /// sanitize or redact. Null when <see cref="TextOutputPolicyResult.Success"/> is
-    /// <see langword="false"/>.
+    /// second path, unlike its sibling).
+    /// <para>
+    /// <see cref="TextOutputPolicyResult.Text"/> is deliberately non-nullable (#490): the two prior
+    /// meanings a null carried — "nothing to admit" and "withheld" — collapsed at every consumer into
+    /// the same <c>?? string.Empty</c> fallback, which made a withheld result and an absent one
+    /// indistinguishable by the time either reached an audit trail or a plan step's output. Read
+    /// <see cref="TextOutputPolicyOutcome"/> to tell them apart; do not infer it from whether
+    /// <see cref="TextOutputPolicyResult.Text"/> happens to be empty.
+    /// </para>
     /// </returns>
     /// <remarks>
     /// Separate from <see cref="ApplyOutputPolicyAsync"/> because the two callers want different things
@@ -240,16 +252,62 @@ public interface IToolCallAdmissionPipeline
 }
 
 /// <summary>
+/// Why <see cref="TextOutputPolicyResult.Text"/> is what it is — see
+/// <see cref="IToolCallAdmissionPipeline.TryApplyTextOutputPolicyAsync"/>'s own remarks for the full
+/// account of what produces each value. Introduced by #490: before this existed, all three of these
+/// outcomes shared one nullable <c>string?</c> field, and every consumer collapsed "nothing to admit"
+/// and "withheld" into the same <c>?? string.Empty</c> fallback — indistinguishable by the time either
+/// reached an audit trail or a plan step's output.
+/// </summary>
+public enum TextOutputPolicyOutcome
+{
+    /// <summary>
+    /// The input was treated and is safe to use as-is — the ordinary case. Named first (and so the
+    /// enum's default value) deliberately: a test double that leaves this field unset produces a
+    /// result that is trivially wrong to consume unguarded, rather than one that looks like a
+    /// legitimate withhold. See the second member for the alternative this rejects.
+    /// </summary>
+    Admitted = 0,
+
+    /// <summary>
+    /// A redaction was required but did not produce text — the gate broke its non-null-in/non-null-out
+    /// contract, or the sanitize/redact chain itself threw. The caller must withhold the result rather
+    /// than emit the original; <see cref="TextOutputPolicyResult.Text"/> is <see cref="string.Empty"/>,
+    /// never the original content.
+    /// </summary>
+    Withheld,
+
+    /// <summary>
+    /// The input was null: there was nothing to sanitize or redact. Distinct from
+    /// <see cref="Withheld"/> so a caller that needs to preserve "no content at all" can branch on this
+    /// value instead of inferring it from an empty <see cref="TextOutputPolicyResult.Text"/>.
+    /// </summary>
+    NothingToAdmit,
+}
+
+/// <summary>
 /// The outcome of <see cref="IToolCallAdmissionPipeline.TryApplyTextOutputPolicyAsync"/> — see that
 /// method's own remarks for what each member means.
 /// </summary>
-/// <param name="Success">
-/// <see langword="false"/> when a redaction was required but did not produce text; the caller must
-/// withhold the result rather than emit the original.
+/// <param name="Outcome">Which of the three outcomes produced <paramref name="Text"/>.</param>
+/// <param name="Text">
+/// The treated text. Non-nullable by design (#490): <see cref="string.Empty"/> on both
+/// <see cref="TextOutputPolicyOutcome.Withheld"/> and <see cref="TextOutputPolicyOutcome.NothingToAdmit"/>,
+/// so a caller can never silently coalesce a withheld result into an empty one — the two are already
+/// the same value on this field; <paramref name="Outcome"/> is what still distinguishes them.
 /// </param>
-/// <param name="Result">The treated text, or <see langword="null"/> when <paramref name="Success"/> is <see langword="false"/>.</param>
 /// <param name="WasTruncated">Whether the pipeline itself cut the text to fit its ceiling.</param>
-public readonly record struct TextOutputPolicyResult(bool Success, string? Result, bool WasTruncated);
+public readonly record struct TextOutputPolicyResult(
+    TextOutputPolicyOutcome Outcome, string Text, bool WasTruncated)
+{
+    /// <summary>
+    /// True when the caller must withhold the result rather than emit <see cref="Text"/> as the
+    /// original — kept as a convenience for the two call sites that only ever needed the boolean
+    /// <c>Success</c> check this record used to expose directly, so a mechanical signature change is
+    /// enough for them.
+    /// </summary>
+    public bool Success => Outcome != TextOutputPolicyOutcome.Withheld;
+}
 
 /// <summary>
 /// One tool call, as the admission chain sees it.

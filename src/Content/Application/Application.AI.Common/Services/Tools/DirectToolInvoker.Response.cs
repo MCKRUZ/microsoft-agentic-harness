@@ -66,7 +66,6 @@ public sealed partial class DirectToolInvoker
             var errorPolicy = await admissionPipeline
                 .TryApplyTextOutputPolicyAsync(admission, toolName, failureText, cancellationToken)
                 .ConfigureAwait(false);
-            var admittedError = errorPolicy.Result;
             if (!errorPolicy.Success)
             {
                 // #491: this Denied is not a governance refusal in the usual sense — the tool DID run
@@ -87,7 +86,10 @@ public sealed partial class DirectToolInvoker
             }
 
             // No ErrorTruncated outcome field exists to report a drop on, matching prior behavior.
-            var (error, _) = Governance.BoundedText.Cap(admittedError ?? string.Empty, ceiling, TruncationMarker);
+            // #490: errorPolicy.Text is non-nullable now, so no ?? string.Empty fallback is needed —
+            // Admitted and NothingToAdmit both already carry an honest string.Empty on this field, and
+            // Withheld already returned above.
+            var (error, _) = Governance.BoundedText.Cap(errorPolicy.Text, ceiling, TruncationMarker);
             return new DirectToolInvocationOutcome
             {
                 Status = DirectToolInvocationStatus.ToolFailed,
@@ -102,7 +104,6 @@ public sealed partial class DirectToolInvoker
         var successPolicy = await admissionPipeline
             .TryApplyTextOutputPolicyAsync(admission, toolName, successText, cancellationToken)
             .ConfigureAwait(false);
-        var admitted = successPolicy.Result;
         var truncatedByPipeline = successPolicy.WasTruncated;
         if (!successPolicy.Success)
         {
@@ -122,7 +123,8 @@ public sealed partial class DirectToolInvoker
                 duration);
         }
 
-        var (output, truncatedByOwnCeiling) = Governance.BoundedText.Cap(admitted ?? string.Empty, ceiling, TruncationMarker);
+        // #490: successPolicy.Text is non-nullable — see the failure branch's identical comment above.
+        var (output, truncatedByOwnCeiling) = Governance.BoundedText.Cap(successPolicy.Text, ceiling, TruncationMarker);
 
         return new DirectToolInvocationOutcome
         {
