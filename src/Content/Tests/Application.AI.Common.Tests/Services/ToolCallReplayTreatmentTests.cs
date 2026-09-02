@@ -203,8 +203,7 @@ public sealed class ToolCallReplayTreatmentTests
     [Fact]
     public void Treat_JsonWithZeroWidthCharactersInStringLiteral_RemainsValidJsonAfterTreatment()
     {
-        var realSanitizer = new CompositeResponseSanitizer(
-        [
+        var realSanitizer = new CompositeResponseSanitizer([
             new CredentialRedactor(),
             new ResponseInjectionScrubber(),
             new ExfiltrationUrlDetector(),
@@ -234,8 +233,7 @@ public sealed class ToolCallReplayTreatmentTests
     [Fact]
     public void Treat_JsonWithQuotedSecretKey_RedactsTheValue()
     {
-        var realSanitizer = new CompositeResponseSanitizer(
-        [
+        var realSanitizer = new CompositeResponseSanitizer([
             new CredentialRedactor(),
             new ResponseInjectionScrubber(),
             new ExfiltrationUrlDetector(),

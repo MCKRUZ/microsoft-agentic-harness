@@ -7,8 +7,29 @@ using Domain.Common.Config.AI;
 namespace Infrastructure.AI.Governance.Adapters;
 
 /// <summary>Pattern-based MCP tool security scanner. Standalone implementation — AGT does not include MCP scanning.</summary>
+/// <remarks>
+/// #580: every <c>[GeneratedRegex]</c> in this file now carries <see cref="RegexTimeoutMilliseconds"/> —
+/// including the six that already had a timeout, previously an undocumented 1000ms. Standardized on
+/// 2000ms to match <c>CredentialRedactor</c>/<c>ResponseInjectionScrubber</c>'s own value in the same
+/// governance layer, whose comment records that 100ms reproduced a spurious
+/// <see cref="RegexMatchTimeoutException"/> on a 20-character input under nothing more exotic than CPU
+/// scheduling contention during a parallel test run — 1000ms was never measured against that failure
+/// mode the way 2000ms was, so this closes an inconsistency rather than picking a number fresh. The
+/// worst case this trades away is roughly double the per-tool scan latency (~7s to ~14s across the
+/// affected patterns) under an adversarial tool description engineered to hit every timeout at once —
+/// accepted because that scenario already fails open per rule (a withheld finding, not a hang or a
+/// crash), so the cost is latency on a pathological input, not a new failure mode.
+/// </remarks>
 internal sealed partial class McpSecurityScannerAdapter : IMcpSecurityScanner
 {
+    /// <summary>
+    /// Shared by every <c>[GeneratedRegex]</c> in this file — see this type's own remarks for why
+    /// 2000ms. A <c>[GeneratedRegex]</c> argument must be a compile-time constant, which a
+    /// <see langword="const"/> field reference satisfies; this replaces nine repeated magic-number
+    /// literals with one value to keep in sync.
+    /// </summary>
+    private const int RegexTimeoutMilliseconds = 2000;
+
     public McpToolScanResult ScanTool(string toolName, string toolDescription, string? toolSchema = null)
     {
         GovernanceMetrics.McpScans.Add(1);
@@ -116,7 +137,7 @@ internal sealed partial class McpSecurityScannerAdapter : IMcpSecurityScanner
     {
         var textToScan = descriptionAndSchema.Raw;
 
-        if (ZeroWidthPattern().IsMatch(textToScan))
+        if (ScannerText.TryFailOpen(() => ZeroWidthPattern().IsMatch(textToScan)))
         {
             threats.Add(new McpToolThreat(
                 McpThreatType.HiddenInstruction,
@@ -130,7 +151,7 @@ internal sealed partial class McpSecurityScannerAdapter : IMcpSecurityScanner
         // embedded credential placeholder) that this rule cannot distinguish from an encoded payload.
         // The short-field callers (a tool description, or a manifest's name/description) keep the
         // rule: those fields are prose-length, where the same run is genuinely rare and worth flagging.
-        if (includeBase64Rule && Base64BlockPattern().IsMatch(textToScan))
+        if (includeBase64Rule && ScannerText.TryFailOpen(() => Base64BlockPattern().IsMatch(textToScan)))
         {
             threats.Add(new McpToolThreat(
                 McpThreatType.HiddenInstruction,
@@ -175,7 +196,7 @@ internal sealed partial class McpSecurityScannerAdapter : IMcpSecurityScanner
     /// </remarks>
     private static void ScanForTyposquatting(string toolName, List<McpToolThreat> threats)
     {
-        if (TyposquattingPattern().IsMatch(toolName))
+        if (ScannerText.TryFailOpen(() => TyposquattingPattern().IsMatch(toolName)))
         {
             threats.Add(new McpToolThreat(
                 McpThreatType.Typosquatting,
@@ -213,7 +234,7 @@ internal sealed partial class McpSecurityScannerAdapter : IMcpSecurityScanner
         @"\b(?:ignor|disregard|overrid|overrul|bypass|forget)\w*\s+(?:\w+\s+){0,3}?" +
         @"(?:previous|prior|above|earlier|preceding|original|system|initial)\s+(?:\w+\s+){0,2}?" +
         @"(?:instructions?|prompts?|rules?|directives?|guardrails?)\b",
-        RegexOptions.IgnoreCase | RegexOptions.Compiled, matchTimeoutMilliseconds: 1000)]
+        RegexOptions.IgnoreCase | RegexOptions.Compiled, matchTimeoutMilliseconds: RegexTimeoutMilliseconds)]
     private static partial Regex ToolPoisoningPattern();
 
     /// <summary>
@@ -228,10 +249,10 @@ internal sealed partial class McpSecurityScannerAdapter : IMcpSecurityScanner
     /// kept because it is also a standard text-hiding character, and the failure is visible and
     /// diagnosable — the tool is withheld with a logged reason — rather than silent.
     /// </remarks>
-    [GeneratedRegex(InvisibleCharacters.Pattern)]
+    [GeneratedRegex(InvisibleCharacters.Pattern, RegexOptions.None, matchTimeoutMilliseconds: RegexTimeoutMilliseconds)]
     private static partial Regex ZeroWidthPattern();
 
-    [GeneratedRegex(@"[A-Za-z0-9+/]{40,}={0,2}")]
+    [GeneratedRegex(@"[A-Za-z0-9+/]{40,}={0,2}", RegexOptions.None, matchTimeoutMilliseconds: RegexTimeoutMilliseconds)]
     private static partial Regex Base64BlockPattern();
 
     /// <summary>
@@ -298,7 +319,7 @@ internal sealed partial class McpSecurityScannerAdapter : IMcpSecurityScanner
         @"|\bact\s+as\s+(?:a|an)\s+(?:\w+\s+)?(?:assistant|agent|ai|model|system|user|admin|administrator|human)\b" +
         @"|\bpretend\b" +
         @"|\brole\s*-?\s*play\s+as\b)",
-        RegexOptions.IgnoreCase | RegexOptions.Compiled, matchTimeoutMilliseconds: 1000)]
+        RegexOptions.IgnoreCase | RegexOptions.Compiled, matchTimeoutMilliseconds: RegexTimeoutMilliseconds)]
     private static partial Regex DescriptionInjectionPattern();
 
     /// <summary>
@@ -340,7 +361,7 @@ internal sealed partial class McpSecurityScannerAdapter : IMcpSecurityScanner
     /// </remarks>
     [GeneratedRegex(
         @"https?://[^\s""'<>]*[?&]\s*(?:data|token|secret|password|passwd|(?:api|private|secret|access)[_-]?key|credential|creds?)\s*=",
-        RegexOptions.IgnoreCase | RegexOptions.Compiled, matchTimeoutMilliseconds: 1000)]
+        RegexOptions.IgnoreCase | RegexOptions.Compiled, matchTimeoutMilliseconds: RegexTimeoutMilliseconds)]
     private static partial Regex ExfiltrationUrlPattern();
 
     /// <summary>
@@ -380,11 +401,11 @@ internal sealed partial class McpSecurityScannerAdapter : IMcpSecurityScanner
         @"|\buse\s+(?:this|it)\s+(?:tool\s+)?instead\s+of\b" +
         @"|\b(?:do\s+not|don't|never)\s+use\s+(?:the\s+)?(?:other|another|any\s+other)\b" +
         @"|\bprefer\s+this\s+(?:tool|function)\s+over\b)",
-        RegexOptions.IgnoreCase | RegexOptions.Compiled, matchTimeoutMilliseconds: 1000)]
+        RegexOptions.IgnoreCase | RegexOptions.Compiled, matchTimeoutMilliseconds: RegexTimeoutMilliseconds)]
     private static partial Regex ToolPreferencePattern();
 
     // Homoglyph characters commonly used in typosquatting: Cyrillic lookalikes, special Unicode
-    [GeneratedRegex(@"[Ѐ-ӿԀ-ԯ‐-―！-～]")]
+    [GeneratedRegex(@"[Ѐ-ӿԀ-ԯ‐-―！-～]", RegexOptions.None, matchTimeoutMilliseconds: RegexTimeoutMilliseconds)]
     private static partial Regex TyposquattingPattern();
 
     /// <summary>
@@ -395,7 +416,7 @@ internal sealed partial class McpSecurityScannerAdapter : IMcpSecurityScanner
     /// </summary>
     [GeneratedRegex(
         @"\b(?:curl|wget)\b(?:\s+(?:-{1,2}\S+|\S+)){0,4}\s+https?://",
-        RegexOptions.IgnoreCase | RegexOptions.Compiled, matchTimeoutMilliseconds: 1000)]
+        RegexOptions.IgnoreCase | RegexOptions.Compiled, matchTimeoutMilliseconds: RegexTimeoutMilliseconds)]
     private static partial Regex CurlWgetPattern();
 
     /// <summary>
@@ -409,6 +430,6 @@ internal sealed partial class McpSecurityScannerAdapter : IMcpSecurityScanner
     [GeneratedRegex(
         @"\bbase64\b.{0,30}?\b(?:send|transmit|post|upload|exfiltrat\w*|curl|wget)\b" +
         @"|\b(?:send|transmit|post|upload|exfiltrat\w*)\b.{0,30}?\bbase64\b",
-        RegexOptions.IgnoreCase | RegexOptions.Compiled | RegexOptions.Singleline, matchTimeoutMilliseconds: 1000)]
+        RegexOptions.IgnoreCase | RegexOptions.Compiled | RegexOptions.Singleline, matchTimeoutMilliseconds: RegexTimeoutMilliseconds)]
     private static partial Regex EncodedExfilPattern();
 }

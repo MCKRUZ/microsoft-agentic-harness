@@ -102,6 +102,15 @@ public static class GovernanceMetrics
     public static Histogram<double> SanitizationDuration { get; } =
         AppInstrument.Meter.CreateHistogram<double>(GovernanceConventions.SanitizationDuration, "ms", "Response sanitization duration");
 
+    /// <summary>
+    /// Sanitizer passes skipped because the sanitizer's own regex match timed out. Tags:
+    /// agent.governance.sanitization.category, agent.governance.tool. See
+    /// <see cref="GovernanceConventions.SanitizerTimeouts"/> for why a skipped pass needs a signal of
+    /// its own rather than being inferred from the absence of sanitizations.
+    /// </summary>
+    public static Counter<long> SanitizerTimeouts { get; } =
+        AppInstrument.Meter.CreateCounter<long>(GovernanceConventions.SanitizerTimeouts, "{timeout}", "Sanitizer passes skipped after a regex match timeout");
+
     /// <summary>Audit-chain integrity verifications performed. Tags: agent.governance.audit_chain.name.</summary>
     public static Counter<long> AuditChainVerifications { get; } =
         AppInstrument.Meter.CreateCounter<long>(GovernanceConventions.AuditChainVerifications, "{verification}", "Audit-chain integrity verifications");

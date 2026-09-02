@@ -65,9 +65,29 @@ internal readonly struct ScannerText
     /// </remarks>
     public bool Matches(Regex pattern)
     {
+        var raw = Raw;
+        var canonical = _canonical;
+        return TryFailOpen(() => pattern.IsMatch(raw) || (canonical != raw && pattern.IsMatch(canonical)));
+    }
+
+    /// <summary>
+    /// Runs <paramref name="match"/>, failing open (returning <see langword="false"/>) on a
+    /// <see cref="RegexMatchTimeoutException"/> rather than letting it propagate — the one fail-open
+    /// primitive this governance layer's scanners share. <see cref="McpSecurityScannerAdapter"/>'s
+    /// three raw-text rules (invisible characters, base64 blocks, typosquatting) call this directly,
+    /// since they must not see the canonicalized/folded text <see cref="Matches"/> also checks — see
+    /// this type's own remarks for why. Kept as one <see cref="Func{TResult}"/>-taking primitive rather
+    /// than a duplicate try/<c>IsMatch</c>/catch in each caller, and — for <see cref="Matches"/>
+    /// specifically — wrapping BOTH the raw and canonical attempts in a single call rather than one
+    /// call each preserves the original short-circuit-on-first-timeout behavior: a timeout on the raw
+    /// text abandons the canonical attempt too, rather than paying a second multi-second timeout
+    /// against text shaped to trigger the same pathological match twice.
+    /// </summary>
+    internal static bool TryFailOpen(Func<bool> match)
+    {
         try
         {
-            return pattern.IsMatch(Raw) || (_canonical != Raw && pattern.IsMatch(_canonical));
+            return match();
         }
         catch (RegexMatchTimeoutException)
         {
@@ -290,6 +310,6 @@ internal static partial class ScannerCanonicalizer
         matchTimeoutMilliseconds: 1000)]
     private static partial Regex SpacedLetterRun();
 
-    [GeneratedRegex(@"\s", RegexOptions.Compiled)]
+    [GeneratedRegex(@"\s", RegexOptions.Compiled, matchTimeoutMilliseconds: 2000)]
     private static partial Regex WhitespaceInRun();
 }

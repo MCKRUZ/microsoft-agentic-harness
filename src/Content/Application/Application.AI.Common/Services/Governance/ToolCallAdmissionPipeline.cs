@@ -462,9 +462,9 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
 
         // #469: the sanitize pass below is unconditional — see the interface remarks for why. It stays
         // in shape-preserving lockstep with RedactResult below via the shared ToolResultText.Sanitize.
-        var treated = admission.RedactsOutput
-            ? _classificationGate.RedactResult(toolName, preCut)
-            : ToolResultText.Sanitize(preCut, _sanitizer, toolName);
+        // Delegated to SanitizeOrRedact (see its own remarks) so a sanitizer/redaction-gate exception
+        // degrades gracefully instead of faulting the whole tool call.
+        var treated = SanitizeOrRedact(admission, toolName, preCut);
 
         // #532: bound AFTER sanitize and redact, never before the FINAL cut — the pre-cut above is a
         // different, wider, scan-cost-only bound, not a substitute for this one. It also mirrors
@@ -603,10 +603,10 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
         // redact-required call answering with null is treated identically whether preCut was null (the
         // well-behaved gate correctly echoing "nothing to redact") or the gate broke its contract on
         // real input — see the fail-closed branch below for why collapsing that distinction is the
-        // point, not an oversight (#479's original regression).
-        var processed = admission.RedactsOutput
-            ? _classificationGate.RedactResult(toolName, preCut)
-            : ToolResultText.Sanitize(preCut, _sanitizer, toolName);
+        // point, not an oversight (#479's original regression). Delegated to SanitizeOrRedact (see its
+        // own remarks) so a sanitizer/redaction-gate exception reaches the SAME null branch below as a
+        // gate that broke its contract by returning null, rather than faulting the whole tool call.
+        var processed = SanitizeOrRedact(admission, toolName, preCut);
 
         if (processed is null)
         {
@@ -857,6 +857,90 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
             return OutputTruncationMarker;
         }
     }
+
+    /// <summary>
+    /// Runs the sanitize-or-redact step both output-policy methods share, degrading rather than
+    /// faulting the turn if <see cref="ICompositeResponseSanitizer"/> or <see cref="IContentRedactionFilter"/>
+    /// throws. <see cref="ToolResultText.Sanitize(object?, ICompositeResponseSanitizer, string)"/> and
+    /// <see cref="IToolClassificationGate.RedactResult(string, object?)"/> are both must-not-throw
+    /// contracts against the SHIPPED <see cref="ICompositeResponseSanitizer"/> implementation, which
+    /// now fails each of its own rules open on a regex timeout rather than letting one propagate — so
+    /// this guards specifically against a consumer-replaced sanitizer or redaction filter, both of
+    /// which this template's DI surface allows swapping out.
+    /// </summary>
+    /// <remarks>
+    /// The two branches degrade differently, matching the two guarantees this pipeline already makes
+    /// (see this type's interface remarks). The baseline sanitize (<paramref name="admission"/>'s
+    /// <c>RedactsOutput</c> false) is defense-in-depth against injection payloads, not a promise about
+    /// secrets — degrading to <paramref name="preCut"/> unsanitized-by-this-pass costs the model a
+    /// scrub pass, nothing more, the same trade a regex timeout inside the composite already makes for
+    /// one rule. A required redaction (<c>RedactsOutput</c> true) exists specifically because the
+    /// classification gate flagged this call's output as needing scrubbing before anything downstream
+    /// sees it; degrading THAT branch to unredacted raw text would silently emit exactly the content
+    /// redaction exists to withhold. Returning <see langword="null"/> instead reuses this method's own
+    /// existing fail-closed handling for a redaction gate that returns null — <see cref="TryApplyTextOutputPolicyAsync"/>'s
+    /// null branch below already withholds the result rather than emitting it, and this call site now
+    /// reaches that same branch by the same route, whether the gate returned null or threw.
+    /// </remarks>
+    private object? SanitizeOrRedact(ToolCallAdmission admission, string toolName, object? preCut)
+    {
+        try
+        {
+            return admission.RedactsOutput
+                ? _classificationGate.RedactResult(toolName, preCut)
+                : ToolResultText.Sanitize(preCut, _sanitizer, toolName);
+        }
+        catch (Exception ex)
+        {
+            LogSanitizeOrRedactFailure(ex, toolName, admission.RedactsOutput);
+            return admission.RedactsOutput ? null : preCut;
+        }
+    }
+
+    /// <summary>
+    /// String-typed overload for <see cref="TryApplyTextOutputPolicyAsync"/> — see the object
+    /// overload's remarks.
+    /// </summary>
+    /// <remarks>
+    /// <strong>Deliberately NOT a cast-through-the-object-overload delegation</strong>, unlike
+    /// <see cref="ToolResultText.Sanitize(string?, ICompositeResponseSanitizer, string)"/>'s equivalent
+    /// split — a /simplify suggestion to match that shape was tried and reverted (broke 4 real tests,
+    /// not just their mocks). The difference: <c>ToolResultText.Sanitize</c>'s two overloads both
+    /// funnel into the SAME <see cref="ICompositeResponseSanitizer.Sanitize"/> method, so casting
+    /// through the object overload calls identical code either way. <see cref="IToolClassificationGate"/>'s <c>RedactResult</c>
+    /// is two SEPARATE interface members —
+    /// <see cref="IToolClassificationGate.RedactResult(string, object?)"/> and
+    /// <see cref="IToolClassificationGate.RedactResult(string, string?)"/> — which a consumer-supplied
+    /// implementation is free to give different behavior (the shipped one happens not to, but the
+    /// interface makes no such promise). Delegating through the object overload silently calls the
+    /// OTHER member than the one
+    /// this method's own signature promises, changing which interface method runs for every consumer
+    /// implementation and, concretely, for every test that mocks <c>RedactResult(string, string?)</c>
+    /// specifically — overload resolution is a compile-time, static-type decision, not something a
+    /// runtime cast can redirect back.
+    /// </remarks>
+    private string? SanitizeOrRedact(ToolCallAdmission admission, string toolName, string? preCut)
+    {
+        try
+        {
+            return admission.RedactsOutput
+                ? _classificationGate.RedactResult(toolName, preCut)
+                : ToolResultText.Sanitize(preCut, _sanitizer, toolName);
+        }
+        catch (Exception ex)
+        {
+            LogSanitizeOrRedactFailure(ex, toolName, admission.RedactsOutput);
+            return admission.RedactsOutput ? null : preCut;
+        }
+    }
+
+    private void LogSanitizeOrRedactFailure(Exception ex, string toolName, bool wasRedactRequired) =>
+        _logger.LogWarning(ex,
+            "Sanitizer/redaction gate threw while processing output of {ToolName}; {Outcome}",
+            toolName,
+            wasRedactRequired
+                ? "the result is withheld rather than returned unredacted"
+                : "the result is passed through unsanitized by this pass");
 
     /// <inheritdoc />
     public ValueTask ReportExecutionAsync(

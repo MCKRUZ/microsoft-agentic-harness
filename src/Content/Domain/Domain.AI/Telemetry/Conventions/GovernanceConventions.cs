@@ -34,6 +34,14 @@ public static class GovernanceConventions
     public const string SanitizationDuration = "agent.governance.response.sanitization_duration";
     public const string SanitizationCategoryTag = "agent.governance.sanitization.category";
 
+    /// <summary>
+    /// A sanitizer in the composite chain that was skipped because its own regex match timed out. The
+    /// skipped pass contributes no <see cref="ResponseSanitizations"/> of its own, so without this
+    /// counter a hostile input that reliably times one rule out is indistinguishable on the metrics
+    /// from content that was simply clean — the one shape an attacker would deliberately produce.
+    /// </summary>
+    public const string SanitizerTimeouts = "agent.governance.response.sanitizer_timeouts";
+
     public const string AuditChainVerifications = "agent.governance.audit_chain.verifications";
     public const string AuditChainBreaks = "agent.governance.audit_chain.breaks";
     public const string AuditChainNameTag = "agent.governance.audit_chain.name";

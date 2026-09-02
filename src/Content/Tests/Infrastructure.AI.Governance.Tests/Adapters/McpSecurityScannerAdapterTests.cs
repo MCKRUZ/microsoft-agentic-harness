@@ -10,6 +10,12 @@ public sealed class McpSecurityScannerAdapterTests
     private readonly McpSecurityScannerAdapter _scanner = new();
 
     [Fact]
+    public void GeneratedPatterns_AllHaveAFiniteMatchTimeout()
+    {
+        RegexTimeoutAssertions.AssertAllHaveFiniteMatchTimeout(typeof(McpSecurityScannerAdapter));
+    }
+
+    [Fact]
     public void ScanTool_SafeTool_ReturnsSafe()
     {
         var result = _scanner.ScanTool("read_file", "Reads a file from the local filesystem");

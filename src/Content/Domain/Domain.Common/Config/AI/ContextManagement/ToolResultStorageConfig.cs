@@ -65,9 +65,11 @@ public class ToolResultStorageConfig
     /// cannot be deferred that way (a page boundary is a character offset a caller can choose freely,
     /// so a secret split across two page boundaries would come back unredacted from both halves — a
     /// security-review finding), so it runs once, here, over the complete content, bounded by this
-    /// cap rather than left unbounded (#563; the sanitizer/redaction filter has no per-pattern match
-    /// timeout — #497 — so an unbounded scan is a real cost concern, not a theoretical one). This cap
-    /// is also what keeps that scan affordable: bounded disk exposure, owner-only directory
+    /// cap rather than left unbounded (#563; every sanitizer/redaction-filter pattern now carries its
+    /// own finite match timeout — #497, resolved — but a finite-per-pattern scan over an unbounded
+    /// number of characters is still an unbounded worst-case total, since the timeout bounds one
+    /// pattern's cost, not the scan as a whole). This cap is also what keeps that scan affordable:
+    /// bounded disk exposure, owner-only directory
     /// permissions, and a retention sweep are the three controls that together make a MaxSpillChars-
     /// sized redaction pass on every spill acceptable. 5,000,000 (~5 MB, ~1.25M tokens) comfortably
     /// holds a full build log or a large file read while still bounding what one runaway tool call can
