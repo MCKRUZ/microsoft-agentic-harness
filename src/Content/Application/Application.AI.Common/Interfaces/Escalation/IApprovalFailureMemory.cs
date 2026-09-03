@@ -1,3 +1,5 @@
+using Domain.AI.Escalation;
+
 namespace Application.AI.Common.Interfaces.Escalation;
 
 /// <summary>
@@ -29,7 +31,10 @@ public interface IApprovalFailureMemory
     ApprovalFailureRecall? TryRecall(in ApprovalFailureKey key);
 
     /// <summary>Records a failed approved attempt against this key.</summary>
-    void RecordFailure(in ApprovalFailureKey key, string failureReason, Guid escalationId);
+    /// <param name="failureReasonSubstitution">See <see cref="ApprovalFailureRecall.Substitution"/>.</param>
+    void RecordFailure(
+        in ApprovalFailureKey key, string failureReason, FailureTextSubstitution failureReasonSubstitution,
+        Guid escalationId);
 
     /// <summary>
     /// Clears any recorded failure for this key — and, as a side effect, any recorded revision
@@ -97,7 +102,12 @@ public readonly record struct ApprovalFailureKey(string ConversationId, string A
 }
 
 /// <summary>A recalled prior failure: how many times it has failed, why, and which escalation last approved it.</summary>
-public readonly record struct ApprovalFailureRecall(int PriorAttemptCount, string FailureReason, Guid EscalationId);
+/// <param name="Substitution">
+/// Why <see cref="FailureReason"/> is a substitute rather than the tool's own message (#472) — see
+/// <see cref="Domain.AI.Escalation.FailureTextSubstitution"/>.
+/// </param>
+public readonly record struct ApprovalFailureRecall(
+    int PriorAttemptCount, string FailureReason, FailureTextSubstitution Substitution, Guid EscalationId);
 
 /// <summary>
 /// A recalled prior revision: which round the next attempt continues, what the reviewer asked for

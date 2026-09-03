@@ -55,6 +55,7 @@ public sealed class AgUiEscalationNotifier : IEscalationNotificationChannel
                 : null,
             AttemptNumber = request.AttemptNumber,
             PriorFailureReason = request.PriorFailureReason,
+            PriorFailureReasonSubstitution = request.PriorFailureReasonSubstitution,
             RevisionRound = request.RevisionRound,
             PriorRevisionInstructions = request.PriorRevisionInstructions,
         };
@@ -162,6 +163,7 @@ public sealed class AgUiEscalationNotifier : IEscalationNotificationChannel
             EscalationId = record.EscalationId.ToString(),
             Status = record.Status.ToString(),
             FailureReason = record.FailureReason,
+            FailureReasonSubstitution = record.FailureReasonSubstitution,
             NotExecutedReason = record.NotExecutedReason?.ToString(),
             ReportedAt = record.ReportedAt,
             ReportedBy = record.ReportedBy,

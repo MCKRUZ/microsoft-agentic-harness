@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using Application.AI.Common.Interfaces.Escalation;
+using Domain.AI.Escalation;
 using Microsoft.Extensions.Logging;
 
 namespace Application.AI.Common.Services.Escalation;
@@ -43,7 +44,7 @@ public sealed class InProcessApprovalFailureMemory : IApprovalFailureMemory
             return null;
 
         entry.LastAccessTicks = _timeProvider.GetUtcNow().UtcTicks;
-        var (attemptCount, failureReason, escalationId) = entry.Snapshot();
+        var (attemptCount, failureReason, substitution, escalationId) = entry.Snapshot();
 
         // Zero means this entry's failure half was never touched — it exists only because
         // RecordRevision created it. Without this guard, any key that ever recorded a revision
@@ -52,11 +53,15 @@ public sealed class InProcessApprovalFailureMemory : IApprovalFailureMemory
         // shape EscalationRequestInvariants rejects outright ("attempt 1 carries a prior failure
         // reason, which never happened"), fail-closing the next approval attempt after every
         // successful revise. Mirrors TryRecallRevision's RevisionRound==0 guard below.
-        return attemptCount == 0 ? null : new ApprovalFailureRecall(attemptCount, failureReason, escalationId);
+        return attemptCount == 0
+            ? null
+            : new ApprovalFailureRecall(attemptCount, failureReason, substitution, escalationId);
     }
 
     /// <inheritdoc />
-    public void RecordFailure(in ApprovalFailureKey key, string failureReason, Guid escalationId)
+    public void RecordFailure(
+        in ApprovalFailureKey key, string failureReason, FailureTextSubstitution failureReasonSubstitution,
+        Guid escalationId)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(failureReason);
 
@@ -64,7 +69,7 @@ public sealed class InProcessApprovalFailureMemory : IApprovalFailureMemory
         // Stamp the access time at creation so a brand-new entry is never rank-0 (oldest) for a
         // concurrent eviction running before this thread updates the timestamp.
         var entry = _entries.GetOrAdd(key, _ => new Entry { LastAccessTicks = now });
-        entry.RecordFailure(failureReason, escalationId);
+        entry.RecordFailure(failureReason, failureReasonSubstitution, escalationId);
         entry.LastAccessTicks = now;
         // Deliberately not folded into the entry's own lock: LastAccessTicks is a pure ranking
         // signal, and two concurrent writers each stamping "now" in whichever order is a benign
@@ -158,6 +163,7 @@ public sealed class InProcessApprovalFailureMemory : IApprovalFailureMemory
         private long _lastAccessTicks;
         private int _attemptCount;
         private string _failureReason = string.Empty;
+        private FailureTextSubstitution _failureReasonSubstitution;
         private Guid _escalationId;
 
         /// <summary>
@@ -172,18 +178,19 @@ public sealed class InProcessApprovalFailureMemory : IApprovalFailureMemory
         }
 
         /// <summary>A coherent snapshot of the attempt count, failure reason, and escalation id together.</summary>
-        public (int AttemptCount, string FailureReason, Guid EscalationId) Snapshot()
+        public (int AttemptCount, string FailureReason, FailureTextSubstitution Substitution, Guid EscalationId) Snapshot()
         {
             lock (_gate)
-                return (_attemptCount, _failureReason, _escalationId);
+                return (_attemptCount, _failureReason, _failureReasonSubstitution, _escalationId);
         }
 
-        public void RecordFailure(string failureReason, Guid escalationId)
+        public void RecordFailure(string failureReason, FailureTextSubstitution failureReasonSubstitution, Guid escalationId)
         {
             lock (_gate)
             {
                 _attemptCount++;
                 _failureReason = failureReason;
+                _failureReasonSubstitution = failureReasonSubstitution;
                 _escalationId = escalationId;
             }
         }

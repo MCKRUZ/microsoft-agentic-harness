@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using Domain.AI.Escalation;
 
 namespace Presentation.AgentHub.AgUi;
 
@@ -51,6 +52,14 @@ public sealed record EscalationRequestedEvent : AgUiEvent
     /// <summary>Why the previous attempt at this action failed. Null on a first attempt.</summary>
     [JsonPropertyName("priorFailureReason")]
     public string? PriorFailureReason { get; init; }
+
+    /// <summary>
+    /// Why <see cref="PriorFailureReason"/> is a substitute rather than the tool's own message
+    /// (#472) — null on a first attempt, same as its sibling. Additive, like every other field
+    /// added to this event after its first shape.
+    /// </summary>
+    [JsonPropertyName("priorFailureReasonSubstitution")]
+    public FailureTextSubstitution? PriorFailureReasonSubstitution { get; init; }
 
     /// <summary>
     /// Which round of reviewer revision this is, 1-based. Greater than 1 means a prior escalation
@@ -169,6 +178,13 @@ public sealed record EscalationExecutedEvent : AgUiEvent
     /// <summary>Why the action failed. Present only when <see cref="Status"/> is "Failed".</summary>
     [JsonPropertyName("failureReason")]
     public string? FailureReason { get; init; }
+
+    /// <summary>
+    /// Why <see cref="FailureReason"/> is a substitute rather than the tool's own message (#472).
+    /// Additive, like every other field added to this event after its first shape.
+    /// </summary>
+    [JsonPropertyName("failureReasonSubstitution")]
+    public FailureTextSubstitution? FailureReasonSubstitution { get; init; }
 
     /// <summary>Why the action never ran. Present only when <see cref="Status"/> is "NeverExecuted".</summary>
     [JsonPropertyName("notExecutedReason")]

@@ -1,5 +1,6 @@
 using Application.AI.Common.Interfaces.Escalation;
 using Application.AI.Common.Services.Escalation;
+using Domain.AI.Escalation;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
@@ -34,12 +35,14 @@ public sealed class InProcessApprovalFailureMemoryTests
         var key = Key();
         var escalationId = Guid.NewGuid();
 
-        memory.RecordFailure(key, "permission denied", escalationId);
+        memory.RecordFailure(key, "permission denied", FailureTextSubstitution.SanitizedToEmpty, escalationId);
         var recall = memory.TryRecall(key);
 
         Assert.NotNull(recall);
         Assert.Equal(1, recall!.Value.PriorAttemptCount);
         Assert.Equal("permission denied", recall.Value.FailureReason);
+        // #472: the substitution reason round-trips through recall, not just the text.
+        Assert.Equal(FailureTextSubstitution.SanitizedToEmpty, recall.Value.Substitution);
         Assert.Equal(escalationId, recall.Value.EscalationId);
     }
 
@@ -49,9 +52,9 @@ public sealed class InProcessApprovalFailureMemoryTests
         var memory = Create();
         var key = Key();
 
-        memory.RecordFailure(key, "first failure", Guid.NewGuid());
+        memory.RecordFailure(key, "first failure", FailureTextSubstitution.None, Guid.NewGuid());
         var secondEscalationId = Guid.NewGuid();
-        memory.RecordFailure(key, "second failure", secondEscalationId);
+        memory.RecordFailure(key, "second failure", FailureTextSubstitution.None, secondEscalationId);
 
         var recall = memory.TryRecall(key);
 
@@ -66,7 +69,7 @@ public sealed class InProcessApprovalFailureMemoryTests
     {
         var memory = Create();
 
-        Assert.ThrowsAny<ArgumentException>(() => memory.RecordFailure(Key(), "", Guid.NewGuid()));
+        Assert.ThrowsAny<ArgumentException>(() => memory.RecordFailure(Key(), "", FailureTextSubstitution.None, Guid.NewGuid()));
     }
 
     [Fact]
@@ -74,7 +77,7 @@ public sealed class InProcessApprovalFailureMemoryTests
     {
         var memory = Create();
         var key = Key();
-        memory.RecordFailure(key, "boom", Guid.NewGuid());
+        memory.RecordFailure(key, "boom", FailureTextSubstitution.None, Guid.NewGuid());
 
         memory.Clear(key);
 
@@ -97,7 +100,7 @@ public sealed class InProcessApprovalFailureMemoryTests
         // The key is (conversation, agent, tool) precisely so one conversation's retry history can
         // never label another's approval card.
         var memory = Create();
-        memory.RecordFailure(Key(conversationId: "conv-a"), "boom", Guid.NewGuid());
+        memory.RecordFailure(Key(conversationId: "conv-a"), "boom", FailureTextSubstitution.None, Guid.NewGuid());
 
         var recall = memory.TryRecall(Key(conversationId: "conv-b"));
 
@@ -110,7 +113,7 @@ public sealed class InProcessApprovalFailureMemoryTests
         // A supervisor and a delegated sub-agent calling the same tool in one conversation must not
         // cross-label each other's retry history.
         var memory = Create();
-        memory.RecordFailure(Key(agentId: "supervisor"), "boom", Guid.NewGuid());
+        memory.RecordFailure(Key(agentId: "supervisor"), "boom", FailureTextSubstitution.None, Guid.NewGuid());
 
         var recall = memory.TryRecall(Key(agentId: "sub-agent"));
 
@@ -123,7 +126,7 @@ public sealed class InProcessApprovalFailureMemoryTests
         var memory = Create();
 
         for (var i = 0; i <= InProcessApprovalFailureMemory.MaxTrackedActions; i++)
-            memory.RecordFailure(Key(conversationId: $"conv-{i}"), "boom", Guid.NewGuid());
+            memory.RecordFailure(Key(conversationId: $"conv-{i}"), "boom", FailureTextSubstitution.None, Guid.NewGuid());
 
         // The most recently recorded entry must survive — the cap is respected, not exceeded.
         var survivor = Key(conversationId: $"conv-{InProcessApprovalFailureMemory.MaxTrackedActions}");
@@ -139,10 +142,10 @@ public sealed class InProcessApprovalFailureMemoryTests
         // failure reason" shape as valid rather than treating it as corruption.
         var memory = Create();
         var evicted = Key(conversationId: "first");
-        memory.RecordFailure(evicted, "boom", Guid.NewGuid());
+        memory.RecordFailure(evicted, "boom", FailureTextSubstitution.None, Guid.NewGuid());
 
         for (var i = 0; i <= InProcessApprovalFailureMemory.MaxTrackedActions; i++)
-            memory.RecordFailure(Key(conversationId: $"conv-{i}"), "boom", Guid.NewGuid());
+            memory.RecordFailure(Key(conversationId: $"conv-{i}"), "boom", FailureTextSubstitution.None, Guid.NewGuid());
 
         Assert.Null(memory.TryRecall(evicted));
     }
@@ -213,7 +216,7 @@ public sealed class InProcessApprovalFailureMemoryTests
         var key = Key();
         memory.RecordRevision(key, 2, "use the read-only endpoint instead", Guid.NewGuid());
 
-        memory.RecordFailure(key, "timed out", Guid.NewGuid());
+        memory.RecordFailure(key, "timed out", FailureTextSubstitution.None, Guid.NewGuid());
 
         var revision = memory.TryRecallRevision(key);
         Assert.NotNull(revision);
@@ -246,7 +249,7 @@ public sealed class InProcessApprovalFailureMemoryTests
         // the failure fields RecordFailure owns.
         var memory = Create();
         var key = Key();
-        memory.RecordFailure(key, "permission denied", Guid.NewGuid());
+        memory.RecordFailure(key, "permission denied", FailureTextSubstitution.None, Guid.NewGuid());
 
         memory.RecordRevision(key, 2, "narrow the scope", Guid.NewGuid());
 
@@ -261,7 +264,7 @@ public sealed class InProcessApprovalFailureMemoryTests
     {
         var memory = Create();
         var key = Key();
-        memory.RecordFailure(key, "permission denied", Guid.NewGuid());
+        memory.RecordFailure(key, "permission denied", FailureTextSubstitution.None, Guid.NewGuid());
         memory.RecordRevision(key, 2, "narrow the scope", Guid.NewGuid());
 
         memory.ClearRevision(key);

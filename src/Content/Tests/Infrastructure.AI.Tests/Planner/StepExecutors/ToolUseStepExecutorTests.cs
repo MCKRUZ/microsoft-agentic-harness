@@ -4,6 +4,7 @@ using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Planner;
 using Application.AI.Common.Interfaces.Sandbox;
 using Application.AI.Common.Services.Governance;
+using Application.AI.Common.Services.Tools;
 using Domain.AI.Attestation;
 using Domain.AI.Escalation;
 using Domain.AI.Governance;
@@ -628,7 +629,7 @@ public sealed class ToolUseStepExecutorTests
             new Dictionary<PlanStepId, string>(), CancellationToken.None);
 
         _executionReporter.Verify(
-            r => r.ReportFailedAsync(Call, It.IsAny<string>(), "plan-executor", CancellationToken.None), Times.Once);
+            r => r.ReportFailedAsync(Call, It.IsAny<PreparedFailureText>(), "plan-executor", CancellationToken.None), Times.Once);
     }
 
     [Fact]
@@ -643,7 +644,7 @@ public sealed class ToolUseStepExecutorTests
 
         Assert.Equal(StepExecutionStatus.Failed, result.Status);
         _executionReporter.Verify(
-            r => r.ReportFailedAsync(Call, It.IsAny<string>(), "plan-executor", CancellationToken.None), Times.Once);
+            r => r.ReportFailedAsync(Call, It.IsAny<PreparedFailureText>(), "plan-executor", CancellationToken.None), Times.Once);
     }
 
     [Fact]
@@ -664,7 +665,7 @@ public sealed class ToolUseStepExecutorTests
             r => r.ReportNotExecutedAsync(Call, EscalationNotExecutedReason.RunCancelled, "plan-executor", CancellationToken.None),
             Times.Once);
         _executionReporter.Verify(
-            r => r.ReportFailedAsync(It.IsAny<ApprovedCall>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            r => r.ReportFailedAsync(It.IsAny<ApprovedCall>(), It.IsAny<PreparedFailureText>(), It.IsAny<string>(), It.IsAny<CancellationToken>()),
             Times.Never);
     }
 }

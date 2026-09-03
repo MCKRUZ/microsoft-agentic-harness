@@ -1,3 +1,4 @@
+using Application.AI.Common.Services.Tools;
 using Domain.AI.Escalation;
 
 namespace Application.AI.Common.Interfaces.Escalation;
@@ -37,9 +38,13 @@ public interface IApprovalExecutionReporter
     ValueTask ReportSucceededAsync(ApprovedCall call, string reportedBy, CancellationToken ct);
 
     /// <summary>Reports that an approved action ran and failed.</summary>
-    /// <param name="failureReason">A human-readable reason, shown to the approver.</param>
+    /// <param name="failureReason">
+    /// The text to show the approver, plus why it is a substitute when it is one (#472) — a sanitizer
+    /// that removed everything and a tool that genuinely emitted the resulting placeholder string used
+    /// to be indistinguishable at this parameter's old <c>string</c> type.
+    /// </param>
     /// <param name="reportedBy">See <see cref="ReportSucceededAsync"/>.</param>
-    ValueTask ReportFailedAsync(ApprovedCall call, string failureReason, string reportedBy, CancellationToken ct);
+    ValueTask ReportFailedAsync(ApprovedCall call, PreparedFailureText failureReason, string reportedBy, CancellationToken ct);
 
     /// <summary>Reports that an approved action never ran.</summary>
     /// <param name="reportedBy">See <see cref="ReportSucceededAsync"/>.</param>

@@ -124,7 +124,7 @@ public sealed class GetEscalationQueryHandlerTests
         _auditStore
             .Setup(s => s.GetLatestExecutionAsync(id, It.IsAny<CancellationToken>()))
             .ReturnsAsync(EscalationExecutionRecord.Failed(
-                id, "downstream API returned 500", DateTimeOffset.UtcNow, "agent-turn"));
+                id, "downstream API returned 500", FailureTextSubstitution.None, DateTimeOffset.UtcNow, "agent-turn"));
 
         var result = await _handler.Handle(new GetEscalationQuery
         {

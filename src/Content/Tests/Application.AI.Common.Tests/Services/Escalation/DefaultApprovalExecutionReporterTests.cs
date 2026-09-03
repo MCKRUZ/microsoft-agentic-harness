@@ -1,5 +1,6 @@
 using Application.AI.Common.Interfaces.Escalation;
 using Application.AI.Common.Services.Escalation;
+using Application.AI.Common.Services.Tools;
 using Domain.AI.Escalation;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Time.Testing;
@@ -65,10 +66,10 @@ public sealed class DefaultApprovalExecutionReporterTests
     public async Task ReportFailedAsync_RecordsFailureAgainstMemory_NotClear()
     {
         var call = Call();
-        await Create().ReportFailedAsync(call, "permission denied", "tool-invocation", CancellationToken.None);
+        await Create().ReportFailedAsync(call, new PreparedFailureText("permission denied", FailureTextSubstitution.None), "tool-invocation", CancellationToken.None);
 
         _failureMemory.Verify(
-            m => m.RecordFailure(call.Key, "permission denied", call.EscalationId), Times.Once);
+            m => m.RecordFailure(call.Key, "permission denied", FailureTextSubstitution.None, call.EscalationId), Times.Once);
         _failureMemory.Verify(m => m.Clear(It.IsAny<ApprovalFailureKey>()), Times.Never);
     }
 
@@ -81,7 +82,7 @@ public sealed class DefaultApprovalExecutionReporterTests
             .Returns(Task.CompletedTask);
 
         var call = Call();
-        await Create().ReportFailedAsync(call, "permission denied", "tool-invocation", CancellationToken.None);
+        await Create().ReportFailedAsync(call, new PreparedFailureText("permission denied", FailureTextSubstitution.None), "tool-invocation", CancellationToken.None);
 
         Assert.NotNull(recorded);
         Assert.Equal(EscalationExecutionStatus.Failed, recorded!.Status);
@@ -99,7 +100,7 @@ public sealed class DefaultApprovalExecutionReporterTests
 
         _failureMemory.Verify(m => m.Clear(It.IsAny<ApprovalFailureKey>()), Times.Never);
         _failureMemory.Verify(
-            m => m.RecordFailure(It.IsAny<ApprovalFailureKey>(), It.IsAny<string>(), It.IsAny<Guid>()), Times.Never);
+            m => m.RecordFailure(It.IsAny<ApprovalFailureKey>(), It.IsAny<string>(), It.IsAny<FailureTextSubstitution>(), It.IsAny<Guid>()), Times.Never);
     }
 
     [Fact]
@@ -163,11 +164,11 @@ public sealed class DefaultApprovalExecutionReporterTests
     public async Task ReportFailedAsync_MemoryThrows_DoesNotThrow()
     {
         _failureMemory
-            .Setup(m => m.RecordFailure(It.IsAny<ApprovalFailureKey>(), It.IsAny<string>(), It.IsAny<Guid>()))
+            .Setup(m => m.RecordFailure(It.IsAny<ApprovalFailureKey>(), It.IsAny<string>(), It.IsAny<FailureTextSubstitution>(), It.IsAny<Guid>()))
             .Throws(new InvalidOperationException("memory corrupted"));
 
         var exception = await Record.ExceptionAsync(
-            () => Create().ReportFailedAsync(Call(), "boom", "tool-invocation", CancellationToken.None).AsTask());
+            () => Create().ReportFailedAsync(Call(), new PreparedFailureText("boom", FailureTextSubstitution.None), "tool-invocation", CancellationToken.None).AsTask());
 
         Assert.Null(exception);
     }
@@ -183,7 +184,7 @@ public sealed class DefaultApprovalExecutionReporterTests
         cts.Cancel();
 
         var exception = await Record.ExceptionAsync(
-            () => Create().ReportFailedAsync(Call(), "boom", "tool-invocation", cts.Token).AsTask());
+            () => Create().ReportFailedAsync(Call(), new PreparedFailureText("boom", FailureTextSubstitution.None), "tool-invocation", cts.Token).AsTask());
 
         Assert.Null(exception);
     }

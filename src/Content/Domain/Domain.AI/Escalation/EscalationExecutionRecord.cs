@@ -23,6 +23,7 @@ public sealed record EscalationExecutionRecord
         Guid escalationId,
         EscalationExecutionStatus status,
         string? failureReason,
+        FailureTextSubstitution? failureReasonSubstitution,
         EscalationNotExecutedReason? notExecutedReason,
         DateTimeOffset reportedAt,
         string reportedBy)
@@ -30,6 +31,7 @@ public sealed record EscalationExecutionRecord
         EscalationId = escalationId;
         Status = status;
         FailureReason = failureReason;
+        FailureReasonSubstitution = failureReasonSubstitution;
         NotExecutedReason = notExecutedReason;
         ReportedAt = reportedAt;
         ReportedBy = reportedBy;
@@ -46,6 +48,17 @@ public sealed record EscalationExecutionRecord
     /// <see cref="EscalationExecutionStatus.Failed"/>.
     /// </summary>
     public string? FailureReason { get; }
+
+    /// <summary>
+    /// Why <see cref="FailureReason"/> is a substitute rather than the tool's own message (#472) —
+    /// <see cref="Escalation.FailureTextSubstitution.None"/> or null when it is the tool's own
+    /// message. A nullable sibling field, not a change to <see cref="FailureReason"/>'s own type:
+    /// this record is JSON-serialized to an append-only, hash-chained audit store, and a persisted
+    /// line written before this field existed must still deserialize — the JSON constructor's
+    /// missing-property default (null) reads exactly as "unknown, treat as the tool's own message,"
+    /// which is the only backward-compatible interpretation an old line can support.
+    /// </summary>
+    public FailureTextSubstitution? FailureReasonSubstitution { get; }
 
     /// <summary>
     /// Why the action never ran. Non-null if and only if <see cref="Status"/> is
@@ -70,7 +83,7 @@ public sealed record EscalationExecutionRecord
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(reportedBy);
         return new EscalationExecutionRecord(
-            escalationId, EscalationExecutionStatus.Succeeded, null, null, reportedAt, reportedBy);
+            escalationId, EscalationExecutionStatus.Succeeded, null, null, null, reportedAt, reportedBy);
     }
 
     /// <summary>The action ran and failed.</summary>
@@ -78,13 +91,19 @@ public sealed record EscalationExecutionRecord
     /// Why it failed. Must contain something an approver can read — blank is rejected as well as
     /// null, for the same reason as <see cref="FailureReason"/>'s own doc.
     /// </param>
+    /// <param name="failureReasonSubstitution">See <see cref="FailureReasonSubstitution"/>.</param>
     public static EscalationExecutionRecord Failed(
-        Guid escalationId, string failureReason, DateTimeOffset reportedAt, string reportedBy)
+        Guid escalationId,
+        string failureReason,
+        FailureTextSubstitution failureReasonSubstitution,
+        DateTimeOffset reportedAt,
+        string reportedBy)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(failureReason);
         ArgumentException.ThrowIfNullOrWhiteSpace(reportedBy);
         return new EscalationExecutionRecord(
-            escalationId, EscalationExecutionStatus.Failed, failureReason, null, reportedAt, reportedBy);
+            escalationId, EscalationExecutionStatus.Failed, failureReason, failureReasonSubstitution, null,
+            reportedAt, reportedBy);
     }
 
     /// <summary>The action never ran.</summary>
@@ -96,6 +115,6 @@ public sealed record EscalationExecutionRecord
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(reportedBy);
         return new EscalationExecutionRecord(
-            escalationId, EscalationExecutionStatus.NeverExecuted, null, reason, reportedAt, reportedBy);
+            escalationId, EscalationExecutionStatus.NeverExecuted, null, null, reason, reportedAt, reportedBy);
     }
 }
