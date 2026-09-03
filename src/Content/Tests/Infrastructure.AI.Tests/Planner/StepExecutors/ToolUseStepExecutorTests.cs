@@ -431,6 +431,27 @@ public sealed class ToolUseStepExecutorTests
     }
 
     [Fact]
+    public async Task ExecuteAsync_SucceedsWithNoSandboxOutput_ReportsNullOutputNotEmptyString()
+    {
+        // #490 code-review finding: no test exercised HandleSuccessAsync's success path with null
+        // sandbox output, so the NothingToAdmit ? null : textPolicy.Text ternary that preserves
+        // StepExecutionResult.Output's "null means no output" contract had no coverage on the one
+        // branch it exists for.
+        _sandboxExecutor.Setup(s => s.ExecuteAsync(It.IsAny<SandboxExecutionRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new SandboxExecutionResult
+            {
+                Success = true, Output = null, ResourceUsage = new ResourceUsage()
+            });
+
+        var step = CreateStep(new ToolUseConfig { ToolName = "file_system" });
+
+        var result = await _sut.ExecuteAsync(step, new Dictionary<PlanStepId, string>(), CancellationToken.None);
+
+        Assert.Equal(StepExecutionStatus.Completed, result.Status);
+        Assert.Null(result.Output);
+    }
+
+    [Fact]
     public async Task ExecuteAsync_ClassificationSeesTheEffectiveArguments_NotJustTheDeclaredOnes()
     {
         // The gate resolves which asset a call touches from its arguments, so it must see what the

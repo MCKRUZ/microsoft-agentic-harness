@@ -817,6 +817,21 @@ public sealed class ToolCallAdmissionPipelineTests
     }
 
     [Fact]
+    public void TextOutputPolicyResult_DefaultValue_IsFailClosed()
+    {
+        // #490 code-review finding: TextOutputPolicyOutcome.Withheld must be the enum's zero value, so
+        // an unset field — a test double that doesn't stub this, or any future code path that
+        // constructs the record without deciding — reads as a refusal, the same fail-closed direction
+        // the bool Success field this type replaced always defaulted to. The first cut of this fix put
+        // Admitted first on the theory that an unset field would be "obviously wrong to consume
+        // unguarded" — false, because every real consumer checks Success before reading anything else,
+        // so an unset field was silently treated as a legitimate admit instead.
+        default(TextOutputPolicyResult).Success.Should().BeFalse(
+            "an unset TextOutputPolicyResult must fail closed, not silently read as an admitted result");
+        default(TextOutputPolicyResult).Outcome.Should().Be(TextOutputPolicyOutcome.Withheld);
+    }
+
+    [Fact]
     public async Task TryApplyTextOutputPolicy_PlainAllow_NullContent_PassesThroughWithoutSanitizing()
     {
         var sanitizer = new Mock<ICompositeResponseSanitizer>(MockBehavior.Strict);

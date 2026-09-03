@@ -262,20 +262,28 @@ public interface IToolCallAdmissionPipeline
 public enum TextOutputPolicyOutcome
 {
     /// <summary>
-    /// The input was treated and is safe to use as-is — the ordinary case. Named first (and so the
-    /// enum's default value) deliberately: a test double that leaves this field unset produces a
-    /// result that is trivially wrong to consume unguarded, rather than one that looks like a
-    /// legitimate withhold. See the second member for the alternative this rejects.
-    /// </summary>
-    Admitted = 0,
-
-    /// <summary>
     /// A redaction was required but did not produce text — the gate broke its non-null-in/non-null-out
     /// contract, or the sanitize/redact chain itself threw. The caller must withhold the result rather
     /// than emit the original; <see cref="TextOutputPolicyResult.Text"/> is <see cref="string.Empty"/>,
     /// never the original content.
     /// </summary>
-    Withheld,
+    /// <remarks>
+    /// Named first (and so the enum's default value, and what <c>default(TextOutputPolicyResult)</c>
+    /// reports) deliberately: this is the fail-closed value, matching the boolean <c>Success</c> field
+    /// this type replaced, which also defaulted to <see langword="false"/>. An earlier draft put
+    /// <see cref="Admitted"/> first on the theory that an unset field would be "trivially wrong to
+    /// consume unguarded" — code review caught that this was backwards. All three real consumers check
+    /// <see cref="TextOutputPolicyResult.Success"/> before reading anything else, so an unset field is
+    /// never "obviously wrong," it is silently treated as a legitimate admit — the opposite failure
+    /// direction from a security control's default. Reordering closes that: a value nobody set now
+    /// reads as a refusal, the same as it always did before this type existed.
+    /// </remarks>
+    Withheld = 0,
+
+    /// <summary>
+    /// The input was treated and is safe to use as-is — the ordinary case.
+    /// </summary>
+    Admitted,
 
     /// <summary>
     /// The input was null: there was nothing to sanitize or redact. Distinct from
@@ -302,7 +310,7 @@ public readonly record struct TextOutputPolicyResult(
 {
     /// <summary>
     /// True when the caller must withhold the result rather than emit <see cref="Text"/> as the
-    /// original — kept as a convenience for the two call sites that only ever needed the boolean
+    /// original — kept as a convenience for the three call sites that only ever needed the boolean
     /// <c>Success</c> check this record used to expose directly, so a mechanical signature change is
     /// enough for them.
     /// </summary>
