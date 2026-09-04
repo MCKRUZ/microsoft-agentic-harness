@@ -595,10 +595,12 @@ public sealed class DirectToolInvokerTests
     public async Task A_redaction_that_cannot_be_applied_withholds_the_result()
     {
         // Fail closed. The gate decided this asset must not be emitted as-is; if its redaction cannot
-        // be applied, falling back to the original defeats the entire control. RedactResult is typed
-        // object? -> object?, and the shipped gate returns structured values unchanged for some
-        // inputs, so a consumer-supplied gate answering with a JsonElement is a realistic way to land
-        // here — and "as string ?? output" would have quietly emitted the unredacted text.
+        // be applied, falling back to the original defeats the entire control. A successful ToolResult
+        // routes through TryApplyTextOutputPolicyAsync's string-typed RedactResult(string, string?)
+        // overload (#490), whose contract is non-null-in/non-null-out — RedactionResult = 42 here is
+        // FakeClassificationGate's way of simulating a consumer-supplied gate that breaks that contract
+        // on real input, which the pipeline reports as TextOutputPolicyOutcome.Withheld rather than
+        // falling back to "as string ?? output" and quietly emitting the unredacted text.
         _classificationGate = new FakeClassificationGate(ClassificationVerdict.RedactOutput())
         {
             RedactionResult = 42

@@ -613,8 +613,12 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
             if (!admission.RedactsOutput)
             {
                 // Non-redact branch: Sanitize's null-in/null-out guarantee (#490) means reaching here
-                // can only mean preCut was null — nothing to sanitize.
-                return new TextOutputPolicyResult(Success: true, Result: null, WasTruncated: false);
+                // can only mean preCut was null — nothing to sanitize. NothingToAdmit, not Withheld
+                // (#490 residual): the caller did not refuse anything here, there was simply nothing to
+                // treat — collapsing the two into the same Text: string.Empty was what let a withheld
+                // result and an absent one read as identical downstream.
+                return new TextOutputPolicyResult(
+                    TextOutputPolicyOutcome.NothingToAdmit, Text: string.Empty, WasTruncated: false);
             }
 
             // Fail closed, deliberately without asking whether preCut was itself null. A redact-required
@@ -629,7 +633,8 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
                 "Classification gate returned null when redacting output of {ToolName}; the result is "
                 + "withheld rather than returned unredacted.",
                 toolName);
-            return new TextOutputPolicyResult(Success: false, Result: null, WasTruncated: false);
+            return new TextOutputPolicyResult(
+                TextOutputPolicyOutcome.Withheld, Text: string.Empty, WasTruncated: false);
         }
 
         // #532: bound after sanitize/redact — see ApplyOutputPolicyAsync for why the order is fixed.
@@ -689,13 +694,13 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
         if (rawFitsWithNoGenuinePromiseToMake)
         {
             SettleAggregateReservation(effectiveCeiling, bounded.Length);
-            return new TextOutputPolicyResult(Success: true, Result: bounded, WasTruncated: true);
+            return new TextOutputPolicyResult(TextOutputPolicyOutcome.Admitted, bounded, WasTruncated: true);
         }
 
         if (!wasTruncated)
         {
             SettleAggregateReservation(effectiveCeiling, bounded.Length);
-            return new TextOutputPolicyResult(Success: true, Result: bounded, WasTruncated: false);
+            return new TextOutputPolicyResult(TextOutputPolicyOutcome.Admitted, bounded, WasTruncated: false);
         }
 
         // #563: the ORIGINAL content — before the scan-cost pre-cut, before sanitize/redact — is what
@@ -736,11 +741,11 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
         {
             var (plainBounded, _) = BoundedText.Cap(processed, effectiveCeiling, OutputTruncationMarker, alwaysEmbedMarker: true);
             SettleAggregateReservation(effectiveCeiling, plainBounded.Length);
-            return new TextOutputPolicyResult(Success: true, Result: plainBounded, WasTruncated: true);
+            return new TextOutputPolicyResult(TextOutputPolicyOutcome.Admitted, plainBounded, WasTruncated: true);
         }
 
         SettleAggregateReservation(effectiveCeiling, withId.Length);
-        return new TextOutputPolicyResult(Success: true, Result: withId, WasTruncated: true);
+        return new TextOutputPolicyResult(TextOutputPolicyOutcome.Admitted, withId, WasTruncated: true);
     }
 
     /// <summary>

@@ -242,7 +242,6 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
         var textPolicy = await _admissionPipeline
             .TryApplyTextOutputPolicyAsync(admission, config.ToolName, sandboxResult.Output, ct)
             .ConfigureAwait(false);
-        var content = textPolicy.Result;
         if (!textPolicy.Success)
         {
             await ReportExecutionAsync(
@@ -260,10 +259,16 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
 
         await ReportExecutionAsync(admission, EscalationExecutionStatus.Succeeded, failureReason: null, config.ToolName);
 
+        // #490: StepExecutionResult.Output is documented as "null if the step produced no output" —
+        // textPolicy.Text is now non-nullable (string.Empty on NothingToAdmit), so mapping it straight
+        // through would silently turn "no output" into an empty-string output, a behavior change to a
+        // persisted plan step this fix has no business making. NothingToAdmit maps back to null,
+        // preserving Output's existing contract; every other reachable outcome here is Admitted
+        // (Withheld already returned above).
         return new StepExecutionResult
         {
             Status = StepExecutionStatus.Completed,
-            Output = content,
+            Output = textPolicy.Outcome == TextOutputPolicyOutcome.NothingToAdmit ? null : textPolicy.Text,
             Duration = sw.Elapsed,
             Attestation = sandboxResult.Attestation
         };

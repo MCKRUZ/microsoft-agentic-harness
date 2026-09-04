@@ -317,7 +317,7 @@ public sealed class ToolCallAdmissionPipelineTests
             ToolCallAdmission.AllowWithOutputRedaction(), Tool, raw, CancellationToken.None);
 
         policy.Success.Should().BeTrue();
-        policy.Result!.Length.Should().BeLessThanOrEqualTo(50,
+        policy.Text.Length.Should().BeLessThanOrEqualTo(50,
             "the aggregate/per-message ceiling must never be exceeded, however the truncation was decided");
         policy.WasTruncated.Should().BeTrue(
             "correctness-review finding: the returned text genuinely IS shorter than what redaction " +
@@ -383,7 +383,7 @@ public sealed class ToolCallAdmissionPipelineTests
             ToolCallAdmission.Allow(), Tool, "harmless output", CancellationToken.None);
 
         policy.Success.Should().BeTrue();
-        policy.Result.Should().Be("harmless output");
+        policy.Text.Should().Be("harmless output");
     }
 
     [Fact]
@@ -401,7 +401,8 @@ public sealed class ToolCallAdmissionPipelineTests
             ToolCallAdmission.AllowWithOutputRedaction(), Tool, "top secret value", CancellationToken.None);
 
         policy.Success.Should().BeFalse();
-        policy.Result.Should().BeNull();
+        policy.Outcome.Should().Be(TextOutputPolicyOutcome.Withheld);
+        policy.Text.Should().BeEmpty();
     }
 
     [Fact]
@@ -441,7 +442,7 @@ public sealed class ToolCallAdmissionPipelineTests
             ToolCallAdmission.Allow(), Tool, "a secret value", CancellationToken.None);
 
         policy.Success.Should().BeTrue();
-        policy.Result.Should().Be("a [SCRUBBED] value");
+        policy.Text.Should().Be("a [SCRUBBED] value");
         gate.Verify(g => g.RedactResult(It.IsAny<string>(), It.IsAny<object?>()), Times.Never);
     }
 
@@ -456,7 +457,7 @@ public sealed class ToolCallAdmissionPipelineTests
             ToolCallAdmission.AllowWithOutputRedaction(), Tool, "raw text", CancellationToken.None);
 
         policy.Success.Should().BeTrue();
-        policy.Result.Should().Be("[redacted]");
+        policy.Text.Should().Be("[redacted]");
     }
 
     [Fact]
@@ -478,7 +479,8 @@ public sealed class ToolCallAdmissionPipelineTests
             ToolCallAdmission.AllowWithOutputRedaction(), Tool, "raw text", CancellationToken.None);
 
         policy.Success.Should().BeFalse();
-        policy.Result.Should().BeNull();
+        policy.Outcome.Should().Be(TextOutputPolicyOutcome.Withheld);
+        policy.Text.Should().BeEmpty();
     }
 
     // ===== #532: tool output is bounded, not just sanitized =====
@@ -669,9 +671,9 @@ public sealed class ToolCallAdmissionPipelineTests
             ToolCallAdmission.Allow(), Tool, new string('x', 5000), CancellationToken.None);
 
         policy.Success.Should().BeTrue("bounding is not a policy denial — the result is admitted, just cut");
-        policy.Result!.Length.Should().BeLessThanOrEqualTo(200);
-        policy.Result.Should().Contain("tool_result_fetch");
-        policy.Result.Should().EndWith("]");
+        policy.Text.Length.Should().BeLessThanOrEqualTo(200);
+        policy.Text.Should().Contain("tool_result_fetch");
+        policy.Text.Should().EndWith("]");
     }
 
     [Fact]
@@ -694,7 +696,7 @@ public sealed class ToolCallAdmissionPipelineTests
         // The property under test: a caller that ONLY reads the text (as ToolUseStepExecutor does) must
         // still be able to tell this was cut, because the final BoundedText.Cap never fires here --
         // sanitizing shrank the pre-cut's survivor to "HEADER" + marker, already under the 10,000 ceiling.
-        policy.Result.Should().Contain(ToolCallAdmissionPipeline.OutputTruncationMarker,
+        policy.Text.Should().Contain(ToolCallAdmissionPipeline.OutputTruncationMarker,
             "a reader with no access to WasTruncated (ToolUseStepExecutor.HandleSuccessAsync discards it) "
             + "must not conclude the result is complete just because the final cut never fired");
     }
@@ -815,6 +817,21 @@ public sealed class ToolCallAdmissionPipelineTests
     }
 
     [Fact]
+    public void TextOutputPolicyResult_DefaultValue_IsFailClosed()
+    {
+        // #490 code-review finding: TextOutputPolicyOutcome.Withheld must be the enum's zero value, so
+        // an unset field — a test double that doesn't stub this, or any future code path that
+        // constructs the record without deciding — reads as a refusal, the same fail-closed direction
+        // the bool Success field this type replaced always defaulted to. The first cut of this fix put
+        // Admitted first on the theory that an unset field would be "obviously wrong to consume
+        // unguarded" — false, because every real consumer checks Success before reading anything else,
+        // so an unset field was silently treated as a legitimate admit instead.
+        default(TextOutputPolicyResult).Success.Should().BeFalse(
+            "an unset TextOutputPolicyResult must fail closed, not silently read as an admitted result");
+        default(TextOutputPolicyResult).Outcome.Should().Be(TextOutputPolicyOutcome.Withheld);
+    }
+
+    [Fact]
     public async Task TryApplyTextOutputPolicy_PlainAllow_NullContent_PassesThroughWithoutSanitizing()
     {
         var sanitizer = new Mock<ICompositeResponseSanitizer>(MockBehavior.Strict);
@@ -823,7 +840,12 @@ public sealed class ToolCallAdmissionPipelineTests
         var policy = await pipeline.TryApplyTextOutputPolicyAsync(ToolCallAdmission.Allow(), Tool, null, CancellationToken.None);
 
         policy.Success.Should().BeTrue("there is nothing to sanitize in an absent result");
-        policy.Result.Should().BeNull();
+        // #490: NothingToAdmit, not Withheld — this call refused nothing, there was simply nothing to
+        // treat. Asserted on the Outcome itself, not inferred from Text being empty: Withheld also
+        // reports an empty Text, and collapsing the two into the same observable value is exactly the
+        // defect #490 fixed.
+        policy.Outcome.Should().Be(TextOutputPolicyOutcome.NothingToAdmit);
+        policy.Text.Should().BeEmpty();
     }
 
     [Fact]
@@ -843,7 +865,12 @@ public sealed class ToolCallAdmissionPipelineTests
             ToolCallAdmission.AllowWithOutputRedaction(), Tool, null, CancellationToken.None);
 
         policy.Success.Should().BeFalse("a redact-required call must never report success just because there was nothing to redact yet");
-        policy.Result.Should().BeNull();
+        // #490: Withheld, not NothingToAdmit — see the sibling PlainAllow test's identical comment.
+        // This is the observable difference the fix exists to make possible: the same null-content
+        // input produces a DIFFERENT Outcome here than on the non-redact path above, even though both
+        // report an empty Text.
+        policy.Outcome.Should().Be(TextOutputPolicyOutcome.Withheld);
+        policy.Text.Should().BeEmpty();
     }
 
     [Fact]
@@ -1324,7 +1351,7 @@ public sealed class ToolCallAdmissionPipelineTests
 
         var first = await pipeline.TryApplyTextOutputPolicyAsync(
             ToolCallAdmission.Allow(), Tool, new string('x', 5_000), CancellationToken.None);
-        first.Result!.Length.Should().Be(1_000);
+        first.Text.Length.Should().Be(1_000);
 
         var second = await pipeline.TryApplyTextOutputPolicyAsync(
             ToolCallAdmission.Allow(), Tool, new string('y', 50), CancellationToken.None);
@@ -1465,10 +1492,10 @@ public sealed class ToolCallAdmissionPipelineTests
             ToolCallAdmission.Allow(), Tool, new string('y', 5_000), CancellationToken.None);
 
         second.Success.Should().BeTrue();
-        second.Result.Should().NotBeNullOrEmpty(
+        second.Text.Should().NotBeNullOrEmpty(
             "an empty result with the aggregate budget fully spent is indistinguishable from the tool "
             + "genuinely returning nothing — the model must always be told something was cut");
-        second.Result.Should().Contain("tool output truncated",
+        second.Text.Should().Contain("tool output truncated",
             "the id-carrying marker may not fit this tight a budget, but the plain truncation marker "
             + "must still survive — ToolUseStepExecutor reads truncation from the text itself, not "
             + "from WasTruncated, so a markerless result here is read as a complete, real result");
