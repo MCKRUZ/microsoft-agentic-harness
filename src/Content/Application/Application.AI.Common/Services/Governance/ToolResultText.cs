@@ -88,15 +88,30 @@ internal static class ToolResultText
         "[tool result withheld: exceeded maximum tool_result nesting depth]";
 
     /// <summary>
-    /// A single-<c>text</c>-block <c>content</c> array carrying <see cref="NestingDepthExceededPlaceholder"/>,
-    /// pre-serialized once — the value <see cref="TransformBlocks"/> substitutes for a <c>tool_result</c>
-    /// block's own nested <c>content</c> once <see cref="MaxToolResultNestingDepth"/> is exhausted.
-    /// <see cref="JsonNode.Parse(string, JsonNodeOptions?, JsonDocumentOptions)"/> is called fresh at
-    /// each substitution site rather than sharing one <see cref="JsonNode"/> instance, because a
-    /// <see cref="JsonNode"/> can only ever be attached to one parent at a time.
+    /// A plain <c>{"type":"text","text":...}</c> block carrying <paramref name="text"/> — what
+    /// <see cref="TransformBlocks"/> substitutes for an ENTIRE <c>tool_result</c> block (not just its
+    /// nested <c>content</c> property) once <see cref="MaxToolResultNestingDepth"/> is exhausted. Takes
+    /// the already-<c>transform</c>ed placeholder text rather than a constant, because
+    /// <paramref name="text"/> may come back shorter than <see cref="NestingDepthExceededPlaceholder"/>
+    /// itself: when this is reached via <see cref="Bound"/>/<see cref="PreCutForScan(object?, int, int, string)"/>,
+    /// <c>transform</c> IS the size-budget check, and it can truncate the placeholder the same as any
+    /// other block's text (#552 third review round — an earlier version emitted the untransformed
+    /// constant here, so it was never charged against the remaining budget at all).
     /// </summary>
-    private static readonly string WithheldNestedContentJson =
-        JsonSerializer.Serialize(new object[] { new { type = "text", text = NestingDepthExceededPlaceholder } });
+    /// <remarks>
+    /// Replacing the WHOLE block — <c>type</c> included, not only its <c>content</c> property — is what
+    /// makes this substitution idempotent on any later walk. Replacing only <c>content</c> while leaving
+    /// <c>type: "tool_result"</c> in place would make the block still look like an unresolved
+    /// <c>tool_result</c> to <see cref="JoinTextCarryingBlocks"/>/<see cref="ExtractText"/> on a later
+    /// call — re-triggering ITS OWN depth-exhaustion branch and re-emitting a fresh, untransformed
+    /// placeholder instead of ever reading the text actually stored here (#552 fourth review finding:
+    /// <c>ToolCallAdmissionPipeline</c> calls <c>ExtractText</c> directly on a value <c>Bound</c> already
+    /// produced, at the aggregate-budget settlement — exactly this call shape). A block that is already
+    /// <c>type: "text"</c> is read by every walk in this file through the same non-recursive path any
+    /// other text block takes.
+    /// </remarks>
+    private static string BuildWithheldBlockJson(string text) =>
+        JsonSerializer.Serialize(new { type = "text", text });
 
     /// <summary>
     /// Runs <paramref name="result"/>'s text through <paramref name="sanitizer"/> and returns it in the
@@ -669,7 +684,13 @@ internal static class ToolResultText
             // HIGH-severity finding this arm exists to close (proven by that version's own test
             // asserting a nested "IGNORE PREVIOUS INSTRUCTIONS" payload passed through by reference).
             case FunctionResultContent or IReadOnlyList<AIContent>:
-                return new TextContent(NestingDepthExceededPlaceholder);
+                // Third security/correctness-review round on #552: the placeholder must itself go
+                // through `transform` — when this method is reached via Bound/PreCutForScan, `transform`
+                // IS the size-budget check (BudgetedCut's closure), and a placeholder that skips it is
+                // never charged against `remaining`, letting N depth-exhausted blocks emit N times the
+                // placeholder's length regardless of ceiling. Routing it through the same hook every
+                // other block's text passes through is the fix, not a special case.
+                return new TextContent(transform(NestingDepthExceededPlaceholder));
             default:
                 return resultValue;
         }
@@ -905,7 +926,19 @@ internal static class ToolResultText
                         // model. Unlike the text-rewrite branch above, this always forces the lazy
                         // `root` parse — "nothing to change" is not a valid outcome for a fail-closed
                         // withhold.
-                        getArrayNode()[blockIndex]!["content"] = JsonNode.Parse(WithheldNestedContentJson);
+                        //
+                        // Third round (correctness-review): the placeholder is routed through
+                        // `transform` — when reached via Bound/PreCutForScan, `transform` IS
+                        // BudgetedCut's size-budget check, and skipping it here left N depth-exhausted
+                        // blocks emitting N x the placeholder's length regardless of `ceiling`.
+                        //
+                        // Fourth round: replaces the WHOLE block (getArrayNode()[blockIndex], not
+                        // ...[blockIndex]!["content"]) — see BuildWithheldBlockJson's remarks for why
+                        // leaving `type: "tool_result"` in place made this non-idempotent on a later
+                        // walk, including ExtractText called directly on Bound's own output
+                        // (ToolCallAdmissionPipeline's aggregate-budget settlement does exactly that).
+                        var withheldText = transform(NestingDepthExceededPlaceholder);
+                        getArrayNode()[blockIndex] = JsonNode.Parse(BuildWithheldBlockJson(withheldText));
                     }
                 }
             }
