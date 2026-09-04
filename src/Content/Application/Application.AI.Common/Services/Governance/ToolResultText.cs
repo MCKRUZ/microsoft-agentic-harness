@@ -331,6 +331,14 @@ internal static class ToolResultText
     {
         switch (result)
         {
+            // A lone tool_result block reaches here as a bare FunctionResultContent (fifth review round
+            // on #552 — see Transform's identical case for why). No outer sibling list to count here,
+            // unlike the AIContent[] case below — just this one value's own internal separator cost.
+            case FunctionResultContent frc:
+            {
+                var (entries, nestedReserve) = CountFunctionResultSeparators(frc.Result, MaxToolResultNestingDepth);
+                return nestedReserve + (entries > 1 ? (entries - 1) * Environment.NewLine.Length : 0);
+            }
             case AIContent[] blocks:
             {
                 var entries = 0;
@@ -500,6 +508,26 @@ internal static class ToolResultText
                     ? result
                     : WithText(text, transformed);
             }
+            // CI security-review finding (fifth review round on #552): a single-content-block MCP
+            // success follows the identical single-vs-array convention documented on the TextContent
+            // case above — a lone tool_result block reaches here as a BARE FunctionResultContent, not
+            // wrapped in an AIContent[] of length 1 — confirmed empirically against the pinned SDK
+            // (ModelContextProtocol.Core 1.4.1's McpClientTool.InvokeCoreAsync converts a single content
+            // block via AIContentExtensions.ToAIContent directly, the same call the multi-block path
+            // makes per-element). Every prior review round tested tool_result nesting only inside an
+            // AIContent[] array; this arm was missing entirely, so a lone tool_result block bypassed
+            // sanitize/redact/bound completely (fell through to `default: return result`) while
+            // ExtractText's own fallback (`_ => JsonSerializer.Serialize(result)`) still serialized its
+            // raw, never-scrubbed text into the output. Reuses TransformFunctionResult unchanged — the
+            // same depth-bounded, fail-closed walk already exercised for a FunctionResultContent found
+            // inside an AIContent[] element, just entered from one more shape.
+            case FunctionResultContent frc:
+            {
+                var transformedResult = TransformFunctionResult(frc.Result, transform, MaxToolResultNestingDepth);
+                return ReferenceEquals(transformedResult, frc.Result)
+                    ? result
+                    : WithFunctionResult(frc, transformedResult);
+            }
             // A multi-content-block MCP tool success reaches this boundary as AIContent[]. TextContent
             // elements carry free text directly; a tool_result block (#552) converts to a
             // FunctionResultContent whose Result can itself be a TextContent, ANOTHER FunctionResultContent
@@ -579,6 +607,11 @@ internal static class ToolResultText
         string text => text,
         JsonElement { ValueKind: JsonValueKind.String } element => element.GetString() ?? string.Empty,
         TextContent text => text.Text,
+        // A lone tool_result block reaches here as a bare FunctionResultContent, not an AIContent[] of
+        // length 1 — see Transform's identical case for why (fifth review round on #552). Must come
+        // before the `_` fallback below, which would otherwise JSON-serialize the raw, unscrubbed
+        // Result verbatim into the output.
+        FunctionResultContent frc => ExtractFunctionResultText(frc.Result, MaxToolResultNestingDepth),
         AIContent[] blocks => JoinAIContentText(blocks),
         JsonElement { ValueKind: JsonValueKind.Object } element when TryGetContentArray(element, out var content) =>
             ExtractContentArrayText(content),
