@@ -324,23 +324,41 @@ internal static class ToolResultText
                     ? result
                     : WithText(text, transformed);
             }
-            // A multi-content-block MCP tool success reaches this boundary as AIContent[]. Only
-            // TextContent elements carry free text to transform; anything else (DataContent — images,
-            // files) passes through untouched.
+            // A multi-content-block MCP tool success reaches this boundary as AIContent[]. TextContent
+            // elements carry free text directly; a tool_result block (#552) converts to a
+            // FunctionResultContent whose Result can itself be a TextContent carrying the originating
+            // server's text verbatim — confirmed against the pinned ModelContextProtocol.Core 1.4.1 /
+            // Microsoft.Extensions.AI.Abstractions 10.5.2 assemblies, not assumed. Anything else
+            // (DataContent — images, files; a FunctionResultContent whose Result isn't a TextContent)
+            // passes through untouched.
             case AIContent[] blocks:
             {
                 AIContent[]? transformedBlocks = null;
                 for (var i = 0; i < blocks.Length; i++)
                 {
-                    if (blocks[i] is not TextContent block)
-                        continue;
+                    switch (blocks[i])
+                    {
+                        case TextContent block:
+                        {
+                            var transformed = transform(block.Text);
+                            if (string.Equals(transformed, block.Text, StringComparison.Ordinal))
+                                continue;
 
-                    var transformed = transform(block.Text);
-                    if (string.Equals(transformed, block.Text, StringComparison.Ordinal))
-                        continue;
+                            transformedBlocks ??= (AIContent[])blocks.Clone();
+                            transformedBlocks[i] = WithText(block, transformed);
+                            break;
+                        }
+                        case FunctionResultContent { Result: TextContent innerText } frc:
+                        {
+                            var transformed = transform(innerText.Text);
+                            if (string.Equals(transformed, innerText.Text, StringComparison.Ordinal))
+                                continue;
 
-                    transformedBlocks ??= (AIContent[])blocks.Clone();
-                    transformedBlocks[i] = WithText(block, transformed);
+                            transformedBlocks ??= (AIContent[])blocks.Clone();
+                            transformedBlocks[i] = WithFunctionResult(frc, WithText(innerText, transformed));
+                            break;
+                        }
+                    }
                 }
                 return transformedBlocks ?? result;
             }
@@ -384,22 +402,70 @@ internal static class ToolResultText
     };
 
     /// <summary>
-    /// Joins every text-carrying block's text (plain <c>text</c> blocks and embedded <c>resource</c>
-    /// blocks, the same two shapes <see cref="TryGetBlockText"/> recognizes for rewriting) with a
-    /// newline, skipping blocks with nothing to extract (e.g. a binary <c>resource</c> or image block).
+    /// Joins every text-carrying block's text (plain <c>text</c> blocks, embedded <c>resource</c>
+    /// blocks, and a <c>tool_result</c> block's own nested text — one level, see
+    /// <see cref="JoinTextCarryingBlocks"/>) with a newline, skipping blocks with nothing to extract
+    /// (e.g. a binary <c>resource</c> or image block).
     /// </summary>
-    private static string ExtractContentArrayText(JsonElement content)
+    private static string ExtractContentArrayText(JsonElement content) =>
+        JoinTextCarryingBlocks(content, allowNestedToolResult: true);
+
+    /// <summary>
+    /// The shared walk <see cref="ExtractContentArrayText"/> reduces to, and also what a
+    /// <c>tool_result</c> block's own nested <c>content</c> array is joined with (#552) — a
+    /// <c>tool_result</c> block (<c>ToolResultContentBlock</c> on the wire) carries its own nested
+    /// content array one JSON level down, structurally identical to the top-level one, and an MCP
+    /// server picking that shape over a bare <c>text</c> block must not skip extraction by doing so.
+    /// </summary>
+    /// <param name="allowNestedToolResult">
+    /// <see langword="false"/> on the recursive call for a <c>tool_result</c>'s own nested array, so a
+    /// <c>tool_result</c> block nested inside another <c>tool_result</c> block is not itself unwrapped.
+    /// The real protocol never nests <c>tool_result</c> this way (confirmed against the pinned
+    /// <c>ModelContextProtocol.Core</c> 1.4.1 assembly: <c>ToolResultContentBlock.Content</c> is
+    /// <c>IList&lt;ContentBlock&gt;</c>, never a list that could itself hold another
+    /// <c>ToolResultContentBlock</c> two levels deep in any flow this repo produces) — recursing
+    /// without this bound would trade a fixed, one-level gap for an unbounded one: a hostile server can
+    /// still wire-craft arbitrarily deep JSON nesting even though the real SDK types cannot represent
+    /// it, and walking that without a depth bound is a stack-depth denial-of-service on attacker-
+    /// controlled input. This flag statically bounds the walk to exactly one recursive call: the value
+    /// passed on the only recursive call site is a literal <see langword="false"/>, never re-derived
+    /// from the caller's own flag, so a third level cannot be introduced without visibly changing that
+    /// literal.
+    /// </param>
+    private static string JoinTextCarryingBlocks(JsonElement content, bool allowNestedToolResult)
     {
         List<string>? texts = null;
         foreach (var block in content.EnumerateArray())
         {
-            if (IsContentBlock(block, out var type)
-                && TryGetBlockText(block, type, out var text, out _))
+            if (!IsContentBlock(block, out var type))
+                continue;
+
+            if (TryGetBlockText(block, type, out var text, out _))
             {
                 (texts ??= []).Add(text);
             }
+            else if (allowNestedToolResult && TryGetNestedToolResultContent(type, block, out var nested))
+            {
+                var nestedText = JoinTextCarryingBlocks(nested, allowNestedToolResult: false);
+                if (nestedText.Length > 0)
+                    (texts ??= []).Add(nestedText);
+            }
         }
         return texts is null ? string.Empty : string.Join(Environment.NewLine, texts);
+    }
+
+    /// <summary>
+    /// Whether <paramref name="block"/> is a <c>tool_result</c> block carrying its own nested
+    /// <c>content</c> array — the one shape every <c>tool_result</c>-aware call site in this file
+    /// checks for, kept as one structural check for the same reason <see cref="IsContentBlock"/> is.
+    /// </summary>
+    private static bool TryGetNestedToolResultContent(string? type, JsonElement block, out JsonElement nested)
+    {
+        if (type == "tool_result" && block.TryGetProperty("content", out nested) && nested.ValueKind == JsonValueKind.Array)
+            return true;
+
+        nested = default;
+        return false;
     }
 
     /// <summary>
@@ -457,7 +523,13 @@ internal static class ToolResultText
     /// a content array, so "what counts as a content block" can't drift between them (#488 second
     /// review round: it had, three separate hand-written copies of this exact check).
     /// </summary>
-    private static bool IsContentBlock(JsonElement block, out string? type)
+    /// <remarks>
+    /// <see langword="internal"/> rather than <see langword="private"/> so
+    /// <see cref="Tools.McpFailureNormalizingAIFunction"/>'s own content-array walk shares this same
+    /// predicate instead of re-deriving it (#554) — that walk had drifted into a fourth independent
+    /// copy of "what counts as a block" before this fix, missing the <c>type</c> requirement entirely.
+    /// </remarks>
+    internal static bool IsContentBlock(JsonElement block, out string? type)
     {
         if (block.ValueKind == JsonValueKind.Object
             && block.TryGetProperty("type", out var typeProp)
@@ -491,29 +563,61 @@ internal static class ToolResultText
     private static JsonElement? TransformSerializedContentBlocks(
         JsonElement original, JsonElement content, Func<string, string> transform)
     {
+        // Parsed lazily, only once a block anywhere (including inside a tool_result's own nested
+        // array) actually needs rewriting: the common case (a structured result with nothing to
+        // scrub) pays no JsonNode allocation at all.
         JsonNode? root = null;
+        JsonNode GetTopArray() => (root ??= JsonNode.Parse(original.GetRawText()))!["content"]!;
+
+        TransformBlocks(content, transform, GetTopArray, allowNestedToolResult: true);
+
+        return root is null ? null : JsonSerializer.SerializeToElement(root);
+    }
+
+    /// <summary>
+    /// The shared walk-and-mutate <see cref="TransformSerializedContentBlocks"/> reduces to, called
+    /// once for the top-level <c>content</c> array and once more, explicitly, for a <c>tool_result</c>
+    /// block's own nested one (#552) — never recursively beyond that, for the same reason
+    /// <see cref="JoinTextCarryingBlocks"/>'s <paramref name="allowNestedToolResult"/> is bounded the
+    /// same way; see that method's remarks.
+    /// </summary>
+    /// <param name="getArrayNode">
+    /// Resolves the mutable <see cref="JsonNode"/> array mirroring <paramref name="content"/> —
+    /// <c>root["content"]</c> for the top-level call, or (for the recursive one-level call) a closure
+    /// that re-derives <c>root["content"][toolResultIndex]["content"]</c> each time, so the lazy
+    /// <c>root</c> parse still happens at most once no matter which level's block needs rewriting.
+    /// </param>
+    private static void TransformBlocks(
+        JsonElement content, Func<string, string> transform, Func<JsonNode> getArrayNode, bool allowNestedToolResult)
+    {
         var index = 0;
 
         foreach (var block in content.EnumerateArray())
         {
-            if (IsContentBlock(block, out var type)
-                && TryGetBlockText(block, type, out var text, out var isEmbeddedResource))
+            var blockIndex = index; // captured per-iteration; a shared loop variable would alias every closure below
+            if (IsContentBlock(block, out var type))
             {
-                var transformed = transform(text);
-                if (!string.Equals(transformed, text, StringComparison.Ordinal))
+                if (TryGetBlockText(block, type, out var text, out var isEmbeddedResource))
                 {
-                    // Parsed lazily, only once a block actually needs rewriting: the common case (a
-                    // structured result with nothing to scrub) pays no JsonNode allocation at all.
-                    root ??= JsonNode.Parse(original.GetRawText());
-                    var target = isEmbeddedResource ? root!["content"]![index]!["resource"] : root!["content"]![index];
-                    target!["text"] = transformed;
+                    var transformed = transform(text);
+                    if (!string.Equals(transformed, text, StringComparison.Ordinal))
+                    {
+                        var target = isEmbeddedResource
+                            ? getArrayNode()[blockIndex]!["resource"]
+                            : getArrayNode()[blockIndex];
+                        target!["text"] = transformed;
+                    }
+                }
+                else if (allowNestedToolResult && TryGetNestedToolResultContent(type, block, out var nested))
+                {
+                    TransformBlocks(
+                        nested, transform, () => getArrayNode()[blockIndex]!["content"]!,
+                        allowNestedToolResult: false);
                 }
             }
 
             index++;
         }
-
-        return root is null ? null : JsonSerializer.SerializeToElement(root);
     }
 
     /// <summary>
@@ -539,13 +643,23 @@ internal static class ToolResultText
 
     /// <summary>
     /// Whether a content block carries free text, without extracting or decoding it — the count-only
-    /// sibling of <see cref="TryGetBlockText"/>, sharing the identical <see cref="ResolveTextHolder"/>
-    /// recognition so the two can never disagree about which blocks qualify.
+    /// sibling of <see cref="TryGetBlockText"/>/<see cref="JoinTextCarryingBlocks"/>, sharing the
+    /// identical <see cref="ResolveTextHolder"/>/<see cref="TryGetNestedToolResultContent"/>
+    /// recognition (including the same one-level <c>tool_result</c> bound, #552) so none of the three
+    /// can disagree about which blocks qualify.
     /// </summary>
-    private static bool HasBlockText(JsonElement block, string? type) =>
-        ResolveTextHolder(block, type) is { } holder
-        && holder.TryGetProperty("text", out var textProp)
-        && textProp.ValueKind == JsonValueKind.String;
+    private static bool HasBlockText(JsonElement block, string? type, bool allowNestedToolResult = true)
+    {
+        if (ResolveTextHolder(block, type) is { } holder
+            && holder.TryGetProperty("text", out var textProp)
+            && textProp.ValueKind == JsonValueKind.String)
+            return true;
+
+        return allowNestedToolResult
+            && TryGetNestedToolResultContent(type, block, out var nested)
+            && nested.EnumerateArray().Any(b => IsContentBlock(b, out var nestedType)
+                && HasBlockText(b, nestedType, allowNestedToolResult: false));
+    }
 
     /// <summary>
     /// Resolves the JSON object a content block's free text would live under: the block itself for a
@@ -571,6 +685,20 @@ internal static class ToolResultText
 
     private static TextContent WithText(TextContent original, string text) => new(text)
     {
+        Annotations = original.Annotations,
+        RawRepresentation = original.RawRepresentation,
+        AdditionalProperties = original.AdditionalProperties
+    };
+
+    /// <summary>
+    /// Rebuilds a <see cref="FunctionResultContent"/> around a new <see cref="FunctionResultContent.Result"/>,
+    /// preserving <see cref="ToolResultContent.CallId"/> — load-bearing for a live caller/result
+    /// correlation elsewhere in this repo (see #556) — plus <see cref="FunctionResultContent.Exception"/>.
+    /// </summary>
+    private static FunctionResultContent WithFunctionResult(FunctionResultContent original, object? result) => new(
+        original.CallId, result)
+    {
+        Exception = original.Exception,
         Annotations = original.Annotations,
         RawRepresentation = original.RawRepresentation,
         AdditionalProperties = original.AdditionalProperties
