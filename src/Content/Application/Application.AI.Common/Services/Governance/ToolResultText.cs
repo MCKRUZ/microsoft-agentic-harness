@@ -334,11 +334,12 @@ internal static class ToolResultText
             // A lone tool_result block reaches here as a bare FunctionResultContent (fifth review round
             // on #552 — see Transform's identical case for why). No outer sibling list to count here,
             // unlike the AIContent[] case below — just this one value's own internal separator cost.
+            // CountFunctionResultSeparators' own NestedReserve already folds in that value's own-level
+            // join cost (see CountListSeparators, which is the opposite convention from the JSON-side
+            // CountJoinableEntries — a sixth review round found this exact case re-adding that cost a
+            // second time here, over-reserving budget; safe-direction only, but a real double-count).
             case FunctionResultContent frc:
-            {
-                var (entries, nestedReserve) = CountFunctionResultSeparators(frc.Result, MaxToolResultNestingDepth);
-                return nestedReserve + (entries > 1 ? (entries - 1) * Environment.NewLine.Length : 0);
-            }
+                return CountFunctionResultSeparators(frc.Result, MaxToolResultNestingDepth).NestedReserve;
             case AIContent[] blocks:
             {
                 var entries = 0;

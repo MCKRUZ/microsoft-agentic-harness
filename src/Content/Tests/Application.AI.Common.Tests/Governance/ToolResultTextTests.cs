@@ -552,6 +552,23 @@ public sealed class ToolResultTextTests
         dropped.Should().BeTrue();
     }
 
+    [Fact]
+    public void Bound_BareFunctionResultContentWrappingAListOfTextContent_DoesNotReserveTheSeparatorTwice()
+    {
+        // #552 sixth review round (correctness-review): CountFunctionResultSeparators' own NestedReserve
+        // already folds in this value's own-level join cost (via CountListSeparators), so the bare-value
+        // SeparatorReserve case must NOT add that cost a second time. Ceiling is calibrated so the two
+        // inner blocks' content plus exactly ONE separator fits with nothing to spare — a caller that
+        // double-reserves would truncate here even though the content genuinely fits within ceiling.
+        var functionResult = new FunctionResultContent(
+            "call-1", new List<AIContent> { new TextContent("AAAA"), new TextContent("BBBB") });
+        var ceiling = 8 + Environment.NewLine.Length;
+
+        var (_, dropped) = ToolResultText.Bound(functionResult, ceiling, "…");
+
+        dropped.Should().BeFalse();
+    }
+
     // ── #552: a tool_result content block on the AIContent[] (FunctionResultContent) path ──
 
     [Fact]
