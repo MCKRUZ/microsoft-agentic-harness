@@ -63,7 +63,40 @@ internal static class ToolResultText
     /// maliciously deep (e.g. 100,000-level) payload still cannot exhaust the call stack — 8 is far
     /// beyond any legitimate tool-chaining depth this repo's planner produces.
     /// </remarks>
+    /// <remarks>
+    /// Second security-review round on the same PR: the first cut of this bound failed OPEN — content
+    /// nested past the budget was silently left untouched (skipped by the join, never reached by
+    /// mutation), which meant it round-tripped verbatim through <see cref="Sanitize(object?, ICompositeResponseSanitizer, string)"/>/
+    /// <see cref="Bound"/> with no sanitize, redact, or size cap applied, proven by that version's own
+    /// test asserting an injection payload nested one level past the budget passed through unmodified.
+    /// Every site that walks this bound (<see cref="JoinTextCarryingBlocks"/>, <see cref="TransformBlocks"/>,
+    /// <see cref="TransformFunctionResult"/>, <see cref="ExtractFunctionResultText"/>, and their
+    /// separator-counting siblings) now fails CLOSED at the boundary instead: content beyond the budget
+    /// is unconditionally replaced with <see cref="NestingDepthExceededPlaceholder"/>, the same
+    /// "withhold rather than silently pass through" contract <see cref="CorruptedSanitizerOutputPlaceholder"/>
+    /// already uses for a different failure mode in this file.
+    /// </remarks>
     private const int MaxToolResultNestingDepth = 8;
+
+    /// <summary>
+    /// Substituted, unconditionally, for a <c>tool_result</c> block's own content once
+    /// <see cref="MaxToolResultNestingDepth"/> is exhausted — see that constant's second remarks block
+    /// for why failing open here was a HIGH-severity security-review finding. A fixed literal, never
+    /// derived from tool-controlled input, so there is nothing in it that itself needs sanitizing.
+    /// </summary>
+    private const string NestingDepthExceededPlaceholder =
+        "[tool result withheld: exceeded maximum tool_result nesting depth]";
+
+    /// <summary>
+    /// A single-<c>text</c>-block <c>content</c> array carrying <see cref="NestingDepthExceededPlaceholder"/>,
+    /// pre-serialized once — the value <see cref="TransformBlocks"/> substitutes for a <c>tool_result</c>
+    /// block's own nested <c>content</c> once <see cref="MaxToolResultNestingDepth"/> is exhausted.
+    /// <see cref="JsonNode.Parse(string, JsonNodeOptions?, JsonDocumentOptions)"/> is called fresh at
+    /// each substitution site rather than sharing one <see cref="JsonNode"/> instance, because a
+    /// <see cref="JsonNode"/> can only ever be attached to one parent at a time.
+    /// </summary>
+    private static readonly string WithheldNestedContentJson =
+        JsonSerializer.Serialize(new object[] { new { type = "text", text = NestingDepthExceededPlaceholder } });
 
     /// <summary>
     /// Runs <paramref name="result"/>'s text through <paramref name="sanitizer"/> and returns it in the
@@ -348,13 +381,20 @@ internal static class ToolResultText
             {
                 entries++;
             }
-            else if (remainingDepth > 0 && TryGetNestedToolResultContent(type, block, out var nested))
+            else if (TryGetNestedToolResultContent(type, block, out var nested))
             {
-                var (subEntries, subReserve) = CountJoinableEntries(nested, remainingDepth - 1);
-                if (subEntries > 0)
+                if (remainingDepth > 0)
                 {
-                    entries++;
-                    nestedReserve += subReserve + (subEntries > 1 ? (subEntries - 1) * Environment.NewLine.Length : 0);
+                    var (subEntries, subReserve) = CountJoinableEntries(nested, remainingDepth - 1);
+                    if (subEntries > 0)
+                    {
+                        entries++;
+                        nestedReserve += subReserve + (subEntries > 1 ? (subEntries - 1) * Environment.NewLine.Length : 0);
+                    }
+                }
+                else
+                {
+                    entries++; // depth exhausted — contributes exactly one entry: the withheld placeholder
                 }
             }
         }
@@ -373,7 +413,11 @@ internal static class ToolResultText
             TextContent => (1, 0),
             FunctionResultContent nestedFrc when remainingDepth > 0 =>
                 CountFunctionResultSeparators(nestedFrc.Result, remainingDepth - 1),
-            IReadOnlyList<AIContent> list when remainingDepth > 0 => CountListSeparators(list, remainingDepth),
+            // Depth exhausted (fail-closed, second security-review round on #552): the withheld
+            // placeholder ExtractFunctionResultText substitutes here is exactly one entry, matching
+            // JoinTextCarryingBlocks'/CountJoinableEntries' identical treatment on the JSON path.
+            FunctionResultContent or IReadOnlyList<AIContent> when remainingDepth <= 0 => (1, 0),
+            IReadOnlyList<AIContent> list => CountListSeparators(list, remainingDepth),
             _ => (0, 0)
         };
 
@@ -448,8 +492,15 @@ internal static class ToolResultText
             // — confirmed against the pinned ModelContextProtocol.Core 1.4.1 / Microsoft.Extensions.AI.Abstractions
             // 10.5.2 assemblies via AIContentExtensions.ToAIContent, not assumed; see
             // MaxToolResultNestingDepth's remarks for why an unbounded-nesting claim was wrong the first
-            // time. TransformFunctionResult walks that chain up to the same depth bound. Anything else
-            // (DataContent — images, files; structured/opaque Result content) passes through untouched.
+            // time. TransformFunctionResult walks that chain using MaxToolResultNestingDepth, but the
+            // two paths do NOT tolerate the identical number of wrapper levels before failing closed:
+            // this switch's own case below unwraps the OUTERMOST FunctionResultContent for free before
+            // TransformFunctionResult(frc.Result, ..., MaxToolResultNestingDepth) ever runs, so this
+            // path tolerates one more level than the JSON path's exact MaxToolResultNestingDepth before
+            // withholding (see the AIContentExtensions... test in ToolResultTextTests.cs for the exact
+            // number) — both are bounded and fail closed at their own boundary, they just don't share
+            // one. Anything else (DataContent — images, files; structured/opaque Result content) passes
+            // through untouched.
             case AIContent[] blocks:
             {
                 AIContent[]? transformedBlocks = null;
@@ -555,7 +606,11 @@ internal static class ToolResultText
         TextContent text => text.Text,
         FunctionResultContent nestedFrc when remainingDepth > 0 =>
             ExtractFunctionResultText(nestedFrc.Result, remainingDepth - 1),
-        IReadOnlyList<AIContent> list when remainingDepth > 0 => JoinFunctionResultList(list, remainingDepth),
+        // Fail closed (second security-review round on #552): depth exhausted, so this content is
+        // never walked or sanitized — withhold it rather than silently return empty (which would let
+        // it round-trip untouched through TransformFunctionResult's caller instead).
+        FunctionResultContent or IReadOnlyList<AIContent> when remainingDepth <= 0 => NestingDepthExceededPlaceholder,
+        IReadOnlyList<AIContent> list => JoinFunctionResultList(list, remainingDepth),
         _ => string.Empty
     };
 
@@ -608,6 +663,13 @@ internal static class ToolResultText
                 }
                 return transformedList ?? resultValue;
             }
+            // Fail closed (second security-review round on #552): depth exhausted, so this content is
+            // never walked or sanitized — replace it UNCONDITIONALLY with a withheld placeholder rather
+            // than falling to `default` and returning it byte-for-byte unscrubbed, which is exactly the
+            // HIGH-severity finding this arm exists to close (proven by that version's own test
+            // asserting a nested "IGNORE PREVIOUS INSTRUCTIONS" payload passed through by reference).
+            case FunctionResultContent or IReadOnlyList<AIContent>:
+                return new TextContent(NestingDepthExceededPlaceholder);
             default:
                 return resultValue;
         }
@@ -615,8 +677,8 @@ internal static class ToolResultText
 
     /// <summary>
     /// Joins every text-carrying block's text (plain <c>text</c> blocks, embedded <c>resource</c>
-    /// blocks, and a <c>tool_result</c> block's own nested text — one level, see
-    /// <see cref="JoinTextCarryingBlocks"/>) with a newline, skipping blocks with nothing to extract
+    /// blocks, and a <c>tool_result</c> block's own nested text — up to <see cref="MaxToolResultNestingDepth"/>
+    /// levels, see <see cref="JoinTextCarryingBlocks"/>) with a newline, skipping blocks with nothing to extract
     /// (e.g. a binary <c>resource</c> or image block).
     /// </summary>
     private static string ExtractContentArrayText(JsonElement content) =>
@@ -651,11 +713,21 @@ internal static class ToolResultText
             {
                 (texts ??= []).Add(text);
             }
-            else if (remainingDepth > 0 && TryGetNestedToolResultContent(type, block, out var nested))
+            else if (TryGetNestedToolResultContent(type, block, out var nested))
             {
-                var nestedText = JoinTextCarryingBlocks(nested, remainingDepth - 1);
-                if (nestedText.Length > 0)
-                    (texts ??= []).Add(nestedText);
+                if (remainingDepth > 0)
+                {
+                    var nestedText = JoinTextCarryingBlocks(nested, remainingDepth - 1);
+                    if (nestedText.Length > 0)
+                        (texts ??= []).Add(nestedText);
+                }
+                else
+                {
+                    // Fail closed (second security-review round on #552): depth exhausted, so this
+                    // block's own content is never walked — withhold it rather than silently skip it,
+                    // which would let it round-trip untouched through Transform's caller instead.
+                    (texts ??= []).Add(NestingDepthExceededPlaceholder);
+                }
             }
         }
         return texts is null ? string.Empty : string.Join(Environment.NewLine, texts);
@@ -816,11 +888,25 @@ internal static class ToolResultText
                         target!["text"] = transformed;
                     }
                 }
-                else if (remainingDepth > 0 && TryGetNestedToolResultContent(type, block, out var nested))
+                else if (TryGetNestedToolResultContent(type, block, out var nested))
                 {
-                    TransformBlocks(
-                        nested, transform, () => getArrayNode()[blockIndex]!["content"]!,
-                        remainingDepth - 1);
+                    if (remainingDepth > 0)
+                    {
+                        TransformBlocks(
+                            nested, transform, () => getArrayNode()[blockIndex]!["content"]!,
+                            remainingDepth - 1);
+                    }
+                    else
+                    {
+                        // Fail closed (second security-review round on #552): depth exhausted, so this
+                        // block's own nested content is never walked or sanitized — replace it
+                        // UNCONDITIONALLY with a withheld placeholder rather than leaving the original,
+                        // never-scrubbed JSON subtree in the result Sanitize/Bound hand back to the
+                        // model. Unlike the text-rewrite branch above, this always forces the lazy
+                        // `root` parse — "nothing to change" is not a valid outcome for a fail-closed
+                        // withhold.
+                        getArrayNode()[blockIndex]!["content"] = JsonNode.Parse(WithheldNestedContentJson);
+                    }
                 }
             }
 
