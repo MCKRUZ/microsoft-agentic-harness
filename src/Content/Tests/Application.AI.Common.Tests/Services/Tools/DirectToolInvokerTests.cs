@@ -10,6 +10,7 @@ using Application.AI.Common.Services.Tools;
 using Application.AI.Common.Tests.Governance;
 using Domain.AI.Bundles;
 using Domain.AI.Changes;
+using Domain.AI.Escalation;
 using Domain.AI.Governance;
 using Domain.AI.Models;
 using Domain.Common.Config.AI;
@@ -752,7 +753,11 @@ public sealed class DirectToolInvokerTests
         await Invoke(Request("alpha"), Tool("alpha", result: ToolResult.Fail("permission denied")));
 
         _executionReporter.Verify(
-            r => r.ReportFailedAsync(call, "permission denied", "direct-invocation", CancellationToken.None), Times.Once);
+            r => r.ReportFailedAsync(
+                call,
+                It.Is<PreparedFailureText>(p => p.Text == "permission denied" && p.Substitution == FailureTextSubstitution.None),
+                "direct-invocation", CancellationToken.None),
+            Times.Once);
     }
 
     [Fact]
@@ -774,8 +779,9 @@ public sealed class DirectToolInvokerTests
         _executionReporter.Verify(
             r => r.ReportFailedAsync(
                 call,
-                It.Is<string>(reason =>
-                    !reason.Contains("admin@example.com") && reason.Contains("[REDACTED:Email]")),
+                It.Is<PreparedFailureText>(p =>
+                    !p.Text.Contains("admin@example.com") && p.Text.Contains("[REDACTED:Email]")
+                    && p.Substitution == FailureTextSubstitution.None),
                 "direct-invocation", CancellationToken.None),
             Times.Once);
     }
@@ -793,7 +799,7 @@ public sealed class DirectToolInvokerTests
         // The fault is reported (approval loop closed) but still surfaces as the invoker's own
         // faulted outcome — reporting must never swallow or replace the caller-facing result.
         _executionReporter.Verify(r => r.ReportFailedAsync(
-            call, It.IsAny<string>(), "direct-invocation", CancellationToken.None), Times.Once);
+            call, It.IsAny<PreparedFailureText>(), "direct-invocation", CancellationToken.None), Times.Once);
         outcome.Status.Should().Be(DirectToolInvocationStatus.Faulted);
     }
 

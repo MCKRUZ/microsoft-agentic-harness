@@ -1,9 +1,27 @@
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Telemetry;
 using Application.AI.Common.Services.Governance;
+using Domain.AI.Escalation;
 using Domain.AI.Telemetry.Redaction;
 
 namespace Application.AI.Common.Services.Tools;
+
+/// <summary>
+/// <see cref="ReportedFailureText.PrepareForReporting"/>'s result: the text to report, plus why it is a
+/// substitute when it is one. See <see cref="Domain.AI.Escalation.FailureTextSubstitution"/> for why the
+/// discriminator itself lives in Domain rather than here.
+/// </summary>
+/// <param name="Text">
+/// Always safe to persist to the audit trail, replay to a human approver, or hand back to the model on
+/// a retry. Never null-or-whitespace: <c>EscalationExecutionRecord.Failed</c> and
+/// <c>InProcessApprovalFailureMemory.RecordFailure</c> both reject that, so every substitution below is
+/// itself a non-blank placeholder string — <see cref="Substitution"/> is what lets a caller tell a
+/// placeholder apart from the tool's own text without relying on that string's exact wording.
+/// </param>
+/// <param name="Substitution">
+/// <see cref="FailureTextSubstitution.None"/> when <paramref name="Text"/> is the tool's own message.
+/// </param>
+public readonly record struct PreparedFailureText(string Text, FailureTextSubstitution Substitution);
 
 /// <summary>
 /// Prepares a tool's raw failure text for every consumer downstream of admission reporting — the audit
@@ -62,8 +80,11 @@ internal static class ReportedFailureText
     /// <param name="redactionFilter">Scrubs known secret patterns (emails, SSNs, AWS keys, JWTs, etc.).</param>
     /// <param name="toolName">The tool that produced <paramref name="text"/>, passed to the sanitizer as context.</param>
     /// <returns>
-    /// The text to report: either the tool's own sanitized/redacted/capped message, or one of the fixed
-    /// withheld placeholders below.
+    /// The text to report — either the tool's own sanitized/redacted/capped message
+    /// (<see cref="FailureTextSubstitution.None"/>), or a fixed withheld placeholder identified by its
+    /// <see cref="PreparedFailureText.Substitution"/> (#472: previously an in-band sentinel string with
+    /// no type-level way to tell it apart from genuine tool text — see this repo's own recorded history
+    /// of that shape, e.g. <c>IacSandboxRunner</c>'s <c>ExitCode</c>/<c>Attestation</c> discriminators).
     /// </returns>
     /// <remarks>
     /// <para>
@@ -77,13 +98,17 @@ internal static class ReportedFailureText
     /// does not close that gap on its own.
     /// </para>
     /// <para>
-    /// <strong>Cap last.</strong> Capping first can slice a real secret in half at the length boundary,
-    /// and the truncated fragment that survives is never run back through the redaction filter, so it
-    /// would reach the audit trail as-is. Redacting the full, uncapped text first and bounding the
-    /// (already-safe) result afterward is the only ordering that can't leak a fragment.
+    /// <strong>Cap last, and every path routes through it.</strong> Capping first can slice a real secret
+    /// in half at the length boundary, and the truncated fragment that survives is never run back through
+    /// the redaction filter, so it would reach the audit trail as-is. Redacting the full, uncapped text
+    /// first and bounding the (already-safe) result afterward is the only ordering that can't leak a
+    /// fragment. Both placeholders below are far under <see cref="MaxLength"/> so routing them through
+    /// <see cref="Cap"/> changes nothing observable today — but every terminal value returning from a
+    /// single point is what makes "does this bypass the cap" a question with one obviously-correct
+    /// answer, rather than something the next placeholder added here has to re-derive.
     /// </para>
     /// </remarks>
-    public static string PrepareForReporting(
+    public static PreparedFailureText PrepareForReporting(
         string text, ICompositeResponseSanitizer sanitizer, IContentRedactionFilter redactionFilter, string? toolName)
     {
         // Bounds the cost of every pattern in the sanitizer/redaction chain before any of them run,
@@ -91,23 +116,26 @@ internal static class ReportedFailureText
         // does nothing to bound how much text the dozens of regex passes upstream of it must scan.
         if (text.Length > MaxScanLength)
         {
-            return OversizedInputPlaceholder;
+            return new PreparedFailureText(Cap(OversizedInputPlaceholder), FailureTextSubstitution.Oversized);
         }
 
         // Sanitize-then-redact ordering lives once in SanitizeThenRedact (#470); the withheld-placeholder
         // decision plugs into its onSanitizedEmpty hook, so this method no longer hand-rolls the same
         // sanitize → check → redact sequence every other call site already converged on.
+        var sanitizedToEmpty = false;
         var reported = SanitizeThenRedact.Apply(
             text, sanitizer, redactionFilter, RedactionCategories.All, toolName,
-            onSanitizedEmpty: _ => EmptyAfterSanitizationPlaceholder);
+            onSanitizedEmpty: _ =>
+            {
+                sanitizedToEmpty = true;
+                return EmptyAfterSanitizationPlaceholder;
+            });
 
-        return Cap(reported);
+        return new PreparedFailureText(
+            Cap(reported),
+            sanitizedToEmpty ? FailureTextSubstitution.SanitizedToEmpty : FailureTextSubstitution.None);
     }
 
-    /// <summary>
-    /// Truncates <paramref name="text"/> to a bounded length, if it exceeds one, via the one
-    /// cut-and-mark primitive every trust-boundary truncation site shares (#467/#470).
-    /// </summary>
-    public static string Cap(string text) =>
+    private static string Cap(string text) =>
         BoundedText.Cap(text, MaxLength, "…[truncated]").Text;
 }

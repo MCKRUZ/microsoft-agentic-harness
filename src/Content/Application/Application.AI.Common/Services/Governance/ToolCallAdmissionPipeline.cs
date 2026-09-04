@@ -994,7 +994,7 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
     /// otherwise bypass entirely (the exception would propagate before <see cref="ReportExecutionAsync"/>
     /// ever reaches its own body). Fails closed: never returns the raw, untreated text on this path.
     /// </summary>
-    private string SafePrepareFailureText(string reason, string? toolName)
+    private PreparedFailureText SafePrepareFailureText(string reason, string? toolName)
     {
         try
         {
@@ -1005,7 +1005,12 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
             _logger.LogError(ex,
                 "Failed to sanitize/redact failure text for {ToolName}; withholding raw text from the report",
                 toolName);
-            return "[tool failure text withheld: sanitization or redaction failed]";
+            // #472: named FailureTextSubstitution.TreatmentFailed rather than an orphan literal — the
+            // third of three substitution reasons ReportedFailureText.PrepareForReporting's own two
+            // (Oversized, SanitizedToEmpty) previously left this one uncovered by the same discriminator.
+            return new PreparedFailureText(
+                "[tool failure text withheld: sanitization or redaction failed]",
+                FailureTextSubstitution.TreatmentFailed);
         }
     }
 

@@ -1,4 +1,5 @@
 using Application.AI.Common.Interfaces.Escalation;
+using Application.AI.Common.Services.Tools;
 using Domain.AI.Escalation;
 using Microsoft.Extensions.Logging;
 
@@ -49,11 +50,14 @@ public sealed class DefaultApprovalExecutionReporter : IApprovalExecutionReporte
             ct);
 
     /// <inheritdoc />
-    public ValueTask ReportFailedAsync(ApprovedCall call, string failureReason, string reportedBy, CancellationToken ct) =>
+    public ValueTask ReportFailedAsync(
+        ApprovedCall call, PreparedFailureText failureReason, string reportedBy, CancellationToken ct) =>
         ReportAsync(
             call,
-            () => EscalationExecutionRecord.Failed(call.EscalationId, failureReason, _timeProvider.GetUtcNow(), reportedBy),
-            onRecorded: () => _failureMemory.RecordFailure(call.Key, failureReason, call.EscalationId),
+            () => EscalationExecutionRecord.Failed(
+                call.EscalationId, failureReason.Text, failureReason.Substitution, _timeProvider.GetUtcNow(), reportedBy),
+            onRecorded: () => _failureMemory.RecordFailure(
+                call.Key, failureReason.Text, failureReason.Substitution, call.EscalationId),
             ct);
 
     /// <inheritdoc />

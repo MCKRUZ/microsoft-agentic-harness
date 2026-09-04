@@ -71,6 +71,13 @@ public sealed record EscalationRequest
     public string? PriorFailureReason { get; init; }
 
     /// <summary>
+    /// Why <see cref="PriorFailureReason"/> is a substitute rather than the tool's own message
+    /// (#472) — null on a first attempt, same as its sibling. See
+    /// <see cref="FailureTextSubstitution"/>.
+    /// </summary>
+    public FailureTextSubstitution? PriorFailureReasonSubstitution { get; init; }
+
+    /// <summary>
     /// The escalation id of the failed prior attempt or the prior revision round this one
     /// follows, when <see cref="AttemptNumber"/> is greater than 1 or <see cref="RevisionRound"/>
     /// is greater than 1. Null on a first attempt. Shared correlation link between the two

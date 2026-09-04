@@ -16,6 +16,9 @@ public sealed record EscalationExecutionSummary
     /// <summary>Why the action failed. Non-null if and only if <see cref="Status"/> is <see cref="EscalationExecutionStatus.Failed"/>.</summary>
     public string? FailureReason { get; init; }
 
+    /// <summary>Why <see cref="FailureReason"/> is a substitute rather than the tool's own message (#472).</summary>
+    public FailureTextSubstitution? FailureReasonSubstitution { get; init; }
+
     /// <summary>Why the action never ran. Non-null if and only if <see cref="Status"/> is <see cref="EscalationExecutionStatus.NeverExecuted"/>.</summary>
     public EscalationNotExecutedReason? NotExecutedReason { get; init; }
 
@@ -34,6 +37,7 @@ public sealed record EscalationExecutionSummary
         {
             Status = record.Status,
             FailureReason = record.FailureReason,
+            FailureReasonSubstitution = record.FailureReasonSubstitution,
             NotExecutedReason = record.NotExecutedReason,
             ReportedAt = record.ReportedAt,
             ReportedBy = record.ReportedBy

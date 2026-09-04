@@ -68,6 +68,9 @@ public sealed record EscalationSummary
     /// </summary>
     public string? PriorFailureReason { get; init; }
 
+    /// <summary>Why <see cref="PriorFailureReason"/> is a substitute rather than the tool's own message (#472).</summary>
+    public FailureTextSubstitution? PriorFailureReasonSubstitution { get; init; }
+
     /// <summary>
     /// The escalation that approved the prior attempt this one retries, or the prior revision
     /// round this one follows, letting an approver open the earlier record for full context.
@@ -110,6 +113,7 @@ public sealed record EscalationSummary
             TimeoutAction = request.TimeoutAction,
             AttemptNumber = request.AttemptNumber,
             PriorFailureReason = request.PriorFailureReason,
+            PriorFailureReasonSubstitution = request.PriorFailureReasonSubstitution,
             PredecessorEscalationId = request.PredecessorEscalationId,
             RevisionRound = request.RevisionRound,
             PriorRevisionInstructions = request.PriorRevisionInstructions

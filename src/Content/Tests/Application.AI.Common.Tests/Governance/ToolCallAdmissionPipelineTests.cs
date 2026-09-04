@@ -4,6 +4,7 @@ using Application.AI.Common.Interfaces.Escalation;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Telemetry;
 using Application.AI.Common.Services.Governance;
+using Application.AI.Common.Services.Tools;
 using Domain.AI.Changes;
 using Domain.AI.Context;
 using Domain.AI.Escalation;
@@ -1058,7 +1059,7 @@ public sealed class ToolCallAdmissionPipelineTests
             admission, new ToolExecutionReport(EscalationExecutionStatus.Succeeded, null, null), "test-site", CancellationToken.None);
 
         reporter.Verify(r => r.ReportSucceededAsync(It.IsAny<ApprovedCall>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
-        reporter.Verify(r => r.ReportFailedAsync(It.IsAny<ApprovedCall>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+        reporter.Verify(r => r.ReportFailedAsync(It.IsAny<ApprovedCall>(), It.IsAny<PreparedFailureText>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
         reporter.Verify(r => r.ReportNotExecutedAsync(It.IsAny<ApprovedCall>(), It.IsAny<EscalationNotExecutedReason>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
@@ -1085,7 +1086,12 @@ public sealed class ToolCallAdmissionPipelineTests
         await WithReporter(reporter).ReportExecutionAsync(
             admission, new ToolExecutionReport(EscalationExecutionStatus.Failed, "permission denied", null), "test-site", CancellationToken.None);
 
-        reporter.Verify(r => r.ReportFailedAsync(call, "permission denied", It.IsAny<string>(), CancellationToken.None), Times.Once);
+        reporter.Verify(
+            r => r.ReportFailedAsync(
+                call,
+                It.Is<PreparedFailureText>(p => p.Text == "permission denied" && p.Substitution == FailureTextSubstitution.None),
+                It.IsAny<string>(), CancellationToken.None),
+            Times.Once);
     }
 
     [Fact]
@@ -1119,9 +1125,10 @@ public sealed class ToolCallAdmissionPipelineTests
         reporter.Verify(
             r => r.ReportFailedAsync(
                 call,
-                It.Is<string>(s =>
-                    s.Contains("[SANITIZED]") && !s.Contains("IGNORE PREVIOUS INSTRUCTIONS")
-                    && s.Contains("[REDACTED:Email]") && !s.Contains("admin@example.com")),
+                It.Is<PreparedFailureText>(p =>
+                    p.Text.Contains("[SANITIZED]") && !p.Text.Contains("IGNORE PREVIOUS INSTRUCTIONS")
+                    && p.Text.Contains("[REDACTED:Email]") && !p.Text.Contains("admin@example.com")
+                    && p.Substitution == FailureTextSubstitution.None),
                 "test-site", CancellationToken.None),
             Times.Once);
     }
@@ -1148,10 +1155,14 @@ public sealed class ToolCallAdmissionPipelineTests
             new ToolExecutionReport(EscalationExecutionStatus.Failed, "entirely hostile content", null, ToolName: Tool),
             "test-site", CancellationToken.None);
 
+        // #472: asserted on Substitution directly, not just non-blank text — the whole point of the
+        // typed discriminator is that a caller no longer has to infer "this was a substitution" from
+        // the text's shape.
         reporter.Verify(
             r => r.ReportFailedAsync(
                 call,
-                It.Is<string>(s => !string.IsNullOrWhiteSpace(s)),
+                It.Is<PreparedFailureText>(p =>
+                    !string.IsNullOrWhiteSpace(p.Text) && p.Substitution == FailureTextSubstitution.SanitizedToEmpty),
                 "test-site", CancellationToken.None),
             Times.Once);
     }
@@ -1180,7 +1191,9 @@ public sealed class ToolCallAdmissionPipelineTests
         reporter.Verify(
             r => r.ReportFailedAsync(
                 call,
-                It.Is<string>(s => s.Contains("exceeded") && s.Contains("characters")),
+                It.Is<PreparedFailureText>(p =>
+                    p.Text.Contains("exceeded") && p.Text.Contains("characters")
+                    && p.Substitution == FailureTextSubstitution.Oversized),
                 "test-site", CancellationToken.None),
             Times.Once);
     }
@@ -1213,7 +1226,9 @@ public sealed class ToolCallAdmissionPipelineTests
         reporter.Verify(
             r => r.ReportFailedAsync(
                 call,
-                It.Is<string>(s => s.Contains("withheld") && !s.Contains("boom")),
+                It.Is<PreparedFailureText>(p =>
+                    p.Text.Contains("withheld") && !p.Text.Contains("boom")
+                    && p.Substitution == FailureTextSubstitution.TreatmentFailed),
                 "test-site", CancellationToken.None),
             Times.Once);
     }
@@ -1230,7 +1245,7 @@ public sealed class ToolCallAdmissionPipelineTests
         await WithReporter(reporter).ReportExecutionAsync(
             admission, new ToolExecutionReport(EscalationExecutionStatus.Failed, null, null), "test-site", CancellationToken.None);
 
-        reporter.Verify(r => r.ReportFailedAsync(It.IsAny<ApprovedCall>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+        reporter.Verify(r => r.ReportFailedAsync(It.IsAny<ApprovedCall>(), It.IsAny<PreparedFailureText>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]

@@ -514,13 +514,19 @@ public sealed class EscalationToolApprovalRouterTests
         var predecessorId = Guid.NewGuid();
         _failureMemory
             .Setup(m => m.TryRecall(ExpectedKey))
-            .Returns(new ApprovalFailureRecall(PriorAttemptCount: 1, FailureReason: "permission denied", predecessorId));
+            .Returns(new ApprovalFailureRecall(
+                PriorAttemptCount: 1, FailureReason: "permission denied",
+                Substitution: FailureTextSubstitution.SanitizedToEmpty, EscalationId: predecessorId));
 
         await Route(Config());
 
         Assert.NotNull(captured());
         Assert.Equal(2, captured()!.AttemptNumber);
         Assert.Equal("permission denied", captured()!.PriorFailureReason);
+        // #472: a non-None substitution proves the wiring actually carries the value through, not
+        // just that the parameter exists — None would pass even if EscalationToolApprovalRouter
+        // silently dropped it.
+        Assert.Equal(FailureTextSubstitution.SanitizedToEmpty, captured()!.PriorFailureReasonSubstitution);
         Assert.Equal(predecessorId, captured()!.PredecessorEscalationId);
     }
 
@@ -535,7 +541,7 @@ public sealed class EscalationToolApprovalRouterTests
         var predecessorId = Guid.NewGuid();
         _failureMemory
             .Setup(m => m.TryRecall(ExpectedKey))
-            .Returns(new ApprovalFailureRecall(1, "boom", predecessorId));
+            .Returns(new ApprovalFailureRecall(1, "boom", FailureTextSubstitution.None, predecessorId));
         CaptureRequest(out var captured);
 
         await Route(Config());
@@ -565,7 +571,7 @@ public sealed class EscalationToolApprovalRouterTests
         CaptureRequest(out var captured);
         _failureMemory
             .Setup(m => m.TryRecall(ExpectedKey))
-            .Returns(new ApprovalFailureRecall(1, new string('x', 1000), Guid.NewGuid()));
+            .Returns(new ApprovalFailureRecall(1, new string('x', 1000), FailureTextSubstitution.None, Guid.NewGuid()));
 
         var config = Config();
         var narrowCap = new GovernanceConfig
@@ -594,7 +600,7 @@ public sealed class EscalationToolApprovalRouterTests
         CaptureRequest(out var captured);
         _failureMemory
             .Setup(m => m.TryRecall(ExpectedKey))
-            .Returns(new ApprovalFailureRecall(1, "short reason", Guid.NewGuid()));
+            .Returns(new ApprovalFailureRecall(1, "short reason", FailureTextSubstitution.None, Guid.NewGuid()));
 
         await Route(Config());
 
@@ -822,7 +828,7 @@ public sealed class EscalationToolApprovalRouterTests
         var revisionEscalationId = Guid.NewGuid();
         _failureMemory
             .Setup(m => m.TryRecall(ExpectedKey))
-            .Returns(new ApprovalFailureRecall(1, "timed out", failureEscalationId));
+            .Returns(new ApprovalFailureRecall(1, "timed out", FailureTextSubstitution.None, failureEscalationId));
         _failureMemory
             .Setup(m => m.TryRecallRevision(ExpectedKey))
             .Returns(new ApprovalRevisionRecall(2, "narrow the scope", revisionEscalationId));

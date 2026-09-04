@@ -247,6 +247,9 @@ public sealed class EscalationToolApprovalRouter : IToolApprovalRouter
                     escalation.RetryAttribution.MaxPriorFailureLength,
                     EscalationRequestInvariants.MaxPriorFailureReasonLength)
                 : null,
+            // #472: carried alongside the clamped text, not clamped itself — an enum has no length
+            // to bound.
+            PriorFailureReasonSubstitution = recall is { } r3 ? r3.Substitution : null,
             // Revision wins when both are live: ClearRevision fires the instant any escalation for
             // this key is approved, so a failure can only ever be recorded (which requires an
             // approval to have happened first) *before* a still-live revision recall, never after.
