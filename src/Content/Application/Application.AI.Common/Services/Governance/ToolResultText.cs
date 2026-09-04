@@ -44,6 +44,28 @@ internal static class ToolResultText
         "[tool result withheld: the response sanitizer returned no content]";
 
     /// <summary>
+    /// Bounds how many levels of a <c>tool_result</c> block's own nested content this file will walk —
+    /// both the JSON (<c>ToolResultContentBlock</c>) and <see cref="FunctionResultContent"/> shapes.
+    /// </summary>
+    /// <remarks>
+    /// Security-review finding on the PR that introduced <c>tool_result</c> unwrapping (#552): an
+    /// earlier version of this fix used a one-level-only <see langword="bool"/> flag, justified by the
+    /// claim that "the real protocol never nests <c>tool_result</c> this way." That claim was false —
+    /// measured, not assumed: a throwaway console app against the pinned <c>ModelContextProtocol.Core</c>
+    /// 1.4.1 assembly round-tripped a doubly-nested <c>ToolResultContentBlock</c> byte-identically
+    /// (<c>ToolResultContentBlock</c> <em>is</em> a <c>ContentBlock</c>, and its own <c>Content</c> is
+    /// <c>IList&lt;ContentBlock&gt;</c> — nothing in the type system stops one containing another), and
+    /// <c>AIContentExtensions.ToAIContent</c> converts that same doubly-nested shape into a
+    /// <see cref="FunctionResultContent"/> whose own <see cref="FunctionResultContent.Result"/> is
+    /// another <see cref="FunctionResultContent"/>. A one-level cutoff left every deeper level a hostile
+    /// MCP server chose to nest at completely unscrubbed — reaching the model with no sanitize, no
+    /// redact, and no bound applied. A literal integer bound, not unbounded recursion, so a
+    /// maliciously deep (e.g. 100,000-level) payload still cannot exhaust the call stack — 8 is far
+    /// beyond any legitimate tool-chaining depth this repo's planner produces.
+    /// </remarks>
+    private const int MaxToolResultNestingDepth = 8;
+
+    /// <summary>
     /// Runs <paramref name="result"/>'s text through <paramref name="sanitizer"/> and returns it in the
     /// same shape it arrived — unless nothing changed, in which case <paramref name="result"/> is
     /// returned untouched rather than paying for a reconstruction that would only reproduce an
@@ -247,34 +269,129 @@ internal static class ToolResultText
     /// separators when it later rejoins <paramref name="result"/>'s text-carrying blocks — zero for
     /// every shape with at most one such block, since a lone block has no neighbor to separate from.
     /// </summary>
+    /// <remarks>
+    /// A <c>tool_result</c> block (JSON) or a <see cref="FunctionResultContent"/> (AIContent[])
+    /// contributes exactly one entry at THIS level — <see cref="JoinTextCarryingBlocks"/> and
+    /// <see cref="JoinAIContentText"/> each collapse its own nested blocks to one joined string before
+    /// adding it — but that nested join spends its own separators that this level's simple count would
+    /// otherwise miss entirely (#552 follow-up finding: counting only top-level entries undercounts by
+    /// every separator a nested join actually inserts). <see cref="CountJoinableEntries"/> and
+    /// <see cref="CountFunctionResultSeparators"/> return that nested cost alongside the entry count so
+    /// it can be added on top, rather than reserving only for the join this level performs itself.
+    /// </remarks>
     private static int SeparatorReserve(object? result)
     {
-        var textBlockCount = result switch
+        switch (result)
         {
-            AIContent[] blocks => blocks.Count(b => b is TextContent),
-            JsonElement { ValueKind: JsonValueKind.Object } element when TryGetContentArray(element, out var content) =>
-                CountTextCarryingBlocks(content),
-            _ => 1
-        };
-
-        return textBlockCount > 1 ? (textBlockCount - 1) * Environment.NewLine.Length : 0;
+            case AIContent[] blocks:
+            {
+                var entries = 0;
+                var nestedReserve = 0;
+                foreach (var block in blocks)
+                {
+                    switch (block)
+                    {
+                        case TextContent:
+                            entries++;
+                            break;
+                        case FunctionResultContent frc:
+                        {
+                            var (subEntries, subReserve) =
+                                CountFunctionResultSeparators(frc.Result, MaxToolResultNestingDepth);
+                            if (subEntries > 0)
+                            {
+                                entries++;
+                                nestedReserve += subReserve;
+                            }
+                            break;
+                        }
+                    }
+                }
+                return nestedReserve + (entries > 1 ? (entries - 1) * Environment.NewLine.Length : 0);
+            }
+            case JsonElement { ValueKind: JsonValueKind.Object } element when TryGetContentArray(element, out var content):
+            {
+                var (entries, nestedReserve) = CountJoinableEntries(content, MaxToolResultNestingDepth);
+                return nestedReserve + (entries > 1 ? (entries - 1) * Environment.NewLine.Length : 0);
+            }
+            default:
+                return 0;
+        }
     }
 
     /// <summary>
-    /// Counts the blocks <see cref="ExtractContentArrayText"/> would actually join — the same
-    /// <see cref="IsContentBlock"/>/<see cref="HasBlockText"/> recognition <see cref="TryGetBlockText"/>
-    /// uses (via the shared <see cref="ResolveTextHolder"/>), so this count and that join can never
-    /// disagree about how many separators will really be inserted.
+    /// Counts the blocks <see cref="JoinTextCarryingBlocks"/> would actually join at this level, plus
+    /// the separators already spent inside any nested <c>tool_result</c> join — the same
+    /// <see cref="IsContentBlock"/>/<see cref="HasBlockText"/>/<see cref="TryGetNestedToolResultContent"/>
+    /// recognition <see cref="JoinTextCarryingBlocks"/> uses, so this count and that join can never
+    /// disagree about how many separators will really be inserted, at any depth.
     /// </summary>
     /// <remarks>
-    /// Efficiency finding (/simplify): an earlier version called <see cref="TryGetBlockText"/> here and
-    /// discarded its extracted text — decoding every block's string via <c>JsonElement.GetString()</c>
-    /// just to count it, then <see cref="Transform"/>'s own walk (via
-    /// <see cref="TransformSerializedContentBlocks"/>) decoded the SAME blocks again to actually use
-    /// them. <see cref="HasBlockText"/> shares the identical structural recognition without extracting.
+    /// Efficiency finding (/simplify): calling <see cref="TryGetBlockText"/> here and discarding its
+    /// extracted text would decode every block's string via <c>JsonElement.GetString()</c> just to
+    /// count it, then <see cref="Transform"/>'s own walk decodes the SAME blocks again to actually use
+    /// them. <see cref="HasBlockText"/> (called with <c>remainingDepth: 0</c> to check only the direct
+    /// <c>text</c>/<c>resource</c> shape, matching this method's own explicit recursion) shares the
+    /// identical structural recognition without extracting.
     /// </remarks>
-    private static int CountTextCarryingBlocks(JsonElement content) =>
-        content.EnumerateArray().Count(block => IsContentBlock(block, out var type) && HasBlockText(block, type));
+    private static (int Entries, int NestedReserve) CountJoinableEntries(JsonElement content, int remainingDepth)
+    {
+        var entries = 0;
+        var nestedReserve = 0;
+
+        foreach (var block in content.EnumerateArray())
+        {
+            if (!IsContentBlock(block, out var type))
+                continue;
+
+            if (HasBlockText(block, type))
+            {
+                entries++;
+            }
+            else if (remainingDepth > 0 && TryGetNestedToolResultContent(type, block, out var nested))
+            {
+                var (subEntries, subReserve) = CountJoinableEntries(nested, remainingDepth - 1);
+                if (subEntries > 0)
+                {
+                    entries++;
+                    nestedReserve += subReserve + (subEntries > 1 ? (subEntries - 1) * Environment.NewLine.Length : 0);
+                }
+            }
+        }
+
+        return (entries, nestedReserve);
+    }
+
+    /// <summary>
+    /// The <see cref="FunctionResultContent"/> counterpart of <see cref="CountJoinableEntries"/> — walks
+    /// a <see cref="FunctionResultContent.Result"/> chain the same way <see cref="ExtractFunctionResultText"/>
+    /// does, so the two can never disagree about how many separators a nested join actually spends.
+    /// </summary>
+    private static (int Entries, int NestedReserve) CountFunctionResultSeparators(object? resultValue, int remainingDepth) =>
+        resultValue switch
+        {
+            TextContent => (1, 0),
+            FunctionResultContent nestedFrc when remainingDepth > 0 =>
+                CountFunctionResultSeparators(nestedFrc.Result, remainingDepth - 1),
+            IReadOnlyList<AIContent> list when remainingDepth > 0 => CountListSeparators(list, remainingDepth),
+            _ => (0, 0)
+        };
+
+    private static (int Entries, int NestedReserve) CountListSeparators(IReadOnlyList<AIContent> list, int remainingDepth)
+    {
+        var entries = 0;
+        var nestedReserve = 0;
+        foreach (var item in list)
+        {
+            var (subEntries, subReserve) = CountFunctionResultSeparators(item, remainingDepth - 1);
+            if (subEntries > 0)
+            {
+                entries++;
+                nestedReserve += subReserve;
+            }
+        }
+        return (entries, nestedReserve + (entries > 1 ? (entries - 1) * Environment.NewLine.Length : 0));
+    }
 
     /// <summary>
     /// String-typed overload of <see cref="PreCutForScan(object?, int, int, string)"/> for a caller that
@@ -326,11 +443,13 @@ internal static class ToolResultText
             }
             // A multi-content-block MCP tool success reaches this boundary as AIContent[]. TextContent
             // elements carry free text directly; a tool_result block (#552) converts to a
-            // FunctionResultContent whose Result can itself be a TextContent carrying the originating
-            // server's text verbatim — confirmed against the pinned ModelContextProtocol.Core 1.4.1 /
-            // Microsoft.Extensions.AI.Abstractions 10.5.2 assemblies, not assumed. Anything else
-            // (DataContent — images, files; a FunctionResultContent whose Result isn't a TextContent)
-            // passes through untouched.
+            // FunctionResultContent whose Result can itself be a TextContent, ANOTHER FunctionResultContent
+            // (a nested tool_result), or a List<AIContent> (a tool_result with more than one inner block)
+            // — confirmed against the pinned ModelContextProtocol.Core 1.4.1 / Microsoft.Extensions.AI.Abstractions
+            // 10.5.2 assemblies via AIContentExtensions.ToAIContent, not assumed; see
+            // MaxToolResultNestingDepth's remarks for why an unbounded-nesting claim was wrong the first
+            // time. TransformFunctionResult walks that chain up to the same depth bound. Anything else
+            // (DataContent — images, files; structured/opaque Result content) passes through untouched.
             case AIContent[] blocks:
             {
                 AIContent[]? transformedBlocks = null;
@@ -348,14 +467,14 @@ internal static class ToolResultText
                             transformedBlocks[i] = WithText(block, transformed);
                             break;
                         }
-                        case FunctionResultContent { Result: TextContent innerText } frc:
+                        case FunctionResultContent frc:
                         {
-                            var transformed = transform(innerText.Text);
-                            if (string.Equals(transformed, innerText.Text, StringComparison.Ordinal))
+                            var transformedResult = TransformFunctionResult(frc.Result, transform, MaxToolResultNestingDepth);
+                            if (ReferenceEquals(transformedResult, frc.Result))
                                 continue;
 
                             transformedBlocks ??= (AIContent[])blocks.Clone();
-                            transformedBlocks[i] = WithFunctionResult(frc, WithText(innerText, transformed));
+                            transformedBlocks[i] = WithFunctionResult(frc, transformedResult);
                             break;
                         }
                     }
@@ -394,12 +513,105 @@ internal static class ToolResultText
         string text => text,
         JsonElement { ValueKind: JsonValueKind.String } element => element.GetString() ?? string.Empty,
         TextContent text => text.Text,
-        AIContent[] blocks => string.Join(Environment.NewLine, blocks.OfType<TextContent>().Select(b => b.Text)),
+        AIContent[] blocks => JoinAIContentText(blocks),
         JsonElement { ValueKind: JsonValueKind.Object } element when TryGetContentArray(element, out var content) =>
             ExtractContentArrayText(content),
         JsonElement element => element.GetRawText(),
         _ => JsonSerializer.Serialize(result)
     };
+
+    /// <summary>
+    /// Joins every <see cref="TextContent"/>'s text and every <see cref="FunctionResultContent"/>'s own
+    /// nested text (a <c>tool_result</c> block, walked up to <see cref="MaxToolResultNestingDepth"/> —
+    /// see <see cref="ExtractFunctionResultText"/>) with a newline, skipping blocks with nothing to
+    /// extract (e.g. an image <see cref="DataContent"/>).
+    /// </summary>
+    private static string JoinAIContentText(AIContent[] blocks)
+    {
+        List<string>? texts = null;
+        foreach (var block in blocks)
+        {
+            var text = block switch
+            {
+                TextContent tc => tc.Text,
+                FunctionResultContent frc => ExtractFunctionResultText(frc.Result, MaxToolResultNestingDepth),
+                _ => string.Empty
+            };
+            if (text.Length > 0)
+                (texts ??= []).Add(text);
+        }
+        return texts is null ? string.Empty : string.Join(Environment.NewLine, texts);
+    }
+
+    /// <summary>
+    /// Extracts the free text a <see cref="FunctionResultContent.Result"/> carries, walking a
+    /// <see cref="FunctionResultContent"/>/<see cref="IReadOnlyList{AIContent}"/> chain up to
+    /// <paramref name="remainingDepth"/> levels — the AIContent[] counterpart of
+    /// <see cref="JoinTextCarryingBlocks"/>'s recursion, for the shapes confirmed in
+    /// <see cref="Transform"/>'s <c>case AIContent[]</c> remarks.
+    /// </summary>
+    private static string ExtractFunctionResultText(object? resultValue, int remainingDepth) => resultValue switch
+    {
+        TextContent text => text.Text,
+        FunctionResultContent nestedFrc when remainingDepth > 0 =>
+            ExtractFunctionResultText(nestedFrc.Result, remainingDepth - 1),
+        IReadOnlyList<AIContent> list when remainingDepth > 0 => JoinFunctionResultList(list, remainingDepth),
+        _ => string.Empty
+    };
+
+    private static string JoinFunctionResultList(IReadOnlyList<AIContent> list, int remainingDepth)
+    {
+        List<string>? texts = null;
+        foreach (var item in list)
+        {
+            var text = ExtractFunctionResultText(item, remainingDepth - 1);
+            if (text.Length > 0)
+                (texts ??= []).Add(text);
+        }
+        return texts is null ? string.Empty : string.Join(Environment.NewLine, texts);
+    }
+
+    /// <summary>
+    /// Transforms the free text inside a <see cref="FunctionResultContent.Result"/>, walking the same
+    /// <see cref="FunctionResultContent"/>/<see cref="IReadOnlyList{AIContent}"/> chain
+    /// <see cref="ExtractFunctionResultText"/> reads, up to <paramref name="remainingDepth"/> levels.
+    /// Returns <paramref name="resultValue"/> itself — not a reconstruction — whenever nothing changed,
+    /// mirroring <see cref="Transform"/>'s own no-op-preserves-identity contract.
+    /// </summary>
+    private static object? TransformFunctionResult(object? resultValue, Func<string, string> transform, int remainingDepth)
+    {
+        switch (resultValue)
+        {
+            case TextContent text:
+            {
+                var transformed = transform(text.Text);
+                return string.Equals(transformed, text.Text, StringComparison.Ordinal) ? resultValue : WithText(text, transformed);
+            }
+            case FunctionResultContent nestedFrc when remainingDepth > 0:
+            {
+                var transformedInner = TransformFunctionResult(nestedFrc.Result, transform, remainingDepth - 1);
+                return ReferenceEquals(transformedInner, nestedFrc.Result)
+                    ? resultValue
+                    : WithFunctionResult(nestedFrc, transformedInner);
+            }
+            case IReadOnlyList<AIContent> list when remainingDepth > 0:
+            {
+                List<AIContent>? transformedList = null;
+                for (var i = 0; i < list.Count; i++)
+                {
+                    var transformedItem = TransformFunctionResult(list[i], transform, remainingDepth - 1);
+                    if (ReferenceEquals(transformedItem, list[i]))
+                        continue;
+
+                    transformedList ??= new List<AIContent>(list);
+                    transformedList[i] = (AIContent)transformedItem!;
+                }
+                return transformedList ?? resultValue;
+            }
+            default:
+                return resultValue;
+        }
+    }
 
     /// <summary>
     /// Joins every text-carrying block's text (plain <c>text</c> blocks, embedded <c>resource</c>
@@ -408,7 +620,7 @@ internal static class ToolResultText
     /// (e.g. a binary <c>resource</c> or image block).
     /// </summary>
     private static string ExtractContentArrayText(JsonElement content) =>
-        JoinTextCarryingBlocks(content, allowNestedToolResult: true);
+        JoinTextCarryingBlocks(content, MaxToolResultNestingDepth);
 
     /// <summary>
     /// The shared walk <see cref="ExtractContentArrayText"/> reduces to, and also what a
@@ -417,22 +629,17 @@ internal static class ToolResultText
     /// content array one JSON level down, structurally identical to the top-level one, and an MCP
     /// server picking that shape over a bare <c>text</c> block must not skip extraction by doing so.
     /// </summary>
-    /// <param name="allowNestedToolResult">
-    /// <see langword="false"/> on the recursive call for a <c>tool_result</c>'s own nested array, so a
-    /// <c>tool_result</c> block nested inside another <c>tool_result</c> block is not itself unwrapped.
-    /// The real protocol never nests <c>tool_result</c> this way (confirmed against the pinned
-    /// <c>ModelContextProtocol.Core</c> 1.4.1 assembly: <c>ToolResultContentBlock.Content</c> is
-    /// <c>IList&lt;ContentBlock&gt;</c>, never a list that could itself hold another
-    /// <c>ToolResultContentBlock</c> two levels deep in any flow this repo produces) — recursing
-    /// without this bound would trade a fixed, one-level gap for an unbounded one: a hostile server can
-    /// still wire-craft arbitrarily deep JSON nesting even though the real SDK types cannot represent
-    /// it, and walking that without a depth bound is a stack-depth denial-of-service on attacker-
-    /// controlled input. This flag statically bounds the walk to exactly one recursive call: the value
-    /// passed on the only recursive call site is a literal <see langword="false"/>, never re-derived
-    /// from the caller's own flag, so a third level cannot be introduced without visibly changing that
-    /// literal.
+    /// <param name="remainingDepth">
+    /// How many more levels of <c>tool_result</c> nesting this call may unwrap — decremented on each
+    /// recursive call for a <c>tool_result</c>'s own nested array, so recursion is bounded to
+    /// <see cref="MaxToolResultNestingDepth"/> levels rather than unbounded: a hostile server can
+    /// wire-craft arbitrarily deep JSON nesting (see <see cref="MaxToolResultNestingDepth"/>'s remarks
+    /// for why the SDK's own types do not prevent this), and walking that without ANY depth bound is a
+    /// stack-depth denial-of-service on attacker-controlled input. A bound past the constant is not a
+    /// silent gap of the kind that motivated it in the first place: it is a deliberate, documented trade
+    /// against a genuinely unbounded input, not an assumption about what the protocol "really" does.
     /// </param>
-    private static string JoinTextCarryingBlocks(JsonElement content, bool allowNestedToolResult)
+    private static string JoinTextCarryingBlocks(JsonElement content, int remainingDepth)
     {
         List<string>? texts = null;
         foreach (var block in content.EnumerateArray())
@@ -444,9 +651,9 @@ internal static class ToolResultText
             {
                 (texts ??= []).Add(text);
             }
-            else if (allowNestedToolResult && TryGetNestedToolResultContent(type, block, out var nested))
+            else if (remainingDepth > 0 && TryGetNestedToolResultContent(type, block, out var nested))
             {
-                var nestedText = JoinTextCarryingBlocks(nested, allowNestedToolResult: false);
+                var nestedText = JoinTextCarryingBlocks(nested, remainingDepth - 1);
                 if (nestedText.Length > 0)
                     (texts ??= []).Add(nestedText);
             }
@@ -569,26 +776,27 @@ internal static class ToolResultText
         JsonNode? root = null;
         JsonNode GetTopArray() => (root ??= JsonNode.Parse(original.GetRawText()))!["content"]!;
 
-        TransformBlocks(content, transform, GetTopArray, allowNestedToolResult: true);
+        TransformBlocks(content, transform, GetTopArray, MaxToolResultNestingDepth);
 
         return root is null ? null : JsonSerializer.SerializeToElement(root);
     }
 
     /// <summary>
     /// The shared walk-and-mutate <see cref="TransformSerializedContentBlocks"/> reduces to, called
-    /// once for the top-level <c>content</c> array and once more, explicitly, for a <c>tool_result</c>
-    /// block's own nested one (#552) — never recursively beyond that, for the same reason
-    /// <see cref="JoinTextCarryingBlocks"/>'s <paramref name="allowNestedToolResult"/> is bounded the
-    /// same way; see that method's remarks.
+    /// once for the top-level <c>content</c> array and recursively for a <c>tool_result</c> block's own
+    /// nested one, up to <see cref="MaxToolResultNestingDepth"/> levels (#552) — see
+    /// <see cref="JoinTextCarryingBlocks"/>'s <c>remainingDepth</c> remarks for why this is bounded
+    /// rather than unbounded.
     /// </summary>
     /// <param name="getArrayNode">
     /// Resolves the mutable <see cref="JsonNode"/> array mirroring <paramref name="content"/> —
-    /// <c>root["content"]</c> for the top-level call, or (for the recursive one-level call) a closure
-    /// that re-derives <c>root["content"][toolResultIndex]["content"]</c> each time, so the lazy
-    /// <c>root</c> parse still happens at most once no matter which level's block needs rewriting.
+    /// <c>root["content"]</c> for the top-level call, or (for a recursive call) a closure that
+    /// re-derives the nested array from its parent each time, so the lazy <c>root</c> parse still
+    /// happens at most once no matter which level's block needs rewriting.
     /// </param>
+    /// <param name="remainingDepth">See <see cref="JoinTextCarryingBlocks"/>'s identical parameter.</param>
     private static void TransformBlocks(
-        JsonElement content, Func<string, string> transform, Func<JsonNode> getArrayNode, bool allowNestedToolResult)
+        JsonElement content, Func<string, string> transform, Func<JsonNode> getArrayNode, int remainingDepth)
     {
         var index = 0;
 
@@ -608,11 +816,11 @@ internal static class ToolResultText
                         target!["text"] = transformed;
                     }
                 }
-                else if (allowNestedToolResult && TryGetNestedToolResultContent(type, block, out var nested))
+                else if (remainingDepth > 0 && TryGetNestedToolResultContent(type, block, out var nested))
                 {
                     TransformBlocks(
                         nested, transform, () => getArrayNode()[blockIndex]!["content"]!,
-                        allowNestedToolResult: false);
+                        remainingDepth - 1);
                 }
             }
 
@@ -642,24 +850,19 @@ internal static class ToolResultText
     }
 
     /// <summary>
-    /// Whether a content block carries free text, without extracting or decoding it — the count-only
-    /// sibling of <see cref="TryGetBlockText"/>/<see cref="JoinTextCarryingBlocks"/>, sharing the
-    /// identical <see cref="ResolveTextHolder"/>/<see cref="TryGetNestedToolResultContent"/>
-    /// recognition (including the same one-level <c>tool_result</c> bound, #552) so none of the three
-    /// can disagree about which blocks qualify.
+    /// Whether a content block directly carries free text (a plain <c>text</c> block, or a
+    /// <c>resource</c> block with a nested <c>text</c> property) — without extracting or decoding it,
+    /// and without looking inside a <c>tool_result</c> block's own nested array. The count-only sibling
+    /// of <see cref="TryGetBlockText"/>, sharing the identical <see cref="ResolveTextHolder"/>
+    /// recognition so the two can never disagree about which blocks qualify. <c>tool_result</c>
+    /// recursion is <see cref="CountJoinableEntries"/>'s own job, not this method's — a block-level
+    /// helper that recursed itself, called from inside another method that ALSO recurses, doubled the
+    /// depth bookkeeping for no benefit; this stays a flat, single-level check.
     /// </summary>
-    private static bool HasBlockText(JsonElement block, string? type, bool allowNestedToolResult = true)
-    {
-        if (ResolveTextHolder(block, type) is { } holder
-            && holder.TryGetProperty("text", out var textProp)
-            && textProp.ValueKind == JsonValueKind.String)
-            return true;
-
-        return allowNestedToolResult
-            && TryGetNestedToolResultContent(type, block, out var nested)
-            && nested.EnumerateArray().Any(b => IsContentBlock(b, out var nestedType)
-                && HasBlockText(b, nestedType, allowNestedToolResult: false));
-    }
+    private static bool HasBlockText(JsonElement block, string? type) =>
+        ResolveTextHolder(block, type) is { } holder
+        && holder.TryGetProperty("text", out var textProp)
+        && textProp.ValueKind == JsonValueKind.String;
 
     /// <summary>
     /// Resolves the JSON object a content block's free text would live under: the block itself for a
