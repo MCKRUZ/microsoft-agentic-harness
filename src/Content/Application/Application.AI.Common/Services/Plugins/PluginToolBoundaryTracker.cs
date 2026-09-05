@@ -89,9 +89,7 @@ public sealed class PluginToolBoundaryTracker : IPluginToolBoundaryTracker
                 // the registry here too means the fault is recorded independently of whether that
                 // caller rethrows — the same defense-in-depth ReportServerToolsDiscovered already
                 // gives the lazy branch.
-                _registry.MarkBoundaryFaulted(
-                    plugin.Name,
-                    $"Tool boundary entries match no known tool: {string.Join(", ", immediateForPlugin.Select(v => $"{v.ListKind}:{v.ToolName}"))}");
+                _registry.MarkBoundaryFaulted(plugin.Name, FaultReason(immediateForPlugin));
                 continue;
             }
 
@@ -158,15 +156,16 @@ public sealed class PluginToolBoundaryTracker : IPluginToolBoundaryTracker
 
             if (faulted is { Count: > 0 })
             {
-                _registry.MarkBoundaryFaulted(
-                    pluginName,
-                    $"Tool boundary entries match no known tool: {string.Join(", ", faulted.Select(v => $"{v.ListKind}:{v.ToolName}"))}");
+                _registry.MarkBoundaryFaulted(pluginName, FaultReason(faulted));
                 violations.AddRange(faulted);
             }
         }
 
         return violations;
     }
+
+    private static string FaultReason(IReadOnlyList<PluginToolBoundaryViolation> violations) =>
+        $"Tool boundary entries match no known tool: {string.Join(", ", violations.Select(v => $"{v.ListKind}:{v.ToolName}"))}";
 
     private static IReadOnlyList<(string Name, string ListKind)> BoundaryEntries(LoadedPlugin plugin)
     {
