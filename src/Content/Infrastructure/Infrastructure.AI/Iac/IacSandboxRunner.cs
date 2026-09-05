@@ -28,10 +28,12 @@ namespace Infrastructure.AI.Iac;
 /// the single source of truth this runner used to duplicate as a hardcoded literal (#387). Network
 /// access is scoped to the provider/module registries via the egress preflight below
 /// (<see cref="SandboxExecutionRequest.EgressPrecheckTargets"/>), not via the permission profile.
-/// The module directory itself is not part of the profile at all — the profile's old
-/// <c>AllowedPaths</c>/<c>DeniedPaths</c>/<c>AllowedHosts</c>/<c>DeniedHosts</c> were removed as
-/// dead config (#405): nothing on this dispatch path (which bypasses
-/// <c>CapabilityEnforcer</c> entirely, see below) ever read them.
+/// The module directory itself is not part of the profile at all —
+/// <c>AllowedPaths</c>/<c>DeniedPaths</c>/<c>AllowedHosts</c>/<c>DeniedHosts</c> are restored and
+/// live elsewhere (#418; see <c>ToolOverrideConfig</c>'s remarks), but
+/// <c>ToolPermissionProfileResolver.ResolveForUngovernedDispatch</c> never populates them on the
+/// profile it returns: nothing on this dispatch path (which bypasses
+/// <c>CapabilityEnforcer</c> entirely, see below) ever reads them.
 /// </para>
 /// <para>
 /// Egress enforcement is the registry allowlist from

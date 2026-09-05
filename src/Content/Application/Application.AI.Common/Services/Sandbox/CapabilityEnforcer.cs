@@ -234,16 +234,16 @@ public sealed class CapabilityEnforcer : ICapabilityEnforcer
     /// pattern is.
     /// </para>
     /// <para>
-    /// Checked via <c>Path.IsPathFullyQualified</c>, not <c>Path.IsPathRooted</c> — the
-    /// latter answers <see langword="true"/> for a Windows drive-relative path like
-    /// <c>"C:secrets\creds.txt"</c>, which is exactly the CWD-dependent ambiguity this guard exists to
-    /// reject: it still resolves against the current directory on that drive, not an absolute location.
+    /// The fully-qualified check lives inside <see cref="NormalizeAndCanonicalize"/> itself, applied
+    /// identically to a requested path and a configured boundary — CI caught the alternative: checking
+    /// it only here left a <em>relative</em> <c>DeniedPaths</c>/<c>AllowedPaths</c> config entry to
+    /// silently resolve against the process's CWD via <see cref="PathScope.Normalize"/>, the exact
+    /// fail-open shape this guard exists to prevent, just on the configured side instead of the
+    /// requested side.
     /// </para>
     /// </remarks>
     private string? NormalizeRequestedPath(string path) =>
-        Path.IsPathFullyQualified(path) && SecureInputValidatorHelper.ValidateFilePath(path)
-            ? NormalizeAndCanonicalize(path)
-            : null;
+        SecureInputValidatorHelper.ValidateFilePath(path) ? NormalizeAndCanonicalize(path) : null;
 
     /// <summary>
     /// Normalizes and canonicalizes an operator-configured <em>allow</em> boundary the same way as a
@@ -263,10 +263,19 @@ public sealed class CapabilityEnforcer : ICapabilityEnforcer
     /// <c>..</c> segment is actually resolved rather than silently discarded, and platform quirks
     /// (e.g. a Windows trailing-dot path component) are handled identically on both sides of the
     /// comparison — then link-resolves through <see cref="_pathCanonicalizer"/> when one is
-    /// registered. Returns <see langword="null"/> on any input the runtime cannot parse.
+    /// registered. Returns <see langword="null"/> on any input that is not already fully qualified
+    /// (checked via <c>Path.IsPathFullyQualified</c>, not <c>Path.IsPathRooted</c> — the latter answers
+    /// <see langword="true"/> for a Windows drive-relative path like <c>"C:secrets\creds.txt"</c>,
+    /// which still resolves against the current directory on that drive, not an absolute location) or
+    /// that the runtime cannot parse at all. Applied to both a requested path and a configured boundary
+    /// identically: neither side has any base directory of its own to resolve a relative path against
+    /// that the other side would agree with.
     /// </summary>
     private string? NormalizeAndCanonicalize(string path)
     {
+        if (!Path.IsPathFullyQualified(path))
+            return null;
+
         try
         {
             var normalized = PathScope.Normalize(path);

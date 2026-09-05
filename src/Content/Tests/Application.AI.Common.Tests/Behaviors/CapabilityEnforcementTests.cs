@@ -335,6 +335,48 @@ public sealed class CapabilityEnforcementTests
     }
 
     [Fact]
+    public async Task DeniedPath_ConfiguredEntryIsRelative_StillRefuses()
+    {
+        // Regression: the fully-qualified check was originally applied only to the requested path,
+        // not to a configured boundary — a relative DeniedPaths entry like "sandbox/secrets" would
+        // silently resolve against the host process's own working directory via PathScope.Normalize
+        // and then never match any real, fully-qualified requested path, turning the deny rule into a
+        // permanent no-op. Neither side of this comparison has a base directory the other would agree
+        // with, so a relative config entry must fail closed exactly like a relative requested path does.
+        var config = new SandboxConfig
+        {
+            ToolOverrides = new() { ["file_system"] = new ToolOverrideConfig { DeniedPaths = ["sandbox/secrets"] } }
+        };
+        var (_, enforcer) = Build(config, ("file_system", FileTool()));
+
+        var result = await enforcer.EnforceAsync(
+            "file_system", ToolCapability.FileRead | ToolCapability.FileWrite,
+            requestedPaths: [$"{Root}sandbox/unrelated.txt"]);
+
+        result.IsSuccess.Should().BeFalse("a relative deny entry must fail closed, not silently become a no-op");
+    }
+
+    [Fact]
+    public async Task AllowedPath_ConfiguredEntryIsRelative_ExcludesRatherThanFalsePositiveAllow()
+    {
+        // The allow-side mirror of the deny regression above: a relative AllowedPaths entry must not
+        // resolve against the host process's own CWD and coincidentally grant access nothing was
+        // meant to grant. It should be excluded from the allowlist (never matches), which for a
+        // profile whose only entry is relative means every request is refused.
+        var config = new SandboxConfig
+        {
+            ToolOverrides = new() { ["file_system"] = new ToolOverrideConfig { AllowedPaths = ["sandbox/work"] } }
+        };
+        var (_, enforcer) = Build(config, ("file_system", FileTool()));
+
+        var result = await enforcer.EnforceAsync(
+            "file_system", ToolCapability.FileRead | ToolCapability.FileWrite,
+            requestedPaths: [$"{Root}sandbox/work/notes.txt"]);
+
+        result.IsSuccess.Should().BeFalse("a relative allow entry must not grant access via a CWD coincidence");
+    }
+
+    [Fact]
     public async Task DeniedPath_WinsOverAllowedPath()
     {
         var config = new SandboxConfig

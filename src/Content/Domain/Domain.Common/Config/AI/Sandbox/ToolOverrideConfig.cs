@@ -30,7 +30,7 @@ namespace Domain.Common.Config.AI.Sandbox;
 /// do (#418 only wired those two entry points). Configuring path/host scoping for a tool ALSO
 /// reachable from a plan step therefore fails that step outright — <c>CapabilityEnforcer</c>'s own
 /// fail-closed design (a configured scope with no determined request refuses) has no way to
-/// distinguish "unknown" from "this admission path was never taught to ask" here.
+/// distinguish "unknown" from "this admission path was never taught to ask" here. Tracked as #587.
 /// </description></item>
 /// </list>
 /// </remarks>
