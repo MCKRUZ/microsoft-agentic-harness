@@ -263,6 +263,36 @@ public class ToolChainBuilderTests
         tools.Should().ContainSingle(t => t.Name == "safe");
     }
 
+    [Fact]
+    public async Task BuildToolsAsync_PluginBoundaryFaulted_DeniesAllToolsRegardlessOfDeclaredList()
+    {
+        // #524: once PluginToolBoundaryTracker has proven a plugin's AllowedTools/DeniedTools
+        // boundary can't be trusted (an entry matches no real tool), the boundary itself is no
+        // longer safe to apply — even a tool the (otherwise fine) DeniedTools list would have let
+        // through must be denied too, since the boundary might be missing an intended denial.
+        var pluginRegistry = new Mock<IPluginRegistry>();
+        pluginRegistry.Setup(r => r.GetPlugin("p")).Returns(
+            new LoadedPlugin("p", "1.0", "/plugins/p", new PluginManifest(),
+                PluginLoadStatus.Loaded, [], ["p:server"],
+                new PluginDeclaration { Name = "p", DeniedTools = ["dangerous"] }));
+        pluginRegistry.Setup(r => r.IsBoundaryFaulted("p")).Returns(true);
+
+        var services = new ServiceCollection();
+        services.AddSingleton(pluginRegistry.Object);
+
+        var builder = CreateBuilder(serviceProvider: services.BuildServiceProvider());
+
+        var skill = new SkillDefinition
+        {
+            Id = "p-skill", Name = "p-skill", Instructions = "Test", PluginSource = "p",
+            Tools = [AIFunctionFactory.Create(() => "r", "safe")]
+        };
+
+        var tools = await builder.BuildToolsAsync(skill, new SkillAgentOptions());
+
+        tools.Should().BeEmpty();
+    }
+
     // --- Managed mode: pre-created tools ---
 
     [Fact]

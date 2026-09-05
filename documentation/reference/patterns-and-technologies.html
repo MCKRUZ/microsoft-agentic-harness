@@ -395,11 +395,16 @@ know the exact filename. Cite file paths in `path:line` form.</code></pre>
                         (<code>AllowedTools</code>, <code>DeniedTools</code>, <code>AutonomyLevel</code>). The
                         <code>PluginPermissionRuleProvider</code> turns those declarations into MediatR rules — and
                         <code>DeniedTools</code> is bypass-immune: it can't be overridden by auto-approve modes.
+                        Since #524, <code>IPluginToolBoundaryTracker</code> additionally verifies every
+                        <code>AllowedTools</code>/<code>DeniedTools</code> entry resolves to a real tool (first-party
+                        at startup, MCP-provided lazily on discovery); an entry that never resolves marks the
+                        plugin's boundary faulted and <code>ToolChainBuilder</code> denies all of its tools.
                     </p>
                     <ul>
                         <li>Manifest reader: <code>Infrastructure.AI/Plugins/PluginManifestReader.cs</code> (verify path — see "Locating plugin internals" note below)</li>
                         <li>Permissions: <code>Application.Core/Permissions/PluginPermissionRuleProvider.cs</code></li>
                         <li>Declaration types: <code>Domain.Common/Config/AI/Plugins/PluginDeclaration.cs</code></li>
+                        <li>Existence check: <code>Application.AI.Common/Services/Plugins/PluginToolBoundaryTracker.cs</code>, <code>Infrastructure.AI/Plugins/PluginToolBoundaryStartupValidator.cs</code></li>
                     </ul>
 
                     <h3 id="agent-manifest">Agent manifest (AGENT.md)</h3>

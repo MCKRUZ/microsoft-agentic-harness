@@ -15,6 +15,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="Infrastructure.AI.MCP.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\..\Application\Application.AI.Common\Application.AI.Common.csproj" />
     <!-- Infrastructure.AI supplies AntiSsrfHandlerFactory — the SSRF guard the MCP
          client is built on. Hard dependency so SSRF protection cannot be omitted. -->
