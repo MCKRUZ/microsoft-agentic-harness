@@ -11,6 +11,9 @@ public sealed class PluginRegistry : IPluginRegistry
     private readonly ConcurrentDictionary<string, LoadedPlugin> _plugins =
         new(StringComparer.OrdinalIgnoreCase);
 
+    private readonly ConcurrentDictionary<string, string> _faultedBoundaries =
+        new(StringComparer.OrdinalIgnoreCase);
+
     /// <inheritdoc />
     public IReadOnlyList<LoadedPlugin> GetLoadedPlugins() =>
         _plugins.Values.ToList();
@@ -26,4 +29,11 @@ public sealed class PluginRegistry : IPluginRegistry
     /// <inheritdoc />
     public void Register(LoadedPlugin plugin) =>
         _plugins[plugin.Name] = plugin;
+
+    /// <inheritdoc />
+    public bool IsBoundaryFaulted(string pluginName) => _faultedBoundaries.ContainsKey(pluginName);
+
+    /// <inheritdoc />
+    public void MarkBoundaryFaulted(string pluginName, string reason) =>
+        _faultedBoundaries[pluginName] = reason;
 }

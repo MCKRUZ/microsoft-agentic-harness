@@ -13,6 +13,7 @@ using Application.AI.Common.Interfaces.MetaHarness;
 using Application.AI.Common.Interfaces.Plugins;
 using Application.AI.Common.Interfaces.Skills;
 using Application.AI.Common.Services.Bundles;
+using Application.AI.Common.Services.Plugins;
 using Application.AI.Common.Interfaces.Prompts;
 using Application.AI.Common.Interfaces.Routing;
 using Application.AI.Common.Interfaces.Tools;
@@ -275,6 +276,28 @@ public static partial class DependencyInjection
         // Startup driver: resolves every declared plugin into the live config + registry before
         // the first (lazy) skill/MCP discovery. Empty Packages list is a clean no-op.
         services.AddHostedService<PluginStartupLoader>();
+
+        // #524: a plugin's AllowedTools/DeniedTools entry that matches no real tool is a silent
+        // no-op today — worst for DeniedTools, documented as bypass-immune. The tracker resolves
+        // MCP-sourced entries lazily as servers are organically discovered (McpToolProvider);
+        // the startup validator below only needs to run AFTER PluginStartupLoader (registration
+        // order = StartAsync order in the Generic Host) so IPluginRegistry is already populated.
+        services.AddSingleton<IPluginToolBoundaryTracker, PluginToolBoundaryTracker>();
+        services.AddHostedService(sp =>
+        {
+            var firstPartyToolNames = new HashSet<string>(
+                services
+                    .Where(d => d.IsKeyedService && d.ServiceType == typeof(ITool))
+                    .Select(d => d.ServiceKey as string)
+                    .Where(key => !string.IsNullOrWhiteSpace(key))!,
+                StringComparer.OrdinalIgnoreCase);
+
+            return new PluginToolBoundaryStartupValidator(
+                sp.GetRequiredService<IPluginRegistry>(),
+                sp.GetRequiredService<IPluginToolBoundaryTracker>(),
+                firstPartyToolNames.Contains,
+                sp.GetRequiredService<ILogger<PluginToolBoundaryStartupValidator>>());
+        });
 
         // --- Tool execution ---
 
