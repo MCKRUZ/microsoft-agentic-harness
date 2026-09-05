@@ -34,9 +34,11 @@ public sealed partial class CapabilityEnforcer
             return null;
 
         // Each configured pattern is normalized once per call here, not once per (requested host ×
-        // pattern) pair inside the loop below.
-        var deniedPatterns = profile.DeniedHosts.Select(NormalizeHostForMatch).ToList();
-        var allowedPatterns = profile.AllowedHosts.Select(NormalizeHostForMatch).ToList();
+        // pattern) pair inside the loop below. A null entry (a literal JSON `null` in DeniedHosts/
+        // AllowedHosts, binding into a null List<string> element despite the non-nullable element
+        // type) is skipped rather than passed to NormalizeHostForMatch, which would NRE on it.
+        var deniedPatterns = profile.DeniedHosts.Where(h => h is not null).Select(NormalizeHostForMatch).ToList();
+        var allowedPatterns = profile.AllowedHosts.Where(h => h is not null).Select(NormalizeHostForMatch).ToList();
 
         if (ValidateHosts(requestedHosts, deniedPatterns, allowedPatterns) is { } hostViolation)
         {

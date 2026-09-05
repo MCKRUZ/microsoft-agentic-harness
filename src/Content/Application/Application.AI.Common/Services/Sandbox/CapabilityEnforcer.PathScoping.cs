@@ -84,7 +84,15 @@ public sealed partial class CapabilityEnforcer
             // unparsable deny entry as "never matches" would silently turn a misconfigured deny rule
             // into a no-op instead of the refusal it was written to enforce, which is the fail-open
             // shape this whole mechanism exists to prevent.
-            if (deniedBoundaries.Any(denied => denied is null || IsPathWithin(normalized, denied)))
+            //
+            // Checked in BOTH directions, not just "is the requested path inside a denied boundary":
+            // a subtree-reading operation (FileSystemTool's "search"/"list", which walk everything
+            // beneath the named path) can name a path that is an ANCESTOR of a denied boundary rather
+            // than a descendant of one — the single-string declaration this class validates has no way
+            // to see the individual file paths such a walk actually returns, so a denied boundary
+            // nested inside the requested path is refused outright rather than silently read through.
+            if (deniedBoundaries.Any(denied =>
+                    denied is null || IsPathWithin(normalized, denied) || IsPathWithin(denied, normalized)))
                 return path;
 
             if (allowedBoundaries.Count > 0 && !allowedBoundaries.Any(allowed => IsPathWithin(normalized, allowed)))
@@ -146,7 +154,18 @@ public sealed partial class CapabilityEnforcer
     /// consults the list. Deny entries are handled directly in <see cref="ValidatePaths"/> instead,
     /// where the same fallback would be fail-open rather than fail-closed.
     /// </summary>
-    private string NormalizeBoundary(string configuredPath) => NormalizeAndCanonicalize(configuredPath) ?? configuredPath;
+    private string NormalizeBoundary(string configuredPath)
+    {
+        if (NormalizeAndCanonicalize(configuredPath) is { } normalized)
+            return normalized;
+
+        // The raw-string fallback above only safely excludes a malformed entry because a raw,
+        // non-normalized string won't match a normalized candidate — except when that raw string is
+        // itself empty or whitespace, which collides with IsPathWithin's own, legitimate "root, fully
+        // normalized" empty-boundary case and would silently match every candidate instead of none.
+        // A NUL never appears in a real normalized path, so it is never mistaken for one.
+        return string.IsNullOrWhiteSpace(configuredPath) ? "\0" : configuredPath;
+    }
 
     /// <summary>
     /// Resolves <paramref name="path"/> to its absolute form via <see cref="PathScope.Normalize"/> —
@@ -162,9 +181,12 @@ public sealed partial class CapabilityEnforcer
     /// identically: neither side has any base directory of its own to resolve a relative path against
     /// that the other side would agree with.
     /// </summary>
-    private string? NormalizeAndCanonicalize(string path)
+    private string? NormalizeAndCanonicalize(string? path)
     {
-        if (!Path.IsPathFullyQualified(path))
+        // A null entry can reach here from a configured list — a literal JSON `null` in
+        // DeniedPaths/AllowedPaths binds to a null List<string> element despite the non-nullable
+        // element type — and Path.IsPathFullyQualified throws on null rather than answering false.
+        if (path is null || !Path.IsPathFullyQualified(path))
             return null;
 
         try

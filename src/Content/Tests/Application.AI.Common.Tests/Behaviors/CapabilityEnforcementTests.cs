@@ -400,6 +400,105 @@ public sealed class CapabilityEnforcementTests
     }
 
     [Fact]
+    public async Task DeniedPath_NestedInsideRequestedAncestor_Refuses()
+    {
+        // CI-caught HIGH: FileSystemTool's "search"/"list" operations recursively read everything
+        // beneath the single declared "path" argument, but the enforcer only ever validated that one
+        // named string. A denied boundary NESTED INSIDE the requested path (the requested path is an
+        // ANCESTOR of the deny entry, not a descendant of it) previously passed unnoticed, silently
+        // reading through a subdirectory the operator explicitly denied. Checked in both directions
+        // now: a deny match on EITHER "requested is under denied" OR "denied is under requested".
+        var config = new SandboxConfig
+        {
+            ToolOverrides = new()
+            {
+                ["file_system"] = new ToolOverrideConfig
+                {
+                    AllowedPaths = [$"{Root}work"],
+                    DeniedPaths = [$"{Root}work/.secrets"]
+                }
+            }
+        };
+        var (_, enforcer) = Build(config, ("file_system", FileTool()));
+
+        // A "search"/"list"-shaped call names the allowed root itself, not the denied child.
+        var result = await enforcer.EnforceAsync(
+            "file_system", ToolCapability.FileRead | ToolCapability.FileWrite,
+            requestedPaths: [$"{Root}work"]);
+
+        result.IsSuccess.Should().BeFalse(
+            "a subtree read from an ancestor of a denied boundary must not silently read through it");
+    }
+
+    [Fact]
+    public async Task DeniedPath_SiblingOfDeniedBoundary_StillAllowed()
+    {
+        // The mirror of the regression above: a requested path that is a SIBLING of a denied
+        // boundary (neither an ancestor nor a descendant of it) must not be caught by the new
+        // both-directions check — only genuine ancestor/descendant containment should refuse.
+        var config = new SandboxConfig
+        {
+            ToolOverrides = new()
+            {
+                ["file_system"] = new ToolOverrideConfig
+                {
+                    AllowedPaths = [$"{Root}work"],
+                    DeniedPaths = [$"{Root}work/.secrets"]
+                }
+            }
+        };
+        var (_, enforcer) = Build(config, ("file_system", FileTool()));
+
+        var result = await enforcer.EnforceAsync(
+            "file_system", ToolCapability.FileRead | ToolCapability.FileWrite,
+            requestedPaths: [$"{Root}work/public"]);
+
+        result.IsSuccess.Should().BeTrue("a sibling of a denied boundary is not itself denied");
+    }
+
+    [Fact]
+    public async Task AllowedPath_ConfiguredEntryIsEmptyString_ExcludesRatherThanMatchingEverything()
+    {
+        // CI-caught MEDIUM: NormalizeBoundary's raw-string fallback on a normalization failure is
+        // meant to safely EXCLUDE a malformed allow entry, but an empty/whitespace configured string
+        // coincided with IsPathWithin's own "empty boundary confines everything" rule for a
+        // genuinely-normalized root path, silently matching every candidate instead of none.
+        var config = new SandboxConfig
+        {
+            ToolOverrides = new() { ["file_system"] = new ToolOverrideConfig { AllowedPaths = [""] } }
+        };
+        var (_, enforcer) = Build(config, ("file_system", FileTool()));
+
+        var result = await enforcer.EnforceAsync(
+            "file_system", ToolCapability.FileRead | ToolCapability.FileWrite,
+            requestedPaths: [$"{Root}anywhere/at/all.txt"]);
+
+        result.IsSuccess.Should().BeFalse("an empty allow entry must exclude, not silently match everything");
+    }
+
+    [Fact]
+    public async Task DeniedPath_ConfiguredListContainsNullEntry_DoesNotThrow()
+    {
+        // Advisory: a literal JSON `null` in DeniedPaths binds to a null List<string> element despite
+        // the non-nullable element type, and used to NRE inside NormalizeAndCanonicalize rather than
+        // being treated like any other unparsable entry.
+        var config = new SandboxConfig
+        {
+            ToolOverrides = new()
+            {
+                ["file_system"] = new ToolOverrideConfig { DeniedPaths = [null!, $"{Root}sandbox/secrets"] }
+            }
+        };
+        var (_, enforcer) = Build(config, ("file_system", FileTool()));
+
+        var act = () => enforcer.EnforceAsync(
+            "file_system", ToolCapability.FileRead | ToolCapability.FileWrite,
+            requestedPaths: [$"{Root}sandbox/secrets/creds.txt"]);
+
+        (await act.Should().NotThrowAsync()).Which.IsSuccess.Should().BeFalse();
+    }
+
+    [Fact]
     public async Task AllowedPathConfigured_RequestOutsideIt_Refuses()
     {
         var config = new SandboxConfig

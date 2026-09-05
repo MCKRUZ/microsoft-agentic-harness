@@ -46,7 +46,13 @@ public sealed record ToolPermissionProfile
     /// <summary>
     /// Filesystem-path boundaries a requested path must fall within, when non-empty. Deny-overrides-allow:
     /// checked before <see cref="AllowedPaths"/>, and a match here refuses the call regardless of any
-    /// allow entry. See <c>CapabilityEnforcer.EnforceAsync</c> for the matching algorithm (#418).
+    /// allow entry — in EITHER direction: the requested path falling under a denied boundary, or a
+    /// denied boundary sitting under the requested path. The latter direction matters for a
+    /// subtree-reading operation (e.g. <c>file_system</c>'s <c>search</c>/<c>list</c>, which walk
+    /// everything beneath the single declared path argument) — without it, naming an ANCESTOR of a
+    /// denied directory would silently read through the deny rather than triggering it, because the
+    /// one string this profile validates was never itself inside the denied boundary. See
+    /// <c>CapabilityEnforcer.EnforceAsync</c> for the matching algorithm (#418).
     /// </summary>
     public IReadOnlyList<string> DeniedPaths { get; init; } = [];
 
