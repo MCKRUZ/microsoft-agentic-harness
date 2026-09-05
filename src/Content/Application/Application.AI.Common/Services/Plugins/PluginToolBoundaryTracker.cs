@@ -38,10 +38,13 @@ public sealed class PluginToolBoundaryTracker : IPluginToolBoundaryTracker
 
     /// <inheritdoc />
     public IReadOnlyList<PluginToolBoundaryViolation> Seed(
-        IReadOnlyList<LoadedPlugin> loadedPlugins, Func<string, bool> isKnownFirstPartyToolName)
+        IReadOnlyList<LoadedPlugin> loadedPlugins,
+        Func<string, bool> isKnownFirstPartyToolName,
+        IReadOnlyCollection<string> allConfiguredMcpServerNames)
     {
         ArgumentNullException.ThrowIfNull(loadedPlugins);
         ArgumentNullException.ThrowIfNull(isKnownFirstPartyToolName);
+        ArgumentNullException.ThrowIfNull(allConfiguredMcpServerNames);
 
         var immediate = new List<PluginToolBoundaryViolation>();
 
@@ -61,9 +64,17 @@ public sealed class PluginToolBoundaryTracker : IPluginToolBoundaryTracker
             if (unresolved.Count == 0)
                 continue;
 
-            if (plugin.McpServerNames.Count == 0)
+            if (allConfiguredMcpServerNames.Count == 0)
             {
-                // No other source these could ever resolve from — provably fake, right now.
+                // No MCP server exists ANYWHERE on this host — no other source these could ever
+                // resolve from, provably fake right now. Deliberately NOT scoped to plugin.McpServerNames
+                // (the plugin's own declared servers): a review round finding traced
+                // ToolChainBuilder.ResolveEffectiveMcpServerName and confirmed a plugin skill's
+                // ToolDeclaration can resolve against ANY host-configured MCP server, not only ones
+                // the plugin itself declares — a zero-own-servers plugin can still legitimately
+                // reference a host-level server's tool in its boundary. Narrowing to the plugin's own
+                // servers previously crashed boot (or permanently denied every tool) on exactly that
+                // valid, pre-existing configuration.
                 immediate.AddRange(unresolved.Select(e => new PluginToolBoundaryViolation(plugin.Name, e.ListKind, e.Name)));
                 continue;
             }
@@ -72,11 +83,11 @@ public sealed class PluginToolBoundaryTracker : IPluginToolBoundaryTracker
             {
                 Lock = new object(),
                 PendingEntries = unresolved.ToDictionary(e => e.Name, e => e.ListKind, StringComparer.OrdinalIgnoreCase),
-                PendingServers = new HashSet<string>(plugin.McpServerNames, StringComparer.OrdinalIgnoreCase),
+                PendingServers = new HashSet<string>(allConfiguredMcpServerNames, StringComparer.OrdinalIgnoreCase),
             };
             _pendingByPlugin[plugin.Name] = pending;
 
-            foreach (var serverName in plugin.McpServerNames)
+            foreach (var serverName in allConfiguredMcpServerNames)
                 _pluginsByServer.GetOrAdd(serverName, _ => []).Add(plugin.Name);
         }
 
