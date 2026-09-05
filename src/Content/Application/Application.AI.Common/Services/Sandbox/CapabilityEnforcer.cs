@@ -1,6 +1,7 @@
 using Application.AI.Common.Interfaces.Sandbox;
 using Domain.AI.Sandbox;
 using Domain.Common;
+using Domain.Common.Helpers;
 using Microsoft.Extensions.Logging;
 
 namespace Application.AI.Common.Services.Sandbox;
@@ -15,18 +16,27 @@ public sealed class CapabilityEnforcer : ICapabilityEnforcer
 {
     private readonly ToolPermissionProfileResolver _resolver;
     private readonly ILogger<CapabilityEnforcer> _logger;
+    private readonly IPathCanonicalizer? _pathCanonicalizer;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="CapabilityEnforcer"/> class.
     /// </summary>
     /// <param name="resolver">Resolves tool permission profiles from attributes and config.</param>
     /// <param name="logger">Logger for enforcement decision auditing.</param>
+    /// <param name="pathCanonicalizer">
+    /// Resolves symlinks/junctions before a path-scoping comparison (#418's CI hardening), so
+    /// <see cref="ValidatePaths"/> cannot be defeated by a link the sandbox itself would follow.
+    /// Optional: a host that doesn't register one still gets the normalized-string comparison, just
+    /// without link resolution — see <see cref="IPathCanonicalizer"/>'s own remarks.
+    /// </param>
     public CapabilityEnforcer(
         ToolPermissionProfileResolver resolver,
-        ILogger<CapabilityEnforcer> logger)
+        ILogger<CapabilityEnforcer> logger,
+        IPathCanonicalizer? pathCanonicalizer = null)
     {
         _resolver = resolver;
         _logger = logger;
+        _pathCanonicalizer = pathCanonicalizer;
     }
 
     /// <inheritdoc />
@@ -110,17 +120,26 @@ public sealed class CapabilityEnforcer : ICapabilityEnforcer
     /// or <see langword="null"/> if every path is permitted. Deny-overrides-allow: a deny match wins
     /// even when the same path also matches an allow entry (#418, restored from pre-#405 history).
     /// </summary>
-    private static string? ValidatePaths(IReadOnlyList<string> requestedPaths, ToolPermissionProfile profile)
+    private string? ValidatePaths(IReadOnlyList<string> requestedPaths, ToolPermissionProfile profile)
     {
         foreach (var path in requestedPaths)
         {
-            var normalized = NormalizePath(path);
+            // A model-supplied path this class cannot safely resolve — one carrying a traversal
+            // pattern, or one the runtime rejects outright — is treated as a violation rather than
+            // compared. CI caught the alternative: a naive normalizer silently dropped a leading
+            // ".." instead of resolving it, so "../secrets/creds.txt" matched no configured
+            // boundary at all. CapabilityEnforcer has no base directory of its own to resolve a
+            // relative traversal against (that is IFileSystemService's own, separately-configured
+            // concern), so refusing outright — mirroring SandboxedPathGuard.ResolveAndValidate's own
+            // first check — is the only answer that cannot be tricked into comparing the wrong path.
+            if (NormalizeRequestedPath(path) is not { } normalized)
+                return path;
 
-            if (profile.DeniedPaths.Any(denied => IsPathWithin(normalized, NormalizePath(denied))))
+            if (profile.DeniedPaths.Any(denied => IsPathWithin(normalized, NormalizeBoundary(denied))))
                 return path;
 
             if (profile.AllowedPaths.Count > 0 &&
-                !profile.AllowedPaths.Any(allowed => IsPathWithin(normalized, NormalizePath(allowed))))
+                !profile.AllowedPaths.Any(allowed => IsPathWithin(normalized, NormalizeBoundary(allowed))))
             {
                 return path;
             }
@@ -132,23 +151,54 @@ public sealed class CapabilityEnforcer : ICapabilityEnforcer
     /// <summary>
     /// Determines whether <paramref name="candidate"/> is the same as, or a descendant of,
     /// <paramref name="boundary"/>, comparing on path-segment boundaries rather than raw string
-    /// prefixes. This prevents sibling-directory bypass (e.g. boundary "C:/sandbox/work" must NOT
-    /// match "C:/sandbox/work-evil"). Both inputs are expected to be already normalized via
-    /// <see cref="NormalizePath"/> (slash-separated, no empty/relative segments, no trailing slash).
+    /// prefixes via <see cref="PathScope.IsSameOrUnderNormalized"/> — the same primitive
+    /// <c>SandboxedPathGuard</c> compares real file access against, so the two cannot disagree about
+    /// which file a path names. Both inputs are expected to be already normalized (and, when a
+    /// canonicalizer is available, link-resolved) via <see cref="NormalizeAndCanonicalize"/>.
     /// </summary>
-    private static bool IsPathWithin(string candidate, string boundary)
+    private static bool IsPathWithin(string candidate, string boundary) =>
+        // An empty boundary (root, fully trimmed) confines everything — preserved as an explicit
+        // case because PathScope.IsSameOrUnderNormalized's own separator-prefixed check does not
+        // reduce to "matches everything" identically on every platform.
+        boundary.Length == 0 || PathScope.IsSameOrUnderNormalized(candidate, boundary);
+
+    /// <summary>
+    /// Normalizes and canonicalizes a model-supplied path for a scoping comparison, refusing
+    /// (returning <see langword="null"/>) rather than guessing when the input carries a traversal
+    /// pattern or the runtime cannot parse it at all. See <see cref="ValidatePaths"/>'s remarks for
+    /// why a relative traversal cannot be safely resolved at this layer.
+    /// </summary>
+    private string? NormalizeRequestedPath(string path) =>
+        SecureInputValidatorHelper.ValidateFilePath(path) ? NormalizeAndCanonicalize(path) : null;
+
+    /// <summary>
+    /// Normalizes and canonicalizes an operator-configured boundary the same way as a requested path
+    /// (#418) — both sides must go through identical treatment, or a boundary reached only through a
+    /// symlink would compare unequal to an already-resolved candidate. Falls back to the raw
+    /// configured string on a normalization failure rather than refusing: a typo in one operator
+    /// entry should degrade that one comparison, not take down every call that consults the list.
+    /// </summary>
+    private string NormalizeBoundary(string configuredPath) => NormalizeAndCanonicalize(configuredPath) ?? configuredPath;
+
+    /// <summary>
+    /// Resolves <paramref name="path"/> to its absolute form via <see cref="PathScope.Normalize"/> —
+    /// the same routine <c>SandboxedPathGuard</c> normalizes real file access through, so a genuine
+    /// <c>..</c> segment is actually resolved rather than silently discarded, and platform quirks
+    /// (e.g. a Windows trailing-dot path component) are handled identically on both sides of the
+    /// comparison — then link-resolves through <see cref="_pathCanonicalizer"/> when one is
+    /// registered. Returns <see langword="null"/> on any input the runtime cannot parse.
+    /// </summary>
+    private string? NormalizeAndCanonicalize(string path)
     {
-        // An empty boundary (e.g. root after normalization) confines everything.
-        if (boundary.Length == 0)
-            return true;
-
-        if (candidate.Equals(boundary, StringComparison.OrdinalIgnoreCase))
-            return true;
-
-        // Descendant must start with "boundary/" so the next character is a true segment boundary.
-        return candidate.Length > boundary.Length
-            && candidate[boundary.Length] == '/'
-            && candidate.StartsWith(boundary, StringComparison.OrdinalIgnoreCase);
+        try
+        {
+            var normalized = PathScope.Normalize(path);
+            return _pathCanonicalizer?.Canonicalize(normalized) ?? normalized;
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return null;
+        }
     }
 
     /// <summary>
@@ -174,49 +224,46 @@ public sealed class CapabilityEnforcer : ICapabilityEnforcer
     }
 
     /// <summary>
-    /// Matches <paramref name="host"/> (port stripped) against <paramref name="pattern"/>, which may
-    /// be an exact host name or a <c>*.suffix</c> wildcard.
+    /// Matches <paramref name="host"/> (port stripped, trailing FQDN dot trimmed) against
+    /// <paramref name="pattern"/>, which may be an exact host name or a <c>*.suffix</c> wildcard.
     /// </summary>
     private static bool HostMatches(string host, string pattern)
     {
-        var normalizedHost = StripPort(host);
+        var normalizedHost = StripPort(host).TrimEnd('.');
+        var normalizedPattern = pattern.TrimEnd('.');
 
-        if (pattern.StartsWith("*."))
+        if (normalizedPattern.StartsWith("*."))
         {
-            var suffix = pattern[1..];
+            var suffix = normalizedPattern[1..];
             return normalizedHost.EndsWith(suffix, StringComparison.OrdinalIgnoreCase)
-                   || normalizedHost.Equals(pattern[2..], StringComparison.OrdinalIgnoreCase);
+                   || normalizedHost.Equals(normalizedPattern[2..], StringComparison.OrdinalIgnoreCase);
         }
 
-        return normalizedHost.Equals(pattern, StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static string StripPort(string host)
-    {
-        var colonIndex = host.LastIndexOf(':');
-        return colonIndex > 0 && host[(colonIndex + 1)..].All(char.IsDigit)
-            ? host[..colonIndex]
-            : host;
+        return normalizedHost.Equals(normalizedPattern, StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>
-    /// Normalizes path separators to <c>/</c> and resolves <c>.</c>/<c>..</c> segments so
-    /// <see cref="IsPathWithin"/> compares like-for-like regardless of how the caller or the config
-    /// wrote a path.
+    /// Strips a trailing <c>:port</c> from <paramref name="host"/>, recognizing the bracketed IPv6
+    /// form (<c>[::1]:443</c>) and leaving a <em>bare</em> IPv6 literal (<c>::1</c>) untouched — more
+    /// than one colon with no brackets is never a host:port pair, so treating the last colon as a
+    /// port separator there would truncate the address itself (<c>::1</c> otherwise becomes <c>:</c>
+    /// and can never match a configured deny/allow entry for it).
     /// </summary>
-    private static string NormalizePath(string path)
+    private static string StripPort(string host)
     {
-        var segments = path.Replace('\\', '/').Split('/', StringSplitOptions.RemoveEmptyEntries);
-        var result = new List<string>();
-        foreach (var segment in segments)
+        if (host.StartsWith('['))
         {
-            if (segment == ".") continue;
-            if (segment == ".." && result.Count > 0 && result[^1] != "..")
-                result.RemoveAt(result.Count - 1);
-            else if (segment != "..")
-                result.Add(segment);
+            var closeBracket = host.IndexOf(']');
+            return closeBracket > 0 ? host[1..closeBracket] : host;
         }
-        return string.Join('/', result);
+
+        if (host.Count(c => c == ':') != 1)
+            return host;
+
+        var colonIndex = host.IndexOf(':');
+        return colonIndex > 0 && host[(colonIndex + 1)..].All(char.IsDigit)
+            ? host[..colonIndex]
+            : host;
     }
 
     private static string FormatMissingCapabilities(ToolCapability missing)

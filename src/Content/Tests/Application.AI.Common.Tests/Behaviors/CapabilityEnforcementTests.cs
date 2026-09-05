@@ -241,6 +241,27 @@ public sealed class CapabilityEnforcementTests
     }
 
     [Fact]
+    public async Task DeniedPath_RelativeTraversal_Refuses()
+    {
+        // CI-caught regression: the naive normalizer this replaced silently dropped a leading ".."
+        // instead of resolving or rejecting it, so "../secrets/creds.txt" matched no configured
+        // boundary at all. CapabilityEnforcer has no base directory to resolve a relative traversal
+        // against (that's IFileSystemService's own concern), so it must refuse any traversal pattern
+        // outright rather than guess where it points.
+        var config = new SandboxConfig
+        {
+            ToolOverrides = new() { ["file_system"] = new ToolOverrideConfig { DeniedPaths = ["C:/sandbox/secrets"] } }
+        };
+        var (_, enforcer) = Build(config, ("file_system", FileTool()));
+
+        var result = await enforcer.EnforceAsync(
+            "file_system", ToolCapability.FileRead | ToolCapability.FileWrite,
+            requestedPaths: ["../secrets/creds.txt"]);
+
+        result.IsSuccess.Should().BeFalse("a path this class cannot safely resolve must not be silently allowed");
+    }
+
+    [Fact]
     public async Task DeniedPath_WinsOverAllowedPath()
     {
         var config = new SandboxConfig
@@ -356,6 +377,42 @@ public sealed class CapabilityEnforcementTests
             requestedHosts: ["api.example.com:8443"]);
 
         result.IsSuccess.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task DeniedHost_TrailingDotFqdn_StillMatches()
+    {
+        // A root-terminated FQDN ("host.") is the same name as "host" — a raw EndsWith comparison
+        // let the trailing dot defeat a *.suffix deny entry entirely.
+        var config = new SandboxConfig
+        {
+            ToolOverrides = new() { ["http_tool"] = new ToolOverrideConfig { DeniedHosts = ["*.evil.com"] } }
+        };
+        var (_, enforcer) = Build(config, ("http_tool", NetworkFileTool()));
+
+        var result = await enforcer.EnforceAsync(
+            "http_tool", ToolCapability.FileRead | ToolCapability.NetworkAccess,
+            requestedHosts: ["api.evil.com."]);
+
+        result.IsSuccess.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task DeniedHost_BareIPv6Literal_StillMatches()
+    {
+        // StripPort's old "last colon, digits after" rule truncated a bare IPv6 literal ("::1"
+        // becomes ":"), so a deny entry for it could never match.
+        var config = new SandboxConfig
+        {
+            ToolOverrides = new() { ["http_tool"] = new ToolOverrideConfig { DeniedHosts = ["::1"] } }
+        };
+        var (_, enforcer) = Build(config, ("http_tool", NetworkFileTool()));
+
+        var result = await enforcer.EnforceAsync(
+            "http_tool", ToolCapability.FileRead | ToolCapability.NetworkAccess,
+            requestedHosts: ["::1"]);
+
+        result.IsSuccess.Should().BeFalse();
     }
 
     [Fact]

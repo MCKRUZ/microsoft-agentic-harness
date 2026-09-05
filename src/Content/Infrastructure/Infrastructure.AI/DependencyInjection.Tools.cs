@@ -1,6 +1,7 @@
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Observability;
 using Application.AI.Common.Interfaces.RAG;
+using Application.AI.Common.Interfaces.Sandbox;
 using Application.AI.Common.Interfaces.Tools;
 using Azure.AI.Agents.Persistent;
 using Azure.AI.OpenAI;
@@ -55,6 +56,11 @@ public static partial class DependencyInjection
                 sp.GetRequiredService<ILogger<FileSystemService>>(),
                 allowedBasePaths,
                 protectedPaths));
+
+        // #418: lets CapabilityEnforcer (Application layer, no filesystem access of its own) resolve
+        // symlinks/junctions the same way SandboxedPathGuard does, so a DeniedPaths/AllowedPaths
+        // comparison cannot be defeated by a link the sandbox itself would follow.
+        services.AddSingleton<IPathCanonicalizer, FileSystemPathCanonicalizer>();
 
         // Boot-time assertion that the governance-state directory does not sit inside an allowed
         // base path. That geometry is a misconfiguration worth refusing on, but note what it does
