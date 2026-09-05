@@ -59,6 +59,21 @@ public sealed class ResourceParameterExtractorTests
     }
 
     [Fact]
+    public void Extract_OperationCasingDiffers_StillMatchesDeclaration()
+    {
+        // Regression: every other stage that admits an operation name (AIToolConverter,
+        // DirectToolInvoker) accepts it case-insensitively, and FileSystemTool.ExecuteAsync itself
+        // dispatches via ToLowerInvariant() — an ordinal-only lookup here would silently downgrade
+        // "Read" to "affirmatively nothing scoped" (Empty), which CapabilityEnforcer trusts and skips
+        // validating, bypassing scoping entirely for a call whose casing merely differs.
+        var result = ResourceParameterExtractor.Extract(
+            "Read", new Dictionary<string, object?> { ["path"] = "src/File.cs" }, FileSystemMap);
+
+        result.Should().NotBeNull();
+        result!.RequestedPaths.Should().ContainSingle().Which.Should().Be("src/File.cs");
+    }
+
+    [Fact]
     public void Extract_DeclaredOperationWithNoParameters_ReturnsEmpty()
     {
         var map = new Dictionary<string, IReadOnlyDictionary<string, ResourceParameterKind>>

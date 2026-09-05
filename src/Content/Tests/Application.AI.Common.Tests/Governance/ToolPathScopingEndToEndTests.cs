@@ -107,9 +107,9 @@ public sealed class ToolPathScopingEndToEndTests
         return (governor, trace);
     }
 
-    private static AIFunctionArguments ReadArgs(string path) => new()
+    private static AIFunctionArguments ReadArgs(string path, string operation = "read") => new()
     {
-        ["operation"] = "read",
+        ["operation"] = operation,
         ["parametersJson"] = JsonSerializer.SerializeToElement(new { path })
     };
 
@@ -132,6 +132,30 @@ public sealed class ToolPathScopingEndToEndTests
 
         // The model-facing text is deliberately generic (never leaks capability/path detail to the
         // LLM) — the trace is where the specific reason, and proof this was path scoping, lives.
+        result.Should().BeOfType<string>();
+        trace.Snapshot().ToolDecisions.Should().ContainSingle(d => d.Reason.Contains("path denied"));
+        fileSystem.Verify(fs => fs.ReadFileAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task AgentTurnPath_DeniedPath_OperationCasingDiffers_StillRefuses()
+    {
+        // Regression for the case-sensitivity bypass caught in review: AIToolConverter accepts an
+        // operation case-insensitively and FileSystemTool.ExecuteAsync dispatches via
+        // ToLowerInvariant(), so "Read" must be denied exactly like "read" — not silently pass because
+        // ResourceParameterExtractor's declaration lookup missed on casing and returned Empty.
+        var (_, fileSystem, toolProvider) = BuildToolFixture();
+        var context = Mock.Of<IAgentExecutionContext>(c => c.AgentId == "test-agent");
+        var (governor, trace) = BuildGovernor(toolProvider, DenyingSandboxConfig(), context);
+
+        var builder = new ToolChainBuilder(
+            NullLogger<ToolChainBuilder>.Instance, toolProvider, new AIToolConverter(NullLogger<AIToolConverter>.Instance));
+        var aiFunction = (AIFunction)builder.BuildToolsByName(["file_system"], "test-agent").Single();
+
+        using var _ = ToolAdmissionAccessor.Begin(AdmissionHarness.Pipeline(governor: governor, executionContext: context));
+
+        var result = await aiFunction.InvokeAsync(ReadArgs(DeniedPath, operation: "Read"));
+
         result.Should().BeOfType<string>();
         trace.Snapshot().ToolDecisions.Should().ContainSingle(d => d.Reason.Contains("path denied"));
         fileSystem.Verify(fs => fs.ReadFileAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
@@ -191,6 +215,53 @@ public sealed class ToolPathScopingEndToEndTests
         {
             ToolName = "file_system",
             Operation = "read",
+            Parameters = new Dictionary<string, object?> { ["path"] = DeniedPath },
+            OwnerId = "caller-1",
+            Envelope = new CapabilityEnvelope { AllowedTools = ["file_system"] }
+        };
+
+        var outcome = await invoker.InvokeAsync(request, CancellationToken.None);
+
+        outcome.Status.Should().Be(DirectToolInvocationStatus.Denied);
+        capturedTrace.Should().NotBeNull();
+        capturedTrace!.Snapshot().ToolDecisions.Should().ContainSingle(d => d.Reason.Contains("path denied"));
+        fileSystem.Verify(fs => fs.ReadFileAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task DirectToolInvokerPath_DeniedPath_OperationCasingDiffers_StillRefuses()
+    {
+        // Same casing regression as the agent-turn path, exercised through the HTTP-facing surface —
+        // the one the correctness/security review both called out as "most exposed to external callers".
+        var fileSystem = new Mock<IFileSystemService>();
+        var tool = new FileSystemTool(fileSystem.Object);
+        var sandboxConfig = DenyingSandboxConfig();
+
+        GovernanceTraceRecorder? capturedTrace = null;
+
+        var services = new ServiceCollection();
+        services.AddKeyedSingleton<ITool>("file_system", tool);
+        services.AddScoped<IAgentExecutionContext, AgentExecutionContext>();
+        services.AddScoped<IToolCallAdmissionPipeline>(sp =>
+        {
+            var (governor, trace) = BuildGovernor(sp, sandboxConfig, sp.GetRequiredService<IAgentExecutionContext>());
+            capturedTrace = trace;
+            return AdmissionHarness.Pipeline(
+                governor: governor, executionContext: sp.GetRequiredService<IAgentExecutionContext>(), trace: trace);
+        });
+
+        var provider = services.BuildServiceProvider();
+        var invoker = new DirectToolInvoker(
+            provider.GetRequiredService<IServiceScopeFactory>(),
+            new ToolCatalog(provider, ["file_system"], NullLogger<ToolCatalog>.Instance),
+            Mock.Of<IOptionsMonitor<DirectToolInvocationConfig>>(
+                m => m.CurrentValue == new DirectToolInvocationConfig { Enabled = true }),
+            NullLogger<DirectToolInvoker>.Instance);
+
+        var request = new DirectToolInvocationRequest
+        {
+            ToolName = "file_system",
+            Operation = "Read",
             Parameters = new Dictionary<string, object?> { ["path"] = DeniedPath },
             OwnerId = "caller-1",
             Envelope = new CapabilityEnvelope { AllowedTools = ["file_system"] }

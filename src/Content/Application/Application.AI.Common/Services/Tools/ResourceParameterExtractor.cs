@@ -38,7 +38,7 @@ public static class ResourceParameterExtractor
         if (operation is null)
             return null;
 
-        if (!declaredByOperation.TryGetValue(operation, out var declaredParameters) || declaredParameters.Count == 0)
+        if (!TryFindDeclaration(declaredByOperation, operation, out var declaredParameters) || declaredParameters.Count == 0)
             return ToolCallResourceRequest.Empty;
 
         var paths = new List<string>();
@@ -64,5 +64,40 @@ public static class ResourceParameterExtractor
         }
 
         return new ToolCallResourceRequest(paths, hosts);
+    }
+
+    /// <summary>
+    /// Looks up <paramref name="operation"/> in <paramref name="declaredByOperation"/>, matching
+    /// case-insensitively so a casing difference can never downgrade a genuinely-declared operation
+    /// to "affirmatively nothing scoped" (<see cref="ToolCallResourceRequest.Empty"/>) — which
+    /// <see cref="Application.AI.Common.Services.Sandbox.CapabilityEnforcer"/> treats as trusted and
+    /// skips validating. Every other stage that admits an operation name — <c>AIToolConverter</c>'s
+    /// operation validation and <c>DirectToolInvoker</c>'s — accepts it case-insensitively, and
+    /// <c>FileSystemTool.ExecuteAsync</c> itself dispatches via <c>ToLowerInvariant()</c>; an
+    /// ordinal-only lookup here was the one link in that chain that disagreed, letting
+    /// <c>operation: "Read"</c> bypass a <c>DeniedPaths</c> configured for <c>"read"</c> entirely.
+    /// </summary>
+    private static bool TryFindDeclaration(
+        IReadOnlyDictionary<string, IReadOnlyDictionary<string, ResourceParameterKind>> declaredByOperation,
+        string operation,
+        out IReadOnlyDictionary<string, ResourceParameterKind> declaredParameters)
+    {
+        if (declaredByOperation.TryGetValue(operation, out var exact))
+        {
+            declaredParameters = exact;
+            return true;
+        }
+
+        foreach (var (key, value) in declaredByOperation)
+        {
+            if (string.Equals(key, operation, StringComparison.OrdinalIgnoreCase))
+            {
+                declaredParameters = value;
+                return true;
+            }
+        }
+
+        declaredParameters = new Dictionary<string, ResourceParameterKind>();
+        return false;
     }
 }
