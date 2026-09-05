@@ -523,12 +523,7 @@ internal static class ToolResultText
             // same depth-bounded, fail-closed walk already exercised for a FunctionResultContent found
             // inside an AIContent[] element, just entered from one more shape.
             case FunctionResultContent frc:
-            {
-                var transformedResult = TransformFunctionResult(frc.Result, transform, MaxToolResultNestingDepth);
-                return ReferenceEquals(transformedResult, frc.Result)
-                    ? result
-                    : WithFunctionResult(frc, transformedResult);
-            }
+                return TransformFunctionResultBlock(frc, transform) ?? result;
             // A multi-content-block MCP tool success reaches this boundary as AIContent[]. TextContent
             // elements carry free text directly; a tool_result block (#552) converts to a
             // FunctionResultContent whose Result can itself be a TextContent, ANOTHER FunctionResultContent
@@ -564,12 +559,12 @@ internal static class ToolResultText
                         }
                         case FunctionResultContent frc:
                         {
-                            var transformedResult = TransformFunctionResult(frc.Result, transform, MaxToolResultNestingDepth);
-                            if (ReferenceEquals(transformedResult, frc.Result))
+                            var transformedFrc = TransformFunctionResultBlock(frc, transform);
+                            if (transformedFrc is null)
                                 continue;
 
                             transformedBlocks ??= (AIContent[])blocks.Clone();
-                            transformedBlocks[i] = WithFunctionResult(frc, transformedResult);
+                            transformedBlocks[i] = transformedFrc;
                             break;
                         }
                     }
@@ -1059,4 +1054,18 @@ internal static class ToolResultText
         RawRepresentation = original.RawRepresentation,
         AdditionalProperties = original.AdditionalProperties
     };
+
+    /// <summary>
+    /// Transforms a single <see cref="FunctionResultContent"/> block — the shared body of
+    /// <see cref="Transform"/>'s bare-<see cref="FunctionResultContent"/> case and its identical
+    /// per-element case inside the <c>AIContent[]</c> loop (/simplify finding: both call sites
+    /// independently duplicated this compute-and-rebuild logic). Returns <see langword="null"/> when
+    /// nothing changed, so each caller decides its own no-op behavior — the bare case falls back to the
+    /// original untyped <c>result</c>, the array loop just <c>continue</c>s.
+    /// </summary>
+    private static FunctionResultContent? TransformFunctionResultBlock(FunctionResultContent frc, Func<string, string> transform)
+    {
+        var transformedResult = TransformFunctionResult(frc.Result, transform, MaxToolResultNestingDepth);
+        return ReferenceEquals(transformedResult, frc.Result) ? null : WithFunctionResult(frc, transformedResult);
+    }
 }
