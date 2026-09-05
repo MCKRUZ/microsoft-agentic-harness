@@ -831,10 +831,22 @@ public partial class ToolChainBuilder : IToolChainBuilder
         {
             var converted = _toolConverter.Convert(tool);
             if (converted != null)
-                return [converted];
+                return [AttachResourceParameters(converted, tool)];
         }
 
         _logger.LogWarning("Tool {ToolName} found in keyed DI but no IToolConverter available to convert it", toolName);
         return [];
     }
+
+    /// <summary>
+    /// Wraps <paramref name="converted"/> in a <see cref="ResourceParameterDeclaringAIFunction"/> when
+    /// <paramref name="tool"/> declares any resource parameters (#418) — the one place a raw
+    /// <see cref="ITool"/> and its converted <see cref="AITool"/> are both in hand, so this is the only
+    /// call site that needs to know about the declaration at all. A tool that declares nothing is
+    /// returned unwrapped, unchanged from before this feature existed.
+    /// </summary>
+    private static AITool AttachResourceParameters(AITool converted, ITool tool) =>
+        converted is AIFunction fn && tool.ResourceParametersByOperation is { Count: > 0 } map
+            ? new ResourceParameterDeclaringAIFunction(fn, map)
+            : converted;
 }

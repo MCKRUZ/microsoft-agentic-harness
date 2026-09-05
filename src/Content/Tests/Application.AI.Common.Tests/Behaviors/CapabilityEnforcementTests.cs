@@ -202,4 +202,174 @@ public sealed class CapabilityEnforcementTests
         profile.MinimumIsolation.Should().Be(SandboxIsolationLevel.Process);
         profile.DeniedCapabilities.Should().Be(ToolCapability.FileRead);
     }
+
+    // --- Path/host scoping (#418) ---
+
+    [Fact]
+    public async Task DeniedPath_ExactMatch_Refuses()
+    {
+        var config = new SandboxConfig
+        {
+            ToolOverrides = new() { ["file_system"] = new ToolOverrideConfig { DeniedPaths = ["C:/sandbox/secrets"] } }
+        };
+        var (_, enforcer) = Build(config, ("file_system", FileTool()));
+
+        var result = await enforcer.EnforceAsync(
+            "file_system", ToolCapability.FileRead | ToolCapability.FileWrite,
+            requestedPaths: ["C:/sandbox/secrets/creds.txt"]);
+
+        result.IsSuccess.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.Contains("path denied"));
+    }
+
+    [Fact]
+    public async Task DeniedPath_SiblingDirectory_DoesNotMatch()
+    {
+        // The sibling-directory bypass IsPathWithin exists to prevent: a boundary of
+        // "C:/sandbox/work" must not match "C:/sandbox/work-evil" via a raw string prefix check.
+        var config = new SandboxConfig
+        {
+            ToolOverrides = new() { ["file_system"] = new ToolOverrideConfig { DeniedPaths = ["C:/sandbox/work"] } }
+        };
+        var (_, enforcer) = Build(config, ("file_system", FileTool()));
+
+        var result = await enforcer.EnforceAsync(
+            "file_system", ToolCapability.FileRead | ToolCapability.FileWrite,
+            requestedPaths: ["C:/sandbox/work-evil/file.txt"]);
+
+        result.IsSuccess.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task DeniedPath_WinsOverAllowedPath()
+    {
+        var config = new SandboxConfig
+        {
+            ToolOverrides = new()
+            {
+                ["file_system"] = new ToolOverrideConfig
+                {
+                    AllowedPaths = ["C:/sandbox"],
+                    DeniedPaths = ["C:/sandbox/secrets"]
+                }
+            }
+        };
+        var (_, enforcer) = Build(config, ("file_system", FileTool()));
+
+        var result = await enforcer.EnforceAsync(
+            "file_system", ToolCapability.FileRead | ToolCapability.FileWrite,
+            requestedPaths: ["C:/sandbox/secrets/creds.txt"]);
+
+        result.IsSuccess.Should().BeFalse("deny overrides allow even when the path is also within an allowed boundary");
+    }
+
+    [Fact]
+    public async Task AllowedPathConfigured_RequestOutsideIt_Refuses()
+    {
+        var config = new SandboxConfig
+        {
+            ToolOverrides = new() { ["file_system"] = new ToolOverrideConfig { AllowedPaths = ["C:/sandbox/work"] } }
+        };
+        var (_, enforcer) = Build(config, ("file_system", FileTool()));
+
+        var result = await enforcer.EnforceAsync(
+            "file_system", ToolCapability.FileRead | ToolCapability.FileWrite,
+            requestedPaths: ["C:/other/place.txt"]);
+
+        result.IsSuccess.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task PathScopingConfigured_RequestedPathsIsNull_RefusesFailClosed()
+    {
+        // The actual fix #418 delivers: a configured deny that cannot verify a call's resource
+        // usage must refuse, not silently let it through — the exact fail-open shape #405 shipped
+        // (requestedPaths: null and [] were treated identically).
+        var config = new SandboxConfig
+        {
+            ToolOverrides = new() { ["file_system"] = new ToolOverrideConfig { DeniedPaths = ["C:/sandbox/secrets"] } }
+        };
+        var (_, enforcer) = Build(config, ("file_system", FileTool()));
+
+        var result = await enforcer.EnforceAsync(
+            "file_system", ToolCapability.FileRead | ToolCapability.FileWrite, requestedPaths: null);
+
+        result.IsSuccess.Should().BeFalse("a configured deny with unknown resource usage must refuse, not pass through");
+    }
+
+    [Fact]
+    public async Task NoPathScopingConfigured_RequestedPathsIsNull_PassesThrough()
+    {
+        var (_, enforcer) = Build(tools: ("file_system", FileTool()));
+
+        var result = await enforcer.EnforceAsync(
+            "file_system", ToolCapability.FileRead | ToolCapability.FileWrite, requestedPaths: null);
+
+        result.IsSuccess.Should().BeTrue("no scoping is configured, so an unknown request is not a violation");
+    }
+
+    [Fact]
+    public async Task PathScopingConfigured_RequestedPathsIsEmpty_PassesThrough()
+    {
+        // Empty means "determined, and there is none" — the tool's own affirmative declaration,
+        // distinct from null ("could not be determined").
+        var config = new SandboxConfig
+        {
+            ToolOverrides = new() { ["file_system"] = new ToolOverrideConfig { DeniedPaths = ["C:/sandbox/secrets"] } }
+        };
+        var (_, enforcer) = Build(config, ("file_system", FileTool()));
+
+        var result = await enforcer.EnforceAsync(
+            "file_system", ToolCapability.FileRead | ToolCapability.FileWrite, requestedPaths: []);
+
+        result.IsSuccess.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task DeniedHost_WildcardMatch_Refuses()
+    {
+        var config = new SandboxConfig
+        {
+            ToolOverrides = new() { ["http_tool"] = new ToolOverrideConfig { DeniedHosts = ["*.evil.com"] } }
+        };
+        var (_, enforcer) = Build(config, ("http_tool", NetworkFileTool()));
+
+        var result = await enforcer.EnforceAsync(
+            "http_tool", ToolCapability.FileRead | ToolCapability.NetworkAccess,
+            requestedHosts: ["api.evil.com:443"]);
+
+        result.IsSuccess.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.Contains("host denied"));
+    }
+
+    [Fact]
+    public async Task AllowedHostConfigured_ExactMatchWithPortStripped_PassesThrough()
+    {
+        var config = new SandboxConfig
+        {
+            ToolOverrides = new() { ["http_tool"] = new ToolOverrideConfig { AllowedHosts = ["api.example.com"] } }
+        };
+        var (_, enforcer) = Build(config, ("http_tool", NetworkFileTool()));
+
+        var result = await enforcer.EnforceAsync(
+            "http_tool", ToolCapability.FileRead | ToolCapability.NetworkAccess,
+            requestedHosts: ["api.example.com:8443"]);
+
+        result.IsSuccess.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task HostScopingConfigured_RequestedHostsIsNull_RefusesFailClosed()
+    {
+        var config = new SandboxConfig
+        {
+            ToolOverrides = new() { ["http_tool"] = new ToolOverrideConfig { DeniedHosts = ["*.evil.com"] } }
+        };
+        var (_, enforcer) = Build(config, ("http_tool", NetworkFileTool()));
+
+        var result = await enforcer.EnforceAsync(
+            "http_tool", ToolCapability.FileRead | ToolCapability.NetworkAccess, requestedHosts: null);
+
+        result.IsSuccess.Should().BeFalse();
+    }
 }

@@ -965,7 +965,8 @@ public sealed class DirectToolInvokerTests
         public async ValueTask<ToolInvocationDecision> AuthorizeAsync(
             string toolName, CancellationToken cancellationToken,
             IReadOnlyDictionary<string, object?>? arguments = null,
-            Domain.AI.Governance.ToolCompositionTaint? composition = null)
+            Domain.AI.Governance.ToolCompositionTaint? composition = null,
+            Domain.AI.Sandbox.ToolCallResourceRequest? resourceRequest = null)
         {
             record.AgentIdWhenAuthorizing = executionContext.AgentId;
 

@@ -89,7 +89,8 @@ internal sealed class GovernedAIFunction : DelegatingAIFunction
         var admission = await admissionPipeline
             .AdmitAsync(
                 new ToolCallAdmissionRequest(
-                    Name, arguments, CountsTowardLoopDetection: true, CompositionTaint: _compositionTaint),
+                    Name, arguments, CountsTowardLoopDetection: true, CompositionTaint: _compositionTaint,
+                    ResourceRequest: ExtractResourceRequest(arguments)),
                 cancellationToken)
             .ConfigureAwait(false);
 
@@ -145,6 +146,54 @@ internal sealed class GovernedAIFunction : DelegatingAIFunction
         return await admissionPipeline
             .ApplyOutputPolicyAsync(admission, Name, Unwrap(result), CancellationToken.None)
             .ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Extracts this call's requested paths/hosts (#418), when the wrapped function is a
+    /// <see cref="ResourceParameterDeclaringAIFunction"/> — i.e. the underlying tool declared which
+    /// of its named parameters are paths/hosts (<c>ITool.ResourceParametersByOperation</c>). Returns
+    /// <see langword="null"/> for every other tool, which <c>ICapabilityEnforcer.EnforceAsync</c>
+    /// only treats as significant when the tool's profile has path/host scoping configured at all —
+    /// see <c>Domain.AI.Sandbox.ToolCallResourceRequest</c>'s remarks.
+    /// </summary>
+    /// <remarks>
+    /// Reads <paramref name="arguments"/> directly, before the wrapped function's own
+    /// <c>AIFunctionFactory</c>-generated binding runs — the same raw dictionary
+    /// <c>AIToolConverter</c>'s wire format populates (<c>operation</c> as a string,
+    /// <c>parametersJson</c> as a <see cref="JsonElement"/>?), confirmed against this repo's own
+    /// <c>AIToolConverterTests</c> regression coverage for exactly these two keys. Read defensively
+    /// regardless: <paramref name="arguments"/> is a plain <c>object?</c> dictionary with no
+    /// compile-time guarantee of either shape.
+    /// </remarks>
+    private Domain.AI.Sandbox.ToolCallResourceRequest? ExtractResourceRequest(AIFunctionArguments arguments)
+    {
+        if (InnerFunction is not ResourceParameterDeclaringAIFunction resourceDeclaring)
+            return null;
+
+        var operation = ReadOperation(arguments);
+        var parameters = ToolParameters.FromJson(ReadParametersJson(arguments));
+        return ResourceParameterExtractor.Extract(operation, parameters, resourceDeclaring.ResourceParametersByOperation);
+    }
+
+    private static string? ReadOperation(AIFunctionArguments arguments)
+    {
+        if (!arguments.TryGetValue(AIToolConverter.OperationArgumentName, out var value))
+            return null;
+
+        return value switch
+        {
+            string s => s,
+            JsonElement { ValueKind: JsonValueKind.String } je => je.GetString(),
+            _ => null
+        };
+    }
+
+    private static JsonElement? ReadParametersJson(AIFunctionArguments arguments)
+    {
+        if (!arguments.TryGetValue(AIToolConverter.ParametersJsonArgumentName, out var value))
+            return null;
+
+        return value as JsonElement?;
     }
 
     /// <summary>

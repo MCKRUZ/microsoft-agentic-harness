@@ -345,11 +345,20 @@ public readonly record struct TextOutputPolicyResult(
 /// wrapper did not stamp, which the governor reads identically to "no findings". See
 /// <c>ToolInvocationGovernor.RequiresApprovalForToolComposition</c>.
 /// </param>
+/// <param name="ResourceRequest">
+/// The paths/hosts this call actually requested (#418), extracted by the caller before admission —
+/// see <c>Domain.AI.Sandbox.ToolCallResourceRequest</c>'s remarks for why <see langword="null"/>
+/// (couldn't be determined) and an empty request (determined, and there is none) mean different
+/// things to <c>ICapabilityEnforcer.EnforceAsync</c>, the eventual consumer. Null for a caller that
+/// never extracts one, which the enforcer treats as "unknown" — refusing outright when the tool's
+/// profile has any path/host scoping configured, never as "nothing to check".
+/// </param>
 public sealed record ToolCallAdmissionRequest(
     string ToolName,
     IReadOnlyDictionary<string, object?>? Arguments = null,
     bool CountsTowardLoopDetection = false,
-    ToolCompositionTaint? CompositionTaint = null);
+    ToolCompositionTaint? CompositionTaint = null,
+    Domain.AI.Sandbox.ToolCallResourceRequest? ResourceRequest = null);
 
 /// <summary>
 /// The admission chain's verdict for one tool call.

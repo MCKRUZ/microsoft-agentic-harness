@@ -157,24 +157,11 @@ public sealed partial class DirectToolInvoker : IDirectToolInvoker
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(effectiveTimeout);
 
-        // Parameters are passed for the same reason the agent path passes them: if a verdict is routed
-        // to a human, approving a bare tool name tells them nothing. This is the surface most exposed
-        // to external callers, so it is the one where an approver most needs to see what they are
-        // signing off on.
-        var admission = await armed.AdmissionPipeline
-            .AdmitAsync(
-                new ToolCallAdmissionRequest(
-                    armed.ToolName, armed.Request.Parameters, CountsTowardLoopDetection: false),
-                deadline.Token)
-            .ConfigureAwait(false);
-
-        if (!admission.IsAllowed)
-        {
-            // The chain's message is already scrubbed for consumption outside the host — rule ids,
-            // paths and policy internals stay in the trace and the structured log.
-            return Refused(DirectToolInvocationStatus.Denied, admission.DeniedMessage!, sw);
-        }
-
+        // Resolved before admission (#418), not after as before: ICapabilityEnforcer.EnforceAsync
+        // needs this call's requested paths/hosts, extracted from armed.Request against the tool's
+        // own ResourceParametersByOperation declaration — which requires the tool itself. Resolving
+        // once and reusing the same reference for both extraction and execution below also removes
+        // what used to be a second keyed-DI lookup for the identical tool.
         var tool = armed.Scope.ServiceProvider.GetKeyedService<ITool>(armed.ToolName);
         if (tool is null)
         {
@@ -183,6 +170,26 @@ public sealed partial class DirectToolInvoker : IDirectToolInvoker
             // it cannot build.
             _logger.LogWarning("Tool {ToolName} is cataloged but did not resolve for invocation", armed.ToolName);
             return Refused(DirectToolInvocationStatus.NotFound, DirectToolInvocationErrors.NoSuchTool, sw);
+        }
+
+        // Parameters are passed for the same reason the agent path passes them: if a verdict is routed
+        // to a human, approving a bare tool name tells them nothing. This is the surface most exposed
+        // to external callers, so it is the one where an approver most needs to see what they are
+        // signing off on.
+        var admission = await armed.AdmissionPipeline
+            .AdmitAsync(
+                new ToolCallAdmissionRequest(
+                    armed.ToolName, armed.Request.Parameters, CountsTowardLoopDetection: false,
+                    ResourceRequest: ResourceParameterExtractor.Extract(
+                        armed.Request.Operation, armed.Request.Parameters, tool.ResourceParametersByOperation)),
+                deadline.Token)
+            .ConfigureAwait(false);
+
+        if (!admission.IsAllowed)
+        {
+            // The chain's message is already scrubbed for consumption outside the host — rule ids,
+            // paths and policy internals stay in the trace and the structured log.
+            return Refused(DirectToolInvocationStatus.Denied, admission.DeniedMessage!, sw);
         }
 
         ToolResult result;

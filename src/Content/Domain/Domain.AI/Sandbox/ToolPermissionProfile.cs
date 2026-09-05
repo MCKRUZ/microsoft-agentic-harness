@@ -42,4 +42,29 @@ public sealed record ToolPermissionProfile
     /// The capability enforcer will never downgrade below this level.
     /// </summary>
     public SandboxIsolationLevel MinimumIsolation { get; init; } = SandboxIsolationLevel.Process;
+
+    /// <summary>
+    /// Filesystem-path boundaries a requested path must fall within, when non-empty. Deny-overrides-allow:
+    /// checked before <see cref="AllowedPaths"/>, and a match here refuses the call regardless of any
+    /// allow entry. See <c>CapabilityEnforcer.EnforceAsync</c> for the matching algorithm (#418).
+    /// </summary>
+    public IReadOnlyList<string> DeniedPaths { get; init; } = [];
+
+    /// <summary>
+    /// Filesystem-path boundaries a requested path must fall within. Empty means unrestricted
+    /// (subject to <see cref="DeniedPaths"/>) — only a non-empty list requires membership (#418).
+    /// </summary>
+    public IReadOnlyList<string> AllowedPaths { get; init; } = [];
+
+    /// <summary>
+    /// Network-host patterns (exact or <c>*.suffix</c> wildcard) a requested host must match, when
+    /// non-empty. Deny-overrides-allow, mirroring <see cref="DeniedPaths"/>/<see cref="AllowedPaths"/> (#418).
+    /// </summary>
+    public IReadOnlyList<string> DeniedHosts { get; init; } = [];
+
+    /// <summary>
+    /// Network-host patterns a requested host must match. Empty means unrestricted (subject to
+    /// <see cref="DeniedHosts"/>) — only a non-empty list requires membership (#418).
+    /// </summary>
+    public IReadOnlyList<string> AllowedHosts { get; init; } = [];
 }

@@ -155,7 +155,8 @@ public sealed partial class ToolInvocationGovernor : IToolInvocationGovernor
         string toolName,
         CancellationToken cancellationToken,
         IReadOnlyDictionary<string, object?>? arguments = null,
-        ToolCompositionTaint? composition = null)
+        ToolCompositionTaint? composition = null,
+        Domain.AI.Sandbox.ToolCallResourceRequest? resourceRequest = null)
     {
         // Opt-in: when enforcement is off the governor never engages — pure pass-through, no record,
         // no behaviour change for existing deployments. Read live rather than from the trace's sticky
@@ -205,7 +206,7 @@ public sealed partial class ToolInvocationGovernor : IToolInvocationGovernor
         // Every gate that can decide on its own runs first; the human is asked last, once.
         // See AuthorizeInOrderAsync for why that ordering is the design and not an accident.
         return await AuthorizeInOrderAsync(
-                agentId, toolName, permission, profile, arguments, composition, cancellationToken)
+                agentId, toolName, permission, profile, arguments, composition, resourceRequest, cancellationToken)
             .ConfigureAwait(false);
     }
 
@@ -241,6 +242,7 @@ public sealed partial class ToolInvocationGovernor : IToolInvocationGovernor
     private async ValueTask<ToolInvocationDecision> AuthorizeInOrderAsync(
         string agentId, string toolName, PermissionDecision permission, ToolRiskProfile profile,
         IReadOnlyDictionary<string, object?>? arguments, ToolCompositionTaint? composition,
+        Domain.AI.Sandbox.ToolCallResourceRequest? resourceRequest,
         CancellationToken cancellationToken)
     {
         // One snapshot for the whole decision. Two stages read this config, and reading the monitor
@@ -306,7 +308,10 @@ public sealed partial class ToolInvocationGovernor : IToolInvocationGovernor
             _sandboxConfig.CurrentValue.DefaultGrantedCapabilities);
 
         var capResult = await _capabilityEnforcer
-            .EnforceAsync(toolName, grantedCapabilities, ct: cancellationToken)
+            .EnforceAsync(
+                toolName, grantedCapabilities,
+                resourceRequest?.RequestedPaths, resourceRequest?.RequestedHosts,
+                ct: cancellationToken)
             .ConfigureAwait(false);
 
         if (!capResult.IsSuccess)

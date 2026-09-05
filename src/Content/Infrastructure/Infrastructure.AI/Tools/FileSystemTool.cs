@@ -70,6 +70,18 @@ public sealed class FileSystemTool : ITool
     public IReadOnlyList<string> SupportedOperations => Operations;
 
     /// <inheritdoc />
+    /// <remarks>
+    /// Every operation's <c>"path"</c> parameter is a filesystem path (#418) — the first, and
+    /// currently only, tool populating this declaration, matching how <see cref="ExecuteAsync"/>
+    /// itself reads every operation's <c>path</c> argument via <c>GetRequiredString</c>.
+    /// </remarks>
+    public IReadOnlyDictionary<string, IReadOnlyDictionary<string, ResourceParameterKind>> ResourceParametersByOperation { get; } =
+        Operations.ToDictionary(
+            op => op,
+            IReadOnlyDictionary<string, ResourceParameterKind> (op) =>
+                new Dictionary<string, ResourceParameterKind> { ["path"] = ResourceParameterKind.Path });
+
+    /// <inheritdoc />
     public async Task<ToolResult> ExecuteAsync(
         string operation,
         IReadOnlyDictionary<string, object?> parameters,

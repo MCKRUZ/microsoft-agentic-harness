@@ -34,4 +34,16 @@ public sealed class ToolOverrideConfig
 
     /// <summary>Per-tool execution timeout override in seconds. Null uses system default.</summary>
     public int? TimeoutSeconds { get; init; }
+
+    /// <summary>Filesystem-path boundaries to deny (#418). Checked before <see cref="AllowedPaths"/>.</summary>
+    public List<string> DeniedPaths { get; init; } = [];
+
+    /// <summary>Filesystem-path boundaries a requested path must fall within, when non-empty (#418).</summary>
+    public List<string> AllowedPaths { get; init; } = [];
+
+    /// <summary>Network-host patterns to deny (#418, exact or <c>*.suffix</c> wildcard). Checked before <see cref="AllowedHosts"/>.</summary>
+    public List<string> DeniedHosts { get; init; } = [];
+
+    /// <summary>Network-host patterns a requested host must match, when non-empty (#418).</summary>
+    public List<string> AllowedHosts { get; init; } = [];
 }
