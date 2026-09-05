@@ -54,6 +54,44 @@ public sealed class PluginToolBoundaryTrackerTests
     }
 
     [Fact]
+    public void Seed_NoMcpServerAndSameUnknownNameInBothLists_ReturnsOneImmediateViolationInsteadOfThrowing()
+    {
+        var plugin = MakePlugin("azure", allowedTools: ["file_wrte"], deniedTools: ["file_wrte"]);
+
+        var violations = _sut.Seed([plugin], NoFirstPartyToolsKnown);
+
+        violations.Should().ContainSingle(v => v.PluginName == "azure" && v.ToolName == "file_wrte");
+    }
+
+    [Fact]
+    public void Seed_HasMcpServerAndSameUnknownNameInBothLists_DoesNotThrow()
+    {
+        // Regression: a name appearing in both AllowedTools and DeniedTools (or twice in one list)
+        // used to throw ArgumentException out of the pending-entries dictionary build the moment a
+        // plugin declares at least one MCP server, crashing host startup on a legally shaped — if
+        // pointless — plugin config, instead of the clean diagnostic this feature exists to produce.
+        var plugin = MakePlugin(
+            "azure", mcpServerNames: ["azure:server1"], allowedTools: ["file_wrte"], deniedTools: ["file_wrte"]);
+
+        var act = () => _sut.Seed([plugin], NoFirstPartyToolsKnown);
+
+        act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void Seed_HasMcpServerAndSameUnknownNameTwiceInOneList_ThenReportServerToolsDiscovered_FaultsOnce()
+    {
+        var plugin = MakePlugin(
+            "azure", mcpServerNames: ["azure:server1"], deniedTools: ["file_wrte", "file_wrte"]);
+        _sut.Seed([plugin], NoFirstPartyToolsKnown);
+
+        var violations = _sut.ReportServerToolsDiscovered("azure:server1", ["unrelated"]);
+
+        violations.Should().ContainSingle(v => v.ToolName == "file_wrte");
+        _registry.Verify(r => r.MarkBoundaryFaulted("azure", It.IsAny<string>()), Times.Once);
+    }
+
+    [Fact]
     public void Seed_PluginWithMcpServerAndUnknownEntry_DoesNotReturnImmediateViolation()
     {
         // Not yet decidable — the entry might be a real MCP tool name, only knowable once that
@@ -129,6 +167,25 @@ public sealed class PluginToolBoundaryTrackerTests
         Parallel.Invoke(
             () => results.Add(_sut.ReportServerToolsDiscovered("azure:s1", ["unrelated1"])),
             () => results.Add(_sut.ReportServerToolsDiscovered("azure:s2", ["unrelated2"])));
+
+        results.SelectMany(r => r).Should().ContainSingle(v => v.ToolName == "file_wrte");
+        _registry.Verify(r => r.MarkBoundaryFaulted("azure", It.IsAny<string>()), Times.Once);
+    }
+
+    [Fact]
+    public void ReportServerToolsDiscovered_ConcurrentReportsForTheSameSingleServer_FaultsExactlyOnce()
+    {
+        // Regression (code-review finding on #524): two overlapping discovery calls for the SAME
+        // server can both pass the initial lookup before either removes the plugin from tracking,
+        // so both would reach the "last pending server just reported" branch and double-fault
+        // without the Resolved guard.
+        var plugin = MakePlugin("azure", mcpServerNames: ["azure:s1"], deniedTools: ["file_wrte"]);
+        _sut.Seed([plugin], NoFirstPartyToolsKnown);
+
+        var results = new System.Collections.Concurrent.ConcurrentBag<IReadOnlyList<PluginToolBoundaryViolation>>();
+        Parallel.Invoke(
+            () => results.Add(_sut.ReportServerToolsDiscovered("azure:s1", ["unrelated"])),
+            () => results.Add(_sut.ReportServerToolsDiscovered("azure:s1", ["unrelated"])));
 
         results.SelectMany(r => r).Should().ContainSingle(v => v.ToolName == "file_wrte");
         _registry.Verify(r => r.MarkBoundaryFaulted("azure", It.IsAny<string>()), Times.Once);

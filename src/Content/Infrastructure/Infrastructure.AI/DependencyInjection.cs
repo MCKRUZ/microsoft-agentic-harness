@@ -286,10 +286,7 @@ public static partial class DependencyInjection
         services.AddHostedService(sp =>
         {
             var firstPartyToolNames = new HashSet<string>(
-                services
-                    .Where(d => d.IsKeyedService && d.ServiceType == typeof(ITool))
-                    .Select(d => d.ServiceKey as string)
-                    .Where(key => !string.IsNullOrWhiteSpace(key))!,
+                Application.AI.Common.Services.Tools.KeyedToolRegistrationScan.Names(services),
                 StringComparer.OrdinalIgnoreCase);
 
             return new PluginToolBoundaryStartupValidator(

@@ -410,11 +410,5 @@ public static class DependencyInjection
     /// non-string key could not be supplied on the wire anyway.
     /// </remarks>
     private static IReadOnlyList<string> KeyedToolRegistrationKeys(IServiceCollection services) =>
-    [
-        .. services
-            .Where(descriptor => descriptor.IsKeyedService && descriptor.ServiceType == typeof(ITool))
-            .Select(descriptor => descriptor.ServiceKey as string)
-            .Where(key => !string.IsNullOrWhiteSpace(key))
-            .Select(key => key!)
-    ];
+        [.. Services.Tools.KeyedToolRegistrationScan.Names(services)];
 }
