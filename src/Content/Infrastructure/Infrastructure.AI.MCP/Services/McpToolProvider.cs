@@ -202,7 +202,7 @@ public sealed class McpToolProvider : IMcpToolProvider
                 "Retrieved {ToolCount} tools from MCP server '{ServerName}'",
                 tools.Count, serverName);
 
-            ReportDiscoveryToBoundaryTracker(serverName, tools);
+            ReportDiscoveryToBoundaryTracker(serverName, tools.Select(t => t.Name));
 
             // McpClientTool implements AITool
             return tools.Cast<AITool>().ToList();
@@ -228,12 +228,19 @@ public sealed class McpToolProvider : IMcpToolProvider
     /// otherwise-successful discovery call's own return value; enforcement happens separately, via
     /// <c>IPluginRegistry.IsBoundaryFaulted</c> denying the plugin's tools on its next resolution.
     /// </summary>
-    private void ReportDiscoveryToBoundaryTracker(string serverName, IList<McpClientTool> tools)
+    /// <remarks>
+    /// Takes bare tool names rather than <see cref="McpClientTool"/> instances specifically so this
+    /// is unit-testable without a live MCP connection — a real correctness-review finding on #524
+    /// flagged this call site (the untrusted-input half of the feature) as having zero test coverage,
+    /// since no fixture in this project exercises <see cref="DiscoverToolsAsync"/>'s success path.
+    /// <c>internal</c> + <c>InternalsVisibleTo</c> lets <c>McpToolProviderTests</c> call this directly.
+    /// </remarks>
+    internal void ReportDiscoveryToBoundaryTracker(string serverName, IEnumerable<string> discoveredToolNames)
     {
         if (_boundaryTracker is null)
             return;
 
-        var violations = _boundaryTracker.ReportServerToolsDiscovered(serverName, tools.Select(t => t.Name).ToList());
+        var violations = _boundaryTracker.ReportServerToolsDiscovered(serverName, discoveredToolNames.ToList());
         foreach (var violation in violations)
         {
             _logger.LogCritical(
