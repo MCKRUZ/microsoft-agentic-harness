@@ -55,64 +55,99 @@ public sealed class CapabilityEnforcer : ICapabilityEnforcer
     {
         var profile = _resolver.Resolve(toolName);
 
+        if (EnforceCapabilities(toolName, grantedCapabilities, profile) is { } capabilityViolation)
+            return Task.FromResult(capabilityViolation);
+
+        if (EnforcePathScoping(toolName, requestedPaths, profile) is { } pathViolation)
+            return Task.FromResult(pathViolation);
+
+        if (EnforceHostScoping(toolName, requestedHosts, profile) is { } hostViolation)
+            return Task.FromResult(hostViolation);
+
+        return Task.FromResult(Result.Success());
+    }
+
+    /// <summary>
+    /// Checks the caller's granted capabilities (narrowed by any per-tool deny override) against the
+    /// tool's requirement. Returns <see langword="null"/> on a pass, or the refusal to return.
+    /// </summary>
+    private Result? EnforceCapabilities(string toolName, ToolCapability grantedCapabilities, ToolPermissionProfile profile)
+    {
         // A tool whose requirement intersects its own per-tool deny is refused outright, not
         // silently let through on a shrunk requirement — see ToolPermissionProfile's remarks (#405).
         var effectivelyGranted = grantedCapabilities & ~profile.DeniedCapabilities;
         var missing = profile.RequiredCapabilities & ~effectivelyGranted;
-        if (missing != ToolCapability.None)
-        {
-            var missingNames = FormatMissingCapabilities(missing);
-            _logger.LogWarning(
-                "Tool {ToolName} requires capabilities not granted: {Missing}",
-                toolName, missingNames);
-            return Task.FromResult(Result.Forbidden(
-                $"Tool '{toolName}' requires capabilities not granted: {missingNames}"));
-        }
+        if (missing == ToolCapability.None)
+            return null;
 
-        // #418: a profile with path/host scoping configured but no requested value to check against
-        // must refuse, not silently allow — this is deliberately NOT `is { Count: > 0 }`, which is
-        // the fail-open shape #405 shipped (null and [] were treated identically, so scoping was
-        // configured but never actually enforced against a call whose resource usage was simply
-        // never determined). See ToolCallResourceRequest's remarks for why null vs. empty matters.
+        var missingNames = FormatMissingCapabilities(missing);
+        _logger.LogWarning("Tool {ToolName} requires capabilities not granted: {Missing}", toolName, missingNames);
+        return Result.Forbidden($"Tool '{toolName}' requires capabilities not granted: {missingNames}");
+    }
+
+    /// <summary>
+    /// Checks <paramref name="requestedPaths"/> against the profile's path scoping, when any is
+    /// configured. Returns <see langword="null"/> on a pass, or the refusal to return.
+    /// </summary>
+    /// <remarks>
+    /// #418: a profile with path scoping configured but no requested value to check against must
+    /// refuse, not silently allow — this is deliberately NOT <c>is { Count: > 0 }</c>, which is the
+    /// fail-open shape #405 shipped (null and <c>[]</c> were treated identically, so scoping was
+    /// configured but never actually enforced against a call whose resource usage was simply never
+    /// determined). See <see cref="Domain.AI.Sandbox.ToolCallResourceRequest"/>'s remarks for why
+    /// null vs. empty matters.
+    /// </remarks>
+    private Result? EnforcePathScoping(string toolName, IReadOnlyList<string>? requestedPaths, ToolPermissionProfile profile)
+    {
         var hasPathScoping = profile.AllowedPaths.Count > 0 || profile.DeniedPaths.Count > 0;
-        if (hasPathScoping)
-        {
-            if (requestedPaths is null)
-            {
-                _logger.LogWarning(
-                    "Tool {ToolName} has path scoping configured but no requested path could be determined for this call",
-                    toolName);
-                return Task.FromResult(Result.Forbidden(
-                    $"Tool '{toolName}' has path scoping configured but no requested path could be determined for this call."));
-            }
+        if (!hasPathScoping)
+            return null;
 
-            if (requestedPaths.Count > 0 && ValidatePaths(requestedPaths, profile) is { } pathViolation)
-            {
-                _logger.LogWarning("Tool {ToolName} path denied: {Path}", toolName, pathViolation);
-                return Task.FromResult(Result.Forbidden($"Tool '{toolName}' path denied: {pathViolation}"));
-            }
+        if (requestedPaths is null)
+        {
+            _logger.LogWarning(
+                "Tool {ToolName} has path scoping configured but no requested path could be determined for this call",
+                toolName);
+            return Result.Forbidden(
+                $"Tool '{toolName}' has path scoping configured but no requested path could be determined for this call.");
         }
 
+        if (requestedPaths.Count > 0 && ValidatePaths(requestedPaths, profile) is { } pathViolation)
+        {
+            _logger.LogWarning("Tool {ToolName} path denied: {Path}", toolName, pathViolation);
+            return Result.Forbidden($"Tool '{toolName}' path denied: {pathViolation}");
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Checks <paramref name="requestedHosts"/> against the profile's host scoping, when any is
+    /// configured. Returns <see langword="null"/> on a pass, or the refusal to return. Mirrors
+    /// <see cref="EnforcePathScoping"/>.
+    /// </summary>
+    private Result? EnforceHostScoping(string toolName, IReadOnlyList<string>? requestedHosts, ToolPermissionProfile profile)
+    {
         var hasHostScoping = profile.AllowedHosts.Count > 0 || profile.DeniedHosts.Count > 0;
-        if (hasHostScoping)
-        {
-            if (requestedHosts is null)
-            {
-                _logger.LogWarning(
-                    "Tool {ToolName} has host scoping configured but no requested host could be determined for this call",
-                    toolName);
-                return Task.FromResult(Result.Forbidden(
-                    $"Tool '{toolName}' has host scoping configured but no requested host could be determined for this call."));
-            }
+        if (!hasHostScoping)
+            return null;
 
-            if (requestedHosts.Count > 0 && ValidateHosts(requestedHosts, profile) is { } hostViolation)
-            {
-                _logger.LogWarning("Tool {ToolName} host denied: {Host}", toolName, hostViolation);
-                return Task.FromResult(Result.Forbidden($"Tool '{toolName}' host denied: {hostViolation}"));
-            }
+        if (requestedHosts is null)
+        {
+            _logger.LogWarning(
+                "Tool {ToolName} has host scoping configured but no requested host could be determined for this call",
+                toolName);
+            return Result.Forbidden(
+                $"Tool '{toolName}' has host scoping configured but no requested host could be determined for this call.");
         }
 
-        return Task.FromResult(Result.Success());
+        if (requestedHosts.Count > 0 && ValidateHosts(requestedHosts, profile) is { } hostViolation)
+        {
+            _logger.LogWarning("Tool {ToolName} host denied: {Host}", toolName, hostViolation);
+            return Result.Forbidden($"Tool '{toolName}' host denied: {hostViolation}");
+        }
+
+        return null;
     }
 
     /// <summary>
@@ -125,17 +160,17 @@ public sealed class CapabilityEnforcer : ICapabilityEnforcer
         foreach (var path in requestedPaths)
         {
             // A model-supplied path this class cannot safely resolve — one carrying a traversal
-            // pattern, or one the runtime rejects outright — is treated as a violation rather than
-            // compared. CI caught the alternative: a naive normalizer silently dropped a leading
-            // ".." instead of resolving it, so "../secrets/creds.txt" matched no configured
-            // boundary at all. CapabilityEnforcer has no base directory of its own to resolve a
-            // relative traversal against (that is IFileSystemService's own, separately-configured
+            // pattern, a relative path, or one the runtime rejects outright — is treated as a
+            // violation rather than compared. CI caught the alternative: a naive normalizer silently
+            // dropped a leading ".." instead of resolving it, so "../secrets/creds.txt" matched no
+            // configured boundary at all. CapabilityEnforcer has no base directory of its own to
+            // resolve a relative path against (that is IFileSystemService's own, separately-configured
             // concern), so refusing outright — mirroring SandboxedPathGuard.ResolveAndValidate's own
             // first check — is the only answer that cannot be tricked into comparing the wrong path.
             if (NormalizeRequestedPath(path) is not { } normalized)
                 return path;
 
-            if (profile.DeniedPaths.Any(denied => IsPathWithin(normalized, NormalizeBoundary(denied))))
+            if (IsDeniedPath(normalized, profile))
                 return path;
 
             if (profile.AllowedPaths.Count > 0 &&
@@ -146,6 +181,26 @@ public sealed class CapabilityEnforcer : ICapabilityEnforcer
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// Whether <paramref name="normalized"/> falls within any of <paramref name="profile"/>'s denied
+    /// paths. A configured deny entry the runtime cannot normalize is treated as matching every
+    /// candidate, not excluded from the check — unlike an allow entry (see <see cref="NormalizeBoundary"/>),
+    /// treating an unparsable deny entry as "never matches" would silently turn a misconfigured deny
+    /// rule into a no-op instead of the refusal it was written to enforce, which is the fail-open shape
+    /// this whole mechanism exists to prevent.
+    /// </summary>
+    private bool IsDeniedPath(string normalized, ToolPermissionProfile profile)
+    {
+        foreach (var denied in profile.DeniedPaths)
+        {
+            var normalizedDenied = NormalizeAndCanonicalize(denied);
+            if (normalizedDenied is null || IsPathWithin(normalized, normalizedDenied))
+                return true;
+        }
+
+        return false;
     }
 
     /// <summary>
@@ -165,9 +220,10 @@ public sealed class CapabilityEnforcer : ICapabilityEnforcer
     /// <summary>
     /// Normalizes and canonicalizes a model-supplied path for a scoping comparison, refusing
     /// (returning <see langword="null"/>) rather than guessing when the input carries a traversal
-    /// pattern, is not already rooted, or the runtime cannot parse it at all.
+    /// pattern, is not fully qualified, or the runtime cannot parse it at all.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// A <em>relative</em> path is refused outright, not resolved — CI caught the alternative:
     /// resolving it against <see cref="PathScope.Normalize"/>'s implicit base (the process's current
     /// directory) answers a different question than the one that matters, because the tool that
@@ -176,18 +232,28 @@ public sealed class CapabilityEnforcer : ICapabilityEnforcer
     /// visibility into and no business assuming. The two resolutions can name different files
     /// entirely, so a relative path is unsafe to compare here at all, exactly like a traversal
     /// pattern is.
+    /// </para>
+    /// <para>
+    /// Checked via <c>Path.IsPathFullyQualified</c>, not <c>Path.IsPathRooted</c> — the
+    /// latter answers <see langword="true"/> for a Windows drive-relative path like
+    /// <c>"C:secrets\creds.txt"</c>, which is exactly the CWD-dependent ambiguity this guard exists to
+    /// reject: it still resolves against the current directory on that drive, not an absolute location.
+    /// </para>
     /// </remarks>
     private string? NormalizeRequestedPath(string path) =>
-        Path.IsPathRooted(path) && SecureInputValidatorHelper.ValidateFilePath(path)
+        Path.IsPathFullyQualified(path) && SecureInputValidatorHelper.ValidateFilePath(path)
             ? NormalizeAndCanonicalize(path)
             : null;
 
     /// <summary>
-    /// Normalizes and canonicalizes an operator-configured boundary the same way as a requested path
-    /// (#418) — both sides must go through identical treatment, or a boundary reached only through a
-    /// symlink would compare unequal to an already-resolved candidate. Falls back to the raw
-    /// configured string on a normalization failure rather than refusing: a typo in one operator
-    /// entry should degrade that one comparison, not take down every call that consults the list.
+    /// Normalizes and canonicalizes an operator-configured <em>allow</em> boundary the same way as a
+    /// requested path (#418) — both sides must go through identical treatment, or a boundary reached
+    /// only through a symlink would compare unequal to an already-resolved candidate. Falls back to
+    /// the raw configured string on a normalization failure, which for an allow entry safely excludes
+    /// it (a raw, non-normalized string will not match a normalized candidate) rather than throwing —
+    /// a typo in one operator entry should degrade that one comparison, not take down every call that
+    /// consults the list. Deny entries use the stricter <see cref="IsDeniedPath"/> instead, where the
+    /// same fallback would be fail-open rather than fail-closed.
     /// </summary>
     private string NormalizeBoundary(string configuredPath) => NormalizeAndCanonicalize(configuredPath) ?? configuredPath;
 
@@ -258,9 +324,12 @@ public sealed class CapabilityEnforcer : ICapabilityEnforcer
 
     /// <summary>
     /// Reduces a host value — whether a requested host or a configured deny/allow entry — to a bare,
-    /// comparable host name: trims whitespace, strips a URL scheme and any path/query that followed it
-    /// (<c>"https://Evil.com/x"</c> → <c>"Evil.com"</c>), strips a trailing port, and trims a
-    /// root-terminating FQDN dot. Applying the identical reduction to both sides of a
+    /// comparable host name. A value that parses as an absolute URI is reduced via <see cref="Uri.Host"/>
+    /// itself, which correctly drops a scheme, userinfo (<c>user@</c>), port, and path/query in one
+    /// step — <em>not</em> an ad-hoc scan for <c>"://"</c>, which matches the first occurrence anywhere
+    /// in the string rather than only a leading scheme and so can be pointed at an unrelated embedded
+    /// URL later in the value. A value that isn't itself an absolute URI falls back to a trailing-port
+    /// strip and a root-terminating FQDN dot trim. Applying the identical reduction to both sides of a
     /// <see cref="HostMatches"/> comparison is what keeps an operator's plain <c>"evil.com"</c> entry
     /// matching every equivalent spelling of that same host a caller might supply.
     /// </summary>
@@ -268,13 +337,8 @@ public sealed class CapabilityEnforcer : ICapabilityEnforcer
     {
         var trimmed = value.Trim();
 
-        var schemeIndex = trimmed.IndexOf("://", StringComparison.Ordinal);
-        if (schemeIndex >= 0)
-            trimmed = trimmed[(schemeIndex + 3)..];
-
-        var slashIndex = trimmed.IndexOf('/');
-        if (slashIndex >= 0)
-            trimmed = trimmed[..slashIndex];
+        if (Uri.TryCreate(trimmed, UriKind.Absolute, out var uri) && !string.IsNullOrEmpty(uri.Host))
+            return uri.Host.TrimEnd('.');
 
         return StripPort(trimmed).TrimEnd('.');
     }

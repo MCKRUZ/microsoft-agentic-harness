@@ -291,6 +291,50 @@ public sealed class CapabilityEnforcementTests
     }
 
     [Fact]
+    public async Task DeniedPath_WindowsDriveRelative_Refuses()
+    {
+        // Windows-only: "C:secrets\creds.txt" (no separator after the drive letter) is
+        // Path.IsPathRooted == true but Path.IsPathFullyQualified == false — it still resolves
+        // against that drive's current directory, the same CWD-dependent ambiguity a plain relative
+        // path has. A rootedness-only check would have let it slip through the guard meant to catch
+        // exactly this.
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        var config = new SandboxConfig
+        {
+            ToolOverrides = new() { ["file_system"] = new ToolOverrideConfig { DeniedPaths = ["C:/sandbox/secrets"] } }
+        };
+        var (_, enforcer) = Build(config, ("file_system", FileTool()));
+
+        var result = await enforcer.EnforceAsync(
+            "file_system", ToolCapability.FileRead | ToolCapability.FileWrite,
+            requestedPaths: ["C:secrets\\creds.txt"]);
+
+        result.IsSuccess.Should().BeFalse("a drive-relative path is not fully qualified and must not be silently allowed");
+    }
+
+    [Fact]
+    public async Task DeniedPath_ConfiguredEntryUnparsable_StillRefuses()
+    {
+        // A configured DeniedPaths entry the runtime cannot normalize (here, an embedded NUL — one
+        // of Path.GetInvalidPathChars() on every platform) must not be silently excluded from
+        // matching — that would turn an operator's deny rule into a no-op instead of the refusal it
+        // was written to enforce. The entry itself, not the requested path, is what's malformed here.
+        var config = new SandboxConfig
+        {
+            ToolOverrides = new() { ["file_system"] = new ToolOverrideConfig { DeniedPaths = ["C:/sandbox/bad\0name"] } }
+        };
+        var (_, enforcer) = Build(config, ("file_system", FileTool()));
+
+        var result = await enforcer.EnforceAsync(
+            "file_system", ToolCapability.FileRead | ToolCapability.FileWrite,
+            requestedPaths: [$"{Root}sandbox/unrelated.txt"]);
+
+        result.IsSuccess.Should().BeFalse("an unparsable deny entry must fail closed, not silently exclude itself");
+    }
+
+    [Fact]
     public async Task DeniedPath_WinsOverAllowedPath()
     {
         var config = new SandboxConfig
@@ -460,6 +504,29 @@ public sealed class CapabilityEnforcementTests
             requestedHosts: ["https://evil.com/exfil"]);
 
         result.IsSuccess.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task AllowedHost_UrlWithEmbeddedSchemeLaterInString_DoesNotMatchTheEmbeddedHost()
+    {
+        // Regression: an unanchored scan for "://" matches the FIRST occurrence anywhere in the
+        // string, so a value like "good.com/redirect?to=http://evil.com" would incorrectly reduce to
+        // "evil.com" — misdirecting the comparison at a host embedded later in the string rather than
+        // the value's own leading host. Uri.TryCreate(..., UriKind.Absolute) refuses to parse this
+        // (no leading scheme), so it must NOT be treated as if its host were "evil.com" — an
+        // AllowedHosts entry for "good.com" must not silently reject it as if it named "evil.com".
+        var config = new SandboxConfig
+        {
+            ToolOverrides = new() { ["http_tool"] = new ToolOverrideConfig { AllowedHosts = ["evil.com"] } }
+        };
+        var (_, enforcer) = Build(config, ("http_tool", NetworkFileTool()));
+
+        var result = await enforcer.EnforceAsync(
+            "http_tool", ToolCapability.FileRead | ToolCapability.NetworkAccess,
+            requestedHosts: ["good.com/redirect?to=http://evil.com"]);
+
+        result.IsSuccess.Should().BeFalse(
+            "the value has no leading scheme so it must not be reduced to the unrelated embedded host \"evil.com\"");
     }
 
     [Fact]
