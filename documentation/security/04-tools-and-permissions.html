@@ -334,14 +334,17 @@
                         <div class="callout-body">
                             <div class="callout-title">A boundary entry that names no real tool now fails closed, not silently</div>
                             <p style="margin: 0">
-                                At startup, if a plugin declares no MCP servers, every <code>AllowedTools</code> /
-                                <code>DeniedTools</code> entry must match a real first-party tool or the host refuses
-                                to boot. For a plugin that does use MCP servers, entries are checked lazily as each
-                                server's tools are discovered — no eager connection just to validate. If an entry is
-                                proven to match nothing, the harness treats the whole boundary as untrustworthy and
-                                denies <strong>every</strong> tool from that plugin's skills rather than run with a
-                                partially-broken policy, because an unrecognized <code>DeniedTools</code> entry is
-                                otherwise a silent no-op that would defeat the bypass-immune guarantee below.
+                                At startup, if <strong>no MCP server is configured anywhere on the host</strong>,
+                                every <code>AllowedTools</code> / <code>DeniedTools</code> entry must match a real
+                                first-party tool or the host refuses to boot. Whenever at least one MCP server is
+                                configured — even one a plugin doesn't declare itself, since a skill's tool
+                                declaration can resolve against any configured server — entries are checked lazily
+                                as each server's tools are discovered — no eager connection just to validate. If an
+                                entry is still unmatched once every configured server has reported, the harness
+                                treats the whole boundary as untrustworthy and denies <strong>every</strong> tool
+                                from that plugin's skills rather than run with a partially-broken policy, because an
+                                unrecognized <code>DeniedTools</code> entry is otherwise a silent no-op that would
+                                defeat the bypass-immune guarantee below.
                             </p>
                         </div>
                     </div>

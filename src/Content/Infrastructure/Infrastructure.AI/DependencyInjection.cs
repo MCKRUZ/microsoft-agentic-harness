@@ -293,6 +293,7 @@ public static partial class DependencyInjection
                 sp.GetRequiredService<IPluginRegistry>(),
                 sp.GetRequiredService<IPluginToolBoundaryTracker>(),
                 firstPartyToolNames.Contains,
+                sp.GetRequiredService<IOptionsMonitor<Domain.Common.Config.AI.AIConfig>>(),
                 sp.GetRequiredService<ILogger<PluginToolBoundaryStartupValidator>>());
         });
 
