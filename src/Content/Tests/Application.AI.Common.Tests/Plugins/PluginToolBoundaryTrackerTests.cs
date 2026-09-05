@@ -49,6 +49,19 @@ public sealed class PluginToolBoundaryTrackerTests
     }
 
     [Fact]
+    public void Seed_ImmediateViolation_AlsoMarksTheRegistryFaulted()
+    {
+        // Defense in depth (review-round finding): the immediate branch's enforcement otherwise
+        // relies entirely on the caller (PluginToolBoundaryStartupValidator) rethrowing — marking
+        // the registry here too means IPluginRegistry.IsBoundaryFaulted is authoritative regardless.
+        var plugin = MakePlugin("azure", deniedTools: ["file_wrte"]);
+
+        _sut.Seed([plugin], NoFirstPartyToolsKnown, NoServersConfigured);
+
+        _registry.Verify(r => r.MarkBoundaryFaulted("azure", It.IsAny<string>()), Times.Once);
+    }
+
+    [Fact]
     public void Seed_NoServersConfiguredAndEveryEntryKnownFirstParty_ReturnsNoViolations()
     {
         var plugin = MakePlugin("azure", deniedTools: ["file_write"]);
@@ -96,6 +109,19 @@ public sealed class PluginToolBoundaryTrackerTests
         var violations = _sut.Seed([plugin], NoFirstPartyToolsKnown, NoServersConfigured);
 
         violations.Should().ContainSingle(v => v.PluginName == "azure" && v.ToolName == "file_wrte");
+    }
+
+    [Fact]
+    public void Seed_SameUnknownNameInBothLists_ReportsDeniedToolsNotAllowedTools()
+    {
+        // The bypass-immune guarantee lives in DeniedTools, so a duplicate-list typo must surface
+        // under that label, not silently as an AllowedTools violation an operator might "fix" by
+        // only touching the AllowedTools entry and leaving the DeniedTools occurrence unaddressed.
+        var plugin = MakePlugin("azure", allowedTools: ["file_wrte"], deniedTools: ["file_wrte"]);
+
+        var violations = _sut.Seed([plugin], NoFirstPartyToolsKnown, NoServersConfigured);
+
+        violations.Should().ContainSingle(v => v.ListKind == "DeniedTools");
     }
 
     [Fact]

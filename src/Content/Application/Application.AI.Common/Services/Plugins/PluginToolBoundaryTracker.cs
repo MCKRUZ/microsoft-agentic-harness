@@ -9,9 +9,10 @@ public sealed class PluginToolBoundaryTracker : IPluginToolBoundaryTracker
     private const string AllowedToolsListKind = "AllowedTools";
     private const string DeniedToolsListKind = "DeniedTools";
 
+    // Never exposed outside this file, so locking on the instance itself (lock (pending) at each
+    // call site) is safe and needs no dedicated lock object.
     private sealed class PendingPlugin
     {
-        public required object Lock { get; init; }
         public required Dictionary<string, string> PendingEntries { get; init; } // name -> list kind
         public required HashSet<string> PendingServers { get; init; }
 
@@ -59,7 +60,10 @@ public sealed class PluginToolBoundaryTracker : IPluginToolBoundaryTracker
             var unresolved = entries
                 .Where(e => !isKnownFirstPartyToolName(e.Name))
                 .GroupBy(e => e.Name, StringComparer.OrdinalIgnoreCase)
-                .Select(g => g.First())
+                // A name duplicated across both lists reports as DeniedTools — the list the
+                // bypass-immune security guarantee actually depends on — rather than whichever
+                // list happened to be enumerated first.
+                .Select(g => g.FirstOrDefault(e => e.ListKind == DeniedToolsListKind, g.First()))
                 .ToList();
             if (unresolved.Count == 0)
                 continue;
@@ -75,13 +79,24 @@ public sealed class PluginToolBoundaryTracker : IPluginToolBoundaryTracker
                 // reference a host-level server's tool in its boundary. Narrowing to the plugin's own
                 // servers previously crashed boot (or permanently denied every tool) on exactly that
                 // valid, pre-existing configuration.
-                immediate.AddRange(unresolved.Select(e => new PluginToolBoundaryViolation(plugin.Name, e.ListKind, e.Name)));
+                var immediateForPlugin = unresolved
+                    .Select(e => new PluginToolBoundaryViolation(plugin.Name, e.ListKind, e.Name))
+                    .ToList();
+                immediate.AddRange(immediateForPlugin);
+
+                // Belt-and-suspenders (review-round finding): enforcement of this branch relies on
+                // PluginToolBoundaryStartupValidator.StartAsync throwing to abort host boot. Marking
+                // the registry here too means the fault is recorded independently of whether that
+                // caller rethrows — the same defense-in-depth ReportServerToolsDiscovered already
+                // gives the lazy branch.
+                _registry.MarkBoundaryFaulted(
+                    plugin.Name,
+                    $"Tool boundary entries match no known tool: {string.Join(", ", immediateForPlugin.Select(v => $"{v.ListKind}:{v.ToolName}"))}");
                 continue;
             }
 
             var pending = new PendingPlugin
             {
-                Lock = new object(),
                 PendingEntries = unresolved.ToDictionary(e => e.Name, e => e.ListKind, StringComparer.OrdinalIgnoreCase),
                 PendingServers = new HashSet<string>(allConfiguredMcpServerNames, StringComparer.OrdinalIgnoreCase),
             };
@@ -113,7 +128,7 @@ public sealed class PluginToolBoundaryTracker : IPluginToolBoundaryTracker
                 continue; // Already resolved and removed by a concurrent report.
 
             List<PluginToolBoundaryViolation>? faulted = null;
-            lock (pending.Lock)
+            lock (pending)
             {
                 // A concurrent report for a DIFFERENT server on this same plugin can already have
                 // resolved it before this thread reached the lock — this thread's own TryGetValue
