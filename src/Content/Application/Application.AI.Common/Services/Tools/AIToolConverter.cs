@@ -30,6 +30,18 @@ namespace Application.AI.Common.Services.Tools;
 /// </remarks>
 public sealed class AIToolConverter : IToolConverter
 {
+    /// <summary>
+    /// The wire-format argument name for the operation string. Published so
+    /// <see cref="GovernedAIFunction"/> can read it off the raw <c>AIFunctionArguments</c> — before
+    /// this class's own <c>AIFunctionFactory</c>-generated binding runs — to extract a call's
+    /// requested paths/hosts (#418), the same acknowledged coupling to this converter's wire shape
+    /// <see cref="GovernedAIFunction"/> already has via <see cref="ConvertedToolFailure"/>.
+    /// </summary>
+    internal const string OperationArgumentName = "operation";
+
+    /// <summary>The wire-format argument name for the JSON-encoded operation parameters. See <see cref="OperationArgumentName"/>.</summary>
+    internal const string ParametersJsonArgumentName = "parametersJson";
+
     private readonly ILogger<AIToolConverter> _logger;
 
     /// <summary>
@@ -66,8 +78,8 @@ public sealed class AIToolConverter : IToolConverter
             .AddPurpose(tool.Description)
             .AddOperations(activeOperations)
             .AddParameters(
-                ("operation", Required: true, $"One of: {string.Join(", ", activeOperations)}"),
-                ("parametersJson", Required: false, "Object containing operation-specific arguments (e.g. {\"path\": \"src\", \"search_term\": \"foo\"})"))
+                (OperationArgumentName, Required: true, $"One of: {string.Join(", ", activeOperations)}"),
+                (ParametersJsonArgumentName, Required: false, "Object containing operation-specific arguments (e.g. {\"path\": \"src\", \"search_term\": \"foo\"})"))
             .Build();
 
         var aiFunction = AIFunctionFactory.Create(

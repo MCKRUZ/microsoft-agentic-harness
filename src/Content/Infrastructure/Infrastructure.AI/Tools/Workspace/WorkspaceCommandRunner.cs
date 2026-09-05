@@ -41,7 +41,10 @@ public static class WorkspaceCommandRunner
     /// <param name="commandLine">The whitespace-delimited command line. First token is the program; remaining tokens are arguments.</param>
     /// <param name="workspace">
     /// The active workspace context. Not itself an enforced filesystem boundary on this dispatch
-    /// path — the profile's old <c>AllowedPaths</c> was removed as dead config (#405); the caller
+    /// path — <c>ToolPermissionProfileResolver.ResolveForUngovernedDispatch</c> never populates
+    /// <c>AllowedPaths</c>/<c>DeniedPaths</c> on the profile it returns (#418; see
+    /// <c>ToolOverrideConfig</c>'s remarks), so a profile configured for a tool reached only through
+    /// this dispatch path carries no path scoping regardless; the caller
     /// (<c>WorkspaceRunTestsTool</c>/<c>WorkspaceRunLintTool</c>) reads the command to run from it
     /// before calling here.
     /// </param>

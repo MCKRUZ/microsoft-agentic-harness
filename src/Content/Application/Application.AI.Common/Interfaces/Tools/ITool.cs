@@ -175,6 +175,23 @@ public interface ITool
     SandboxIsolationLevel MinimumIsolation => SandboxIsolationLevel.None;
 
     /// <summary>
+    /// For each operation this tool supports, which of its named parameters (the keys the
+    /// <c>parameters</c> dictionary in <see cref="ExecuteAsync"/> carries) represent a filesystem
+    /// path or a network host — what <c>ToolPermissionProfile</c>'s path/host allow/deny scoping
+    /// (#418) is checked against. Extracted before the call is admitted, so declaring a parameter
+    /// here is what makes per-tool path/host confinement possible at all for this tool.
+    /// </summary>
+    /// <remarks>
+    /// Default is <see langword="null"/> — deliberately NOT fail-closed the way
+    /// <see cref="RequiredCapabilities"/> is: an undeclared tool simply cannot be path/host-scoped
+    /// (the same "unknown, not both" reasoning <see cref="Capabilities"/> uses), not "scoped to
+    /// nothing." A profile with path/host scoping configured for a tool that declares nothing here
+    /// is refused outright by <c>CapabilityEnforcer</c> — see <c>ToolCallResourceRequest</c>'s
+    /// remarks — so there is no silent gap between "declared nothing" and "scoping doesn't apply."
+    /// </remarks>
+    IReadOnlyDictionary<string, IReadOnlyDictionary<string, ResourceParameterKind>>? ResourceParametersByOperation => null;
+
+    /// <summary>
     /// Executes a tool operation with the given parameters.
     /// </summary>
     /// <param name="operation">The operation to perform (must be in <see cref="SupportedOperations"/>).</param>

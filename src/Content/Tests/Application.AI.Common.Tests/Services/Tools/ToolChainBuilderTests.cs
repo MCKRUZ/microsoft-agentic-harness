@@ -4,6 +4,7 @@ using Application.AI.Common.Interfaces.Plugins;
 using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Services.Governance;
 using Application.AI.Common.Services.Tools;
+using Domain.AI.Sandbox;
 using Domain.AI.Skills;
 using Domain.AI.Tools;
 using Domain.Common.Config.AI;
@@ -589,6 +590,58 @@ public class ToolChainBuilderTests
 
         tools.Should().ContainSingle();
         tools[0].Name.Should().Be("file_system");
+    }
+
+    [Fact]
+    public void BuildToolsByName_ToolDeclaresResourceParameters_WrapsInResourceParameterDeclaringAIFunction()
+    {
+        // #418: AttachResourceParameters is the one call site that knows about a tool's
+        // ResourceParametersByOperation declaration at all — this proves it actually wraps.
+        var resourceMap = new Dictionary<string, IReadOnlyDictionary<string, ResourceParameterKind>>
+        {
+            ["read"] = new Dictionary<string, ResourceParameterKind> { ["path"] = ResourceParameterKind.Path }
+        };
+        var toolMock = new Mock<ITool>();
+        toolMock.Setup(t => t.Name).Returns("file_system");
+        toolMock.Setup(t => t.ResourceParametersByOperation).Returns(resourceMap);
+
+        var convertedTool = AIFunctionFactory.Create(() => "converted", "file_system");
+        var converter = new Mock<IToolConverter>();
+        converter.Setup(c => c.Convert(toolMock.Object, null)).Returns(convertedTool);
+
+        var services = new ServiceCollection();
+        services.AddKeyedSingleton<ITool>("file_system", toolMock.Object);
+
+        var builder = CreateBuilder(toolConverter: converter.Object, serviceProvider: services.BuildServiceProvider());
+
+        var tools = builder.BuildToolsByName(["file_system"]);
+
+        tools.Should().ContainSingle();
+        var governed = tools[0].Should().BeOfType<GovernedAIFunction>().Subject;
+        governed.Inner.Should().BeOfType<ResourceParameterDeclaringAIFunction>();
+    }
+
+    [Fact]
+    public void BuildToolsByName_ToolDeclaresNoResourceParameters_DoesNotWrap()
+    {
+        var toolMock = new Mock<ITool>();
+        toolMock.Setup(t => t.Name).Returns("file_system");
+        // ResourceParametersByOperation not set — default null, matching every tool before #418.
+
+        var convertedTool = AIFunctionFactory.Create(() => "converted", "file_system");
+        var converter = new Mock<IToolConverter>();
+        converter.Setup(c => c.Convert(toolMock.Object, null)).Returns(convertedTool);
+
+        var services = new ServiceCollection();
+        services.AddKeyedSingleton<ITool>("file_system", toolMock.Object);
+
+        var builder = CreateBuilder(toolConverter: converter.Object, serviceProvider: services.BuildServiceProvider());
+
+        var tools = builder.BuildToolsByName(["file_system"]);
+
+        tools.Should().ContainSingle();
+        var governed = tools[0].Should().BeOfType<GovernedAIFunction>().Subject;
+        governed.Inner.Should().NotBeOfType<ResourceParameterDeclaringAIFunction>();
     }
 
     [Fact]

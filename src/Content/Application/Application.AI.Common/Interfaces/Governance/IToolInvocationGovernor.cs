@@ -48,6 +48,12 @@ public interface IToolInvocationGovernor
     /// the tool result. When enforcement is disabled the governor records the would-be decision but
     /// always returns <see cref="ToolInvocationDecision.Allow()"/>.
     /// </returns>
+    /// <param name="resourceRequest">
+    /// The paths/hosts this call actually requested (#418), when the caller extracted one — see
+    /// <c>Domain.AI.Sandbox.ToolCallResourceRequest</c>'s remarks for why <see langword="null"/> and
+    /// an empty request are not interchangeable. Forwarded to
+    /// <c>ICapabilityEnforcer.EnforceAsync</c>, the only stage that reads it.
+    /// </param>
     /// <remarks>
     /// <paramref name="arguments"/> is optional so the callers that authorize by capability name
     /// rather than by a model-supplied argument set — the plan-step executors — are unaffected.
@@ -56,7 +62,8 @@ public interface IToolInvocationGovernor
         string toolName,
         CancellationToken cancellationToken,
         IReadOnlyDictionary<string, object?>? arguments = null,
-        ToolCompositionTaint? composition = null);
+        ToolCompositionTaint? composition = null,
+        Domain.AI.Sandbox.ToolCallResourceRequest? resourceRequest = null);
 }
 
 /// <summary>

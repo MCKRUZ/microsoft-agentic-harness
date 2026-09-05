@@ -86,7 +86,8 @@ public sealed class ToolPermissionProfileResolver
     public ToolPermissionProfile Resolve(string toolName)
     {
         var (baseCapabilities, baseIsolation) = ResolveBase(toolName);
-        var (deniedCaps, effectiveIsolation) = ResolveOverride(toolName, baseIsolation);
+        _config.CurrentValue.ToolOverrides.TryGetValue(toolName, out var overrideConfig);
+        var (deniedCaps, effectiveIsolation) = ResolveOverride(overrideConfig, baseIsolation);
 
         return new ToolPermissionProfile
         {
@@ -94,12 +95,19 @@ public sealed class ToolPermissionProfileResolver
             // ToolPermissionProfile.EffectiveCapabilities for the value consumers should read.
             RequiredCapabilities = baseCapabilities,
             DeniedCapabilities = deniedCaps,
-            MinimumIsolation = effectiveIsolation
+            MinimumIsolation = effectiveIsolation,
+            // Path/host scoping (#418) has no "base declaration" the way capabilities and isolation
+            // do — a tool never declares its own allow/deny boundaries, only an operator does via
+            // config — so this is a straight passthrough of the override, not a merge.
+            DeniedPaths = overrideConfig?.DeniedPaths ?? [],
+            AllowedPaths = overrideConfig?.AllowedPaths ?? [],
+            DeniedHosts = overrideConfig?.DeniedHosts ?? [],
+            AllowedHosts = overrideConfig?.AllowedHosts ?? []
         };
     }
 
     /// <summary>
-    /// Parses <paramref name="toolName"/>'s <see cref="ToolOverrideConfig"/>, if any, into a
+    /// Parses <paramref name="overrideConfig"/>, if any, into a
     /// <c>DeniedCapabilities</c> value and an isolation floor merged with <paramref name="baseIsolation"/>
     /// — the override-parsing logic shared by <see cref="Resolve"/> and
     /// <see cref="ResolveForUngovernedDispatch"/>, factored out so the latter no longer needs a second
@@ -107,10 +115,9 @@ public sealed class ToolPermissionProfileResolver
     /// real keyed-DI resolution, not a dictionary read, so the duplicate lookup was a real, if small,
     /// per-call cost on a hot dispatch path).
     /// </summary>
-    private (ToolCapability DeniedCapabilities, SandboxIsolationLevel EffectiveIsolation) ResolveOverride(
-        string toolName, SandboxIsolationLevel baseIsolation)
+    private static (ToolCapability DeniedCapabilities, SandboxIsolationLevel EffectiveIsolation) ResolveOverride(
+        ToolOverrideConfig? overrideConfig, SandboxIsolationLevel baseIsolation)
     {
-        _config.CurrentValue.ToolOverrides.TryGetValue(toolName, out var overrideConfig);
         if (overrideConfig is null)
             return (ToolCapability.None, baseIsolation);
 
@@ -223,7 +230,8 @@ public sealed class ToolPermissionProfileResolver
         }
 
         var baseIsolation = firstPartyTool?.MinimumIsolation ?? SandboxIsolationLevel.None;
-        var (deniedCaps, overrideIsolation) = ResolveOverride(toolName, baseIsolation);
+        _config.CurrentValue.ToolOverrides.TryGetValue(toolName, out var overrideConfig);
+        var (deniedCaps, overrideIsolation) = ResolveOverride(overrideConfig, baseIsolation);
 
         var denied = requiredCapabilities & deniedCaps;
         if (denied != ToolCapability.None)

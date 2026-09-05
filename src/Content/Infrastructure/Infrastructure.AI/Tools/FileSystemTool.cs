@@ -32,6 +32,10 @@ public sealed class FileSystemTool : ITool
     private static readonly IReadOnlyList<string> Operations =
         ["read", "write", "list", "search", "exists"];
 
+    /// <summary>The single shared declaration every operation maps to — see <see cref="ResourceParametersByOperation"/>.</summary>
+    private static readonly IReadOnlyDictionary<string, ResourceParameterKind> PathOnly =
+        new Dictionary<string, ResourceParameterKind> { ["path"] = ResourceParameterKind.Path };
+
     private readonly IFileSystemService _fileSystem;
 
     /// <summary>
@@ -68,6 +72,15 @@ public sealed class FileSystemTool : ITool
 
     /// <inheritdoc />
     public IReadOnlyList<string> SupportedOperations => Operations;
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// Every operation's <c>"path"</c> parameter is a filesystem path (#418) — the first, and
+    /// currently only, tool populating this declaration, matching how <see cref="ExecuteAsync"/>
+    /// itself reads every operation's <c>path</c> argument via <c>GetRequiredString</c>.
+    /// </remarks>
+    public IReadOnlyDictionary<string, IReadOnlyDictionary<string, ResourceParameterKind>> ResourceParametersByOperation { get; } =
+        Operations.ToDictionary(op => op, _ => PathOnly);
 
     /// <inheritdoc />
     public async Task<ToolResult> ExecuteAsync(
