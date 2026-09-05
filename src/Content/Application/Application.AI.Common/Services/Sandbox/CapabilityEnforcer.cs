@@ -1,7 +1,6 @@
 using Application.AI.Common.Interfaces.Sandbox;
 using Domain.AI.Sandbox;
 using Domain.Common;
-using Domain.Common.Helpers;
 using Microsoft.Extensions.Logging;
 
 namespace Application.AI.Common.Services.Sandbox;
@@ -12,7 +11,16 @@ namespace Application.AI.Common.Services.Sandbox;
 /// <see cref="ToolPermissionProfile.DeniedCapabilities"/> override (#405), and validating any
 /// requested filesystem paths/network hosts against the profile's deny-overrides-allow scoping (#418).
 /// </summary>
-public sealed class CapabilityEnforcer : ICapabilityEnforcer
+/// <remarks>
+/// Split by concern into partial classes — <c>CapabilityEnforcer.PathScoping.cs</c> and
+/// <c>CapabilityEnforcer.HostScoping.cs</c> — the same pattern this codebase already uses for a large
+/// class with genuinely independent responsibilities (see <c>PlanExecutor.Scheduling.cs</c>/
+/// <c>PlanExecutor.Recovery.cs</c>, <c>ToolInvocationGovernor</c>). Path scoping and host scoping each
+/// own their own normalization rules and fail-open/fail-closed reasoning and share nothing with
+/// capability-flag checking beyond "same profile object, same deny-overrides-allow pattern" — this
+/// file keeps only the shared entry point and the capability check itself.
+/// </remarks>
+public sealed partial class CapabilityEnforcer : ICapabilityEnforcer
 {
     private readonly ToolPermissionProfileResolver _resolver;
     private readonly ILogger<CapabilityEnforcer> _logger;
@@ -24,10 +32,10 @@ public sealed class CapabilityEnforcer : ICapabilityEnforcer
     /// <param name="resolver">Resolves tool permission profiles from attributes and config.</param>
     /// <param name="logger">Logger for enforcement decision auditing.</param>
     /// <param name="pathCanonicalizer">
-    /// Resolves symlinks/junctions before a path-scoping comparison (#418's CI hardening), so
-    /// <see cref="ValidatePaths"/> cannot be defeated by a link the sandbox itself would follow.
-    /// Optional: a host that doesn't register one still gets the normalized-string comparison, just
-    /// without link resolution — see <see cref="IPathCanonicalizer"/>'s own remarks.
+    /// Resolves symlinks/junctions before a path-scoping comparison (#418's CI hardening), so the
+    /// path-scoping check cannot be defeated by a link the sandbox itself would follow. Optional: a
+    /// host that doesn't register one still gets the normalized-string comparison, just without link
+    /// resolution — see <see cref="IPathCanonicalizer"/>'s own remarks.
     /// </param>
     public CapabilityEnforcer(
         ToolPermissionProfileResolver resolver,
@@ -83,297 +91,6 @@ public sealed class CapabilityEnforcer : ICapabilityEnforcer
         var missingNames = FormatMissingCapabilities(missing);
         _logger.LogWarning("Tool {ToolName} requires capabilities not granted: {Missing}", toolName, missingNames);
         return Result.Forbidden($"Tool '{toolName}' requires capabilities not granted: {missingNames}");
-    }
-
-    /// <summary>
-    /// Checks <paramref name="requestedPaths"/> against the profile's path scoping, when any is
-    /// configured. Returns <see langword="null"/> on a pass, or the refusal to return.
-    /// </summary>
-    /// <remarks>
-    /// #418: a profile with path scoping configured but no requested value to check against must
-    /// refuse, not silently allow — this is deliberately NOT <c>is { Count: > 0 }</c>, which is the
-    /// fail-open shape #405 shipped (null and <c>[]</c> were treated identically, so scoping was
-    /// configured but never actually enforced against a call whose resource usage was simply never
-    /// determined). See <see cref="Domain.AI.Sandbox.ToolCallResourceRequest"/>'s remarks for why
-    /// null vs. empty matters.
-    /// </remarks>
-    private Result? EnforcePathScoping(string toolName, IReadOnlyList<string>? requestedPaths, ToolPermissionProfile profile)
-    {
-        var hasPathScoping = profile.AllowedPaths.Count > 0 || profile.DeniedPaths.Count > 0;
-        if (!hasPathScoping)
-            return null;
-
-        if (requestedPaths is null)
-        {
-            _logger.LogWarning(
-                "Tool {ToolName} has path scoping configured but no requested path could be determined for this call",
-                toolName);
-            return Result.Forbidden(
-                $"Tool '{toolName}' has path scoping configured but no requested path could be determined for this call.");
-        }
-
-        if (requestedPaths.Count > 0 && ValidatePaths(requestedPaths, profile) is { } pathViolation)
-        {
-            _logger.LogWarning("Tool {ToolName} path denied: {Path}", toolName, pathViolation);
-            return Result.Forbidden($"Tool '{toolName}' path denied: {pathViolation}");
-        }
-
-        return null;
-    }
-
-    /// <summary>
-    /// Checks <paramref name="requestedHosts"/> against the profile's host scoping, when any is
-    /// configured. Returns <see langword="null"/> on a pass, or the refusal to return. Mirrors
-    /// <see cref="EnforcePathScoping"/>.
-    /// </summary>
-    private Result? EnforceHostScoping(string toolName, IReadOnlyList<string>? requestedHosts, ToolPermissionProfile profile)
-    {
-        var hasHostScoping = profile.AllowedHosts.Count > 0 || profile.DeniedHosts.Count > 0;
-        if (!hasHostScoping)
-            return null;
-
-        if (requestedHosts is null)
-        {
-            _logger.LogWarning(
-                "Tool {ToolName} has host scoping configured but no requested host could be determined for this call",
-                toolName);
-            return Result.Forbidden(
-                $"Tool '{toolName}' has host scoping configured but no requested host could be determined for this call.");
-        }
-
-        if (requestedHosts.Count > 0 && ValidateHosts(requestedHosts, profile) is { } hostViolation)
-        {
-            _logger.LogWarning("Tool {ToolName} host denied: {Host}", toolName, hostViolation);
-            return Result.Forbidden($"Tool '{toolName}' host denied: {hostViolation}");
-        }
-
-        return null;
-    }
-
-    /// <summary>
-    /// Returns the first requested path that violates <paramref name="profile"/>'s deny/allow lists,
-    /// or <see langword="null"/> if every path is permitted. Deny-overrides-allow: a deny match wins
-    /// even when the same path also matches an allow entry (#418, restored from pre-#405 history).
-    /// </summary>
-    private string? ValidatePaths(IReadOnlyList<string> requestedPaths, ToolPermissionProfile profile)
-    {
-        foreach (var path in requestedPaths)
-        {
-            // A model-supplied path this class cannot safely resolve — one carrying a traversal
-            // pattern, a relative path, or one the runtime rejects outright — is treated as a
-            // violation rather than compared. CI caught the alternative: a naive normalizer silently
-            // dropped a leading ".." instead of resolving it, so "../secrets/creds.txt" matched no
-            // configured boundary at all. CapabilityEnforcer has no base directory of its own to
-            // resolve a relative path against (that is IFileSystemService's own, separately-configured
-            // concern), so refusing outright — mirroring SandboxedPathGuard.ResolveAndValidate's own
-            // first check — is the only answer that cannot be tricked into comparing the wrong path.
-            if (NormalizeRequestedPath(path) is not { } normalized)
-                return path;
-
-            if (IsDeniedPath(normalized, profile))
-                return path;
-
-            if (profile.AllowedPaths.Count > 0 &&
-                !profile.AllowedPaths.Any(allowed => IsPathWithin(normalized, NormalizeBoundary(allowed))))
-            {
-                return path;
-            }
-        }
-
-        return null;
-    }
-
-    /// <summary>
-    /// Whether <paramref name="normalized"/> falls within any of <paramref name="profile"/>'s denied
-    /// paths. A configured deny entry the runtime cannot normalize is treated as matching every
-    /// candidate, not excluded from the check — unlike an allow entry (see <see cref="NormalizeBoundary"/>),
-    /// treating an unparsable deny entry as "never matches" would silently turn a misconfigured deny
-    /// rule into a no-op instead of the refusal it was written to enforce, which is the fail-open shape
-    /// this whole mechanism exists to prevent.
-    /// </summary>
-    private bool IsDeniedPath(string normalized, ToolPermissionProfile profile)
-    {
-        foreach (var denied in profile.DeniedPaths)
-        {
-            var normalizedDenied = NormalizeAndCanonicalize(denied);
-            if (normalizedDenied is null || IsPathWithin(normalized, normalizedDenied))
-                return true;
-        }
-
-        return false;
-    }
-
-    /// <summary>
-    /// Determines whether <paramref name="candidate"/> is the same as, or a descendant of,
-    /// <paramref name="boundary"/>, comparing on path-segment boundaries rather than raw string
-    /// prefixes via <see cref="PathScope.IsSameOrUnderNormalized"/> — the same primitive
-    /// <c>SandboxedPathGuard</c> compares real file access against, so the two cannot disagree about
-    /// which file a path names. Both inputs are expected to be already normalized (and, when a
-    /// canonicalizer is available, link-resolved) via <see cref="NormalizeAndCanonicalize"/>.
-    /// </summary>
-    private static bool IsPathWithin(string candidate, string boundary) =>
-        // An empty boundary (root, fully trimmed) confines everything — preserved as an explicit
-        // case because PathScope.IsSameOrUnderNormalized's own separator-prefixed check does not
-        // reduce to "matches everything" identically on every platform.
-        boundary.Length == 0 || PathScope.IsSameOrUnderNormalized(candidate, boundary);
-
-    /// <summary>
-    /// Normalizes and canonicalizes a model-supplied path for a scoping comparison, refusing
-    /// (returning <see langword="null"/>) rather than guessing when the input carries a traversal
-    /// pattern, is not fully qualified, or the runtime cannot parse it at all.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// A <em>relative</em> path is refused outright, not resolved — CI caught the alternative:
-    /// resolving it against <see cref="PathScope.Normalize"/>'s implicit base (the process's current
-    /// directory) answers a different question than the one that matters, because the tool that
-    /// actually opens the file resolves the identical string against its own, separately-configured
-    /// sandbox base path (<c>SandboxedPathGuard.ResolveRelative</c>) — a base this class has no
-    /// visibility into and no business assuming. The two resolutions can name different files
-    /// entirely, so a relative path is unsafe to compare here at all, exactly like a traversal
-    /// pattern is.
-    /// </para>
-    /// <para>
-    /// The fully-qualified check lives inside <see cref="NormalizeAndCanonicalize"/> itself, applied
-    /// identically to a requested path and a configured boundary — CI caught the alternative: checking
-    /// it only here left a <em>relative</em> <c>DeniedPaths</c>/<c>AllowedPaths</c> config entry to
-    /// silently resolve against the process's CWD via <see cref="PathScope.Normalize"/>, the exact
-    /// fail-open shape this guard exists to prevent, just on the configured side instead of the
-    /// requested side.
-    /// </para>
-    /// </remarks>
-    private string? NormalizeRequestedPath(string path) =>
-        SecureInputValidatorHelper.ValidateFilePath(path) ? NormalizeAndCanonicalize(path) : null;
-
-    /// <summary>
-    /// Normalizes and canonicalizes an operator-configured <em>allow</em> boundary the same way as a
-    /// requested path (#418) — both sides must go through identical treatment, or a boundary reached
-    /// only through a symlink would compare unequal to an already-resolved candidate. Falls back to
-    /// the raw configured string on a normalization failure, which for an allow entry safely excludes
-    /// it (a raw, non-normalized string will not match a normalized candidate) rather than throwing —
-    /// a typo in one operator entry should degrade that one comparison, not take down every call that
-    /// consults the list. Deny entries use the stricter <see cref="IsDeniedPath"/> instead, where the
-    /// same fallback would be fail-open rather than fail-closed.
-    /// </summary>
-    private string NormalizeBoundary(string configuredPath) => NormalizeAndCanonicalize(configuredPath) ?? configuredPath;
-
-    /// <summary>
-    /// Resolves <paramref name="path"/> to its absolute form via <see cref="PathScope.Normalize"/> —
-    /// the same routine <c>SandboxedPathGuard</c> normalizes real file access through, so a genuine
-    /// <c>..</c> segment is actually resolved rather than silently discarded, and platform quirks
-    /// (e.g. a Windows trailing-dot path component) are handled identically on both sides of the
-    /// comparison — then link-resolves through <see cref="_pathCanonicalizer"/> when one is
-    /// registered. Returns <see langword="null"/> on any input that is not already fully qualified
-    /// (checked via <c>Path.IsPathFullyQualified</c>, not <c>Path.IsPathRooted</c> — the latter answers
-    /// <see langword="true"/> for a Windows drive-relative path like <c>"C:secrets\creds.txt"</c>,
-    /// which still resolves against the current directory on that drive, not an absolute location) or
-    /// that the runtime cannot parse at all. Applied to both a requested path and a configured boundary
-    /// identically: neither side has any base directory of its own to resolve a relative path against
-    /// that the other side would agree with.
-    /// </summary>
-    private string? NormalizeAndCanonicalize(string path)
-    {
-        if (!Path.IsPathFullyQualified(path))
-            return null;
-
-        try
-        {
-            var normalized = PathScope.Normalize(path);
-            return _pathCanonicalizer?.Canonicalize(normalized) ?? normalized;
-        }
-        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
-        {
-            return null;
-        }
-    }
-
-    /// <summary>
-    /// Returns the first requested host that violates <paramref name="profile"/>'s deny/allow lists,
-    /// or <see langword="null"/> if every host is permitted. Deny-overrides-allow, mirroring
-    /// <see cref="ValidatePaths"/> (#418, restored from pre-#405 history).
-    /// </summary>
-    private static string? ValidateHosts(IReadOnlyList<string> requestedHosts, ToolPermissionProfile profile)
-    {
-        foreach (var host in requestedHosts)
-        {
-            if (profile.DeniedHosts.Any(denied => HostMatches(host, denied)))
-                return host;
-
-            if (profile.AllowedHosts.Count > 0 &&
-                !profile.AllowedHosts.Any(allowed => HostMatches(host, allowed)))
-            {
-                return host;
-            }
-        }
-
-        return null;
-    }
-
-    /// <summary>
-    /// Matches <paramref name="host"/> against <paramref name="pattern"/>, which may be an exact host
-    /// name or a <c>*.suffix</c> wildcard. Both sides go through <see cref="NormalizeHostForMatch"/>
-    /// identically — a configured pattern is operator-authored, not attacker-controlled, but a
-    /// port/scheme/whitespace mismatch on that side is just as fail-open as one on the requested host,
-    /// so both are held to the same normalization rather than only the request.
-    /// </summary>
-    private static bool HostMatches(string host, string pattern)
-    {
-        var normalizedHost = NormalizeHostForMatch(host);
-        var normalizedPattern = NormalizeHostForMatch(pattern);
-
-        if (normalizedPattern.StartsWith("*."))
-        {
-            var suffix = normalizedPattern[1..];
-            return normalizedHost.EndsWith(suffix, StringComparison.OrdinalIgnoreCase)
-                   || normalizedHost.Equals(normalizedPattern[2..], StringComparison.OrdinalIgnoreCase);
-        }
-
-        return normalizedHost.Equals(normalizedPattern, StringComparison.OrdinalIgnoreCase);
-    }
-
-    /// <summary>
-    /// Reduces a host value — whether a requested host or a configured deny/allow entry — to a bare,
-    /// comparable host name. A value that parses as an absolute URI is reduced via <see cref="Uri.Host"/>
-    /// itself, which correctly drops a scheme, userinfo (<c>user@</c>), port, and path/query in one
-    /// step — <em>not</em> an ad-hoc scan for <c>"://"</c>, which matches the first occurrence anywhere
-    /// in the string rather than only a leading scheme and so can be pointed at an unrelated embedded
-    /// URL later in the value. A value that isn't itself an absolute URI falls back to a trailing-port
-    /// strip and a root-terminating FQDN dot trim. Applying the identical reduction to both sides of a
-    /// <see cref="HostMatches"/> comparison is what keeps an operator's plain <c>"evil.com"</c> entry
-    /// matching every equivalent spelling of that same host a caller might supply.
-    /// </summary>
-    private static string NormalizeHostForMatch(string value)
-    {
-        var trimmed = value.Trim();
-
-        if (Uri.TryCreate(trimmed, UriKind.Absolute, out var uri) && !string.IsNullOrEmpty(uri.Host))
-            return uri.Host.TrimEnd('.');
-
-        return StripPort(trimmed).TrimEnd('.');
-    }
-
-    /// <summary>
-    /// Strips a trailing <c>:port</c> from <paramref name="host"/>, recognizing the bracketed IPv6
-    /// form (<c>[::1]:443</c>) and leaving a <em>bare</em> IPv6 literal (<c>::1</c>) untouched — more
-    /// than one colon with no brackets is never a host:port pair, so treating the last colon as a
-    /// port separator there would truncate the address itself (<c>::1</c> otherwise becomes <c>:</c>
-    /// and can never match a configured deny/allow entry for it).
-    /// </summary>
-    private static string StripPort(string host)
-    {
-        if (host.StartsWith('['))
-        {
-            var closeBracket = host.IndexOf(']');
-            return closeBracket > 0 ? host[1..closeBracket] : host;
-        }
-
-        if (host.Count(c => c == ':') != 1)
-            return host;
-
-        var colonIndex = host.IndexOf(':');
-        return colonIndex > 0 && host[(colonIndex + 1)..].All(char.IsDigit)
-            ? host[..colonIndex]
-            : host;
     }
 
     private static string FormatMissingCapabilities(ToolCapability missing)
