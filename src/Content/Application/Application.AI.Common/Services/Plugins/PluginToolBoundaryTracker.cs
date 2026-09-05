@@ -14,6 +14,13 @@ public sealed class PluginToolBoundaryTracker : IPluginToolBoundaryTracker
         public required object Lock { get; init; }
         public required Dictionary<string, string> PendingEntries { get; init; } // name -> list kind
         public required HashSet<string> PendingServers { get; init; }
+
+        // Guards against firing twice for one plugin: a caller can still hold this same instance
+        // (from its own TryGetValue) after _pendingByPlugin.TryRemove has already dropped it — two
+        // concurrent ReportServerToolsDiscovered calls for THE SAME server can both reach the lock
+        // with PendingServers already empty and PendingEntries never cleared, otherwise faulting
+        // (and logging) the same violation twice.
+        public bool Resolved { get; set; }
     }
 
     private readonly IPluginRegistry _registry;
@@ -41,7 +48,16 @@ public sealed class PluginToolBoundaryTracker : IPluginToolBoundaryTracker
         foreach (var plugin in loadedPlugins)
         {
             var entries = BoundaryEntries(plugin);
-            var unresolved = entries.Where(e => !isKnownFirstPartyToolName(e.Name)).ToList();
+            // A name can legitimately appear more than once — duplicated within one list, or once
+            // in AllowedTools and once in DeniedTools — and the existence question is identical
+            // either time, so collapse before anything downstream (the ToDictionary below cannot
+            // tolerate a repeated key at all — confirmed by a review round finding it throws
+            // ArgumentException on exactly this shape, crashing a legally-configured plugin's boot).
+            var unresolved = entries
+                .Where(e => !isKnownFirstPartyToolName(e.Name))
+                .GroupBy(e => e.Name, StringComparer.OrdinalIgnoreCase)
+                .Select(g => g.First())
+                .ToList();
             if (unresolved.Count == 0)
                 continue;
 
@@ -88,6 +104,12 @@ public sealed class PluginToolBoundaryTracker : IPluginToolBoundaryTracker
             List<PluginToolBoundaryViolation>? faulted = null;
             lock (pending.Lock)
             {
+                // A concurrent report for a DIFFERENT server on this same plugin can already have
+                // resolved it before this thread reached the lock — this thread's own TryGetValue
+                // above ran against a reference that predates that removal, so it must re-check here.
+                if (pending.Resolved)
+                    continue;
+
                 foreach (var name in pending.PendingEntries.Keys.Where(discovered.Contains).ToList())
                     pending.PendingEntries.Remove(name);
 
@@ -104,6 +126,7 @@ public sealed class PluginToolBoundaryTracker : IPluginToolBoundaryTracker
                         .ToList();
                 }
 
+                pending.Resolved = true;
                 _pendingByPlugin.TryRemove(pluginName, out _);
             }
 
