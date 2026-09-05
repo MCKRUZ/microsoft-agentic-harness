@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Diagnostics.Metrics;
 using Application.AI.Common.Interfaces;
+using Application.AI.Common.Interfaces.Plugins;
 using Application.AI.Common.OpenTelemetry.Metrics;
 using Domain.AI.Telemetry.Conventions;
 using Microsoft.Extensions.AI;
@@ -51,17 +52,26 @@ public sealed class McpToolProvider : IMcpToolProvider
 {
     private readonly ILogger<McpToolProvider> _logger;
     private readonly McpConnectionManager _connectionManager;
+    private readonly IPluginToolBoundaryTracker? _boundaryTracker;
     private bool _disposed;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="McpToolProvider"/> class.
     /// </summary>
+    /// <param name="boundaryTracker">
+    /// Optional (#524). When supplied, every successful tool-list discovery is reported to it so a
+    /// plugin's AllowedTools/DeniedTools entries can be resolved or fail-closed-faulted against real
+    /// MCP tool names — see <see cref="IPluginToolBoundaryTracker"/>'s remarks. Absent in most tests,
+    /// which have nothing to report to; production DI always supplies it.
+    /// </param>
     public McpToolProvider(
         ILogger<McpToolProvider> logger,
-        McpConnectionManager connectionManager)
+        McpConnectionManager connectionManager,
+        IPluginToolBoundaryTracker? boundaryTracker = null)
     {
         _logger = logger;
         _connectionManager = connectionManager;
+        _boundaryTracker = boundaryTracker;
     }
 
     /// <inheritdoc />
@@ -192,6 +202,8 @@ public sealed class McpToolProvider : IMcpToolProvider
                 "Retrieved {ToolCount} tools from MCP server '{ServerName}'",
                 tools.Count, serverName);
 
+            ReportDiscoveryToBoundaryTracker(serverName, tools);
+
             // McpClientTool implements AITool
             return tools.Cast<AITool>().ToList();
         }
@@ -204,6 +216,31 @@ public sealed class McpToolProvider : IMcpToolProvider
         {
             RecordOutcome(start, serverName, McpConventions.StatusValues.Error);
             throw;
+        }
+    }
+
+    /// <summary>
+    /// Reports a server's just-discovered tool names to the plugin tool-boundary tracker (#524), so
+    /// any plugin depending on this server can resolve or fail-closed-fault its
+    /// AllowedTools/DeniedTools entries against them. A no-op when no tracker is wired (most tests)
+    /// or nothing is pending for this server (the overwhelmingly common case). Logged at Critical,
+    /// not thrown — the tracker never throws, and a boundary violation must not disturb this
+    /// otherwise-successful discovery call's own return value; enforcement happens separately, via
+    /// <c>IPluginRegistry.IsBoundaryFaulted</c> denying the plugin's tools on its next resolution.
+    /// </summary>
+    private void ReportDiscoveryToBoundaryTracker(string serverName, IList<McpClientTool> tools)
+    {
+        if (_boundaryTracker is null)
+            return;
+
+        var violations = _boundaryTracker.ReportServerToolsDiscovered(serverName, tools.Select(t => t.Name).ToList());
+        foreach (var violation in violations)
+        {
+            _logger.LogCritical(
+                "Plugin '{Plugin}': {ListKind} entry '{ToolName}' matches no known tool (first-party " +
+                "or MCP) — this entry is a no-op, and the plugin's tool boundary can no longer be " +
+                "trusted, so all tools from this plugin are now denied.",
+                violation.PluginName, violation.ListKind, violation.ToolName);
         }
     }
 

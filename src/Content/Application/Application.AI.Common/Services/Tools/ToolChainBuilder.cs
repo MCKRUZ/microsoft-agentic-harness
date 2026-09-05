@@ -218,6 +218,20 @@ public partial class ToolChainBuilder : IToolChainBuilder
         if (loadedPlugin is null)
             return provisioned;
 
+        // #524: a boundary entry that matches no real tool is provably broken, not just
+        // permissive — most dangerously for DeniedTools, documented as bypass-immune. Once
+        // PluginToolBoundaryTracker has proven that (see its remarks), the boundary can no longer
+        // be trusted, so this denies every tool from the plugin rather than run with a
+        // partially-broken policy.
+        if (pluginRegistry!.IsBoundaryFaulted(skill.PluginSource))
+        {
+            _logger.LogWarning(
+                "Plugin '{Plugin}' tool boundary is faulted (an AllowedTools/DeniedTools entry " +
+                "matches no known tool) — denying all tools for skill '{Skill}'",
+                skill.PluginSource, skill.Id);
+            return [];
+        }
+
         return ApplyPluginToolBoundary(provisioned, loadedPlugin.Declaration);
     }
 
