@@ -53,6 +53,16 @@ internal sealed class McpFailureNormalizingAIFunction : DelegatingAIFunction
     /// <see langword="null"/> for anything that isn't that shape, including a genuine success (which
     /// reaches here as a <see cref="JsonElement"/> too, just without <c>isError: true</c>).
     /// </summary>
+    /// <remarks>
+    /// The inner loop gates each block on <see cref="ToolResultText.IsContentBlock"/> — the same
+    /// predicate <see cref="ToolResultText.TryGetContentArray"/> already gates the outer
+    /// <c>content</c>-array recognition on — so this stops being a fourth independent re-derivation of
+    /// "what counts as a content block" (#554; <c>ToolResultText.cs</c> itself had three before #488).
+    /// This does not recover a message from a non-protocol-legal block that carries a top-level
+    /// <c>text</c> property with no <c>type</c> discriminator (e.g. <c>{"text":"disk full"}</c>) — a
+    /// real MCP content block always carries <c>type</c>, and <c>TryGetContentArray</c>'s own gate
+    /// (unchanged here) already rejects an array whose only block lacks one before this loop runs.
+    /// </remarks>
     private static string? TryGetMcpFailureText(object? result)
     {
         if (result is not JsonElement { ValueKind: JsonValueKind.Object } element)
@@ -65,7 +75,7 @@ internal sealed class McpFailureNormalizingAIFunction : DelegatingAIFunction
         {
             foreach (var block in content.EnumerateArray())
             {
-                if (block.ValueKind == JsonValueKind.Object
+                if (ToolResultText.IsContentBlock(block, out _)
                     && block.TryGetProperty("text", out var text) && text.ValueKind == JsonValueKind.String)
                     return text.GetString();
             }

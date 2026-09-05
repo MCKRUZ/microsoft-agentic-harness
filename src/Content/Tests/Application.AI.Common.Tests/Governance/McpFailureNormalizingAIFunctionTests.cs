@@ -99,6 +99,35 @@ public sealed class McpFailureNormalizingAIFunctionTests
     }
 
     [Fact]
+    public async Task InvokeAsync_McpFailureWithTypelessBlockCarryingText_SkipsItAndFallsBackToGenericMessage()
+    {
+        // #554: before this fix, the inner loop accepted any object with a "text" property, with no
+        // "type" discriminator required — a fourth independent copy of "what counts as a content
+        // block" that had drifted from ToolResultText.IsContentBlock (the predicate the outer
+        // TryGetContentArray gate already enforces). Here the outer gate is satisfied by the
+        // legitimate "image" block, so the array IS recognized as MCP-shaped, but the second block
+        // (text with no type — not a real content block) must be skipped by the inner loop too, not
+        // misread as the failure message.
+        var inner = AIFunctionFactory.Create(
+            () => new
+            {
+                isError = true,
+                content = new object[]
+                {
+                    new { type = "image", data = "aGVsbG8=" },
+                    new { text = "not a real content block, just an object with a text property" }
+                }
+            },
+            new AIFunctionFactoryOptions { Name = "mcp_tool", Description = "test mcp tool" });
+        var normalizer = new McpFailureNormalizingAIFunction(inner);
+
+        var result = await normalizer.InvokeAsync(new AIFunctionArguments(), CancellationToken.None);
+
+        var failure = Assert.IsType<ConvertedToolFailure>(result);
+        Assert.Equal("MCP tool reported failure with no message.", failure.ErrorText);
+    }
+
+    [Fact]
     public void Decorator_PreservesInnerNameAndSchema()
     {
         var inner = MakeMcpFailingInner("irrelevant");
