@@ -33,12 +33,16 @@ namespace Application.AI.Common.Tests.Governance;
 /// </summary>
 public sealed class ToolPathScopingEndToEndTests
 {
-    private const string DeniedPath = "C:/sandbox/secrets/creds.txt";
-    private const string AllowedPath = "C:/sandbox/work/notes.txt";
+    // CapabilityEnforcer refuses any requested path that isn't OS-rooted (#418 CI hardening); a
+    // literal "C:/..." path is rooted on Windows but not on Linux (CI runs on ubuntu-latest), so
+    // every fixture below is built from this OS-correct root.
+    private static readonly string Root = OperatingSystem.IsWindows() ? "C:/" : "/";
+    private static readonly string DeniedPath = $"{Root}sandbox/secrets/creds.txt";
+    private static readonly string AllowedPath = $"{Root}sandbox/work/notes.txt";
 
     private static SandboxConfig DenyingSandboxConfig() => new()
     {
-        ToolOverrides = new() { ["file_system"] = new ToolOverrideConfig { DeniedPaths = ["C:/sandbox/secrets"] } }
+        ToolOverrides = new() { ["file_system"] = new ToolOverrideConfig { DeniedPaths = [$"{Root}sandbox/secrets"] } }
     };
 
     /// <summary>A real <see cref="FileSystemTool"/> over a mocked <see cref="IFileSystemService"/>, keyed
@@ -114,6 +118,37 @@ public sealed class ToolPathScopingEndToEndTests
     };
 
     // --- Agent-turn path (GovernedAIFunction / ToolChainBuilder) ---
+
+    [Fact]
+    public async Task AgentTurnPath_DeniedPath_ParametersJsonArrivesAsRawString_StillRefuses()
+    {
+        // Regression: GovernedAIFunction.ReadParametersJson used to accept only a boxed JsonElement,
+        // silently discarding any other CLR shape (including a plain, well-formed JSON string) as
+        // "no parameters" — which downgrades to ToolCallResourceRequest.Empty and CapabilityEnforcer
+        // trusts that and skips validating. AIFunctionArguments never carries a bare string here via
+        // the real Microsoft.Extensions.AI pipeline, but a caller outside it could.
+        var (_, fileSystem, toolProvider) = BuildToolFixture();
+        var context = Mock.Of<IAgentExecutionContext>(c => c.AgentId == "test-agent");
+        var (governor, trace) = BuildGovernor(toolProvider, DenyingSandboxConfig(), context);
+
+        var builder = new ToolChainBuilder(
+            NullLogger<ToolChainBuilder>.Instance, toolProvider, new AIToolConverter(NullLogger<AIToolConverter>.Instance));
+        var aiFunction = (AIFunction)builder.BuildToolsByName(["file_system"], "test-agent").Single();
+
+        using var _ = ToolAdmissionAccessor.Begin(AdmissionHarness.Pipeline(governor: governor, executionContext: context));
+
+        var args = new AIFunctionArguments
+        {
+            ["operation"] = "read",
+            ["parametersJson"] = JsonSerializer.Serialize(new { path = DeniedPath })
+        };
+
+        var result = await aiFunction.InvokeAsync(args);
+
+        result.Should().BeOfType<string>();
+        trace.Snapshot().ToolDecisions.Should().ContainSingle(d => d.Reason.Contains("path denied"));
+        fileSystem.Verify(fs => fs.ReadFileAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
 
     [Fact]
     public async Task AgentTurnPath_DeniedPath_RefusesBeforeFileSystemServiceReached()

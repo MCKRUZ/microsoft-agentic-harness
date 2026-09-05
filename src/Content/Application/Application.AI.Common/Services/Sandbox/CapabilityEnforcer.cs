@@ -165,11 +165,22 @@ public sealed class CapabilityEnforcer : ICapabilityEnforcer
     /// <summary>
     /// Normalizes and canonicalizes a model-supplied path for a scoping comparison, refusing
     /// (returning <see langword="null"/>) rather than guessing when the input carries a traversal
-    /// pattern or the runtime cannot parse it at all. See <see cref="ValidatePaths"/>'s remarks for
-    /// why a relative traversal cannot be safely resolved at this layer.
+    /// pattern, is not already rooted, or the runtime cannot parse it at all.
     /// </summary>
+    /// <remarks>
+    /// A <em>relative</em> path is refused outright, not resolved — CI caught the alternative:
+    /// resolving it against <see cref="PathScope.Normalize"/>'s implicit base (the process's current
+    /// directory) answers a different question than the one that matters, because the tool that
+    /// actually opens the file resolves the identical string against its own, separately-configured
+    /// sandbox base path (<c>SandboxedPathGuard.ResolveRelative</c>) — a base this class has no
+    /// visibility into and no business assuming. The two resolutions can name different files
+    /// entirely, so a relative path is unsafe to compare here at all, exactly like a traversal
+    /// pattern is.
+    /// </remarks>
     private string? NormalizeRequestedPath(string path) =>
-        SecureInputValidatorHelper.ValidateFilePath(path) ? NormalizeAndCanonicalize(path) : null;
+        Path.IsPathRooted(path) && SecureInputValidatorHelper.ValidateFilePath(path)
+            ? NormalizeAndCanonicalize(path)
+            : null;
 
     /// <summary>
     /// Normalizes and canonicalizes an operator-configured boundary the same way as a requested path
@@ -224,13 +235,16 @@ public sealed class CapabilityEnforcer : ICapabilityEnforcer
     }
 
     /// <summary>
-    /// Matches <paramref name="host"/> (port stripped, trailing FQDN dot trimmed) against
-    /// <paramref name="pattern"/>, which may be an exact host name or a <c>*.suffix</c> wildcard.
+    /// Matches <paramref name="host"/> against <paramref name="pattern"/>, which may be an exact host
+    /// name or a <c>*.suffix</c> wildcard. Both sides go through <see cref="NormalizeHostForMatch"/>
+    /// identically — a configured pattern is operator-authored, not attacker-controlled, but a
+    /// port/scheme/whitespace mismatch on that side is just as fail-open as one on the requested host,
+    /// so both are held to the same normalization rather than only the request.
     /// </summary>
     private static bool HostMatches(string host, string pattern)
     {
-        var normalizedHost = StripPort(host).TrimEnd('.');
-        var normalizedPattern = pattern.TrimEnd('.');
+        var normalizedHost = NormalizeHostForMatch(host);
+        var normalizedPattern = NormalizeHostForMatch(pattern);
 
         if (normalizedPattern.StartsWith("*."))
         {
@@ -240,6 +254,29 @@ public sealed class CapabilityEnforcer : ICapabilityEnforcer
         }
 
         return normalizedHost.Equals(normalizedPattern, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Reduces a host value — whether a requested host or a configured deny/allow entry — to a bare,
+    /// comparable host name: trims whitespace, strips a URL scheme and any path/query that followed it
+    /// (<c>"https://Evil.com/x"</c> → <c>"Evil.com"</c>), strips a trailing port, and trims a
+    /// root-terminating FQDN dot. Applying the identical reduction to both sides of a
+    /// <see cref="HostMatches"/> comparison is what keeps an operator's plain <c>"evil.com"</c> entry
+    /// matching every equivalent spelling of that same host a caller might supply.
+    /// </summary>
+    private static string NormalizeHostForMatch(string value)
+    {
+        var trimmed = value.Trim();
+
+        var schemeIndex = trimmed.IndexOf("://", StringComparison.Ordinal);
+        if (schemeIndex >= 0)
+            trimmed = trimmed[(schemeIndex + 3)..];
+
+        var slashIndex = trimmed.IndexOf('/');
+        if (slashIndex >= 0)
+            trimmed = trimmed[..slashIndex];
+
+        return StripPort(trimmed).TrimEnd('.');
     }
 
     /// <summary>

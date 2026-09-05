@@ -188,12 +188,29 @@ internal sealed class GovernedAIFunction : DelegatingAIFunction
         };
     }
 
+    /// <summary>
+    /// Reads the raw <c>parametersJson</c> argument, accepting both shapes <see cref="ReadOperation"/>
+    /// already does — a plain CLR <see cref="string"/> or a <see cref="JsonElement"/> — rather than
+    /// only the latter. A caller outside the standard Microsoft.Extensions.AI pipeline (which always
+    /// supplies a <see cref="JsonElement"/>) that put a raw string here would otherwise silently lose
+    /// it: <c>null</c> here becomes <c>ToolCallResourceRequest.Empty</c> via <see cref="ToolParameters.FromJson"/>
+    /// and <see cref="ResourceParameterExtractor.Extract"/>, which <c>CapabilityEnforcer</c> trusts as
+    /// "determined, and there is none" and skips validating — the exact null-vs-empty conflation this
+    /// whole mechanism exists to prevent, reintroduced one level up. Re-wrapping a string as a
+    /// <see cref="JsonElement"/> costs nothing extra: <see cref="ToolParameters.FromJson"/> already
+    /// parses a string-valued element as JSON (its own double-encoded-string handling).
+    /// </summary>
     private static JsonElement? ReadParametersJson(AIFunctionArguments arguments)
     {
         if (!arguments.TryGetValue(AIToolConverter.ParametersJsonArgumentName, out var value))
             return null;
 
-        return value as JsonElement?;
+        return value switch
+        {
+            JsonElement je => je,
+            string s => JsonSerializer.SerializeToElement(s),
+            _ => null
+        };
     }
 
     /// <summary>

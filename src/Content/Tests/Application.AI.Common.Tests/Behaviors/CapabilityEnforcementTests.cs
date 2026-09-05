@@ -22,6 +22,14 @@ namespace Application.AI.Common.Tests.Behaviors;
 /// </summary>
 public sealed class CapabilityEnforcementTests
 {
+    // CapabilityEnforcer now refuses any requested path that is not OS-rooted (#418 CI hardening —
+    // a relative path is unsafe to compare here at all, since it would resolve against a base this
+    // class has no visibility into). A literal "C:/..." fixture is rooted on Windows but NOT on
+    // Linux (CI runs on ubuntu-latest), so every path fixture below is built from this OS-correct
+    // root rather than hardcoded, or every "should be allowed"/"sibling doesn't match" assertion
+    // would silently become "always refused" off this machine.
+    private static readonly string Root = OperatingSystem.IsWindows() ? "C:/" : "/";
+
     private static ITool FileTool() => Mock.Of<ITool>(t =>
         t.RequiredCapabilities == (ToolCapability.FileRead | ToolCapability.FileWrite));
 
@@ -210,13 +218,13 @@ public sealed class CapabilityEnforcementTests
     {
         var config = new SandboxConfig
         {
-            ToolOverrides = new() { ["file_system"] = new ToolOverrideConfig { DeniedPaths = ["C:/sandbox/secrets"] } }
+            ToolOverrides = new() { ["file_system"] = new ToolOverrideConfig { DeniedPaths = [$"{Root}sandbox/secrets"] } }
         };
         var (_, enforcer) = Build(config, ("file_system", FileTool()));
 
         var result = await enforcer.EnforceAsync(
             "file_system", ToolCapability.FileRead | ToolCapability.FileWrite,
-            requestedPaths: ["C:/sandbox/secrets/creds.txt"]);
+            requestedPaths: [$"{Root}sandbox/secrets/creds.txt"]);
 
         result.IsSuccess.Should().BeFalse();
         result.Errors.Should().Contain(e => e.Contains("path denied"));
@@ -226,16 +234,16 @@ public sealed class CapabilityEnforcementTests
     public async Task DeniedPath_SiblingDirectory_DoesNotMatch()
     {
         // The sibling-directory bypass IsPathWithin exists to prevent: a boundary of
-        // "C:/sandbox/work" must not match "C:/sandbox/work-evil" via a raw string prefix check.
+        // ".../sandbox/work" must not match ".../sandbox/work-evil" via a raw string prefix check.
         var config = new SandboxConfig
         {
-            ToolOverrides = new() { ["file_system"] = new ToolOverrideConfig { DeniedPaths = ["C:/sandbox/work"] } }
+            ToolOverrides = new() { ["file_system"] = new ToolOverrideConfig { DeniedPaths = [$"{Root}sandbox/work"] } }
         };
         var (_, enforcer) = Build(config, ("file_system", FileTool()));
 
         var result = await enforcer.EnforceAsync(
             "file_system", ToolCapability.FileRead | ToolCapability.FileWrite,
-            requestedPaths: ["C:/sandbox/work-evil/file.txt"]);
+            requestedPaths: [$"{Root}sandbox/work-evil/file.txt"]);
 
         result.IsSuccess.Should().BeTrue();
     }
@@ -250,7 +258,7 @@ public sealed class CapabilityEnforcementTests
         // outright rather than guess where it points.
         var config = new SandboxConfig
         {
-            ToolOverrides = new() { ["file_system"] = new ToolOverrideConfig { DeniedPaths = ["C:/sandbox/secrets"] } }
+            ToolOverrides = new() { ["file_system"] = new ToolOverrideConfig { DeniedPaths = [$"{Root}sandbox/secrets"] } }
         };
         var (_, enforcer) = Build(config, ("file_system", FileTool()));
 
@@ -262,6 +270,27 @@ public sealed class CapabilityEnforcementTests
     }
 
     [Fact]
+    public async Task DeniedPath_RelativeNonTraversal_Refuses()
+    {
+        // CI-caught regression: an ordinary relative path with no ".." at all still cannot be safely
+        // compared here — CapabilityEnforcer would resolve it against the process's own working
+        // directory, while IFileSystemService resolves the identical string against its own,
+        // separately-configured sandbox base. The two can name different files entirely, so any
+        // non-rooted path is refused outright, not just one that looks like a traversal attempt.
+        var config = new SandboxConfig
+        {
+            ToolOverrides = new() { ["file_system"] = new ToolOverrideConfig { DeniedPaths = [$"{Root}sandbox/secrets"] } }
+        };
+        var (_, enforcer) = Build(config, ("file_system", FileTool()));
+
+        var result = await enforcer.EnforceAsync(
+            "file_system", ToolCapability.FileRead | ToolCapability.FileWrite,
+            requestedPaths: ["secrets/creds.txt"]);
+
+        result.IsSuccess.Should().BeFalse("a relative path resolves against an unknown base and must not be silently allowed");
+    }
+
+    [Fact]
     public async Task DeniedPath_WinsOverAllowedPath()
     {
         var config = new SandboxConfig
@@ -270,8 +299,8 @@ public sealed class CapabilityEnforcementTests
             {
                 ["file_system"] = new ToolOverrideConfig
                 {
-                    AllowedPaths = ["C:/sandbox"],
-                    DeniedPaths = ["C:/sandbox/secrets"]
+                    AllowedPaths = [$"{Root}sandbox"],
+                    DeniedPaths = [$"{Root}sandbox/secrets"]
                 }
             }
         };
@@ -279,7 +308,7 @@ public sealed class CapabilityEnforcementTests
 
         var result = await enforcer.EnforceAsync(
             "file_system", ToolCapability.FileRead | ToolCapability.FileWrite,
-            requestedPaths: ["C:/sandbox/secrets/creds.txt"]);
+            requestedPaths: [$"{Root}sandbox/secrets/creds.txt"]);
 
         result.IsSuccess.Should().BeFalse("deny overrides allow even when the path is also within an allowed boundary");
     }
@@ -289,13 +318,13 @@ public sealed class CapabilityEnforcementTests
     {
         var config = new SandboxConfig
         {
-            ToolOverrides = new() { ["file_system"] = new ToolOverrideConfig { AllowedPaths = ["C:/sandbox/work"] } }
+            ToolOverrides = new() { ["file_system"] = new ToolOverrideConfig { AllowedPaths = [$"{Root}sandbox/work"] } }
         };
         var (_, enforcer) = Build(config, ("file_system", FileTool()));
 
         var result = await enforcer.EnforceAsync(
             "file_system", ToolCapability.FileRead | ToolCapability.FileWrite,
-            requestedPaths: ["C:/other/place.txt"]);
+            requestedPaths: [$"{Root}other/place.txt"]);
 
         result.IsSuccess.Should().BeFalse();
     }
@@ -308,7 +337,7 @@ public sealed class CapabilityEnforcementTests
         // (requestedPaths: null and [] were treated identically).
         var config = new SandboxConfig
         {
-            ToolOverrides = new() { ["file_system"] = new ToolOverrideConfig { DeniedPaths = ["C:/sandbox/secrets"] } }
+            ToolOverrides = new() { ["file_system"] = new ToolOverrideConfig { DeniedPaths = [$"{Root}sandbox/secrets"] } }
         };
         var (_, enforcer) = Build(config, ("file_system", FileTool()));
 
@@ -336,7 +365,7 @@ public sealed class CapabilityEnforcementTests
         // distinct from null ("could not be determined").
         var config = new SandboxConfig
         {
-            ToolOverrides = new() { ["file_system"] = new ToolOverrideConfig { DeniedPaths = ["C:/sandbox/secrets"] } }
+            ToolOverrides = new() { ["file_system"] = new ToolOverrideConfig { DeniedPaths = [$"{Root}sandbox/secrets"] } }
         };
         var (_, enforcer) = Build(config, ("file_system", FileTool()));
 
@@ -411,6 +440,42 @@ public sealed class CapabilityEnforcementTests
         var result = await enforcer.EnforceAsync(
             "http_tool", ToolCapability.FileRead | ToolCapability.NetworkAccess,
             requestedHosts: ["::1"]);
+
+        result.IsSuccess.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task DeniedHost_UrlSchemeAndPath_StillMatches()
+    {
+        // A resource-parameter of Host kind could carry a full URL, not a bare host — the old
+        // single-colon check treated the whole string as unstrippable and compared it verbatim.
+        var config = new SandboxConfig
+        {
+            ToolOverrides = new() { ["http_tool"] = new ToolOverrideConfig { DeniedHosts = ["evil.com"] } }
+        };
+        var (_, enforcer) = Build(config, ("http_tool", NetworkFileTool()));
+
+        var result = await enforcer.EnforceAsync(
+            "http_tool", ToolCapability.FileRead | ToolCapability.NetworkAccess,
+            requestedHosts: ["https://evil.com/exfil"]);
+
+        result.IsSuccess.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task DeniedHost_ConfiguredEntryCarriesPort_StillMatchesBareRequestedHost()
+    {
+        // The port was only ever stripped from the requested host, never from the configured
+        // pattern — an operator entry of "evil.com:443" could never match anything.
+        var config = new SandboxConfig
+        {
+            ToolOverrides = new() { ["http_tool"] = new ToolOverrideConfig { DeniedHosts = ["evil.com:443"] } }
+        };
+        var (_, enforcer) = Build(config, ("http_tool", NetworkFileTool()));
+
+        var result = await enforcer.EnforceAsync(
+            "http_tool", ToolCapability.FileRead | ToolCapability.NetworkAccess,
+            requestedHosts: ["evil.com"]);
 
         result.IsSuccess.Should().BeFalse();
     }
