@@ -142,6 +142,20 @@ public sealed class ResourceParameterExtractorTests
     }
 
     [Fact]
+    public void Extract_DeclaredParameterIsEmptyString_IsIncludedNotIgnored()
+    {
+        // #595 code-review: an empty string is a present-but-invalid path value, not an absent one.
+        // Excluding it here (as the non-string case above correctly does) would make RequestedPaths
+        // empty, and CapabilityEnforcer treats an empty request as "nothing to check" and passes it —
+        // silently bypassing scoping. Including it lets path validation deny it as unparsable instead.
+        var result = ResourceParameterExtractor.Extract(
+            "read", new Dictionary<string, object?> { ["path"] = "" }, FileSystemMap);
+
+        result.Should().NotBeNull();
+        result!.RequestedPaths.Should().ContainSingle().Which.Should().BeEmpty();
+    }
+
+    [Fact]
     public void Extract_ParametersIsNullButOperationIsDeclared_ReturnsEmptyRequest()
     {
         var result = ResourceParameterExtractor.Extract("read", parameters: null, FileSystemMap);

@@ -501,12 +501,11 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
                 {
                     // A string property keeps its literal quote characters under GetRawText() (e.g. a
                     // "path" value becomes "\"C:\\foo\"", not "C:\\foo"), which breaks path/host scoping
-                    // validation for a value legitimately chained from an upstream step. GetString() for
-                    // strings; GetRawText() stays for every other kind, which downstream consumers still
-                    // expect as JSON-encoded text.
-                    merged.TryAdd(prop.Name, prop.Value.ValueKind == JsonValueKind.String
-                        ? prop.Value.GetString()
-                        : prop.Value.GetRawText());
+                    // validation for a value legitimately chained from an upstream step.
+                    // ToolParameters.NormalizeScalarToText unwraps a string kind the same way and keeps
+                    // GetRawText() for every other kind, which downstream consumers still expect as
+                    // JSON-encoded text.
+                    merged.TryAdd(prop.Name, ToolParameters.NormalizeScalarToText(prop.Value));
                 }
             }
             catch (JsonException) { }

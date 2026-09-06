@@ -25,10 +25,12 @@ public static class ResourceParameterExtractor
     /// resource usage for this call is unknown, and <c>CapabilityEnforcer</c> must treat that as a
     /// reason to refuse when scoping is configured, not as "nothing to check". An operation string
     /// that fails to match anything is exactly as unknown as a missing one: both could be an
-    /// upstream-corrupted value (#587 — a plan step's merged arguments can carry raw, quote-wrapped
-    /// JSON text for an upstream-sourced value) as easily as a genuinely unrecognized name, and
-    /// treating either as "nothing to check" would silently allow a call this method has no basis to
-    /// vouch for.
+    /// upstream-corrupted value (#587 — historically, a plan step's merged arguments could carry raw,
+    /// quote-wrapped JSON text for an upstream-sourced string value; #595 fixed that specific
+    /// mechanism for the plan-step path, but this method has no way to know which caller produced
+    /// <paramref name="operation"/> or whether some other path still can) as easily as a genuinely
+    /// unrecognized name, and treating either as "nothing to check" would silently allow a call this
+    /// method has no basis to vouch for.
     /// <see cref="ToolCallResourceRequest.Empty"/> only when the tool affirmatively recognizes
     /// <paramref name="operation"/> and declares no resource parameters for it. Otherwise the
     /// paths/hosts found among <paramref name="parameters"/> for this operation's declared keys.
@@ -58,7 +60,14 @@ public static class ResourceParameterExtractor
             if (parameters is null || !parameters.TryGetValue(parameterName, out var value))
                 continue;
 
-            if (value is not string { Length: > 0 } text)
+            // Length is deliberately NOT checked here (#595 code-review): a declared parameter that
+            // resolves to a genuinely empty string is a present-but-invalid path/host value, not an
+            // absent one. Excluding it here would drop it from the request entirely, and
+            // CapabilityEnforcer treats an empty request as "nothing to check" and passes it —
+            // silently bypassing scoping instead of letting the empty value reach path/host
+            // validation, which correctly denies it as unparsable. Only a non-string value (including
+            // null) means no usable value was supplied.
+            if (value is not string text)
                 continue;
 
             switch (kind)
