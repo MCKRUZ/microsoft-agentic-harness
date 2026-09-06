@@ -13,6 +13,7 @@ using Application.AI.Common.Services.Tools;
 using Domain.AI.Bundles;
 using Domain.AI.Changes;
 using Domain.AI.Governance;
+using Domain.AI.Models;
 using Domain.AI.Permissions;
 using Domain.AI.Planner;
 using Domain.AI.Sandbox;
@@ -73,10 +74,11 @@ public sealed class ToolPathScopingEndToEndTests
     /// trace, not the returned/reported message.
     /// </summary>
     private static (ToolInvocationGovernor Governor, GovernanceTraceRecorder Trace) BuildGovernor(
-        IServiceProvider toolProvider, SandboxConfig sandboxConfig, IAgentExecutionContext context)
+        IServiceProvider toolProvider, SandboxConfig sandboxConfig, IAgentExecutionContext context,
+        IReadOnlySet<string>? toolNames = null)
     {
         var sandboxMonitor = Mock.Of<IOptionsMonitor<SandboxConfig>>(m => m.CurrentValue == sandboxConfig);
-        var lookup = new FirstPartyToolLookup(toolProvider, new HashSet<string> { "file_system" });
+        var lookup = new FirstPartyToolLookup(toolProvider, toolNames ?? new HashSet<string> { "file_system" });
         var resolver = new ToolPermissionProfileResolver(lookup, sandboxMonitor);
         var enforcer = new CapabilityEnforcer(resolver, NullLogger<CapabilityEnforcer>.Instance);
 
@@ -196,6 +198,36 @@ public sealed class ToolPathScopingEndToEndTests
         using var _ = ToolAdmissionAccessor.Begin(AdmissionHarness.Pipeline(governor: governor, executionContext: context));
 
         var result = await aiFunction.InvokeAsync(ReadArgs(DeniedPath, operation: "Read"));
+
+        result.Should().BeOfType<string>();
+        trace.Snapshot().ToolDecisions.Should().ContainSingle(d => d.Reason.Contains("path denied"));
+        fileSystem.Verify(fs => fs.ReadFileAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task AgentTurnPath_DeniedPath_OperationArrivesAsJsonElement_StillRefuses()
+    {
+        // Regression (#595): every other agent-turn test in this file passes "operation" as a plain
+        // CLR string, so GovernedAIFunction.ReadOperation's JsonElement-unwrap arm — now delegating to
+        // the shared ToolParameters.NormalizeScalar (extracted from three independent copies) — was
+        // never actually exercised end-to-end by this path's own test suite. A caller outside the
+        // standard Microsoft.Extensions.AI pipeline can still put a boxed JsonElement there directly.
+        var (_, fileSystem, toolProvider) = BuildToolFixture();
+        var context = Mock.Of<IAgentExecutionContext>(c => c.AgentId == "test-agent");
+        var (governor, trace) = BuildGovernor(toolProvider, DenyingSandboxConfig(), context);
+
+        var builder = new ToolChainBuilder(
+            NullLogger<ToolChainBuilder>.Instance, toolProvider, new AIToolConverter(NullLogger<AIToolConverter>.Instance));
+        var aiFunction = (AIFunction)builder.BuildToolsByName(["file_system"], "test-agent").Single();
+
+        using var _ = ToolAdmissionAccessor.Begin(AdmissionHarness.Pipeline(governor: governor, executionContext: context));
+
+        var args = new AIFunctionArguments
+        {
+            ["operation"] = JsonSerializer.SerializeToElement("read"),
+            ["parametersJson"] = JsonSerializer.SerializeToElement(new { path = DeniedPath })
+        };
+        var result = await aiFunction.InvokeAsync(args);
 
         result.Should().BeOfType<string>();
         trace.Snapshot().ToolDecisions.Should().ContainSingle(d => d.Reason.Contains("path denied"));
@@ -485,21 +517,28 @@ public sealed class ToolPathScopingEndToEndTests
     }
 
     [Fact]
-    public async Task PlanExecutorPath_CaseVariantDuplicateArgumentKeys_DoesNotThrow_AndStillRefuses()
+    public async Task PlanExecutorPath_CaseVariantDuplicateArgumentKeys_LastWriterWins_CheckedValueMatchesDispatched()
     {
-        // Regression (grader/correctness/security review on #587, rounds 3-4): BuildToolArguments
-        // merges an upstream step's JSON output into the step's own declared parameters via TryAdd on
-        // an ordinal dictionary, so the merged set can legitimately hold two keys that are case-variants
-        // of each other. Round 3's ToDictionary threw ArgumentException uncaught on the collision.
-        // Round 4's last-write-wins fix stopped the throw but only checked whichever value won — while
-        // RunSandboxAsync still dispatches BOTH keys to the tool, which reads its own declared casing.
-        // Using DIFFERENT values on the two keys (an allowed decoy for "Path", the actual denied target
-        // for "path") is the discriminating case a same-value fixture cannot prove: if the enforcer
-        // trusted whichever key won the collision, this call would be wrongly allowed. The fix refuses
-        // outright on any collision instead, so it must refuse here regardless of which value would
-        // have won.
+        // Regression (grader/correctness/security review on #587 rounds 3-4, root-caused on #595):
+        // BuildToolArguments used to merge into an ORDINAL dictionary, so two keys that are
+        // case-variants of each other could coexist as separate entries. Round 3's ToDictionary threw
+        // ArgumentException uncaught on that collision; round 4's admission-layer last-write-wins fix
+        // stopped the throw but only checked whichever value won, while RunSandboxAsync still
+        // dispatched BOTH keys — a plan step could win the check with a decoy and have the tool still
+        // read a denied value under its own declared casing.
+        //
+        // #595 fixed this at the actual source: BuildToolArguments now merges case-insensitively, so
+        // the two keys collapse into ONE entry — whichever was declared last — before either the
+        // resource check or the sandbox dispatch ever sees them. There is no longer a second value for
+        // the tool to read that the check didn't see: the same value is checked AND consumed, by
+        // construction. This test proves both halves — the winning ("Path") value is what gets
+        // checked (call succeeds, since it's in-bounds) AND it's the only value serialized to the
+        // sandbox (the shadowed "path"/denied value never reaches dispatch at all).
         var fileSystem = new Mock<IFileSystemService>();
-        var (executor, sandboxExecutor, trace) = BuildPlanExecutorFixture(DenyingSandboxConfig(), fileSystem);
+        var (executor, sandboxExecutor, _) = BuildPlanExecutorFixture(DenyingSandboxConfig(), fileSystem);
+        sandboxExecutor
+            .Setup(s => s.ExecuteAsync(It.IsAny<SandboxExecutionRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new SandboxExecutionResult { Success = true, Output = "hello world" });
 
         var step = BuildToolStep(new ToolUseConfig
         {
@@ -508,18 +547,18 @@ public sealed class ToolPathScopingEndToEndTests
             {
                 ["operation"] = "read",
                 ["path"] = DeniedPath,
-                ["Path"] = AllowedPath
+                ["Path"] = AllowedPath // declared last in source order — wins the case-insensitive collapse
             }
         });
 
         var result = await executor.ExecuteAsync(step, new Dictionary<PlanStepId, string>(), CancellationToken.None);
 
-        result.Status.Should().Be(StepExecutionStatus.Failed);
-        result.IsPolicyDenial.Should().BeTrue();
-        trace.Snapshot().ToolDecisions.Should().ContainSingle(
-            d => d.Reason.Contains("no requested path could be determined"));
+        result.Status.Should().Be(StepExecutionStatus.Completed);
         sandboxExecutor.Verify(
-            s => s.ExecuteAsync(It.IsAny<SandboxExecutionRequest>(), It.IsAny<CancellationToken>()), Times.Never);
+            s => s.ExecuteAsync(
+                It.Is<SandboxExecutionRequest>(r => r.Input.Contains(AllowedPath) && !r.Input.Contains(DeniedPath)),
+                It.IsAny<CancellationToken>()),
+            Times.Once);
     }
 
     [Fact]
@@ -554,5 +593,119 @@ public sealed class ToolPathScopingEndToEndTests
             d => d.Reason.Contains("no requested path could be determined"));
         sandboxExecutor.Verify(
             s => s.ExecuteAsync(It.IsAny<SandboxExecutionRequest>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    // --- Partial-declaration-map coverage on the two pre-existing paths (#595 item 2) ---
+
+    /// <summary>
+    /// Declares resource parameters for only ONE of its two supported operations — proving that
+    /// <see cref="ResourceParameterExtractor.Extract"/>'s null-for-unrecognized-operation fix (#587
+    /// code-review; originally verified only through <see cref="FileSystemTool"/>, which declares
+    /// every operation it supports) also holds for a genuinely partial declaration map, on the two
+    /// admission paths that predate #587 and had no dedicated test for this shape.
+    /// </summary>
+    private sealed class PartiallyDeclaredTool : ITool
+    {
+        public const string Name_ = "partial_tool";
+        public string Name => Name_;
+        public string Description => "Test tool with a partial ResourceParametersByOperation map.";
+        public IReadOnlyList<string> SupportedOperations => ["declared_op", "undeclared_op"];
+
+        public IReadOnlyDictionary<string, IReadOnlyDictionary<string, ResourceParameterKind>>? ResourceParametersByOperation { get; } =
+            new Dictionary<string, IReadOnlyDictionary<string, ResourceParameterKind>>
+            {
+                ["declared_op"] = new Dictionary<string, ResourceParameterKind> { ["path"] = ResourceParameterKind.Path }
+            };
+
+        public Task<ToolResult> ExecuteAsync(
+            string operation, IReadOnlyDictionary<string, object?> parameters, CancellationToken cancellationToken = default) =>
+            Task.FromResult(ToolResult.Ok("ok"));
+    }
+
+    private static SandboxConfig PartialToolScopingConfig() => new()
+    {
+        ToolOverrides = new()
+        {
+            [PartiallyDeclaredTool.Name_] = new ToolOverrideConfig { DeniedPaths = [$"{Root}sandbox/secrets"] }
+        }
+    };
+
+    [Fact]
+    public async Task AgentTurnPath_UndeclaredOperationOnPartiallyDeclaredTool_RefusesRatherThanAllows()
+    {
+        var tool = new PartiallyDeclaredTool();
+        var services = new ServiceCollection();
+        services.AddKeyedSingleton<ITool>(PartiallyDeclaredTool.Name_, tool);
+        var toolProvider = services.BuildServiceProvider();
+
+        var context = Mock.Of<IAgentExecutionContext>(c => c.AgentId == "test-agent");
+        var (governor, trace) = BuildGovernor(
+            toolProvider, PartialToolScopingConfig(), context, new HashSet<string> { PartiallyDeclaredTool.Name_ });
+
+        var builder = new ToolChainBuilder(
+            NullLogger<ToolChainBuilder>.Instance, toolProvider, new AIToolConverter(NullLogger<AIToolConverter>.Instance));
+        var aiFunction = (AIFunction)builder.BuildToolsByName([PartiallyDeclaredTool.Name_], "test-agent").Single();
+
+        using var _ = ToolAdmissionAccessor.Begin(AdmissionHarness.Pipeline(governor: governor, executionContext: context));
+
+        var args = new AIFunctionArguments
+        {
+            ["operation"] = "undeclared_op",
+            ["parametersJson"] = JsonSerializer.SerializeToElement(new { path = AllowedPath })
+        };
+        var result = await aiFunction.InvokeAsync(args);
+
+        // Before #587's code-review fix, an operation absent from ResourceParametersByOperation
+        // entirely resolved to ToolCallResourceRequest.Empty ("nothing to check") and was ALLOWED —
+        // even though this tool has real path scoping configured. It must now refuse.
+        result.Should().BeOfType<string>();
+        trace.Snapshot().ToolDecisions.Should().ContainSingle(
+            d => d.Reason.Contains("no requested path could be determined"));
+    }
+
+    [Fact]
+    public async Task DirectToolInvokerPath_UndeclaredOperationOnPartiallyDeclaredTool_RefusesRatherThanAllows()
+    {
+        var tool = new PartiallyDeclaredTool();
+        var sandboxConfig = PartialToolScopingConfig();
+
+        GovernanceTraceRecorder? capturedTrace = null;
+
+        var services = new ServiceCollection();
+        services.AddKeyedSingleton<ITool>(PartiallyDeclaredTool.Name_, tool);
+        services.AddScoped<IAgentExecutionContext, AgentExecutionContext>();
+        services.AddScoped<IToolCallAdmissionPipeline>(sp =>
+        {
+            var (governor, trace) = BuildGovernor(
+                sp, sandboxConfig, sp.GetRequiredService<IAgentExecutionContext>(),
+                new HashSet<string> { PartiallyDeclaredTool.Name_ });
+            capturedTrace = trace;
+            return AdmissionHarness.Pipeline(
+                governor: governor, executionContext: sp.GetRequiredService<IAgentExecutionContext>(), trace: trace);
+        });
+
+        var provider = services.BuildServiceProvider();
+        var invoker = new DirectToolInvoker(
+            provider.GetRequiredService<IServiceScopeFactory>(),
+            new ToolCatalog(provider, [PartiallyDeclaredTool.Name_], NullLogger<ToolCatalog>.Instance),
+            Mock.Of<IOptionsMonitor<DirectToolInvocationConfig>>(
+                m => m.CurrentValue == new DirectToolInvocationConfig { Enabled = true }),
+            NullLogger<DirectToolInvoker>.Instance);
+
+        var request = new DirectToolInvocationRequest
+        {
+            ToolName = PartiallyDeclaredTool.Name_,
+            Operation = "undeclared_op",
+            Parameters = new Dictionary<string, object?> { ["path"] = AllowedPath },
+            OwnerId = "caller-1",
+            Envelope = new CapabilityEnvelope { AllowedTools = [PartiallyDeclaredTool.Name_] }
+        };
+
+        var outcome = await invoker.InvokeAsync(request, CancellationToken.None);
+
+        outcome.Status.Should().Be(DirectToolInvocationStatus.Denied);
+        capturedTrace.Should().NotBeNull();
+        capturedTrace!.Snapshot().ToolDecisions.Should().ContainSingle(
+            d => d.Reason.Contains("no requested path could be determined"));
     }
 }
