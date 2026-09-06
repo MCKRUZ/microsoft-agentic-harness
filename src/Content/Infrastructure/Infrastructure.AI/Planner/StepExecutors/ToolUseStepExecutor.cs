@@ -449,6 +449,7 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
     /// into the effective argument set the tool will be invoked with.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Case-insensitive by construction (#595 — root-cause fix, correctness/security review on #587
     /// round 3-4): matches <c>ToolParameters.Flatten</c>'s convention on the agent-turn path, and
     /// eliminates the case-variant-duplicate-key ambiguity at its source instead of detecting and
@@ -462,6 +463,21 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
     /// empirically that overload throws <see cref="ArgumentException"/> when the source (ordinal)
     /// dictionary already holds two case-variant keys and the new comparer is case-insensitive, the
     /// same crash class fixed once already in this method's history.
+    /// </para>
+    /// <para>
+    /// <strong>Two collision policies, by design, not by accident (code-review on #595):</strong> a
+    /// declared parameter always wins over an upstream-produced value of the same (case-insensitive)
+    /// name — the upstream-merge loop below uses <c>TryAdd</c>, which never overwrites an entry the
+    /// first loop already placed — because a step's own declared arguments are the plan author's
+    /// explicit intent and an upstream step's output is untrusted-relative-to-that-intent data flowing
+    /// in. Within EACH loop, though, a genuine collision (two declared keys, or two upstream keys, that
+    /// are case-variants of each other) resolves by index assignment / last-write-wins, which depends
+    /// on <paramref name="config"/>.<c>InputParameters</c>'s own enumeration order — an implementation
+    /// detail of whatever <see cref="IReadOnlyDictionary{TKey,TValue}"/> a producer supplies, not a
+    /// contractual guarantee. That ambiguity is harmless from a security standpoint (whichever value
+    /// wins is both the one checked and the one dispatched — see above), but which specific value wins
+    /// is not itself guaranteed stable across producers or runtimes.
+    /// </para>
     /// </remarks>
     private static Dictionary<string, object?> BuildToolArguments(
         ToolUseConfig config,
@@ -471,6 +487,8 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
         foreach (var (key, value) in config.InputParameters)
             merged[key] = value;
 
+        // TryAdd (not index assignment): a declared parameter always wins over an upstream-produced
+        // value of the same name, across casing now too — see the class remarks above.
         foreach (var (_, output) in upstreamOutputs)
         {
             if (string.IsNullOrEmpty(output)) continue;

@@ -528,12 +528,16 @@ public sealed class ToolPathScopingEndToEndTests
         // read a denied value under its own declared casing.
         //
         // #595 fixed this at the actual source: BuildToolArguments now merges case-insensitively, so
-        // the two keys collapse into ONE entry — whichever was declared last — before either the
-        // resource check or the sandbox dispatch ever sees them. There is no longer a second value for
-        // the tool to read that the check didn't see: the same value is checked AND consumed, by
-        // construction. This test proves both halves — the winning ("Path") value is what gets
-        // checked (call succeeds, since it's in-bounds) AND it's the only value serialized to the
-        // sandbox (the shadowed "path"/denied value never reaches dispatch at all).
+        // the two keys collapse into ONE entry before either the resource check or the sandbox
+        // dispatch ever sees them. There is no longer a second value for the tool to read that the
+        // check didn't see: the same value is checked AND consumed, by construction — proven here
+        // regardless of WHICH value survives the collapse. Which one wins depends on
+        // config.InputParameters's own enumeration order (an implementation detail of whatever
+        // IReadOnlyDictionary a producer supplies, not a contractual guarantee — code-review finding);
+        // this test pins today's Dictionary-insertion-order behavior ("Path", declared second, wins)
+        // without asserting that order is itself guaranteed. This test proves both halves — the
+        // winning value is what gets checked (call succeeds, since it's in-bounds) AND it's the only
+        // value serialized to the sandbox (the shadowed "path"/denied value never reaches dispatch).
         var fileSystem = new Mock<IFileSystemService>();
         var (executor, sandboxExecutor, _) = BuildPlanExecutorFixture(DenyingSandboxConfig(), fileSystem);
         sandboxExecutor
@@ -557,6 +561,52 @@ public sealed class ToolPathScopingEndToEndTests
         sandboxExecutor.Verify(
             s => s.ExecuteAsync(
                 It.Is<SandboxExecutionRequest>(r => r.Input.Contains(AllowedPath) && !r.Input.Contains(DeniedPath)),
+                It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task PlanExecutorPath_DeclaredParameterCollidesWithUpstreamKey_DeclaredWinsAcrossCasing()
+    {
+        // Regression (code-review on #595): the earlier collision test only covers two keys declared
+        // together in the SAME step's own InputParameters. This covers the other shape the fix must
+        // also hold for: a declared parameter colliding (case-insensitively) with a key an UPSTREAM
+        // step's JSON output produces. BuildToolArguments's upstream-merge loop uses TryAdd specifically
+        // so a declared parameter always wins over upstream-produced data of the same name — proven
+        // here to hold across casing too, not just exact-name collisions.
+        //
+        // Deliberately asserts SUCCESS, not refusal: an upstream-merged value is always GetRawText()
+        // quoted JSON text (#587/#595 item 5, tracked separately), so if the upstream decoy wrongly won
+        // the collision, the call would ALSO be refused — just for an unrelated reason (the quoted text
+        // fails path normalization), not because TryAdd worked. That shape would make an "expect
+        // refusal" assertion pass regardless of which value won, hiding the exact bug this test exists
+        // to catch (confirmed by mutation-testing: index-assignment instead of TryAdd here produced an
+        // unexpected PASS against the original, refusal-based version of this test). Asserting success
+        // with the DECLARED (in-bounds) value, and that the dispatched payload contains it while the
+        // upstream decoy text never appears, is the one shape where the two outcomes genuinely diverge.
+        var fileSystem = new Mock<IFileSystemService>();
+        var (executor, sandboxExecutor, _) = BuildPlanExecutorFixture(DenyingSandboxConfig(), fileSystem);
+        sandboxExecutor
+            .Setup(s => s.ExecuteAsync(It.IsAny<SandboxExecutionRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new SandboxExecutionResult { Success = true, Output = "hello world" });
+
+        const string upstreamDecoyText = "upstream-decoy-should-never-win";
+        var step = BuildToolStep(new ToolUseConfig
+        {
+            ToolName = "file_system",
+            InputParameters = new Dictionary<string, object?> { ["operation"] = "read", ["path"] = AllowedPath }
+        });
+        var upstreamOutputs = new Dictionary<PlanStepId, string>
+        {
+            [new PlanStepId(Guid.NewGuid())] = JsonSerializer.Serialize(new { Path = upstreamDecoyText })
+        };
+
+        var result = await executor.ExecuteAsync(step, upstreamOutputs, CancellationToken.None);
+
+        result.Status.Should().Be(StepExecutionStatus.Completed);
+        sandboxExecutor.Verify(
+            s => s.ExecuteAsync(
+                It.Is<SandboxExecutionRequest>(r => r.Input.Contains(AllowedPath) && !r.Input.Contains(upstreamDecoyText)),
                 It.IsAny<CancellationToken>()),
             Times.Once);
     }

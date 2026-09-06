@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Application.AI.Common.Interfaces.GitOps;
 using Application.AI.Common.Interfaces.Tools;
+using Application.AI.Common.Services.Tools;
 using Domain.AI.Changes;
 using Domain.AI.Models;
 using Domain.AI.Sandbox;
@@ -113,7 +114,10 @@ public sealed class K8sGptAnalyzeTool : ITool
         if (!parameters.TryGetValue("filters", out var v) || v is null)
             return [];
 
-        return v switch
+        // ToolParameters.NormalizeScalar (#595) unwraps a string-valued JsonElement to a plain string
+        // before the switch runs, so the CLR-string and JsonElement-string cases collapse into the
+        // same arm below — this used to be a fourth independent copy of that unwrap logic.
+        return ToolParameters.NormalizeScalar(v) switch
         {
             IEnumerable<string> list => list.Where(static x => !string.IsNullOrWhiteSpace(x)).ToArray(),
             string csv => SplitCsv(csv),
@@ -123,7 +127,6 @@ public sealed class K8sGptAnalyzeTool : ITool
                    .Where(static x => !string.IsNullOrWhiteSpace(x))
                    .Select(static x => x!)
                    .ToArray(),
-            JsonElement { ValueKind: JsonValueKind.String } str => SplitCsv(str.GetString() ?? string.Empty),
             _ => [],
         };
     }
