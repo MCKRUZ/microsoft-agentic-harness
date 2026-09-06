@@ -190,12 +190,15 @@ public static class ToolParameters
     /// <see cref="JsonElement"/>; that element's raw JSON text when it is a non-string
     /// <see cref="JsonElement"/>; otherwise <paramref name="value"/> itself, unchanged.
     /// </returns>
-    public static object? NormalizeScalarToText(object? value) => value switch
+    public static object? NormalizeScalarToText(object? value)
     {
-        JsonElement { ValueKind: JsonValueKind.String } je => je.GetString(),
-        JsonElement je => je.GetRawText(),
-        _ => value
-    };
+        // Delegates the string-unwrap rule to NormalizeScalar instead of re-matching it (/simplify):
+        // a string-valued JsonElement is already unwrapped to a plain string by NormalizeScalar, so it
+        // never reaches the JsonElement check below; anything NormalizeScalar left as a JsonElement is
+        // by definition non-string here.
+        var normalized = NormalizeScalar(value);
+        return normalized is JsonElement je ? je.GetRawText() : normalized;
+    }
 
     /// <summary>
     /// The shared answer for "no parameters". A fresh dictionary per call would allocate on the
