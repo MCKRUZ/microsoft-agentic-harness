@@ -62,9 +62,10 @@ public sealed partial class SkillMetadataParser
     /// </param>
     /// <param name="egressValidator">
     /// Validates a parsed <see cref="EgressManifest"/> against the same SSRF-narrow rules the
-    /// runtime egress policy applies (#531) — auto-discovered via <c>AddValidatorsFromAssembly</c> on
-    /// the <c>Application.AI.Common</c> assembly, so no manual registration is needed beyond this
-    /// constructor injection giving it a real caller.
+    /// runtime egress policy applies (#531). Registered explicitly as a singleton in
+    /// <c>SkillDiscoveryServiceCollectionExtensions.AddSkillDiscovery</c> — see that method's remarks
+    /// for why a plain <c>AddValidatorsFromAssembly</c> registration (scoped by default) is not
+    /// sufficient here.
     /// </param>
     public SkillMetadataParser(
         ILogger<SkillMetadataParser> logger,

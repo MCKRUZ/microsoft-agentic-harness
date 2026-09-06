@@ -46,9 +46,17 @@ public static class SkillDiscoveryServiceCollectionExtensions
     /// standalone MCP server, per this method's own remarks above) never runs
     /// <c>AddApplicationAIDependencies</c>'s <c>AddValidatorsFromAssembly</c> at all, so without this
     /// line <see cref="SkillMetadataParser"/> would fail to construct there outright, not merely with
-    /// the wrong lifetime. A caller that DOES also run the assembly scan ends up with two registrations
-    /// for the same service; the last one registered wins for direct resolution, so composition order
-    /// decides nothing here — this singleton always satisfies the constructor.
+    /// the wrong lifetime.
+    /// </para>
+    /// <para>
+    /// <b>Composition order still matters for a caller that also runs the assembly scan.</b> .NET DI
+    /// resolves the LAST registration of a service type for direct injection, so this singleton wins
+    /// only because <c>AddGlobalProjectDependencies</c> calls <c>AddApplicationAIDependencies</c>
+    /// (line ~532, the scoped scan) before <c>AddInfrastructureAIDependencies</c> → this method
+    /// (line ~543). A future reordering of those two calls would silently restore the captive-dependency
+    /// failure this fix closes — <c>ValidateOnBuild</c> would catch it, but only at container-build
+    /// time, not at compile time. Keep this registration downstream of any consumer's own
+    /// <c>AddValidatorsFromAssembly</c> call over an assembly that scans <see cref="EgressManifestValidator"/>.
     /// </para>
     /// </remarks>
     /// <param name="services">The service collection to register into.</param>

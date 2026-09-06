@@ -189,7 +189,7 @@ internal sealed class GovernedAIFunction : DelegatingAIFunction
     /// the same scope without duplicating the check.
     /// </summary>
     private IDisposable? BeginSkillScope() =>
-        _skillId is not null ? _currentSkillAccessor?.BeginScope(_skillId) : null;
+        !string.IsNullOrWhiteSpace(_skillId) ? _currentSkillAccessor?.BeginScope(_skillId) : null;
 
     /// <summary>
     /// Extracts this call's requested paths/hosts (#418), when the wrapped function is a
