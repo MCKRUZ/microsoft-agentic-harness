@@ -386,75 +386,42 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
     /// <c>object?</c>-typed dictionary values bind as <see cref="JsonElement"/>, not <see cref="string"/>.
     /// Left unhandled, that producer's calls would silently never populate a resource request at all —
     /// fail-closed (no bypass), but #587's own goal of enforcing identically across all three admission
-    /// paths would quietly not hold for it. <see cref="NormalizeScalar"/> unwraps a string-valued
-    /// <see cref="JsonElement"/> the same way <see cref="GovernedAIFunction"/> already does for its own
-    /// wire shape, so both plan-authoring producers reach <see cref="ResourceParameterExtractor.Extract"/>
-    /// on equal footing.
+    /// paths would quietly not hold for it. <see cref="ToolParameters.NormalizeScalar"/> unwraps a
+    /// string-valued <see cref="JsonElement"/> the same way <see cref="GovernedAIFunction"/> already
+    /// does for its own wire shape (both now call the same shared helper, #595), so both
+    /// plan-authoring producers reach <see cref="ResourceParameterExtractor.Extract"/> on equal footing.
     /// </para>
     /// <para>
-    /// Case-insensitive by construction (correctness review on #587), matching both other admission
-    /// paths: <c>ToolParameters.Flatten</c> (the agent-turn path) hands <see cref="ResourceParameterExtractor.Extract"/>
-    /// an <see cref="StringComparer.OrdinalIgnoreCase"/> dictionary, and a step naming a declared
-    /// parameter with different casing (e.g. <c>"Path"</c> against a declared <c>"path"</c>) must not
-    /// silently miss the match — that would resolve to <see cref="Domain.AI.Sandbox.ToolCallResourceRequest.Empty"/>,
-    /// which <c>CapabilityEnforcer</c> treats as "nothing to check" and allows.
-    /// </para>
-    /// <para>
-    /// <paramref name="arguments"/> is itself ordinal — <c>BuildToolArguments</c> merges an upstream
-    /// step's JSON output into the step's own declared parameters via <c>TryAdd</c> on a case-sensitive
-    /// dictionary — so it can legitimately hold two keys that are case-variants of each other (e.g. a
-    /// declared <c>"path"</c> alongside an upstream-produced <c>"Path"</c>). Re-keying that with
-    /// <see cref="Enumerable.ToDictionary{TSource,TKey,TElement}(IEnumerable{TSource},Func{TSource,TKey},Func{TSource,TElement})"/>
-    /// threw <see cref="ArgumentException"/> on the colliding key (grader/correctness review, round 3).
-    /// A last-write-wins loop fixed the throw but introduced a worse defect (security review, round 4):
-    /// the enforcer would then validate only whichever value won the collision, while
-    /// <c>RunSandboxAsync</c> still serializes and dispatches the WHOLE original dictionary — both
-    /// keys — to the tool. A plan step could name the denied path under one casing and an in-bounds
-    /// decoy under the other, win the check with the decoy, and have the sandboxed tool still read the
-    /// denied one under its own declared (differently-cased) key. Checked value must equal consumed
-    /// value; when a collision makes that impossible to guarantee, refuse rather than pick one side of
-    /// the ambiguity to trust — the same fail-closed posture as an unreadable operation.
+    /// <paramref name="arguments"/> is already case-insensitive — <c>BuildToolArguments</c> (#595)
+    /// merges into an <see cref="StringComparer.OrdinalIgnoreCase"/> dictionary from the start, the
+    /// same convention <c>ToolParameters.Flatten</c> uses on the agent-turn path — so a step naming a
+    /// declared parameter with different casing (e.g. <c>"Path"</c> against a declared <c>"path"</c>)
+    /// already matches by the time it reaches this method, and two keys that are case-variants of each
+    /// other have already collapsed into one entry (whichever was written last) before either this
+    /// check or <c>RunSandboxAsync</c>'s dispatch ever sees them — no collision is possible here to
+    /// detect. (Earlier revisions of this method built their own case-insensitive copy and had to
+    /// detect and refuse such a collision themselves; #595 moved the fix to its actual source.)
     /// </para>
     /// </remarks>
     private Domain.AI.Sandbox.ToolCallResourceRequest? ExtractResourceRequest(
         string toolName, IReadOnlyDictionary<string, object?> arguments)
     {
         // Resolved first so a tool with no resource-parameter declaration (or one outside the bounded
-        // first-party set) skips the dictionary copy below entirely — Extract would return null anyway.
+        // first-party set) skips the normalization pass below entirely — Extract would return null anyway.
         var tool = _firstPartyToolLookup.Resolve(toolName);
         if (tool?.ResourceParametersByOperation is not { Count: > 0 } declared)
             return null;
 
         var normalizedArguments = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
         foreach (var (key, value) in arguments)
-        {
-            // TryAdd fails only on a case-variant collision — arguments' own (ordinal) key set is
-            // already unique, so this is the first point two differently-cased keys can coincide.
-            // Refuse outright rather than let one arbitrarily win: see the class remarks above.
-            if (!normalizedArguments.TryAdd(key, NormalizeScalar(value)))
-                return null;
-        }
+            normalizedArguments[key] = ToolParameters.NormalizeScalar(value);
 
-        // Read from the normalized dictionary, not the raw arguments, so a differently-cased key
-        // ("Operation") matches the same way every declared resource-parameter name already does.
         var operation = normalizedArguments.TryGetValue(AIToolConverter.OperationArgumentName, out var operationValue)
             ? operationValue as string
             : null;
 
         return ResourceParameterExtractor.Extract(operation, normalizedArguments, declared);
     }
-
-    /// <summary>
-    /// Unwraps a string-valued <see cref="JsonElement"/> to the plain <see cref="string"/>
-    /// <see cref="ResourceParameterExtractor.Extract"/> expects; every other shape (already a CLR
-    /// scalar, or a non-string <see cref="JsonElement"/> that could never be a path/host anyway) passes
-    /// through unchanged.
-    /// </summary>
-    private static object? NormalizeScalar(object? value) => value switch
-    {
-        JsonElement { ValueKind: JsonValueKind.String } je => je.GetString(),
-        _ => value
-    };
 
     private static SandboxIsolationLevel DetermineIsolation(
         ToolUseConfig config,
@@ -481,12 +448,47 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
     /// Merges the step's declared parameters with any JSON object fields produced by upstream steps
     /// into the effective argument set the tool will be invoked with.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Case-insensitive by construction (#595 — root-cause fix, correctness/security review on #587
+    /// round 3-4): matches <c>ToolParameters.Flatten</c>'s convention on the agent-turn path, and
+    /// eliminates the case-variant-duplicate-key ambiguity at its source instead of detecting and
+    /// refusing it downstream in <see cref="ExtractResourceRequest"/>. A declared parameter and an
+    /// upstream-produced value that are case-variants of each other (e.g. <c>"path"</c> and
+    /// <c>"Path"</c>) now collapse into ONE entry before either the resource check or
+    /// <see cref="RunSandboxAsync"/>'s dispatch ever sees them — the same value is checked and
+    /// consumed, structurally, rather than by convention. The initial copy from
+    /// <paramref name="config"/>.<see cref="ToolUseConfig.InputParameters"/> uses index assignment,
+    /// not <c>Dictionary</c>'s <c>(source, comparer)</c> copy constructor overload — verified
+    /// empirically that overload throws <see cref="ArgumentException"/> when the source (ordinal)
+    /// dictionary already holds two case-variant keys and the new comparer is case-insensitive, the
+    /// same crash class fixed once already in this method's history.
+    /// </para>
+    /// <para>
+    /// <strong>Two collision policies, by design, not by accident (code-review on #595):</strong> a
+    /// declared parameter always wins over an upstream-produced value of the same (case-insensitive)
+    /// name — the upstream-merge loop below uses <c>TryAdd</c>, which never overwrites an entry the
+    /// first loop already placed — because a step's own declared arguments are the plan author's
+    /// explicit intent and an upstream step's output is untrusted-relative-to-that-intent data flowing
+    /// in. Within EACH loop, though, a genuine collision (two declared keys, or two upstream keys, that
+    /// are case-variants of each other) resolves by index assignment / last-write-wins, which depends
+    /// on <paramref name="config"/>.<c>InputParameters</c>'s own enumeration order — an implementation
+    /// detail of whatever <see cref="IReadOnlyDictionary{TKey,TValue}"/> a producer supplies, not a
+    /// contractual guarantee. That ambiguity is harmless from a security standpoint (whichever value
+    /// wins is both the one checked and the one dispatched — see above), but which specific value wins
+    /// is not itself guaranteed stable across producers or runtimes.
+    /// </para>
+    /// </remarks>
     private static Dictionary<string, object?> BuildToolArguments(
         ToolUseConfig config,
         IReadOnlyDictionary<PlanStepId, string> upstreamOutputs)
     {
-        var merged = new Dictionary<string, object?>(config.InputParameters);
+        var merged = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (key, value) in config.InputParameters)
+            merged[key] = value;
 
+        // TryAdd (not index assignment): a declared parameter always wins over an upstream-produced
+        // value of the same name, across casing now too — see the class remarks above.
         foreach (var (_, output) in upstreamOutputs)
         {
             if (string.IsNullOrEmpty(output)) continue;

@@ -139,6 +139,35 @@ public static class ToolParameters
     }
 
     /// <summary>
+    /// Unwraps a string-valued <see cref="JsonElement"/> to the plain <see cref="string"/> a caller
+    /// that matches by CLR type (<c>value is string</c>) actually needs; every other shape (already a
+    /// CLR scalar, or a non-string <see cref="JsonElement"/>) passes through unchanged.
+    /// </summary>
+    /// <remarks>
+    /// Extracted (#595) from what turned out to be FOUR independent copies of the same switch arm —
+    /// <c>GovernedAIFunction.ReadOperation</c>, <c>ToolUseStepExecutor.NormalizeScalar</c>,
+    /// <c>K8sGptAnalyzeTool.ReadFilters</c>, and a broader version in
+    /// <c>LlmPlanOutputMapper.GetJsonValue</c> — that had already drifted apart once (one handled only
+    /// the string case, one passed everything else through, one handled numbers/bools/null too). A
+    /// caller needing only the string-unwrap behavior calls this directly; <c>GetJsonValue</c>'s
+    /// broader scalar conversion is a separate concern (parsing a whole JSON value at rest, not
+    /// normalizing one already-extracted argument) and is not folded in here. A similar, more involved
+    /// duplicate lives in <c>ConditionalBranchStepExecutor.BuildEvaluationContext</c> (typed CLR
+    /// conversion, not just string-unwrap) — tracked separately (#595 follow-up) rather than folded in
+    /// here, since reconciling it changes that executor's own semantics.
+    /// </remarks>
+    /// <param name="value">The value to normalize — any CLR scalar, or a boxed <see cref="JsonElement"/>.</param>
+    /// <returns>
+    /// The unwrapped <see cref="string"/> when <paramref name="value"/> is a string-valued
+    /// <see cref="JsonElement"/>; otherwise <paramref name="value"/> itself, unchanged.
+    /// </returns>
+    public static object? NormalizeScalar(object? value) => value switch
+    {
+        JsonElement { ValueKind: JsonValueKind.String } je => je.GetString(),
+        _ => value
+    };
+
+    /// <summary>
     /// The shared answer for "no parameters". A fresh dictionary per call would allocate on the
     /// commonest path, since several operations take no arguments at all.
     /// </summary>

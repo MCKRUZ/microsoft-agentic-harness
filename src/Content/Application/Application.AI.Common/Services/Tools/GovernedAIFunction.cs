@@ -223,12 +223,10 @@ internal sealed class GovernedAIFunction : DelegatingAIFunction
         if (!arguments.TryGetValue(AIToolConverter.OperationArgumentName, out var value))
             return null;
 
-        return value switch
-        {
-            string s => s,
-            JsonElement { ValueKind: JsonValueKind.String } je => je.GetString(),
-            _ => null
-        };
+        // ToolParameters.NormalizeScalar unwraps a string-valued JsonElement; anything it doesn't
+        // return as a string (a CLR non-string, or a non-string JsonElement) falls out here as null,
+        // preserving this method's original three-arm behavior (#595).
+        return ToolParameters.NormalizeScalar(value) as string;
     }
 
     /// <summary>
