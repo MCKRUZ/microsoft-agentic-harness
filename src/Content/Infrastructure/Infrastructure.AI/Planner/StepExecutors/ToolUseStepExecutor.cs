@@ -436,11 +436,9 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
                 return null;
         }
 
-        // "operation" duplicates AIToolConverter.OperationArgumentName's value — that constant is
-        // internal to a different assembly (Application.AI.Common) and not visible here. Keep in sync.
         // Read from the normalized dictionary, not the raw arguments, so a differently-cased key
         // ("Operation") matches the same way every declared resource-parameter name already does.
-        var operation = normalizedArguments.TryGetValue("operation", out var operationValue)
+        var operation = normalizedArguments.TryGetValue(AIToolConverter.OperationArgumentName, out var operationValue)
             ? operationValue as string
             : null;
 

@@ -521,4 +521,38 @@ public sealed class ToolPathScopingEndToEndTests
         sandboxExecutor.Verify(
             s => s.ExecuteAsync(It.IsAny<SandboxExecutionRequest>(), It.IsAny<CancellationToken>()), Times.Never);
     }
+
+    [Fact]
+    public async Task PlanExecutorPath_OperationSourcedFromUpstreamOutput_CorruptedByRawTextQuoting_StillRefuses()
+    {
+        // Regression (code-review on #587): BuildToolArguments merges an upstream step's JSON output
+        // via JsonElement.GetRawText(), which keeps the literal JSON quote characters on string values
+        // — so an operation name sourced purely from upstream output arrives as "\"read\"", not "read".
+        // Before ResourceParameterExtractor.Extract's fix, an operation that fails to match any declared
+        // name returned ToolCallResourceRequest.Empty (not null), which CapabilityEnforcer trusts as
+        // "nothing to check" and allows — silently defeating path scoping for exactly the plan-executor
+        // path #587 set out to close.
+        var fileSystem = new Mock<IFileSystemService>();
+        var (executor, sandboxExecutor, trace) = BuildPlanExecutorFixture(DenyingSandboxConfig(), fileSystem);
+
+        // Operation/path arrive only via the upstream merge, not the step's own declared parameters.
+        var step = BuildToolStep(new ToolUseConfig
+        {
+            ToolName = "file_system",
+            InputParameters = new Dictionary<string, object?>()
+        });
+        var upstreamOutputs = new Dictionary<PlanStepId, string>
+        {
+            [new PlanStepId(Guid.NewGuid())] = JsonSerializer.Serialize(new { operation = "read", path = DeniedPath })
+        };
+
+        var result = await executor.ExecuteAsync(step, upstreamOutputs, CancellationToken.None);
+
+        result.Status.Should().Be(StepExecutionStatus.Failed);
+        result.IsPolicyDenial.Should().BeTrue();
+        trace.Snapshot().ToolDecisions.Should().ContainSingle(
+            d => d.Reason.Contains("no requested path could be determined"));
+        sandboxExecutor.Verify(
+            s => s.ExecuteAsync(It.IsAny<SandboxExecutionRequest>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
 }
