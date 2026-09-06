@@ -61,6 +61,14 @@ public sealed partial class CapabilityEnforcer
         {
             var normalizedHost = NormalizeHostForMatch(host);
 
+            // Mirrors ValidatePaths' unconditional rejection of an unparsable path (#595
+            // code-review): an empty/unparsable host is refused regardless of whether AllowedHosts
+            // is configured, not only when it fails to match an allow entry. Without this, a
+            // deny-list-only configuration (no AllowedHosts, so the allow-check below never runs)
+            // would silently admit an empty host that matches no configured deny pattern.
+            if (string.IsNullOrEmpty(normalizedHost))
+                return host;
+
             if (deniedPatterns.Any(pattern => HostPatternMatches(normalizedHost, pattern)))
                 return host;
 
