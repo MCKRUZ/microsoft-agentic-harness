@@ -400,16 +400,21 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
     /// which <c>CapabilityEnforcer</c> treats as "nothing to check" and allows.
     /// </para>
     /// <para>
-    /// Built with a last-write-wins loop, not <see cref="Enumerable.ToDictionary{TSource,TKey,TElement}(IEnumerable{TSource},Func{TSource,TKey},Func{TSource,TElement})"/>
-    /// (grader/correctness review on #587): <paramref name="arguments"/> is itself ordinal —
-    /// <c>BuildToolArguments</c> merges an upstream step's JSON output into the step's own declared
-    /// parameters via <c>TryAdd</c> on a case-sensitive dictionary — so it can legitimately hold two
-    /// keys that are case-variants of each other (e.g. a declared <c>"path"</c> alongside an
-    /// upstream-produced <c>"Path"</c>). Re-keying that into an <see cref="StringComparer.OrdinalIgnoreCase"/>
-    /// dictionary via <c>ToDictionary</c> would throw <see cref="ArgumentException"/> on the second,
-    /// colliding key instead of resolving it — an admission-time crash that reaches
-    /// <c>PlanExecutor</c>'s broad exception handler uncaught, which is a materially worse failure mode
-    /// than the clean, traced refusal every other path in this admission chain produces.
+    /// <paramref name="arguments"/> is itself ordinal — <c>BuildToolArguments</c> merges an upstream
+    /// step's JSON output into the step's own declared parameters via <c>TryAdd</c> on a case-sensitive
+    /// dictionary — so it can legitimately hold two keys that are case-variants of each other (e.g. a
+    /// declared <c>"path"</c> alongside an upstream-produced <c>"Path"</c>). Re-keying that with
+    /// <see cref="Enumerable.ToDictionary{TSource,TKey,TElement}(IEnumerable{TSource},Func{TSource,TKey},Func{TSource,TElement})"/>
+    /// threw <see cref="ArgumentException"/> on the colliding key (grader/correctness review, round 3).
+    /// A last-write-wins loop fixed the throw but introduced a worse defect (security review, round 4):
+    /// the enforcer would then validate only whichever value won the collision, while
+    /// <c>RunSandboxAsync</c> still serializes and dispatches the WHOLE original dictionary — both
+    /// keys — to the tool. A plan step could name the denied path under one casing and an in-bounds
+    /// decoy under the other, win the check with the decoy, and have the sandboxed tool still read the
+    /// denied one under its own declared (differently-cased) key. Checked value must equal consumed
+    /// value; when a collision makes that impossible to guarantee, refuse rather than pick one side of
+    /// the ambiguity to trust — the same fail-closed posture as an unreadable operation or a
+    /// non-string parameter value.
     /// </para>
     /// </remarks>
     private Domain.AI.Sandbox.ToolCallResourceRequest? ExtractResourceRequest(
@@ -423,7 +428,13 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
 
         var normalizedArguments = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
         foreach (var (key, value) in arguments)
-            normalizedArguments[key] = NormalizeScalar(value);
+        {
+            // TryAdd fails only on a case-variant collision — arguments' own (ordinal) key set is
+            // already unique, so this is the first point two differently-cased keys can coincide.
+            // Refuse outright rather than let one arbitrarily win: see the class remarks above.
+            if (!normalizedArguments.TryAdd(key, NormalizeScalar(value)))
+                return null;
+        }
 
         // "operation" duplicates AIToolConverter.OperationArgumentName's value — that constant is
         // internal to a different assembly (Application.AI.Common) and not visible here. Keep in sync.

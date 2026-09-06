@@ -487,12 +487,17 @@ public sealed class ToolPathScopingEndToEndTests
     [Fact]
     public async Task PlanExecutorPath_CaseVariantDuplicateArgumentKeys_DoesNotThrow_AndStillRefuses()
     {
-        // Regression (grader/correctness/security review on #587, round 3): BuildToolArguments merges
-        // an upstream step's JSON output into the step's own declared parameters via TryAdd on an
-        // ordinal dictionary, so the merged set can legitimately hold two keys that are case-variants
-        // of each other. Re-keying that into a case-insensitive dictionary via ToDictionary threw
-        // ArgumentException uncaught, reaching PlanExecutor's broad handler instead of a clean, traced
-        // refusal — a materially worse failure mode than every other admission path in this chain.
+        // Regression (grader/correctness/security review on #587, rounds 3-4): BuildToolArguments
+        // merges an upstream step's JSON output into the step's own declared parameters via TryAdd on
+        // an ordinal dictionary, so the merged set can legitimately hold two keys that are case-variants
+        // of each other. Round 3's ToDictionary threw ArgumentException uncaught on the collision.
+        // Round 4's last-write-wins fix stopped the throw but only checked whichever value won — while
+        // RunSandboxAsync still dispatches BOTH keys to the tool, which reads its own declared casing.
+        // Using DIFFERENT values on the two keys (an allowed decoy for "Path", the actual denied target
+        // for "path") is the discriminating case a same-value fixture cannot prove: if the enforcer
+        // trusted whichever key won the collision, this call would be wrongly allowed. The fix refuses
+        // outright on any collision instead, so it must refuse here regardless of which value would
+        // have won.
         var fileSystem = new Mock<IFileSystemService>();
         var (executor, sandboxExecutor, trace) = BuildPlanExecutorFixture(DenyingSandboxConfig(), fileSystem);
 
@@ -503,7 +508,7 @@ public sealed class ToolPathScopingEndToEndTests
             {
                 ["operation"] = "read",
                 ["path"] = DeniedPath,
-                ["Path"] = DeniedPath
+                ["Path"] = AllowedPath
             }
         });
 
@@ -511,7 +516,8 @@ public sealed class ToolPathScopingEndToEndTests
 
         result.Status.Should().Be(StepExecutionStatus.Failed);
         result.IsPolicyDenial.Should().BeTrue();
-        trace.Snapshot().ToolDecisions.Should().ContainSingle(d => d.Reason.Contains("path denied"));
+        trace.Snapshot().ToolDecisions.Should().ContainSingle(
+            d => d.Reason.Contains("no requested path could be determined"));
         sandboxExecutor.Verify(
             s => s.ExecuteAsync(It.IsAny<SandboxExecutionRequest>(), It.IsAny<CancellationToken>()), Times.Never);
     }
