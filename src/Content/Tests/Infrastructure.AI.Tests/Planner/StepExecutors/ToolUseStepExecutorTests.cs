@@ -12,6 +12,7 @@ using Domain.AI.Planner;
 using Domain.Common.Config.AI;
 using Domain.AI.Sandbox;
 using Infrastructure.AI.Planner.StepExecutors;
+using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -603,6 +604,62 @@ public sealed class ToolUseStepExecutorTests
         Assert.Contains("\"op\"", captured!.Input);
         Assert.Contains("5", captured.Input);
         Assert.Contains("3", captured.Input);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_UpstreamStringValue_DoesNotRetainLiteralJsonQuotes()
+    {
+        // #595 item 5: a plan step legitimately chaining a path/host value from an upstream step's
+        // JSON output must receive the plain string, not one still wrapped in the quote characters
+        // GetRawText() preserves — the latter fails path/host scoping validation on every call.
+        var config = new ToolUseConfig
+        {
+            ToolName = "file_system",
+            InputParameters = new Dictionary<string, object?> { ["operation"] = "read" }
+        };
+        var step = CreateStep(config);
+        var upstreamId = new PlanStepId(Guid.NewGuid());
+        var outputs = new Dictionary<PlanStepId, string> { [upstreamId] = """{"path": "C:\\foo\\bar.txt"}""" };
+
+        SandboxExecutionRequest? captured = null;
+        _sandboxExecutor.Setup(s => s.ExecuteAsync(It.IsAny<SandboxExecutionRequest>(), It.IsAny<CancellationToken>()))
+            .Callback<SandboxExecutionRequest, CancellationToken>((req, _) => captured = req)
+            .ReturnsAsync(new SandboxExecutionResult { Success = true, Output = "ok", ResourceUsage = new ResourceUsage() });
+
+        await _sut.ExecuteAsync(step, outputs, CancellationToken.None);
+
+        Assert.NotNull(captured);
+        using var doc = JsonDocument.Parse(captured!.Input);
+        var path = doc.RootElement.GetProperty("path").GetString();
+        Assert.Equal("C:\\foo\\bar.txt", path);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_UpstreamOutputIsNonObjectJson_SkipsItWithoutThrowing()
+    {
+        // #595: an upstream step whose output parses as a non-object JSON root (a bare array or
+        // number) used to throw InvalidOperationException from EnumerateObject(), uncaught locally —
+        // burning a full retry attempt with a generic error on every retry instead of just ignoring
+        // that upstream contribution, the same way malformed (non-JSON) output already is.
+        var config = new ToolUseConfig
+        {
+            ToolName = "calculator",
+            InputParameters = new Dictionary<string, object?> { ["op"] = "add" }
+        };
+        var step = CreateStep(config);
+        var upstreamId = new PlanStepId(Guid.NewGuid());
+        var outputs = new Dictionary<PlanStepId, string> { [upstreamId] = "[1,2,3]" };
+
+        SandboxExecutionRequest? captured = null;
+        _sandboxExecutor.Setup(s => s.ExecuteAsync(It.IsAny<SandboxExecutionRequest>(), It.IsAny<CancellationToken>()))
+            .Callback<SandboxExecutionRequest, CancellationToken>((req, _) => captured = req)
+            .ReturnsAsync(new SandboxExecutionResult { Success = true, Output = "ok", ResourceUsage = new ResourceUsage() });
+
+        var result = await _sut.ExecuteAsync(step, outputs, CancellationToken.None);
+
+        Assert.Equal(StepExecutionStatus.Completed, result.Status);
+        Assert.NotNull(captured);
+        Assert.Contains("\"op\"", captured!.Input);
     }
 
     // ===== #325 execution reporting =====
