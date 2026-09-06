@@ -491,24 +491,19 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
         // value of the same name, across casing now too — see the class remarks above.
         foreach (var (_, output) in upstreamOutputs)
         {
-            if (string.IsNullOrEmpty(output)) continue;
-            try
+            // UpstreamJsonProperties (#595 code-review) centralizes the parse/non-object-root-guard/
+            // catch boilerplate this loop shares with ConditionalBranchStepExecutor.
+            // BuildEvaluationContext; only the per-property value conversion below is this method's own.
+            foreach (var prop in UpstreamJsonProperties.Parse(output))
             {
-                using var doc = JsonDocument.Parse(output);
-                if (doc.RootElement.ValueKind != JsonValueKind.Object) continue;
-
-                foreach (var prop in doc.RootElement.EnumerateObject())
-                {
-                    // A string property keeps its literal quote characters under GetRawText() (e.g. a
-                    // "path" value becomes "\"C:\\foo\"", not "C:\\foo"), which breaks path/host scoping
-                    // validation for a value legitimately chained from an upstream step.
-                    // ToolParameters.NormalizeScalarToText unwraps a string kind the same way and keeps
-                    // GetRawText() for every other kind, which downstream consumers still expect as
-                    // JSON-encoded text.
-                    merged.TryAdd(prop.Name, ToolParameters.NormalizeScalarToText(prop.Value));
-                }
+                // A string property keeps its literal quote characters under GetRawText() (e.g. a
+                // "path" value becomes "\"C:\\foo\"", not "C:\\foo"), which breaks path/host scoping
+                // validation for a value legitimately chained from an upstream step.
+                // ToolParameters.NormalizeScalarToText unwraps a string kind the same way and keeps
+                // GetRawText() for every other kind, which downstream consumers still expect as
+                // JSON-encoded text.
+                merged.TryAdd(prop.Name, ToolParameters.NormalizeScalarToText(prop.Value));
             }
-            catch (JsonException) { }
         }
 
         return merged;

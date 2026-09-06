@@ -73,32 +73,21 @@ public sealed class ConditionalBranchStepExecutor : IPlanStepExecutor
 
         foreach (var (_, output) in upstreamOutputs)
         {
-            if (string.IsNullOrEmpty(output)) continue;
-
-            try
+            // UpstreamJsonProperties (#595 code-review) centralizes the parse/non-object-root-guard/
+            // catch boilerplate this loop shares with ToolUseStepExecutor.BuildToolArguments; only the
+            // per-property value conversion below (typed CLR values, not JSON-encoded text) is this
+            // method's own.
+            foreach (var prop in UpstreamJsonProperties.Parse(output))
             {
-                using var doc = JsonDocument.Parse(output);
-                // #595: a non-object root (a bare array or number) is valid JSON, so it reaches here
-                // rather than the catch below, but EnumerateObject() throws InvalidOperationException
-                // on it — uncaught. Skip it the same way malformed (non-JSON) output already is.
-                if (doc.RootElement.ValueKind != JsonValueKind.Object) continue;
-
-                foreach (var prop in doc.RootElement.EnumerateObject())
+                context[prop.Name] = prop.Value.ValueKind switch
                 {
-                    context[prop.Name] = prop.Value.ValueKind switch
-                    {
-                        JsonValueKind.Number => prop.Value.GetDouble(),
-                        JsonValueKind.True => true,
-                        JsonValueKind.False => false,
-                        JsonValueKind.String => prop.Value.GetString(),
-                        JsonValueKind.Null => null,
-                        _ => prop.Value.GetRawText()
-                    };
-                }
-            }
-            catch (JsonException)
-            {
-                // Non-JSON output — skip
+                    JsonValueKind.Number => prop.Value.GetDouble(),
+                    JsonValueKind.True => true,
+                    JsonValueKind.False => false,
+                    JsonValueKind.String => prop.Value.GetString(),
+                    JsonValueKind.Null => null,
+                    _ => prop.Value.GetRawText()
+                };
             }
         }
 
