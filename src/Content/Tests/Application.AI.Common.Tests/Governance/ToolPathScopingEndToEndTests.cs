@@ -47,9 +47,9 @@ public sealed class ToolPathScopingEndToEndTests
     private static readonly string DeniedPath = $"{Root}sandbox/secrets/creds.txt";
     private static readonly string AllowedPath = $"{Root}sandbox/work/notes.txt";
 
-    private static SandboxConfig DenyingSandboxConfig() => new()
+    private static SandboxConfig DenyingSandboxConfig(string toolName = "file_system") => new()
     {
-        ToolOverrides = new() { ["file_system"] = new ToolOverrideConfig { DeniedPaths = [$"{Root}sandbox/secrets"] } }
+        ToolOverrides = new() { [toolName] = new ToolOverrideConfig { DeniedPaths = [$"{Root}sandbox/secrets"] } }
     };
 
     /// <summary>A real <see cref="FileSystemTool"/> over a mocked <see cref="IFileSystemService"/>, keyed
@@ -672,14 +672,6 @@ public sealed class ToolPathScopingEndToEndTests
             Task.FromResult(ToolResult.Ok("ok"));
     }
 
-    private static SandboxConfig PartialToolScopingConfig() => new()
-    {
-        ToolOverrides = new()
-        {
-            [PartiallyDeclaredTool.Name_] = new ToolOverrideConfig { DeniedPaths = [$"{Root}sandbox/secrets"] }
-        }
-    };
-
     [Fact]
     public async Task AgentTurnPath_UndeclaredOperationOnPartiallyDeclaredTool_RefusesRatherThanAllows()
     {
@@ -690,7 +682,8 @@ public sealed class ToolPathScopingEndToEndTests
 
         var context = Mock.Of<IAgentExecutionContext>(c => c.AgentId == "test-agent");
         var (governor, trace) = BuildGovernor(
-            toolProvider, PartialToolScopingConfig(), context, new HashSet<string> { PartiallyDeclaredTool.Name_ });
+            toolProvider, DenyingSandboxConfig(PartiallyDeclaredTool.Name_), context,
+            new HashSet<string> { PartiallyDeclaredTool.Name_ });
 
         var builder = new ToolChainBuilder(
             NullLogger<ToolChainBuilder>.Instance, toolProvider, new AIToolConverter(NullLogger<AIToolConverter>.Instance));
@@ -717,7 +710,7 @@ public sealed class ToolPathScopingEndToEndTests
     public async Task DirectToolInvokerPath_UndeclaredOperationOnPartiallyDeclaredTool_RefusesRatherThanAllows()
     {
         var tool = new PartiallyDeclaredTool();
-        var sandboxConfig = PartialToolScopingConfig();
+        var sandboxConfig = DenyingSandboxConfig(PartiallyDeclaredTool.Name_);
 
         GovernanceTraceRecorder? capturedTrace = null;
 
