@@ -20,7 +20,8 @@ public sealed class SkillMetadataParserEgressTests : IDisposable
     {
         _sut = new SkillMetadataParser(
             NullLogger<SkillMetadataParser>.Instance, new UnsandboxedSkillFileReader(),
-            TestMcpSecurityScanner.AlwaysSafe(), TestMcpSecurityScanner.DefaultConfig());
+            TestMcpSecurityScanner.AlwaysSafe(), TestMcpSecurityScanner.DefaultConfig(),
+            TestMcpSecurityScanner.RealEgressValidator());
         _tempDir = Path.Combine(Path.GetTempPath(), $"egress-parser-tests-{Guid.NewGuid():N}");
         Directory.CreateDirectory(_tempDir);
     }
@@ -105,8 +106,10 @@ public sealed class SkillMetadataParserEgressTests : IDisposable
             "",
             "    - host: \"api.example.com\"",
             "      schemes: [\"https\"]",
+            "      ports: [443]",
             "    - hostPattern: \"*.azure-api.net\"",
             "      schemes: [\"https\"]",
+            "      ports: [443]",
             "---",
             "Body content here.");
 
@@ -162,5 +165,34 @@ public sealed class SkillMetadataParserEgressTests : IDisposable
 
         skill.Egress.Should().NotBeNull();
         skill.Egress!.Allowlist.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// #531: a semantically invalid allowlist entry — a multi-label wildcard, an SSRF-vector shape
+    /// <see cref="Application.AI.Common.Skills.EgressAllowlistEntryValidator"/> rejects — must refuse the whole skill at parse
+    /// time, never reach <see cref="Domain.AI.Skills.SkillDefinition.Egress"/> unvalidated.
+    /// </summary>
+    [Fact]
+    public void ParseFromFile_MultiLabelWildcardHostPattern_ThrowsSkillParsingException()
+    {
+        var content = """
+            ---
+            name: "bad-egress"
+            description: "Declares an invalid hostPattern"
+            egress:
+              allowlist:
+                - hostPattern: "*.evil.*.com"
+                  schemes: ["https"]
+                  ports: [443]
+            ---
+            Body content here.
+            """;
+
+        var path = WriteSkillFile(content);
+
+        var act = () => _sut.ParseFromFile(path, _tempDir);
+
+        act.Should().Throw<Application.AI.Common.Exceptions.SkillParsingException>()
+            .WithMessage("*Invalid egress manifest*");
     }
 }

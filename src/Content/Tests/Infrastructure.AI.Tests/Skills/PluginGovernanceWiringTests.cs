@@ -81,7 +81,8 @@ public sealed class PluginGovernanceWiringTests : IDisposable
             new OptionsMonitorStub(appConfig),
             new SkillMetadataParser(
                 NullLogger<SkillMetadataParser>.Instance, new UnsandboxedSkillFileReader(),
-                TestMcpSecurityScanner.AlwaysSafe(), TestMcpSecurityScanner.DefaultConfig()),
+                TestMcpSecurityScanner.AlwaysSafe(), TestMcpSecurityScanner.DefaultConfig(),
+                TestMcpSecurityScanner.RealEgressValidator()),
             new UnsandboxedSkillFileReader(),
             pluginRegistry);
     }

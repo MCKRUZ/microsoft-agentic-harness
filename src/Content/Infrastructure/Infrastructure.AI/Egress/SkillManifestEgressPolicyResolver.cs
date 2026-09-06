@@ -46,12 +46,6 @@ namespace Infrastructure.AI.Egress;
 /// </remarks>
 public sealed class SkillManifestEgressPolicyResolver : IEgressPolicyResolver
 {
-    /// <summary>
-    /// Cache key reserved for the "no skill active" path. Distinct from any
-    /// valid skill id (skill ids cannot contain spaces in the discovery flow).
-    /// </summary>
-    private const string NoSkillKey = "<no-skill>";
-
     private readonly ICurrentSkillAccessor _currentSkill;
     private readonly ISkillMetadataRegistry _skillRegistry;
     private readonly IOptionsMonitor<AppConfig> _appConfig;
@@ -59,7 +53,18 @@ public sealed class SkillManifestEgressPolicyResolver : IEgressPolicyResolver
     private readonly ILogger<DefaultEgressPolicy> _policyLogger;
     private readonly TimeProvider _timeProvider;
 
-    private readonly ConcurrentDictionary<string, IEgressPolicy> _cache = new(StringComparer.OrdinalIgnoreCase);
+    // Two separate caches rather than one keyed by skill id plus a reserved sentinel string (#531
+    // security-review finding): the prior design's sentinel ("<no-skill>") relied on no real skill
+    // ever being named that, case-insensitively, in a case-insensitive cache — a property nothing
+    // enforced, and one the sentinel's own doc comment misstated (it claimed the safety came from
+    // skill ids never containing spaces, which the sentinel itself doesn't contain and so proves
+    // nothing about). A skill an operator names any case variant of the sentinel would collide in
+    // the shared dictionary with the reserved "no skill" entry, in whichever direction lost the
+    // race to populate the cache first — leaking that skill's widened allowlist onto every
+    // unscoped call, or vice versa. Splitting the "no skill" case onto its own field makes the
+    // collision structurally impossible rather than relying on a string never being reused.
+    private readonly Lazy<IEgressPolicy> _noSkillPolicy;
+    private readonly ConcurrentDictionary<string, IEgressPolicy> _skillCache = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>Initializes a new <see cref="SkillManifestEgressPolicyResolver"/>.</summary>
     public SkillManifestEgressPolicyResolver(
@@ -83,6 +88,7 @@ public sealed class SkillManifestEgressPolicyResolver : IEgressPolicyResolver
         _logger = logger;
         _policyLogger = policyLogger;
         _timeProvider = timeProvider;
+        _noSkillPolicy = new Lazy<IEgressPolicy>(BuildDefaultOnlyPolicy);
     }
 
     /// <inheritdoc />
@@ -90,18 +96,19 @@ public sealed class SkillManifestEgressPolicyResolver : IEgressPolicyResolver
     {
         ArgumentNullException.ThrowIfNull(identity);
 
-        var key = _currentSkill.CurrentSkillId ?? NoSkillKey;
-        return _cache.GetOrAdd(key, BuildPolicy);
+        var skillId = _currentSkill.CurrentSkillId;
+        return skillId is null ? _noSkillPolicy.Value : _skillCache.GetOrAdd(skillId, BuildPolicyForSkill);
     }
 
-    private IEgressPolicy BuildPolicy(string key)
+    private IEgressPolicy BuildDefaultOnlyPolicy()
     {
         var defaultEntries = EgressAllowlistMapper.Map(_appConfig.CurrentValue.AI.Egress.DefaultAllowlist);
+        return new DefaultEgressPolicy(defaultEntries, _policyLogger, _timeProvider);
+    }
 
-        if (string.Equals(key, NoSkillKey, StringComparison.Ordinal))
-        {
-            return new DefaultEgressPolicy(defaultEntries, _policyLogger, _timeProvider);
-        }
+    private IEgressPolicy BuildPolicyForSkill(string key)
+    {
+        var defaultEntries = EgressAllowlistMapper.Map(_appConfig.CurrentValue.AI.Egress.DefaultAllowlist);
 
         var skill = _skillRegistry.TryGet(key);
         if (skill is null)

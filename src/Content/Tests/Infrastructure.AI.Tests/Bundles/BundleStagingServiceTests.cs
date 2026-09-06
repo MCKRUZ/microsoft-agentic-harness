@@ -736,7 +736,8 @@ public sealed class BundleStagingServiceTests : IDisposable
             new SkillMetadataParser(
                 NullLogger<SkillMetadataParser>.Instance, new UnsandboxedSkillFileReader(),
                 skillScanner ?? TestMcpSecurityScanner.AlwaysSafe(),
-                Mock.Of<IOptionsMonitor<AIConfig>>(m => m.CurrentValue == appConfig.AI)),
+                Mock.Of<IOptionsMonitor<AIConfig>>(m => m.CurrentValue == appConfig.AI),
+                TestMcpSecurityScanner.RealEgressValidator()),
             new UnsandboxedSkillFileReader(),
             pluginReader ?? new PluginManifestReader(NullLogger<PluginManifestReader>.Instance),
             bundleOwnedMcpServers ?? new BundleOwnedMcpServerRegistry(),

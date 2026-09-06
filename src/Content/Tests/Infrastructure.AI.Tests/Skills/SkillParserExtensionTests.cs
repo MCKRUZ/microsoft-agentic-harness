@@ -12,7 +12,8 @@ public sealed class SkillParserExtensionTests
 {
     private static SkillMetadataParser CreateParser() =>
         new(NullLogger<SkillMetadataParser>.Instance, new UnsandboxedSkillFileReader(),
-            TestMcpSecurityScanner.AlwaysSafe(), TestMcpSecurityScanner.DefaultConfig());
+            TestMcpSecurityScanner.AlwaysSafe(), TestMcpSecurityScanner.DefaultConfig(),
+            TestMcpSecurityScanner.RealEgressValidator());
 
     [Fact]
     public void SkillParser_WithObjectivesSection_ExtractsObjectivesContent()

@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Plugins;
+using Application.AI.Common.Interfaces.Skills;
 using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Services.Governance;
 using Domain.AI.Governance;
@@ -59,7 +60,9 @@ public partial class ToolChainBuilder : IToolChainBuilder
     /// A tool paired with where it was resolved from — recorded at the moment of resolution, before
     /// dedup, the reserved-name filter, or governance wrapping run. <see langword="null"/>
     /// <see cref="McpServerName"/> means first-party (keyed DI or caller-supplied); a non-null value
-    /// names the MCP server that advertised it.
+    /// names the MCP server that advertised it. <see cref="SkillId"/> is the second provenance
+    /// dimension (#531): the skill this tool was resolved for, or <see langword="null"/> for the
+    /// skill-agnostic <see cref="BuildToolsByName"/> path.
     /// </summary>
     /// <remarks>
     /// This is the single source of truth for "where did this tool come from" used by
@@ -70,9 +73,13 @@ public partial class ToolChainBuilder : IToolChainBuilder
     /// tool's description verbatim onto a same-named MCP tool, making both instances indistinguishable
     /// and causing the exclusion to drop them both. Tracking provenance positionally as each tool is
     /// produced makes both failure modes structurally impossible: origin is a label attached at
-    /// creation, never re-derived from content.
+    /// creation, never re-derived from content. <see cref="SkillId"/> lives on this struct rather than
+    /// as a separate scalar parameter threaded through <see cref="FinalizeChain"/>/<see cref="WrapGoverned"/>
+    /// for the same reason: a per-tool carrier is what a future cross-skill union policy (#589) would
+    /// need to look at, and a scalar "every tool in this batch shares one skill" parameter can never
+    /// express that even though today's one-skill-per-build-call shape means the two are equivalent.
     /// </remarks>
-    private readonly record struct ProvisionedTool(AITool Tool, string? McpServerName);
+    private readonly record struct ProvisionedTool(AITool Tool, string? McpServerName, string? SkillId = null);
 
     /// <summary>
     /// Resolves one skill's tools. Runs the same first-party-precedence and collision/shadowing/drift
@@ -127,12 +134,12 @@ public partial class ToolChainBuilder : IToolChainBuilder
             // config a bundle registers into, so a colon in the name is not evidence of bundle ownership.
             var isBundleOwned = envelope?.IsBundleOwnedMcpServer(serverName) ?? false;
             foreach (var t in serverTools)
-                injected.Add(new ProvisionedTool(PublishServerTool(t, serverName, isBundleOwned), serverName));
+                injected.Add(new ProvisionedTool(PublishServerTool(t, serverName, isBundleOwned), serverName, skill.Id));
         }
 
         if (options.AdditionalTools?.Count > 0)
             foreach (var t in options.AdditionalTools)
-                injected.Add(new ProvisionedTool(t, null));
+                injected.Add(new ProvisionedTool(t, null, skill.Id));
 
         injected = ApplyPluginBoundaryIfPluginSkill(skill, injected);
 
@@ -161,11 +168,11 @@ public partial class ToolChainBuilder : IToolChainBuilder
 
         if (skill.Tools?.Count > 0)
             foreach (var t in skill.Tools)
-                managed.Add(new ProvisionedTool(t, null));
+                managed.Add(new ProvisionedTool(t, null, skill.Id));
 
         if (skill.ToolDeclarations?.Count > 0)
         {
-            var provisionTasks = skill.ToolDeclarations.Select(d => ProvisionToolAsync(d, callOnceCandidates, cancellationToken));
+            var provisionTasks = skill.ToolDeclarations.Select(d => ProvisionToolAsync(d, skill.Id, callOnceCandidates, cancellationToken));
             var results = await Task.WhenAll(provisionTasks);
             foreach (var provisioned in results)
                 if (provisioned != null)
@@ -179,13 +186,13 @@ public partial class ToolChainBuilder : IToolChainBuilder
                 var resolved = ResolveToolByName(toolName);
                 if (resolved != null)
                     foreach (var t in resolved)
-                        managed.Add(new ProvisionedTool(t, null));
+                        managed.Add(new ProvisionedTool(t, null, skill.Id));
             }
         }
 
         if (options.AdditionalTools?.Count > 0)
             foreach (var t in options.AdditionalTools)
-                managed.Add(new ProvisionedTool(t, null));
+                managed.Add(new ProvisionedTool(t, null, skill.Id));
 
         managed = ApplyPluginBoundaryIfPluginSkill(skill, managed);
 
@@ -282,7 +289,8 @@ public partial class ToolChainBuilder : IToolChainBuilder
     /// remarks for why the wrap would otherwise sever reference-based candidate tracking.
     /// </param>
     private List<ProvisionedTool> FinalizeChain(
-        List<ProvisionedTool> provisioned, string source, ConcurrentDictionary<AITool, byte>? callOnceCandidates = null)
+        List<ProvisionedTool> provisioned, string source,
+        ConcurrentDictionary<AITool, byte>? callOnceCandidates = null)
     {
         var survivors = ReservedPlanCapabilityFilter.Exclude(provisioned.Select(p => p.Tool), source, _logger);
         var afterReservedFilter = KeepSurviving(provisioned, survivors);
@@ -327,15 +335,29 @@ public partial class ToolChainBuilder : IToolChainBuilder
     /// instance already inside it; it never lets a name substitute for a reference the way the general
     /// provenance problem above forbids.
     /// </para>
+    /// <para>
+    /// Resolves <see cref="ICurrentSkillAccessor"/> once per call (#531), an optional collaborator
+    /// resolved ad hoc from <see cref="_serviceProvider"/> — the same pattern already used for
+    /// <see cref="Interfaces.Plugins.IPluginRegistry"/> in <see cref="ApplyPluginBoundaryIfPluginSkill"/>
+    /// — rather than a constructor dependency, since it is needed only here. Every tool wrapped in one
+    /// call shares the one resolved accessor instance; each tool's own <see cref="ProvisionedTool.SkillId"/>
+    /// is carried into <see cref="GovernedAIFunction"/> alongside it, so a per-skill policy resolver (the
+    /// egress allowlist resolver) sees the right skill scope for the duration of each tool's own
+    /// invocation.
+    /// </para>
     /// </remarks>
     private List<AITool> WrapGoverned(
-        IEnumerable<ProvisionedTool> provisioned, ConcurrentDictionary<AITool, byte>? callOnceCandidates = null)
+        IEnumerable<ProvisionedTool> provisioned,
+        ConcurrentDictionary<AITool, byte>? callOnceCandidates = null)
     {
+        var currentSkillAccessor = _serviceProvider.GetService<ICurrentSkillAccessor>();
         var result = new List<AITool>();
         foreach (var p in provisioned)
         {
             var wrapped = p.Tool is AIFunction fn and not GovernedAIFunction
-                ? new GovernedAIFunction(p.McpServerName is not null ? new McpFailureNormalizingAIFunction(fn) : fn)
+                ? new GovernedAIFunction(
+                    p.McpServerName is not null ? new McpFailureNormalizingAIFunction(fn) : fn,
+                    currentSkillAccessor: currentSkillAccessor, skillId: p.SkillId)
                 : p.Tool;
 
             if (callOnceCandidates is not null && callOnceCandidates.ContainsKey(p.Tool))
@@ -488,9 +510,13 @@ public partial class ToolChainBuilder : IToolChainBuilder
             // finding discovered by THIS analysis means unwrapping to the same inner function and
             // rewrapping — never double-governing, since InnerFunction always points at the real tool.
             // governed.Inner already carries any McpFailureNormalizingAIFunction wrapping intact —
-            // there is no separate provenance flag left to forward.
+            // there is no separate provenance flag left to forward. governed.CurrentSkillAccessor/
+            // SkillId (#531) DO need forwarding explicitly — unlike Inner, they are not implicit in
+            // the wrapped function, so a re-wrap that forgot them would silently drop the tool's skill
+            // scope the moment a composition finding implicates it.
             return (AITool)new GovernedAIFunction(
-                governed.Inner, new ToolCompositionTaint(findings));
+                governed.Inner, new ToolCompositionTaint(findings),
+                governed.CurrentSkillAccessor, governed.SkillId);
         }).ToList();
     }
 
@@ -531,6 +557,7 @@ public partial class ToolChainBuilder : IToolChainBuilder
     /// </summary>
     private async Task<List<ProvisionedTool>?> ProvisionToolAsync(
         Domain.AI.Tools.ToolDeclaration declaration,
+        string skillId,
         ConcurrentDictionary<AITool, byte> callOnceCandidates,
         CancellationToken cancellationToken = default)
     {
@@ -557,7 +584,7 @@ public partial class ToolChainBuilder : IToolChainBuilder
                     // tool auto-granted by advertising a same-named tool of its own. See
                     // CapabilityEnvelope.IsBundleOwnedMcpServer and BundleOwnedMcpToolNaming.
                     var provisionedMcpTools = mcpTools
-                        .Select(t => new ProvisionedTool(PublishServerTool(t, effectiveServerName, isBundleOwned), effectiveServerName))
+                        .Select(t => new ProvisionedTool(PublishServerTool(t, effectiveServerName, isBundleOwned), effectiveServerName, skillId))
                         .ToList();
                     TagCallOnceCandidates(declaration, provisionedMcpTools, callOnceCandidates);
                     return provisionedMcpTools;
@@ -573,7 +600,7 @@ public partial class ToolChainBuilder : IToolChainBuilder
         var resolved = ResolveToolByName(declaration.Name);
         if (resolved != null)
         {
-            var provisionedFirstParty = resolved.Select(t => new ProvisionedTool(t, null)).ToList();
+            var provisionedFirstParty = resolved.Select(t => new ProvisionedTool(t, null, skillId)).ToList();
             TagCallOnceCandidates(declaration, provisionedFirstParty, callOnceCandidates);
             return provisionedFirstParty;
         }
@@ -585,7 +612,7 @@ public partial class ToolChainBuilder : IToolChainBuilder
             {
                 _logger.LogInformation("Using fallback tool {Fallback} for {ToolName}",
                     declaration.Fallback, declaration.Name);
-                var provisionedFallback = resolved.Select(t => new ProvisionedTool(t, null)).ToList();
+                var provisionedFallback = resolved.Select(t => new ProvisionedTool(t, null, skillId)).ToList();
                 TagCallOnceCandidates(declaration, provisionedFallback, callOnceCandidates);
                 return provisionedFallback;
             }

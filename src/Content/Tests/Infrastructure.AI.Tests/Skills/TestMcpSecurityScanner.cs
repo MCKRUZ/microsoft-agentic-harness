@@ -1,6 +1,9 @@
 using Application.AI.Common.Interfaces.Governance;
+using Application.AI.Common.Skills;
 using Domain.AI.Governance;
+using Domain.AI.Skills;
 using Domain.Common.Config.AI;
+using FluentValidation;
 using Microsoft.Extensions.Options;
 using Moq;
 
@@ -31,4 +34,10 @@ internal static class TestMcpSecurityScanner
     /// <summary>An <see cref="IOptionsMonitor{AIConfig}"/> exposing a default (governance-off) <see cref="AIConfig"/>.</summary>
     public static IOptionsMonitor<AIConfig> DefaultConfig() =>
         Mock.Of<IOptionsMonitor<AIConfig>>(m => m.CurrentValue == new AIConfig());
+
+    /// <summary>
+    /// The real <see cref="EgressManifestValidator"/> (#531) — stateless (a pure FluentValidation
+    /// rule tree), so a fresh instance per call costs nothing and there is no reason to mock it.
+    /// </summary>
+    public static IValidator<EgressManifest> RealEgressValidator() => new EgressManifestValidator();
 }

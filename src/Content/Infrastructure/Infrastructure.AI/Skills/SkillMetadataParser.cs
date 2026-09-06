@@ -2,10 +2,10 @@ using Application.AI.Common.Exceptions;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Skills;
 using Application.Common.Helpers;
-using Domain.AI.Egress;
 using Domain.AI.Skills;
 using Domain.AI.Tools;
 using Domain.Common.Config.AI;
+using FluentValidation;
 using Infrastructure.AI.Governance;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -39,6 +39,7 @@ public sealed partial class SkillMetadataParser
     private readonly ISkillFileReader _fileReader;
     private readonly IMcpSecurityScanner _scanner;
     private readonly IOptionsMonitor<AIConfig> _config;
+    private readonly IValidator<EgressManifest> _egressValidator;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="SkillMetadataParser"/> class.
@@ -58,21 +59,31 @@ public sealed partial class SkillMetadataParser
     /// <see cref="GovernanceConfig.McpToolBlockThreshold"/>); read per call so a config reload takes
     /// effect, matching <c>ScanningMcpToolProvider</c>'s convention for the same policy.
     /// </param>
+    /// <param name="egressValidator">
+    /// Validates a parsed <see cref="EgressManifest"/> against the same SSRF-narrow rules the
+    /// runtime egress policy applies (#531). Registered explicitly as a singleton in
+    /// <c>SkillDiscoveryServiceCollectionExtensions.AddSkillDiscovery</c> — see that method's remarks
+    /// for why a plain <c>AddValidatorsFromAssembly</c> registration (scoped by default) is not
+    /// sufficient here.
+    /// </param>
     public SkillMetadataParser(
         ILogger<SkillMetadataParser> logger,
         ISkillFileReader fileReader,
         IMcpSecurityScanner scanner,
-        IOptionsMonitor<AIConfig> config)
+        IOptionsMonitor<AIConfig> config,
+        IValidator<EgressManifest> egressValidator)
     {
         ArgumentNullException.ThrowIfNull(logger);
         ArgumentNullException.ThrowIfNull(fileReader);
         ArgumentNullException.ThrowIfNull(scanner);
         ArgumentNullException.ThrowIfNull(config);
+        ArgumentNullException.ThrowIfNull(egressValidator);
 
         _logger = logger;
         _fileReader = fileReader;
         _scanner = scanner;
         _config = config;
+        _egressValidator = egressValidator;
     }
 
     /// <summary>
@@ -169,6 +180,9 @@ public sealed partial class SkillMetadataParser
 
         ScanOrRefuse(name, description, body, toolDeclarations, skillFilePath);
 
+        var egress = frontmatter.Egress();
+        ValidateEgressOrRefuse(egress, skillFilePath);
+
         var metaBlock = frontmatter.ScalarBlock("metadata");
 
         return new SkillDefinition
@@ -196,7 +210,7 @@ public sealed partial class SkillMetadataParser
             LoadedAt = DateTime.UtcNow,
 
             PluginSource = pluginSource,
-            Egress = frontmatter.Egress(),
+            Egress = egress,
         };
     }
 

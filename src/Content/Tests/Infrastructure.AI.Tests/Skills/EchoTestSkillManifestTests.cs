@@ -31,7 +31,8 @@ public sealed class EchoTestSkillManifestTests
     {
         var parser = new SkillMetadataParser(
             NullLogger<SkillMetadataParser>.Instance, new UnsandboxedSkillFileReader(),
-            TestMcpSecurityScanner.AlwaysSafe(), TestMcpSecurityScanner.DefaultConfig());
+            TestMcpSecurityScanner.AlwaysSafe(), TestMcpSecurityScanner.DefaultConfig(),
+            TestMcpSecurityScanner.RealEgressValidator());
         var skillPath = RepoRoot.Combine("skills", "echo-test");
         var filePath = Path.Combine(skillPath, "SKILL.md");
 

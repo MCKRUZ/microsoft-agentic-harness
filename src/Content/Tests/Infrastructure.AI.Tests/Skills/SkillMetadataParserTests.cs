@@ -19,7 +19,8 @@ public sealed class SkillMetadataParserTests : IDisposable
     {
         _sut = new SkillMetadataParser(
             NullLogger<SkillMetadataParser>.Instance, new UnsandboxedSkillFileReader(),
-            TestMcpSecurityScanner.AlwaysSafe(), TestMcpSecurityScanner.DefaultConfig());
+            TestMcpSecurityScanner.AlwaysSafe(), TestMcpSecurityScanner.DefaultConfig(),
+            TestMcpSecurityScanner.RealEgressValidator());
         _tempDir = Path.Combine(Path.GetTempPath(), $"skill-parser-tests-{Guid.NewGuid():N}");
         Directory.CreateDirectory(_tempDir);
     }

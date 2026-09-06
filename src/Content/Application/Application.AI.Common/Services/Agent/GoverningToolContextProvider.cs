@@ -30,6 +30,18 @@ namespace Application.AI.Common.Services.Agent;
 /// template other consumers extend, so it is written down rather than left implicit.
 /// </para>
 /// <para>
+/// <strong>Known limitation: no per-skill egress scope on this channel either (#531, tracked as #589).</strong> The
+/// same missing provenance that blocks MCP-failure normalization above also blocks
+/// <see cref="GovernedAIFunction"/>'s skill-scoped egress wiring: <see cref="Govern"/>'s
+/// <c>new GovernedAIFunction(fn)</c> call always passes a null skill id, so a tool reaching the model
+/// through this channel — <c>run_skill_script</c> notably, the one tool here that IS fully governed —
+/// runs with whatever skill scope (if any) happens to already be ambient from an outer call, never one
+/// attributed to the skill that actually contributed it. Fails closed (the egress resolver falls back
+/// to the harness-wide default allowlist), never open. Giving this channel real per-tool skill
+/// attribution is the same larger, separate change the MCP-provenance gap above already calls for —
+/// not something to bolt onto one tool here without doing it for the whole channel.
+/// </para>
+/// <para>
 /// Register this provider <em>last</em> in the <c>AIContextProviders</c> list (after the skills
 /// provider and <see cref="ToolPermissionFilter"/>) so it sees the final, filtered tool set.
 /// Already-wrapped functions and non-function tools pass through unchanged, so it composes safely

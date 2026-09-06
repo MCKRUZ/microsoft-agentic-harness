@@ -33,7 +33,8 @@ public sealed class SkillMetadataRegistryTests
         var logger = NullLogger<SkillMetadataRegistry>.Instance;
         var parser = new SkillMetadataParser(
             NullLogger<SkillMetadataParser>.Instance, new UnsandboxedSkillFileReader(),
-            TestMcpSecurityScanner.AlwaysSafe(), TestMcpSecurityScanner.DefaultConfig());
+            TestMcpSecurityScanner.AlwaysSafe(), TestMcpSecurityScanner.DefaultConfig(),
+            TestMcpSecurityScanner.RealEgressValidator());
 
         return new SkillMetadataRegistry(logger, optionsMonitor, parser, new UnsandboxedSkillFileReader());
     }
@@ -62,7 +63,8 @@ public sealed class SkillMetadataRegistryTests
             new OptionsMonitorStub(appConfig),
             new SkillMetadataParser(
             NullLogger<SkillMetadataParser>.Instance, new UnsandboxedSkillFileReader(),
-            TestMcpSecurityScanner.AlwaysSafe(), TestMcpSecurityScanner.DefaultConfig()),
+            TestMcpSecurityScanner.AlwaysSafe(), TestMcpSecurityScanner.DefaultConfig(),
+            TestMcpSecurityScanner.RealEgressValidator()),
             new UnsandboxedSkillFileReader(),
             pluginRegistry: null);
 
@@ -174,6 +176,8 @@ public sealed class SkillMetadataRegistryTests
         services.AddSingleton(TestMcpSecurityScanner.DefaultConfig());
         services.AddSingleton<Application.AI.Common.Interfaces.Skills.ISkillFileReader,
             Infrastructure.AI.Skills.SkillFileReader>();
+        services.AddSingleton<FluentValidation.IValidator<Domain.AI.Skills.EgressManifest>,
+            Application.AI.Common.Skills.EgressManifestValidator>();
         services.AddSingleton<SkillMetadataParser>();
         services.AddSingleton<ISkillMetadataRegistry, SkillMetadataRegistry>();
 

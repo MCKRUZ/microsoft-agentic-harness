@@ -229,6 +229,43 @@ public sealed class SkillManifestEgressPolicyResolverTests
     }
 
     /// <summary>
+    /// Security-review finding on #531: a skill literally named a case variant of the resolver's
+    /// former reserved sentinel string must resolve its OWN policy, never collide with the no-skill
+    /// default — proving the fix (separate cache/field for the two cases) rather than relying on the
+    /// sentinel string never being reused by a real skill id.
+    /// </summary>
+    [Fact]
+    public async Task ResolveFor_SkillNamedLikeTheOldSentinel_ResolvesItsOwnPolicy_NotTheDefault()
+    {
+        var accessor = new CurrentSkillAccessor();
+        var skill = SkillWithAllowlist("<NO-SKILL>", new EgressAllowlistEntry
+        {
+            Host = "widened.example.com",
+            Schemes = ["https"],
+            Ports = [443]
+        });
+
+        var registry = new Mock<ISkillMetadataRegistry>(MockBehavior.Strict);
+        registry.Setup(r => r.TryGet("<NO-SKILL>")).Returns(skill);
+
+        var resolver = NewResolver(accessor, registry.Object,
+            new EgressAllowlistConfigEntry { Host = "default.example.com", Schemes = ["https"], Ports = [443] });
+
+        // No-skill policy resolved first, so any shared-cache collision would already have poisoned
+        // the entry the skill lookup below reads.
+        var noSkillPolicy = resolver.ResolveFor(TestIdentity.Default);
+        var noSkillVerdict = await noSkillPolicy.AllowAsync(
+            new Uri("https://widened.example.com/"), TestIdentity.Default, CancellationToken.None);
+        noSkillVerdict.Allowed.Should().BeFalse("the no-skill policy must never carry a skill's widened allowlist");
+
+        using var _ = accessor.BeginScope("<NO-SKILL>");
+        var skillPolicy = resolver.ResolveFor(TestIdentity.Default);
+        var skillVerdict = await skillPolicy.AllowAsync(
+            new Uri("https://widened.example.com/"), TestIdentity.Default, CancellationToken.None);
+        skillVerdict.Allowed.Should().BeTrue("the skill's own allowlist addition must still apply for its own scope");
+    }
+
+    /// <summary>
     /// CurrentSkillAccessor: nested BeginScope() composes — the inner activation
     /// restores the previous skill id on dispose. Guards against a stale
     /// identifier leaking across logical scopes.

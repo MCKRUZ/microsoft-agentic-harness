@@ -121,7 +121,7 @@ public sealed class SkillMetadataParserManifestScanningTests : IDisposable
         var path = WriteSkillFile(SkillBody);
         var parser = new SkillMetadataParser(
             NullLogger<SkillMetadataParser>.Instance, new UnsandboxedSkillFileReader(),
-            WithheldScanner().Object, ConfigWithSecurityEnabled());
+            WithheldScanner().Object, ConfigWithSecurityEnabled(), TestMcpSecurityScanner.RealEgressValidator());
 
         var ex = Assert.Throws<ManifestRefusedException>(() => parser.ParseFromFile(path, _tempDir));
 
@@ -140,7 +140,7 @@ public sealed class SkillMetadataParserManifestScanningTests : IDisposable
         var path = WriteSkillFile(SkillBody);
         var parser = new SkillMetadataParser(
             NullLogger<SkillMetadataParser>.Instance, new UnsandboxedSkillFileReader(),
-            WithheldScanner().Object, ConfigWithSecurityEnabled());
+            WithheldScanner().Object, ConfigWithSecurityEnabled(), TestMcpSecurityScanner.RealEgressValidator());
 
         var ex = Assert.Throws<ManifestRefusedException>(() => parser.ParseFromFile(path, _tempDir));
 
@@ -154,7 +154,7 @@ public sealed class SkillMetadataParserManifestScanningTests : IDisposable
         var path = WriteSkillFile(SkillBody);
         var parser = new SkillMetadataParser(
             NullLogger<SkillMetadataParser>.Instance, new UnsandboxedSkillFileReader(),
-            TestMcpSecurityScanner.AlwaysSafe(), ConfigWithSecurityEnabled());
+            TestMcpSecurityScanner.AlwaysSafe(), ConfigWithSecurityEnabled(), TestMcpSecurityScanner.RealEgressValidator());
 
         var skill = parser.ParseFromFile(path, _tempDir);
 
@@ -176,7 +176,7 @@ public sealed class SkillMetadataParserManifestScanningTests : IDisposable
 
         var parser = new SkillMetadataParser(
             NullLogger<SkillMetadataParser>.Instance, new UnsandboxedSkillFileReader(),
-            mock.Object, ConfigWithSecurityEnabled(ThreatLevel.High));
+            mock.Object, ConfigWithSecurityEnabled(ThreatLevel.High), TestMcpSecurityScanner.RealEgressValidator());
 
         var skill = parser.ParseFromFile(path, _tempDir);
 
@@ -197,7 +197,7 @@ public sealed class SkillMetadataParserManifestScanningTests : IDisposable
 
         var parser = new SkillMetadataParser(
             NullLogger<SkillMetadataParser>.Instance, new UnsandboxedSkillFileReader(),
-            mock.Object, disabledConfig);
+            mock.Object, disabledConfig, TestMcpSecurityScanner.RealEgressValidator());
 
         var skill = parser.ParseFromFile(path, _tempDir);
 
@@ -217,7 +217,7 @@ public sealed class SkillMetadataParserManifestScanningTests : IDisposable
         var path = WriteSkillFile(SkillBodyWithObjectivesPayload);
         var parser = new SkillMetadataParser(
             NullLogger<SkillMetadataParser>.Instance, new UnsandboxedSkillFileReader(),
-            ScannerFlaggingContent("MARKER_PAYLOAD").Object, ConfigWithSecurityEnabled());
+            ScannerFlaggingContent("MARKER_PAYLOAD").Object, ConfigWithSecurityEnabled(), TestMcpSecurityScanner.RealEgressValidator());
 
         Assert.Throws<ManifestRefusedException>(() => parser.ParseFromFile(path, _tempDir));
     }
@@ -233,7 +233,7 @@ public sealed class SkillMetadataParserManifestScanningTests : IDisposable
         var path = WriteSkillFile(SkillBodyWithToolDeclarationPayload);
         var parser = new SkillMetadataParser(
             NullLogger<SkillMetadataParser>.Instance, new UnsandboxedSkillFileReader(),
-            ScannerFlaggingContent("MARKER_PAYLOAD").Object, ConfigWithSecurityEnabled());
+            ScannerFlaggingContent("MARKER_PAYLOAD").Object, ConfigWithSecurityEnabled(), TestMcpSecurityScanner.RealEgressValidator());
 
         Assert.Throws<ManifestRefusedException>(() => parser.ParseFromFile(path, _tempDir));
     }

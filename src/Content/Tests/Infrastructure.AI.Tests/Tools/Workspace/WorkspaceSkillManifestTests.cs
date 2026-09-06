@@ -24,7 +24,8 @@ public sealed class WorkspaceSkillManifestTests
 
         var parser = new SkillMetadataParser(
             NullLogger<SkillMetadataParser>.Instance, new UnsandboxedSkillFileReader(),
-            TestMcpSecurityScanner.AlwaysSafe(), TestMcpSecurityScanner.DefaultConfig());
+            TestMcpSecurityScanner.AlwaysSafe(), TestMcpSecurityScanner.DefaultConfig(),
+            TestMcpSecurityScanner.RealEgressValidator());
         var skill = parser.ParseFromFile(skillPath, Path.GetDirectoryName(skillPath)!, pluginSource: "workspace-skill");
 
         skill.Name.Should().Be("workspace");
