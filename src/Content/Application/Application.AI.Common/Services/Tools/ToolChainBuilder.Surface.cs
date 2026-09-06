@@ -116,6 +116,23 @@ public partial class ToolChainBuilder
     /// one that was actually scanned. Also returns which surviving names are MCP-attributed, decided in
     /// the same pass rather than re-derived by the caller.
     /// </summary>
+    /// <remarks>
+    /// <strong>Known limitation: two skills sharing a first-party tool name pin the published
+    /// instance's per-skill egress scope (#531, tracked as #589) to whichever skill enumerated
+    /// first.</strong> Each
+    /// skill's tools are already wrapped as <see cref="GovernedAIFunction"/> — one <c>SkillId</c>
+    /// baked in per instance — before <paramref name="allProvisioned"/> reaches this method
+    /// (<c>BuildProvisionedToolsAsync</c>/<c>FinalizeChain</c> runs per skill, upstream). The
+    /// first-party dedup loop below (<c>seen.Add(p.Tool.Name)</c>) keeps only the first-enumerated
+    /// skill's instance, so a call to that shared tool always resolves the first skill's egress
+    /// allowlist, even during a turn the model is conceptually driving from the second skill. Not a
+    /// security hole — the resolved policy is still a real, valid skill's policy, never the harness
+    /// default's absence of one — but it can silently withhold a second skill's declared allowlist
+    /// addition for a tool the two skills happen to share by name. Fixing this precisely needs a
+    /// design decision this PR doesn't make: whether a shared tool name should union every
+    /// contributing skill's allowlist, or something else. Tracked for follow-up rather than guessed at
+    /// here.
+    /// </remarks>
     private static (List<AITool> Tools, HashSet<string> McpAttributedNames) ProjectSurvivors(
         List<ProvisionedTool> allProvisioned,
         List<ProvisionedTool> mcpCandidates,

@@ -1,5 +1,4 @@
 using Application.AI.Common.Interfaces;
-using Application.AI.Common.Skills;
 using Domain.Common.Config;
 using Domain.Common.Config.AI;
 using FluentAssertions;
@@ -35,7 +34,7 @@ public sealed class SkillMetadataRegistryTests
         var parser = new SkillMetadataParser(
             NullLogger<SkillMetadataParser>.Instance, new UnsandboxedSkillFileReader(),
             TestMcpSecurityScanner.AlwaysSafe(), TestMcpSecurityScanner.DefaultConfig(),
-            new EgressManifestValidator());
+            TestMcpSecurityScanner.RealEgressValidator());
 
         return new SkillMetadataRegistry(logger, optionsMonitor, parser, new UnsandboxedSkillFileReader());
     }
@@ -65,7 +64,7 @@ public sealed class SkillMetadataRegistryTests
             new SkillMetadataParser(
             NullLogger<SkillMetadataParser>.Instance, new UnsandboxedSkillFileReader(),
             TestMcpSecurityScanner.AlwaysSafe(), TestMcpSecurityScanner.DefaultConfig(),
-            new EgressManifestValidator()),
+            TestMcpSecurityScanner.RealEgressValidator()),
             new UnsandboxedSkillFileReader(),
             pluginRegistry: null);
 

@@ -23,9 +23,15 @@ tools:
     description: "Security-scan the module (Checkov + tfsec / ARM-TTK + Checkov); reports normalised findings and a pass/fail verdict."
 egress:
   allowlist:
-    - "registry.terraform.io"
-    - "releases.hashicorp.com"
-    - "mcr.microsoft.com"
+    - host: "registry.terraform.io"
+      schemes: ["https"]
+      ports: [443]
+    - host: "releases.hashicorp.com"
+      schemes: ["https"]
+      ports: [443]
+    - host: "mcr.microsoft.com"
+      schemes: ["https"]
+      ports: [443]
 ---
 
 You are the IaC authoring skill. You scaffold infrastructure-as-code modules,

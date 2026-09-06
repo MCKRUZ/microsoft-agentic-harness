@@ -956,8 +956,11 @@ public sealed class SecurityControlHasACallerTests
     [Fact]
     public void SkillEgressConsumerResolvedExemptions_AreStillInvoked()
     {
+        // SkillMetadataParser.Egress.cs, not SkillMetadataParser.cs: ValidateEgressOrRefuse (and the
+        // .Validate() call this control anchors on) lives in that partial-class file, split out to
+        // keep the main file under this repo's 400-line convention.
         var parserPath = Path.Combine(
-            RepoRoot.Path, "src", "Content", "Infrastructure", "Infrastructure.AI", "Skills", "SkillMetadataParser.cs");
+            RepoRoot.Path, "src", "Content", "Infrastructure", "Infrastructure.AI", "Skills", "SkillMetadataParser.Egress.cs");
         File.Exists(parserPath).Should().BeTrue("the consumer that justifies the EgressManifest exemption must exist");
 
         var parserSource = SourceScan.StripCommentsAndStrings(File.ReadAllText(parserPath));

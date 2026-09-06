@@ -1,4 +1,3 @@
-using Application.AI.Common.Skills;
 using FluentAssertions;
 using Infrastructure.AI.Skills;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -22,7 +21,7 @@ public sealed class SkillMetadataParserEgressTests : IDisposable
         _sut = new SkillMetadataParser(
             NullLogger<SkillMetadataParser>.Instance, new UnsandboxedSkillFileReader(),
             TestMcpSecurityScanner.AlwaysSafe(), TestMcpSecurityScanner.DefaultConfig(),
-            new EgressManifestValidator());
+            TestMcpSecurityScanner.RealEgressValidator());
         _tempDir = Path.Combine(Path.GetTempPath(), $"egress-parser-tests-{Guid.NewGuid():N}");
         Directory.CreateDirectory(_tempDir);
     }
@@ -170,7 +169,7 @@ public sealed class SkillMetadataParserEgressTests : IDisposable
 
     /// <summary>
     /// #531: a semantically invalid allowlist entry — a multi-label wildcard, an SSRF-vector shape
-    /// <see cref="EgressAllowlistEntryValidator"/> rejects — must refuse the whole skill at parse
+    /// <see cref="Application.AI.Common.Skills.EgressAllowlistEntryValidator"/> rejects — must refuse the whole skill at parse
     /// time, never reach <see cref="Domain.AI.Skills.SkillDefinition.Egress"/> unvalidated.
     /// </summary>
     [Fact]

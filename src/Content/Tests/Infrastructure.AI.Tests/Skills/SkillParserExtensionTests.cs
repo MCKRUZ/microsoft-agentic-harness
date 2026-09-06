@@ -1,4 +1,3 @@
-using Application.AI.Common.Skills;
 using FluentAssertions;
 using Infrastructure.AI.Skills;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -14,7 +13,7 @@ public sealed class SkillParserExtensionTests
     private static SkillMetadataParser CreateParser() =>
         new(NullLogger<SkillMetadataParser>.Instance, new UnsandboxedSkillFileReader(),
             TestMcpSecurityScanner.AlwaysSafe(), TestMcpSecurityScanner.DefaultConfig(),
-            new EgressManifestValidator());
+            TestMcpSecurityScanner.RealEgressValidator());
 
     [Fact]
     public void SkillParser_WithObjectivesSection_ExtractsObjectivesContent()

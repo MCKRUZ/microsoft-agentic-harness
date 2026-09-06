@@ -1,6 +1,5 @@
 using Application.AI.Common.Exceptions;
 using Application.AI.Common.Interfaces.Governance;
-using Application.AI.Common.Skills;
 using Domain.AI.Governance;
 using Domain.Common.Config.AI;
 using Infrastructure.AI.Skills;
@@ -122,7 +121,7 @@ public sealed class SkillMetadataParserManifestScanningTests : IDisposable
         var path = WriteSkillFile(SkillBody);
         var parser = new SkillMetadataParser(
             NullLogger<SkillMetadataParser>.Instance, new UnsandboxedSkillFileReader(),
-            WithheldScanner().Object, ConfigWithSecurityEnabled(), new EgressManifestValidator());
+            WithheldScanner().Object, ConfigWithSecurityEnabled(), TestMcpSecurityScanner.RealEgressValidator());
 
         var ex = Assert.Throws<ManifestRefusedException>(() => parser.ParseFromFile(path, _tempDir));
 
@@ -141,7 +140,7 @@ public sealed class SkillMetadataParserManifestScanningTests : IDisposable
         var path = WriteSkillFile(SkillBody);
         var parser = new SkillMetadataParser(
             NullLogger<SkillMetadataParser>.Instance, new UnsandboxedSkillFileReader(),
-            WithheldScanner().Object, ConfigWithSecurityEnabled(), new EgressManifestValidator());
+            WithheldScanner().Object, ConfigWithSecurityEnabled(), TestMcpSecurityScanner.RealEgressValidator());
 
         var ex = Assert.Throws<ManifestRefusedException>(() => parser.ParseFromFile(path, _tempDir));
 
@@ -155,7 +154,7 @@ public sealed class SkillMetadataParserManifestScanningTests : IDisposable
         var path = WriteSkillFile(SkillBody);
         var parser = new SkillMetadataParser(
             NullLogger<SkillMetadataParser>.Instance, new UnsandboxedSkillFileReader(),
-            TestMcpSecurityScanner.AlwaysSafe(), ConfigWithSecurityEnabled(), new EgressManifestValidator());
+            TestMcpSecurityScanner.AlwaysSafe(), ConfigWithSecurityEnabled(), TestMcpSecurityScanner.RealEgressValidator());
 
         var skill = parser.ParseFromFile(path, _tempDir);
 
@@ -177,7 +176,7 @@ public sealed class SkillMetadataParserManifestScanningTests : IDisposable
 
         var parser = new SkillMetadataParser(
             NullLogger<SkillMetadataParser>.Instance, new UnsandboxedSkillFileReader(),
-            mock.Object, ConfigWithSecurityEnabled(ThreatLevel.High), new EgressManifestValidator());
+            mock.Object, ConfigWithSecurityEnabled(ThreatLevel.High), TestMcpSecurityScanner.RealEgressValidator());
 
         var skill = parser.ParseFromFile(path, _tempDir);
 
@@ -198,7 +197,7 @@ public sealed class SkillMetadataParserManifestScanningTests : IDisposable
 
         var parser = new SkillMetadataParser(
             NullLogger<SkillMetadataParser>.Instance, new UnsandboxedSkillFileReader(),
-            mock.Object, disabledConfig, new EgressManifestValidator());
+            mock.Object, disabledConfig, TestMcpSecurityScanner.RealEgressValidator());
 
         var skill = parser.ParseFromFile(path, _tempDir);
 
@@ -218,7 +217,7 @@ public sealed class SkillMetadataParserManifestScanningTests : IDisposable
         var path = WriteSkillFile(SkillBodyWithObjectivesPayload);
         var parser = new SkillMetadataParser(
             NullLogger<SkillMetadataParser>.Instance, new UnsandboxedSkillFileReader(),
-            ScannerFlaggingContent("MARKER_PAYLOAD").Object, ConfigWithSecurityEnabled(), new EgressManifestValidator());
+            ScannerFlaggingContent("MARKER_PAYLOAD").Object, ConfigWithSecurityEnabled(), TestMcpSecurityScanner.RealEgressValidator());
 
         Assert.Throws<ManifestRefusedException>(() => parser.ParseFromFile(path, _tempDir));
     }
@@ -234,7 +233,7 @@ public sealed class SkillMetadataParserManifestScanningTests : IDisposable
         var path = WriteSkillFile(SkillBodyWithToolDeclarationPayload);
         var parser = new SkillMetadataParser(
             NullLogger<SkillMetadataParser>.Instance, new UnsandboxedSkillFileReader(),
-            ScannerFlaggingContent("MARKER_PAYLOAD").Object, ConfigWithSecurityEnabled(), new EgressManifestValidator());
+            ScannerFlaggingContent("MARKER_PAYLOAD").Object, ConfigWithSecurityEnabled(), TestMcpSecurityScanner.RealEgressValidator());
 
         Assert.Throws<ManifestRefusedException>(() => parser.ParseFromFile(path, _tempDir));
     }

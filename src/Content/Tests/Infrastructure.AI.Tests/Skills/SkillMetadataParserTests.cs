@@ -1,4 +1,3 @@
-using Application.AI.Common.Skills;
 using Domain.AI.Skills;
 using FluentAssertions;
 using Infrastructure.AI.Skills;
@@ -21,7 +20,7 @@ public sealed class SkillMetadataParserTests : IDisposable
         _sut = new SkillMetadataParser(
             NullLogger<SkillMetadataParser>.Instance, new UnsandboxedSkillFileReader(),
             TestMcpSecurityScanner.AlwaysSafe(), TestMcpSecurityScanner.DefaultConfig(),
-            new EgressManifestValidator());
+            TestMcpSecurityScanner.RealEgressValidator());
         _tempDir = Path.Combine(Path.GetTempPath(), $"skill-parser-tests-{Guid.NewGuid():N}");
         Directory.CreateDirectory(_tempDir);
     }
