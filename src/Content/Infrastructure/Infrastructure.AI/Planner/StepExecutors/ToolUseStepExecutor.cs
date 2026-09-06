@@ -6,6 +6,7 @@ using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Planner;
 using Application.AI.Common.Services.Governance;
 using Application.AI.Common.Interfaces.Sandbox;
+using Application.AI.Common.Services.Tools;
 using Domain.AI.Escalation;
 using Domain.AI.Governance;
 using Domain.AI.Planner;
@@ -43,6 +44,11 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
     private readonly IPlanProgressNotifier _notifier;
     private readonly PlanExecutionContext _executionContext;
     private readonly ILogger<ToolUseStepExecutor> _logger;
+    // Shared bounded-key-set-gated lookup (#387) — the same one ToolPermissionProfileResolver,
+    // ToolRiskClassifier, and ToolCapabilityResolver already read a tool's own declaration from.
+    // Needed here for ITool.ResourceParametersByOperation (#418/#587): a name outside the bounded
+    // first-party set (MCP/bundle-owned) resolves to null, same as everywhere else this lookup is used.
+    private readonly FirstPartyToolLookup _firstPartyToolLookup;
 
     public ToolUseStepExecutor(
         ICapabilityEnforcer capabilityEnforcer,
@@ -51,7 +57,8 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
         IAttestationService attestationService,
         IPlanProgressNotifier notifier,
         PlanExecutionContext executionContext,
-        ILogger<ToolUseStepExecutor> logger)
+        ILogger<ToolUseStepExecutor> logger,
+        FirstPartyToolLookup firstPartyToolLookup)
     {
         _capabilityEnforcer = capabilityEnforcer;
         _admissionPipeline = admissionPipeline;
@@ -60,6 +67,7 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
         _notifier = notifier;
         _executionContext = executionContext;
         _logger = logger;
+        _firstPartyToolLookup = firstPartyToolLookup;
     }
 
     public async Task<StepExecutionResult> ExecuteAsync(
@@ -326,6 +334,13 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
     /// path runs. Anything less would let a plan reach a tool the harness refuses in a chat turn — the
     /// agent could bypass a control simply by emitting a plan step instead of calling the tool
     /// directly, which is exactly the gap this chain exists to close.
+    /// <para>
+    /// #587: <see cref="ToolCallAdmissionRequest.ResourceRequest"/> must be populated here the same
+    /// way <c>GovernedAIFunction</c> and <c>DirectToolInvoker</c> already populate it (#418) — a plan
+    /// step is a third, independent admission path, and <c>CapabilityEnforcer</c>'s own fail-closed
+    /// design refuses any tool with path/host scoping configured when this stays unset, even for a
+    /// call whose paths/hosts were genuinely in bounds.
+    /// </para>
     /// </remarks>
     private async Task<(ToolCallAdmission Admission, StepExecutionResult? Refusal)> AdmitToolAsync(
         string toolName,
@@ -335,7 +350,7 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
         CancellationToken ct)
     {
         var admission = await _admissionPipeline
-            .AdmitAsync(new ToolCallAdmissionRequest(toolName, arguments), ct);
+            .AdmitAsync(new ToolCallAdmissionRequest(toolName, arguments, ResourceRequest: ExtractResourceRequest(toolName, arguments)), ct);
         if (admission.IsAllowed)
             return (admission, null);
 
@@ -351,6 +366,32 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
         });
     }
 
+    /// <summary>
+    /// Extracts the requested paths/hosts for one plan step's tool call — the same
+    /// <see cref="ResourceParameterExtractor.Extract"/> both other admission entry points call (#418),
+    /// applied to a plan step's own shape.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="Domain.AI.Planner.ToolUseConfig"/> carries no separate operation field — a plan
+    /// author (or the LLM planner) puts the operation under the well-known <c>"operation"</c> key
+    /// inside the flat argument set, the same wire-format key <see cref="AIToolConverter"/> and
+    /// <see cref="GovernedAIFunction"/> already use for exactly this concept. The remaining entries in
+    /// <paramref name="arguments"/> are the operation's own flat parameters — already plain CLR values
+    /// (<c>LlmPlanOutputMapper</c>/<c>WorkflowDefinitionMapper</c> both deserialize straight from JSON
+    /// into scalars), never a nested <c>JsonElement</c> the way a raw agent-turn call arrives, so no
+    /// further unwrapping is needed here the way <see cref="GovernedAIFunction"/> requires for its own
+    /// wire shape.
+    /// </remarks>
+    private Domain.AI.Sandbox.ToolCallResourceRequest? ExtractResourceRequest(
+        string toolName, IReadOnlyDictionary<string, object?> arguments)
+    {
+        var operation = arguments.TryGetValue("operation", out var operationValue)
+            ? operationValue as string
+            : null;
+
+        var tool = _firstPartyToolLookup.Resolve(toolName);
+        return ResourceParameterExtractor.Extract(operation, arguments, tool?.ResourceParametersByOperation);
+    }
 
     private static SandboxIsolationLevel DetermineIsolation(
         ToolUseConfig config,

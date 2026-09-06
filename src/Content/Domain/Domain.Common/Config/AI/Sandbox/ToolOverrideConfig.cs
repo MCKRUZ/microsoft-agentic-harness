@@ -14,7 +14,7 @@ namespace Domain.Common.Config.AI.Sandbox;
 /// </para>
 /// <para>
 /// <see cref="DeniedPaths"/>/<see cref="AllowedPaths"/>/<see cref="DeniedHosts"/>/<see cref="AllowedHosts"/>
-/// (#418) carry the identical limitation on two further paths, tracked for follow-up rather than
+/// (#418) carry the identical limitation on one further path, tracked for follow-up rather than
 /// covered by #418 itself:
 /// </para>
 /// <list type="bullet">
@@ -24,15 +24,15 @@ namespace Domain.Common.Config.AI.Sandbox;
 /// <c>ICapabilityEnforcer</c> entirely — never copies these four fields onto the profile it returns,
 /// so configuring them against a tool reached only through that path is silently inert.
 /// </description></item>
-/// <item><description>
-/// The plan/DAG executor (<c>ToolUseStepExecutor</c>) admits a step's tool call without extracting a
-/// <c>ToolCallResourceRequest</c> the way <c>GovernedAIFunction</c> and <c>DirectToolInvoker</c> both
-/// do (#418 only wired those two entry points). Configuring path/host scoping for a tool ALSO
-/// reachable from a plan step therefore fails that step outright — <c>CapabilityEnforcer</c>'s own
-/// fail-closed design (a configured scope with no determined request refuses) has no way to
-/// distinguish "unknown" from "this admission path was never taught to ask" here. Tracked as #587.
-/// </description></item>
 /// </list>
+/// <para>
+/// The plan/DAG executor (<c>ToolUseStepExecutor</c>) used to have this same gap — it admitted a
+/// step's tool call without extracting a <c>ToolCallResourceRequest</c> the way
+/// <c>GovernedAIFunction</c> and <c>DirectToolInvoker</c> already did (#418 only wired those two
+/// entry points at the time). #587 closed it: <c>ToolUseStepExecutor.ExtractResourceRequest</c> now
+/// populates it the same way, so configuring path/host scoping for a tool also reachable from a plan
+/// step is enforced identically across all three entry points.
+/// </para>
 /// </remarks>
 public sealed class ToolOverrideConfig
 {

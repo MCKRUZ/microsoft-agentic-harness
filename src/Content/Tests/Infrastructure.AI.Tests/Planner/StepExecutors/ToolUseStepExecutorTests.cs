@@ -70,7 +70,8 @@ public sealed class ToolUseStepExecutorTests
             _attestationService.Object,
             _notifier.Object,
             _context,
-            NullLogger<ToolUseStepExecutor>.Instance);
+            NullLogger<ToolUseStepExecutor>.Instance,
+            new FirstPartyToolLookup(sp, new HashSet<string>()));
     }
 
     private static PlanStep CreateStep(ToolUseConfig config) => new()
@@ -515,15 +516,17 @@ public sealed class ToolUseStepExecutorTests
         var services = new ServiceCollection();
         services.AddKeyedSingleton<ISandboxExecutor>(SandboxIsolationLevel.Process, _sandboxExecutor.Object);
         services.AddKeyedSingleton<ISandboxExecutor>(SandboxIsolationLevel.Container, _sandboxExecutor.Object);
+        var sp = services.BuildServiceProvider();
 
         return new ToolUseStepExecutor(
             _capabilityEnforcer.Object,
             BuildAdmissionPipeline(observers),
-            services.BuildServiceProvider(),
+            sp,
             _attestationService.Object,
             _notifier.Object,
             _context,
-            NullLogger<ToolUseStepExecutor>.Instance);
+            NullLogger<ToolUseStepExecutor>.Instance,
+            new FirstPartyToolLookup(sp, new HashSet<string>()));
     }
 
     /// <summary>

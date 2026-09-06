@@ -298,6 +298,10 @@ public sealed class PlannerDiRegistrationTests : IDisposable
         services.AddSingleton<ISender>(new Mock<ISender>().Object);
         services.AddSingleton<IPlanProgressNotifier>(new Mock<IPlanProgressNotifier>().Object);
         services.AddSingleton<ICapabilityEnforcer>(new Mock<ICapabilityEnforcer>().Object);
+        // ToolUseStepExecutor takes this directly now (#587) — previously only reached transitively
+        // through the real ICapabilityEnforcer, which this fixture mocks away above.
+        services.AddSingleton(sp => new Application.AI.Common.Services.Tools.FirstPartyToolLookup(
+            sp, new HashSet<string>()));
         services.AddSingleton<ICompositeResponseSanitizer>(new Mock<ICompositeResponseSanitizer>().Object);
         services.AddSingleton<IDockerClient>(new Mock<IDockerClient>().Object);
 
