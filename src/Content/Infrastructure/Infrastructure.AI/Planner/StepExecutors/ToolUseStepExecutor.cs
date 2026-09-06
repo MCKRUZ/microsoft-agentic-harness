@@ -413,8 +413,7 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
     /// decoy under the other, win the check with the decoy, and have the sandboxed tool still read the
     /// denied one under its own declared (differently-cased) key. Checked value must equal consumed
     /// value; when a collision makes that impossible to guarantee, refuse rather than pick one side of
-    /// the ambiguity to trust — the same fail-closed posture as an unreadable operation or a
-    /// non-string parameter value.
+    /// the ambiguity to trust — the same fail-closed posture as an unreadable operation.
     /// </para>
     /// </remarks>
     private Domain.AI.Sandbox.ToolCallResourceRequest? ExtractResourceRequest(
