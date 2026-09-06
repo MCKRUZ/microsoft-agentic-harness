@@ -1,0 +1,481 @@
+diff --git a/src/Content/Domain/Domain.Common/Config/AI/Sandbox/ToolOverrideConfig.cs b/src/Content/Domain/Domain.Common/Config/AI/Sandbox/ToolOverrideConfig.cs
+index 580752aa..92a26666 100644
+--- a/src/Content/Domain/Domain.Common/Config/AI/Sandbox/ToolOverrideConfig.cs
++++ b/src/Content/Domain/Domain.Common/Config/AI/Sandbox/ToolOverrideConfig.cs
+@@ -14,7 +14,7 @@ namespace Domain.Common.Config.AI.Sandbox;
+ /// </para>
+ /// <para>
+ /// <see cref="DeniedPaths"/>/<see cref="AllowedPaths"/>/<see cref="DeniedHosts"/>/<see cref="AllowedHosts"/>
+-/// (#418) carry the identical limitation on two further paths, tracked for follow-up rather than
++/// (#418) carry the identical limitation on one further path, tracked for follow-up rather than
+ /// covered by #418 itself:
+ /// </para>
+ /// <list type="bullet">
+@@ -24,15 +24,15 @@ namespace Domain.Common.Config.AI.Sandbox;
+ /// <c>ICapabilityEnforcer</c> entirely — never copies these four fields onto the profile it returns,
+ /// so configuring them against a tool reached only through that path is silently inert.
+ /// </description></item>
+-/// <item><description>
+-/// The plan/DAG executor (<c>ToolUseStepExecutor</c>) admits a step's tool call without extracting a
+-/// <c>ToolCallResourceRequest</c> the way <c>GovernedAIFunction</c> and <c>DirectToolInvoker</c> both
+-/// do (#418 only wired those two entry points). Configuring path/host scoping for a tool ALSO
+-/// reachable from a plan step therefore fails that step outright — <c>CapabilityEnforcer</c>'s own
+-/// fail-closed design (a configured scope with no determined request refuses) has no way to
+-/// distinguish "unknown" from "this admission path was never taught to ask" here. Tracked as #587.
+-/// </description></item>
+ /// </list>
++/// <para>
++/// The plan/DAG executor (<c>ToolUseStepExecutor</c>) used to have this same gap — it admitted a
++/// step's tool call without extracting a <c>ToolCallResourceRequest</c> the way
++/// <c>GovernedAIFunction</c> and <c>DirectToolInvoker</c> already did (#418 only wired those two
++/// entry points at the time). #587 closed it: <c>ToolUseStepExecutor.ExtractResourceRequest</c> now
++/// populates it the same way, so configuring path/host scoping for a tool also reachable from a plan
++/// step is enforced identically across all three entry points.
++/// </para>
+ /// </remarks>
+ public sealed class ToolOverrideConfig
+ {
+diff --git a/src/Content/Infrastructure/Infrastructure.AI/Planner/StepExecutors/ToolUseStepExecutor.cs b/src/Content/Infrastructure/Infrastructure.AI/Planner/StepExecutors/ToolUseStepExecutor.cs
+index 00dec622..5884d3d1 100644
+--- a/src/Content/Infrastructure/Infrastructure.AI/Planner/StepExecutors/ToolUseStepExecutor.cs
++++ b/src/Content/Infrastructure/Infrastructure.AI/Planner/StepExecutors/ToolUseStepExecutor.cs
+@@ -6,6 +6,7 @@ using Application.AI.Common.Interfaces.Governance;
+ using Application.AI.Common.Interfaces.Planner;
+ using Application.AI.Common.Services.Governance;
+ using Application.AI.Common.Interfaces.Sandbox;
++using Application.AI.Common.Services.Tools;
+ using Domain.AI.Escalation;
+ using Domain.AI.Governance;
+ using Domain.AI.Planner;
+@@ -43,6 +44,11 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
+     private readonly IPlanProgressNotifier _notifier;
+     private readonly PlanExecutionContext _executionContext;
+     private readonly ILogger<ToolUseStepExecutor> _logger;
++    // Shared bounded-key-set-gated lookup (#387) — the same one ToolPermissionProfileResolver,
++    // ToolRiskClassifier, and ToolCapabilityResolver already read a tool's own declaration from.
++    // Needed here for ITool.ResourceParametersByOperation (#418/#587): a name outside the bounded
++    // first-party set (MCP/bundle-owned) resolves to null, same as everywhere else this lookup is used.
++    private readonly FirstPartyToolLookup _firstPartyToolLookup;
+ 
+     public ToolUseStepExecutor(
+         ICapabilityEnforcer capabilityEnforcer,
+@@ -51,7 +57,8 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
+         IAttestationService attestationService,
+         IPlanProgressNotifier notifier,
+         PlanExecutionContext executionContext,
+-        ILogger<ToolUseStepExecutor> logger)
++        ILogger<ToolUseStepExecutor> logger,
++        FirstPartyToolLookup firstPartyToolLookup)
+     {
+         _capabilityEnforcer = capabilityEnforcer;
+         _admissionPipeline = admissionPipeline;
+@@ -60,6 +67,7 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
+         _notifier = notifier;
+         _executionContext = executionContext;
+         _logger = logger;
++        _firstPartyToolLookup = firstPartyToolLookup;
+     }
+ 
+     public async Task<StepExecutionResult> ExecuteAsync(
+@@ -326,6 +334,13 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
+     /// path runs. Anything less would let a plan reach a tool the harness refuses in a chat turn — the
+     /// agent could bypass a control simply by emitting a plan step instead of calling the tool
+     /// directly, which is exactly the gap this chain exists to close.
++    /// <para>
++    /// #587: <see cref="ToolCallAdmissionRequest.ResourceRequest"/> must be populated here the same
++    /// way <c>GovernedAIFunction</c> and <c>DirectToolInvoker</c> already populate it (#418) — a plan
++    /// step is a third, independent admission path, and <c>CapabilityEnforcer</c>'s own fail-closed
++    /// design refuses any tool with path/host scoping configured when this stays unset, even for a
++    /// call whose paths/hosts were genuinely in bounds.
++    /// </para>
+     /// </remarks>
+     private async Task<(ToolCallAdmission Admission, StepExecutionResult? Refusal)> AdmitToolAsync(
+         string toolName,
+@@ -335,7 +350,7 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
+         CancellationToken ct)
+     {
+         var admission = await _admissionPipeline
+-            .AdmitAsync(new ToolCallAdmissionRequest(toolName, arguments), ct);
++            .AdmitAsync(new ToolCallAdmissionRequest(toolName, arguments, ResourceRequest: ExtractResourceRequest(toolName, arguments)), ct);
+         if (admission.IsAllowed)
+             return (admission, null);
+ 
+@@ -351,6 +366,71 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
+         });
+     }
+ 
++    /// <summary>
++    /// Extracts the requested paths/hosts for one plan step's tool call — the same
++    /// <see cref="ResourceParameterExtractor.Extract"/> both other admission entry points call (#418),
++    /// applied to a plan step's own shape.
++    /// </summary>
++    /// <remarks>
++    /// <see cref="Domain.AI.Planner.ToolUseConfig"/> carries no separate operation field — a plan
++    /// author (or the LLM planner) puts the operation under the well-known <c>"operation"</c> key
++    /// inside the flat argument set, the same wire-format key <see cref="AIToolConverter"/> and
++    /// <see cref="GovernedAIFunction"/> already use for exactly this concept.
++    /// <para>
++    /// A plan step's own flat values are NOT reliably plain CLR values, unlike the doc comment this
++    /// replaced claimed (correctness/security review on #587): <c>LlmPlanOutputMapper</c> does convert
++    /// straight to scalars, but a step submitted through the workflow HTTP surface
++    /// (<c>WorkflowDefinitionMapper</c>/<c>ToolUseStepConfiguration</c>) round-trips through
++    /// System.Text.Json with no <c>object</c>-typed converter registered
++    /// (<c>ExecutionApiServiceCollectionExtensions</c> only adds <c>JsonStringEnumConverter</c>), so its
++    /// <c>object?</c>-typed dictionary values bind as <see cref="JsonElement"/>, not <see cref="string"/>.
++    /// Left unhandled, that producer's calls would silently never populate a resource request at all —
++    /// fail-closed (no bypass), but #587's own goal of enforcing identically across all three admission
++    /// paths would quietly not hold for it. <see cref="NormalizeScalar"/> unwraps a string-valued
++    /// <see cref="JsonElement"/> the same way <see cref="GovernedAIFunction"/> already does for its own
++    /// wire shape, so both plan-authoring producers reach <see cref="ResourceParameterExtractor.Extract"/>
++    /// on equal footing.
++    /// </para>
++    /// <para>
++    /// Case-insensitive by construction (correctness review on #587), matching both other admission
++    /// paths: <c>ToolParameters.Flatten</c> (the agent-turn path) hands <see cref="ResourceParameterExtractor.Extract"/>
++    /// an <see cref="StringComparer.OrdinalIgnoreCase"/> dictionary, and a step naming a declared
++    /// parameter with different casing (e.g. <c>"Path"</c> against a declared <c>"path"</c>) must not
++    /// silently miss the match — that would resolve to <see cref="Domain.AI.Sandbox.ToolCallResourceRequest.Empty"/>,
++    /// which <c>CapabilityEnforcer</c> treats as "nothing to check" and allows.
++    /// </para>
++    /// </remarks>
++    private Domain.AI.Sandbox.ToolCallResourceRequest? ExtractResourceRequest(
++        string toolName, IReadOnlyDictionary<string, object?> arguments)
++    {
++        // Resolved first so a tool with no resource-parameter declaration (or one outside the bounded
++        // first-party set) skips the dictionary copy below entirely — Extract would return null anyway.
++        var tool = _firstPartyToolLookup.Resolve(toolName);
++        if (tool?.ResourceParametersByOperation is not { Count: > 0 } declared)
++            return null;
++
++        // "operation" duplicates AIToolConverter.OperationArgumentName's value — that constant is
++        // internal to a different assembly (Application.AI.Common) and not visible here. Keep in sync.
++        var operation = arguments.TryGetValue("operation", out var operationValue)
++            ? NormalizeScalar(operationValue) as string
++            : null;
++        var normalizedArguments = arguments.ToDictionary(
++            kv => kv.Key, kv => NormalizeScalar(kv.Value), StringComparer.OrdinalIgnoreCase);
++
++        return ResourceParameterExtractor.Extract(operation, normalizedArguments, declared);
++    }
++
++    /// <summary>
++    /// Unwraps a string-valued <see cref="JsonElement"/> to the plain <see cref="string"/>
++    /// <see cref="ResourceParameterExtractor.Extract"/> expects; every other shape (already a CLR
++    /// scalar, or a non-string <see cref="JsonElement"/> that could never be a path/host anyway) passes
++    /// through unchanged.
++    /// </summary>
++    private static object? NormalizeScalar(object? value) => value switch
++    {
++        JsonElement { ValueKind: JsonValueKind.String } je => je.GetString(),
++        _ => value
++    };
+ 
+     private static SandboxIsolationLevel DetermineIsolation(
+         ToolUseConfig config,
+diff --git a/src/Content/Tests/Application.AI.Common.Tests/Governance/ToolPathScopingEndToEndTests.cs b/src/Content/Tests/Application.AI.Common.Tests/Governance/ToolPathScopingEndToEndTests.cs
+index 1c8497bc..49d140f2 100644
+--- a/src/Content/Tests/Application.AI.Common.Tests/Governance/ToolPathScopingEndToEndTests.cs
++++ b/src/Content/Tests/Application.AI.Common.Tests/Governance/ToolPathScopingEndToEndTests.cs
+@@ -1,7 +1,10 @@
+ using System.Text.Json;
+ using Application.AI.Common.Interfaces.Agent;
++using Application.AI.Common.Interfaces.Attestation;
+ using Application.AI.Common.Interfaces.Governance;
+ using Application.AI.Common.Interfaces.Permissions;
++using Application.AI.Common.Interfaces.Planner;
++using Application.AI.Common.Interfaces.Sandbox;
+ using Application.AI.Common.Interfaces.Tools;
+ using Application.AI.Common.Services.Agent;
+ using Application.AI.Common.Services.Governance;
+@@ -11,11 +14,14 @@ using Domain.AI.Bundles;
+ using Domain.AI.Changes;
+ using Domain.AI.Governance;
+ using Domain.AI.Permissions;
++using Domain.AI.Planner;
++using Domain.AI.Sandbox;
+ using Domain.Common.Config.AI;
+ using Domain.Common.Config.AI.DirectToolInvocation;
+ using Domain.Common.Config.AI.Permissions;
+ using Domain.Common.Config.AI.Sandbox;
+ using FluentAssertions;
++using Infrastructure.AI.Planner.StepExecutors;
+ using Infrastructure.AI.Tools;
+ using Microsoft.Extensions.AI;
+ using Microsoft.Extensions.DependencyInjection;
+@@ -309,4 +315,172 @@ public sealed class ToolPathScopingEndToEndTests
+         capturedTrace!.Snapshot().ToolDecisions.Should().ContainSingle(d => d.Reason.Contains("path denied"));
+         fileSystem.Verify(fs => fs.ReadFileAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+     }
++
++    // --- Plan/DAG executor path (ToolUseStepExecutor, #587) ---
++
++    /// <summary>
++    /// A second, independent <see cref="CapabilityEnforcer"/> — <see cref="ToolUseStepExecutor"/> takes
++    /// its own <see cref="ICapabilityEnforcer"/> to resolve a sandbox isolation tier AFTER admission,
++    /// separate from the one <see cref="BuildGovernor"/> wires into the admission chain itself. Both
++    /// read the same <paramref name="sandboxConfig"/>, so they agree on what is denied.
++    /// </summary>
++    private static CapabilityEnforcer BuildCapabilityEnforcer(IServiceProvider toolProvider, SandboxConfig sandboxConfig)
++    {
++        var lookup = new FirstPartyToolLookup(toolProvider, new HashSet<string> { "file_system" });
++        var resolver = new ToolPermissionProfileResolver(
++            lookup, Mock.Of<IOptionsMonitor<SandboxConfig>>(m => m.CurrentValue == sandboxConfig));
++        return new CapabilityEnforcer(resolver, NullLogger<CapabilityEnforcer>.Instance);
++    }
++
++    /// <summary>
++    /// A plan step's <see cref="ToolUseConfig.InputParameters"/> carries no separate operation field
++    /// (#587) — the operation lives under the well-known <c>"operation"</c> key inside the flat
++    /// argument set, the same convention <see cref="AIToolConverter"/> and
++    /// <see cref="GovernedAIFunction"/> use for the other two paths.
++    /// </summary>
++    private static ToolUseConfig ReadConfig(string path, string operation = "read") => new()
++    {
++        ToolName = "file_system",
++        InputParameters = new Dictionary<string, object?> { ["operation"] = operation, ["path"] = path }
++    };
++
++    /// <summary>
++    /// The workflow-submit producer's actual wire shape (correctness/security review on #587):
++    /// System.Text.Json binds an <c>object?</c>-typed dictionary value to <see cref="JsonElement"/>
++    /// with no converter registered to unwrap it, unlike <c>LlmPlanOutputMapper</c>'s
++    /// <see cref="ReadConfig"/> shape, which already holds plain CLR strings.
++    /// </summary>
++    private static ToolUseConfig ReadConfigFromJsonElements(string path, string operation = "read") => new()
++    {
++        ToolName = "file_system",
++        InputParameters = new Dictionary<string, object?>
++        {
++            ["operation"] = JsonSerializer.SerializeToElement(operation),
++            ["path"] = JsonSerializer.SerializeToElement(path)
++        }
++    };
++
++    private static PlanStep BuildToolStep(ToolUseConfig config) => new()
++    {
++        Id = new PlanStepId(Guid.NewGuid()),
++        Name = "tool-step",
++        Type = StepType.ToolUse,
++        Configuration = config,
++        RetryPolicy = new RetryPolicy()
++    };
++
++    private static (ToolUseStepExecutor Executor, Mock<ISandboxExecutor> SandboxExecutor, GovernanceTraceRecorder Trace)
++        BuildPlanExecutorFixture(SandboxConfig sandboxConfig, Mock<IFileSystemService> fileSystem)
++    {
++        var tool = new FileSystemTool(fileSystem.Object);
++        var sandboxExecutor = new Mock<ISandboxExecutor>();
++
++        var services = new ServiceCollection();
++        services.AddKeyedSingleton<ITool>("file_system", tool);
++        services.AddKeyedSingleton<ISandboxExecutor>(SandboxIsolationLevel.Process, sandboxExecutor.Object);
++        services.AddKeyedSingleton<ISandboxExecutor>(SandboxIsolationLevel.Container, sandboxExecutor.Object);
++        var provider = services.BuildServiceProvider();
++
++        var context = Mock.Of<IAgentExecutionContext>(c => c.AgentId == "test-agent");
++        var (governor, trace) = BuildGovernor(provider, sandboxConfig, context);
++        var enforcer = BuildCapabilityEnforcer(provider, sandboxConfig);
++        var lookup = new FirstPartyToolLookup(provider, new HashSet<string> { "file_system" });
++
++        var executor = new ToolUseStepExecutor(
++            enforcer,
++            AdmissionHarness.Pipeline(governor: governor, executionContext: context, trace: trace),
++            provider,
++            Mock.Of<IAttestationService>(),
++            Mock.Of<IPlanProgressNotifier>(),
++            new PlanExecutionContext { CurrentPlanId = new PlanId(Guid.NewGuid()) },
++            NullLogger<ToolUseStepExecutor>.Instance,
++            lookup);
++
++        return (executor, sandboxExecutor, trace);
++    }
++
++    [Fact]
++    public async Task PlanExecutorPath_DeniedPath_RefusesBeforeSandboxDispatch()
++    {
++        var fileSystem = new Mock<IFileSystemService>();
++        var (executor, sandboxExecutor, trace) = BuildPlanExecutorFixture(DenyingSandboxConfig(), fileSystem);
++
++        var step = BuildToolStep(ReadConfig(DeniedPath));
++
++        var result = await executor.ExecuteAsync(step, new Dictionary<PlanStepId, string>(), CancellationToken.None);
++
++        // Same fail-closed shape as the other two paths: the model-facing text is generic, and the
++        // trace is where proof this was a path-scoping denial (not some other gate) lives.
++        result.Status.Should().Be(StepExecutionStatus.Failed);
++        result.IsPolicyDenial.Should().BeTrue();
++        trace.Snapshot().ToolDecisions.Should().ContainSingle(d => d.Reason.Contains("path denied"));
++        sandboxExecutor.Verify(
++            s => s.ExecuteAsync(It.IsAny<SandboxExecutionRequest>(), It.IsAny<CancellationToken>()), Times.Never);
++    }
++
++    [Fact]
++    public async Task PlanExecutorPath_AllowedPath_ReachesSandboxDispatch()
++    {
++        var fileSystem = new Mock<IFileSystemService>();
++        var (executor, sandboxExecutor, _) = BuildPlanExecutorFixture(DenyingSandboxConfig(), fileSystem);
++        sandboxExecutor
++            .Setup(s => s.ExecuteAsync(It.IsAny<SandboxExecutionRequest>(), It.IsAny<CancellationToken>()))
++            .ReturnsAsync(new SandboxExecutionResult { Success = true, Output = "hello world" });
++
++        var step = BuildToolStep(ReadConfig(AllowedPath));
++
++        var result = await executor.ExecuteAsync(step, new Dictionary<PlanStepId, string>(), CancellationToken.None);
++
++        // The regression #587 guards against: an in-bounds path must not be refused just because this
++        // admission path never determined its resource usage.
++        result.Status.Should().Be(StepExecutionStatus.Completed);
++        sandboxExecutor.Verify(
++            s => s.ExecuteAsync(It.IsAny<SandboxExecutionRequest>(), It.IsAny<CancellationToken>()), Times.Once);
++    }
++
++    [Fact]
++    public async Task PlanExecutorPath_JsonElementValuedArguments_DeniedPath_StillRefuses()
++    {
++        // Regression (correctness/security review on #587): a workflow submitted through the HTTP
++        // surface arrives with JsonElement-valued arguments, not the plain strings LlmPlanOutputMapper
++        // produces. Without normalization this silently degrades to "never scoped" for that producer —
++        // fail-closed rather than a bypass, but not the "enforced identically" #587 set out to achieve.
++        var fileSystem = new Mock<IFileSystemService>();
++        var (executor, sandboxExecutor, trace) = BuildPlanExecutorFixture(DenyingSandboxConfig(), fileSystem);
++
++        var step = BuildToolStep(ReadConfigFromJsonElements(DeniedPath));
++
++        var result = await executor.ExecuteAsync(step, new Dictionary<PlanStepId, string>(), CancellationToken.None);
++
++        result.Status.Should().Be(StepExecutionStatus.Failed);
++        result.IsPolicyDenial.Should().BeTrue();
++        trace.Snapshot().ToolDecisions.Should().ContainSingle(d => d.Reason.Contains("path denied"));
++        sandboxExecutor.Verify(
++            s => s.ExecuteAsync(It.IsAny<SandboxExecutionRequest>(), It.IsAny<CancellationToken>()), Times.Never);
++    }
++
++    [Fact]
++    public async Task PlanExecutorPath_DeniedPath_ArgumentKeyCasingDiffers_StillRefuses()
++    {
++        // Regression (correctness review on #587): the agent-turn path hands Extract a case-insensitive
++        // dictionary (ToolParameters.Flatten). A plan step naming the declared "path" parameter as
++        // "Path" must still match — an ordinal dictionary here would silently miss it, resolve to
++        // ToolCallResourceRequest.Empty, and CapabilityEnforcer reads Empty as "nothing to check".
++        var fileSystem = new Mock<IFileSystemService>();
++        var (executor, sandboxExecutor, trace) = BuildPlanExecutorFixture(DenyingSandboxConfig(), fileSystem);
++
++        var step = BuildToolStep(new ToolUseConfig
++        {
++            ToolName = "file_system",
++            InputParameters = new Dictionary<string, object?> { ["operation"] = "read", ["Path"] = DeniedPath }
++        });
++
++        var result = await executor.ExecuteAsync(step, new Dictionary<PlanStepId, string>(), CancellationToken.None);
++
++        result.Status.Should().Be(StepExecutionStatus.Failed);
++        result.IsPolicyDenial.Should().BeTrue();
++        trace.Snapshot().ToolDecisions.Should().ContainSingle(d => d.Reason.Contains("path denied"));
++        sandboxExecutor.Verify(
++            s => s.ExecuteAsync(It.IsAny<SandboxExecutionRequest>(), It.IsAny<CancellationToken>()), Times.Never);
++    }
+ }
+diff --git a/src/Content/Tests/Infrastructure.AI.Tests/Planner/PlannerDiRegistrationTests.cs b/src/Content/Tests/Infrastructure.AI.Tests/Planner/PlannerDiRegistrationTests.cs
+index c7d4c0dc..4a838159 100644
+--- a/src/Content/Tests/Infrastructure.AI.Tests/Planner/PlannerDiRegistrationTests.cs
++++ b/src/Content/Tests/Infrastructure.AI.Tests/Planner/PlannerDiRegistrationTests.cs
+@@ -298,6 +298,10 @@ public sealed class PlannerDiRegistrationTests : IDisposable
+         services.AddSingleton<ISender>(new Mock<ISender>().Object);
+         services.AddSingleton<IPlanProgressNotifier>(new Mock<IPlanProgressNotifier>().Object);
+         services.AddSingleton<ICapabilityEnforcer>(new Mock<ICapabilityEnforcer>().Object);
++        // ToolUseStepExecutor takes this directly now (#587) — previously only reached transitively
++        // through the real ICapabilityEnforcer, which this fixture mocks away above.
++        services.AddSingleton(sp => new Application.AI.Common.Services.Tools.FirstPartyToolLookup(
++            sp, new HashSet<string>()));
+         services.AddSingleton<ICompositeResponseSanitizer>(new Mock<ICompositeResponseSanitizer>().Object);
+         services.AddSingleton<IDockerClient>(new Mock<IDockerClient>().Object);
+ 
+diff --git a/src/Content/Tests/Infrastructure.AI.Tests/Planner/StepExecutors/ToolUseStepExecutorAttestationBindingTests.cs b/src/Content/Tests/Infrastructure.AI.Tests/Planner/StepExecutors/ToolUseStepExecutorAttestationBindingTests.cs
+index d527757b..62585d0b 100644
+--- a/src/Content/Tests/Infrastructure.AI.Tests/Planner/StepExecutors/ToolUseStepExecutorAttestationBindingTests.cs
++++ b/src/Content/Tests/Infrastructure.AI.Tests/Planner/StepExecutors/ToolUseStepExecutorAttestationBindingTests.cs
+@@ -2,6 +2,7 @@ using System.Security.Cryptography;
+ using Application.AI.Common.Interfaces.Governance;
+ using Application.AI.Common.Interfaces.Planner;
+ using Application.AI.Common.Interfaces.Sandbox;
++using Application.AI.Common.Services.Tools;
+ using Domain.AI.Attestation;
+ using Domain.AI.Governance;
+ using Domain.AI.Planner;
+@@ -62,16 +63,18 @@ public sealed class ToolUseStepExecutorAttestationBindingTests
+         var services = new ServiceCollection();
+         services.AddKeyedSingleton<ISandboxExecutor>(SandboxIsolationLevel.Process, _sandboxExecutor.Object);
+         services.AddKeyedSingleton<ISandboxExecutor>(SandboxIsolationLevel.Container, _sandboxExecutor.Object);
++        var sp = services.BuildServiceProvider();
+ 
+         _sut = new ToolUseStepExecutor(
+             _capabilityEnforcer.Object,
+             // Ungoverned default: no envelope armed and every gate off means the chain admits.
+             PermissiveAdmission.Pipeline(),
+-            services.BuildServiceProvider(),
++            sp,
+             _attestationService,
+             _notifier.Object,
+             new PlanExecutionContext { CurrentPlanId = new PlanId(Guid.NewGuid()) },
+-            NullLogger<ToolUseStepExecutor>.Instance);
++            NullLogger<ToolUseStepExecutor>.Instance,
++            new FirstPartyToolLookup(sp, new HashSet<string>()));
+     }
+ 
+     private static PlanStep CreateStep() => new()
+diff --git a/src/Content/Tests/Infrastructure.AI.Tests/Planner/StepExecutors/ToolUseStepExecutorSolutionReviewFixTests.cs b/src/Content/Tests/Infrastructure.AI.Tests/Planner/StepExecutors/ToolUseStepExecutorSolutionReviewFixTests.cs
+index b0e350c8..72ac7907 100644
+--- a/src/Content/Tests/Infrastructure.AI.Tests/Planner/StepExecutors/ToolUseStepExecutorSolutionReviewFixTests.cs
++++ b/src/Content/Tests/Infrastructure.AI.Tests/Planner/StepExecutors/ToolUseStepExecutorSolutionReviewFixTests.cs
+@@ -2,6 +2,7 @@ using Application.AI.Common.Interfaces.Attestation;
+ using Application.AI.Common.Interfaces.Governance;
+ using Application.AI.Common.Interfaces.Planner;
+ using Application.AI.Common.Interfaces.Sandbox;
++using Application.AI.Common.Services.Tools;
+ using Domain.AI.Governance;
+ using Domain.AI.Planner;
+ using Domain.AI.Sandbox;
+@@ -55,7 +56,8 @@ public sealed class ToolUseStepExecutorSolutionReviewFixTests
+             _attestationService.Object,
+             _notifier.Object,
+             _context,
+-            NullLogger<ToolUseStepExecutor>.Instance);
++            NullLogger<ToolUseStepExecutor>.Instance,
++            new FirstPartyToolLookup(sp, new HashSet<string>()));
+     }
+ 
+     [Fact]
+diff --git a/src/Content/Tests/Infrastructure.AI.Tests/Planner/StepExecutors/ToolUseStepExecutorTests.cs b/src/Content/Tests/Infrastructure.AI.Tests/Planner/StepExecutors/ToolUseStepExecutorTests.cs
+index 06489120..99a8d2d3 100644
+--- a/src/Content/Tests/Infrastructure.AI.Tests/Planner/StepExecutors/ToolUseStepExecutorTests.cs
++++ b/src/Content/Tests/Infrastructure.AI.Tests/Planner/StepExecutors/ToolUseStepExecutorTests.cs
+@@ -70,7 +70,8 @@ public sealed class ToolUseStepExecutorTests
+             _attestationService.Object,
+             _notifier.Object,
+             _context,
+-            NullLogger<ToolUseStepExecutor>.Instance);
++            NullLogger<ToolUseStepExecutor>.Instance,
++            new FirstPartyToolLookup(sp, new HashSet<string>()));
+     }
+ 
+     private static PlanStep CreateStep(ToolUseConfig config) => new()
+@@ -515,15 +516,17 @@ public sealed class ToolUseStepExecutorTests
+         var services = new ServiceCollection();
+         services.AddKeyedSingleton<ISandboxExecutor>(SandboxIsolationLevel.Process, _sandboxExecutor.Object);
+         services.AddKeyedSingleton<ISandboxExecutor>(SandboxIsolationLevel.Container, _sandboxExecutor.Object);
++        var sp = services.BuildServiceProvider();
+ 
+         return new ToolUseStepExecutor(
+             _capabilityEnforcer.Object,
+             BuildAdmissionPipeline(observers),
+-            services.BuildServiceProvider(),
++            sp,
+             _attestationService.Object,
+             _notifier.Object,
+             _context,
+-            NullLogger<ToolUseStepExecutor>.Instance);
++            NullLogger<ToolUseStepExecutor>.Instance,
++            new FirstPartyToolLookup(sp, new HashSet<string>()));
+     }
+ 
+     /// <summary>

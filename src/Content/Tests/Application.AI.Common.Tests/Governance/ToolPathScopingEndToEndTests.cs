@@ -483,4 +483,36 @@ public sealed class ToolPathScopingEndToEndTests
         sandboxExecutor.Verify(
             s => s.ExecuteAsync(It.IsAny<SandboxExecutionRequest>(), It.IsAny<CancellationToken>()), Times.Never);
     }
+
+    [Fact]
+    public async Task PlanExecutorPath_CaseVariantDuplicateArgumentKeys_DoesNotThrow_AndStillRefuses()
+    {
+        // Regression (grader/correctness/security review on #587, round 3): BuildToolArguments merges
+        // an upstream step's JSON output into the step's own declared parameters via TryAdd on an
+        // ordinal dictionary, so the merged set can legitimately hold two keys that are case-variants
+        // of each other. Re-keying that into a case-insensitive dictionary via ToDictionary threw
+        // ArgumentException uncaught, reaching PlanExecutor's broad handler instead of a clean, traced
+        // refusal — a materially worse failure mode than every other admission path in this chain.
+        var fileSystem = new Mock<IFileSystemService>();
+        var (executor, sandboxExecutor, trace) = BuildPlanExecutorFixture(DenyingSandboxConfig(), fileSystem);
+
+        var step = BuildToolStep(new ToolUseConfig
+        {
+            ToolName = "file_system",
+            InputParameters = new Dictionary<string, object?>
+            {
+                ["operation"] = "read",
+                ["path"] = DeniedPath,
+                ["Path"] = DeniedPath
+            }
+        });
+
+        var result = await executor.ExecuteAsync(step, new Dictionary<PlanStepId, string>(), CancellationToken.None);
+
+        result.Status.Should().Be(StepExecutionStatus.Failed);
+        result.IsPolicyDenial.Should().BeTrue();
+        trace.Snapshot().ToolDecisions.Should().ContainSingle(d => d.Reason.Contains("path denied"));
+        sandboxExecutor.Verify(
+            s => s.ExecuteAsync(It.IsAny<SandboxExecutionRequest>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
 }

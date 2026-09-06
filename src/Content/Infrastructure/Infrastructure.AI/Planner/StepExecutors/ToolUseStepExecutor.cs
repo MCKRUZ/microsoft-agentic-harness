@@ -399,6 +399,18 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
     /// silently miss the match — that would resolve to <see cref="Domain.AI.Sandbox.ToolCallResourceRequest.Empty"/>,
     /// which <c>CapabilityEnforcer</c> treats as "nothing to check" and allows.
     /// </para>
+    /// <para>
+    /// Built with a last-write-wins loop, not <see cref="Enumerable.ToDictionary{TSource,TKey,TElement}(IEnumerable{TSource},Func{TSource,TKey},Func{TSource,TElement})"/>
+    /// (grader/correctness review on #587): <paramref name="arguments"/> is itself ordinal —
+    /// <c>BuildToolArguments</c> merges an upstream step's JSON output into the step's own declared
+    /// parameters via <c>TryAdd</c> on a case-sensitive dictionary — so it can legitimately hold two
+    /// keys that are case-variants of each other (e.g. a declared <c>"path"</c> alongside an
+    /// upstream-produced <c>"Path"</c>). Re-keying that into an <see cref="StringComparer.OrdinalIgnoreCase"/>
+    /// dictionary via <c>ToDictionary</c> would throw <see cref="ArgumentException"/> on the second,
+    /// colliding key instead of resolving it — an admission-time crash that reaches
+    /// <c>PlanExecutor</c>'s broad exception handler uncaught, which is a materially worse failure mode
+    /// than the clean, traced refusal every other path in this admission chain produces.
+    /// </para>
     /// </remarks>
     private Domain.AI.Sandbox.ToolCallResourceRequest? ExtractResourceRequest(
         string toolName, IReadOnlyDictionary<string, object?> arguments)
@@ -409,13 +421,17 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
         if (tool?.ResourceParametersByOperation is not { Count: > 0 } declared)
             return null;
 
+        var normalizedArguments = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (key, value) in arguments)
+            normalizedArguments[key] = NormalizeScalar(value);
+
         // "operation" duplicates AIToolConverter.OperationArgumentName's value — that constant is
         // internal to a different assembly (Application.AI.Common) and not visible here. Keep in sync.
-        var operation = arguments.TryGetValue("operation", out var operationValue)
-            ? NormalizeScalar(operationValue) as string
+        // Read from the normalized dictionary, not the raw arguments, so a differently-cased key
+        // ("Operation") matches the same way every declared resource-parameter name already does.
+        var operation = normalizedArguments.TryGetValue("operation", out var operationValue)
+            ? operationValue as string
             : null;
-        var normalizedArguments = arguments.ToDictionary(
-            kv => kv.Key, kv => NormalizeScalar(kv.Value), StringComparer.OrdinalIgnoreCase);
 
         return ResourceParameterExtractor.Extract(operation, normalizedArguments, declared);
     }
