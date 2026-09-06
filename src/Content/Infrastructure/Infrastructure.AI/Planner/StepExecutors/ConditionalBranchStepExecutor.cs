@@ -78,6 +78,11 @@ public sealed class ConditionalBranchStepExecutor : IPlanStepExecutor
             try
             {
                 using var doc = JsonDocument.Parse(output);
+                // #595: a non-object root (a bare array or number) is valid JSON, so it reaches here
+                // rather than the catch below, but EnumerateObject() throws InvalidOperationException
+                // on it — uncaught. Skip it the same way malformed (non-JSON) output already is.
+                if (doc.RootElement.ValueKind != JsonValueKind.Object) continue;
+
                 foreach (var prop in doc.RootElement.EnumerateObject())
                 {
                     context[prop.Name] = prop.Value.ValueKind switch

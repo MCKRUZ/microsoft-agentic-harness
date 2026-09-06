@@ -59,6 +59,35 @@ public sealed class ConditionalBranchStepExecutorTests
     }
 
     [Fact]
+    public async Task ExecuteAsync_UpstreamOutputIsNonObjectJson_SkipsItWithoutThrowing()
+    {
+        // #595 code-review: BuildEvaluationContext has the identical parse-then-EnumerateObject()
+        // shape as ToolUseStepExecutor.BuildToolArguments, which had the same bug fixed elsewhere in
+        // this PR — a non-object JSON root (a bare array or number) is valid JSON, so it isn't caught
+        // by catch(JsonException), but EnumerateObject() throws InvalidOperationException on it.
+        var trueTarget = new PlanStepId(Guid.NewGuid());
+        var falseTarget = new PlanStepId(Guid.NewGuid());
+        var config = new ConditionalBranchConfig
+        {
+            ConditionExpression = "score > 5",
+            TrueEdgeTargetId = trueTarget,
+            FalseEdgeTargetId = falseTarget
+        };
+        var step = CreateStep(config);
+        var upstreamId = new PlanStepId(Guid.NewGuid());
+        var outputs = new Dictionary<PlanStepId, string> { [upstreamId] = "[1,2,3]" };
+
+        var result = await _sut.ExecuteAsync(step, outputs, CancellationToken.None);
+
+        // The point of this test is that ExecuteAsync returns a normal result at all — before the
+        // fix, EnumerateObject() throws InvalidOperationException uncaught, and this call never
+        // returns. "score" was never populated (the non-object output is skipped, not merged), so the
+        // condition evaluates false and the executor still completes, taking the false edge.
+        Assert.Equal(StepExecutionStatus.Completed, result.Status);
+        Assert.Equal(falseTarget, result.ActiveEdgeTarget);
+    }
+
+    [Fact]
     public async Task ExecuteAsync_FalseCondition_ReturnsFalseEdgeTarget()
     {
         var trueTarget = new PlanStepId(Guid.NewGuid());
