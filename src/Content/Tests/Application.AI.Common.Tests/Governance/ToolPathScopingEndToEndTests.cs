@@ -458,4 +458,29 @@ public sealed class ToolPathScopingEndToEndTests
         sandboxExecutor.Verify(
             s => s.ExecuteAsync(It.IsAny<SandboxExecutionRequest>(), It.IsAny<CancellationToken>()), Times.Never);
     }
+
+    [Fact]
+    public async Task PlanExecutorPath_DeniedPath_ArgumentKeyCasingDiffers_StillRefuses()
+    {
+        // Regression (correctness review on #587): the agent-turn path hands Extract a case-insensitive
+        // dictionary (ToolParameters.Flatten). A plan step naming the declared "path" parameter as
+        // "Path" must still match — an ordinal dictionary here would silently miss it, resolve to
+        // ToolCallResourceRequest.Empty, and CapabilityEnforcer reads Empty as "nothing to check".
+        var fileSystem = new Mock<IFileSystemService>();
+        var (executor, sandboxExecutor, trace) = BuildPlanExecutorFixture(DenyingSandboxConfig(), fileSystem);
+
+        var step = BuildToolStep(new ToolUseConfig
+        {
+            ToolName = "file_system",
+            InputParameters = new Dictionary<string, object?> { ["operation"] = "read", ["Path"] = DeniedPath }
+        });
+
+        var result = await executor.ExecuteAsync(step, new Dictionary<PlanStepId, string>(), CancellationToken.None);
+
+        result.Status.Should().Be(StepExecutionStatus.Failed);
+        result.IsPolicyDenial.Should().BeTrue();
+        trace.Snapshot().ToolDecisions.Should().ContainSingle(d => d.Reason.Contains("path denied"));
+        sandboxExecutor.Verify(
+            s => s.ExecuteAsync(It.IsAny<SandboxExecutionRequest>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
 }

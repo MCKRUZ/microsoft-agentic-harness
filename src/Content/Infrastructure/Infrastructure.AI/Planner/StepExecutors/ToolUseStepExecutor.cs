@@ -391,17 +391,33 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
     /// wire shape, so both plan-authoring producers reach <see cref="ResourceParameterExtractor.Extract"/>
     /// on equal footing.
     /// </para>
+    /// <para>
+    /// Case-insensitive by construction (correctness review on #587), matching both other admission
+    /// paths: <c>ToolParameters.Flatten</c> (the agent-turn path) hands <see cref="ResourceParameterExtractor.Extract"/>
+    /// an <see cref="StringComparer.OrdinalIgnoreCase"/> dictionary, and a step naming a declared
+    /// parameter with different casing (e.g. <c>"Path"</c> against a declared <c>"path"</c>) must not
+    /// silently miss the match — that would resolve to <see cref="Domain.AI.Sandbox.ToolCallResourceRequest.Empty"/>,
+    /// which <c>CapabilityEnforcer</c> treats as "nothing to check" and allows.
+    /// </para>
     /// </remarks>
     private Domain.AI.Sandbox.ToolCallResourceRequest? ExtractResourceRequest(
         string toolName, IReadOnlyDictionary<string, object?> arguments)
     {
+        // Resolved first so a tool with no resource-parameter declaration (or one outside the bounded
+        // first-party set) skips the dictionary copy below entirely — Extract would return null anyway.
+        var tool = _firstPartyToolLookup.Resolve(toolName);
+        if (tool?.ResourceParametersByOperation is not { Count: > 0 } declared)
+            return null;
+
+        // "operation" duplicates AIToolConverter.OperationArgumentName's value — that constant is
+        // internal to a different assembly (Application.AI.Common) and not visible here. Keep in sync.
         var operation = arguments.TryGetValue("operation", out var operationValue)
             ? NormalizeScalar(operationValue) as string
             : null;
-        var normalizedArguments = arguments.ToDictionary(kv => kv.Key, kv => NormalizeScalar(kv.Value));
+        var normalizedArguments = arguments.ToDictionary(
+            kv => kv.Key, kv => NormalizeScalar(kv.Value), StringComparer.OrdinalIgnoreCase);
 
-        var tool = _firstPartyToolLookup.Resolve(toolName);
-        return ResourceParameterExtractor.Extract(operation, normalizedArguments, tool?.ResourceParametersByOperation);
+        return ResourceParameterExtractor.Extract(operation, normalizedArguments, declared);
     }
 
     /// <summary>
