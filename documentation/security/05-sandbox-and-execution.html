@@ -328,10 +328,15 @@
                         (<code>RequiredCapabilities</code> minus <code>DeniedCapabilities</code>) is the value sandbox
                         provisioning and the attestation reads. There is no ambiguity to exploit and no ordering
                         trick: <em>deny always wins</em>, and a denial that the tool actually needs is a hard refusal,
-                        never a quiet downgrade. (An earlier version of this control also scoped allow/deny to
-                        specific filesystem paths and network hosts; that mechanism was removed as dead
-                        configuration — nothing on the live tool-call path ever checked a requested path or host
-                        against it.)
+                        never a quiet downgrade. (This control also scopes allow/deny to specific filesystem paths
+                        and network hosts via <code>AllowedPaths</code>/<code>DeniedPaths</code>/<code>AllowedHosts</code>/<code>DeniedHosts</code>.
+                        <code>CapabilityEnforcer</code> checks a call's requested paths/hosts against these lists
+                        whenever the tool declares which of its parameters carry them, and this is enforced
+                        identically across all three tool-invocation entry points: the agent's conversational
+                        turn, the direct-invoke HTTP surface, and plan/DAG steps. Two narrow gaps remain, tracked
+                        for follow-up rather than fixed: whole-shell-command tools that bypass the capability
+                        enforcer entirely, and a plan step chaining a path/host value from an upstream step's
+                        output rather than declaring it directly.)
                     </p>
 
                     <div class="callout callout-warning">
