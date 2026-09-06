@@ -20,12 +20,18 @@ public static class ResourceParameterExtractor
     /// The tool's own declaration (<c>ITool.ResourceParametersByOperation</c>).
     /// </param>
     /// <returns>
-    /// <see langword="null"/> when the tool declares nothing, or <paramref name="operation"/> could
-    /// not be read — resource usage for this call is unknown, and <c>CapabilityEnforcer</c> must
-    /// treat that as a reason to refuse when scoping is configured, not as "nothing to check".
-    /// <see cref="ToolCallResourceRequest.Empty"/> when the tool declares resource parameters for
-    /// OTHER operations but affirmatively declares none for this one. Otherwise the paths/hosts found
-    /// among <paramref name="parameters"/> for this operation's declared keys.
+    /// <see langword="null"/> when the tool declares nothing, <paramref name="operation"/> could not
+    /// be read, or <paramref name="operation"/> does not match any operation the tool declares —
+    /// resource usage for this call is unknown, and <c>CapabilityEnforcer</c> must treat that as a
+    /// reason to refuse when scoping is configured, not as "nothing to check". An operation string
+    /// that fails to match anything is exactly as unknown as a missing one: both could be an
+    /// upstream-corrupted value (#587 — a plan step's merged arguments can carry raw, quote-wrapped
+    /// JSON text for an upstream-sourced value) as easily as a genuinely unrecognized name, and
+    /// treating either as "nothing to check" would silently allow a call this method has no basis to
+    /// vouch for.
+    /// <see cref="ToolCallResourceRequest.Empty"/> only when the tool affirmatively recognizes
+    /// <paramref name="operation"/> and declares no resource parameters for it. Otherwise the
+    /// paths/hosts found among <paramref name="parameters"/> for this operation's declared keys.
     /// </returns>
     public static ToolCallResourceRequest? Extract(
         string? operation,
@@ -38,7 +44,10 @@ public static class ResourceParameterExtractor
         if (operation is null)
             return null;
 
-        if (!TryFindDeclaration(declaredByOperation, operation, out var declaredParameters) || declaredParameters.Count == 0)
+        if (!TryFindDeclaration(declaredByOperation, operation, out var declaredParameters))
+            return null;
+
+        if (declaredParameters.Count == 0)
             return ToolCallResourceRequest.Empty;
 
         var paths = new List<string>();

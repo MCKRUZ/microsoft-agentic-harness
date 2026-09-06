@@ -48,14 +48,19 @@ public sealed class ResourceParameterExtractorTests
     }
 
     [Fact]
-    public void Extract_OperationNotDeclared_ReturnsEmpty()
+    public void Extract_OperationNotDeclared_ReturnsNull()
     {
-        // "exists" is a real file_system operation but not one of FileSystemMap's two declared
-        // operations — the tool affirmatively declares nothing scoped for it, distinct from "unknown".
+        // Regression (#587 code-review): "exists" is a real file_system operation but not one of
+        // FileSystemMap's two declared operations here — the map has no entry for it at all, which is
+        // exactly as unknown as a missing operation string, NOT "affirmatively declares nothing scoped
+        // for it" (that's Extract_DeclaredOperationWithNoParameters_ReturnsEmpty below, where the map
+        // DOES have an entry). Conflating the two — this test's own original, incorrect expectation —
+        // let an operation the tool couldn't recognize at all (including a corrupted/garbled operation
+        // string arriving from a plan's upstream-output merge) skip scoping entirely.
         var result = ResourceParameterExtractor.Extract(
             "exists", new Dictionary<string, object?> { ["path"] = "src" }, FileSystemMap);
 
-        result.Should().Be(ToolCallResourceRequest.Empty);
+        result.Should().BeNull();
     }
 
     [Fact]

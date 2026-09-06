@@ -35,9 +35,13 @@ public sealed class AIToolConverter : IToolConverter
     /// <see cref="GovernedAIFunction"/> can read it off the raw <c>AIFunctionArguments</c> — before
     /// this class's own <c>AIFunctionFactory</c>-generated binding runs — to extract a call's
     /// requested paths/hosts (#418), the same acknowledged coupling to this converter's wire shape
-    /// <see cref="GovernedAIFunction"/> already has via <see cref="ConvertedToolFailure"/>.
+    /// <see cref="GovernedAIFunction"/> already has via <see cref="ConvertedToolFailure"/>. Public
+    /// (not <see langword="internal"/>) since #587: <c>Infrastructure.AI</c>'s <c>ToolUseStepExecutor</c>
+    /// needs the identical value for a plan step's own flat argument shape, and that assembly has no
+    /// <c>InternalsVisibleTo</c> grant here — a hand-copied string literal would drift silently if this
+    /// value ever changed.
     /// </summary>
-    internal const string OperationArgumentName = "operation";
+    public const string OperationArgumentName = "operation";
 
     /// <summary>The wire-format argument name for the JSON-encoded operation parameters. See <see cref="OperationArgumentName"/>.</summary>
     internal const string ParametersJsonArgumentName = "parametersJson";

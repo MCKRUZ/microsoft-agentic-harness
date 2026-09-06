@@ -6,6 +6,7 @@ using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Planner;
 using Application.AI.Common.Services.Governance;
 using Application.AI.Common.Interfaces.Sandbox;
+using Application.AI.Common.Services.Tools;
 using Domain.AI.Escalation;
 using Domain.AI.Governance;
 using Domain.AI.Planner;
@@ -43,6 +44,11 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
     private readonly IPlanProgressNotifier _notifier;
     private readonly PlanExecutionContext _executionContext;
     private readonly ILogger<ToolUseStepExecutor> _logger;
+    // Shared bounded-key-set-gated lookup (#387) — the same one ToolPermissionProfileResolver,
+    // ToolRiskClassifier, and ToolCapabilityResolver already read a tool's own declaration from.
+    // Needed here for ITool.ResourceParametersByOperation (#418/#587): a name outside the bounded
+    // first-party set (MCP/bundle-owned) resolves to null, same as everywhere else this lookup is used.
+    private readonly FirstPartyToolLookup _firstPartyToolLookup;
 
     public ToolUseStepExecutor(
         ICapabilityEnforcer capabilityEnforcer,
@@ -51,7 +57,8 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
         IAttestationService attestationService,
         IPlanProgressNotifier notifier,
         PlanExecutionContext executionContext,
-        ILogger<ToolUseStepExecutor> logger)
+        ILogger<ToolUseStepExecutor> logger,
+        FirstPartyToolLookup firstPartyToolLookup)
     {
         _capabilityEnforcer = capabilityEnforcer;
         _admissionPipeline = admissionPipeline;
@@ -60,6 +67,7 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
         _notifier = notifier;
         _executionContext = executionContext;
         _logger = logger;
+        _firstPartyToolLookup = firstPartyToolLookup;
     }
 
     public async Task<StepExecutionResult> ExecuteAsync(
@@ -326,6 +334,13 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
     /// path runs. Anything less would let a plan reach a tool the harness refuses in a chat turn — the
     /// agent could bypass a control simply by emitting a plan step instead of calling the tool
     /// directly, which is exactly the gap this chain exists to close.
+    /// <para>
+    /// #587: <see cref="ToolCallAdmissionRequest.ResourceRequest"/> must be populated here the same
+    /// way <c>GovernedAIFunction</c> and <c>DirectToolInvoker</c> already populate it (#418) — a plan
+    /// step is a third, independent admission path, and <c>CapabilityEnforcer</c>'s own fail-closed
+    /// design refuses any tool with path/host scoping configured when this stays unset, even for a
+    /// call whose paths/hosts were genuinely in bounds.
+    /// </para>
     /// </remarks>
     private async Task<(ToolCallAdmission Admission, StepExecutionResult? Refusal)> AdmitToolAsync(
         string toolName,
@@ -335,7 +350,7 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
         CancellationToken ct)
     {
         var admission = await _admissionPipeline
-            .AdmitAsync(new ToolCallAdmissionRequest(toolName, arguments), ct);
+            .AdmitAsync(new ToolCallAdmissionRequest(toolName, arguments, ResourceRequest: ExtractResourceRequest(toolName, arguments)), ct);
         if (admission.IsAllowed)
             return (admission, null);
 
@@ -351,6 +366,95 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
         });
     }
 
+    /// <summary>
+    /// Extracts the requested paths/hosts for one plan step's tool call — the same
+    /// <see cref="ResourceParameterExtractor.Extract"/> both other admission entry points call (#418),
+    /// applied to a plan step's own shape.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="Domain.AI.Planner.ToolUseConfig"/> carries no separate operation field — a plan
+    /// author (or the LLM planner) puts the operation under the well-known <c>"operation"</c> key
+    /// inside the flat argument set, the same wire-format key <see cref="AIToolConverter"/> and
+    /// <see cref="GovernedAIFunction"/> already use for exactly this concept.
+    /// <para>
+    /// A plan step's own flat values are NOT reliably plain CLR values, unlike the doc comment this
+    /// replaced claimed (correctness/security review on #587): <c>LlmPlanOutputMapper</c> does convert
+    /// straight to scalars, but a step submitted through the workflow HTTP surface
+    /// (<c>WorkflowDefinitionMapper</c>/<c>ToolUseStepConfiguration</c>) round-trips through
+    /// System.Text.Json with no <c>object</c>-typed converter registered
+    /// (<c>ExecutionApiServiceCollectionExtensions</c> only adds <c>JsonStringEnumConverter</c>), so its
+    /// <c>object?</c>-typed dictionary values bind as <see cref="JsonElement"/>, not <see cref="string"/>.
+    /// Left unhandled, that producer's calls would silently never populate a resource request at all —
+    /// fail-closed (no bypass), but #587's own goal of enforcing identically across all three admission
+    /// paths would quietly not hold for it. <see cref="NormalizeScalar"/> unwraps a string-valued
+    /// <see cref="JsonElement"/> the same way <see cref="GovernedAIFunction"/> already does for its own
+    /// wire shape, so both plan-authoring producers reach <see cref="ResourceParameterExtractor.Extract"/>
+    /// on equal footing.
+    /// </para>
+    /// <para>
+    /// Case-insensitive by construction (correctness review on #587), matching both other admission
+    /// paths: <c>ToolParameters.Flatten</c> (the agent-turn path) hands <see cref="ResourceParameterExtractor.Extract"/>
+    /// an <see cref="StringComparer.OrdinalIgnoreCase"/> dictionary, and a step naming a declared
+    /// parameter with different casing (e.g. <c>"Path"</c> against a declared <c>"path"</c>) must not
+    /// silently miss the match — that would resolve to <see cref="Domain.AI.Sandbox.ToolCallResourceRequest.Empty"/>,
+    /// which <c>CapabilityEnforcer</c> treats as "nothing to check" and allows.
+    /// </para>
+    /// <para>
+    /// <paramref name="arguments"/> is itself ordinal — <c>BuildToolArguments</c> merges an upstream
+    /// step's JSON output into the step's own declared parameters via <c>TryAdd</c> on a case-sensitive
+    /// dictionary — so it can legitimately hold two keys that are case-variants of each other (e.g. a
+    /// declared <c>"path"</c> alongside an upstream-produced <c>"Path"</c>). Re-keying that with
+    /// <see cref="Enumerable.ToDictionary{TSource,TKey,TElement}(IEnumerable{TSource},Func{TSource,TKey},Func{TSource,TElement})"/>
+    /// threw <see cref="ArgumentException"/> on the colliding key (grader/correctness review, round 3).
+    /// A last-write-wins loop fixed the throw but introduced a worse defect (security review, round 4):
+    /// the enforcer would then validate only whichever value won the collision, while
+    /// <c>RunSandboxAsync</c> still serializes and dispatches the WHOLE original dictionary — both
+    /// keys — to the tool. A plan step could name the denied path under one casing and an in-bounds
+    /// decoy under the other, win the check with the decoy, and have the sandboxed tool still read the
+    /// denied one under its own declared (differently-cased) key. Checked value must equal consumed
+    /// value; when a collision makes that impossible to guarantee, refuse rather than pick one side of
+    /// the ambiguity to trust — the same fail-closed posture as an unreadable operation.
+    /// </para>
+    /// </remarks>
+    private Domain.AI.Sandbox.ToolCallResourceRequest? ExtractResourceRequest(
+        string toolName, IReadOnlyDictionary<string, object?> arguments)
+    {
+        // Resolved first so a tool with no resource-parameter declaration (or one outside the bounded
+        // first-party set) skips the dictionary copy below entirely — Extract would return null anyway.
+        var tool = _firstPartyToolLookup.Resolve(toolName);
+        if (tool?.ResourceParametersByOperation is not { Count: > 0 } declared)
+            return null;
+
+        var normalizedArguments = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (key, value) in arguments)
+        {
+            // TryAdd fails only on a case-variant collision — arguments' own (ordinal) key set is
+            // already unique, so this is the first point two differently-cased keys can coincide.
+            // Refuse outright rather than let one arbitrarily win: see the class remarks above.
+            if (!normalizedArguments.TryAdd(key, NormalizeScalar(value)))
+                return null;
+        }
+
+        // Read from the normalized dictionary, not the raw arguments, so a differently-cased key
+        // ("Operation") matches the same way every declared resource-parameter name already does.
+        var operation = normalizedArguments.TryGetValue(AIToolConverter.OperationArgumentName, out var operationValue)
+            ? operationValue as string
+            : null;
+
+        return ResourceParameterExtractor.Extract(operation, normalizedArguments, declared);
+    }
+
+    /// <summary>
+    /// Unwraps a string-valued <see cref="JsonElement"/> to the plain <see cref="string"/>
+    /// <see cref="ResourceParameterExtractor.Extract"/> expects; every other shape (already a CLR
+    /// scalar, or a non-string <see cref="JsonElement"/> that could never be a path/host anyway) passes
+    /// through unchanged.
+    /// </summary>
+    private static object? NormalizeScalar(object? value) => value switch
+    {
+        JsonElement { ValueKind: JsonValueKind.String } je => je.GetString(),
+        _ => value
+    };
 
     private static SandboxIsolationLevel DetermineIsolation(
         ToolUseConfig config,

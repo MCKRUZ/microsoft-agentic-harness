@@ -1,7 +1,10 @@
 using System.Text.Json;
 using Application.AI.Common.Interfaces.Agent;
+using Application.AI.Common.Interfaces.Attestation;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Permissions;
+using Application.AI.Common.Interfaces.Planner;
+using Application.AI.Common.Interfaces.Sandbox;
 using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Services.Agent;
 using Application.AI.Common.Services.Governance;
@@ -11,11 +14,14 @@ using Domain.AI.Bundles;
 using Domain.AI.Changes;
 using Domain.AI.Governance;
 using Domain.AI.Permissions;
+using Domain.AI.Planner;
+using Domain.AI.Sandbox;
 using Domain.Common.Config.AI;
 using Domain.Common.Config.AI.DirectToolInvocation;
 using Domain.Common.Config.AI.Permissions;
 using Domain.Common.Config.AI.Sandbox;
 using FluentAssertions;
+using Infrastructure.AI.Planner.StepExecutors;
 using Infrastructure.AI.Tools;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
@@ -308,5 +314,245 @@ public sealed class ToolPathScopingEndToEndTests
         capturedTrace.Should().NotBeNull();
         capturedTrace!.Snapshot().ToolDecisions.Should().ContainSingle(d => d.Reason.Contains("path denied"));
         fileSystem.Verify(fs => fs.ReadFileAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    // --- Plan/DAG executor path (ToolUseStepExecutor, #587) ---
+
+    /// <summary>
+    /// A second, independent <see cref="CapabilityEnforcer"/> — <see cref="ToolUseStepExecutor"/> takes
+    /// its own <see cref="ICapabilityEnforcer"/> to resolve a sandbox isolation tier AFTER admission,
+    /// separate from the one <see cref="BuildGovernor"/> wires into the admission chain itself. Both
+    /// read the same <paramref name="sandboxConfig"/>, so they agree on what is denied.
+    /// </summary>
+    private static CapabilityEnforcer BuildCapabilityEnforcer(IServiceProvider toolProvider, SandboxConfig sandboxConfig)
+    {
+        var lookup = new FirstPartyToolLookup(toolProvider, new HashSet<string> { "file_system" });
+        var resolver = new ToolPermissionProfileResolver(
+            lookup, Mock.Of<IOptionsMonitor<SandboxConfig>>(m => m.CurrentValue == sandboxConfig));
+        return new CapabilityEnforcer(resolver, NullLogger<CapabilityEnforcer>.Instance);
+    }
+
+    /// <summary>
+    /// A plan step's <see cref="ToolUseConfig.InputParameters"/> carries no separate operation field
+    /// (#587) — the operation lives under the well-known <c>"operation"</c> key inside the flat
+    /// argument set, the same convention <see cref="AIToolConverter"/> and
+    /// <see cref="GovernedAIFunction"/> use for the other two paths.
+    /// </summary>
+    private static ToolUseConfig ReadConfig(string path, string operation = "read") => new()
+    {
+        ToolName = "file_system",
+        InputParameters = new Dictionary<string, object?> { ["operation"] = operation, ["path"] = path }
+    };
+
+    /// <summary>
+    /// The workflow-submit producer's actual wire shape (correctness/security review on #587):
+    /// System.Text.Json binds an <c>object?</c>-typed dictionary value to <see cref="JsonElement"/>
+    /// with no converter registered to unwrap it, unlike <c>LlmPlanOutputMapper</c>'s
+    /// <see cref="ReadConfig"/> shape, which already holds plain CLR strings.
+    /// </summary>
+    private static ToolUseConfig ReadConfigFromJsonElements(string path, string operation = "read") => new()
+    {
+        ToolName = "file_system",
+        InputParameters = new Dictionary<string, object?>
+        {
+            ["operation"] = JsonSerializer.SerializeToElement(operation),
+            ["path"] = JsonSerializer.SerializeToElement(path)
+        }
+    };
+
+    private static PlanStep BuildToolStep(ToolUseConfig config) => new()
+    {
+        Id = new PlanStepId(Guid.NewGuid()),
+        Name = "tool-step",
+        Type = StepType.ToolUse,
+        Configuration = config,
+        RetryPolicy = new RetryPolicy()
+    };
+
+    private static (ToolUseStepExecutor Executor, Mock<ISandboxExecutor> SandboxExecutor, GovernanceTraceRecorder Trace)
+        BuildPlanExecutorFixture(SandboxConfig sandboxConfig, Mock<IFileSystemService> fileSystem)
+    {
+        var tool = new FileSystemTool(fileSystem.Object);
+        var sandboxExecutor = new Mock<ISandboxExecutor>();
+
+        var services = new ServiceCollection();
+        services.AddKeyedSingleton<ITool>("file_system", tool);
+        services.AddKeyedSingleton<ISandboxExecutor>(SandboxIsolationLevel.Process, sandboxExecutor.Object);
+        services.AddKeyedSingleton<ISandboxExecutor>(SandboxIsolationLevel.Container, sandboxExecutor.Object);
+        var provider = services.BuildServiceProvider();
+
+        var context = Mock.Of<IAgentExecutionContext>(c => c.AgentId == "test-agent");
+        var (governor, trace) = BuildGovernor(provider, sandboxConfig, context);
+        var enforcer = BuildCapabilityEnforcer(provider, sandboxConfig);
+        var lookup = new FirstPartyToolLookup(provider, new HashSet<string> { "file_system" });
+
+        var executor = new ToolUseStepExecutor(
+            enforcer,
+            AdmissionHarness.Pipeline(governor: governor, executionContext: context, trace: trace),
+            provider,
+            Mock.Of<IAttestationService>(),
+            Mock.Of<IPlanProgressNotifier>(),
+            new PlanExecutionContext { CurrentPlanId = new PlanId(Guid.NewGuid()) },
+            NullLogger<ToolUseStepExecutor>.Instance,
+            lookup);
+
+        return (executor, sandboxExecutor, trace);
+    }
+
+    [Fact]
+    public async Task PlanExecutorPath_DeniedPath_RefusesBeforeSandboxDispatch()
+    {
+        var fileSystem = new Mock<IFileSystemService>();
+        var (executor, sandboxExecutor, trace) = BuildPlanExecutorFixture(DenyingSandboxConfig(), fileSystem);
+
+        var step = BuildToolStep(ReadConfig(DeniedPath));
+
+        var result = await executor.ExecuteAsync(step, new Dictionary<PlanStepId, string>(), CancellationToken.None);
+
+        // Same fail-closed shape as the other two paths: the model-facing text is generic, and the
+        // trace is where proof this was a path-scoping denial (not some other gate) lives.
+        result.Status.Should().Be(StepExecutionStatus.Failed);
+        result.IsPolicyDenial.Should().BeTrue();
+        trace.Snapshot().ToolDecisions.Should().ContainSingle(d => d.Reason.Contains("path denied"));
+        sandboxExecutor.Verify(
+            s => s.ExecuteAsync(It.IsAny<SandboxExecutionRequest>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task PlanExecutorPath_AllowedPath_ReachesSandboxDispatch()
+    {
+        var fileSystem = new Mock<IFileSystemService>();
+        var (executor, sandboxExecutor, _) = BuildPlanExecutorFixture(DenyingSandboxConfig(), fileSystem);
+        sandboxExecutor
+            .Setup(s => s.ExecuteAsync(It.IsAny<SandboxExecutionRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new SandboxExecutionResult { Success = true, Output = "hello world" });
+
+        var step = BuildToolStep(ReadConfig(AllowedPath));
+
+        var result = await executor.ExecuteAsync(step, new Dictionary<PlanStepId, string>(), CancellationToken.None);
+
+        // The regression #587 guards against: an in-bounds path must not be refused just because this
+        // admission path never determined its resource usage.
+        result.Status.Should().Be(StepExecutionStatus.Completed);
+        sandboxExecutor.Verify(
+            s => s.ExecuteAsync(It.IsAny<SandboxExecutionRequest>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task PlanExecutorPath_JsonElementValuedArguments_DeniedPath_StillRefuses()
+    {
+        // Regression (correctness/security review on #587): a workflow submitted through the HTTP
+        // surface arrives with JsonElement-valued arguments, not the plain strings LlmPlanOutputMapper
+        // produces. Without normalization this silently degrades to "never scoped" for that producer —
+        // fail-closed rather than a bypass, but not the "enforced identically" #587 set out to achieve.
+        var fileSystem = new Mock<IFileSystemService>();
+        var (executor, sandboxExecutor, trace) = BuildPlanExecutorFixture(DenyingSandboxConfig(), fileSystem);
+
+        var step = BuildToolStep(ReadConfigFromJsonElements(DeniedPath));
+
+        var result = await executor.ExecuteAsync(step, new Dictionary<PlanStepId, string>(), CancellationToken.None);
+
+        result.Status.Should().Be(StepExecutionStatus.Failed);
+        result.IsPolicyDenial.Should().BeTrue();
+        trace.Snapshot().ToolDecisions.Should().ContainSingle(d => d.Reason.Contains("path denied"));
+        sandboxExecutor.Verify(
+            s => s.ExecuteAsync(It.IsAny<SandboxExecutionRequest>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task PlanExecutorPath_DeniedPath_ArgumentKeyCasingDiffers_StillRefuses()
+    {
+        // Regression (correctness review on #587): the agent-turn path hands Extract a case-insensitive
+        // dictionary (ToolParameters.Flatten). A plan step naming the declared "path" parameter as
+        // "Path" must still match — an ordinal dictionary here would silently miss it, resolve to
+        // ToolCallResourceRequest.Empty, and CapabilityEnforcer reads Empty as "nothing to check".
+        var fileSystem = new Mock<IFileSystemService>();
+        var (executor, sandboxExecutor, trace) = BuildPlanExecutorFixture(DenyingSandboxConfig(), fileSystem);
+
+        var step = BuildToolStep(new ToolUseConfig
+        {
+            ToolName = "file_system",
+            InputParameters = new Dictionary<string, object?> { ["operation"] = "read", ["Path"] = DeniedPath }
+        });
+
+        var result = await executor.ExecuteAsync(step, new Dictionary<PlanStepId, string>(), CancellationToken.None);
+
+        result.Status.Should().Be(StepExecutionStatus.Failed);
+        result.IsPolicyDenial.Should().BeTrue();
+        trace.Snapshot().ToolDecisions.Should().ContainSingle(d => d.Reason.Contains("path denied"));
+        sandboxExecutor.Verify(
+            s => s.ExecuteAsync(It.IsAny<SandboxExecutionRequest>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task PlanExecutorPath_CaseVariantDuplicateArgumentKeys_DoesNotThrow_AndStillRefuses()
+    {
+        // Regression (grader/correctness/security review on #587, rounds 3-4): BuildToolArguments
+        // merges an upstream step's JSON output into the step's own declared parameters via TryAdd on
+        // an ordinal dictionary, so the merged set can legitimately hold two keys that are case-variants
+        // of each other. Round 3's ToDictionary threw ArgumentException uncaught on the collision.
+        // Round 4's last-write-wins fix stopped the throw but only checked whichever value won — while
+        // RunSandboxAsync still dispatches BOTH keys to the tool, which reads its own declared casing.
+        // Using DIFFERENT values on the two keys (an allowed decoy for "Path", the actual denied target
+        // for "path") is the discriminating case a same-value fixture cannot prove: if the enforcer
+        // trusted whichever key won the collision, this call would be wrongly allowed. The fix refuses
+        // outright on any collision instead, so it must refuse here regardless of which value would
+        // have won.
+        var fileSystem = new Mock<IFileSystemService>();
+        var (executor, sandboxExecutor, trace) = BuildPlanExecutorFixture(DenyingSandboxConfig(), fileSystem);
+
+        var step = BuildToolStep(new ToolUseConfig
+        {
+            ToolName = "file_system",
+            InputParameters = new Dictionary<string, object?>
+            {
+                ["operation"] = "read",
+                ["path"] = DeniedPath,
+                ["Path"] = AllowedPath
+            }
+        });
+
+        var result = await executor.ExecuteAsync(step, new Dictionary<PlanStepId, string>(), CancellationToken.None);
+
+        result.Status.Should().Be(StepExecutionStatus.Failed);
+        result.IsPolicyDenial.Should().BeTrue();
+        trace.Snapshot().ToolDecisions.Should().ContainSingle(
+            d => d.Reason.Contains("no requested path could be determined"));
+        sandboxExecutor.Verify(
+            s => s.ExecuteAsync(It.IsAny<SandboxExecutionRequest>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task PlanExecutorPath_OperationSourcedFromUpstreamOutput_CorruptedByRawTextQuoting_StillRefuses()
+    {
+        // Regression (code-review on #587): BuildToolArguments merges an upstream step's JSON output
+        // via JsonElement.GetRawText(), which keeps the literal JSON quote characters on string values
+        // — so an operation name sourced purely from upstream output arrives as "\"read\"", not "read".
+        // Before ResourceParameterExtractor.Extract's fix, an operation that fails to match any declared
+        // name returned ToolCallResourceRequest.Empty (not null), which CapabilityEnforcer trusts as
+        // "nothing to check" and allows — silently defeating path scoping for exactly the plan-executor
+        // path #587 set out to close.
+        var fileSystem = new Mock<IFileSystemService>();
+        var (executor, sandboxExecutor, trace) = BuildPlanExecutorFixture(DenyingSandboxConfig(), fileSystem);
+
+        // Operation/path arrive only via the upstream merge, not the step's own declared parameters.
+        var step = BuildToolStep(new ToolUseConfig
+        {
+            ToolName = "file_system",
+            InputParameters = new Dictionary<string, object?>()
+        });
+        var upstreamOutputs = new Dictionary<PlanStepId, string>
+        {
+            [new PlanStepId(Guid.NewGuid())] = JsonSerializer.Serialize(new { operation = "read", path = DeniedPath })
+        };
+
+        var result = await executor.ExecuteAsync(step, upstreamOutputs, CancellationToken.None);
+
+        result.Status.Should().Be(StepExecutionStatus.Failed);
+        result.IsPolicyDenial.Should().BeTrue();
+        trace.Snapshot().ToolDecisions.Should().ContainSingle(
+            d => d.Reason.Contains("no requested path could be determined"));
+        sandboxExecutor.Verify(
+            s => s.ExecuteAsync(It.IsAny<SandboxExecutionRequest>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 }

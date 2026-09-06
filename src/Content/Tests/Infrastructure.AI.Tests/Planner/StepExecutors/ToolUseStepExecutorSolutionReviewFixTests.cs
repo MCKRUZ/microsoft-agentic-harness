@@ -2,6 +2,7 @@ using Application.AI.Common.Interfaces.Attestation;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Planner;
 using Application.AI.Common.Interfaces.Sandbox;
+using Application.AI.Common.Services.Tools;
 using Domain.AI.Governance;
 using Domain.AI.Planner;
 using Domain.AI.Sandbox;
@@ -55,7 +56,8 @@ public sealed class ToolUseStepExecutorSolutionReviewFixTests
             _attestationService.Object,
             _notifier.Object,
             _context,
-            NullLogger<ToolUseStepExecutor>.Instance);
+            NullLogger<ToolUseStepExecutor>.Instance,
+            new FirstPartyToolLookup(sp, new HashSet<string>()));
     }
 
     [Fact]

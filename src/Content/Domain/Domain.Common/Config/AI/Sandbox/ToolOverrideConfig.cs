@@ -14,7 +14,7 @@ namespace Domain.Common.Config.AI.Sandbox;
 /// </para>
 /// <para>
 /// <see cref="DeniedPaths"/>/<see cref="AllowedPaths"/>/<see cref="DeniedHosts"/>/<see cref="AllowedHosts"/>
-/// (#418) carry the identical limitation on two further paths, tracked for follow-up rather than
+/// (#418) carry the identical limitation on one further path, tracked for follow-up rather than
 /// covered by #418 itself:
 /// </para>
 /// <list type="bullet">
@@ -24,15 +24,25 @@ namespace Domain.Common.Config.AI.Sandbox;
 /// <c>ICapabilityEnforcer</c> entirely — never copies these four fields onto the profile it returns,
 /// so configuring them against a tool reached only through that path is silently inert.
 /// </description></item>
-/// <item><description>
-/// The plan/DAG executor (<c>ToolUseStepExecutor</c>) admits a step's tool call without extracting a
-/// <c>ToolCallResourceRequest</c> the way <c>GovernedAIFunction</c> and <c>DirectToolInvoker</c> both
-/// do (#418 only wired those two entry points). Configuring path/host scoping for a tool ALSO
-/// reachable from a plan step therefore fails that step outright — <c>CapabilityEnforcer</c>'s own
-/// fail-closed design (a configured scope with no determined request refuses) has no way to
-/// distinguish "unknown" from "this admission path was never taught to ask" here. Tracked as #587.
-/// </description></item>
 /// </list>
+/// <para>
+/// The plan/DAG executor (<c>ToolUseStepExecutor</c>) used to have this same gap — it admitted a
+/// step's tool call without extracting a <c>ToolCallResourceRequest</c> the way
+/// <c>GovernedAIFunction</c> and <c>DirectToolInvoker</c> already did (#418 only wired those two
+/// entry points at the time). #587 closed it: <c>ToolUseStepExecutor.ExtractResourceRequest</c> now
+/// populates it the same way, so a call whose paths/hosts came from the step's own declared
+/// parameters is scoped identically across all three entry points.
+/// </para>
+/// <para>
+/// <strong>One narrower gap remains on the plan path specifically:</strong> when a path/host value is
+/// chained from an upstream step's output rather than declared directly on the step, it arrives via
+/// <c>ToolUseStepExecutor.BuildToolArguments</c>' JSON-merge as <c>JsonElement.GetRawText()</c> —
+/// literal, quote-wrapped JSON text, not the plain string every other producer supplies. That value
+/// fails path/host normalization and the call is refused — never silently allowed, since #587's
+/// <c>ResourceParameterExtractor.Extract</c> fix (code-review round) treats an operation or value it
+/// cannot read as unknown rather than "nothing to check" — but a plan legitimately chaining a
+/// path/host between steps cannot use scoping today. Tracked for follow-up, not covered here.
+/// </para>
 /// </remarks>
 public sealed class ToolOverrideConfig
 {

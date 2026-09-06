@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Planner;
 using Application.AI.Common.Interfaces.Sandbox;
+using Application.AI.Common.Services.Tools;
 using Domain.AI.Attestation;
 using Domain.AI.Governance;
 using Domain.AI.Planner;
@@ -62,16 +63,18 @@ public sealed class ToolUseStepExecutorAttestationBindingTests
         var services = new ServiceCollection();
         services.AddKeyedSingleton<ISandboxExecutor>(SandboxIsolationLevel.Process, _sandboxExecutor.Object);
         services.AddKeyedSingleton<ISandboxExecutor>(SandboxIsolationLevel.Container, _sandboxExecutor.Object);
+        var sp = services.BuildServiceProvider();
 
         _sut = new ToolUseStepExecutor(
             _capabilityEnforcer.Object,
             // Ungoverned default: no envelope armed and every gate off means the chain admits.
             PermissiveAdmission.Pipeline(),
-            services.BuildServiceProvider(),
+            sp,
             _attestationService,
             _notifier.Object,
             new PlanExecutionContext { CurrentPlanId = new PlanId(Guid.NewGuid()) },
-            NullLogger<ToolUseStepExecutor>.Instance);
+            NullLogger<ToolUseStepExecutor>.Instance,
+            new FirstPartyToolLookup(sp, new HashSet<string>()));
     }
 
     private static PlanStep CreateStep() => new()
