@@ -156,6 +156,23 @@ public sealed class ResourceParameterExtractorTests
     }
 
     [Fact]
+    public void Extract_DeclaredHostParameterIsEmptyString_IsIncludedNotIgnored()
+    {
+        // Symmetric with the Path case above (round-6 code-review): the same present-but-invalid
+        // reasoning applies to a declared Host parameter, not just Path.
+        var map = new Dictionary<string, IReadOnlyDictionary<string, ResourceParameterKind>>
+        {
+            ["fetch"] = new Dictionary<string, ResourceParameterKind> { ["url_host"] = ResourceParameterKind.Host }
+        };
+
+        var result = ResourceParameterExtractor.Extract(
+            "fetch", new Dictionary<string, object?> { ["url_host"] = "" }, map);
+
+        result.Should().NotBeNull();
+        result!.RequestedHosts.Should().ContainSingle().Which.Should().BeEmpty();
+    }
+
+    [Fact]
     public void Extract_ParametersIsNullButOperationIsDeclared_ReturnsEmptyRequest()
     {
         var result = ResourceParameterExtractor.Extract("read", parameters: null, FileSystemMap);
