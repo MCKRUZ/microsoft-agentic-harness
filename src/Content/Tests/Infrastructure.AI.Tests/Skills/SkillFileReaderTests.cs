@@ -1,4 +1,5 @@
 using Application.AI.Common.Interfaces.Skills;
+using Application.AI.Common.Skills;
 using Domain.Common.Config;
 using Domain.Common.Config.AI;
 using Domain.Common.Config.AI.BundleExecution;
@@ -226,7 +227,8 @@ public sealed class SkillFileReaderTests : IDisposable
         var reader = CreateReader();
         var parser = new SkillMetadataParser(
             NullLogger<SkillMetadataParser>.Instance, reader,
-            TestMcpSecurityScanner.AlwaysSafe(), TestMcpSecurityScanner.DefaultConfig());
+            TestMcpSecurityScanner.AlwaysSafe(), TestMcpSecurityScanner.DefaultConfig(),
+            new EgressManifestValidator());
 
         var act = () => NestedSkillScanner.Scan(
             _outsideRoot, parser, reader, NullLogger<SkillFileReaderTests>.Instance);

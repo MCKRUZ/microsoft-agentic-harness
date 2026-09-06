@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Plugins;
+using Application.AI.Common.Interfaces.Skills;
 using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Services.Governance;
 using Domain.AI.Governance;
@@ -148,7 +149,7 @@ public partial class ToolChainBuilder : IToolChainBuilder
         // No call-once candidates flow through this path: Injected mode never calls ProvisionToolAsync
         // (the only place a ToolDeclaration's CallOncePerConversation is tagged), so there is nothing
         // for FinalizeChain to carry forward here.
-        return FinalizeChain(injected, DescribeSource(skill, "injected MCP tool resolution"));
+        return FinalizeChain(injected, DescribeSource(skill, "injected MCP tool resolution"), skillId: skill.Id);
     }
 
     private async Task<List<ProvisionedTool>> BuildManagedModeToolsAsync(
@@ -198,7 +199,7 @@ public partial class ToolChainBuilder : IToolChainBuilder
         // whole-agent-set exit (BuildToolsAsync, BuildMergedToolsWithSourcesAsync) can register it
         // later, against the FULLY resolved surface — see RegisterSurvivingCallOnceTools's remarks for
         // why registering at this per-skill, pre-cross-skill-dedup point was unsafe.
-        return FinalizeChain(managed, DescribeSource(skill, "managed tool resolution"), callOnceCandidates);
+        return FinalizeChain(managed, DescribeSource(skill, "managed tool resolution"), callOnceCandidates, skill.Id);
     }
 
     /// <summary>
@@ -278,16 +279,23 @@ public partial class ToolChainBuilder : IToolChainBuilder
     /// <param name="callOnceCandidates">
     /// Optional. When supplied, any tool present in this set that survives the reserved-capability
     /// filter below has its NEW, governance-wrapped instance added too — see
-    /// <see cref="WrapGoverned(IEnumerable{ProvisionedTool}, ConcurrentDictionary{AITool,byte}?)"/>'s
+    /// <see cref="WrapGoverned(IEnumerable{ProvisionedTool}, ConcurrentDictionary{AITool,byte}?, string?)"/>'s
     /// remarks for why the wrap would otherwise sever reference-based candidate tracking.
     /// </param>
+    /// <param name="skillId">
+    /// The id of the one skill every tool in <paramref name="provisioned"/> was resolved for (#531) —
+    /// each of this builder's per-skill resolution methods calls here with exactly one skill in scope.
+    /// Null for the skill-agnostic <see cref="BuildToolsByName"/> path (delegated subagents), which
+    /// correctly leaves those tools with no skill-scoped egress allowlist.
+    /// </param>
     private List<ProvisionedTool> FinalizeChain(
-        List<ProvisionedTool> provisioned, string source, ConcurrentDictionary<AITool, byte>? callOnceCandidates = null)
+        List<ProvisionedTool> provisioned, string source,
+        ConcurrentDictionary<AITool, byte>? callOnceCandidates = null, string? skillId = null)
     {
         var survivors = ReservedPlanCapabilityFilter.Exclude(provisioned.Select(p => p.Tool), source, _logger);
         var afterReservedFilter = KeepSurviving(provisioned, survivors);
 
-        var wrapped = WrapGoverned(afterReservedFilter, callOnceCandidates);
+        var wrapped = WrapGoverned(afterReservedFilter, callOnceCandidates, skillId);
         return afterReservedFilter.Zip(wrapped, (p, w) => p with { Tool = w }).ToList();
     }
 
@@ -327,15 +335,29 @@ public partial class ToolChainBuilder : IToolChainBuilder
     /// instance already inside it; it never lets a name substitute for a reference the way the general
     /// provenance problem above forbids.
     /// </para>
+    /// <para>
+    /// Resolves <see cref="ICurrentSkillAccessor"/> once per call (#531), an optional collaborator
+    /// resolved ad hoc from <see cref="_serviceProvider"/> — the same pattern already used for
+    /// <see cref="Interfaces.Plugins.IPluginRegistry"/> in <see cref="ApplyPluginBoundaryIfPluginSkill"/>
+    /// — rather than a constructor dependency, since it is needed only here. Every tool wrapped in one
+    /// call shares the one resolved instance and the one <paramref name="skillId"/>; both are carried
+    /// into <see cref="GovernedAIFunction"/> so a per-skill policy resolver (the egress allowlist
+    /// resolver) sees the right skill scope for the duration of each tool's own invocation.
+    /// </para>
     /// </remarks>
     private List<AITool> WrapGoverned(
-        IEnumerable<ProvisionedTool> provisioned, ConcurrentDictionary<AITool, byte>? callOnceCandidates = null)
+        IEnumerable<ProvisionedTool> provisioned,
+        ConcurrentDictionary<AITool, byte>? callOnceCandidates = null,
+        string? skillId = null)
     {
+        var currentSkillAccessor = _serviceProvider.GetService<ICurrentSkillAccessor>();
         var result = new List<AITool>();
         foreach (var p in provisioned)
         {
             var wrapped = p.Tool is AIFunction fn and not GovernedAIFunction
-                ? new GovernedAIFunction(p.McpServerName is not null ? new McpFailureNormalizingAIFunction(fn) : fn)
+                ? new GovernedAIFunction(
+                    p.McpServerName is not null ? new McpFailureNormalizingAIFunction(fn) : fn,
+                    currentSkillAccessor: currentSkillAccessor, skillId: skillId)
                 : p.Tool;
 
             if (callOnceCandidates is not null && callOnceCandidates.ContainsKey(p.Tool))
@@ -488,9 +510,13 @@ public partial class ToolChainBuilder : IToolChainBuilder
             // finding discovered by THIS analysis means unwrapping to the same inner function and
             // rewrapping — never double-governing, since InnerFunction always points at the real tool.
             // governed.Inner already carries any McpFailureNormalizingAIFunction wrapping intact —
-            // there is no separate provenance flag left to forward.
+            // there is no separate provenance flag left to forward. governed.CurrentSkillAccessor/
+            // SkillId (#531) DO need forwarding explicitly — unlike Inner, they are not implicit in
+            // the wrapped function, so a re-wrap that forgot them would silently drop the tool's skill
+            // scope the moment a composition finding implicates it.
             return (AITool)new GovernedAIFunction(
-                governed.Inner, new ToolCompositionTaint(findings));
+                governed.Inner, new ToolCompositionTaint(findings),
+                governed.CurrentSkillAccessor, governed.SkillId);
         }).ToList();
     }
 
@@ -657,7 +683,7 @@ public partial class ToolChainBuilder : IToolChainBuilder
     /// a declaration that never had authority over it — reintroducing the exact class of defect
     /// <see cref="ProvisionedTool"/>'s own remarks warn against for provenance tracking generally. Instead,
     /// <paramref name="callOnceCandidates"/> is populated with the ORIGINAL resolved instance in
-    /// <see cref="TagCallOnceCandidates"/>, and <see cref="WrapGoverned(IEnumerable{ProvisionedTool},ConcurrentDictionary{AITool,byte}?)"/>
+    /// <see cref="TagCallOnceCandidates"/>, and <see cref="WrapGoverned(IEnumerable{ProvisionedTool},ConcurrentDictionary{AITool,byte}?,string?)"/>
     /// carries that membership forward onto the new <see cref="GovernedAIFunction"/> instance as each
     /// tool is wrapped — so checking <paramref name="survivors"/> by reference here still correctly
     /// distinguishes "the specific instance a call-once declaration actually produced" from "any tool

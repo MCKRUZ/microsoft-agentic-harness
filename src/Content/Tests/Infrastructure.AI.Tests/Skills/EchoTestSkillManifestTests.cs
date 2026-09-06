@@ -1,3 +1,4 @@
+using Application.AI.Common.Skills;
 using Infrastructure.AI.Skills;
 using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -31,7 +32,8 @@ public sealed class EchoTestSkillManifestTests
     {
         var parser = new SkillMetadataParser(
             NullLogger<SkillMetadataParser>.Instance, new UnsandboxedSkillFileReader(),
-            TestMcpSecurityScanner.AlwaysSafe(), TestMcpSecurityScanner.DefaultConfig());
+            TestMcpSecurityScanner.AlwaysSafe(), TestMcpSecurityScanner.DefaultConfig(),
+            new EgressManifestValidator());
         var skillPath = RepoRoot.Combine("skills", "echo-test");
         var filePath = Path.Combine(skillPath, "SKILL.md");
 

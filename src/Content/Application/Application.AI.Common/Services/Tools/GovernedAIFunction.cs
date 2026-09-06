@@ -1,4 +1,5 @@
 using Application.AI.Common.Interfaces.Governance;
+using Application.AI.Common.Interfaces.Skills;
 using Application.AI.Common.Services.Governance;
 using Domain.AI.Escalation;
 using Domain.AI.Governance;
@@ -56,16 +57,35 @@ internal sealed class GovernedAIFunction : DelegatingAIFunction
     private const string ReportedBy = "agent-turn";
 
     private readonly ToolCompositionTaint? _compositionTaint;
+    private readonly ICurrentSkillAccessor? _currentSkillAccessor;
+    private readonly string? _skillId;
 
     /// <param name="innerFunction">The tool function this wrapper governs.</param>
     /// <param name="compositionTaint">
     /// The tool-composition findings that implicate this tool as a sink, when any were found — see
     /// <see cref="ToolChainBuilder.ApplyCompositionTaint"/>.
     /// </param>
-    public GovernedAIFunction(AIFunction innerFunction, ToolCompositionTaint? compositionTaint = null)
+    /// <param name="currentSkillAccessor">
+    /// Establishes <paramref name="skillId"/> as the ambient current skill (#531) for the duration of
+    /// this call, so a per-skill policy resolver (the egress allowlist resolver) sees the right skill
+    /// without the caller threading it through every method. Null when this tool was not built from a
+    /// skill context (e.g. <c>ToolChainBuilder.BuildToolsByName</c>, used for delegated subagents) —
+    /// the call then runs with whatever skill scope, if any, is already ambient.
+    /// </param>
+    /// <param name="skillId">
+    /// The id of the skill this tool was resolved for. Null has the same "no scope to establish"
+    /// effect as a null <paramref name="currentSkillAccessor"/>.
+    /// </param>
+    public GovernedAIFunction(
+        AIFunction innerFunction,
+        ToolCompositionTaint? compositionTaint = null,
+        ICurrentSkillAccessor? currentSkillAccessor = null,
+        string? skillId = null)
         : base(innerFunction)
     {
         _compositionTaint = compositionTaint;
+        _currentSkillAccessor = currentSkillAccessor;
+        _skillId = skillId;
     }
 
     /// <summary>
@@ -78,10 +98,24 @@ internal sealed class GovernedAIFunction : DelegatingAIFunction
     /// </summary>
     internal AIFunction Inner => InnerFunction;
 
+    /// <summary>
+    /// The skill this tool was resolved for (#531), so <c>ToolChainBuilder.ApplyCompositionTaint</c>'s
+    /// re-wrap can carry it forward onto the new instance instead of silently losing the scope.
+    /// </summary>
+    internal string? SkillId => _skillId;
+
+    /// <summary>
+    /// The accessor supplied at construction, for the same re-wrap-forwarding reason as
+    /// <see cref="SkillId"/>.
+    /// </summary>
+    internal ICurrentSkillAccessor? CurrentSkillAccessor => _currentSkillAccessor;
+
     protected override async ValueTask<object?> InvokeCoreAsync(
         AIFunctionArguments arguments,
         CancellationToken cancellationToken)
     {
+        using var skillScope = BeginSkillScope();
+
         var admissionPipeline = ToolAdmissionAccessor.Current;
         if (admissionPipeline is null)
             return Unwrap(await base.InvokeCoreAsync(arguments, cancellationToken).ConfigureAwait(false));
@@ -147,6 +181,15 @@ internal sealed class GovernedAIFunction : DelegatingAIFunction
             .ApplyOutputPolicyAsync(admission, Name, Unwrap(result), CancellationToken.None)
             .ConfigureAwait(false);
     }
+
+    /// <summary>
+    /// Establishes <see cref="_skillId"/> as the ambient current skill for this call's duration
+    /// (#531), or returns null (no-op scope) when either half is missing. Called once, wrapping the
+    /// whole method body, so both the early-return-no-admission-pipeline branch and the main path get
+    /// the same scope without duplicating the check.
+    /// </summary>
+    private IDisposable? BeginSkillScope() =>
+        _skillId is not null ? _currentSkillAccessor?.BeginScope(_skillId) : null;
 
     /// <summary>
     /// Extracts this call's requested paths/hosts (#418), when the wrapped function is a

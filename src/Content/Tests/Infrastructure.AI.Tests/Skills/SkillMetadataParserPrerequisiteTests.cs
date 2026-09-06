@@ -1,3 +1,4 @@
+using Application.AI.Common.Skills;
 using FluentAssertions;
 using Infrastructure.AI.Skills;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -18,7 +19,8 @@ public sealed class SkillMetadataParserPrerequisiteTests : IDisposable
     {
         _sut = new SkillMetadataParser(
             NullLogger<SkillMetadataParser>.Instance, new UnsandboxedSkillFileReader(),
-            TestMcpSecurityScanner.AlwaysSafe(), TestMcpSecurityScanner.DefaultConfig());
+            TestMcpSecurityScanner.AlwaysSafe(), TestMcpSecurityScanner.DefaultConfig(),
+            new EgressManifestValidator());
         _tempDir = Path.Combine(Path.GetTempPath(), $"prereq-parser-tests-{Guid.NewGuid():N}");
         Directory.CreateDirectory(_tempDir);
     }

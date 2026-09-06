@@ -2,6 +2,7 @@ using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Plugins;
 using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Services.Tools;
+using Application.AI.Common.Skills;
 using Domain.AI.Skills;
 using Domain.Common.Config;
 using Domain.Common.Config.AI;
@@ -81,7 +82,8 @@ public sealed class PluginGovernanceWiringTests : IDisposable
             new OptionsMonitorStub(appConfig),
             new SkillMetadataParser(
                 NullLogger<SkillMetadataParser>.Instance, new UnsandboxedSkillFileReader(),
-                TestMcpSecurityScanner.AlwaysSafe(), TestMcpSecurityScanner.DefaultConfig()),
+                TestMcpSecurityScanner.AlwaysSafe(), TestMcpSecurityScanner.DefaultConfig(),
+                new EgressManifestValidator()),
             new UnsandboxedSkillFileReader(),
             pluginRegistry);
     }

@@ -6,6 +6,7 @@ using Domain.AI.Egress;
 using Domain.AI.Skills;
 using Domain.AI.Tools;
 using Domain.Common.Config.AI;
+using FluentValidation;
 using Infrastructure.AI.Governance;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -39,6 +40,7 @@ public sealed partial class SkillMetadataParser
     private readonly ISkillFileReader _fileReader;
     private readonly IMcpSecurityScanner _scanner;
     private readonly IOptionsMonitor<AIConfig> _config;
+    private readonly IValidator<EgressManifest> _egressValidator;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="SkillMetadataParser"/> class.
@@ -58,21 +60,30 @@ public sealed partial class SkillMetadataParser
     /// <see cref="GovernanceConfig.McpToolBlockThreshold"/>); read per call so a config reload takes
     /// effect, matching <c>ScanningMcpToolProvider</c>'s convention for the same policy.
     /// </param>
+    /// <param name="egressValidator">
+    /// Validates a parsed <see cref="EgressManifest"/> against the same SSRF-narrow rules the
+    /// runtime egress policy applies (#531) — auto-discovered via <c>AddValidatorsFromAssembly</c> on
+    /// the <c>Application.AI.Common</c> assembly, so no manual registration is needed beyond this
+    /// constructor injection giving it a real caller.
+    /// </param>
     public SkillMetadataParser(
         ILogger<SkillMetadataParser> logger,
         ISkillFileReader fileReader,
         IMcpSecurityScanner scanner,
-        IOptionsMonitor<AIConfig> config)
+        IOptionsMonitor<AIConfig> config,
+        IValidator<EgressManifest> egressValidator)
     {
         ArgumentNullException.ThrowIfNull(logger);
         ArgumentNullException.ThrowIfNull(fileReader);
         ArgumentNullException.ThrowIfNull(scanner);
         ArgumentNullException.ThrowIfNull(config);
+        ArgumentNullException.ThrowIfNull(egressValidator);
 
         _logger = logger;
         _fileReader = fileReader;
         _scanner = scanner;
         _config = config;
+        _egressValidator = egressValidator;
     }
 
     /// <summary>
@@ -169,6 +180,9 @@ public sealed partial class SkillMetadataParser
 
         ScanOrRefuse(name, description, body, toolDeclarations, skillFilePath);
 
+        var egress = frontmatter.Egress();
+        ValidateEgressOrRefuse(egress, skillFilePath);
+
         var metaBlock = frontmatter.ScalarBlock("metadata");
 
         return new SkillDefinition
@@ -196,8 +210,30 @@ public sealed partial class SkillMetadataParser
             LoadedAt = DateTime.UtcNow,
 
             PluginSource = pluginSource,
-            Egress = frontmatter.Egress(),
+            Egress = egress,
         };
+    }
+
+    /// <summary>
+    /// Validates a non-null <paramref name="egress"/> manifest against the same SSRF-narrow rules
+    /// the runtime egress policy applies (#531), throwing <see cref="SkillParsingException"/> if it
+    /// fails — a malformed manifest must never reach the policy resolver. Mirrors
+    /// <see cref="ScanOrRefuse"/>'s "refuse to construct the definition" shape for a different
+    /// class of manifest defect (schema validity, not content safety).
+    /// </summary>
+    private void ValidateEgressOrRefuse(EgressManifest? egress, string skillFilePath)
+    {
+        if (egress is null)
+            return;
+
+        var result = _egressValidator.Validate(egress);
+        if (result.IsValid)
+            return;
+
+        var reason = string.Join("; ", result.Errors.Select(e => e.ErrorMessage));
+        _logger.LogWarning(
+            "Refusing skill manifest at {Path}: invalid egress allowlist: {Reason}", skillFilePath, reason);
+        throw new SkillParsingException(skillFilePath, $"Invalid egress manifest: {reason}");
     }
 
     /// <summary>

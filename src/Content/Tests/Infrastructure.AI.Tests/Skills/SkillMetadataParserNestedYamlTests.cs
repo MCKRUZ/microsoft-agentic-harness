@@ -1,3 +1,4 @@
+using Application.AI.Common.Skills;
 using FluentAssertions;
 using Infrastructure.AI.Skills;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -17,7 +18,8 @@ public sealed class SkillMetadataParserNestedYamlTests : IDisposable
     {
         _sut = new SkillMetadataParser(
             NullLogger<SkillMetadataParser>.Instance, new UnsandboxedSkillFileReader(),
-            TestMcpSecurityScanner.AlwaysSafe(), TestMcpSecurityScanner.DefaultConfig());
+            TestMcpSecurityScanner.AlwaysSafe(), TestMcpSecurityScanner.DefaultConfig(),
+            new EgressManifestValidator());
         _tempDir = Path.Combine(Path.GetTempPath(), $"skill-nested-yaml-tests-{Guid.NewGuid():N}");
         Directory.CreateDirectory(_tempDir);
     }

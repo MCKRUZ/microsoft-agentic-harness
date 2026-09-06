@@ -301,7 +301,10 @@ public sealed class SecurityControlHasACallerTests
     /// silently skipped. It is a different meaning from "a consumer resolves this", so it is a
     /// different list — the same reasoning CLAUDE.md records for not overloading one field with two
     /// meanings. <see cref="KnownDeadValidators_AreStillDead"/> fails the moment one gains a caller,
-    /// so the exemption cannot outlive the defect it documents.
+    /// so the exemption cannot outlive the defect it documents. Empty as of #531 — the egress
+    /// manifest pair that populated it is now genuinely invoked (see
+    /// <see cref="SkillEgressConsumerResolvedTypes"/>) — kept, not deleted, as the mechanism a future
+    /// confirmed-dead validator uses.
     /// </para>
     /// <para>
     /// <strong>Six false alarms, and what each one taught.</strong> Matching on filename swept in
@@ -383,7 +386,9 @@ public sealed class SecurityControlHasACallerTests
         // but it would surface as dozens of false alarms, so prove the classifier works.
         mediatrRequests.Should().NotBeEmpty("the MediatR request types this exemption rests on must be detectable");
 
-        var consumerResolvedTypes = ConsumerResolvedValidatedTypes.ToHashSet(StringComparer.Ordinal);
+        var consumerResolvedTypes = ConsumerResolvedValidatedTypes
+            .Concat(SkillEgressConsumerResolvedTypes)
+            .ToHashSet(StringComparer.Ordinal);
         var knownDead = KnownDeadValidators.ToHashSet(StringComparer.Ordinal);
 
         // In scope unless an invocation mechanism is PROVEN. An unparsable or unrecognised type
@@ -842,21 +847,14 @@ public sealed class SecurityControlHasACallerTests
     /// </para>
     /// <para>
     /// This is <strong>not</strong> a place to park an inconvenient failure. An entry is admissible
-    /// only with a filed issue and a measured reason the defect is not urgent. The egress pair
-    /// qualifies on both counts: their validated types are parsed onto
-    /// <c>SkillDefinition.Egress</c> and read by nothing, so validating them would change no
-    /// behaviour, and the runtime <c>DefaultEgressPolicy</c> still enforces scheme and allowlist
-    /// matching on every request — the gap fails closed. #531 carries the decision of whether to wire
-    /// per-skill egress or remove it.
+    /// only with a filed issue and a measured reason the defect is not urgent — see
+    /// <see cref="ConsumerResolvedValidatedTypes"/>'s remarks for what happened the first time this
+    /// file's own guard could not see the egress manifest pair's shape. Currently empty: #531's fix
+    /// wired the pair into <c>SkillMetadataParser</c>, so they moved to
+    /// <see cref="SkillEgressConsumerResolvedTypes"/> below instead of staying parked here.
     /// </para>
     /// </remarks>
-    private static readonly string[] KnownDeadValidators =
-    [
-        // #531: SkillDefinition.Egress is parsed, mapped, stored, and consumed by nothing, so neither
-        // validator has anything to validate. Fails closed — DefaultEgressPolicy still enforces.
-        "EgressManifestValidator",
-        "EgressAllowlistEntryValidator"
-    ];
+    private static readonly string[] KnownDeadValidators = [];
 
     /// <summary>
     /// Every entry on <see cref="KnownDeadValidators"/> must still be dead, so the exemption cannot
@@ -867,6 +865,15 @@ public sealed class SecurityControlHasACallerTests
     /// #531 asks for — this test reports that the exemption is now false and must be removed, rather
     /// than letting a newly-live validator sit permanently outside the guard's scope. A dead-control
     /// exemption that survives the control coming alive is how the scope of a guard quietly shrinks.
+    /// <para>
+    /// Checks two caller shapes, not one — a mutation-test run against #531's own fix (deliberately
+    /// re-adding "EgressManifestValidator" here while its real DI-resolved caller in
+    /// <c>SkillMetadataParser</c> stood) found the bare-name check alone gives a false "still dead":
+    /// a consumer that resolves <c>IValidator&lt;TValidated&gt;</c> via constructor injection —
+    /// exactly how #531 wires <c>SkillMetadataParser</c> — never spells the concrete validator class
+    /// name anywhere, so a name-only scan is blind to it. The second check closes that gap by looking
+    /// for the validated TYPE inside an <c>IValidator&lt;&gt;</c> mention instead.
+    /// </para>
     /// </remarks>
     [Fact]
     public void KnownDeadValidators_AreStillDead()
@@ -884,17 +891,23 @@ public sealed class SecurityControlHasACallerTests
             // A caller is any production mention outside the file that declares it. The declaring file
             // is excluded because a parent validator legitimately names its child via SetValidator,
             // which is self-reference, not a consumer.
-            var declaring = production
+            var declaringFiles = production
                 .Where(f => Regex.IsMatch(f.Code, $@"\bclass\s+{validator}\b"))
-                .Select(f => f.Path)
                 .ToArray();
 
-            declaring.Should().ContainSingle(
+            declaringFiles.Select(f => f.Path).Should().ContainSingle(
                 $"{validator} must still be declared exactly once for this exemption to describe anything real");
 
+            var declaringPath = declaringFiles[0].Path;
+            var validated = FindValidatorDeclarations(declaringFiles[0].Code)
+                .FirstOrDefault(d => d.Validator == validator).Validated;
+
             var callers = production
-                .Where(f => !string.Equals(f.Path, declaring[0], StringComparison.OrdinalIgnoreCase))
-                .Where(f => Regex.IsMatch(f.Code, $@"\b{validator}\b"))
+                .Where(f => !string.Equals(f.Path, declaringPath, StringComparison.OrdinalIgnoreCase))
+                .Where(f => Regex.IsMatch(f.Code, $@"\b{validator}\b")
+                    // A DI-resolved caller (constructor injection of IValidator<TValidated>) never
+                    // spells the concrete class name — see the remarks above.
+                    || (validated is not null && Regex.IsMatch(f.Code, $@"\bIValidator\s*<\s*{validated}\s*>")))
                 .Select(f => Path.GetRelativePath(contentRoot, f.Path))
                 .ToArray();
 
@@ -907,6 +920,59 @@ public sealed class SecurityControlHasACallerTests
             + "excused it is now false and is holding a live validator outside this guard's scope. "
             + "Remove the entry — and if this is the #531 fix landing, remove both. Revived: "
             + string.Join("; ", revived));
+    }
+
+    /// <summary>
+    /// #531: <c>SkillMetadataParser</c> resolves <c>IValidator&lt;EgressManifest&gt;</c> via
+    /// constructor injection and calls <c>.Validate()</c> on it directly — a genuine consumer-resolved
+    /// mechanism, but a different shape from <see cref="ConsumerResolvedValidatedTypes"/>'s (which is
+    /// anchored specifically to <c>PlanValidator</c>'s generic dispatch-arm pattern and would never
+    /// match a direct field-call site). Given its own list and its own staleness check rather than
+    /// folded into that one, for the same reason <see cref="KnownDeadValidators"/> is its own list:
+    /// two different mechanisms proven two different ways must not collapse into one, or a future
+    /// reader cannot tell which proof backs which entry.
+    /// </summary>
+    private static readonly string[] SkillEgressConsumerResolvedTypes =
+    [
+        // EgressManifestValidator's validated type — proven invoked below by finding the actual
+        // .Validate() call in SkillMetadataParser.cs.
+        "EgressManifest",
+        // EgressAllowlistEntryValidator's validated type. Never resolved directly — EgressManifestValidator
+        // composes it as a child via RuleForEach(...).SetValidator(...), which FluentValidation
+        // runs unconditionally as part of the parent's own Validate() call. Proven below by finding
+        // that composition, not by a separate top-level call site (there is none).
+        "EgressAllowlistEntry"
+    ];
+
+    /// <summary>
+    /// Both entries on <see cref="SkillEgressConsumerResolvedTypes"/> must still be genuinely invoked,
+    /// so the exemption cannot outlive the wiring #531 put in place.
+    /// </summary>
+    /// <remarks>
+    /// Two independent proofs, matching the two different invocation shapes the list documents: a
+    /// direct <c>.Validate()</c> call site for the parent, and a <c>SetValidator</c> composition for
+    /// the child. Either regressing independently reopens the exact gap #531 closed for that half.
+    /// </remarks>
+    [Fact]
+    public void SkillEgressConsumerResolvedExemptions_AreStillInvoked()
+    {
+        var parserPath = Path.Combine(
+            RepoRoot.Path, "src", "Content", "Infrastructure", "Infrastructure.AI", "Skills", "SkillMetadataParser.cs");
+        File.Exists(parserPath).Should().BeTrue("the consumer that justifies the EgressManifest exemption must exist");
+
+        var parserSource = SourceScan.StripCommentsAndStrings(File.ReadAllText(parserPath));
+        Regex.IsMatch(parserSource, @"_egressValidator\.Validate\(").Should().BeTrue(
+            "control: SkillMetadataParser must actually call .Validate() on the injected "
+            + "IValidator<EgressManifest> for the EgressManifest exemption to describe anything real");
+
+        var validatorPath = Path.Combine(
+            RepoRoot.Path, "src", "Content", "Application", "Application.AI.Common", "Skills", "EgressManifestValidator.cs");
+        File.Exists(validatorPath).Should().BeTrue("the parent validator that composes the child must exist");
+
+        var validatorSource = SourceScan.StripCommentsAndStrings(File.ReadAllText(validatorPath));
+        Regex.IsMatch(validatorSource, @"SetValidator\(new EgressAllowlistEntryValidator\(\)\)").Should().BeTrue(
+            "control: EgressManifestValidator must still compose EgressAllowlistEntryValidator as a "
+            + "child, or the EgressAllowlistEntry exemption is stale and the validator is unreachable");
     }
 
     /// <summary>

@@ -2,6 +2,7 @@ using System.IO.Compression;
 using System.Text;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Plugins;
+using Application.AI.Common.Skills;
 using Domain.AI.Governance;
 using Domain.Common.Config;
 using Domain.Common.Config.AI;
@@ -736,7 +737,8 @@ public sealed class BundleStagingServiceTests : IDisposable
             new SkillMetadataParser(
                 NullLogger<SkillMetadataParser>.Instance, new UnsandboxedSkillFileReader(),
                 skillScanner ?? TestMcpSecurityScanner.AlwaysSafe(),
-                Mock.Of<IOptionsMonitor<AIConfig>>(m => m.CurrentValue == appConfig.AI)),
+                Mock.Of<IOptionsMonitor<AIConfig>>(m => m.CurrentValue == appConfig.AI),
+                new EgressManifestValidator()),
             new UnsandboxedSkillFileReader(),
             pluginReader ?? new PluginManifestReader(NullLogger<PluginManifestReader>.Instance),
             bundleOwnedMcpServers ?? new BundleOwnedMcpServerRegistry(),

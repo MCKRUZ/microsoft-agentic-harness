@@ -1,3 +1,4 @@
+using Application.AI.Common.Skills;
 using Domain.AI.Skills;
 using FluentAssertions;
 using Infrastructure.AI.Skills;
@@ -20,7 +21,8 @@ public sealed class SkillFrontmatterContractTests : IDisposable
     {
         _sut = new SkillMetadataParser(
             NullLogger<SkillMetadataParser>.Instance, new UnsandboxedSkillFileReader(),
-            TestMcpSecurityScanner.AlwaysSafe(), TestMcpSecurityScanner.DefaultConfig());
+            TestMcpSecurityScanner.AlwaysSafe(), TestMcpSecurityScanner.DefaultConfig(),
+            new EgressManifestValidator());
         _tempDir = Path.Combine(Path.GetTempPath(), $"frontmatter-contract-{Guid.NewGuid():N}");
         Directory.CreateDirectory(_tempDir);
     }

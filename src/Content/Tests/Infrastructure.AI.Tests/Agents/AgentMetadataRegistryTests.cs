@@ -1,5 +1,6 @@
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Skills;
+using Application.AI.Common.Skills;
 using Domain.Common.Config;
 using Domain.Common.Config.AI;
 using FluentAssertions;
@@ -43,7 +44,8 @@ public sealed class AgentMetadataRegistryTests
                 NullLogger<AgentMetadataParser>.Instance, TestMcpSecurityScanner.AlwaysSafe(), TestMcpSecurityScanner.DefaultConfig()),
             new SkillMetadataParser(
                 NullLogger<SkillMetadataParser>.Instance, new UnsandboxedSkillFileReader(),
-                TestMcpSecurityScanner.AlwaysSafe(), TestMcpSecurityScanner.DefaultConfig()),
+                TestMcpSecurityScanner.AlwaysSafe(), TestMcpSecurityScanner.DefaultConfig(),
+                new EgressManifestValidator()),
             new UnsandboxedSkillFileReader(),
             ownedSkills);
     }
@@ -143,6 +145,8 @@ public sealed class AgentMetadataRegistryTests
         services.AddSingleton<AgentMetadataParser>();
         services.AddSingleton<Application.AI.Common.Interfaces.Skills.ISkillFileReader,
             Infrastructure.AI.Skills.SkillFileReader>();
+        services.AddSingleton<FluentValidation.IValidator<Domain.AI.Skills.EgressManifest>,
+            Application.AI.Common.Skills.EgressManifestValidator>();
         services.AddSingleton<SkillMetadataParser>();
         services.AddSingleton<IAgentOwnedSkillStore, AgentOwnedSkillStore>();
         services.AddSingleton<IAgentMetadataRegistry, AgentMetadataRegistry>();
