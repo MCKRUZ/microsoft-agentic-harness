@@ -291,6 +291,14 @@ docker run -d --name jaeger \
                         blast radius — a third-party plugin can read files but never write them, regardless of the
                         agent's own permissions.
                     </p>
+                    <p>
+                        An <code>AllowedTools</code>/<code>DeniedTools</code> entry that matches no real tool — first-
+                        party or MCP — is fail-closed, not a silent no-op. If resolvable at startup (no MCP server is
+                        configured anywhere on the host), the host refuses to boot. Otherwise it's checked once the
+                        entry's tool is discovered on some configured server; if still unresolved once every server
+                        has reported, the whole plugin's boundary is marked faulted and every tool from its skills is
+                        denied.
+                    </p>
 
                     <h3>5 · The sandbox</h3>
                     <p>

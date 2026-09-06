@@ -69,4 +69,27 @@ public class PluginRegistryTests
 
         _sut.IsLoaded("broken").Should().BeFalse();
     }
+
+    [Fact]
+    public void IsBoundaryFaulted_UnmarkedPlugin_ReturnsFalse()
+    {
+        _sut.IsBoundaryFaulted("azure").Should().BeFalse();
+    }
+
+    [Fact]
+    public void MarkBoundaryFaulted_ThenIsBoundaryFaulted_ReturnsTrue()
+    {
+        _sut.MarkBoundaryFaulted("azure", "DeniedTools entry 'file_wrte' matches no known tool");
+
+        _sut.IsBoundaryFaulted("azure").Should().BeTrue();
+    }
+
+    [Fact]
+    public void IsBoundaryFaulted_CaseInsensitive_ReturnsTrue()
+    {
+        _sut.MarkBoundaryFaulted("Azure", "reason");
+
+        _sut.IsBoundaryFaulted("azure").Should().BeTrue();
+        _sut.IsBoundaryFaulted("AZURE").Should().BeTrue();
+    }
 }

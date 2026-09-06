@@ -497,6 +497,21 @@ You are the team's automated code review assistant. For each pull request:
                                     </p>
                                 </div>
                             </div>
+                            <div class="callout callout-info">
+                                <span class="callout-icon">i</span>
+                                <div class="callout-body">
+                                    <div class="callout-title">A typo in AllowedTools/DeniedTools now fails closed</div>
+                                    <p style="margin: 0">
+                                        An entry that matches no real tool — first-party or MCP — is no longer a
+                                        silent no-op. With no MCP server configured on the host, it fails startup
+                                        outright. Otherwise it's resolved lazily as each configured server's tools
+                                        are discovered; if it's still unmatched once every server has reported,
+                                        every tool from this plugin's skills is denied. See
+                                        <a href="10-observability.html">Observability &amp; Safety</a> for the full
+                                        mechanics.
+                                    </p>
+                                </div>
+                            </div>
                         </li>
 
                         <li class="step">
