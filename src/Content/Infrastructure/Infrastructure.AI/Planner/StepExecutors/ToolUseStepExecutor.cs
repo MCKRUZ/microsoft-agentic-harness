@@ -375,23 +375,46 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
     /// <see cref="Domain.AI.Planner.ToolUseConfig"/> carries no separate operation field — a plan
     /// author (or the LLM planner) puts the operation under the well-known <c>"operation"</c> key
     /// inside the flat argument set, the same wire-format key <see cref="AIToolConverter"/> and
-    /// <see cref="GovernedAIFunction"/> already use for exactly this concept. The remaining entries in
-    /// <paramref name="arguments"/> are the operation's own flat parameters — already plain CLR values
-    /// (<c>LlmPlanOutputMapper</c>/<c>WorkflowDefinitionMapper</c> both deserialize straight from JSON
-    /// into scalars), never a nested <c>JsonElement</c> the way a raw agent-turn call arrives, so no
-    /// further unwrapping is needed here the way <see cref="GovernedAIFunction"/> requires for its own
-    /// wire shape.
+    /// <see cref="GovernedAIFunction"/> already use for exactly this concept.
+    /// <para>
+    /// A plan step's own flat values are NOT reliably plain CLR values, unlike the doc comment this
+    /// replaced claimed (correctness/security review on #587): <c>LlmPlanOutputMapper</c> does convert
+    /// straight to scalars, but a step submitted through the workflow HTTP surface
+    /// (<c>WorkflowDefinitionMapper</c>/<c>ToolUseStepConfiguration</c>) round-trips through
+    /// System.Text.Json with no <c>object</c>-typed converter registered
+    /// (<c>ExecutionApiServiceCollectionExtensions</c> only adds <c>JsonStringEnumConverter</c>), so its
+    /// <c>object?</c>-typed dictionary values bind as <see cref="JsonElement"/>, not <see cref="string"/>.
+    /// Left unhandled, that producer's calls would silently never populate a resource request at all —
+    /// fail-closed (no bypass), but #587's own goal of enforcing identically across all three admission
+    /// paths would quietly not hold for it. <see cref="NormalizeScalar"/> unwraps a string-valued
+    /// <see cref="JsonElement"/> the same way <see cref="GovernedAIFunction"/> already does for its own
+    /// wire shape, so both plan-authoring producers reach <see cref="ResourceParameterExtractor.Extract"/>
+    /// on equal footing.
+    /// </para>
     /// </remarks>
     private Domain.AI.Sandbox.ToolCallResourceRequest? ExtractResourceRequest(
         string toolName, IReadOnlyDictionary<string, object?> arguments)
     {
         var operation = arguments.TryGetValue("operation", out var operationValue)
-            ? operationValue as string
+            ? NormalizeScalar(operationValue) as string
             : null;
+        var normalizedArguments = arguments.ToDictionary(kv => kv.Key, kv => NormalizeScalar(kv.Value));
 
         var tool = _firstPartyToolLookup.Resolve(toolName);
-        return ResourceParameterExtractor.Extract(operation, arguments, tool?.ResourceParametersByOperation);
+        return ResourceParameterExtractor.Extract(operation, normalizedArguments, tool?.ResourceParametersByOperation);
     }
+
+    /// <summary>
+    /// Unwraps a string-valued <see cref="JsonElement"/> to the plain <see cref="string"/>
+    /// <see cref="ResourceParameterExtractor.Extract"/> expects; every other shape (already a CLR
+    /// scalar, or a non-string <see cref="JsonElement"/> that could never be a path/host anyway) passes
+    /// through unchanged.
+    /// </summary>
+    private static object? NormalizeScalar(object? value) => value switch
+    {
+        JsonElement { ValueKind: JsonValueKind.String } je => je.GetString(),
+        _ => value
+    };
 
     private static SandboxIsolationLevel DetermineIsolation(
         ToolUseConfig config,

@@ -344,6 +344,22 @@ public sealed class ToolPathScopingEndToEndTests
         InputParameters = new Dictionary<string, object?> { ["operation"] = operation, ["path"] = path }
     };
 
+    /// <summary>
+    /// The workflow-submit producer's actual wire shape (correctness/security review on #587):
+    /// System.Text.Json binds an <c>object?</c>-typed dictionary value to <see cref="JsonElement"/>
+    /// with no converter registered to unwrap it, unlike <c>LlmPlanOutputMapper</c>'s
+    /// <see cref="ReadConfig"/> shape, which already holds plain CLR strings.
+    /// </summary>
+    private static ToolUseConfig ReadConfigFromJsonElements(string path, string operation = "read") => new()
+    {
+        ToolName = "file_system",
+        InputParameters = new Dictionary<string, object?>
+        {
+            ["operation"] = JsonSerializer.SerializeToElement(operation),
+            ["path"] = JsonSerializer.SerializeToElement(path)
+        }
+    };
+
     private static PlanStep BuildToolStep(ToolUseConfig config) => new()
     {
         Id = new PlanStepId(Guid.NewGuid()),
@@ -420,5 +436,26 @@ public sealed class ToolPathScopingEndToEndTests
         result.Status.Should().Be(StepExecutionStatus.Completed);
         sandboxExecutor.Verify(
             s => s.ExecuteAsync(It.IsAny<SandboxExecutionRequest>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task PlanExecutorPath_JsonElementValuedArguments_DeniedPath_StillRefuses()
+    {
+        // Regression (correctness/security review on #587): a workflow submitted through the HTTP
+        // surface arrives with JsonElement-valued arguments, not the plain strings LlmPlanOutputMapper
+        // produces. Without normalization this silently degrades to "never scoped" for that producer —
+        // fail-closed rather than a bypass, but not the "enforced identically" #587 set out to achieve.
+        var fileSystem = new Mock<IFileSystemService>();
+        var (executor, sandboxExecutor, trace) = BuildPlanExecutorFixture(DenyingSandboxConfig(), fileSystem);
+
+        var step = BuildToolStep(ReadConfigFromJsonElements(DeniedPath));
+
+        var result = await executor.ExecuteAsync(step, new Dictionary<PlanStepId, string>(), CancellationToken.None);
+
+        result.Status.Should().Be(StepExecutionStatus.Failed);
+        result.IsPolicyDenial.Should().BeTrue();
+        trace.Snapshot().ToolDecisions.Should().ContainSingle(d => d.Reason.Contains("path denied"));
+        sandboxExecutor.Verify(
+            s => s.ExecuteAsync(It.IsAny<SandboxExecutionRequest>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 }
