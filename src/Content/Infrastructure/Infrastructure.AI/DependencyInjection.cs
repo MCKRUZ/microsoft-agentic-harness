@@ -285,8 +285,15 @@ public static partial class DependencyInjection
         services.AddSingleton<IPluginToolBoundaryTracker, PluginToolBoundaryTracker>();
         services.AddHostedService(sp =>
         {
+            // Reuses the same bounded key set FirstPartyToolLookup already built (/simplify finding:
+            // re-scanning `services` here duplicated that scan and needlessly kept the whole
+            // IServiceCollection reachable through this factory's closure for the process lifetime).
+            // Copied into a fresh OrdinalIgnoreCase set rather than used directly: FirstPartyToolLookup's
+            // own set is Ordinal (case-sensitive, by design — see its registration), and this existence
+            // check has always matched a boundary entry case-insensitively.
             var firstPartyToolNames = new HashSet<string>(
-                Application.AI.Common.Services.Tools.KeyedToolRegistrationScan.Names(services),
+                sp.GetRequiredService<Application.AI.Common.Services.Tools.FirstPartyToolLookup>()
+                    .RegisteredFirstPartyToolKeys,
                 StringComparer.OrdinalIgnoreCase);
 
             return new PluginToolBoundaryStartupValidator(

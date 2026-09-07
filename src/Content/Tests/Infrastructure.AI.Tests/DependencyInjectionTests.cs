@@ -67,6 +67,14 @@ public sealed class DependencyInjectionTests
         // PR added, or that pre-existing guard throws for every hosted-service enumeration test.
         services.AddSingleton(Mock.Of<IMcpToolProvider>());
         services.AddSingleton(Mock.Of<IBundleMcpServerRegistrar>());
+        // PluginToolBoundaryStartupValidator's firstPartyToolNames set (/simplify: reuses
+        // FirstPartyToolLookup instead of re-scanning `services` independently) resolves it eagerly
+        // during hosted-service construction. The real composition root registers it via
+        // Application.AI.Common's own DI module, called separately from AddInfrastructureAIDependencies
+        // — mirror that here so hosted-service enumeration can resolve. Sealed class, so a real instance
+        // rather than a Mock.Of<T>; the empty key set is fine since these tests don't exercise its content.
+        services.AddSingleton(sp => new Application.AI.Common.Services.Tools.FirstPartyToolLookup(
+            sp, new HashSet<string>()));
 
         return services;
     }

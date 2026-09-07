@@ -134,18 +134,8 @@ public sealed class PluginPermissionRuleProvider : IPermissionRuleProvider
             // Deny rules. Emitted first so the boundary applies even when AutonomyLevel is unset
             // or invalid.
             if (plugin.Declaration.DeniedTools is { Count: > 0 } denied)
-            {
                 foreach (var deniedTool in denied)
-                {
-                    rules.Add(new ToolPermissionRule(
-                        deniedTool,
-                        null,
-                        PermissionBehaviorType.Deny,
-                        PermissionRuleSource.PluginDeclaration,
-                        Priority: 1,
-                        IsBypassImmune: true));
-                }
-            }
+                    rules.Add(DenyRule(deniedTool));
 
             if (string.IsNullOrEmpty(plugin.Declaration.AutonomyLevel))
                 continue;
@@ -197,21 +187,23 @@ public sealed class PluginPermissionRuleProvider : IPermissionRuleProvider
         // fail-closed response is broad, not scoped to the one plugin: deny every known first-party
         // tool agent-wide until every plugin's boundary is Verified. See this type's remarks.
         if (anyBoundaryUnverified)
-        {
             foreach (var toolName in _firstPartyToolLookup.RegisteredFirstPartyToolKeys)
-            {
-                rules.Add(new ToolPermissionRule(
-                    toolName,
-                    null,
-                    PermissionBehaviorType.Deny,
-                    PermissionRuleSource.PluginDeclaration,
-                    Priority: 1,
-                    IsBypassImmune: true));
-            }
-        }
+                rules.Add(DenyRule(toolName));
 
         return Task.FromResult<IReadOnlyList<ToolPermissionRule>>(rules);
     }
+
+    /// <summary>
+    /// A bypass-immune Deny rule for <paramref name="toolName"/> — the identical shape both the
+    /// per-plugin <c>DeniedTools</c> loop and the unverified-boundary fail-closed response above need.
+    /// </summary>
+    private static ToolPermissionRule DenyRule(string toolName) => new(
+        toolName,
+        null,
+        PermissionBehaviorType.Deny,
+        PermissionRuleSource.PluginDeclaration,
+        Priority: 1,
+        IsBypassImmune: true);
 
     /// <summary>
     /// Collects the distinct tool names declared by every skill attributed to
