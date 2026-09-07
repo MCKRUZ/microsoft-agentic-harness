@@ -124,8 +124,17 @@ public sealed class McpToolProviderBoundaryTrackerTests
         // catch(Exception) block, where the round-1 report-on-failure bug lived, must be checked.
         var catchStart = code.IndexOf("catch (Exception)", start, StringComparison.Ordinal);
         catchStart.Should().BeGreaterThan(start, "DiscoverToolsAsync should still have a catch(Exception) block");
-        var nextMethod = code.IndexOf("private ", catchStart + 1, StringComparison.Ordinal);
-        var catchBody = nextMethod > catchStart ? code[catchStart..nextMethod] : code[catchStart..(catchStart + 800)];
+        // #524 round-2 code-review: searching only for "private " skipped straight past
+        // ReportDiscoveryToBoundaryTracker (internal), silently widening the checked region to
+        // whatever comes after it too — today's pass was luck, not a guarantee. Take whichever of
+        // "private "/"internal "/"public " comes first after the catch block starts.
+        var candidates = new[] { "private ", "internal ", "public " }
+            .Select(modifier => code.IndexOf(modifier, catchStart + 1, StringComparison.Ordinal))
+            .Where(i => i > catchStart)
+            .ToList();
+        candidates.Should().NotBeEmpty("some member must follow DiscoverToolsAsync's catch block");
+        var nextMember = candidates.Min();
+        var catchBody = code[catchStart..nextMember];
 
         catchBody.Should().NotContain("SafeReportDiscoveryToBoundaryTracker",
             "reporting on failure must happen only at the operation's genuinely terminal exits, not on this method's own (possibly first-attempt, possibly-recoverable) failure");

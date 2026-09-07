@@ -4,6 +4,7 @@ using Application.AI.Common.Interfaces.Permissions;
 using Application.AI.Common.Interfaces.Plugins;
 using Application.AI.Common.Services.Bundles;
 using Application.AI.Common.Services.Governance;
+using Application.AI.Common.Services.Tools;
 using Application.Core.Permissions;
 using Domain.AI.Agents;
 using Domain.AI.Bundles;
@@ -135,6 +136,10 @@ public sealed class EnvelopeEnforcementIntegrationTests
                 tierResolver.Object, options, NullLogger<AutonomyTierRuleProvider>.Instance),
             new PluginPermissionRuleProvider(
                 pluginRegistry.Object, skillRegistry.Object, new ServiceCollection().BuildServiceProvider(),
+                // #524 round-2: empty key set is fine — pluginRegistry never configures
+                // GetBoundaryStatus, so Moq's default (PluginBoundaryStatus.Verified) means the
+                // blanket-deny path this lookup feeds never fires here.
+                new FirstPartyToolLookup(new ServiceCollection().BuildServiceProvider(), new HashSet<string>()),
                 NullLogger<PluginPermissionRuleProvider>.Instance),
             new EnvelopePermissionRuleProvider(NullLogger<EnvelopePermissionRuleProvider>.Instance),
             new ConfigBasedRuleProvider(options)

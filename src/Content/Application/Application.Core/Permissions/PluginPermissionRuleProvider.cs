@@ -2,6 +2,7 @@ using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Permissions;
 using Application.AI.Common.Interfaces.Plugins;
 using Application.AI.Common.Interfaces.Tools;
+using Application.AI.Common.Services.Tools;
 using Domain.Common.Helpers;
 using Domain.AI.Governance;
 using Domain.AI.Permissions;
@@ -52,12 +53,33 @@ namespace Application.Core.Permissions;
 /// on such a plugin must name its tools via the plugin's <c>AllowedTools</c> or per-skill
 /// <c>allowed-tools</c> declarations. (<c>DeniedTools</c> are unaffected — they name tools explicitly.)
 /// </para>
+/// <para>
+/// <b>Unverified boundary (#524 round-2 code-review).</b> This provider's Deny rules trust a plugin's
+/// <c>DeniedTools</c> entries exactly the way <c>ToolChainBuilder</c> used to before #524 — an entry
+/// naming no real tool is a silent no-op, and this is the ONE enforcement path #524's tool-SET
+/// filtering never reaches: <c>DeniedTools</c> exists specifically to let a plugin block a *global*
+/// tool it does not own (the doc above's "backstop for sensitive global tools"), and
+/// <c>ToolChainBuilder.ApplyPluginBoundaryIfPluginSkill</c> only ever filters the tool SET sourced from
+/// the plugin's OWN skill — a global tool reachable through any OTHER skill in the same agent is never
+/// touched by that filter regardless of this plugin's boundary state. When
+/// <see cref="IPluginRegistry.GetBoundaryStatus"/> is not <see cref="PluginBoundaryStatus.Verified"/>
+/// for a plugin, this provider therefore ALSO emits a bypass-immune Deny rule for every first-party
+/// tool name known to the host (<see cref="FirstPartyToolLookup.RegisteredFirstPartyToolKeys"/>) — not
+/// scoped to this plugin, because a corrupted/unresolved entry gives no way to know which specific
+/// global tool it was meant to protect. This is agent-wide and deliberately broad: Matt's explicit call
+/// (this PR's own review) was that the collateral cost of over-blocking shared tools is acceptable
+/// against the alternative of leaving a sensitive tool's only declared protection silently absent. The
+/// existing, correctly-scoped DeniedTools and autonomy-baseline rules below are still emitted
+/// unconditionally alongside this — harmless overlap for first-party names, and still the only
+/// coverage for any additional, validly-named non-first-party (MCP) entry in the same list.
+/// </para>
 /// </remarks>
 public sealed class PluginPermissionRuleProvider : IPermissionRuleProvider
 {
     private readonly IPluginRegistry _registry;
     private readonly ISkillMetadataRegistry _skillRegistry;
     private readonly IServiceProvider _serviceProvider;
+    private readonly FirstPartyToolLookup _firstPartyToolLookup;
     private readonly ILogger<PluginPermissionRuleProvider> _logger;
 
     /// <summary>
@@ -72,16 +94,22 @@ public sealed class PluginPermissionRuleProvider : IPermissionRuleProvider
     /// Used to detect globally-registered keyed-DI tools so the autonomy baseline can exclude shared
     /// harness tools the plugin does not own.
     /// </param>
+    /// <param name="firstPartyToolLookup">
+    /// Supplies every known first-party tool name for the unverified-boundary fail-closed response —
+    /// see this type's remarks.
+    /// </param>
     /// <param name="logger">Logger for invalid autonomy level and unscoped-baseline warnings.</param>
     public PluginPermissionRuleProvider(
         IPluginRegistry registry,
         ISkillMetadataRegistry skillRegistry,
         IServiceProvider serviceProvider,
+        FirstPartyToolLookup firstPartyToolLookup,
         ILogger<PluginPermissionRuleProvider> logger)
     {
         _registry = registry;
         _skillRegistry = skillRegistry;
         _serviceProvider = serviceProvider;
+        _firstPartyToolLookup = firstPartyToolLookup;
         _logger = logger;
     }
 
@@ -94,9 +122,13 @@ public sealed class PluginPermissionRuleProvider : IPermissionRuleProvider
         CancellationToken cancellationToken = default)
     {
         var rules = new List<ToolPermissionRule>();
+        var anyBoundaryUnverified = false;
 
         foreach (var plugin in _registry.GetLoadedPlugins())
         {
+            if (_registry.GetBoundaryStatus(plugin.Name) != PluginBoundaryStatus.Verified)
+                anyBoundaryUnverified = true;
+
             // DeniedTools are bypass-immune and enforced independently of any AutonomyLevel:
             // a plugin that only denies tools (no autonomy override) must still contribute its
             // Deny rules. Emitted first so the boundary applies even when AutonomyLevel is unset
@@ -154,6 +186,27 @@ public sealed class PluginPermissionRuleProvider : IPermissionRuleProvider
                     PermissionRuleSource.PluginDeclaration,
                     Priority: 5,
                     IsAuthoritativeBaseline: true));
+            }
+        }
+
+        // #524 round-2 code-review: at least one plugin's boundary can't be trusted (an
+        // AllowedTools/DeniedTools entry matches no real tool), and this class's own DeniedTools
+        // rules — the ONLY enforcement path that protects a global tool a plugin does not own — trust
+        // those entries exactly the way ToolChainBuilder used to before #524, with no existence check.
+        // Which specific global tool a corrupted entry was meant to protect is unknowable, so the
+        // fail-closed response is broad, not scoped to the one plugin: deny every known first-party
+        // tool agent-wide until every plugin's boundary is Verified. See this type's remarks.
+        if (anyBoundaryUnverified)
+        {
+            foreach (var toolName in _firstPartyToolLookup.RegisteredFirstPartyToolKeys)
+            {
+                rules.Add(new ToolPermissionRule(
+                    toolName,
+                    null,
+                    PermissionBehaviorType.Deny,
+                    PermissionRuleSource.PluginDeclaration,
+                    Priority: 1,
+                    IsBypassImmune: true));
             }
         }
 

@@ -27,8 +27,12 @@ public sealed class PluginToolBoundaryTracker : IPluginToolBoundaryTracker
     private readonly IPluginRegistry _registry;
     private readonly ConcurrentDictionary<string, PendingPlugin> _pendingByPlugin = new(StringComparer.OrdinalIgnoreCase);
 
-    // serverName -> plugin names waiting on it, built once at Seed time.
-    private readonly ConcurrentDictionary<string, List<string>> _pluginsByServer = new(StringComparer.OrdinalIgnoreCase);
+    // serverName -> plugin names waiting on it, built once at Seed time. ConcurrentBag, not List
+    // (#524 round-2 code-review): Seed's .Add and ReportServerToolsDiscovered's foreach were
+    // otherwise an unsynchronized write+enumerate on a plain List<T> if MCP discovery is ever
+    // triggered concurrently with startup — a real, if narrow, race Seed's own single-threaded-in-
+    // practice usage today masks but does not prevent.
+    private readonly ConcurrentDictionary<string, ConcurrentBag<string>> _pluginsByServer = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>Initializes a new instance of the <see cref="PluginToolBoundaryTracker"/> class.</summary>
     public PluginToolBoundaryTracker(IPluginRegistry registry)
@@ -130,6 +134,7 @@ public sealed class PluginToolBoundaryTracker : IPluginToolBoundaryTracker
                 continue; // Already resolved and removed by a concurrent report.
 
             List<PluginToolBoundaryViolation>? faulted = null;
+            var resolvedEarly = false;
             lock (pending)
             {
                 // A concurrent report for a DIFFERENT server on this same plugin can already have
@@ -141,24 +146,42 @@ public sealed class PluginToolBoundaryTracker : IPluginToolBoundaryTracker
                 foreach (var name in pending.PendingEntries.Keys.Where(discovered.Contains).ToList())
                     pending.PendingEntries.Remove(name);
 
-                pending.PendingServers.Remove(serverName);
-
-                if (pending.PendingServers.Count > 0)
-                    continue; // Other servers this plugin depends on haven't reported yet.
-
-                // Last pending server just reported. Whatever's still unresolved is now provably fake.
-                if (pending.PendingEntries.Count > 0)
+                // #524 round-2 code-review: every entry this plugin was waiting on already matched a
+                // real tool — resolve now, not after every OTHER configured server also reports. A
+                // later report from an unrelated server cannot un-match something already proven to
+                // exist, so waiting for it only stretches how long ToolChainBuilder denies this
+                // plugin's tools (Pending) for no reason tied to this plugin's own boundary at all.
+                if (pending.PendingEntries.Count == 0)
                 {
-                    faulted = pending.PendingEntries
-                        .Select(kv => new PluginToolBoundaryViolation(pluginName, kv.Value, kv.Key))
-                        .ToList();
+                    pending.Resolved = true;
+                    _pendingByPlugin.TryRemove(pluginName, out _);
+                    resolvedEarly = true;
                 }
+                else
+                {
+                    pending.PendingServers.Remove(serverName);
 
-                pending.Resolved = true;
-                _pendingByPlugin.TryRemove(pluginName, out _);
+                    if (pending.PendingServers.Count > 0)
+                        continue; // Other servers this plugin depends on haven't reported yet.
+
+                    // Last pending server just reported. Whatever's still unresolved is now provably fake.
+                    if (pending.PendingEntries.Count > 0)
+                    {
+                        faulted = pending.PendingEntries
+                            .Select(kv => new PluginToolBoundaryViolation(pluginName, kv.Value, kv.Key))
+                            .ToList();
+                    }
+
+                    pending.Resolved = true;
+                    _pendingByPlugin.TryRemove(pluginName, out _);
+                }
             }
 
-            if (faulted is { Count: > 0 })
+            if (resolvedEarly)
+            {
+                _registry.MarkBoundaryVerified(pluginName);
+            }
+            else if (faulted is { Count: > 0 })
             {
                 _registry.MarkBoundaryFaulted(pluginName, FaultReason(faulted));
                 violations.AddRange(faulted);

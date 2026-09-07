@@ -154,6 +154,28 @@ public sealed class PluginToolBoundaryTrackerTests
     }
 
     [Fact]
+    public void ReportServerToolsDiscovered_EveryEntryResolvesFromTheFirstOfTwoServers_VerifiesWithoutWaitingForTheSecond()
+    {
+        // #524 round-2 code-review: waiting for every configured server to report before verifying a
+        // plugin whose entries already fully resolved from an EARLIER server needlessly stretches how
+        // long ToolChainBuilder denies its tools (Pending) — a later, unrelated server's report can
+        // never un-match something already proven to exist.
+        var plugin = MakePlugin("azure", deniedTools: ["delete_repository"]);
+        _sut.Seed([plugin], NoFirstPartyToolsKnown, ["host:github", "host:jira"]);
+
+        var violations = _sut.ReportServerToolsDiscovered("host:github", ["delete_repository"]);
+
+        violations.Should().BeEmpty();
+        _registry.Verify(r => r.MarkBoundaryVerified("azure"), Times.Once);
+        _registry.Verify(r => r.MarkBoundaryFaulted(It.IsAny<string>(), It.IsAny<string>()), Times.Never);
+
+        // The still-unreported "host:jira" server must have nothing left to do for this plugin.
+        var laterReport = _sut.ReportServerToolsDiscovered("host:jira", []);
+        laterReport.Should().BeEmpty();
+        _registry.Verify(r => r.MarkBoundaryVerified("azure"), Times.Once, "must not be called a second time for the same resolution");
+    }
+
+    [Fact]
     public void Seed_NoServersConfiguredAndSameUnknownNameInBothLists_ReturnsOneImmediateViolationInsteadOfThrowing()
     {
         var plugin = MakePlugin("azure", allowedTools: ["file_wrte"], deniedTools: ["file_wrte"]);

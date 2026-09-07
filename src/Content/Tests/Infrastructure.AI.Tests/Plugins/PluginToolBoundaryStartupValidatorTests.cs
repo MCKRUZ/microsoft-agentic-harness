@@ -141,6 +141,14 @@ public sealed class PluginToolBoundaryStartupValidatorTests
             .Returns([]);
         _tracker.Setup(t => t.PendingServerNames).Returns(["server-a", "server-b"]);
 
+        // #524 round-3: the availability-poll grace period this test doesn't itself exercise needs
+        // IsServerAvailableAsync mocked too — an unconfigured Mock<T> method returns null for a
+        // Task<bool>, and awaiting null throws, which ResolveOneServerAsync's own catch swallows
+        // before ever reaching GetToolsAsync.
+        _toolProvider
+            .Setup(p => p.IsServerAvailableAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
+
         var queried = new ConcurrentBag<string>();
         var bothQueried = new TaskCompletionSource();
         _toolProvider
@@ -162,6 +170,42 @@ public sealed class PluginToolBoundaryStartupValidatorTests
     }
 
     [Fact]
+    public async Task StartAsync_SeedSucceeds_ServerNotYetAvailable_RetriesBeforeGivingUp()
+    {
+        // #524 round-3 code-review: a Stdio/spawned-process MCP server can genuinely take a few
+        // seconds to become reachable. Without this retry, the very first proactive probe racing a
+        // still-starting server would report failure and permanently fault a healthy plugin — the
+        // exact regression this fix closes. Proves GetToolsAsync isn't even attempted until
+        // IsServerAvailableAsync reports true.
+        _registry.Setup(r => r.GetLoadedPlugins()).Returns([MakePlugin("azure")]);
+        _tracker.Setup(t => t.Seed(
+                It.IsAny<IReadOnlyList<LoadedPlugin>>(), It.IsAny<Func<string, bool>>(), It.IsAny<IReadOnlyCollection<string>>()))
+            .Returns([]);
+        _tracker.Setup(t => t.PendingServerNames).Returns(["server-a"]);
+
+        var availabilityCalls = 0;
+        var getToolsCalled = new TaskCompletionSource();
+        _toolProvider
+            .Setup(p => p.IsServerAvailableAsync("server-a", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(() => Interlocked.Increment(ref availabilityCalls) >= 3); // "Available" on the 3rd poll.
+        _toolProvider
+            .Setup(p => p.GetToolsAsync("server-a", It.IsAny<CancellationToken>()))
+            .Returns((string _, CancellationToken _) =>
+            {
+                getToolsCalled.TrySetResult();
+                return Task.FromResult<IList<AITool>>([]);
+            });
+        var sut = MakeSut(_ => true);
+
+        await sut.StartAsync(CancellationToken.None);
+
+        await Task.WhenAny(getToolsCalled.Task, Task.Delay(TimeSpan.FromSeconds(5)));
+        getToolsCalled.Task.IsCompletedSuccessfully.Should().BeTrue(
+            "GetToolsAsync must still be attempted once the server becomes available, not abandoned after the first failed poll");
+        availabilityCalls.Should().BeGreaterThanOrEqualTo(3);
+    }
+
+    [Fact]
     public async Task StartAsync_SeedSucceeds_DoesNotAwaitPendingServerResolutionBeforeReturning()
     {
         // The proactive query must be fire-and-forget — StartAsync blocking on live third-party MCP
@@ -172,6 +216,9 @@ public sealed class PluginToolBoundaryStartupValidatorTests
                 It.IsAny<IReadOnlyList<LoadedPlugin>>(), It.IsAny<Func<string, bool>>(), It.IsAny<IReadOnlyCollection<string>>()))
             .Returns([]);
         _tracker.Setup(t => t.PendingServerNames).Returns(["server-a"]);
+        _toolProvider
+            .Setup(p => p.IsServerAvailableAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
         _toolProvider
             .Setup(p => p.GetToolsAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .Returns(new TaskCompletionSource<IList<AITool>>().Task); // Never completes.

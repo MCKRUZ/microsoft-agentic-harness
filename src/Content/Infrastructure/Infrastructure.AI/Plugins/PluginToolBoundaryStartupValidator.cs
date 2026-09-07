@@ -130,9 +130,13 @@ public sealed class PluginToolBoundaryStartupValidator : IHostedService
             return Task.CompletedTask;
         }
 
+        // #524 round-2 code-review: this branch fires when NO MCP server is configured anywhere on
+        // the host (see Seed's own remarks) — not when this specific plugin declares none of its own.
+        // A plugin can legitimately declare a server that is merely disabled right now; the fix in
+        // that case is re-enabling a server, not touching this plugin's declaration at all.
         var lines = immediateViolations.Select(v =>
             $"Plugin '{v.PluginName}': {v.ListKind} entry '{v.ToolName}' matches no first-party tool, " +
-            "and this plugin declares no MCP server that could ever supply it either.");
+            "and no MCP server is configured anywhere on this host that could ever supply it either.");
 
         throw new InvalidOperationException(
             "One or more plugin AllowedTools/DeniedTools entries name a tool that does not exist, so "
@@ -157,10 +161,31 @@ public sealed class PluginToolBoundaryStartupValidator : IHostedService
         }
     }
 
+    // A Stdio/spawned-process MCP server (npx, a container) can genuinely take a few seconds to
+    // become reachable — this is not a failure, just a cold start still in progress.
+    private const int MaxAvailabilityAttempts = 5;
+    private static readonly TimeSpan AvailabilityRetryDelay = TimeSpan.FromSeconds(1);
+
     private async Task ResolveOneServerAsync(string serverName)
     {
         try
         {
+            // #524 round-2 code-review: GetToolsAsync's failure path reports to the boundary tracker,
+            // and ReportServerToolsDiscovered only honors the FIRST report per server — so a proactive
+            // probe that races a still-starting server and loses would itself permanently fault the
+            // plugin, with no way back short of a process restart. IsServerAvailableAsync has no such
+            // side effect (confirmed: it never calls the tracker), so it's safe to retry here — only
+            // the ONE real, reporting attempt below happens after the server is confirmed reachable or
+            // this budget is exhausted, matching organic usage's own single-attempt behavior rather
+            // than manufacturing a second, artificially-lenient reporting path.
+            for (var attempt = 0; attempt < MaxAvailabilityAttempts; attempt++)
+            {
+                if (await _toolProvider.IsServerAvailableAsync(serverName))
+                    break;
+                if (attempt < MaxAvailabilityAttempts - 1)
+                    await Task.Delay(AvailabilityRetryDelay);
+            }
+
             // The result itself is discarded — GetToolsAsync's own success/failure path already
             // reports to the boundary tracker (McpToolProvider.DiscoverToolsAsync and its
             // connection-failure branch); this call exists purely to trigger that reporting sooner
