@@ -168,6 +168,39 @@ public static class ToolParameters
     };
 
     /// <summary>
+    /// Same string-unwrap rule as <see cref="NormalizeScalar"/>, but for a caller that must always
+    /// hand back a <see cref="string"/> — a non-string <see cref="JsonElement"/> falls back to
+    /// <see cref="JsonElement.GetRawText"/> instead of passing the element through unchanged.
+    /// </summary>
+    /// <remarks>
+    /// A sibling, not a parameter on <see cref="NormalizeScalar"/> itself (#595 code-review): the two
+    /// have genuinely different contracts a caller picks between, not two modes of one operation.
+    /// <see cref="NormalizeScalar"/>'s callers merge a value back into a CLR object graph they may
+    /// serialize later, where a passed-through <see cref="JsonElement"/> serializes correctly on its
+    /// own; <c>ToolUseStepExecutor.BuildToolArguments</c> merges every upstream property into a
+    /// <c>Dictionary&lt;string, object?&gt;</c> whose values were always raw JSON text as a
+    /// <see cref="string"/> before #595 touched it — switching a non-string value to a passed-through
+    /// element there would change what a tool actually receives for every existing non-string
+    /// upstream-merged argument (a JSON number stops being double-encoded as a quoted string), a
+    /// behavior change well outside what #595 set out to fix.
+    /// </remarks>
+    /// <param name="value">The value to normalize — any CLR scalar, or a boxed <see cref="JsonElement"/>.</param>
+    /// <returns>
+    /// The unwrapped <see cref="string"/> when <paramref name="value"/> is a string-valued
+    /// <see cref="JsonElement"/>; that element's raw JSON text when it is a non-string
+    /// <see cref="JsonElement"/>; otherwise <paramref name="value"/> itself, unchanged.
+    /// </returns>
+    public static object? NormalizeScalarToText(object? value)
+    {
+        // Delegates the string-unwrap rule to NormalizeScalar instead of re-matching it (/simplify):
+        // a string-valued JsonElement is already unwrapped to a plain string by NormalizeScalar, so it
+        // never reaches the JsonElement check below; anything NormalizeScalar left as a JsonElement is
+        // by definition non-string here.
+        var normalized = NormalizeScalar(value);
+        return normalized is JsonElement je ? je.GetRawText() : normalized;
+    }
+
+    /// <summary>
     /// The shared answer for "no parameters". A fresh dictionary per call would allocate on the
     /// commonest path, since several operations take no arguments at all.
     /// </summary>

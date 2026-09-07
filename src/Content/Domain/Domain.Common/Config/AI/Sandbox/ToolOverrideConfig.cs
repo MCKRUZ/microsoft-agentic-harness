@@ -34,14 +34,15 @@ namespace Domain.Common.Config.AI.Sandbox;
 /// parameters is scoped identically across all three entry points.
 /// </para>
 /// <para>
-/// <strong>One narrower gap remains on the plan path specifically:</strong> when a path/host value is
+/// <strong>The narrower gap that once existed here is closed:</strong> when a path/host value is
 /// chained from an upstream step's output rather than declared directly on the step, it arrives via
-/// <c>ToolUseStepExecutor.BuildToolArguments</c>' JSON-merge as <c>JsonElement.GetRawText()</c> —
-/// literal, quote-wrapped JSON text, not the plain string every other producer supplies. That value
-/// fails path/host normalization and the call is refused — never silently allowed, since #587's
-/// <c>ResourceParameterExtractor.Extract</c> fix (code-review round) treats an operation or value it
-/// cannot read as unknown rather than "nothing to check" — but a plan legitimately chaining a
-/// path/host between steps cannot use scoping today. Tracked for follow-up, not covered here.
+/// <c>ToolUseStepExecutor.BuildToolArguments</c>' JSON-merge. That merge used to call
+/// <c>JsonElement.GetRawText()</c> unconditionally, keeping literal quote characters on a chained
+/// string value and failing path/host normalization every time — refused, never silently allowed
+/// (#587's <c>ResourceParameterExtractor.Extract</c> fix treats a value it cannot read as unknown
+/// rather than "nothing to check"), but unusable for scoping. #595 fixed the merge itself
+/// (<c>ToolParameters.NormalizeScalarToText</c> unwraps a string value the same way a directly-declared
+/// parameter arrives), so a chained path/host now scopes identically to a directly-declared one.
 /// </para>
 /// </remarks>
 public sealed class ToolOverrideConfig

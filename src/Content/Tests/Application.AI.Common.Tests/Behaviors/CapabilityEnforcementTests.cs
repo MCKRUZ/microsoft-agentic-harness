@@ -578,6 +578,26 @@ public sealed class CapabilityEnforcementTests
     }
 
     [Fact]
+    public async Task DeniedHostOnly_RequestedHostIsEmptyString_Refuses()
+    {
+        // #595 code-review: a deny-list-only config has no AllowedHosts, so the allow-check in
+        // ValidateHosts never runs — before this fix, an empty-string requested host matched no
+        // configured deny pattern either, and the loop fell through with no violation, silently
+        // admitting it. Mirrors ValidatePaths' unconditional rejection of an unparsable path.
+        var config = new SandboxConfig
+        {
+            ToolOverrides = new() { ["http_tool"] = new ToolOverrideConfig { DeniedHosts = ["*.evil.com"] } }
+        };
+        var (_, enforcer) = Build(config, ("http_tool", NetworkFileTool()));
+
+        var result = await enforcer.EnforceAsync(
+            "http_tool", ToolCapability.FileRead | ToolCapability.NetworkAccess,
+            requestedHosts: [""]);
+
+        result.IsSuccess.Should().BeFalse();
+    }
+
+    [Fact]
     public async Task AllowedHostConfigured_ExactMatchWithPortStripped_PassesThrough()
     {
         var config = new SandboxConfig

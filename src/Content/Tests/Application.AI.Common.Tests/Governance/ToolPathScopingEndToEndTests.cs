@@ -612,15 +612,19 @@ public sealed class ToolPathScopingEndToEndTests
     }
 
     [Fact]
-    public async Task PlanExecutorPath_OperationSourcedFromUpstreamOutput_CorruptedByRawTextQuoting_StillRefuses()
+    public async Task PlanExecutorPath_OperationAndPathSourcedFromUpstreamOutput_RefusesViaRealPathScoping()
     {
-        // Regression (code-review on #587): BuildToolArguments merges an upstream step's JSON output
-        // via JsonElement.GetRawText(), which keeps the literal JSON quote characters on string values
-        // — so an operation name sourced purely from upstream output arrives as "\"read\"", not "read".
-        // Before ResourceParameterExtractor.Extract's fix, an operation that fails to match any declared
-        // name returned ToolCallResourceRequest.Empty (not null), which CapabilityEnforcer trusts as
-        // "nothing to check" and allows — silently defeating path scoping for exactly the plan-executor
-        // path #587 set out to close.
+        // Regression (code-review on #587, updated by #595): BuildToolArguments used to merge an
+        // upstream step's JSON output via JsonElement.GetRawText() unconditionally, which kept the
+        // literal JSON quote characters on string values — so an operation name sourced purely from
+        // upstream output arrived as "\"read\"", not "read", and a denied path arrived the same way.
+        // Before ResourceParameterExtractor.Extract's #587 fix, an operation that fails to match any
+        // declared name returned ToolCallResourceRequest.Empty (not null), which CapabilityEnforcer
+        // trusts as "nothing to check" and allows — silently defeating path scoping. #595 closed the
+        // quoting mechanism itself for string values, so operation and path now arrive clean and are
+        // correctly recognized — this call is refused through genuine path-scoping validation (the
+        // path IS denied), not through the fallback "couldn't determine" safety net #587 added. Either
+        // refusal reason proves the call didn't slip through; this asserts the one that is now correct.
         var fileSystem = new Mock<IFileSystemService>();
         var (executor, sandboxExecutor, trace) = BuildPlanExecutorFixture(DenyingSandboxConfig(), fileSystem);
 
@@ -639,8 +643,41 @@ public sealed class ToolPathScopingEndToEndTests
 
         result.Status.Should().Be(StepExecutionStatus.Failed);
         result.IsPolicyDenial.Should().BeTrue();
-        trace.Snapshot().ToolDecisions.Should().ContainSingle(
-            d => d.Reason.Contains("no requested path could be determined"));
+        trace.Snapshot().ToolDecisions.Should().ContainSingle(d => d.Reason.Contains("path denied"));
+        sandboxExecutor.Verify(
+            s => s.ExecuteAsync(It.IsAny<SandboxExecutionRequest>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task PlanExecutorPath_UpstreamChainedPathResolvesToEmptyString_StillRefuses()
+    {
+        // Regression (code-review on #595 item 5): fixing GetRawText()'s literal-quote bug for a
+        // chained upstream string value (this PR) meant a genuinely empty string now reaches
+        // ResourceParameterExtractor as a real 0-length string instead of the 2-char quoted garbage
+        // that used to fail path validation. ResourceParameterExtractor.Extract's own value filter
+        // used to treat an empty string identically to "parameter not supplied" (skipped, not added
+        // to RequestedPaths) — which made CapabilityEnforcer.EnforcePathScoping see an empty request
+        // and treat that as "nothing to check", passing the call with path scoping configured. The
+        // fix keeps a present-but-empty value in the request so path validation denies it as
+        // unparsable, same as any other invalid path.
+        var fileSystem = new Mock<IFileSystemService>();
+        var (executor, sandboxExecutor, trace) = BuildPlanExecutorFixture(DenyingSandboxConfig(), fileSystem);
+
+        var step = BuildToolStep(new ToolUseConfig
+        {
+            ToolName = "file_system",
+            InputParameters = new Dictionary<string, object?> { ["operation"] = "read" }
+        });
+        var upstreamOutputs = new Dictionary<PlanStepId, string>
+        {
+            [new PlanStepId(Guid.NewGuid())] = JsonSerializer.Serialize(new { path = "" })
+        };
+
+        var result = await executor.ExecuteAsync(step, upstreamOutputs, CancellationToken.None);
+
+        result.Status.Should().Be(StepExecutionStatus.Failed);
+        result.IsPolicyDenial.Should().BeTrue();
+        trace.Snapshot().ToolDecisions.Should().ContainSingle(d => d.Reason.Contains("path denied"));
         sandboxExecutor.Verify(
             s => s.ExecuteAsync(It.IsAny<SandboxExecutionRequest>(), It.IsAny<CancellationToken>()), Times.Never);
     }

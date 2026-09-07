@@ -333,10 +333,11 @@
                         <code>CapabilityEnforcer</code> checks a call's requested paths/hosts against these lists
                         whenever the tool declares which of its parameters carry them, and this is enforced
                         identically across all three tool-invocation entry points: the agent's conversational
-                        turn, the direct-invoke HTTP surface, and plan/DAG steps. Two narrow gaps remain, tracked
+                        turn, the direct-invoke HTTP surface, and plan/DAG steps. One narrow gap remains, tracked
                         for follow-up rather than fixed: whole-shell-command tools that bypass the capability
-                        enforcer entirely, and a plan step chaining a path/host value from an upstream step's
-                        output rather than declaring it directly.)
+                        enforcer entirely. (A plan step chaining a path/host value from an upstream step's output
+                        used to bypass scoping the same way; that's now fixed — such a value is normalized
+                        identically to a directly-declared one before the check runs.)
                     </p>
 
                     <div class="callout callout-warning">
