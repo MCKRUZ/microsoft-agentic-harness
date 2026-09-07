@@ -51,3 +51,22 @@ public sealed record ToolCallEndEvent(
     /// <summary>The tool call that has finished streaming arguments.</summary>
     [property: JsonPropertyName("toolCallId")] string ToolCallId
 ) : AgUiEvent;
+
+/// <summary>
+/// The result of a tool call the server executed itself (a normal MCP or local tool, as opposed to
+/// the mid-run client-round-trip flow the three events above exist for — that case's result arrives
+/// via the browser's own <c>POST /ag-ui/tool-result</c>, never as an event). Emitted once, after the
+/// matching <see cref="ToolCallEndEvent"/>, by a turn's attached streaming sink.
+/// </summary>
+public sealed record ToolCallResultEvent(
+    /// <summary>The tool call this result belongs to.</summary>
+    [property: JsonPropertyName("toolCallId")] string ToolCallId,
+    /// <summary>The tool's redacted output text, or empty when <see cref="Withheld"/> is true.</summary>
+    [property: JsonPropertyName("result")] string Result,
+    /// <summary>
+    /// <see langword="true"/> when the real result was withheld (oversized or unredactable) — see
+    /// <c>StreamedToolCallResult.Withheld</c> for the full contract. Never <see langword="false"/>,
+    /// so omitted from the wire on every normal frame.
+    /// </summary>
+    [property: JsonPropertyName("withheld")] bool? Withheld = null
+) : AgUiEvent;

@@ -29,10 +29,12 @@ namespace Presentation.AgentHub.AgUi;
 [JsonDerivedType(typeof(TextMessageStartEvent), AgUiEventType.TextMessageStart)]
 [JsonDerivedType(typeof(TextMessageContentEvent), AgUiEventType.TextMessageContent)]
 [JsonDerivedType(typeof(TextMessageEndEvent), AgUiEventType.TextMessageEnd)]
-// Client round-trip tool calls (mid-run blocking proxy)
+// Client round-trip tool calls (mid-run blocking proxy) and server-executed tool call announcements
+// (both share the same Start/Args/End shape; only server-executed calls also emit a Result)
 [JsonDerivedType(typeof(ToolCallStartEvent), AgUiEventType.ToolCallStart)]
 [JsonDerivedType(typeof(ToolCallArgsEvent), AgUiEventType.ToolCallArgs)]
 [JsonDerivedType(typeof(ToolCallEndEvent), AgUiEventType.ToolCallEnd)]
+[JsonDerivedType(typeof(ToolCallResultEvent), AgUiEventType.ToolCallResult)]
 // Escalation
 [JsonDerivedType(typeof(EscalationRequestedEvent), AgUiEventType.EscalationRequested)]
 [JsonDerivedType(typeof(EscalationResolvedEvent), AgUiEventType.EscalationResolved)]
