@@ -71,25 +71,54 @@ public class PluginRegistryTests
     }
 
     [Fact]
-    public void IsBoundaryFaulted_UnmarkedPlugin_ReturnsFalse()
+    public void GetBoundaryStatus_UnmarkedPlugin_ReturnsVerified()
     {
-        _sut.IsBoundaryFaulted("azure").Should().BeFalse();
+        _sut.GetBoundaryStatus("azure").Should().Be(PluginBoundaryStatus.Verified);
     }
 
     [Fact]
-    public void MarkBoundaryFaulted_ThenIsBoundaryFaulted_ReturnsTrue()
+    public void MarkBoundaryFaulted_ThenGetBoundaryStatus_ReturnsFaulted()
     {
         _sut.MarkBoundaryFaulted("azure", "DeniedTools entry 'file_wrte' matches no known tool");
 
-        _sut.IsBoundaryFaulted("azure").Should().BeTrue();
+        _sut.GetBoundaryStatus("azure").Should().Be(PluginBoundaryStatus.Faulted);
     }
 
     [Fact]
-    public void IsBoundaryFaulted_CaseInsensitive_ReturnsTrue()
+    public void GetBoundaryStatus_CaseInsensitive_ReturnsFaulted()
     {
         _sut.MarkBoundaryFaulted("Azure", "reason");
 
-        _sut.IsBoundaryFaulted("azure").Should().BeTrue();
-        _sut.IsBoundaryFaulted("AZURE").Should().BeTrue();
+        _sut.GetBoundaryStatus("azure").Should().Be(PluginBoundaryStatus.Faulted);
+        _sut.GetBoundaryStatus("AZURE").Should().Be(PluginBoundaryStatus.Faulted);
+    }
+
+    [Fact]
+    public void MarkBoundaryPending_ThenGetBoundaryStatus_ReturnsPending()
+    {
+        _sut.MarkBoundaryPending("azure");
+
+        _sut.GetBoundaryStatus("azure").Should().Be(PluginBoundaryStatus.Pending);
+    }
+
+    [Fact]
+    public void MarkBoundaryPending_ThenMarkBoundaryVerified_ReturnsVerified()
+    {
+        _sut.MarkBoundaryPending("azure");
+        _sut.MarkBoundaryVerified("azure");
+
+        _sut.GetBoundaryStatus("azure").Should().Be(PluginBoundaryStatus.Verified);
+    }
+
+    [Fact]
+    public void MarkBoundaryFaulted_ThenMarkBoundaryVerified_StaysFaulted()
+    {
+        // Faulted is terminal (#524 redesign) — a caller resolving one pending entry has no way to
+        // know whether some OTHER entry already faulted this same plugin through a different call,
+        // so MarkBoundaryVerified must never be able to downgrade it.
+        _sut.MarkBoundaryFaulted("azure", "DeniedTools entry 'file_wrte' matches no known tool");
+        _sut.MarkBoundaryVerified("azure");
+
+        _sut.GetBoundaryStatus("azure").Should().Be(PluginBoundaryStatus.Faulted);
     }
 }

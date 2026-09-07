@@ -229,13 +229,17 @@ public partial class ToolChainBuilder : IToolChainBuilder
         // permissive — most dangerously for DeniedTools, documented as bypass-immune. Once
         // PluginToolBoundaryTracker has proven that (see its remarks), the boundary can no longer
         // be trusted, so this denies every tool from the plugin rather than run with a
-        // partially-broken policy.
-        if (pluginRegistry!.IsBoundaryFaulted(skill.PluginSource))
+        // partially-broken policy. Pending is treated identically to Faulted, not to Verified — an
+        // entry still awaiting an MCP server's tool list is exactly as unproven as one already
+        // confirmed fake, and trusting it in the meantime is the specific gap a review round found:
+        // a server nothing else happens to query left a plugin's boundary silently trusted forever.
+        var status = pluginRegistry!.GetBoundaryStatus(skill.PluginSource);
+        if (status != PluginBoundaryStatus.Verified)
         {
             _logger.LogWarning(
-                "Plugin '{Plugin}' tool boundary is faulted (an AllowedTools/DeniedTools entry " +
-                "matches no known tool) — denying all tools for skill '{Skill}'",
-                skill.PluginSource, skill.Id);
+                "Plugin '{Plugin}' tool boundary is {Status} (an AllowedTools/DeniedTools entry " +
+                "matches no known tool, or still awaits one) — denying all tools for skill '{Skill}'",
+                skill.PluginSource, status, skill.Id);
             return [];
         }
 

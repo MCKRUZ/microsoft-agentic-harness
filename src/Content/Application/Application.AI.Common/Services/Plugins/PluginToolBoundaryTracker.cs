@@ -38,6 +38,9 @@ public sealed class PluginToolBoundaryTracker : IPluginToolBoundaryTracker
     }
 
     /// <inheritdoc />
+    public IReadOnlyCollection<string> PendingServerNames => _pluginsByServer.Keys.ToList();
+
+    /// <inheritdoc />
     public IReadOnlyList<PluginToolBoundaryViolation> Seed(
         IReadOnlyList<LoadedPlugin> loadedPlugins,
         Func<string, bool> isKnownFirstPartyToolName,
@@ -99,6 +102,7 @@ public sealed class PluginToolBoundaryTracker : IPluginToolBoundaryTracker
                 PendingServers = new HashSet<string>(allConfiguredMcpServerNames, StringComparer.OrdinalIgnoreCase),
             };
             _pendingByPlugin[plugin.Name] = pending;
+            _registry.MarkBoundaryPending(plugin.Name);
 
             foreach (var serverName in allConfiguredMcpServerNames)
                 _pluginsByServer.GetOrAdd(serverName, _ => []).Add(plugin.Name);
@@ -158,6 +162,14 @@ public sealed class PluginToolBoundaryTracker : IPluginToolBoundaryTracker
             {
                 _registry.MarkBoundaryFaulted(pluginName, FaultReason(faulted));
                 violations.AddRange(faulted);
+            }
+            else
+            {
+                // Every entry this plugin was waiting on now matches a real tool — the Pending state
+                // Seed set is resolved clean. Without this, the transition out of Pending was never
+                // recorded anywhere; the plugin only stopped appearing in _pendingByPlugin, which
+                // GetBoundaryStatus has no visibility into.
+                _registry.MarkBoundaryVerified(pluginName);
             }
         }
 

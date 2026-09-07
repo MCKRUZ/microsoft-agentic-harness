@@ -104,4 +104,42 @@ public sealed class McpToolProviderBoundaryTrackerTests
 
         methodBody.Should().Contain("ReportDiscoveryToBoundaryTracker(serverName");
     }
+
+    [Fact]
+    public void DiscoverToolsAsync_SourceReportsEmptyDiscoveryOnFailure()
+    {
+        // #524 redesign: a plugin boundary entry pending on a server whose discovery FAILS (the
+        // server connected but ListToolsAsync itself then failed) must not wait forever — this proves
+        // the catch(Exception) block still reports an empty discovery so ReportServerToolsDiscovered
+        // can resolve or fault the entry instead of leaving it stuck Pending indefinitely.
+        var path = RepoRoot.Combine(
+            "src", "Content", "Infrastructure", "Infrastructure.AI.MCP", "Services", "McpToolProvider.cs");
+        var code = SourceScan.StripCommentsAndStrings(File.ReadAllText(path));
+
+        var discoverToolsAsyncStart = code.IndexOf("private async Task<IList<AITool>> DiscoverToolsAsync", StringComparison.Ordinal);
+        discoverToolsAsyncStart.Should().BeGreaterThan(-1, "DiscoverToolsAsync should still exist under this name");
+        var methodBody = code[discoverToolsAsyncStart..(discoverToolsAsyncStart + 2500)];
+
+        methodBody.Should().Contain("RecordOutcome(start, serverName, McpConventions.StatusValues.Error)");
+        methodBody.Should().Contain("ReportDiscoveryToBoundaryTracker(serverName, [])");
+    }
+
+    [Fact]
+    public void GetToolsAsync_SourceReportsEmptyDiscoveryWhenConnectionFails()
+    {
+        // The other, more common failure shape: the server can't even be CONNECTED to (genuinely
+        // down, misconfigured). That never reaches DiscoverToolsAsync at all — GetToolsAsync's own
+        // "client is null" branch is the only place that can report it, so a pending plugin boundary
+        // entry doesn't wait forever for a connection that will never succeed.
+        var path = RepoRoot.Combine(
+            "src", "Content", "Infrastructure", "Infrastructure.AI.MCP", "Services", "McpToolProvider.cs");
+        var code = SourceScan.StripCommentsAndStrings(File.ReadAllText(path));
+
+        var getToolsAsyncStart = code.IndexOf("public async Task<IList<AITool>> GetToolsAsync", StringComparison.Ordinal);
+        getToolsAsyncStart.Should().BeGreaterThan(-1, "GetToolsAsync should still exist under this name");
+        var methodBody = code[getToolsAsyncStart..(getToolsAsyncStart + 1500)];
+
+        methodBody.Should().Contain("if (client is null)");
+        methodBody.Should().Contain("ReportDiscoveryToBoundaryTracker(serverName, [])");
+    }
 }

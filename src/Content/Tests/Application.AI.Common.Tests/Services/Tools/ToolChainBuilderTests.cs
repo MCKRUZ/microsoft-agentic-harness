@@ -276,7 +276,37 @@ public class ToolChainBuilderTests
             new LoadedPlugin("p", "1.0", "/plugins/p", new PluginManifest(),
                 PluginLoadStatus.Loaded, [], ["p:server"],
                 new PluginDeclaration { Name = "p", DeniedTools = ["dangerous"] }));
-        pluginRegistry.Setup(r => r.IsBoundaryFaulted("p")).Returns(true);
+        pluginRegistry.Setup(r => r.GetBoundaryStatus("p")).Returns(PluginBoundaryStatus.Faulted);
+
+        var services = new ServiceCollection();
+        services.AddSingleton(pluginRegistry.Object);
+
+        var builder = CreateBuilder(serviceProvider: services.BuildServiceProvider());
+
+        var skill = new SkillDefinition
+        {
+            Id = "p-skill", Name = "p-skill", Instructions = "Test", PluginSource = "p",
+            Tools = [AIFunctionFactory.Create(() => "r", "safe")]
+        };
+
+        var tools = await builder.BuildToolsAsync(skill, new SkillAgentOptions());
+
+        tools.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task BuildToolsAsync_PluginBoundaryPending_DeniesAllToolsSameAsFaulted()
+    {
+        // #524 redesign: an entry still awaiting an MCP server's tool list is exactly as unproven as
+        // one already confirmed fake — trusting it in the meantime is the gap that let a plugin
+        // boundary stay silently trusted forever when a dependent server was never organically
+        // queried. Pending must deny, not pass through to ApplyPluginToolBoundary.
+        var pluginRegistry = new Mock<IPluginRegistry>();
+        pluginRegistry.Setup(r => r.GetPlugin("p")).Returns(
+            new LoadedPlugin("p", "1.0", "/plugins/p", new PluginManifest(),
+                PluginLoadStatus.Loaded, [], ["p:server"],
+                new PluginDeclaration { Name = "p", DeniedTools = ["dangerous"] }));
+        pluginRegistry.Setup(r => r.GetBoundaryStatus("p")).Returns(PluginBoundaryStatus.Pending);
 
         var services = new ServiceCollection();
         services.AddSingleton(pluginRegistry.Object);

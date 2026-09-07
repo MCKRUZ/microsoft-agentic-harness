@@ -88,6 +88,20 @@ public sealed class PluginToolBoundaryTrackerTests
     }
 
     [Fact]
+    public void Seed_EntryDeferredToLazyResolution_MarksTheRegistryPending()
+    {
+        // #524 redesign: an entry that can't be resolved immediately must be recorded as Pending
+        // (untrusted) — not left implicitly "not yet faulted, so trusted" the way a bare fault flag
+        // would leave it. This is what lets ToolChainBuilder deny the plugin's tools while it waits,
+        // instead of a server nothing organically queries leaving it silently trusted forever.
+        var plugin = MakePlugin("azure", deniedTools: ["maybe_host_level_tool"]);
+
+        _sut.Seed([plugin], NoFirstPartyToolsKnown, ["host:github"]);
+
+        _registry.Verify(r => r.MarkBoundaryPending("azure"), Times.Once);
+    }
+
+    [Fact]
     public void ReportServerToolsDiscovered_HostServerResolvesAPluginsEntry_NeverFaults()
     {
         // Same scenario, carried through to resolution: the host-level server (not the plugin's own)
@@ -99,6 +113,44 @@ public sealed class PluginToolBoundaryTrackerTests
 
         violations.Should().BeEmpty();
         _registry.Verify(r => r.MarkBoundaryFaulted(It.IsAny<string>(), It.IsAny<string>()), Times.Never);
+    }
+
+    [Fact]
+    public void ReportServerToolsDiscovered_EveryPendingEntryResolves_MarksTheRegistryVerified()
+    {
+        // The other half of the Pending -> {Verified, Faulted} transition (#524 redesign): resolving
+        // clean must explicitly clear Pending, not just leave it implicitly "not faulted" — that
+        // implicit gap is exactly what let a resolved plugin's boundary stay ambiguous with one that
+        // was never checked at all.
+        var plugin = MakePlugin("azure", deniedTools: ["delete_repository"]);
+        _sut.Seed([plugin], NoFirstPartyToolsKnown, ["host:github"]);
+
+        _sut.ReportServerToolsDiscovered("host:github", ["delete_repository", "create_issue"]);
+
+        _registry.Verify(r => r.MarkBoundaryVerified("azure"), Times.Once);
+    }
+
+    [Fact]
+    public void PendingServerNames_AfterSeed_ContainsEveryConfiguredServer()
+    {
+        // Matches Seed's own deliberate design (see class remarks): an entry can resolve against ANY
+        // host-configured server, not just the plugin's own, so every configured server counts as
+        // "pending" for PluginToolBoundaryStartupValidator's proactive-resolution purposes.
+        var plugin = MakePlugin("azure", deniedTools: ["maybe_host_level_tool"]);
+
+        _sut.Seed([plugin], NoFirstPartyToolsKnown, ["host:github", "host:jira"]);
+
+        _sut.PendingServerNames.Should().BeEquivalentTo(["host:github", "host:jira"]);
+    }
+
+    [Fact]
+    public void PendingServerNames_NoPluginHasUnresolvedEntries_IsEmpty()
+    {
+        var plugin = MakePlugin("azure", deniedTools: ["file_write"]);
+
+        _sut.Seed([plugin], name => name == "file_write", ["host:github"]);
+
+        _sut.PendingServerNames.Should().BeEmpty();
     }
 
     [Fact]

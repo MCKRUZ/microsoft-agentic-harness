@@ -1,3 +1,5 @@
+using Application.AI.Common.Interfaces;
+using Application.AI.Common.Interfaces.Bundles;
 using Application.AI.Common.Interfaces.DriftDetection;
 using Application.AI.Common.Interfaces.Escalation;
 using Application.AI.Common.Interfaces.Learnings;
@@ -222,6 +224,16 @@ public sealed class DriftLearningsDiTests
         // the real composition root registers this via Application.AI.Common's own DI module,
         // called separately from AddInfrastructureAIDependencies — mirror that here too.
         services.AddMemoryCache();
+
+        // PluginToolBoundaryStartupValidator (#524 redesign) depends on IMcpToolProvider, to
+        // proactively resolve pending plugin-boundary entries right after boot. The real composition
+        // root registers it via Infrastructure.AI.MCP's own DI module, called separately from
+        // AddInfrastructureAIDependencies — mirror that here so hosted-service enumeration can resolve.
+        // BundleRunExecutor's own constructor enforces "IMcpToolProvider and IBundleMcpServerRegistrar
+        // register together, never one without the other" — both mocked here, not just the one this
+        // PR added, or that pre-existing guard throws for every hosted-service enumeration test.
+        services.AddSingleton(Mock.Of<IMcpToolProvider>());
+        services.AddSingleton(Mock.Of<IBundleMcpServerRegistrar>());
 
         // Register knowledge graph (provides IKnowledgeGraphStore for graph-backed stores)
         services.AddKnowledgeGraphDependencies(appConfig);

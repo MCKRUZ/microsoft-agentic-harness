@@ -1,3 +1,4 @@
+using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Plugins;
 using Domain.Common.Config.AI;
 using Microsoft.Extensions.Hosting;
@@ -17,12 +18,18 @@ namespace Infrastructure.AI.Plugins;
 /// configured on the host, an entry might be a real MCP tool name — a plugin skill's tool
 /// declaration can resolve against ANY host-configured server, not just ones the plugin itself
 /// declares (see <c>ToolChainBuilder.ResolveEffectiveMcpServerName</c>) — only knowable once the
-/// harness actually talks to that server. This validator does not connect to any server itself
-/// (that would make host startup depend on every configured third-party server being reachable,
-/// which the existing lazy MCP connection design deliberately avoids). Those entries are seeded
-/// into <see cref="IPluginToolBoundaryTracker"/> here and resolved or fail-closed-faulted later,
-/// lazily, by <see cref="IPluginToolBoundaryTracker.ReportServerToolsDiscovered"/> the first time
-/// the harness organically discovers that server's tools (see that method's remarks).
+/// harness actually talks to that server. Those entries are seeded into
+/// <see cref="IPluginToolBoundaryTracker"/> as <see cref="PluginBoundaryStatus.Pending"/> here, and
+/// resolved or fail-closed-faulted by <see cref="IPluginToolBoundaryTracker.ReportServerToolsDiscovered"/>
+/// whenever the harness discovers that server's tools — including a proactive, fire-and-forget
+/// query this validator itself kicks off for every <see cref="IPluginToolBoundaryTracker.PendingServerNames"/>
+/// server right after <see cref="StartAsync"/> seeds them, not only when the running session
+/// organically needs that server. <strong>Host boot itself still never blocks on this</strong> — the
+/// proactive query is started, never awaited, so a slow or unreachable third-party server delays how
+/// quickly its dependent plugins leave <see cref="PluginBoundaryStatus.Pending"/>, never delays
+/// <see cref="StartAsync"/> returning. A plugin whose boundary is still resolving when a request
+/// arrives is denied, not trusted — see <see cref="PluginBoundaryStatus"/>'s remarks for why that is
+/// the deliberate fail-closed default, not a race condition to route around.
 /// </para>
 /// <para>
 /// Registered as <see cref="IHostedService"/>, matching <c>ToolAuthorizationConfigValidator</c>'s
@@ -50,6 +57,7 @@ public sealed class PluginToolBoundaryStartupValidator : IHostedService
     private readonly IPluginToolBoundaryTracker _tracker;
     private readonly Func<string, bool> _isKnownFirstPartyToolName;
     private readonly IOptionsMonitor<AIConfig> _aiConfig;
+    private readonly IMcpToolProvider _toolProvider;
     private readonly ILogger<PluginToolBoundaryStartupValidator> _logger;
 
     /// <summary>Initializes a new instance of the <see cref="PluginToolBoundaryStartupValidator"/> class.</summary>
@@ -63,24 +71,35 @@ public sealed class PluginToolBoundaryStartupValidator : IHostedService
     /// Supplies the enabled MCP server names configured anywhere on the host, read fresh inside
     /// <see cref="StartAsync"/> — see this type's remarks for why it cannot be resolved any earlier.
     /// </param>
+    /// <param name="toolProvider">
+    /// Used to proactively resolve every <see cref="IPluginToolBoundaryTracker.PendingServerNames"/>
+    /// server right after <see cref="IPluginToolBoundaryTracker.Seed"/> — fire-and-forget, in the
+    /// background, never awaited before <see cref="StartAsync"/> returns — so a plugin boundary
+    /// doesn't stay <see cref="PluginBoundaryStatus.Pending"/> (and therefore denied) for the rest of
+    /// the process lifetime just because nothing else happens to query that server. See this type's
+    /// remarks for why boot itself must still never block on live third-party connectivity.
+    /// </param>
     /// <param name="logger">Records the validated boundary shape.</param>
     public PluginToolBoundaryStartupValidator(
         IPluginRegistry registry,
         IPluginToolBoundaryTracker tracker,
         Func<string, bool> isKnownFirstPartyToolName,
         IOptionsMonitor<AIConfig> aiConfig,
+        IMcpToolProvider toolProvider,
         ILogger<PluginToolBoundaryStartupValidator> logger)
     {
         ArgumentNullException.ThrowIfNull(registry);
         ArgumentNullException.ThrowIfNull(tracker);
         ArgumentNullException.ThrowIfNull(isKnownFirstPartyToolName);
         ArgumentNullException.ThrowIfNull(aiConfig);
+        ArgumentNullException.ThrowIfNull(toolProvider);
         ArgumentNullException.ThrowIfNull(logger);
 
         _registry = registry;
         _tracker = tracker;
         _isKnownFirstPartyToolName = isKnownFirstPartyToolName;
         _aiConfig = aiConfig;
+        _toolProvider = toolProvider;
         _logger = logger;
     }
 
@@ -106,6 +125,8 @@ public sealed class PluginToolBoundaryStartupValidator : IHostedService
                 "Plugin tool boundaries validated: {PluginCount} loaded plugin(s), no immediately " +
                 "unresolvable AllowedTools/DeniedTools entries.",
                 loadedPlugins.Count);
+
+            ResolvePendingServersInBackground();
             return Task.CompletedTask;
         }
 
@@ -118,6 +139,44 @@ public sealed class PluginToolBoundaryStartupValidator : IHostedService
             + "the host refuses to boot (#524 — an unrecognized DeniedTools entry silently denies "
             + "nothing, which is worse than an error). Fix the following then restart:\n - "
             + string.Join("\n - ", lines));
+    }
+
+    /// <summary>
+    /// Fire-and-forget: queries every <see cref="IPluginToolBoundaryTracker.PendingServerNames"/>
+    /// server once, in the background, so a plugin boundary depending on it resolves promptly instead
+    /// of only when the running session organically needs that server — see this type's remarks.
+    /// Never awaited by <see cref="StartAsync"/>; each server's task owns its own exception handling
+    /// so a connection failure here can neither propagate to an unobserved-task-exception handler nor
+    /// block any other server's resolution.
+    /// </summary>
+    private void ResolvePendingServersInBackground()
+    {
+        foreach (var serverName in _tracker.PendingServerNames)
+        {
+            _ = ResolveOneServerAsync(serverName);
+        }
+    }
+
+    private async Task ResolveOneServerAsync(string serverName)
+    {
+        try
+        {
+            // The result itself is discarded — GetToolsAsync's own success/failure path already
+            // reports to the boundary tracker (McpToolProvider.DiscoverToolsAsync and its
+            // connection-failure branch); this call exists purely to trigger that reporting sooner
+            // than "whenever a skill happens to need this server" would.
+            await _toolProvider.GetToolsAsync(serverName);
+        }
+        catch (Exception ex)
+        {
+            // GetToolsAsync's own contract is "skipped rather than throwing" for every caller it
+            // documents (see its remarks) — this catch exists as a last-resort backstop against that
+            // contract changing under this call site in the future, not because it is expected to
+            // fire today.
+            _logger.LogWarning(ex,
+                "Proactive plugin-boundary resolution for MCP server '{ServerName}' failed unexpectedly",
+                serverName);
+        }
     }
 
     /// <inheritdoc />

@@ -58,6 +58,15 @@ public sealed class DependencyInjectionTests
         services.AddMemoryCache();
         services.AddSingleton<ISender>(new Mock<ISender>().Object);
         services.AddKnowledgeGraphDependencies(config);
+        // PluginToolBoundaryStartupValidator (#524 redesign) depends on IMcpToolProvider, to
+        // proactively resolve pending plugin-boundary entries right after boot. The real composition
+        // root registers it via Infrastructure.AI.MCP's own DI module, called separately from
+        // AddInfrastructureAIDependencies — mirror that here so hosted-service enumeration can resolve.
+        // BundleRunExecutor's own constructor enforces "IMcpToolProvider and IBundleMcpServerRegistrar
+        // register together, never one without the other" — both mocked here, not just the one this
+        // PR added, or that pre-existing guard throws for every hosted-service enumeration test.
+        services.AddSingleton(Mock.Of<IMcpToolProvider>());
+        services.AddSingleton(Mock.Of<IBundleMcpServerRegistrar>());
 
         return services;
     }

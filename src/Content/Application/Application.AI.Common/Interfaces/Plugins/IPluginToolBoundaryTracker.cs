@@ -21,9 +21,12 @@ public sealed record PluginToolBoundaryViolation(string PluginName, string ListK
 /// dangerously for <c>DeniedTools</c>, which is documented as bypass-immune. This tracker is what
 /// turns that into a loud, fail-closed fault instead. <see cref="Seed"/> resolves what's decidable
 /// immediately (no MCP server is configured anywhere on the host, so nothing could ever resolve an
-/// unmatched entry); <see cref="ReportServerToolsDiscovered"/> resolves the rest lazily, as MCP
-/// servers are organically discovered during normal operation — never by connecting to a server
-/// early just to check.
+/// unmatched entry); everything else is left <see cref="PluginBoundaryStatus.Pending"/> (untrusted,
+/// not silently allowed — see that enum's remarks) until <see cref="ReportServerToolsDiscovered"/>
+/// resolves it, whether from the harness's own normal MCP use or from
+/// <c>PluginToolBoundaryStartupValidator</c> proactively querying <see cref="PendingServerNames"/>
+/// right after boot specifically so a server nothing else happens to use doesn't leave a plugin
+/// pending — and therefore denied — for the rest of the process lifetime.
 /// </remarks>
 public interface IPluginToolBoundaryTracker
 {
@@ -69,4 +72,16 @@ public interface IPluginToolBoundaryTracker
     /// <param name="discoveredToolNames">The raw tool names the server just reported.</param>
     IReadOnlyList<PluginToolBoundaryViolation> ReportServerToolsDiscovered(
         string serverName, IReadOnlyCollection<string> discoveredToolNames);
+
+    /// <summary>
+    /// Every MCP server name at least one plugin's boundary was <see cref="PluginBoundaryStatus.Pending"/>
+    /// on immediately after the most recent <see cref="Seed"/> call. Meant to be read exactly once,
+    /// right after <see cref="Seed"/> returns — by <c>PluginToolBoundaryStartupValidator</c>, to decide
+    /// which servers to proactively query so pending entries resolve promptly instead of only if the
+    /// running session happens to need that server anyway. NOT pruned as entries resolve via
+    /// <see cref="ReportServerToolsDiscovered"/> — a server every pending plugin has since resolved
+    /// against still appears here — so a caller reading this well after boot gets a superset of what
+    /// is genuinely still pending, not a live count.
+    /// </summary>
+    IReadOnlyCollection<string> PendingServerNames { get; }
 }

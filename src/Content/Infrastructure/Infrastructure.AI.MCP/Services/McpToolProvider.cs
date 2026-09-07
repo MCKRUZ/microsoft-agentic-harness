@@ -82,7 +82,26 @@ public sealed class McpToolProvider : IMcpToolProvider
         var client = await TryConnectAsync(
             ct => _connectionManager.GetClientAsync(serverName, ct), serverName, "connect", cancellationToken);
         if (client is null)
+        {
+            // #524 redesign: a server that can't even be connected to (the common "unreachable
+            // server" shape, e.g. genuinely down or misconfigured) never reaches DiscoverToolsAsync
+            // at all, so that method's own failure-path report can't cover it. A plugin boundary
+            // entry pending on this server must not wait forever for a connection that will never
+            // succeed — reported the same defensive way as DiscoverToolsAsync's own catch block.
+            try
+            {
+                ReportDiscoveryToBoundaryTracker(serverName, []);
+            }
+            catch (Exception trackerEx)
+            {
+                _logger.LogError(trackerEx,
+                    "Plugin tool-boundary tracker threw reporting {ServerName}'s connection failure — " +
+                    "ignored so it cannot turn an already-degraded call into a thrown exception",
+                    serverName);
+            }
+
             return [];
+        }
 
         try
         {
@@ -202,7 +221,22 @@ public sealed class McpToolProvider : IMcpToolProvider
                 "Retrieved {ToolCount} tools from MCP server '{ServerName}'",
                 tools.Count, serverName);
 
-            ReportDiscoveryToBoundaryTracker(serverName, tools.Select(t => t.Name));
+            // #524 code-review: ReportDiscoveryToBoundaryTracker's own doc claims "the tracker never
+            // throws," but nothing enforced that — an exception here would fall through to the
+            // catch(Exception) below, which records this otherwise-successful discovery as an Error
+            // outcome and rethrows to the caller. Guarded here so the doc's claim is actually true,
+            // not just assumed.
+            try
+            {
+                ReportDiscoveryToBoundaryTracker(serverName, tools.Select(t => t.Name));
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex,
+                    "Plugin tool-boundary tracker threw reporting {ServerName}'s discovered tools — " +
+                    "ignored so it cannot turn a successful discovery into a reported failure",
+                    serverName);
+            }
 
             // McpClientTool implements AITool
             return tools.Cast<AITool>().ToList();
@@ -215,6 +249,26 @@ public sealed class McpToolProvider : IMcpToolProvider
         catch (Exception)
         {
             RecordOutcome(start, serverName, McpConventions.StatusValues.Error);
+
+            // #524 redesign: a plugin boundary entry pending on THIS server must not wait forever
+            // just because the server is unreachable — an empty report is the correct signal either
+            // way (this server has no matching tools, whether because it truly doesn't or because it
+            // couldn't be reached), and lets ReportServerToolsDiscovered's normal resolution/fault
+            // logic run instead of leaving the entry stuck Pending indefinitely. Guarded the same way
+            // as the success-path call above, so a tracker failure here can't mask the real exception
+            // this catch block is about to rethrow.
+            try
+            {
+                ReportDiscoveryToBoundaryTracker(serverName, []);
+            }
+            catch (Exception trackerEx)
+            {
+                _logger.LogError(trackerEx,
+                    "Plugin tool-boundary tracker threw reporting {ServerName}'s failed discovery — " +
+                    "ignored so it cannot mask the original discovery failure",
+                    serverName);
+            }
+
             throw;
         }
     }
