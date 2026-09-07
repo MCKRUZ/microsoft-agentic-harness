@@ -317,6 +317,10 @@ public sealed class AgUiRunHandler
             return;
         }
 
+        // Per-run context/override, never persisted — see AvatarRunContext for why this is a
+        // distinct channel from the conversation's persistent Settings below.
+        var runContext = AvatarRunContext.TryParse(input.Context);
+
         var command = new ExecuteAgentTurnCommand
         {
             AgentName = record.AgentName,
@@ -324,9 +328,13 @@ public sealed class AgUiRunHandler
             ConversationHistory = ToMeaiHistory(history),
             ConversationId = input.ThreadId,
             TurnNumber = turnNumber,
-            DeploymentOverride = record.Settings?.DeploymentName,
+            // A per-run override takes precedence over the conversation's persisted deployment —
+            // this is what lets one call route to a different model (e.g. an uncensored deployment
+            // for explicit content) without a settings round-trip AG-UI has no way to make.
+            DeploymentOverride = runContext.DeploymentOverride ?? record.Settings?.DeploymentName,
             Temperature = record.Settings?.Temperature,
             SystemPromptOverride = record.Settings?.SystemPromptOverride,
+            TurnContext = runContext.TurnContext,
             ObservabilitySessionId = telemetry.SessionId,
         };
 

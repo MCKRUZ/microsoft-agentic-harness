@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Domain.AI.Caching;
 
 namespace Infrastructure.AI.Caching;
 
@@ -28,6 +29,17 @@ namespace Infrastructure.AI.Caching;
 /// tokens for Sonnet/Opus) and the prefix is byte-identical across turns; below that, the provider
 /// silently ignores the breakpoint, so stamping it unconditionally is safe.
 /// </para>
+/// <para>
+/// <strong>Marker-based override.</strong> The "mark whatever is last" rule above is correct only
+/// when nothing after the stable prefix is expected to change. Once a caller attaches a genuinely
+/// per-turn block after it (see <c>CallerTurnContextProvider</c>), marking "last" would mark the
+/// <em>changing</em> content, and the provider would never observe a byte-identical prefix — silent,
+/// permanent cache misses. A caller that needs the boundary placed deliberately terminates its
+/// stable content with <see cref="CacheBoundaryMarker"/>; when present, this transform splits that
+/// system message's text at the marker (marker text removed from the output) and marks only the
+/// piece before it, ignoring the "last message" scan entirely. Absent the marker — every existing
+/// caller — behavior is byte-for-byte what it was before this override existed.
+/// </para>
 /// </remarks>
 public static class PromptCacheInjector
 {
@@ -38,8 +50,16 @@ public static class PromptCacheInjector
     private const string SystemRole = "system";
 
     /// <summary>
-    /// Returns <paramref name="requestJson"/> with a <c>cache_control: ephemeral</c> breakpoint on
-    /// the last system message, or the original string unchanged when no safe injection applies.
+    /// The boundary sentinel — see <see cref="PromptCacheConventions.CacheBoundaryMarker"/> for the
+    /// full contract. Defined in Domain so both this transform and the instruction-building code in
+    /// Application.AI.Common (which cannot depend on this Infrastructure project) agree on the exact
+    /// string.
+    /// </summary>
+    public const string CacheBoundaryMarker = PromptCacheConventions.CacheBoundaryMarker;
+
+    /// <summary>
+    /// Returns <paramref name="requestJson"/> with a <c>cache_control: ephemeral</c> breakpoint
+    /// placed per the rules above, or the original string unchanged when no safe injection applies.
     /// </summary>
     /// <param name="requestJson">The serialized OpenAI chat-completions request body.</param>
     /// <returns>The rewritten body, or <paramref name="requestJson"/> unchanged.</returns>
@@ -61,11 +81,81 @@ public static class PromptCacheInjector
         if (root is not JsonObject body || body[MessagesProperty] is not JsonArray messages)
             return requestJson;
 
+        var markedMessage = FindMarkedSystemMessage(messages);
+        if (markedMessage is not null)
+            return TrySplitAtMarker(markedMessage) ? body.ToJsonString() : requestJson;
+
         var systemMessage = FindLastSystemMessage(messages);
         if (systemMessage is null)
             return requestJson;
 
         return TryMark(systemMessage) ? body.ToJsonString() : requestJson;
+    }
+
+    /// <summary>
+    /// Finds the system message whose plain-string content contains <see cref="CacheBoundaryMarker"/>,
+    /// or <see langword="null"/> when no system message carries one — including when a system
+    /// message's content is already an array (the marker is only ever appended to the plain-string
+    /// static instruction, never to array-shaped content), which correctly falls through to the
+    /// existing "last message" behavior for that case.
+    /// </summary>
+    private static JsonObject? FindMarkedSystemMessage(JsonArray messages)
+    {
+        foreach (var node in messages)
+        {
+            if (node is JsonObject message
+                && message[RoleProperty]?.GetValue<string>() == SystemRole
+                && message[ContentProperty] is JsonValue value
+                && value.TryGetValue<string>(out var text)
+                && text.Contains(CacheBoundaryMarker, StringComparison.Ordinal))
+            {
+                return message;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Splits a marked system message's string content at <see cref="CacheBoundaryMarker"/> into two
+    /// text blocks — the stable prefix (marked cacheable) and whatever a caller appended after it
+    /// (left unmarked, so it is sent fresh every turn without ever being the cached content). Returns
+    /// <see langword="false"/> only if the content shape changed between detection and this call
+    /// (defensive; cannot happen via the single call site above).
+    /// </summary>
+    private static bool TrySplitAtMarker(JsonObject markedMessage)
+    {
+        if (markedMessage[ContentProperty] is not JsonValue value || !value.TryGetValue<string>(out var text))
+            return false;
+
+        var markerIndex = text.IndexOf(CacheBoundaryMarker, StringComparison.Ordinal);
+        if (markerIndex < 0)
+            return false;
+
+        var stable = text[..markerIndex];
+        var rest = text[(markerIndex + CacheBoundaryMarker.Length)..];
+
+        var blocks = new JsonArray
+        {
+            new JsonObject
+            {
+                ["type"] = "text",
+                ["text"] = stable,
+                [CacheControlProperty] = Ephemeral(),
+            },
+        };
+
+        if (rest.Length > 0)
+        {
+            blocks.Add(new JsonObject
+            {
+                ["type"] = "text",
+                ["text"] = rest,
+            });
+        }
+
+        markedMessage[ContentProperty] = blocks;
+        return true;
     }
 
     private static JsonObject? FindLastSystemMessage(JsonArray messages)

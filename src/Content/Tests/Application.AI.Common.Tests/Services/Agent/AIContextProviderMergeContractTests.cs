@@ -2,6 +2,7 @@ using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Context;
 using Application.AI.Common.Interfaces.KnowledgeGraph;
 using Application.AI.Common.Interfaces.Learnings;
+using Application.AI.Common.Services;
 using Application.AI.Common.Services.Agent;
 using Application.AI.Common.Services.Tools;
 using Domain.AI.KnowledgeGraph.Models;
@@ -85,6 +86,7 @@ public sealed class AIContextProviderMergeContractTests
         [nameof(KnowledgeMemoryContextProvider)] = BuildKnowledgeMemory,
         [nameof(LearningsRecallContextProvider)] = BuildLearningsRecall,
         [nameof(PeerAgentContextProvider)] = BuildPeerAgentContext,
+        [nameof(CallerTurnContextProvider)] = BuildCallerTurnContext,
         [nameof(PerTurnBudgetContextProvider)] = () => new PerTurnBudgetContextProvider(
             "MergeContractAgent",
             new Mock<IContextBudgetTracker>().Object,
@@ -213,6 +215,18 @@ public sealed class AIContextProviderMergeContractTests
         return new PeerAgentContextProvider(registry.Object, owningAgentId: "self-agent");
     }
 
+    /// <summary>
+    /// Active configuration for <see cref="CallerTurnContextProvider"/> is a non-blank ambient value —
+    /// the no-op (blank/unset) case is covered separately in <c>CallerTurnContextProviderTests</c>, not
+    /// here, matching this suite's stated purpose of exercising each provider while it is actually doing
+    /// something.
+    /// </summary>
+    private static CallerTurnContextProvider BuildCallerTurnContext()
+    {
+        CallerTurnContextScope.Current = "Mood: relaxed. Recently discussed: the Mac Mini migration.";
+        return new CallerTurnContextProvider();
+    }
+
     // ── the guard: no subclass may escape this suite ─────────────────────────
 
     [Fact]
@@ -292,6 +306,22 @@ public sealed class AIContextProviderMergeContractTests
         result.Instructions.Should().Contain("Handles peer-shaped work.");
         result.Instructions.Should().NotContain("self-agent",
             "the owning agent's own id must never appear as one of its own delegation targets");
+    }
+
+    [Fact]
+    public async Task CallerTurnContext_StillInjectsItsBlockExactlyOnce()
+    {
+        try
+        {
+            var result = await Create(nameof(CallerTurnContextProvider))
+                .InvokingAsync(MakeContext(ActiveInput()));
+
+            CountOccurrences(result.Instructions, "Mood: relaxed").Should().Be(1);
+        }
+        finally
+        {
+            CallerTurnContextScope.Current = null;
+        }
     }
 
     [Fact]

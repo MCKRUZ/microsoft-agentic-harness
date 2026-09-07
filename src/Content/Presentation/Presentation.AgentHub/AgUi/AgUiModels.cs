@@ -41,7 +41,11 @@ public sealed record RunAgentInput
     public JsonElement? Tools { get; init; }
 
     /// <summary>
-    /// Optional context object. Accepted for protocol compliance; server does not use this.
+    /// Optional context object. Unlike <see cref="State"/>/<see cref="Tools"/>/
+    /// <see cref="ForwardedProps"/>, this one <em>is</em> read by the server — see
+    /// <see cref="AvatarRunContext.TryParse"/> — as the vehicle for a caller's per-run,
+    /// non-persistent context and model override (<c>{"turnContext": "...", "deploymentOverride":
+    /// "..."}</c>). Any shape the parser doesn't recognise is treated the same as absent.
     /// </summary>
     public JsonElement? Context { get; init; }
 
@@ -49,6 +53,48 @@ public sealed record RunAgentInput
     /// Optional forwarded properties. Accepted for protocol compliance; server does not use this.
     /// </summary>
     public JsonElement? ForwardedProps { get; init; }
+}
+
+/// <summary>
+/// The optional per-run payload a caller may place in <see cref="RunAgentInput.Context"/>: content
+/// for this one turn only, never persisted to <c>ConversationSettings</c>. See
+/// <c>CallerTurnContextProvider</c> for why <see cref="TurnContext"/> exists as a distinct channel
+/// from the conversation's persistent <c>SystemPromptOverride</c>.
+/// </summary>
+/// <param name="TurnContext">
+/// Text folded into the model's context for this turn only (e.g. mood, recently retrieved memory,
+/// situational continuity) — delivered via the per-invocation <c>AIContextProvider</c> rail, never
+/// baked into the cached static instructions.
+/// </param>
+/// <param name="DeploymentOverride">
+/// Model deployment to use for this one call, taking precedence over the conversation's persisted
+/// <c>ConversationSettings.DeploymentName</c>. Lets a caller route an individual turn to a different
+/// model (e.g. an uncensored deployment for explicit content) without a settings round-trip, which
+/// AG-UI callers have no way to make — <c>ConversationSettings</c> updates are reachable only from
+/// the SignalR hub.
+/// </param>
+public sealed record AvatarRunContext(string? TurnContext, string? DeploymentOverride)
+{
+    /// <summary>
+    /// Parses <paramref name="context"/> into an <see cref="AvatarRunContext"/>, defensively: any
+    /// shape this doesn't recognise (absent, wrong type, malformed) yields both fields
+    /// <see langword="null"/> rather than throwing — a caller not using this feature (i.e. every
+    /// caller until the avatar migration) must never have its run fail because of it.
+    /// </summary>
+    public static AvatarRunContext TryParse(JsonElement? context)
+    {
+        if (context is not { ValueKind: JsonValueKind.Object } obj)
+            return new AvatarRunContext(null, null);
+
+        var turnContext = obj.TryGetProperty("turnContext", out var tc) && tc.ValueKind == JsonValueKind.String
+            ? tc.GetString()
+            : null;
+        var deploymentOverride = obj.TryGetProperty("deploymentOverride", out var dep) && dep.ValueKind == JsonValueKind.String
+            ? dep.GetString()
+            : null;
+
+        return new AvatarRunContext(turnContext, deploymentOverride);
+    }
 }
 
 /// <summary>

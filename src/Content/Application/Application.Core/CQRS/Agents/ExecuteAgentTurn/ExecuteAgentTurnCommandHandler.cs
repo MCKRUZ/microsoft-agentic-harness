@@ -142,6 +142,12 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 			// records to this handler's scoped ILlmUsageCapture instance.
 			LlmUsageCapture.Current = _usageCapture;
 
+			// Seed this turn's caller-supplied context (mood, memory, etc. — distinct from the
+			// persistent SystemPromptOverride) for CallerTurnContextProvider to pick up on the
+			// per-invocation AIContextProvider rail. Null when the caller sent none, which the
+			// provider treats as "contribute nothing."
+			CallerTurnContextScope.Current = request.TurnContext;
+
 			// Snapshot which tool-call ids are already present in the seed history — a replayed
 			// conversation's FunctionResultContent is indistinguishable, by content alone, from one
 			// this turn is about to produce for real. ToolDiagnosticsMiddleware consults this ambient
@@ -190,6 +196,7 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 				{
 					LlmUsageCapture.Current = null;
 					ReplayedToolCallScope.Current = null;
+					CallerTurnContextScope.Current = null;
 				}
 			}
 
