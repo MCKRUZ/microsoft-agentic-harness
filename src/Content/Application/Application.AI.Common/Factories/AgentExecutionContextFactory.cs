@@ -171,6 +171,14 @@ public partial class AgentExecutionContextFactory
         if (_appConfig.CurrentValue.AI?.ContextManagement?.PromptComposition?.Enabled == true)
             instruction = await ComposeStaticSystemPromptAsync(agentName, instruction);
 
+        // Terminate the stable instruction with the cache-boundary sentinel so PromptCacheInjector
+        // marks this content — not CallerTurnContextProvider's per-turn addition that follows it —
+        // as the cached prefix. Only when caching is actually enabled: with it off, the injector
+        // never runs on any request, so nothing would ever strip the marker back out. See
+        // PromptCacheConventions.CacheBoundaryMarker for the full contract.
+        if (_appConfig.CurrentValue.AI?.AgentFramework?.EnablePromptCaching == true)
+            instruction += Domain.AI.Caching.PromptCacheConventions.CacheBoundaryMarker;
+
         // Agent tool ceiling. Resolve the one effective allowlist that governs this agent (see
         // ResolveEffectiveAllowlist) and drive BOTH enforcement points with it — the merge-time tool
         // filter and the runtime ToolPermissionFilter — so they can never disagree. null means no

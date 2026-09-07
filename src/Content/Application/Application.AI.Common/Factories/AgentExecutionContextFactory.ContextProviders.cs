@@ -131,6 +131,13 @@ public partial class AgentExecutionContextFactory
                 "task-similarity recall");
         }
 
+        // Caller-supplied per-turn context (mood, memory, situational continuity a calling
+        // application recomputes every turn) — unconditional, unlike the two recall providers above:
+        // it needs no tenant-scoped dependency and no config flag, since it contributes nothing
+        // (empty AIContext) unless a caller actually sets CallerTurnContextScope.Current for this
+        // turn. Every agent that doesn't use this feature pays nothing beyond one list entry.
+        providers.Add(new Services.Agent.CallerTurnContextProvider());
+
         // Governance wrapper — added after the recall providers so it wraps the final, filtered tool
         // set, guaranteeing the governor gates every tool the agent can call including the framework
         // progressive-disclosure tools that bypass ToolChainBuilder.

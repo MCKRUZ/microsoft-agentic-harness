@@ -60,6 +60,15 @@ public record ExecuteAgentTurnCommand : IRequest<AgentTurnResult>, IAgentTurnReq
 	public string? DeploymentOverride { get; init; }
 
 	/// <summary>
+	/// Optional caller-supplied context for this turn only — distinct from
+	/// <see cref="SystemPromptOverride"/>, which is persistent and merged into the agent's cached
+	/// static instructions once per conversation. This travels the per-invocation
+	/// <c>AIContextProvider</c> rail instead (see <c>CallerTurnContextProvider</c>), so it can change
+	/// every turn without invalidating the Anthropic prompt cache on the static instructions.
+	/// </summary>
+	public string? TurnContext { get; init; }
+
+	/// <summary>
 	/// Optional sampling temperature. Null preserves provider defaults.
 	/// </summary>
 	public float? Temperature { get; init; }

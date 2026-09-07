@@ -125,6 +125,89 @@ public sealed class PromptCacheInjectorTests
         result["messages"]![1]!["content"]!.GetValue<string>().Should().Be("User stays a plain string.");
     }
 
+    [Fact]
+    public void InjectSystemCacheControl_MarkerPresent_SplitsAtMarkerNotLastMessage()
+    {
+        // Shape a per-turn caller would actually produce: stable instructions terminated by the
+        // marker, a genuinely-changing per-turn block appended after it by CallerTurnContextProvider,
+        // then the new user turn. Without marker-awareness this would (wrongly) mark "Volatile.".
+        var input = $$"""
+        {"messages":[
+            {"role":"system","content":"Stable instructions.{{PromptCacheInjector.CacheBoundaryMarker}}Volatile."},
+            {"role":"user","content":"Hi"}
+        ]}
+        """;
+
+        var result = Parse(PromptCacheInjector.InjectSystemCacheControl(input));
+
+        var parts = result["messages"]![0]!["content"]!.AsArray();
+        parts.Should().HaveCount(2);
+        parts[0]!["text"]!.GetValue<string>().Should().Be("Stable instructions.");
+        parts[0]!["cache_control"]!["type"]!.GetValue<string>().Should().Be("ephemeral");
+        parts[1]!["text"]!.GetValue<string>().Should().Be("Volatile.");
+        parts[1]!["cache_control"].Should().BeNull("the per-turn block must never be the cached content");
+    }
+
+    [Fact]
+    public void InjectSystemCacheControl_MarkerPresent_TrailingContentEmpty_OmitsSecondBlock()
+    {
+        var input = $$"""
+        {"messages":[
+            {"role":"system","content":"Stable only.{{PromptCacheInjector.CacheBoundaryMarker}}"}
+        ]}
+        """;
+
+        var result = Parse(PromptCacheInjector.InjectSystemCacheControl(input));
+
+        var parts = result["messages"]![0]!["content"]!.AsArray();
+        parts.Should().HaveCount(1);
+        parts[0]!["text"]!.GetValue<string>().Should().Be("Stable only.");
+        parts[0]!["cache_control"]!["type"]!.GetValue<string>().Should().Be("ephemeral");
+    }
+
+    [Fact]
+    public void InjectSystemCacheControl_MarkerAbsent_FallsBackToLastMessageBehaviorUnchanged()
+    {
+        // Same shape as InjectSystemCacheControl_LastSystemMessageIsMarked_NotTheFirst, but this
+        // documents that the fallback still fires when no marker exists anywhere in the request —
+        // the new marker path must never change behavior for a caller that never uses it.
+        const string input = """
+        {"messages":[
+            {"role":"system","content":"First."},
+            {"role":"user","content":"Hi"},
+            {"role":"system","content":"Second."}
+        ]}
+        """;
+
+        var result = Parse(PromptCacheInjector.InjectSystemCacheControl(input));
+
+        result["messages"]![0]!["content"]!.GetValue<string>().Should().Be("First.");
+        result["messages"]![2]!["content"]!.AsArray()[0]!["cache_control"]!["type"]!
+            .GetValue<string>().Should().Be("ephemeral");
+    }
+
+    [Fact]
+    public void InjectSystemCacheControl_MarkerOnlyInArrayContent_FallsBackToLastMessageBehavior()
+    {
+        // The marker is only ever appended to plain-string static instructions — see
+        // FindMarkedSystemMessage's remarks. A marker literally embedded in already-array-shaped
+        // content (not a real production shape) is correctly ignored by the marker scan and falls
+        // through to the existing behavior rather than throwing or silently doing nothing.
+        var input = $$"""
+        {"messages":[
+            {"role":"system","content":[{"type":"text","text":"Has {{PromptCacheInjector.CacheBoundaryMarker}} inside an array."}]}
+        ]}
+        """;
+
+        var result = Parse(PromptCacheInjector.InjectSystemCacheControl(input));
+
+        var parts = result["messages"]![0]!["content"]!.AsArray();
+        parts.Should().HaveCount(1);
+        parts[0]!["cache_control"]!["type"]!.GetValue<string>().Should().Be("ephemeral");
+        parts[0]!["text"]!.GetValue<string>().Should().Contain(PromptCacheInjector.CacheBoundaryMarker,
+            "the marker is only stripped from plain-string content; this documents the array case is unaffected");
+    }
+
     private static int CountOccurrences(string haystack, string needle)
     {
         var count = 0;

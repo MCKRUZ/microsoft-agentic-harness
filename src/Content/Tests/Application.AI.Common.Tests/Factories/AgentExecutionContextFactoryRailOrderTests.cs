@@ -170,6 +170,7 @@ public sealed class AgentExecutionContextFactoryRailOrderTests : IDisposable
                 typeof(ToolPermissionFilter),             // everything above it is filtered; nothing below is
                 typeof(KnowledgeMemoryContextProvider),   // instructions only
                 typeof(LearningsRecallContextProvider),   // instructions only
+                typeof(CallerTurnContextProvider),        // instructions only; unconditional, no config gate
                 typeof(GoverningToolContextProvider),     // wraps the finished, filtered tool set
                 typeof(PerTurnBudgetContextProvider)      // measures everything above it, so it is last
             ],
@@ -247,8 +248,9 @@ public sealed class AgentExecutionContextFactoryRailOrderTests : IDisposable
         var rail = context.AIContextProviders!;
 
         // Control: the two rows really do differ, so this is not the same case asserted twice. Without
-        // it, a factory that ignored the flag would satisfy both.
-        rail.Count.Should().Be(5 + (recall ? 2 : 0));
+        // it, a factory that ignored the flag would satisfy both. Base count includes
+        // CallerTurnContextProvider, which — like PeerAgentContextProvider — is unconditional.
+        rail.Count.Should().Be(6 + (recall ? 2 : 0));
 
         rail[^1].Should().BeOfType<PerTurnBudgetContextProvider>(
             "the measurer charges the difference between what it is handed and the baseline it was built "
