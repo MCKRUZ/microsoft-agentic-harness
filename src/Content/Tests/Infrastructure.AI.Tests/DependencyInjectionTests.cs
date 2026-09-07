@@ -2,6 +2,7 @@ using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Bundles;
 using Application.AI.Common.Interfaces.Escalation;
+using Application.AI.Common.Interfaces.Plugins;
 using Application.AI.Common.Interfaces.Resilience;
 using Domain.Common.Config;
 using Domain.Common.Config.AI.MCP;
@@ -10,6 +11,7 @@ using FluentAssertions;
 using Infrastructure.AI.Escalation;
 using Infrastructure.AI.KnowledgeGraph;
 using Infrastructure.AI.MCP;
+using Infrastructure.AI.Plugins;
 using Infrastructure.AI.Resilience;
 using Infrastructure.AI.Tests.Planner.StepExecutors;
 using MediatR;
@@ -56,6 +58,23 @@ public sealed class DependencyInjectionTests
         services.AddMemoryCache();
         services.AddSingleton<ISender>(new Mock<ISender>().Object);
         services.AddKnowledgeGraphDependencies(config);
+        // PluginToolBoundaryStartupValidator (#524 redesign) depends on IMcpToolProvider, to
+        // proactively resolve pending plugin-boundary entries right after boot. The real composition
+        // root registers it via Infrastructure.AI.MCP's own DI module, called separately from
+        // AddInfrastructureAIDependencies — mirror that here so hosted-service enumeration can resolve.
+        // BundleRunExecutor's own constructor enforces "IMcpToolProvider and IBundleMcpServerRegistrar
+        // register together, never one without the other" — both mocked here, not just the one this
+        // PR added, or that pre-existing guard throws for every hosted-service enumeration test.
+        services.AddSingleton(Mock.Of<IMcpToolProvider>());
+        services.AddSingleton(Mock.Of<IBundleMcpServerRegistrar>());
+        // PluginToolBoundaryStartupValidator's firstPartyToolNames set (/simplify: reuses
+        // FirstPartyToolLookup instead of re-scanning `services` independently) resolves it eagerly
+        // during hosted-service construction. The real composition root registers it via
+        // Application.AI.Common's own DI module, called separately from AddInfrastructureAIDependencies
+        // — mirror that here so hosted-service enumeration can resolve. Sealed class, so a real instance
+        // rather than a Mock.Of<T>; the empty key set is fine since these tests don't exercise its content.
+        services.AddSingleton(sp => new Application.AI.Common.Services.Tools.FirstPartyToolLookup(
+            sp, new HashSet<string>()));
 
         return services;
     }
@@ -272,6 +291,33 @@ public sealed class DependencyInjectionTests
         var hostedServices = provider.GetServices<IHostedService>().ToList();
 
         hostedServices.Should().NotContain(s => s is LlmRetryQueue);
+    }
+
+    [Fact]
+    public void AddInfrastructureAIDependencies_RegistersPluginToolBoundaryStartupValidatorHostedService()
+    {
+        // #524: this is the ONLY thing standing between the startup validator and becoming a
+        // ninth instance of the "control nothing invokes" family (CLAUDE.md Common Mistakes) — a
+        // hosted service that is never registered runs never, however correct its own logic is.
+        var services = CreateBaseServices();
+        services.AddInfrastructureAIDependencies(IsolatedAppConfig.Create());
+        using var provider = services.BuildServiceProvider();
+
+        var hostedServices = provider.GetServices<IHostedService>().ToList();
+
+        hostedServices.Should().Contain(s => s is PluginToolBoundaryStartupValidator);
+    }
+
+    [Fact]
+    public void AddInfrastructureAIDependencies_RegistersIPluginToolBoundaryTracker()
+    {
+        var services = CreateBaseServices();
+        services.AddInfrastructureAIDependencies(IsolatedAppConfig.Create());
+        using var provider = services.BuildServiceProvider();
+
+        var tracker = provider.GetService<IPluginToolBoundaryTracker>();
+
+        tracker.Should().NotBeNull();
     }
 
     [Fact]

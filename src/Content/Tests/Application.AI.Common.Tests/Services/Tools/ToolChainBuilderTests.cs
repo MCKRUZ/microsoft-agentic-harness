@@ -264,6 +264,109 @@ public class ToolChainBuilderTests
         tools.Should().ContainSingle(t => t.Name == "safe");
     }
 
+    [Fact]
+    public async Task BuildToolsAsync_DeniedToolNamesTheDiKeyButItsAitoolNameDisagrees_StillRemovesIt()
+    {
+        // Code-review finding on #524: a keyed ITool can legitimately report a converted AITool.Name
+        // that disagrees with its own DI registration key (ToolCatalogTests.
+        // Catalog_ToolWhoseNameDisagreesWithItsKey_... proves this is a real, supported shape). A
+        // plugin author writes DeniedTools against the DI key — the same identifier
+        // PluginToolBoundaryTracker's existence check validates against — because that's the name a
+        // skill's ToolDeclaration resolves by. Before the fix, ApplyPluginToolBoundary matched only
+        // against AITool.Name, so a DeniedTools entry naming the key was "verified" as real by the
+        // existence check but silently never matched anything here — the exact no-op #524 exists to
+        // close, just reopened one layer down.
+        var toolMock = new Mock<ITool>();
+        toolMock.Setup(t => t.Name).Returns("self_reported_name");
+
+        var converter = new Mock<IToolConverter>();
+        converter.Setup(c => c.Convert(toolMock.Object, null))
+            .Returns(AIFunctionFactory.Create(() => "converted", "self_reported_name"));
+
+        var pluginRegistry = new Mock<IPluginRegistry>();
+        pluginRegistry.Setup(r => r.GetPlugin("p")).Returns(
+            new LoadedPlugin("p", "1.0", "/plugins/p", new PluginManifest(),
+                PluginLoadStatus.Loaded, [], ["p:server"],
+                new PluginDeclaration { Name = "p", DeniedTools = ["registered_key"] }));
+
+        var services = new ServiceCollection();
+        services.AddKeyedSingleton<ITool>("registered_key", toolMock.Object);
+        services.AddSingleton(pluginRegistry.Object);
+
+        var builder = CreateBuilder(toolConverter: converter.Object, serviceProvider: services.BuildServiceProvider());
+
+        var skill = new SkillDefinition
+        {
+            Id = "p-skill", Name = "p-skill", Instructions = "Test", PluginSource = "p",
+            ToolDeclarations = [new ToolDeclaration { Name = "registered_key" }]
+        };
+
+        var tools = await builder.BuildToolsAsync(skill, new SkillAgentOptions());
+
+        tools.Should().BeEmpty("the plugin's DeniedTools entry names the DI key, which must still " +
+            "match even though the converted tool's own Name disagrees with it");
+    }
+
+    [Fact]
+    public async Task BuildToolsAsync_PluginBoundaryFaulted_DeniesAllToolsRegardlessOfDeclaredList()
+    {
+        // #524: once PluginToolBoundaryTracker has proven a plugin's AllowedTools/DeniedTools
+        // boundary can't be trusted (an entry matches no real tool), the boundary itself is no
+        // longer safe to apply — even a tool the (otherwise fine) DeniedTools list would have let
+        // through must be denied too, since the boundary might be missing an intended denial.
+        var pluginRegistry = new Mock<IPluginRegistry>();
+        pluginRegistry.Setup(r => r.GetPlugin("p")).Returns(
+            new LoadedPlugin("p", "1.0", "/plugins/p", new PluginManifest(),
+                PluginLoadStatus.Loaded, [], ["p:server"],
+                new PluginDeclaration { Name = "p", DeniedTools = ["dangerous"] }));
+        pluginRegistry.Setup(r => r.GetBoundaryStatus("p")).Returns(PluginBoundaryStatus.Faulted);
+
+        var services = new ServiceCollection();
+        services.AddSingleton(pluginRegistry.Object);
+
+        var builder = CreateBuilder(serviceProvider: services.BuildServiceProvider());
+
+        var skill = new SkillDefinition
+        {
+            Id = "p-skill", Name = "p-skill", Instructions = "Test", PluginSource = "p",
+            Tools = [AIFunctionFactory.Create(() => "r", "safe")]
+        };
+
+        var tools = await builder.BuildToolsAsync(skill, new SkillAgentOptions());
+
+        tools.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task BuildToolsAsync_PluginBoundaryPending_DeniesAllToolsSameAsFaulted()
+    {
+        // #524 redesign: an entry still awaiting an MCP server's tool list is exactly as unproven as
+        // one already confirmed fake — trusting it in the meantime is the gap that let a plugin
+        // boundary stay silently trusted forever when a dependent server was never organically
+        // queried. Pending must deny, not pass through to ApplyPluginToolBoundary.
+        var pluginRegistry = new Mock<IPluginRegistry>();
+        pluginRegistry.Setup(r => r.GetPlugin("p")).Returns(
+            new LoadedPlugin("p", "1.0", "/plugins/p", new PluginManifest(),
+                PluginLoadStatus.Loaded, [], ["p:server"],
+                new PluginDeclaration { Name = "p", DeniedTools = ["dangerous"] }));
+        pluginRegistry.Setup(r => r.GetBoundaryStatus("p")).Returns(PluginBoundaryStatus.Pending);
+
+        var services = new ServiceCollection();
+        services.AddSingleton(pluginRegistry.Object);
+
+        var builder = CreateBuilder(serviceProvider: services.BuildServiceProvider());
+
+        var skill = new SkillDefinition
+        {
+            Id = "p-skill", Name = "p-skill", Instructions = "Test", PluginSource = "p",
+            Tools = [AIFunctionFactory.Create(() => "r", "safe")]
+        };
+
+        var tools = await builder.BuildToolsAsync(skill, new SkillAgentOptions());
+
+        tools.Should().BeEmpty();
+    }
+
     // --- Managed mode: pre-created tools ---
 
     [Fact]

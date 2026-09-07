@@ -57,4 +57,12 @@ public sealed class FirstPartyToolLookup
         _registeredFirstPartyToolKeys.Contains(toolName)
             ? _serviceProvider.GetKeyedService<ITool>(toolName)
             : null;
+
+    /// <summary>
+    /// Every first-party tool name registered under keyed DI — the same bounded set
+    /// <see cref="Resolve"/> checks membership against, exposed for a caller that needs to enumerate
+    /// rather than look up one name (#524 round-2 code-review: <c>PluginPermissionRuleProvider</c>'s
+    /// fail-closed response to an unverified plugin boundary needs every name to deny, not one).
+    /// </summary>
+    public IReadOnlySet<string> RegisteredFirstPartyToolKeys => _registeredFirstPartyToolKeys;
 }

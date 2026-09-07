@@ -79,7 +79,19 @@ public partial class ToolChainBuilder : IToolChainBuilder
     /// need to look at, and a scalar "every tool in this batch shares one skill" parameter can never
     /// express that even though today's one-skill-per-build-call shape means the two are equivalent.
     /// </remarks>
-    private readonly record struct ProvisionedTool(AITool Tool, string? McpServerName, string? SkillId = null);
+    /// <param name="ToolKey">
+    /// The keyed-DI registration name this tool was resolved under, when it came from
+    /// <see cref="ResolveToolByName"/> — <see langword="null"/> for MCP-sourced tools and for tools
+    /// handed in pre-resolved (<c>SkillDefinition.Tools</c>, <c>SkillAgentOptions.AdditionalTools</c>).
+    /// A keyed <see cref="Application.AI.Common.Interfaces.Tools.ITool"/> can legitimately report a
+    /// converted <see cref="Tool"/>.Name that disagrees with the key it was registered under
+    /// (<c>ToolCatalogTests.Catalog_ToolWhoseNameDisagreesWithItsKey_...</c> proves this is a real,
+    /// supported shape) — <see cref="ApplyPluginToolBoundary"/> must match a plugin boundary entry
+    /// against this key when it's populated, the same identifier
+    /// <see cref="Plugins.PluginToolBoundaryTracker"/>'s existence check already validates against, or
+    /// a boundary entry naming the key would verify as real but never actually match at filter time.
+    /// </param>
+    private readonly record struct ProvisionedTool(AITool Tool, string? McpServerName, string? SkillId = null, string? ToolKey = null);
 
     /// <summary>
     /// Resolves one skill's tools. Runs the same first-party-precedence and collision/shadowing/drift
@@ -186,7 +198,7 @@ public partial class ToolChainBuilder : IToolChainBuilder
                 var resolved = ResolveToolByName(toolName);
                 if (resolved != null)
                     foreach (var t in resolved)
-                        managed.Add(new ProvisionedTool(t, null, skill.Id));
+                        managed.Add(new ProvisionedTool(t, null, skill.Id, toolName));
             }
         }
 
@@ -224,6 +236,24 @@ public partial class ToolChainBuilder : IToolChainBuilder
         var loadedPlugin = pluginRegistry?.GetPlugin(skill.PluginSource);
         if (loadedPlugin is null)
             return provisioned;
+
+        // #524: a boundary entry that matches no real tool is provably broken, not just
+        // permissive — most dangerously for DeniedTools, documented as bypass-immune. Once
+        // PluginToolBoundaryTracker has proven that (see its remarks), the boundary can no longer
+        // be trusted, so this denies every tool from the plugin rather than run with a
+        // partially-broken policy. Pending is treated identically to Faulted, not to Verified — an
+        // entry still awaiting an MCP server's tool list is exactly as unproven as one already
+        // confirmed fake, and trusting it in the meantime is the specific gap a review round found:
+        // a server nothing else happens to query left a plugin's boundary silently trusted forever.
+        var status = pluginRegistry!.GetBoundaryStatus(skill.PluginSource);
+        if (status != PluginBoundaryStatus.Verified)
+        {
+            _logger.LogWarning(
+                "Plugin '{Plugin}' tool boundary is {Status} (an AllowedTools/DeniedTools entry " +
+                "matches no known tool, or still awaits one) — denying all tools for skill '{Skill}'",
+                skill.PluginSource, status, skill.Id);
+            return [];
+        }
 
         return ApplyPluginToolBoundary(provisioned, loadedPlugin.Declaration);
     }
@@ -532,16 +562,22 @@ public partial class ToolChainBuilder : IToolChainBuilder
     /// </summary>
     private static List<ProvisionedTool> ApplyPluginToolBoundary(List<ProvisionedTool> tools, PluginDeclaration declaration)
     {
+        // Match on ToolKey when the tool came from keyed DI (the same identifier
+        // PluginToolBoundaryTracker's existence check validates against), falling back to the
+        // published AITool.Name for MCP-sourced and pre-resolved tools, which have no DI key at all.
+        // See ProvisionedTool.ToolKey's remarks: a keyed tool's converted name can legitimately
+        // disagree with its registration key, and checking the wrong one here would let a boundary
+        // entry the existence check already proved real silently never match anything.
         if (declaration.AllowedTools is { Count: > 0 } allowed)
         {
             var allowSet = new HashSet<string>(allowed, StringComparer.OrdinalIgnoreCase);
-            tools = tools.Where(t => allowSet.Contains(t.Tool.Name)).ToList();
+            tools = tools.Where(t => allowSet.Contains(t.ToolKey ?? t.Tool.Name)).ToList();
         }
 
         if (declaration.DeniedTools is { Count: > 0 } denied)
         {
             var denySet = new HashSet<string>(denied, StringComparer.OrdinalIgnoreCase);
-            tools = tools.Where(t => !denySet.Contains(t.Tool.Name)).ToList();
+            tools = tools.Where(t => !denySet.Contains(t.ToolKey ?? t.Tool.Name)).ToList();
         }
 
         return tools;
@@ -600,7 +636,7 @@ public partial class ToolChainBuilder : IToolChainBuilder
         var resolved = ResolveToolByName(declaration.Name);
         if (resolved != null)
         {
-            var provisionedFirstParty = resolved.Select(t => new ProvisionedTool(t, null, skillId)).ToList();
+            var provisionedFirstParty = resolved.Select(t => new ProvisionedTool(t, null, skillId, declaration.Name)).ToList();
             TagCallOnceCandidates(declaration, provisionedFirstParty, callOnceCandidates);
             return provisionedFirstParty;
         }
@@ -612,7 +648,7 @@ public partial class ToolChainBuilder : IToolChainBuilder
             {
                 _logger.LogInformation("Using fallback tool {Fallback} for {ToolName}",
                     declaration.Fallback, declaration.Name);
-                var provisionedFallback = resolved.Select(t => new ProvisionedTool(t, null, skillId)).ToList();
+                var provisionedFallback = resolved.Select(t => new ProvisionedTool(t, null, skillId, declaration.Fallback)).ToList();
                 TagCallOnceCandidates(declaration, provisionedFallback, callOnceCandidates);
                 return provisionedFallback;
             }

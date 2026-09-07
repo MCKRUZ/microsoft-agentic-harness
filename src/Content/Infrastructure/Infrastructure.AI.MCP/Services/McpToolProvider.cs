@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Diagnostics.Metrics;
 using Application.AI.Common.Interfaces;
+using Application.AI.Common.Interfaces.Plugins;
 using Application.AI.Common.OpenTelemetry.Metrics;
 using Domain.AI.Telemetry.Conventions;
 using Microsoft.Extensions.AI;
@@ -51,17 +52,26 @@ public sealed class McpToolProvider : IMcpToolProvider
 {
     private readonly ILogger<McpToolProvider> _logger;
     private readonly McpConnectionManager _connectionManager;
+    private readonly IPluginToolBoundaryTracker? _boundaryTracker;
     private bool _disposed;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="McpToolProvider"/> class.
     /// </summary>
+    /// <param name="boundaryTracker">
+    /// Optional (#524). When supplied, every successful tool-list discovery is reported to it so a
+    /// plugin's AllowedTools/DeniedTools entries can be resolved or fail-closed-faulted against real
+    /// MCP tool names — see <see cref="IPluginToolBoundaryTracker"/>'s remarks. Absent in most tests,
+    /// which have nothing to report to; production DI always supplies it.
+    /// </param>
     public McpToolProvider(
         ILogger<McpToolProvider> logger,
-        McpConnectionManager connectionManager)
+        McpConnectionManager connectionManager,
+        IPluginToolBoundaryTracker? boundaryTracker = null)
     {
         _logger = logger;
         _connectionManager = connectionManager;
+        _boundaryTracker = boundaryTracker;
     }
 
     /// <inheritdoc />
@@ -72,7 +82,21 @@ public sealed class McpToolProvider : IMcpToolProvider
         var client = await TryConnectAsync(
             ct => _connectionManager.GetClientAsync(serverName, ct), serverName, "connect", cancellationToken);
         if (client is null)
+        {
+            // #524 redesign: a server that can't even be connected to (the common "unreachable
+            // server" shape, e.g. genuinely down or misconfigured) never reaches DiscoverToolsAsync
+            // at all. This branch is the genuinely terminal outcome for THIS call — TryConnectAsync
+            // makes no retry attempt of its own for an initial connect failure — so it's the right
+            // place to unblock a plugin boundary entry pending on this server, UNLESS the null came
+            // from the caller cancelling rather than a real connection failure: TryConnectAsync
+            // collapses both to the same null (round-2 code-review finding), and a cancelled call says
+            // nothing about whether the server has matching tools — reporting it would let an
+            // unrelated caller hitting cancel wrongly fault this plugin's boundary.
+            if (!cancellationToken.IsCancellationRequested)
+                SafeReportDiscoveryToBoundaryTracker(serverName, []);
+
             return [];
+        }
 
         try
         {
@@ -152,7 +176,16 @@ public sealed class McpToolProvider : IMcpToolProvider
         var freshClient = await TryConnectAsync(
             ct => _connectionManager.ReconnectAsync(serverName, failedClient, ct), serverName, "reconnect", cancellationToken);
         if (freshClient is null)
+        {
+            // Terminal for this call: no further retry is attempted after a failed reconnect. Same
+            // cancellation guard as GetToolsAsync's own "client is null" branch, for the same reason —
+            // TryConnectAsync collapses a real reconnect failure and a caller cancellation to the same
+            // null (#524 round-2 code-review).
+            if (!cancellationToken.IsCancellationRequested)
+                SafeReportDiscoveryToBoundaryTracker(serverName, []);
+
             return [];
+        }
 
         try
         {
@@ -165,11 +198,36 @@ public sealed class McpToolProvider : IMcpToolProvider
         catch (Exception ex)
         {
             // DiscoverToolsAsync already recorded the Error outcome (with real elapsed time) before
-            // rethrowing — do not record it again here.
+            // rethrowing — do not record it again here. This IS the operation's genuinely terminal
+            // failure — the retry this method exists to perform has now also failed — so this is the
+            // right (and only) place left to report it to the boundary tracker.
             _logger.LogWarning(ex,
                 "Failed to get tools from MCP server '{ServerName}' after reconnecting — skipping",
                 serverName);
+            SafeReportDiscoveryToBoundaryTracker(serverName, []);
             return [];
+        }
+    }
+
+    /// <summary>
+    /// Reports <paramref name="discoveredToolNames"/> for <paramref name="serverName"/> to the plugin
+    /// tool-boundary tracker, swallowing (and logging) any exception it throws — every call site's own
+    /// contract requires it not disturb whatever otherwise-successful-or-already-failed outcome it's
+    /// attached to. Centralizes what was, before #524's round-2 code-review, three independently
+    /// drifting copies of the identical try/catch/log shape.
+    /// </summary>
+    private void SafeReportDiscoveryToBoundaryTracker(string serverName, IEnumerable<string> discoveredToolNames)
+    {
+        try
+        {
+            ReportDiscoveryToBoundaryTracker(serverName, discoveredToolNames);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex,
+                "Plugin tool-boundary tracker threw reporting {ServerName}'s discovery outcome — " +
+                "ignored so it cannot disturb the discovery call it was attached to",
+                serverName);
         }
     }
 
@@ -192,6 +250,13 @@ public sealed class McpToolProvider : IMcpToolProvider
                 "Retrieved {ToolCount} tools from MCP server '{ServerName}'",
                 tools.Count, serverName);
 
+            // #524 code-review: ReportDiscoveryToBoundaryTracker's own doc claims "the tracker never
+            // throws," but nothing enforced that — an exception here would fall through to the
+            // catch(Exception) below, which records this otherwise-successful discovery as an Error
+            // outcome and rethrows to the caller. Guarded so the doc's claim is actually true, not
+            // just assumed — see SafeReportDiscoveryToBoundaryTracker.
+            SafeReportDiscoveryToBoundaryTracker(serverName, tools.Select(t => t.Name));
+
             // McpClientTool implements AITool
             return tools.Cast<AITool>().ToList();
         }
@@ -203,7 +268,51 @@ public sealed class McpToolProvider : IMcpToolProvider
         catch (Exception)
         {
             RecordOutcome(start, serverName, McpConventions.StatusValues.Error);
+
+            // #524 code-review (round 2): do NOT report to the boundary tracker here. This method is
+            // called for both the first attempt and the post-reconnect retry (GetToolsAsync,
+            // RetryAfterReconnectAsync) — its own failure is not necessarily the operation's FINAL
+            // outcome. Reporting here fired before RetryAfterReconnectAsync ever got a chance to run,
+            // so a one-off transient failure (exactly the stale-session case #385's retry exists to
+            // recover from) permanently faulted a plugin on its first, spurious failure — the tracker
+            // only honors the first report per server and silently drops the correct, later one.
+            // Reporting on failure happens exactly once, only at the genuinely terminal points: see
+            // GetToolsAsync's "client is null" branch and RetryAfterReconnectAsync's own two failure
+            // exits.
             throw;
+        }
+    }
+
+    /// <summary>
+    /// Reports a server's just-discovered tool names to the plugin tool-boundary tracker (#524), so
+    /// any plugin depending on this server can resolve or fail-closed-fault its
+    /// AllowedTools/DeniedTools entries against them. A no-op when no tracker is wired (most tests)
+    /// or nothing is pending for this server (the overwhelmingly common case). Logged at Critical,
+    /// not thrown — the tracker never throws, and a boundary violation must not disturb this
+    /// otherwise-successful discovery call's own return value; enforcement happens separately, via
+    /// <c>IPluginRegistry.GetBoundaryStatus</c> denying the plugin's tools on its next resolution
+    /// whenever the status isn't <see cref="Application.AI.Common.Interfaces.Plugins.PluginBoundaryStatus.Verified"/>.
+    /// </summary>
+    /// <remarks>
+    /// Takes bare tool names rather than <see cref="McpClientTool"/> instances specifically so this
+    /// is unit-testable without a live MCP connection — a real correctness-review finding on #524
+    /// flagged this call site (the untrusted-input half of the feature) as having zero test coverage,
+    /// since no fixture in this project exercises <see cref="DiscoverToolsAsync"/>'s success path.
+    /// <c>internal</c> + <c>InternalsVisibleTo</c> lets <c>McpToolProviderTests</c> call this directly.
+    /// </remarks>
+    internal void ReportDiscoveryToBoundaryTracker(string serverName, IEnumerable<string> discoveredToolNames)
+    {
+        if (_boundaryTracker is null)
+            return;
+
+        var violations = _boundaryTracker.ReportServerToolsDiscovered(serverName, discoveredToolNames.ToList());
+        foreach (var violation in violations)
+        {
+            _logger.LogCritical(
+                "Plugin '{Plugin}': {ListKind} entry '{ToolName}' matches no known tool (first-party " +
+                "or MCP) — this entry is a no-op, and the plugin's tool boundary can no longer be " +
+                "trusted, so all tools from this plugin are now denied.",
+                violation.PluginName, violation.ListKind, violation.ToolName);
         }
     }
 

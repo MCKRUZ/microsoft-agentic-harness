@@ -22,6 +22,7 @@
     <ProjectReference Include="../../Infrastructure/Infrastructure.AI.MCP/Infrastructure.AI.MCP.csproj" />
     <ProjectReference Include="../../Infrastructure/Infrastructure.AI/Infrastructure.AI.csproj" />
     <ProjectReference Include="../../Application/Application.AI.Common/Application.AI.Common.csproj" />
+    <ProjectReference Include="../Tests.Common/Tests.Common.csproj" />
   </ItemGroup>
 
 </Project>

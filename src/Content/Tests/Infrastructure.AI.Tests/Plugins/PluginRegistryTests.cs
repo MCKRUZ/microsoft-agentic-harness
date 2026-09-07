@@ -69,4 +69,70 @@ public class PluginRegistryTests
 
         _sut.IsLoaded("broken").Should().BeFalse();
     }
+
+    [Fact]
+    public void GetBoundaryStatus_UnmarkedPlugin_ReturnsVerified()
+    {
+        _sut.GetBoundaryStatus("azure").Should().Be(PluginBoundaryStatus.Verified);
+    }
+
+    [Fact]
+    public void MarkBoundaryFaulted_ThenGetBoundaryStatus_ReturnsFaulted()
+    {
+        _sut.MarkBoundaryFaulted("azure", "DeniedTools entry 'file_wrte' matches no known tool");
+
+        _sut.GetBoundaryStatus("azure").Should().Be(PluginBoundaryStatus.Faulted);
+    }
+
+    [Fact]
+    public void GetBoundaryStatus_CaseInsensitive_ReturnsFaulted()
+    {
+        _sut.MarkBoundaryFaulted("Azure", "reason");
+
+        _sut.GetBoundaryStatus("azure").Should().Be(PluginBoundaryStatus.Faulted);
+        _sut.GetBoundaryStatus("AZURE").Should().Be(PluginBoundaryStatus.Faulted);
+    }
+
+    [Fact]
+    public void MarkBoundaryPending_ThenGetBoundaryStatus_ReturnsPending()
+    {
+        _sut.MarkBoundaryPending("azure");
+
+        _sut.GetBoundaryStatus("azure").Should().Be(PluginBoundaryStatus.Pending);
+    }
+
+    [Fact]
+    public void MarkBoundaryPending_ThenMarkBoundaryVerified_ReturnsVerified()
+    {
+        _sut.MarkBoundaryPending("azure");
+        _sut.MarkBoundaryVerified("azure");
+
+        _sut.GetBoundaryStatus("azure").Should().Be(PluginBoundaryStatus.Verified);
+    }
+
+    [Fact]
+    public void MarkBoundaryFaulted_ThenMarkBoundaryVerified_StaysFaulted()
+    {
+        // Faulted is terminal (#524 redesign) — a caller resolving one pending entry has no way to
+        // know whether some OTHER entry already faulted this same plugin through a different call,
+        // so MarkBoundaryVerified must never be able to downgrade it.
+        _sut.MarkBoundaryFaulted("azure", "DeniedTools entry 'file_wrte' matches no known tool");
+        _sut.MarkBoundaryVerified("azure");
+
+        _sut.GetBoundaryStatus("azure").Should().Be(PluginBoundaryStatus.Faulted);
+    }
+
+    [Fact]
+    public void MarkBoundaryFaulted_ThenMarkBoundaryPending_StaysFaulted()
+    {
+        // Same terminal guarantee as MarkBoundaryVerified above (#524 round-2 code-review): the two
+        // methods had this guard asymmetrically — only Verified refused to downgrade Faulted. Not
+        // reachable via any caller today (Seed calls MarkBoundaryPending at most once per plugin, and
+        // never after a fault), but the registry is the shared trust boundary, not any one caller's
+        // discipline, so it must hold regardless of how many callers exist in the future.
+        _sut.MarkBoundaryFaulted("azure", "DeniedTools entry 'file_wrte' matches no known tool");
+        _sut.MarkBoundaryPending("azure");
+
+        _sut.GetBoundaryStatus("azure").Should().Be(PluginBoundaryStatus.Faulted);
+    }
 }

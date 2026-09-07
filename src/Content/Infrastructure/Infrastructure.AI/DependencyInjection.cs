@@ -13,6 +13,7 @@ using Application.AI.Common.Interfaces.MetaHarness;
 using Application.AI.Common.Interfaces.Plugins;
 using Application.AI.Common.Interfaces.Skills;
 using Application.AI.Common.Services.Bundles;
+using Application.AI.Common.Services.Plugins;
 using Application.AI.Common.Interfaces.Prompts;
 using Application.AI.Common.Interfaces.Routing;
 using Application.AI.Common.Interfaces.Tools;
@@ -275,6 +276,34 @@ public static partial class DependencyInjection
         // Startup driver: resolves every declared plugin into the live config + registry before
         // the first (lazy) skill/MCP discovery. Empty Packages list is a clean no-op.
         services.AddHostedService<PluginStartupLoader>();
+
+        // #524: a plugin's AllowedTools/DeniedTools entry that matches no real tool is a silent
+        // no-op today — worst for DeniedTools, documented as bypass-immune. The tracker resolves
+        // MCP-sourced entries lazily as servers are organically discovered (McpToolProvider);
+        // the startup validator below only needs to run AFTER PluginStartupLoader (registration
+        // order = StartAsync order in the Generic Host) so IPluginRegistry is already populated.
+        services.AddSingleton<IPluginToolBoundaryTracker, PluginToolBoundaryTracker>();
+        services.AddHostedService(sp =>
+        {
+            // Reuses the same bounded key set FirstPartyToolLookup already built (/simplify finding:
+            // re-scanning `services` here duplicated that scan and needlessly kept the whole
+            // IServiceCollection reachable through this factory's closure for the process lifetime).
+            // Copied into a fresh OrdinalIgnoreCase set rather than used directly: FirstPartyToolLookup's
+            // own set is Ordinal (case-sensitive, by design — see its registration), and this existence
+            // check has always matched a boundary entry case-insensitively.
+            var firstPartyToolNames = new HashSet<string>(
+                sp.GetRequiredService<Application.AI.Common.Services.Tools.FirstPartyToolLookup>()
+                    .RegisteredFirstPartyToolKeys,
+                StringComparer.OrdinalIgnoreCase);
+
+            return new PluginToolBoundaryStartupValidator(
+                sp.GetRequiredService<IPluginRegistry>(),
+                sp.GetRequiredService<IPluginToolBoundaryTracker>(),
+                firstPartyToolNames.Contains,
+                sp.GetRequiredService<IOptionsMonitor<Domain.Common.Config.AI.AIConfig>>(),
+                sp.GetRequiredService<Application.AI.Common.Interfaces.IMcpToolProvider>(),
+                sp.GetRequiredService<ILogger<PluginToolBoundaryStartupValidator>>());
+        });
 
         // --- Tool execution ---
 

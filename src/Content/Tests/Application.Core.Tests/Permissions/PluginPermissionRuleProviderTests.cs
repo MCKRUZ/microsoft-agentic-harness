@@ -1,6 +1,7 @@
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Plugins;
 using Application.AI.Common.Interfaces.Tools;
+using Application.AI.Common.Services.Tools;
 using Application.Core.Permissions;
 using Domain.AI.Governance;
 using Domain.AI.Permissions;
@@ -33,13 +34,19 @@ public sealed class PluginPermissionRuleProviderTests : IDisposable
     private void GivenGlobalKeyedTool(string toolName) =>
         _services.AddKeyedSingleton<ITool>(toolName, (_, _) => Mock.Of<ITool>());
 
-    private PluginPermissionRuleProvider CreateProvider()
+    private PluginPermissionRuleProvider CreateProvider(params string[] knownFirstPartyToolNames)
     {
         _serviceProvider = _services.BuildServiceProvider();
+        // #524 round-2: an empty key set is fine for every pre-existing test here — none configures
+        // GetBoundaryStatus to return anything but the Moq default (PluginBoundaryStatus.Verified,
+        // the enum's zero value), so the blanket-deny path this lookup feeds never fires for them.
+        var firstPartyToolLookup = new FirstPartyToolLookup(
+            _serviceProvider, new HashSet<string>(knownFirstPartyToolNames));
         return new PluginPermissionRuleProvider(
             _registryMock.Object,
             _skillRegistryMock.Object,
             _serviceProvider,
+            firstPartyToolLookup,
             NullLogger<PluginPermissionRuleProvider>.Instance);
     }
 
@@ -283,5 +290,62 @@ public sealed class PluginPermissionRuleProviderTests : IDisposable
         var rules = await CreateProvider().GetRulesAsync("any-agent");
 
         rules.Should().BeEmpty();
+    }
+
+    // --- #524 round-2 code-review: unverified boundary must not leave a global tool unprotected ---
+
+    [Theory]
+    [InlineData(PluginBoundaryStatus.Pending)]
+    [InlineData(PluginBoundaryStatus.Faulted)]
+    public async Task GetRulesAsync_PluginBoundaryUnverified_EmitsBypassImmuneDenyForEveryFirstPartyTool(
+        PluginBoundaryStatus status)
+    {
+        // This is the SECOND enforcement path #524's original fix never touched: ToolChainBuilder
+        // only filters the tool SET sourced from the faulted plugin's own skill, but DeniedTools
+        // exists specifically to let a plugin block a GLOBAL tool it does not own — reachable through
+        // any OTHER skill in the agent, regardless of this plugin's own boundary state. An unresolved
+        // entry gives no way to know which specific global tool it was meant to protect, so the
+        // fail-closed response is broad: deny every known first-party tool, not scoped to this plugin.
+        var declaration = new PluginDeclaration { Name = "azure", DeniedTools = ["file_wrte"] };
+        _registryMock.Setup(r => r.GetLoadedPlugins()).Returns(new List<LoadedPlugin> { Loaded(declaration) });
+        _registryMock.Setup(r => r.GetBoundaryStatus("azure")).Returns(status);
+
+        var rules = await CreateProvider("file_system", "shell").GetRulesAsync("any-agent");
+
+        rules.Should().Contain(r => r.ToolPattern == "file_system"
+            && r.Behavior == PermissionBehaviorType.Deny && r.IsBypassImmune);
+        rules.Should().Contain(r => r.ToolPattern == "shell"
+            && r.Behavior == PermissionBehaviorType.Deny && r.IsBypassImmune);
+    }
+
+    [Fact]
+    public async Task GetRulesAsync_PluginBoundaryVerified_DoesNotEmitBlanketDeny()
+    {
+        var declaration = new PluginDeclaration { Name = "azure", DeniedTools = ["file_write"] };
+        _registryMock.Setup(r => r.GetLoadedPlugins()).Returns(new List<LoadedPlugin> { Loaded(declaration) });
+        _registryMock.Setup(r => r.GetBoundaryStatus("azure")).Returns(PluginBoundaryStatus.Verified);
+
+        var rules = await CreateProvider("file_system", "shell").GetRulesAsync("any-agent");
+
+        rules.Should().NotContain(r => r.ToolPattern == "file_system");
+        rules.Should().NotContain(r => r.ToolPattern == "shell");
+    }
+
+    [Fact]
+    public async Task GetRulesAsync_OnlyOneOfMultiplePluginsUnverified_StillEmitsBlanketDenyAgentWide()
+    {
+        // The blanket deny is not scoped to the specific unverified plugin — it can't be, since which
+        // global tool a corrupted entry was meant to protect is unknowable — so even a fully healthy
+        // second plugin doesn't limit its reach.
+        var healthy = new PluginDeclaration { Name = "healthy" };
+        var broken = new PluginDeclaration { Name = "broken", DeniedTools = ["file_wrte"] };
+        _registryMock.Setup(r => r.GetLoadedPlugins())
+            .Returns(new List<LoadedPlugin> { Loaded(healthy), Loaded(broken) });
+        _registryMock.Setup(r => r.GetBoundaryStatus("healthy")).Returns(PluginBoundaryStatus.Verified);
+        _registryMock.Setup(r => r.GetBoundaryStatus("broken")).Returns(PluginBoundaryStatus.Faulted);
+
+        var rules = await CreateProvider("file_system").GetRulesAsync("any-agent");
+
+        rules.Should().Contain(r => r.ToolPattern == "file_system" && r.Behavior == PermissionBehaviorType.Deny);
     }
 }
