@@ -106,22 +106,72 @@ public sealed class McpToolProviderBoundaryTrackerTests
     }
 
     [Fact]
-    public void DiscoverToolsAsync_SourceReportsEmptyDiscoveryOnFailure()
+    public void DiscoverToolsAsync_SourceDoesNotReportToBoundaryTrackerOnItsOwnFailure()
     {
-        // #524 redesign: a plugin boundary entry pending on a server whose discovery FAILS (the
-        // server connected but ListToolsAsync itself then failed) must not wait forever — this proves
-        // the catch(Exception) block still reports an empty discovery so ReportServerToolsDiscovered
-        // can resolve or fault the entry instead of leaving it stuck Pending indefinitely.
+        // #524 round-2 code-review: DiscoverToolsAsync is called for BOTH the first attempt and the
+        // post-reconnect retry. Reporting from its own catch(Exception) block fired on the first,
+        // possibly-transient failure — before RetryAfterReconnectAsync ever got a chance to recover —
+        // and ReportServerToolsDiscovered only honors the FIRST report per server, silently dropping
+        // the correct, later one. A one-off network blip could then permanently fault a healthy
+        // plugin. This proves the report call was removed from this method's own failure path.
         var path = RepoRoot.Combine(
             "src", "Content", "Infrastructure", "Infrastructure.AI.MCP", "Services", "McpToolProvider.cs");
         var code = SourceScan.StripCommentsAndStrings(File.ReadAllText(path));
 
-        var discoverToolsAsyncStart = code.IndexOf("private async Task<IList<AITool>> DiscoverToolsAsync", StringComparison.Ordinal);
-        discoverToolsAsyncStart.Should().BeGreaterThan(-1, "DiscoverToolsAsync should still exist under this name");
-        var methodBody = code[discoverToolsAsyncStart..(discoverToolsAsyncStart + 2500)];
+        var start = code.IndexOf("private async Task<IList<AITool>> DiscoverToolsAsync", StringComparison.Ordinal);
+        start.Should().BeGreaterThan(-1, "DiscoverToolsAsync should still exist under this name");
+        // Success path legitimately still reports (with the real discovered names) — only the
+        // catch(Exception) block, where the round-1 report-on-failure bug lived, must be checked.
+        var catchStart = code.IndexOf("catch (Exception)", start, StringComparison.Ordinal);
+        catchStart.Should().BeGreaterThan(start, "DiscoverToolsAsync should still have a catch(Exception) block");
+        var nextMethod = code.IndexOf("private ", catchStart + 1, StringComparison.Ordinal);
+        var catchBody = nextMethod > catchStart ? code[catchStart..nextMethod] : code[catchStart..(catchStart + 800)];
 
-        methodBody.Should().Contain("RecordOutcome(start, serverName, McpConventions.StatusValues.Error)");
-        methodBody.Should().Contain("ReportDiscoveryToBoundaryTracker(serverName, [])");
+        catchBody.Should().NotContain("SafeReportDiscoveryToBoundaryTracker",
+            "reporting on failure must happen only at the operation's genuinely terminal exits, not on this method's own (possibly first-attempt, possibly-recoverable) failure");
+    }
+
+    [Fact]
+    public void RetryAfterReconnectAsync_SourceReportsEmptyDiscoveryAtBothTerminalFailureExits()
+    {
+        // The other half of the fix: reporting must happen exactly once, at the genuinely terminal
+        // points — after a failed reconnect, and after a retried discovery also fails — not before.
+        var path = RepoRoot.Combine(
+            "src", "Content", "Infrastructure", "Infrastructure.AI.MCP", "Services", "McpToolProvider.cs");
+        var code = SourceScan.StripCommentsAndStrings(File.ReadAllText(path));
+
+        var start = code.IndexOf("private async Task<IList<AITool>> RetryAfterReconnectAsync", StringComparison.Ordinal);
+        start.Should().BeGreaterThan(-1, "RetryAfterReconnectAsync should still exist under this name");
+        // Bounded at the helper's own declaration, not the next Task-returning method — that
+        // declaration line itself contains "SafeReportDiscoveryToBoundaryTracker" as its method name,
+        // which would inflate the occurrence count by one if included in the slice.
+        var nextMethod = code.IndexOf("private void SafeReportDiscoveryToBoundaryTracker", start + 1, StringComparison.Ordinal);
+        nextMethod.Should().BeGreaterThan(start);
+        var methodBody = code[start..nextMethod];
+
+        var occurrences = System.Text.RegularExpressions.Regex.Matches(methodBody, "SafeReportDiscoveryToBoundaryTracker").Count;
+        occurrences.Should().Be(2,
+            "one for the failed-reconnect exit (freshClient is null) and one for the retried-discovery-also-failed exit");
+    }
+
+    [Fact]
+    public void GetToolsAsync_SourceSkipsReportingWhenNullClientCameFromCancellation()
+    {
+        // TryConnectAsync collapses a genuine connection failure and a caller cancellation to the same
+        // null return — reporting unconditionally there would let an unrelated caller hitting cancel
+        // wrongly fault a plugin's boundary. This proves the cancellation guard is in place.
+        var path = RepoRoot.Combine(
+            "src", "Content", "Infrastructure", "Infrastructure.AI.MCP", "Services", "McpToolProvider.cs");
+        var code = SourceScan.StripCommentsAndStrings(File.ReadAllText(path));
+
+        var start = code.IndexOf("public async Task<IList<AITool>> GetToolsAsync", StringComparison.Ordinal);
+        start.Should().BeGreaterThan(-1, "GetToolsAsync should still exist under this name");
+        var clientIsNullIndex = code.IndexOf("if (client is null)", start, StringComparison.Ordinal);
+        clientIsNullIndex.Should().BeGreaterThan(start);
+        var branchBody = code[clientIsNullIndex..(clientIsNullIndex + 800)];
+
+        branchBody.Should().Contain("if (!cancellationToken.IsCancellationRequested)");
+        branchBody.Should().Contain("SafeReportDiscoveryToBoundaryTracker");
     }
 
     [Fact]
