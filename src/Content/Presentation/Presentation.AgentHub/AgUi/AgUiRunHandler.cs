@@ -3,6 +3,7 @@ using System.Security.Claims;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.AI;
 using Application.AI.Common.OpenTelemetry.Metrics;
+using Application.AI.Common.Services;
 using Application.Common.Exceptions.ExceptionTypes;
 using Application.Core.CQRS.Agents.ExecuteAgentTurn;
 using Domain.AI.Telemetry.Conventions;
@@ -25,8 +26,6 @@ namespace Presentation.AgentHub.AgUi;
 /// </remarks>
 public sealed class AgUiRunHandler
 {
-    private const int ChunkSize = 50;
-
     private readonly IMediator _mediator;
     private readonly IConversationStore _conversationStore;
     private readonly IObservabilityStore _observabilityStore;
@@ -338,6 +337,26 @@ public sealed class AgUiRunHandler
             ObservabilitySessionId = telemetry.SessionId,
         };
 
+        // Stream and persist the assistant response under a single stable id, generated before
+        // dispatch (not after, as this used to be) because the attached sink below needs it to tag
+        // TEXT_MESSAGE_CONTENT frames as they arrive mid-turn. The client references this id (via
+        // TEXT_MESSAGE_START) for retry-from-message, so the streamed id and the persisted id MUST
+        // match. TEXT_MESSAGE_START is NOT emitted here, deliberately: a turn that fails before any
+        // generation happens must produce only RUN_ERROR, never an empty, orphaned message frame —
+        // see AgUiTurnStreamSink.Started for how the message gets framed lazily instead.
+        var assistantId = Guid.NewGuid();
+        var messageId = assistantId.ToString();
+
+        // Attach a real streaming sink for the duration of this dispatch so
+        // ExecuteAgentTurnCommandHandler takes its streaming branch instead of the blocking one —
+        // this is what actually delivers on AG-UI's reason for existing (tool-call visibility, real
+        // token streaming), which nothing wired up before this. Restored in finally exactly like
+        // ConversationOrchestrator's own SignalR attach/restore, so a nested or subsequent dispatch
+        // on this async flow is unaffected.
+        var sink = new AgUiTurnStreamSink(writer, messageId);
+        var previousSink = AgentTurnStreamSink.Current;
+        AgentTurnStreamSink.Current = sink;
+
         AgentTurnResult result;
         try
         {
@@ -350,8 +369,14 @@ public sealed class AgUiRunHandler
         catch (Exception ex)
         {
             _logger.LogError(ex, "AG-UI run {RunId}: MediatR dispatch failed.", input.RunId);
+            if (sink.Started)
+                await writer.WriteAsync(new TextMessageEndEvent(messageId), ct);
             await writer.WriteAsync(new RunErrorEvent("An error occurred during agent execution."), ct);
             return;
+        }
+        finally
+        {
+            AgentTurnStreamSink.Current = previousSink;
         }
 
         if (!result.Success)
@@ -373,6 +398,8 @@ public sealed class AgUiRunHandler
                     ? result.Error!
                     : "The agent was unable to process your request.";
 
+            if (sink.Started)
+                await writer.WriteAsync(new TextMessageEndEvent(messageId), ct);
             await writer.WriteAsync(new RunErrorEvent(message), ct);
             return;
         }
@@ -400,23 +427,22 @@ public sealed class AgUiRunHandler
                 result.CostUsd, result.ToolsInvoked.Count, result.Model),
             ct);
 
-        // Stream and persist the assistant response under a single stable id. The client
-        // references this id (via TEXT_MESSAGE_START) for retry-from-message, so the streamed
-        // id and the persisted id MUST match. All TEXT_MESSAGE_* events for this message share it.
-        var assistantId = Guid.NewGuid();
-        var messageId = assistantId.ToString();
-        await writer.WriteAsync(new TextMessageStartEvent(messageId, "assistant"), ct);
-
         var response = result.Response;
-        for (var i = 0; i < response.Length; i += ChunkSize)
-        {
-            var chunk = response.Substring(i, Math.Min(ChunkSize, response.Length - i));
-            await writer.WriteAsync(new TextMessageContentEvent(messageId, chunk), ct);
-        }
 
+        // The common case: text already streamed to the client in real time via the sink attached
+        // above, so this just closes the message frame. The fallback covers a caller that never
+        // drove the sink in real time — a provider without streaming support, or a test double that
+        // returns a canned AgentTurnResult directly — by emitting the complete response as one frame,
+        // identical to this method's behavior before real streaming existed. Either way the client
+        // sees exactly one well-formed START/CONTENT*/END sequence for this messageId.
+        if (!sink.Started)
+        {
+            await writer.WriteAsync(new TextMessageStartEvent(messageId, "assistant"), ct);
+            if (!string.IsNullOrEmpty(response))
+                await writer.WriteAsync(new TextMessageContentEvent(messageId, response), ct);
+        }
         await writer.WriteAsync(new TextMessageEndEvent(messageId), ct);
 
-        // Persist the assistant response under the same id that was streamed to the client.
         var assistantMsg = new ConversationMessage(
             assistantId,
             MessageRole.Assistant,

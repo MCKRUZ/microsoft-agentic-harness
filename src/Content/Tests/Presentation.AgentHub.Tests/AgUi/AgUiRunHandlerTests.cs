@@ -759,6 +759,98 @@ public sealed class AgUiRunHandlerTests
             It.IsAny<CancellationToken>()), Times.Once);
     }
 
+    /// <summary>
+    /// Proves the actual wiring this handler exists to provide, not just each piece in isolation:
+    /// <see cref="AgUiRunHandler"/> must attach a sink to <c>AgentTurnStreamSink.Current</c> *before*
+    /// dispatching, so that whatever runs inside the MediatR call — here, a mediator stand-in
+    /// driving the ambient sink directly, standing in for what
+    /// <c>ExecuteAgentTurnCommandHandler.RunStreamingTurnAsync</c> does for a real turn — reaches the
+    /// live SSE stream as real per-delta content and real tool-call events, not the finished
+    /// response chunked up after the fact. This is the specific capability the AG-UI protocol choice
+    /// was made for; a regression here silently turns AG-UI back into a thin text-only transport
+    /// indistinguishable from the SignalR hub it replaced.
+    /// </summary>
+    [Fact]
+    public async Task HandleRunAsync_MediatorDrivesAmbientSink_RealDeltasAndToolCallsReachTheStream()
+    {
+        const string threadId = "conv-streaming";
+        const string userId = "user-streaming";
+
+        var mediator = new Mock<IMediator>();
+        var store = new Mock<IConversationStore>();
+        var record = MakeRecord(threadId, userId);
+
+        store.Setup(s => s.GetAsync(threadId, userId, It.IsAny<CancellationToken>()))
+             .ReturnsAsync(record);
+        store.Setup(s => s.GetHistoryForDispatch(threadId, userId, It.IsAny<int>(), It.IsAny<CancellationToken>()))
+             .ReturnsAsync([]);
+        store.Setup(s => s.AppendMessageAsync(threadId, userId, It.IsAny<ConversationMessage>(), It.IsAny<CancellationToken>()))
+             .Returns(Task.CompletedTask);
+
+        mediator
+            .Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
+            .Returns(async (ExecuteAgentTurnCommand _, CancellationToken ct) =>
+            {
+                // Stands in for RunStreamingTurnAsync: drives whatever sink the handler attached
+                // ambiently before calling Send, exactly as the real streaming loop would.
+                var sink = Application.AI.Common.Services.AgentTurnStreamSink.Current;
+                sink.Should().NotBeNull(
+                    "AgUiRunHandler must attach a sink before dispatch, or a real turn silently falls back to the blocking, tool-invisible path");
+
+                await sink!.EmitAsync("Let me check. ", ct);
+                await sink.EmitToolCallAsync(
+                    "call-1", "search_memory", new StreamedToolCallArguments("{\"q\":\"eyes\"}", false), ct);
+                await sink.EmitToolCallResultAsync(
+                    "call-1", new StreamedToolCallResult("green", false), ct);
+                await sink.EmitAsync("Green.", ct);
+
+                return MakeSuccessResult("Let me check. Green.");
+            });
+
+        var budget = new Mock<IConversationBudgetTracker>();
+        budget.Setup(b => b.GetStatusAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(ConversationBudgetStatus.Disabled);
+
+        var handler = BuildHandler(mediator, store, budget: budget);
+        var input = MakeInput(threadId, "Do you remember my eyes?");
+        var user = MakeUser(userId);
+
+        using var ms = new MemoryStream();
+        var writer = new AgUiEventWriter(ms);
+
+        await handler.HandleRunAsync(input, writer, user);
+
+        var frames = ParseSseFrames(ms);
+        var types = frames.Select(EventType).ToList();
+
+        types.Should().Equal(
+            AgUiEventType.RunStarted,
+            AgUiEventType.TextMessageStart,
+            AgUiEventType.TextMessageContent,
+            AgUiEventType.ToolCallStart,
+            AgUiEventType.ToolCallArgs,
+            AgUiEventType.ToolCallEnd,
+            AgUiEventType.ToolCallResult,
+            AgUiEventType.TextMessageContent,
+            AgUiEventType.TextMessageEnd,
+            AgUiEventType.RunFinished);
+
+        // The two content deltas arrived separately, not as one post-hoc chunk of the final response —
+        // this is the difference between real streaming and the artificial chunking it replaced.
+        var deltas = frames.Where(f => EventType(f) == AgUiEventType.TextMessageContent)
+            .Select(f => f.RootElement.GetProperty("delta").GetString())
+            .ToList();
+        deltas.Should().Equal("Let me check. ", "Green.");
+
+        var toolResult = frames.Single(f => EventType(f) == AgUiEventType.ToolCallResult);
+        toolResult.RootElement.GetProperty("toolCallId").GetString().Should().Be("call-1");
+        toolResult.RootElement.GetProperty("result").GetString().Should().Be("green");
+
+        // The ambient sink must be detached again once dispatch finishes, or a later turn on the same
+        // async flow would silently inherit this one's writer.
+        Application.AI.Common.Services.AgentTurnStreamSink.Current.Should().BeNull();
+    }
+
     [Fact]
     public async Task HandleRunAsync_ClientSuppliesUserMessageId_PersistsUserMessageUnderThatId()
     {
