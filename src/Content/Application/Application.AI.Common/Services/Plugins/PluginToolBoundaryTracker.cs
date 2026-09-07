@@ -177,6 +177,11 @@ public sealed class PluginToolBoundaryTracker : IPluginToolBoundaryTracker
                 }
             }
 
+            // By construction, the "last server reported" branch above only reaches here with
+            // PendingEntries still non-empty (the early-resolve branch already handled the
+            // empty case and set resolvedEarly instead) - so faulted is always populated on
+            // every path that isn't resolvedEarly. No third "clean resolve via last server"
+            // case exists to handle.
             if (resolvedEarly)
             {
                 _registry.MarkBoundaryVerified(pluginName);
@@ -185,14 +190,6 @@ public sealed class PluginToolBoundaryTracker : IPluginToolBoundaryTracker
             {
                 _registry.MarkBoundaryFaulted(pluginName, FaultReason(faulted));
                 violations.AddRange(faulted);
-            }
-            else
-            {
-                // Every entry this plugin was waiting on now matches a real tool — the Pending state
-                // Seed set is resolved clean. Without this, the transition out of Pending was never
-                // recorded anywhere; the plugin only stopped appearing in _pendingByPlugin, which
-                // GetBoundaryStatus has no visibility into.
-                _registry.MarkBoundaryVerified(pluginName);
             }
         }
 

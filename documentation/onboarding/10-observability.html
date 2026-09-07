@@ -297,7 +297,10 @@ docker run -d --name jaeger \
                         configured anywhere on the host), the host refuses to boot. Otherwise it's checked once the
                         entry's tool is discovered on some configured server; if still unresolved once every server
                         has reported, the whole plugin's boundary is marked faulted and every tool from its skills is
-                        denied.
+                        denied. This denial isn't limited to the plugin in question, and it starts as soon as any
+                        plugin's boundary is unresolved — not only once it's confirmed faulted: every first-party
+                        tool is denied agent-wide for as long as any plugin's boundary hasn't verified, since
+                        there's no way to know which global tool an unresolved entry was meant to protect.
                     </p>
 
                     <h3>5 · The sandbox</h3>

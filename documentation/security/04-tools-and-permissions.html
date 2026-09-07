@@ -346,6 +346,15 @@
                                 unrecognized <code>DeniedTools</code> entry is otherwise a silent no-op that would
                                 defeat the bypass-immune guarantee below.
                             </p>
+                            <p style="margin: 0.75rem 0 0">
+                                The deny isn't scoped to the plugin under suspicion, and it doesn't wait for the
+                                entry to be proven fake: the moment any loaded plugin's boundary is anything other
+                                than fully verified — including the ordinary window while a lazy MCP check is
+                                still pending — <code>PluginPermissionRuleProvider</code> adds a bypass-immune
+                                Deny rule for every first-party tool, agent-wide, because a corrupted or unresolved
+                                <code>DeniedTools</code> entry gives no way to know which specific global tool it
+                                was meant to protect.
+                            </p>
                         </div>
                     </div>
 

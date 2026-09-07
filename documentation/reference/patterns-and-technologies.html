@@ -397,8 +397,11 @@ know the exact filename. Cite file paths in `path:line` form.</code></pre>
                         <code>DeniedTools</code> is bypass-immune: it can't be overridden by auto-approve modes.
                         Since #524, <code>IPluginToolBoundaryTracker</code> additionally verifies every
                         <code>AllowedTools</code>/<code>DeniedTools</code> entry resolves to a real tool (first-party
-                        at startup, MCP-provided lazily on discovery); an entry that never resolves marks the
-                        plugin's boundary faulted and <code>ToolChainBuilder</code> denies all of its tools.
+                        at startup, MCP-provided lazily on discovery); while any plugin's boundary is unresolved
+                        or faulted, <code>ToolChainBuilder</code> denies that plugin's own tools and
+                        <code>PluginPermissionRuleProvider</code> additionally denies every first-party tool
+                        agent-wide, since a corrupted <code>DeniedTools</code> entry could have been meant to
+                        protect any of them.
                     </p>
                     <ul>
                         <li>Manifest reader: <code>Infrastructure.AI/Plugins/PluginManifestReader.cs</code> (verify path — see "Locating plugin internals" note below)</li>
