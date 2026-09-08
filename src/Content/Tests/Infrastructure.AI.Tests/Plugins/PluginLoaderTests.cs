@@ -282,6 +282,32 @@ public sealed class PluginLoaderTests : IDisposable
     }
 
     [Fact]
+    public void CommitResolvedState_ThrowsPartwayThroughMcpLoop_RollsBackTheServersAlreadyRegistered()
+    {
+        // #614 code-review finding (round 2): unlike a skill path — only ever attributed to a plugin
+        // whose Status is Loaded — an MCP server registered into McpServersConfig.Servers carries no
+        // plugin/status gating at all; PluginToolBoundaryStartupValidator/McpConnectionManager read it
+        // unconditionally. A server left committed for a plugin that ultimately reports Failed would
+        // be immediately live with none of that plugin's boundary governance ever verified — worse
+        // than the skills case this fix already covered. Proves the loop rolls back every server IT
+        // ITSELF already registered when a later entry in the same call fails, the same way
+        // BundleStagingService.ParsePluginManifests already does for its own MCP loop (#372). A null
+        // namespaced name is a genuine ConcurrentDictionary indexer failure (ArgumentNullException),
+        // not a test-only seam — ConcurrentDictionary<TKey,TValue> throws for any null key at runtime
+        // regardless of the compile-time nullable-reference annotation on the tuple's own type.
+        var good = new McpServerDefinition { Enabled = true, Type = McpServerType.Stdio, Command = "npx" };
+        var bad = new McpServerDefinition { Enabled = true, Type = McpServerType.Stdio, Command = "npx" };
+
+        Action act = () => _sut.CommitResolvedState(
+            skillPaths: [],
+            mcpRegistrations: [("plugin:good", good), (null!, bad)]);
+
+        act.Should().Throw<ArgumentNullException>();
+        _mcpServersConfig.Servers.Should().NotContainKey("plugin:good",
+            "the first server registered in this call must be rolled back when a later one in the same call fails");
+    }
+
+    [Fact]
     public void Load_LoggingTheSuccessFails_StillReportsLoadedWithTheCommittedState()
     {
         // Round-2 grader/correctness finding on this same fix: the first version of the atomic-commit

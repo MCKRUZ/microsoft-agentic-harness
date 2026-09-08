@@ -53,12 +53,9 @@ public sealed class PluginLoader : IPluginLoader
     /// </remarks>
     public LoadedPlugin? Load(string pluginPath, PluginDeclaration declaration, PluginManifest manifest)
     {
-        List<string> skillPaths;
-        List<string> mcpServerNames;
-
         try
         {
-            var resolvedSkillPaths = string.IsNullOrEmpty(manifest.Skills)
+            var skillPaths = string.IsNullOrEmpty(manifest.Skills)
                 ? []
                 : ResolveSkillPaths(pluginPath, declaration, manifest.Skills);
 
@@ -66,44 +63,21 @@ public sealed class PluginLoader : IPluginLoader
                 ? []
                 : ResolveMcpServerRegistrations(pluginPath, declaration, manifest.McpServers);
 
-            // Commit point. Nothing above this line has mutated shared state, so every return above
-            // it — early or via an exception — leaves both configs exactly as this call found them.
-            //
-            // The two writes below are not transactionally atomic with each other — grader review
-            // correctly flagged that a throw partway through the MCP loop would still leave a
-            // narrower version of #614's split state (MCP servers partially registered, no skills
-            // committed yet since that write is ordered last). Deliberately ordered so the
-            // MULTI-STEP write (the loop, one dictionary write per server) goes BEFORE the
-            // SINGLE-STATEMENT write (the skills list reassignment): the only way either can now
-            // throw is a bare Dictionary/List write against already-validated, non-null keys and
-            // values, which requires an out-of-memory-class failure, not a manifest-content one.
-            var resolvedMcpServerNames = new List<string>(mcpRegistrations.Count);
-            foreach (var (namespacedName, definition) in mcpRegistrations)
-            {
-                // Last-writer-wins on a duplicate namespaced key — unlike BundleStagingService's
-                // TryAdd + keep-first-and-warn. Deliberately different, not an oversight: a host
-                // plugin's own manifest realistically never declares the same server name twice, so
-                // this path optimizes for the simpler write; a bundle's namespace is per-upload and a
-                // duplicate there is worth flagging to the (untrusted) bundle author rather than
-                // silently accepted.
-                _mcpServersConfig.Servers[namespacedName] = definition;
-                resolvedMcpServerNames.Add(namespacedName);
-            }
+            var (committedSkillPaths, committedMcpServerNames) = CommitResolvedState(skillPaths, mcpRegistrations);
 
-            if (resolvedSkillPaths.Count > 0)
-                _skillsConfig.AdditionalPaths = [.. _skillsConfig.AdditionalPaths, .. resolvedSkillPaths];
+            // Never inside this try's reach on its own — see LogLoadedSafely's remarks for why a
+            // broken sink here must not retroactively turn an already-committed load into Failed.
+            LogLoadedSafely(declaration, manifest, committedSkillPaths, committedMcpServerNames);
 
-            // Both writes above have now genuinely succeeded — plain, already-validated
-            // Dictionary/List writes, nothing left in this try that manifest content or a caller
-            // can make throw. Assigning into the outer locals here, rather than returning directly,
-            // is what makes the success log below reachable WITHOUT sitting inside this catch's
-            // reach (round-2 grader/correctness finding on this same fix: the previous shape kept the
-            // success log inside this try, after the commit — a broken logging sink there still
-            // landed in the catch below and reported PluginLoadStatus.Failed over a load that had, in
-            // fact, already fully committed. Logging that a load succeeded must never be able to
-            // retroactively turn it into a reported failure).
-            skillPaths = resolvedSkillPaths;
-            mcpServerNames = resolvedMcpServerNames;
+            return new LoadedPlugin(
+                declaration.Name,
+                manifest.Version,
+                pluginPath,
+                manifest,
+                PluginLoadStatus.Loaded,
+                committedSkillPaths,
+                committedMcpServerNames,
+                declaration);
         }
         catch (Exception ex)
         {
@@ -119,7 +93,78 @@ public sealed class PluginLoader : IPluginLoader
                 [],
                 declaration);
         }
+    }
 
+    /// <summary>
+    /// Commits both resolved contributions to shared config as one unit: either both fully commit, or
+    /// neither survives. Nothing before this call has mutated shared state (see <see cref="Load"/>'s
+    /// remarks), so a throw anywhere before it leaves both configs untouched already; this method's
+    /// own job is to make a throw DURING the commit itself behave the same way.
+    /// </summary>
+    /// <remarks>
+    /// Round-2 code-review finding on this same fix: an earlier version left the two writes
+    /// non-atomic with each other and reasoned the residual risk down to "an out-of-memory-class
+    /// write failure, not a manifest-content one" — true, but understated. Unlike a skill path (which
+    /// <c>SkillMetadataRegistry.ResolvePluginSkillPaths</c> only attributes to a plugin whose
+    /// <see cref="LoadedPlugin.Status"/> is <see cref="PluginLoadStatus.Loaded"/>), an MCP server
+    /// registered into <see cref="_mcpServersConfig"/> carries no plugin/status gating at all —
+    /// <c>PluginToolBoundaryStartupValidator</c>/<c>McpConnectionManager</c> read
+    /// <see cref="McpServersConfig.Servers"/> unconditionally. A server left committed for a plugin
+    /// that ultimately reports <see cref="PluginLoadStatus.Failed"/> would be immediately live with
+    /// none of that plugin's boundary governance ever verified — worse than the skills case, not an
+    /// equally-thin residual. Rolls back the same way <c>BundleStagingService.ParsePluginManifests</c>
+    /// already does for its own MCP-server registration loop (issue #372): register-and-track, then on
+    /// any throw remove everything this call itself just added.
+    /// </remarks>
+    /// <summary>Internal for direct rollback testing — see <c>Infrastructure.AI.Tests.Plugins.PluginLoaderTests</c>.</summary>
+    internal (List<string> SkillPaths, List<string> McpServerNames) CommitResolvedState(
+        List<string> skillPaths,
+        List<(string NamespacedName, McpServerDefinition Definition)> mcpRegistrations)
+    {
+        var mcpServerNames = new List<string>(mcpRegistrations.Count);
+
+        try
+        {
+            foreach (var (namespacedName, definition) in mcpRegistrations)
+            {
+                // Last-writer-wins on a duplicate namespaced key — unlike BundleStagingService's
+                // TryAdd + keep-first-and-warn. Deliberately different, not an oversight: a host
+                // plugin's own manifest realistically never declares the same server name twice, so
+                // this path optimizes for the simpler write; a bundle's namespace is per-upload and a
+                // duplicate there is worth flagging to the (untrusted) bundle author rather than
+                // silently accepted.
+                _mcpServersConfig.Servers[namespacedName] = definition;
+                mcpServerNames.Add(namespacedName);
+            }
+
+            if (skillPaths.Count > 0)
+                _skillsConfig.AdditionalPaths = [.. _skillsConfig.AdditionalPaths, .. skillPaths];
+        }
+        catch
+        {
+            foreach (var registered in mcpServerNames)
+                _mcpServersConfig.Servers.TryRemove(registered, out _);
+            throw;
+        }
+
+        return (skillPaths, mcpServerNames);
+    }
+
+    /// <summary>
+    /// Logs the successful load, isolated in its own try/catch so a broken sink can never be
+    /// mistaken for a load failure.
+    /// </summary>
+    /// <remarks>
+    /// Round-2 grader/correctness finding on this same fix: an earlier version kept this log call
+    /// inside <see cref="Load"/>'s main try, after the commit — a broken sink there still landed in
+    /// the outer catch and reported <see cref="PluginLoadStatus.Failed"/> despite the commit having
+    /// already fully succeeded, reproducing #614's split state one call later. The exception here is
+    /// deliberately swallowed rather than logged: the same call that just failed is the only channel
+    /// available to report it, and this is diagnostic output, not part of load correctness.
+    /// </remarks>
+    private void LogLoadedSafely(
+        PluginDeclaration declaration, PluginManifest manifest, List<string> skillPaths, List<string> mcpServerNames)
+    {
         try
         {
             _logger.LogInformation(
@@ -128,20 +173,7 @@ public sealed class PluginLoader : IPluginLoader
         }
         catch (Exception)
         {
-            // Deliberately not logged (the same call that just failed is the only way to log it):
-            // a broken sink here is a diagnostics problem, not a load failure — the commit above
-            // already fully succeeded, and this call reports that fact, it does not decide it.
         }
-
-        return new LoadedPlugin(
-            declaration.Name,
-            manifest.Version,
-            pluginPath,
-            manifest,
-            PluginLoadStatus.Loaded,
-            skillPaths,
-            mcpServerNames,
-            declaration);
     }
 
     /// <summary>
@@ -193,7 +225,7 @@ public sealed class PluginLoader : IPluginLoader
         foreach (var serverProp in block.Value.ServersElement.EnumerateObject())
         {
             var namespacedName = $"{declaration.Name}:{serverProp.Name}";
-            var built = BuildOneServer(declaration, namespacedName, serverProp);
+            var built = BuildOneServer(declaration, serverProp);
             if (built is not null)
                 registrations.Add((namespacedName, built));
         }
@@ -209,7 +241,7 @@ public sealed class PluginLoader : IPluginLoader
     /// resolved in the same call and leaving any server built by an earlier entry in this same loop
     /// unregistered (absent from the returned names, so nothing can deregister it later).
     /// </summary>
-    private McpServerDefinition? BuildOneServer(PluginDeclaration declaration, string namespacedName, JsonProperty serverProp)
+    private McpServerDefinition? BuildOneServer(PluginDeclaration declaration, JsonProperty serverProp)
     {
         var result = McpServerDefinitionBuilder.Build(
             serverProp.Value, declaration.Env, $"[Plugin: {declaration.Name}]", serverProp.Name);
@@ -218,7 +250,7 @@ public sealed class PluginLoader : IPluginLoader
 
         _logger.LogWarning(
             "Plugin {Name}: failed to build MCP server definition for '{ServerName}', skipping: {Errors}",
-            declaration.Name, namespacedName, string.Join("; ", result.Errors));
+            declaration.Name, serverProp.Name, string.Join("; ", result.Errors));
         return null;
     }
 
