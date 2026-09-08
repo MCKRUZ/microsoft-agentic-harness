@@ -117,20 +117,25 @@ public sealed class SkillManifestEgressPolicyResolver : IEgressPolicyResolver
     /// <see cref="_multiSkillCache"/>'s own key space only.
     /// </summary>
     /// <remarks>
-    /// Length-prefixes each sorted id (<c>"{length}{id}"</c>) rather than joining with a bare
-    /// separator (code-review finding: no validator in this codebase restricts what characters a
-    /// skill id can contain — <c>SkillMetadataParser</c> takes it straight from manifest YAML — so a
-    /// bare-separator join could ambiguously collide, e.g. ids <c>["a", "bc"]</c> and
-    /// <c>["ab", "c"]</c> would sort and join to the identical string with no separator, or the same
-    /// collision recurs one level up if the separator itself can appear inside an id). Length-prefixing
-    /// makes every segment's boundary a function of a number the join itself writes, not of what the
-    /// id contains, so two different sorted id lists can never produce the same key regardless of
-    /// content.
+    /// Length-prefixes each sorted id as <c>"{length}:{id}"</c> — not a bare separator join
+    /// (code-review finding: no validator in this codebase restricts what characters a skill id can
+    /// contain, so a bare-separator join could ambiguously collide, e.g. ids <c>["a", "bc"]</c> and
+    /// <c>["ab", "c"]</c> sort and join to the identical string with no separator, or the same
+    /// collision recurs one level up if the separator itself can appear inside an id) — and not a bare
+    /// length prefix with no delimiter either (a SECOND round of review caught this same fix's own
+    /// first version: <c>"{length}{id}"</c> is not actually unambiguous, because the decimal length
+    /// digits are not delimited from the content that follows — a digit-leading id can extend what
+    /// looks like the length of the PRECEDING segment, e.g. ids <c>["2", "abcdefghij"]</c> (lengths 1,
+    /// 10) and a single id <c>["10abcdefghij"]</c> (length 12) both produce <c>"1210abcdefghij"</c>).
+    /// The <c>:</c> delimiter is what actually closes the gap: it can never be a decimal digit, so the
+    /// length-digit run for each segment always terminates at the first <c>:</c> regardless of what the
+    /// id itself contains, and exactly that many characters are then consumed as the segment's content
+    /// before the next length-digit run begins.
     /// </remarks>
     private static string CompositeKey(IReadOnlyList<string> skillIds) =>
         string.Concat(skillIds
             .OrderBy(id => id, StringComparer.OrdinalIgnoreCase)
-            .Select(id => $"{id.Length}{id}"));
+            .Select(id => $"{id.Length}:{id}"));
 
     private IEgressPolicy BuildDefaultOnlyPolicy()
     {

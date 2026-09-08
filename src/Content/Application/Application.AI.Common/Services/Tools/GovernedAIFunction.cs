@@ -88,8 +88,9 @@ internal sealed class GovernedAIFunction : DelegatingAIFunction
     /// time — needed when one tool instance is shared by every skill and the caller names which
     /// skill it means as an argument (#589's <c>run_skill_script</c> case: the framework's
     /// <c>AgentSkillsProvider</c> is a single agent-wide instance, not one per skill). A null or
-    /// blank result establishes no scope (fail-closed to the harness-wide default), never a wrong
-    /// or stale one.
+    /// blank result establishes NO scope — this call runs with whatever scope, if any, is already
+    /// ambient from an outer call — never a wrong or stale one. Not the same claim as "falls back to
+    /// the harness-wide default": that only follows when nothing established an outer scope either.
     /// </param>
     public GovernedAIFunction(
         AIFunction innerFunction,

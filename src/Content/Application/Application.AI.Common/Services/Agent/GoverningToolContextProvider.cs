@@ -37,8 +37,11 @@ namespace Application.AI.Common.Services.Agent;
 /// this tool's egress scope any more: <see cref="Govern"/> wraps it with
 /// <see cref="GovernedAIFunction"/>'s <c>skillIdFromArguments</c> resolver, which reads the model's own
 /// <c>skillName</c> call argument and maps it back to the harness skill that contributed it — see
-/// <see cref="Govern"/>'s remarks for the mechanics. A missing or unrecognized <c>skillName</c> still
-/// fails closed to the harness-wide default allowlist, never a guess. The two other skill-disclosure
+/// <see cref="Govern"/>'s remarks for the mechanics. A missing or unrecognized <c>skillName</c>
+/// establishes no NEW scope — never a guess — which on this channel's actual call position means the
+/// harness-wide default allowlist applies, since nothing establishes an outer scope ahead of it here.
+/// That is a fact about where this tool sits on the rail today, not a guarantee this code itself makes;
+/// see <see cref="Govern"/>'s remarks for what "no scope" precisely means. The two other skill-disclosure
 /// tools (<c>load_skill</c>/<c>read_skill_resource</c>) are exempt from <see cref="GovernedAIFunction"/>
 /// entirely, so this does not apply to them — see the exemption rationale below.
 /// </para>

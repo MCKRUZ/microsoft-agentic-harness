@@ -140,6 +140,56 @@ public sealed class SkillManifestEgressPolicyResolverTests
     }
 
     /// <summary>
+    /// #589 correctness/security review finding on this PR's own first draft: the multi-skill cache
+    /// key's original length-prefix scheme (<c>"{length}{id}"</c>, no delimiter between the length
+    /// digits and the id content) was not actually collision-free — a digit-leading id can extend what
+    /// looks like the length of the preceding segment. Concretely, sorted-and-joined ids
+    /// <c>["2", "abcdefghij", "zzz"]</c> and <c>["10abcdefghij", "zzz"]</c> both produced the identical
+    /// key <c>"1210abcdefghij3zzz"</c> under that scheme, even though they name two entirely different
+    /// skill combinations. This test resolves both sets (with distinct, mutually exclusive allowlist
+    /// entries) and proves neither one's policy leaks into the other's cache slot.
+    /// </summary>
+    [Fact]
+    public async Task ResolveFor_TwoDifferentMultiSkillSetsWithColliderShapedIds_NeverShareACacheEntry()
+    {
+        var accessor = new CurrentSkillAccessor();
+
+        var skillTwo = SkillWithAllowlist("2", new EgressAllowlistEntry
+        { Host = "set-a-only.example.com", Schemes = ["https"], Ports = [443] });
+        var skillAbc = SkillWithAllowlist("abcdefghij");
+        var skillZzz = SkillWithAllowlist("zzz");
+        var skillTenAbc = SkillWithAllowlist("10abcdefghij", new EgressAllowlistEntry
+        { Host = "set-b-only.example.com", Schemes = ["https"], Ports = [443] });
+
+        var registry = new Mock<ISkillMetadataRegistry>(MockBehavior.Strict);
+        registry.Setup(r => r.TryGet("2")).Returns(skillTwo);
+        registry.Setup(r => r.TryGet("abcdefghij")).Returns(skillAbc);
+        registry.Setup(r => r.TryGet("zzz")).Returns(skillZzz);
+        registry.Setup(r => r.TryGet("10abcdefghij")).Returns(skillTenAbc);
+
+        var resolver = NewResolver(accessor, registry.Object);
+
+        using (accessor.BeginScope(["2", "abcdefghij", "zzz"]))
+        {
+            var setAPolicy = resolver.ResolveFor(TestIdentity.Default);
+            var allowed = await setAPolicy.AllowAsync(new Uri("https://set-a-only.example.com/"), TestIdentity.Default, CancellationToken.None);
+            allowed.Allowed.Should().BeTrue("set A's own skill '2' declared this host");
+        }
+
+        using (accessor.BeginScope(["10abcdefghij", "zzz"]))
+        {
+            var setBPolicy = resolver.ResolveFor(TestIdentity.Default);
+
+            var setBHost = await setBPolicy.AllowAsync(new Uri("https://set-b-only.example.com/"), TestIdentity.Default, CancellationToken.None);
+            setBHost.Allowed.Should().BeTrue("set B's own skill '10abcdefghij' declared this host");
+
+            var setAHost = await setBPolicy.AllowAsync(new Uri("https://set-a-only.example.com/"), TestIdentity.Default, CancellationToken.None);
+            setAHost.Allowed.Should().BeFalse(
+                "set B never declared this host - a colliding cache key would have returned set A's cached policy instead");
+        }
+    }
+
+    /// <summary>
     /// Test 6 (brief): the resolver caches by skill key. Two lookups with the
     /// same active skill return the SAME policy instance. Per-skill cache keeps
     /// the merge cost amortized over the lifetime of the process.
