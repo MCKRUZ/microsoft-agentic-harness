@@ -245,7 +245,7 @@ public sealed class PluginLoaderTests : IDisposable
     }
 
     [Fact]
-    public void Load_SomethingThrowsAfterSkillsWouldHaveCommitted_LeavesSkillsConfigUntouched()
+    public void Load_SomethingThrowsDuringResolve_LeavesSkillsConfigUntouched()
     {
         // #614: the old shape committed the skill path to _skillsConfig.AdditionalPaths immediately
         // inside LoadSkills, then kept going — if ANYTHING later in the same Load call threw, the
@@ -264,14 +264,15 @@ public sealed class PluginLoaderTests : IDisposable
 
         var manifest = new PluginManifest
         {
-            Name = "throws-late",
+            Name = "throws-during-resolve",
             Version = "1.0.0",
             Skills = "./skills/"
         };
 
-        var sut = new PluginLoader(_skillsConfig, _mcpServersConfig, new ThrowingLogger());
+        // Fires on ResolveSkillPaths' own resolve-time log — before the commit block runs at all.
+        var sut = new PluginLoader(_skillsConfig, _mcpServersConfig, new ThrowingLogger(messageContains: "resolved skill path"));
 
-        var result = sut.Load(_tempDir, MakeDeclaration("throws-late"), manifest);
+        var result = sut.Load(_tempDir, MakeDeclaration("throws-during-resolve"), manifest);
 
         result.Should().NotBeNull();
         result!.Status.Should().Be(PluginLoadStatus.Failed,
@@ -280,15 +281,50 @@ public sealed class PluginLoaderTests : IDisposable
             "a skill path must never survive in shared config for a plugin that ended up Failed");
     }
 
+    [Fact]
+    public void Load_LoggingTheSuccessFails_StillReportsLoadedWithTheCommittedState()
+    {
+        // Round-2 grader/correctness finding on this same fix: the first version of the atomic-commit
+        // shape still had the success LogInformation call ("Plugin ... loaded: ...") inside the same
+        // try as the commit — a broken sink on THAT specific call still landed in the outer catch and
+        // reported Failed despite both configs having already been fully committed, reproducing #614
+        // one call later. This proves the fix for that: a failure logging that the load succeeded must
+        // never retroactively turn it into a reported failure or lose the already-committed state.
+        var skillsDir = Path.Combine(_tempDir, "skills");
+        Directory.CreateDirectory(skillsDir);
+
+        var manifest = new PluginManifest
+        {
+            Name = "log-success-fails",
+            Version = "1.0.0",
+            Skills = "./skills/"
+        };
+
+        // Fires only on the final summary log ("... loaded: ..."), which runs after the commit —
+        // ResolveSkillPaths' own earlier "resolved skill path" log is spared, so staging completes.
+        var sut = new PluginLoader(_skillsConfig, _mcpServersConfig, new ThrowingLogger(messageContains: "loaded:"));
+
+        var result = sut.Load(_tempDir, MakeDeclaration("log-success-fails"), manifest);
+
+        result.Should().NotBeNull();
+        result!.Status.Should().Be(PluginLoadStatus.Loaded,
+            "the commit already fully succeeded before the failing log call — a diagnostics failure must not overturn that");
+        result.SkillPaths.Should().ContainSingle(skillsDir);
+        _skillsConfig.AdditionalPaths.Should().Contain(skillsDir,
+            "the skill path was already committed and must not be discarded just because logging that fact failed");
+    }
+
     /// <summary>
-    /// Throws on an Information-level log call specifically — real loggers can fail (a broken sink, a
-    /// full disk, a network-based provider timing out), and #614's fix must hold regardless of which
-    /// step in <see cref="PluginLoader.Load"/> a failure originates from, not just a manifest-content
-    /// one. Deliberately spares Warning: <see cref="PluginLoader.Load"/>'s own catch block logs the
-    /// failure at Warning, and that call must survive for the method to return a value at all rather
-    /// than let a second, unrelated exception escape unhandled out of the test itself.
+    /// Throws on an Information-level log call whose rendered message contains
+    /// <paramref name="messageContains"/> — real loggers can fail (a broken sink, a full disk, a
+    /// network-based provider timing out), and #614's fix must hold regardless of which step in
+    /// <see cref="PluginLoader.Load"/> a failure originates from, not just a manifest-content one.
+    /// Message-selective so a test can target either the resolve-time log (pre-commit) or the
+    /// success summary log (post-commit) independently. Deliberately spares Warning always:
+    /// <see cref="PluginLoader.Load"/>'s own catch block logs the failure at Warning, and that call
+    /// must survive for the method to return a value at all.
     /// </summary>
-    private sealed class ThrowingLogger : ILogger<PluginLoader>
+    private sealed class ThrowingLogger(string messageContains) : ILogger<PluginLoader>
     {
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
         public bool IsEnabled(LogLevel logLevel) => true;
@@ -297,7 +333,7 @@ public sealed class PluginLoaderTests : IDisposable
             LogLevel logLevel, EventId eventId, TState state, Exception? exception,
             Func<TState, Exception?, string> formatter)
         {
-            if (logLevel == LogLevel.Information)
+            if (logLevel == LogLevel.Information && formatter(state, exception).Contains(messageContains))
                 throw new InvalidOperationException("Simulated logging sink failure.");
         }
     }

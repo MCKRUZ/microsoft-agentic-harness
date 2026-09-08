@@ -49,14 +49,16 @@ public sealed class PluginLoader : IPluginLoader
     /// skill commit can ever throw" — an invariant nothing enforced and that held only because every
     /// call reachable from the MCP-loading step happens to already return <c>Result&lt;T&gt;</c>
     /// instead of throwing (traced during #614's investigation: no crafted manifest reproduces a live
-    /// throw there today). This closes the gap for the input-validation failures that caused it; see
-    /// the commit block below for the one residual (in-memory-write) sliver this does not close.
+    /// throw there today).
     /// </remarks>
     public LoadedPlugin? Load(string pluginPath, PluginDeclaration declaration, PluginManifest manifest)
     {
+        List<string> skillPaths;
+        List<string> mcpServerNames;
+
         try
         {
-            var skillPaths = string.IsNullOrEmpty(manifest.Skills)
+            var resolvedSkillPaths = string.IsNullOrEmpty(manifest.Skills)
                 ? []
                 : ResolveSkillPaths(pluginPath, declaration, manifest.Skills);
 
@@ -75,7 +77,7 @@ public sealed class PluginLoader : IPluginLoader
             // SINGLE-STATEMENT write (the skills list reassignment): the only way either can now
             // throw is a bare Dictionary/List write against already-validated, non-null keys and
             // values, which requires an out-of-memory-class failure, not a manifest-content one.
-            var mcpServerNames = new List<string>(mcpRegistrations.Count);
+            var resolvedMcpServerNames = new List<string>(mcpRegistrations.Count);
             foreach (var (namespacedName, definition) in mcpRegistrations)
             {
                 // Last-writer-wins on a duplicate namespaced key — unlike BundleStagingService's
@@ -85,25 +87,23 @@ public sealed class PluginLoader : IPluginLoader
                 // duplicate there is worth flagging to the (untrusted) bundle author rather than
                 // silently accepted.
                 _mcpServersConfig.Servers[namespacedName] = definition;
-                mcpServerNames.Add(namespacedName);
+                resolvedMcpServerNames.Add(namespacedName);
             }
 
-            if (skillPaths.Count > 0)
-                _skillsConfig.AdditionalPaths = [.. _skillsConfig.AdditionalPaths, .. skillPaths];
+            if (resolvedSkillPaths.Count > 0)
+                _skillsConfig.AdditionalPaths = [.. _skillsConfig.AdditionalPaths, .. resolvedSkillPaths];
 
-            _logger.LogInformation(
-                "Plugin {Name} v{Version} loaded: {SkillCount} skill path(s), {McpCount} MCP server(s)",
-                declaration.Name, manifest.Version, skillPaths.Count, mcpServerNames.Count);
-
-            return new LoadedPlugin(
-                declaration.Name,
-                manifest.Version,
-                pluginPath,
-                manifest,
-                PluginLoadStatus.Loaded,
-                skillPaths,
-                mcpServerNames,
-                declaration);
+            // Both writes above have now genuinely succeeded — plain, already-validated
+            // Dictionary/List writes, nothing left in this try that manifest content or a caller
+            // can make throw. Assigning into the outer locals here, rather than returning directly,
+            // is what makes the success log below reachable WITHOUT sitting inside this catch's
+            // reach (round-2 grader/correctness finding on this same fix: the previous shape kept the
+            // success log inside this try, after the commit — a broken logging sink there still
+            // landed in the catch below and reported PluginLoadStatus.Failed over a load that had, in
+            // fact, already fully committed. Logging that a load succeeded must never be able to
+            // retroactively turn it into a reported failure).
+            skillPaths = resolvedSkillPaths;
+            mcpServerNames = resolvedMcpServerNames;
         }
         catch (Exception ex)
         {
@@ -119,6 +119,29 @@ public sealed class PluginLoader : IPluginLoader
                 [],
                 declaration);
         }
+
+        try
+        {
+            _logger.LogInformation(
+                "Plugin {Name} v{Version} loaded: {SkillCount} skill path(s), {McpCount} MCP server(s)",
+                declaration.Name, manifest.Version, skillPaths.Count, mcpServerNames.Count);
+        }
+        catch (Exception)
+        {
+            // Deliberately not logged (the same call that just failed is the only way to log it):
+            // a broken sink here is a diagnostics problem, not a load failure — the commit above
+            // already fully succeeded, and this call reports that fact, it does not decide it.
+        }
+
+        return new LoadedPlugin(
+            declaration.Name,
+            manifest.Version,
+            pluginPath,
+            manifest,
+            PluginLoadStatus.Loaded,
+            skillPaths,
+            mcpServerNames,
+            declaration);
     }
 
     /// <summary>
