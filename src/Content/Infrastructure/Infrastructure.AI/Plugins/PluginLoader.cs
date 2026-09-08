@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text.Json;
 using Application.AI.Common.Interfaces.Plugins;
 using Domain.Common.Config.AI;
@@ -63,11 +64,11 @@ public sealed class PluginLoader : IPluginLoader
                 ? []
                 : ResolveMcpServerRegistrations(pluginPath, declaration, manifest.McpServers);
 
-            var (committedSkillPaths, committedMcpServerNames) = CommitResolvedState(skillPaths, mcpRegistrations);
+            var mcpServerNames = CommitResolvedState(skillPaths, mcpRegistrations);
 
             // Never inside this try's reach on its own — see LogLoadedSafely's remarks for why a
             // broken sink here must not retroactively turn an already-committed load into Failed.
-            LogLoadedSafely(declaration, manifest, committedSkillPaths, committedMcpServerNames);
+            LogLoadedSafely(declaration, manifest, skillPaths, mcpServerNames);
 
             return new LoadedPlugin(
                 declaration.Name,
@@ -75,8 +76,8 @@ public sealed class PluginLoader : IPluginLoader
                 pluginPath,
                 manifest,
                 PluginLoadStatus.Loaded,
-                committedSkillPaths,
-                committedMcpServerNames,
+                skillPaths,
+                mcpServerNames,
                 declaration);
         }
         catch (Exception ex)
@@ -96,12 +97,15 @@ public sealed class PluginLoader : IPluginLoader
     }
 
     /// <summary>
-    /// Commits both resolved contributions to shared config as one unit: either both fully commit, or
-    /// neither survives. Nothing before this call has mutated shared state (see <see cref="Load"/>'s
-    /// remarks), so a throw anywhere before it leaves both configs untouched already; this method's
-    /// own job is to make a throw DURING the commit itself behave the same way.
+    /// Commits both resolved contributions to shared config, each as a single reassignment rather than
+    /// an in-place mutation. Nothing before this call has mutated shared state (see <see cref="Load"/>'s
+    /// remarks), so a throw anywhere before it leaves both configs untouched already; this method's own
+    /// job is to make a throw DURING the commit behave the same way, and to never expose a
+    /// partially-applied MCP server set to a concurrent reader even on the successful path.
+    /// Internal for direct testing — see <c>Infrastructure.AI.Tests.Plugins.PluginLoaderTests</c>.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Round-2 code-review finding on this same fix: an earlier version left the two writes
     /// non-atomic with each other and reasoned the residual risk down to "an out-of-memory-class
     /// write failure, not a manifest-content one" — true, but understated. Unlike a skill path (which
@@ -112,19 +116,36 @@ public sealed class PluginLoader : IPluginLoader
     /// <see cref="McpServersConfig.Servers"/> unconditionally. A server left committed for a plugin
     /// that ultimately reports <see cref="PluginLoadStatus.Failed"/> would be immediately live with
     /// none of that plugin's boundary governance ever verified — worse than the skills case, not an
-    /// equally-thin residual. Rolls back the same way <c>BundleStagingService.ParsePluginManifests</c>
-    /// already does for its own MCP-server registration loop (issue #372): register-and-track, then on
-    /// any throw remove everything this call itself just added.
+    /// equally-thin residual.
+    /// </para>
+    /// <para>
+    /// Round-3 code-review finding, on THIS round's own first fix for the paragraph above: register-
+    /// and-track-then-roll-back-on-throw (mirroring <c>BundleStagingService.ParsePluginManifests</c>,
+    /// issue #372) is safe for that method's own registry (bundle-scoped keys, <c>TryAdd</c>-only, a
+    /// duplicate is always rejected) but not for this one, which deliberately allows last-writer-wins
+    /// on a duplicate namespaced key across two plugin declarations sharing a <c>Name</c> — nothing
+    /// validates that names are unique. A blind <c>TryRemove</c> on rollback would delete a
+    /// DIFFERENT, already-loaded plugin's legitimate registration if this call's key happened to
+    /// collide with one. The register-per-key loop against the live dictionary also let a concurrent
+    /// reader (<c>McpConnectionManager</c> holds an open enumerator across network I/O per
+    /// <see cref="McpServersConfig"/>'s own remarks) observe a partially-updated server set mid-loop,
+    /// even on the successful path. Building the merged dictionary off to the side and reassigning
+    /// <see cref="McpServersConfig.Servers"/> in one shot — the same single-reassignment shape already
+    /// used two lines below for <see cref="SkillsConfig.AdditionalPaths"/> — removes both problems at
+    /// once: nothing is visible to a reader until the whole merged set is ready, and a throw before the
+    /// reassignment leaves the original dictionary reference completely untouched, so there is nothing
+    /// left to roll back.
+    /// </para>
     /// </remarks>
-    /// <summary>Internal for direct rollback testing — see <c>Infrastructure.AI.Tests.Plugins.PluginLoaderTests</c>.</summary>
-    internal (List<string> SkillPaths, List<string> McpServerNames) CommitResolvedState(
+    internal List<string> CommitResolvedState(
         List<string> skillPaths,
         List<(string NamespacedName, McpServerDefinition Definition)> mcpRegistrations)
     {
         var mcpServerNames = new List<string>(mcpRegistrations.Count);
 
-        try
+        if (mcpRegistrations.Count > 0)
         {
+            var merged = new ConcurrentDictionary<string, McpServerDefinition>(_mcpServersConfig.Servers);
             foreach (var (namespacedName, definition) in mcpRegistrations)
             {
                 // Last-writer-wins on a duplicate namespaced key — unlike BundleStagingService's
@@ -133,21 +154,17 @@ public sealed class PluginLoader : IPluginLoader
                 // this path optimizes for the simpler write; a bundle's namespace is per-upload and a
                 // duplicate there is worth flagging to the (untrusted) bundle author rather than
                 // silently accepted.
-                _mcpServersConfig.Servers[namespacedName] = definition;
+                merged[namespacedName] = definition;
                 mcpServerNames.Add(namespacedName);
             }
 
-            if (skillPaths.Count > 0)
-                _skillsConfig.AdditionalPaths = [.. _skillsConfig.AdditionalPaths, .. skillPaths];
-        }
-        catch
-        {
-            foreach (var registered in mcpServerNames)
-                _mcpServersConfig.Servers.TryRemove(registered, out _);
-            throw;
+            _mcpServersConfig.Servers = merged;
         }
 
-        return (skillPaths, mcpServerNames);
+        if (skillPaths.Count > 0)
+            _skillsConfig.AdditionalPaths = [.. _skillsConfig.AdditionalPaths, .. skillPaths];
+
+        return mcpServerNames;
     }
 
     /// <summary>
@@ -173,6 +190,9 @@ public sealed class PluginLoader : IPluginLoader
         }
         catch (Exception)
         {
+            // Deliberately swallowed, not logged: the sink that just failed is the only channel this
+            // method has to report a failure, and this call reports a load that already succeeded —
+            // it does not decide load correctness. See this method's remarks for the full rationale.
         }
     }
 

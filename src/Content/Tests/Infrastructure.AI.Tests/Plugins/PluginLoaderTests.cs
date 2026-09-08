@@ -282,19 +282,26 @@ public sealed class PluginLoaderTests : IDisposable
     }
 
     [Fact]
-    public void CommitResolvedState_ThrowsPartwayThroughMcpLoop_RollsBackTheServersAlreadyRegistered()
+    public void CommitResolvedState_ThrowsPartwayThroughMcpMerge_NeverTouchesTheLiveDictionary()
     {
-        // #614 code-review finding (round 2): unlike a skill path — only ever attributed to a plugin
-        // whose Status is Loaded — an MCP server registered into McpServersConfig.Servers carries no
+        // #614 code-review, round 2: unlike a skill path — only ever attributed to a plugin whose
+        // Status is Loaded — an MCP server registered into McpServersConfig.Servers carries no
         // plugin/status gating at all; PluginToolBoundaryStartupValidator/McpConnectionManager read it
         // unconditionally. A server left committed for a plugin that ultimately reports Failed would
-        // be immediately live with none of that plugin's boundary governance ever verified — worse
-        // than the skills case this fix already covered. Proves the loop rolls back every server IT
-        // ITSELF already registered when a later entry in the same call fails, the same way
-        // BundleStagingService.ParsePluginManifests already does for its own MCP loop (#372). A null
-        // namespaced name is a genuine ConcurrentDictionary indexer failure (ArgumentNullException),
-        // not a test-only seam — ConcurrentDictionary<TKey,TValue> throws for any null key at runtime
-        // regardless of the compile-time nullable-reference annotation on the tuple's own type.
+        // be immediately live with none of that plugin's boundary governance ever verified.
+        //
+        // Round 3 finding on this same fix's first attempt: a register-into-the-live-dictionary-then-
+        // roll-back-on-throw loop is unsafe here specifically because this method allows last-writer-
+        // wins on a duplicate namespaced key across two plugin declarations sharing a Name — nothing
+        // validates uniqueness. A blind rollback-by-delete would remove a DIFFERENT, already-loaded
+        // plugin's legitimate registration if this call's key happened to collide with one. The fix:
+        // build the merged set off to the side and reassign Servers in one shot, so a throw during the
+        // merge never touches the live dictionary at all — there is nothing to roll back because
+        // nothing was ever written to it. A null namespaced name is a genuine ConcurrentDictionary
+        // indexer failure (ArgumentNullException), not a test-only seam.
+        var existing = new McpServerDefinition { Enabled = true, Type = McpServerType.Stdio, Command = "existing" };
+        _mcpServersConfig.Servers["other-plugin:server"] = existing;
+
         var good = new McpServerDefinition { Enabled = true, Type = McpServerType.Stdio, Command = "npx" };
         var bad = new McpServerDefinition { Enabled = true, Type = McpServerType.Stdio, Command = "npx" };
 
@@ -304,7 +311,9 @@ public sealed class PluginLoaderTests : IDisposable
 
         act.Should().Throw<ArgumentNullException>();
         _mcpServersConfig.Servers.Should().NotContainKey("plugin:good",
-            "the first server registered in this call must be rolled back when a later one in the same call fails");
+            "the merge never reached the live dictionary, so nothing from this failed call should be visible");
+        _mcpServersConfig.Servers.Should().ContainSingle().Which.Key.Should().Be("other-plugin:server",
+            "a pre-existing, unrelated registration must survive completely untouched by a failed merge");
     }
 
     [Fact]
