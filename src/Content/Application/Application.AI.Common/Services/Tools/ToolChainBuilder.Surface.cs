@@ -204,23 +204,34 @@ public partial class ToolChainBuilder
     private static AITool UnionSkillScopeIfNeeded(
         AITool published, AITool candidate, ConcurrentDictionary<AITool, byte> callOnceCandidates)
     {
-        // Checked before the union-needed early return below, not only inside it (code-review
+        // Computed once up front, but the actual TryAdd is deferred to whichever instance this
+        // method actually returns (code-simplifier: tagging `published` unconditionally here, then
+        // tagging `rewrapped` again below when a rewrap happens, left a stale-but-harmless entry for
+        // the discarded `published` instance — RegisterSurvivingCallOnceTools only reads tags for
+        // tools that make it into the final surface, so it was never a bug, just a wasted write).
+        // Still evaluated before the union-needed check below, not only inside it (code-review
         // finding: a skill that names the same tool via two of its own ToolDeclarations - same skill
         // id on both, so the union branch never fires at all - could still have the DISCARDED
         // candidate be the one call-once-tagged. Since `published` is what survives to
-        // RegisterSurvivingCallOnceTools either way, tag IT the moment either side was a candidate,
-        // independent of whether a union rewrap also happens.
+        // RegisterSurvivingCallOnceTools either way, tag whichever instance is actually returned the
+        // moment either side was a candidate, independent of whether a union rewrap also happens.
         var eitherWasCallOnceCandidate = callOnceCandidates.ContainsKey(published) || callOnceCandidates.ContainsKey(candidate);
-        if (eitherWasCallOnceCandidate)
-            callOnceCandidates.TryAdd(published, 0);
 
         if (published is not GovernedAIFunction publishedGoverned || candidate is not GovernedAIFunction candidateGoverned)
+        {
+            if (eitherWasCallOnceCandidate)
+                callOnceCandidates.TryAdd(published, 0);
             return published;
+        }
 
         var publishedIds = publishedGoverned.SkillIds ?? [];
         var candidateIds = candidateGoverned.SkillIds ?? [];
         if (candidateIds.Count == 0 || candidateIds.All(id => publishedIds.Contains(id, StringComparer.OrdinalIgnoreCase)))
+        {
+            if (eitherWasCallOnceCandidate)
+                callOnceCandidates.TryAdd(published, 0);
             return published;
+        }
 
         var union = publishedIds
             .Concat(candidateIds)

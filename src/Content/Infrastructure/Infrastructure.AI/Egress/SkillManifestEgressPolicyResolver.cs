@@ -53,25 +53,25 @@ public sealed class SkillManifestEgressPolicyResolver : IEgressPolicyResolver
     private readonly ILogger<DefaultEgressPolicy> _policyLogger;
     private readonly TimeProvider _timeProvider;
 
-    // Two separate caches rather than one keyed by skill id plus a reserved sentinel string (#531
-    // security-review finding): the prior design's sentinel ("<no-skill>") relied on no real skill
-    // ever being named that, case-insensitively, in a case-insensitive cache — a property nothing
-    // enforced, and one the sentinel's own doc comment misstated (it claimed the safety came from
-    // skill ids never containing spaces, which the sentinel itself doesn't contain and so proves
-    // nothing about). A skill an operator names any case variant of the sentinel would collide in
-    // the shared dictionary with the reserved "no skill" entry, in whichever direction lost the
-    // race to populate the cache first — leaking that skill's widened allowlist onto every
-    // unscoped call, or vice versa. Splitting the "no skill" case onto its own field makes the
-    // collision structurally impossible rather than relying on a string never being reused.
+    // No-skill policy stays on its own field rather than a reserved sentinel key sharing the skill
+    // cache's key space (#531 security-review finding): the prior design's sentinel ("<no-skill>")
+    // relied on no real skill ever being named that, case-insensitively, in a case-insensitive
+    // cache — a property nothing enforced, and one the sentinel's own doc comment misstated (it
+    // claimed the safety came from skill ids never containing spaces, which the sentinel itself
+    // doesn't contain and so proves nothing about). Splitting the "no skill" case onto its own
+    // field makes the collision structurally impossible rather than relying on a string never
+    // being reused.
     private readonly Lazy<IEgressPolicy> _noSkillPolicy;
-    private readonly ConcurrentDictionary<string, IEgressPolicy> _skillCache = new(StringComparer.OrdinalIgnoreCase);
 
-    // A separate cache, not a composite key sharing _skillCache's key space (#589 security-review
-    // finding): a composite key sharing the single-skill cache's own key space would need an
-    // unenforced assumption about what characters a skill id can contain to stay collision-free
-    // against a bare id. A separate dictionary removes that collision class entirely — the same
-    // pattern the no-skill/single-skill split above already uses for the identical reason.
-    private readonly ConcurrentDictionary<string, IEgressPolicy> _multiSkillCache = new(StringComparer.OrdinalIgnoreCase);
+    // One cache for every non-empty skill scope, single- or multi-skill alike, keyed by structural
+    // (order-independent, case-insensitive) list equality rather than a string encoding of the list
+    // (#589 simplification: an earlier version kept a separate string-keyed cache per arity, with a
+    // hand-proved collision-free length-prefix encoding for the multi-skill key — see git history —
+    // that took two review rounds to actually get right. A comparer keyed directly on the list
+    // sidesteps that whole class of encoding-collision reasoning: two lists are the same cache slot
+    // exactly when SkillIdListComparer says they're equal, by construction, for any arity).
+    private readonly ConcurrentDictionary<IReadOnlyList<string>, IEgressPolicy> _skillCache =
+        new(SkillIdListComparer.Instance);
 
     /// <summary>Initializes a new <see cref="SkillManifestEgressPolicyResolver"/>.</summary>
     public SkillManifestEgressPolicyResolver(
@@ -104,38 +104,38 @@ public sealed class SkillManifestEgressPolicyResolver : IEgressPolicyResolver
         ArgumentNullException.ThrowIfNull(identity);
 
         var skillIds = _currentSkill.CurrentSkillIds;
-        return skillIds.Count switch
-        {
-            0 => _noSkillPolicy.Value,
-            1 => _skillCache.GetOrAdd(skillIds[0], key => BuildPolicyForSkills([key])),
-            _ => _multiSkillCache.GetOrAdd(CompositeKey(skillIds), _ => BuildPolicyForSkills(skillIds)),
-        };
+        return skillIds.Count == 0
+            ? _noSkillPolicy.Value
+            : _skillCache.GetOrAdd(skillIds, static (ids, self) => self.BuildPolicyForSkills(ids), this);
     }
 
     /// <summary>
-    /// A deterministic, collision-free cache key for a multi-skill scope (#589), for
-    /// <see cref="_multiSkillCache"/>'s own key space only.
+    /// Order-independent, case-insensitive structural equality over a skill-id list — what makes
+    /// <see cref="_skillCache"/> safe to key directly on the list rather than on an encoded string.
     /// </summary>
-    /// <remarks>
-    /// Length-prefixes each sorted id as <c>"{length}:{id}"</c> — not a bare separator join
-    /// (code-review finding: no validator in this codebase restricts what characters a skill id can
-    /// contain, so a bare-separator join could ambiguously collide, e.g. ids <c>["a", "bc"]</c> and
-    /// <c>["ab", "c"]</c> sort and join to the identical string with no separator, or the same
-    /// collision recurs one level up if the separator itself can appear inside an id) — and not a bare
-    /// length prefix with no delimiter either (a SECOND round of review caught this same fix's own
-    /// first version: <c>"{length}{id}"</c> is not actually unambiguous, because the decimal length
-    /// digits are not delimited from the content that follows — a digit-leading id can extend what
-    /// looks like the length of the PRECEDING segment, e.g. ids <c>["2", "abcdefghij"]</c> (lengths 1,
-    /// 10) and a single id <c>["10abcdefghij"]</c> (length 12) both produce <c>"1210abcdefghij"</c>).
-    /// The <c>:</c> delimiter is what actually closes the gap: it can never be a decimal digit, so the
-    /// length-digit run for each segment always terminates at the first <c>:</c> regardless of what the
-    /// id itself contains, and exactly that many characters are then consumed as the segment's content
-    /// before the next length-digit run begins.
-    /// </remarks>
-    private static string CompositeKey(IReadOnlyList<string> skillIds) =>
-        string.Concat(skillIds
-            .OrderBy(id => id, StringComparer.OrdinalIgnoreCase)
-            .Select(id => $"{id.Length}:{id}"));
+    private sealed class SkillIdListComparer : IEqualityComparer<IReadOnlyList<string>>
+    {
+        public static readonly SkillIdListComparer Instance = new();
+
+        public bool Equals(IReadOnlyList<string>? x, IReadOnlyList<string>? y)
+        {
+            if (ReferenceEquals(x, y))
+                return true;
+            if (x is null || y is null || x.Count != y.Count)
+                return false;
+
+            return x.OrderBy(id => id, StringComparer.OrdinalIgnoreCase)
+                .SequenceEqual(y.OrderBy(id => id, StringComparer.OrdinalIgnoreCase), StringComparer.OrdinalIgnoreCase);
+        }
+
+        public int GetHashCode(IReadOnlyList<string> obj)
+        {
+            var hash = new HashCode();
+            foreach (var id in obj.OrderBy(id => id, StringComparer.OrdinalIgnoreCase))
+                hash.Add(id, StringComparer.OrdinalIgnoreCase);
+            return hash.ToHashCode();
+        }
+    }
 
     private IEgressPolicy BuildDefaultOnlyPolicy()
     {
