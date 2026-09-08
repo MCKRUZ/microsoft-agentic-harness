@@ -113,6 +113,13 @@ public sealed class SkillManifestEgressPolicyResolver : IEgressPolicyResolver
     /// Order-independent, case-insensitive structural equality over a skill-id list — what makes
     /// <see cref="_skillCache"/> safe to key directly on the list rather than on an encoded string.
     /// </summary>
+    /// <remarks>
+    /// Single-element lists get a dedicated O(1) path in both members (#589 code-review, second
+    /// round): a single active skill is the overwhelming common case — <see cref="ResolveFor"/> runs
+    /// on every governed outbound HTTP request — and the general path's <c>OrderBy</c> sort is pure
+    /// overhead when there is nothing to order. This restores, for that case, the same cost the old
+    /// design's separate bare-string single-skill cache had before the two caches were merged.
+    /// </remarks>
     private sealed class SkillIdListComparer : IEqualityComparer<IReadOnlyList<string>>
     {
         public static readonly SkillIdListComparer Instance = new();
@@ -123,6 +130,8 @@ public sealed class SkillManifestEgressPolicyResolver : IEgressPolicyResolver
                 return true;
             if (x is null || y is null || x.Count != y.Count)
                 return false;
+            if (x.Count == 1)
+                return string.Equals(x[0], y[0], StringComparison.OrdinalIgnoreCase);
 
             return x.OrderBy(id => id, StringComparer.OrdinalIgnoreCase)
                 .SequenceEqual(y.OrderBy(id => id, StringComparer.OrdinalIgnoreCase), StringComparer.OrdinalIgnoreCase);
@@ -130,6 +139,9 @@ public sealed class SkillManifestEgressPolicyResolver : IEgressPolicyResolver
 
         public int GetHashCode(IReadOnlyList<string> obj)
         {
+            if (obj.Count == 1)
+                return StringComparer.OrdinalIgnoreCase.GetHashCode(obj[0]);
+
             var hash = new HashCode();
             foreach (var id in obj.OrderBy(id => id, StringComparer.OrdinalIgnoreCase))
                 hash.Add(id, StringComparer.OrdinalIgnoreCase);

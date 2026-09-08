@@ -315,16 +315,10 @@ public sealed class GoverningToolContextProvider : AIContextProvider
     private static string? ResolveSkillIdFromArguments(
         AIFunctionArguments arguments, IReadOnlyDictionary<string, string> skillIdByFrameworkName)
     {
-        if (!arguments.TryGetValue("skillName", out var value))
-            return null;
-
-        // Mirrors GovernedAIFunction.ReadOperation: the framework's own pipeline supplies a
-        // JsonElement, but read defensively since arguments is a plain object? dictionary with no
-        // compile-time guarantee of that shape.
-        return ToolParameters.NormalizeScalar(value) is string frameworkName &&
-            skillIdByFrameworkName.TryGetValue(frameworkName, out var skillId)
-                ? skillId
-                : null;
+        var frameworkName = ToolParameters.ReadStringArgument(arguments, "skillName");
+        return frameworkName is not null && skillIdByFrameworkName.TryGetValue(frameworkName, out var skillId)
+            ? skillId
+            : null;
     }
 
     /// <summary>

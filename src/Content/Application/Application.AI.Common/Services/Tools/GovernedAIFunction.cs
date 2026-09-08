@@ -80,8 +80,9 @@ internal sealed class GovernedAIFunction : DelegatingAIFunction
     /// <see cref="ToolChainBuilder.ProjectSurvivors"/>). Null or empty has the same "no scope to
     /// establish" effect as a null <paramref name="currentSkillAccessor"/>. Mutually exclusive with
     /// <paramref name="skillIdFromArguments"/> in practice — a tool either has a scope fixed at build
-    /// time or resolves one per call, never both; when both are supplied,
-    /// <paramref name="skillIdFromArguments"/> wins.
+    /// time or resolves one per call, never both. No production call site supplies both today; if one
+    /// ever did, <paramref name="skillIdFromArguments"/> is consulted first and this parameter is
+    /// never read — not a fallback contest where this list is tried second when the resolver misses.
     /// </param>
     /// <param name="skillIdFromArguments">
     /// Resolves the active skill from this call's own arguments instead of a scope fixed at build
@@ -257,16 +258,8 @@ internal sealed class GovernedAIFunction : DelegatingAIFunction
         return ResourceParameterExtractor.Extract(operation, parameters, resourceDeclaring.ResourceParametersByOperation);
     }
 
-    private static string? ReadOperation(AIFunctionArguments arguments)
-    {
-        if (!arguments.TryGetValue(AIToolConverter.OperationArgumentName, out var value))
-            return null;
-
-        // ToolParameters.NormalizeScalar unwraps a string-valued JsonElement; anything it doesn't
-        // return as a string (a CLR non-string, or a non-string JsonElement) falls out here as null,
-        // preserving this method's original three-arm behavior (#595).
-        return ToolParameters.NormalizeScalar(value) as string;
-    }
+    private static string? ReadOperation(AIFunctionArguments arguments) =>
+        ToolParameters.ReadStringArgument(arguments, AIToolConverter.OperationArgumentName);
 
     /// <summary>
     /// Reads the raw <c>parametersJson</c> argument, accepting both shapes <see cref="ReadOperation"/>

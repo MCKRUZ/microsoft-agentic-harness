@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Microsoft.Extensions.AI;
 
 namespace Application.AI.Common.Services.Tools;
 
@@ -199,6 +200,26 @@ public static class ToolParameters
         var normalized = NormalizeScalar(value);
         return normalized is JsonElement je ? je.GetRawText() : normalized;
     }
+
+    /// <summary>
+    /// Reads one string-valued argument from a tool's <see cref="AIFunctionArguments"/>, applying the
+    /// same string-unwrap rule as <see cref="NormalizeScalar"/>.
+    /// </summary>
+    /// <remarks>
+    /// Extracted (#589 code-review) from two independent copies of the identical "TryGetValue then
+    /// unwrap" sequence — <c>GovernedAIFunction.ReadOperation</c> and
+    /// <c>GoverningToolContextProvider.ResolveSkillIdFromArguments</c> — each reading a
+    /// differently-named argument but otherwise doing the same two steps.
+    /// </remarks>
+    /// <param name="arguments">The tool call's arguments.</param>
+    /// <param name="key">The argument name to look up.</param>
+    /// <returns>
+    /// The unwrapped string when <paramref name="key"/> is present and resolves to one via
+    /// <see cref="NormalizeScalar"/>; otherwise <see langword="null"/> — the key is absent, or its
+    /// value is a CLR non-string or a non-string <see cref="JsonElement"/>.
+    /// </returns>
+    public static string? ReadStringArgument(AIFunctionArguments arguments, string key) =>
+        arguments.TryGetValue(key, out var value) ? NormalizeScalar(value) as string : null;
 
     /// <summary>
     /// The shared answer for "no parameters". A fresh dictionary per call would allocate on the

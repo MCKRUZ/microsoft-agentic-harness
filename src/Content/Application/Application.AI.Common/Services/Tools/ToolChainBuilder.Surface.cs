@@ -45,7 +45,7 @@ public partial class ToolChainBuilder
         // independent first-occurrence picks (one for scanning, one for publishing) could otherwise
         // disagree if the same server was contacted twice within one build and returned a changed
         // definition in between the two calls.
-        var mcpCandidates = DeduplicateMcpCandidates(allProvisioned, firstPartyNames);
+        var mcpCandidates = DeduplicateMcpCandidates(allProvisioned, firstPartyNames, callOnceCandidates);
 
         var survivingNames = new HashSet<string>(firstPartyNames, StringComparer.OrdinalIgnoreCase);
 
@@ -74,6 +74,7 @@ public partial class ToolChainBuilder
     /// scanner or the published surface as an MCP entry).
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Grouped by (server, name) together — NOT by name alone, and NOT by a concatenated string key.
     /// Grouping by name alone would collapse two genuinely different servers' same-named tools down to a
     /// single candidate before the surface scanner ever saw more than one of them, silently discarding
@@ -81,14 +82,48 @@ public partial class ToolChainBuilder
     /// the same bug: server "trusted" + tool "reader" and server "trustedread" + tool "er" would hash
     /// identically. A tuple key compares both components independently, so no such collision is
     /// possible. Grouping still only removes true duplicates: the same server's tool recorded twice
-    /// because two different resolution paths reached it.
+    /// because two different resolution paths reached it — including two different skills each
+    /// declaring the SAME server/tool pair, which is exactly the case a bare "keep the first" pick
+    /// would have silently mishandled.
+    /// </para>
+    /// <para>
+    /// #589 code-review finding (second round): a bare <c>g.First()</c> here has the identical bug
+    /// the first-party dedup loop in <see cref="ProjectSurvivors"/> was fixed to avoid — each skill's
+    /// own <c>GovernedAIFunction</c> wrapper (with that skill's own <see cref="GovernedAIFunction.SkillIds"/>)
+    /// is already built by the time tools from multiple skills are pooled into <paramref name="allProvisioned"/>
+    /// here (<c>WrapGoverned</c>, via <c>FinalizeChain</c>, runs per skill upstream of this method), so
+    /// two skills naming the same MCP server/tool each produce their own independently-scoped instance.
+    /// Folding the group through <see cref="UnionSkillScopeIfNeeded"/> — the same primitive the
+    /// first-party loop uses — closes this the same way, rather than leaving the MCP source exempt from
+    /// a fix its own tool-source counterpart already received.
+    /// </para>
     /// </remarks>
-    private static List<ProvisionedTool> DeduplicateMcpCandidates(List<ProvisionedTool> allProvisioned, HashSet<string> firstPartyNames)
+    private static List<ProvisionedTool> DeduplicateMcpCandidates(
+        List<ProvisionedTool> allProvisioned, HashSet<string> firstPartyNames, ConcurrentDictionary<AITool, byte> callOnceCandidates)
         => allProvisioned
             .Where(p => p.McpServerName is not null && !firstPartyNames.Contains(p.Tool.Name))
             .GroupBy(p => (Server: p.McpServerName!.ToUpperInvariant(), Name: p.Tool.Name.ToUpperInvariant()))
-            .Select(g => g.First())
+            .Select(g => UnionMcpGroup(g, callOnceCandidates))
             .ToList();
+
+    /// <summary>
+    /// Folds every skill's independently-wrapped instance of the same (server, name) MCP tool into one
+    /// published <see cref="ProvisionedTool"/>, carrying the union of every instance's skill scope —
+    /// the MCP-source counterpart to <see cref="ProjectSurvivors"/>'s first-party dedup loop.
+    /// </summary>
+    private static ProvisionedTool UnionMcpGroup(
+        IEnumerable<ProvisionedTool> group, ConcurrentDictionary<AITool, byte> callOnceCandidates)
+    {
+        using var enumerator = group.GetEnumerator();
+        enumerator.MoveNext();
+        var canonical = enumerator.Current;
+        var unionedTool = canonical.Tool;
+
+        while (enumerator.MoveNext())
+            unionedTool = UnionSkillScopeIfNeeded(unionedTool, enumerator.Current.Tool, callOnceCandidates);
+
+        return canonical with { Tool = unionedTool };
+    }
 
     /// <summary>
     /// Runs the surface scanner over the canonical MCP candidate set and admits whatever the withhold
@@ -204,47 +239,46 @@ public partial class ToolChainBuilder
     private static AITool UnionSkillScopeIfNeeded(
         AITool published, AITool candidate, ConcurrentDictionary<AITool, byte> callOnceCandidates)
     {
-        // Computed once up front, but the actual TryAdd is deferred to whichever instance this
-        // method actually returns (code-simplifier: tagging `published` unconditionally here, then
-        // tagging `rewrapped` again below when a rewrap happens, left a stale-but-harmless entry for
-        // the discarded `published` instance — RegisterSurvivingCallOnceTools only reads tags for
-        // tools that make it into the final surface, so it was never a bug, just a wasted write).
-        // Still evaluated before the union-needed check below, not only inside it (code-review
-        // finding: a skill that names the same tool via two of its own ToolDeclarations - same skill
-        // id on both, so the union branch never fires at all - could still have the DISCARDED
-        // candidate be the one call-once-tagged. Since `published` is what survives to
-        // RegisterSurvivingCallOnceTools either way, tag whichever instance is actually returned the
-        // moment either side was a candidate, independent of whether a union rewrap also happens.
+        // Evaluated up front, on the two ORIGINAL instances, not on whatever ResolveUnion returns —
+        // a skill that names the same tool via two of its own ToolDeclarations (same skill id on
+        // both) never triggers a rewrap at all, so the DISCARDED candidate could still have been the
+        // one call-once-tagged. Since `published` is what survives to RegisterSurvivingCallOnceTools
+        // either way (a rewrap or not), tag whichever instance ResolveUnion actually returns, exactly
+        // once, right here — not once per return branch inside it (code-simplifier: an earlier version
+        // repeated the identical tag-then-return pair in all three of ResolveUnion's branches instead
+        // of tagging the one result this method actually produces).
         var eitherWasCallOnceCandidate = callOnceCandidates.ContainsKey(published) || callOnceCandidates.ContainsKey(candidate);
+        var result = ResolveUnion(published, candidate);
 
+        if (eitherWasCallOnceCandidate)
+            callOnceCandidates.TryAdd(result, 0);
+
+        return result;
+    }
+
+    /// <summary>
+    /// The pure "what tool should this name now publish as" decision behind
+    /// <see cref="UnionSkillScopeIfNeeded"/>, with no side effects of its own — <em>every</em> return
+    /// here is a candidate for <see cref="UnionSkillScopeIfNeeded"/>'s single call-once tag, so this
+    /// method must never tag anything itself.
+    /// </summary>
+    private static AITool ResolveUnion(AITool published, AITool candidate)
+    {
         if (published is not GovernedAIFunction publishedGoverned || candidate is not GovernedAIFunction candidateGoverned)
-        {
-            if (eitherWasCallOnceCandidate)
-                callOnceCandidates.TryAdd(published, 0);
             return published;
-        }
 
         var publishedIds = publishedGoverned.SkillIds ?? [];
         var candidateIds = candidateGoverned.SkillIds ?? [];
         if (candidateIds.Count == 0 || candidateIds.All(id => publishedIds.Contains(id, StringComparer.OrdinalIgnoreCase)))
-        {
-            if (eitherWasCallOnceCandidate)
-                callOnceCandidates.TryAdd(published, 0);
             return published;
-        }
 
         var union = publishedIds
             .Concat(candidateIds)
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
 
-        var rewrapped = new GovernedAIFunction(
+        return new GovernedAIFunction(
             publishedGoverned.Inner, compositionTaint: null, publishedGoverned.CurrentSkillAccessor, union);
-
-        if (eitherWasCallOnceCandidate)
-            callOnceCandidates.TryAdd(rewrapped, 0);
-
-        return rewrapped;
     }
 
     /// <summary>

@@ -569,6 +569,36 @@ public class ToolChainBuilderTests
     }
 
     [Fact]
+    public async Task BuildMergedToolsAsync_TwoSkillsShareAnMcpToolName_UnionsBothSkillsEgressScope()
+    {
+        // #589 code-review finding (second round): DeduplicateMcpCandidates picked g.First() for a
+        // (server, name) group, silently dropping every later skill's independently-scoped instance -
+        // the exact bug ProjectSurvivors' first-party dedup loop was fixed to avoid, left open for the
+        // MCP tool source. Each skill's own GovernedAIFunction wrapper (with that skill's own SkillIds)
+        // is already built before tools from multiple skills are pooled here, so two plugin skills
+        // naming the same MCP server/tool must union rather than first-win.
+        var mcpProvider = new Mock<IMcpToolProvider>();
+        mcpProvider
+            .Setup(p => p.GetAllToolsAsync(It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new Dictionary<string, IList<AITool>>
+            {
+                ["shared-server"] = [AIFunctionFactory.Create(() => "r", "shared_mcp_tool")]
+            });
+
+        var builder = CreateBuilder(mcpToolProvider: mcpProvider.Object);
+
+        var skillA = new SkillDefinition { Id = "skill-a", Name = "skill-a", Instructions = "Test", PluginSource = "plugin" };
+        var skillB = new SkillDefinition { Id = "skill-b", Name = "skill-b", Instructions = "Test", PluginSource = "plugin" };
+
+        var tools = await builder.BuildMergedToolsAsync([skillA, skillB], new SkillAgentOptions());
+
+        var governed = tools.Should().ContainSingle(t => t.Name == "shared_mcp_tool")
+            .Which.Should().BeOfType<GovernedAIFunction>().Subject;
+        governed.SkillIds.Should().BeEquivalentTo(["skill-a", "skill-b"],
+            "both skills declared this MCP tool, so the published instance must carry both skills' scope");
+    }
+
+    [Fact]
     public async Task BuildToolsAsync_ToolNotDeclaredCallOnce_PolicyNeverConsulted()
     {
         var toolMock = new Mock<ITool>();
