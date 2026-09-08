@@ -49,7 +49,8 @@ public sealed class PluginLoader : IPluginLoader
     /// skill commit can ever throw" — an invariant nothing enforced and that held only because every
     /// call reachable from the MCP-loading step happens to already return <c>Result&lt;T&gt;</c>
     /// instead of throwing (traced during #614's investigation: no crafted manifest reproduces a live
-    /// throw there today). This closes the gap by construction instead of by staying lucky.
+    /// throw there today). This closes the gap for the input-validation failures that caused it; see
+    /// the commit block below for the one residual (in-memory-write) sliver this does not close.
     /// </remarks>
     public LoadedPlugin? Load(string pluginPath, PluginDeclaration declaration, PluginManifest manifest)
     {
@@ -65,9 +66,15 @@ public sealed class PluginLoader : IPluginLoader
 
             // Commit point. Nothing above this line has mutated shared state, so every return above
             // it — early or via an exception — leaves both configs exactly as this call found them.
-            if (skillPaths.Count > 0)
-                _skillsConfig.AdditionalPaths = [.. _skillsConfig.AdditionalPaths, .. skillPaths];
-
+            //
+            // The two writes below are not transactionally atomic with each other — grader review
+            // correctly flagged that a throw partway through the MCP loop would still leave a
+            // narrower version of #614's split state (MCP servers partially registered, no skills
+            // committed yet since that write is ordered last). Deliberately ordered so the
+            // MULTI-STEP write (the loop, one dictionary write per server) goes BEFORE the
+            // SINGLE-STATEMENT write (the skills list reassignment): the only way either can now
+            // throw is a bare Dictionary/List write against already-validated, non-null keys and
+            // values, which requires an out-of-memory-class failure, not a manifest-content one.
             var mcpServerNames = new List<string>(mcpRegistrations.Count);
             foreach (var (namespacedName, definition) in mcpRegistrations)
             {
@@ -80,6 +87,9 @@ public sealed class PluginLoader : IPluginLoader
                 _mcpServersConfig.Servers[namespacedName] = definition;
                 mcpServerNames.Add(namespacedName);
             }
+
+            if (skillPaths.Count > 0)
+                _skillsConfig.AdditionalPaths = [.. _skillsConfig.AdditionalPaths, .. skillPaths];
 
             _logger.LogInformation(
                 "Plugin {Name} v{Version} loaded: {SkillCount} skill path(s), {McpCount} MCP server(s)",
