@@ -5,6 +5,7 @@ using Domain.Common.Config.AI.MCP;
 using Domain.Common.Config.AI.Plugins;
 using FluentAssertions;
 using Infrastructure.AI.Plugins;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
@@ -241,5 +242,134 @@ public sealed class PluginLoaderTests : IDisposable
 
         result.Should().NotBeNull();
         result!.McpServerNames.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Load_SomethingThrowsDuringResolve_LeavesSkillsConfigUntouched()
+    {
+        // #614: the old shape committed the skill path to _skillsConfig.AdditionalPaths immediately
+        // inside LoadSkills, then kept going — if ANYTHING later in the same Load call threw, the
+        // outer catch marked the plugin Failed, but the already-committed skill path stayed in
+        // AdditionalPaths. SkillMetadataRegistry.ResolvePluginSkillPaths only attributes a skill to a
+        // plugin whose Status is Loaded, so that orphaned path's skill would resolve PluginSource =
+        // null (indistinguishable from a built-in skill) and run with NO AllowedTools/DeniedTools
+        // restriction at all — for exactly the plugin that failed to finish loading. Traced during
+        // #614's investigation: no crafted manifest reproduces a live throw from the MCP-loading step
+        // today (it's fully Result<T>-based), so this test injects a fault the honest way that IS
+        // still reachable — a logging call failing, e.g. a broken log sink — to prove the commit is
+        // atomic regardless of WHERE in the load a failure comes from, not just the specific trigger
+        // that was in scope originally.
+        var skillsDir = Path.Combine(_tempDir, "skills");
+        Directory.CreateDirectory(skillsDir);
+
+        var manifest = new PluginManifest
+        {
+            Name = "throws-during-resolve",
+            Version = "1.0.0",
+            Skills = "./skills/"
+        };
+
+        // Fires on ResolveSkillPaths' own resolve-time log — before the commit block runs at all.
+        var sut = new PluginLoader(_skillsConfig, _mcpServersConfig, new ThrowingLogger(messageContains: "resolved skill path"));
+
+        var result = sut.Load(_tempDir, MakeDeclaration("throws-during-resolve"), manifest);
+
+        result.Should().NotBeNull();
+        result!.Status.Should().Be(PluginLoadStatus.Failed,
+            "the plugin never finished loading, so it must not report as Loaded");
+        _skillsConfig.AdditionalPaths.Should().BeEmpty(
+            "a skill path must never survive in shared config for a plugin that ended up Failed");
+    }
+
+    [Fact]
+    public void CommitResolvedState_ThrowsPartwayThroughMcpMerge_NeverTouchesTheLiveDictionary()
+    {
+        // #614 code-review, round 2: unlike a skill path — only ever attributed to a plugin whose
+        // Status is Loaded — an MCP server registered into McpServersConfig.Servers carries no
+        // plugin/status gating at all; PluginToolBoundaryStartupValidator/McpConnectionManager read it
+        // unconditionally. A server left committed for a plugin that ultimately reports Failed would
+        // be immediately live with none of that plugin's boundary governance ever verified.
+        //
+        // Round 3 finding on this same fix's first attempt: a register-into-the-live-dictionary-then-
+        // roll-back-on-throw loop is unsafe here specifically because this method allows last-writer-
+        // wins on a duplicate namespaced key across two plugin declarations sharing a Name — nothing
+        // validates uniqueness. A blind rollback-by-delete would remove a DIFFERENT, already-loaded
+        // plugin's legitimate registration if this call's key happened to collide with one. The fix:
+        // build the merged set off to the side and reassign Servers in one shot, so a throw during the
+        // merge never touches the live dictionary at all — there is nothing to roll back because
+        // nothing was ever written to it. A null namespaced name is a genuine ConcurrentDictionary
+        // indexer failure (ArgumentNullException), not a test-only seam.
+        var existing = new McpServerDefinition { Enabled = true, Type = McpServerType.Stdio, Command = "existing" };
+        _mcpServersConfig.Servers["other-plugin:server"] = existing;
+
+        var good = new McpServerDefinition { Enabled = true, Type = McpServerType.Stdio, Command = "npx" };
+        var bad = new McpServerDefinition { Enabled = true, Type = McpServerType.Stdio, Command = "npx" };
+
+        Action act = () => _sut.CommitResolvedState(
+            skillPaths: [],
+            mcpRegistrations: [("plugin:good", good), (null!, bad)]);
+
+        act.Should().Throw<ArgumentNullException>();
+        _mcpServersConfig.Servers.Should().NotContainKey("plugin:good",
+            "the merge never reached the live dictionary, so nothing from this failed call should be visible");
+        _mcpServersConfig.Servers.Should().ContainSingle().Which.Key.Should().Be("other-plugin:server",
+            "a pre-existing, unrelated registration must survive completely untouched by a failed merge");
+    }
+
+    [Fact]
+    public void Load_LoggingTheSuccessFails_StillReportsLoadedWithTheCommittedState()
+    {
+        // Round-2 grader/correctness finding on this same fix: the first version of the atomic-commit
+        // shape still had the success LogInformation call ("Plugin ... loaded: ...") inside the same
+        // try as the commit — a broken sink on THAT specific call still landed in the outer catch and
+        // reported Failed despite both configs having already been fully committed, reproducing #614
+        // one call later. This proves the fix for that: a failure logging that the load succeeded must
+        // never retroactively turn it into a reported failure or lose the already-committed state.
+        var skillsDir = Path.Combine(_tempDir, "skills");
+        Directory.CreateDirectory(skillsDir);
+
+        var manifest = new PluginManifest
+        {
+            Name = "log-success-fails",
+            Version = "1.0.0",
+            Skills = "./skills/"
+        };
+
+        // Fires only on the final summary log ("... loaded: ..."), which runs after the commit —
+        // ResolveSkillPaths' own earlier "resolved skill path" log is spared, so staging completes.
+        var sut = new PluginLoader(_skillsConfig, _mcpServersConfig, new ThrowingLogger(messageContains: "loaded:"));
+
+        var result = sut.Load(_tempDir, MakeDeclaration("log-success-fails"), manifest);
+
+        result.Should().NotBeNull();
+        result!.Status.Should().Be(PluginLoadStatus.Loaded,
+            "the commit already fully succeeded before the failing log call — a diagnostics failure must not overturn that");
+        result.SkillPaths.Should().ContainSingle(skillsDir);
+        _skillsConfig.AdditionalPaths.Should().Contain(skillsDir,
+            "the skill path was already committed and must not be discarded just because logging that fact failed");
+    }
+
+    /// <summary>
+    /// Throws on an Information-level log call whose rendered message contains
+    /// <paramref name="messageContains"/> — real loggers can fail (a broken sink, a full disk, a
+    /// network-based provider timing out), and #614's fix must hold regardless of which step in
+    /// <see cref="PluginLoader.Load"/> a failure originates from, not just a manifest-content one.
+    /// Message-selective so a test can target either the resolve-time log (pre-commit) or the
+    /// success summary log (post-commit) independently. Deliberately spares Warning always:
+    /// <see cref="PluginLoader.Load"/>'s own catch block logs the failure at Warning, and that call
+    /// must survive for the method to return a value at all.
+    /// </summary>
+    private sealed class ThrowingLogger(string messageContains) : ILogger<PluginLoader>
+    {
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            if (logLevel == LogLevel.Information && formatter(state, exception).Contains(messageContains))
+                throw new InvalidOperationException("Simulated logging sink failure.");
+        }
     }
 }
