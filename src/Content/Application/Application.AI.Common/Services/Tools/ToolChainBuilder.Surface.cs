@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using Application.AI.Common.Helpers;
 using Application.AI.Common.OpenTelemetry.Metrics;
@@ -33,7 +34,8 @@ public partial class ToolChainBuilder
     /// make the two indistinguishable, because origin was recorded at resolution time, not
     /// reconstructed from what the tools say about themselves.
     /// </remarks>
-    private (List<AITool> Tools, HashSet<string> McpAttributedNames) ResolveSurvivingTools(List<ProvisionedTool> allProvisioned)
+    private (List<AITool> Tools, HashSet<string> McpAttributedNames) ResolveSurvivingTools(
+        List<ProvisionedTool> allProvisioned, ConcurrentDictionary<AITool, byte> callOnceCandidates)
     {
         var firstPartyNames = CollectFirstPartyNames(allProvisioned);
 
@@ -43,7 +45,7 @@ public partial class ToolChainBuilder
         // independent first-occurrence picks (one for scanning, one for publishing) could otherwise
         // disagree if the same server was contacted twice within one build and returned a changed
         // definition in between the two calls.
-        var mcpCandidates = DeduplicateMcpCandidates(allProvisioned, firstPartyNames);
+        var mcpCandidates = DeduplicateMcpCandidates(allProvisioned, firstPartyNames, callOnceCandidates);
 
         var survivingNames = new HashSet<string>(firstPartyNames, StringComparer.OrdinalIgnoreCase);
 
@@ -53,7 +55,7 @@ public partial class ToolChainBuilder
         else
             AddScannedMcpNames(mcpCandidates, survivingNames);
 
-        return ProjectSurvivors(allProvisioned, mcpCandidates, survivingNames, firstPartyNames);
+        return ProjectSurvivors(allProvisioned, mcpCandidates, survivingNames, firstPartyNames, callOnceCandidates);
     }
 
     private static HashSet<string> CollectFirstPartyNames(List<ProvisionedTool> allProvisioned)
@@ -72,6 +74,7 @@ public partial class ToolChainBuilder
     /// scanner or the published surface as an MCP entry).
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Grouped by (server, name) together — NOT by name alone, and NOT by a concatenated string key.
     /// Grouping by name alone would collapse two genuinely different servers' same-named tools down to a
     /// single candidate before the surface scanner ever saw more than one of them, silently discarding
@@ -79,14 +82,48 @@ public partial class ToolChainBuilder
     /// the same bug: server "trusted" + tool "reader" and server "trustedread" + tool "er" would hash
     /// identically. A tuple key compares both components independently, so no such collision is
     /// possible. Grouping still only removes true duplicates: the same server's tool recorded twice
-    /// because two different resolution paths reached it.
+    /// because two different resolution paths reached it — including two different skills each
+    /// declaring the SAME server/tool pair, which is exactly the case a bare "keep the first" pick
+    /// would have silently mishandled.
+    /// </para>
+    /// <para>
+    /// #589 code-review finding (second round): a bare <c>g.First()</c> here has the identical bug
+    /// the first-party dedup loop in <see cref="ProjectSurvivors"/> was fixed to avoid — each skill's
+    /// own <c>GovernedAIFunction</c> wrapper (with that skill's own <see cref="GovernedAIFunction.SkillIds"/>)
+    /// is already built by the time tools from multiple skills are pooled into <paramref name="allProvisioned"/>
+    /// here (<c>WrapGoverned</c>, via <c>FinalizeChain</c>, runs per skill upstream of this method), so
+    /// two skills naming the same MCP server/tool each produce their own independently-scoped instance.
+    /// Folding the group through <see cref="UnionSkillScopeIfNeeded"/> — the same primitive the
+    /// first-party loop uses — closes this the same way, rather than leaving the MCP source exempt from
+    /// a fix its own tool-source counterpart already received.
+    /// </para>
     /// </remarks>
-    private static List<ProvisionedTool> DeduplicateMcpCandidates(List<ProvisionedTool> allProvisioned, HashSet<string> firstPartyNames)
+    private static List<ProvisionedTool> DeduplicateMcpCandidates(
+        List<ProvisionedTool> allProvisioned, HashSet<string> firstPartyNames, ConcurrentDictionary<AITool, byte> callOnceCandidates)
         => allProvisioned
             .Where(p => p.McpServerName is not null && !firstPartyNames.Contains(p.Tool.Name))
             .GroupBy(p => (Server: p.McpServerName!.ToUpperInvariant(), Name: p.Tool.Name.ToUpperInvariant()))
-            .Select(g => g.First())
+            .Select(g => UnionMcpGroup(g, callOnceCandidates))
             .ToList();
+
+    /// <summary>
+    /// Folds every skill's independently-wrapped instance of the same (server, name) MCP tool into one
+    /// published <see cref="ProvisionedTool"/>, carrying the union of every instance's skill scope —
+    /// the MCP-source counterpart to <see cref="ProjectSurvivors"/>'s first-party dedup loop.
+    /// </summary>
+    private static ProvisionedTool UnionMcpGroup(
+        IEnumerable<ProvisionedTool> group, ConcurrentDictionary<AITool, byte> callOnceCandidates)
+    {
+        using var enumerator = group.GetEnumerator();
+        enumerator.MoveNext();
+        var canonical = enumerator.Current;
+        var unionedTool = canonical.Tool;
+
+        while (enumerator.MoveNext())
+            unionedTool = UnionSkillScopeIfNeeded(unionedTool, enumerator.Current.Tool, callOnceCandidates);
+
+        return canonical with { Tool = unionedTool };
+    }
 
     /// <summary>
     /// Runs the surface scanner over the canonical MCP candidate set and admits whatever the withhold
@@ -117,29 +154,30 @@ public partial class ToolChainBuilder
     /// the same pass rather than re-derived by the caller.
     /// </summary>
     /// <remarks>
-    /// <strong>Known limitation: two skills sharing a first-party tool name pin the published
-    /// instance's per-skill egress scope (#531, tracked as #589) to whichever skill enumerated
-    /// first.</strong> Each
-    /// skill's tools are already wrapped as <see cref="GovernedAIFunction"/> — one <c>SkillId</c>
-    /// baked in per instance — before <paramref name="allProvisioned"/> reaches this method
-    /// (<c>BuildProvisionedToolsAsync</c>/<c>FinalizeChain</c> runs per skill, upstream). The
-    /// first-party dedup loop below (<c>seen.Add(p.Tool.Name)</c>) keeps only the first-enumerated
-    /// skill's instance, so a call to that shared tool always resolves the first skill's egress
-    /// allowlist, even during a turn the model is conceptually driving from the second skill. Not a
-    /// security hole — the resolved policy is still a real, valid skill's policy, never the harness
-    /// default's absence of one — but it can silently withhold a second skill's declared allowlist
-    /// addition for a tool the two skills happen to share by name. Fixing this precisely needs a
-    /// design decision this PR doesn't make: whether a shared tool name should union every
-    /// contributing skill's allowlist, or something else. Tracked for follow-up rather than guessed at
-    /// here.
+    /// <strong>Two skills sharing a first-party tool name union both skills' egress scope (#531,
+    /// #589).</strong> Each skill's tools are already wrapped as <see cref="GovernedAIFunction"/> —
+    /// one instance's <c>SkillIds</c> baked in per skill — before <paramref name="allProvisioned"/>
+    /// reaches this method (<c>BuildProvisionedToolsAsync</c>/<c>FinalizeChain</c> runs per skill,
+    /// upstream). The first-party dedup loop below detects a second skill sharing an already-published
+    /// name and re-wraps the published instance to carry the union of both skills' ids, rather than
+    /// silently keeping only whichever skill enumerated first — so a call to the shared tool resolves
+    /// an egress policy covering both skills' declared allowlists, regardless of which one the model
+    /// is conceptually driving the turn from. The re-wrap also carries <paramref name="callOnceCandidates"/>
+    /// forward onto the new instance — the same alias-preservation <see cref="WrapGoverned"/> already
+    /// does — because that set is keyed by reference identity
+    /// (<see cref="ReferenceEqualityComparer.Instance"/>): a re-wrap that produced a new,
+    /// never-tagged instance without this would silently drop a shared tool's
+    /// <c>CallOncePerConversation</c> restriction the moment two skills happened to share its name
+    /// (correctness/security review finding on this PR's own first draft).
     /// </remarks>
     private static (List<AITool> Tools, HashSet<string> McpAttributedNames) ProjectSurvivors(
         List<ProvisionedTool> allProvisioned,
         List<ProvisionedTool> mcpCandidates,
         HashSet<string> survivingNames,
-        HashSet<string> firstPartyNames)
+        HashSet<string> firstPartyNames,
+        ConcurrentDictionary<AITool, byte> callOnceCandidates)
     {
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var indexByName = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         var result = new List<AITool>();
 
         foreach (var p in allProvisioned)
@@ -148,8 +186,15 @@ public partial class ToolChainBuilder
                 continue;
             if (!survivingNames.Contains(p.Tool.Name))
                 continue;
-            if (seen.Add(p.Tool.Name))
+
+            if (!indexByName.TryGetValue(p.Tool.Name, out var existingIndex))
+            {
+                indexByName[p.Tool.Name] = result.Count;
                 result.Add(p.Tool);
+                continue;
+            }
+
+            result[existingIndex] = UnionSkillScopeIfNeeded(result[existingIndex], p.Tool, callOnceCandidates);
         }
 
         var mcpAttributedNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -160,7 +205,7 @@ public partial class ToolChainBuilder
             // first-party claim, and the first-party-wins policy above is already fully applied.
             if (!survivingNames.Contains(candidate.Tool.Name))
                 continue;
-            if (seen.Add(candidate.Tool.Name))
+            if (indexByName.TryAdd(candidate.Tool.Name, result.Count))
             {
                 result.Add(candidate.Tool);
                 mcpAttributedNames.Add(candidate.Tool.Name);
@@ -168,6 +213,72 @@ public partial class ToolChainBuilder
         }
 
         return (result, mcpAttributedNames);
+    }
+
+    /// <summary>
+    /// When two skills share a first-party tool name, unions the second skill's <see cref="GovernedAIFunction.SkillIds"/>
+    /// into the already-published instance instead of silently dropping them (#589). Re-wraps the same
+    /// way <see cref="ApplyCompositionTaint"/> does — unwrap to <see cref="GovernedAIFunction.Inner"/>,
+    /// rewrap with the combined scope — since this runs before that method, on tools with no
+    /// composition taint yet, so there is nothing else to preserve across the rewrap.
+    /// </summary>
+    /// <param name="published">The instance already added to the result list for this name.</param>
+    /// <param name="candidate">A later-enumerated skill's own instance of the same-named tool.</param>
+    /// <param name="callOnceCandidates">
+    /// The whole-agent-set call-once candidate tracker (#589 correctness/security review finding):
+    /// keyed by reference identity, so a re-wrap here that produced a new, untagged instance would
+    /// silently fall out of it, dropping a shared tool's <c>CallOncePerConversation</c> restriction
+    /// exactly the way <see cref="WrapGoverned"/>'s own alias-carry-forward comment already warns
+    /// about for its own re-wrap. If either side was tagged, the new instance is tagged too.
+    /// </param>
+    /// <returns>
+    /// <paramref name="published"/> unchanged when either side isn't a <see cref="GovernedAIFunction"/>
+    /// or the candidate's skill ids are already fully covered by the published instance; otherwise a
+    /// new instance wrapping the same inner function with the union of both sides' skill ids.
+    /// </returns>
+    private static AITool UnionSkillScopeIfNeeded(
+        AITool published, AITool candidate, ConcurrentDictionary<AITool, byte> callOnceCandidates)
+    {
+        // Evaluated up front, on the two ORIGINAL instances, not on whatever ResolveUnion returns —
+        // a skill that names the same tool via two of its own ToolDeclarations (same skill id on
+        // both) never triggers a rewrap at all, so the DISCARDED candidate could still have been the
+        // one call-once-tagged. Since `published` is what survives to RegisterSurvivingCallOnceTools
+        // either way (a rewrap or not), tag whichever instance ResolveUnion actually returns, exactly
+        // once, right here — not once per return branch inside it (code-simplifier: an earlier version
+        // repeated the identical tag-then-return pair in all three of ResolveUnion's branches instead
+        // of tagging the one result this method actually produces).
+        var eitherWasCallOnceCandidate = callOnceCandidates.ContainsKey(published) || callOnceCandidates.ContainsKey(candidate);
+        var result = ResolveUnion(published, candidate);
+
+        if (eitherWasCallOnceCandidate)
+            callOnceCandidates.TryAdd(result, 0);
+
+        return result;
+    }
+
+    /// <summary>
+    /// The pure "what tool should this name now publish as" decision behind
+    /// <see cref="UnionSkillScopeIfNeeded"/>, with no side effects of its own — <em>every</em> return
+    /// here is a candidate for <see cref="UnionSkillScopeIfNeeded"/>'s single call-once tag, so this
+    /// method must never tag anything itself.
+    /// </summary>
+    private static AITool ResolveUnion(AITool published, AITool candidate)
+    {
+        if (published is not GovernedAIFunction publishedGoverned || candidate is not GovernedAIFunction candidateGoverned)
+            return published;
+
+        var publishedIds = publishedGoverned.SkillIds ?? [];
+        var candidateIds = candidateGoverned.SkillIds ?? [];
+        if (candidateIds.Count == 0 || candidateIds.All(id => publishedIds.Contains(id, StringComparer.OrdinalIgnoreCase)))
+            return published;
+
+        var union = publishedIds
+            .Concat(candidateIds)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        return new GovernedAIFunction(
+            publishedGoverned.Inner, compositionTaint: null, publishedGoverned.CurrentSkillAccessor, union);
     }
 
     /// <summary>

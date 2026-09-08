@@ -1,8 +1,12 @@
 using System.Text.Json;
+using Application.AI.Common.Interfaces.Skills;
 using Application.AI.Common.Services.Agent;
 using Application.AI.Common.Services.Governance;
 using Application.AI.Common.Services.Tools;
 using Domain.AI.Planner;
+using FluentAssertions;
+using Infrastructure.AI.Skills;
+using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
@@ -171,6 +175,79 @@ public sealed class GoverningToolContextProviderTests
             tools, NullLogger<GoverningToolContextProviderTests>.Instance, AdmissionHarness.PermissiveSanitizer());
 
         Assert.Null(result);
+    }
+
+    /// <summary>A tool function that records <see cref="CurrentSkillAccessor.CurrentSkillIds"/> at the
+    /// moment it executes — the only way to observe an ambient scope actually established for THIS
+    /// call, since <see cref="MakeFunction"/>'s plain <c>() =&gt; "ok"</c> body has no such hook.</summary>
+    private static AIFunction MakeScopeObservingFunction(string name, CurrentSkillAccessor accessor, Action<IReadOnlyList<string>> observe) =>
+        AIFunctionFactory.Create(
+            () =>
+            {
+                observe(accessor.CurrentSkillIds);
+                return "ok";
+            },
+            new AIFunctionFactoryOptions { Name = name, Description = "t" });
+
+    [Fact]
+    public async Task Govern_RunSkillScriptWithKnownSkillName_EstablishesThatSkillsScopeForTheCall()
+    {
+        // #589: the framework publishes one run_skill_script instance shared by every skill on the
+        // agent — the model names which skill's script to run via the skillName argument, not by
+        // which instance it invoked. Govern must resolve THAT argument at call time, not bake a
+        // fixed skill id in at construction like it does for a skill's own first-party/MCP tools.
+        var accessor = new CurrentSkillAccessor();
+        IReadOnlyList<string>? observedDuringCall = null;
+        var inner = MakeScopeObservingFunction(
+            AgentSkillsProvider.RunSkillScriptToolName, accessor, ids => observedDuringCall = ids);
+        var nameMap = new Dictionary<string, string> { ["reader-skill"] = "reader-skill-harness-id" };
+
+        var wrapped = (AIFunction)GoverningToolContextProvider.Govern(
+            inner, AdmissionHarness.PermissiveSanitizer(), accessor, nameMap);
+
+        var args = new AIFunctionArguments { ["skillName"] = "reader-skill" };
+        await wrapped.InvokeAsync(args, CancellationToken.None);
+
+        observedDuringCall.Should().Equal(["reader-skill-harness-id"], "the model's skillName argument must map to the harness's own skill id");
+        accessor.CurrentSkillIds.Should().BeEmpty("the scope must be restored once the call returns");
+    }
+
+    [Theory]
+    [InlineData("unmapped-skill")]
+    [InlineData(null)]
+    public async Task Govern_RunSkillScriptWithUnmappedOrMissingSkillName_EstablishesNoScope(string? skillName)
+    {
+        // Fail-closed contract (#589): a skillName the map doesn't recognize, or no skillName at all,
+        // must never fall back to a guess or a stale scope — only no scope, same as before this
+        // parameter existed.
+        var accessor = new CurrentSkillAccessor();
+        IReadOnlyList<string>? observedDuringCall = null;
+        var inner = MakeScopeObservingFunction(
+            AgentSkillsProvider.RunSkillScriptToolName, accessor, ids => observedDuringCall = ids);
+        var nameMap = new Dictionary<string, string> { ["reader-skill"] = "reader-skill-harness-id" };
+
+        var wrapped = (AIFunction)GoverningToolContextProvider.Govern(
+            inner, AdmissionHarness.PermissiveSanitizer(), accessor, nameMap);
+
+        var args = skillName is null
+            ? new AIFunctionArguments()
+            : new AIFunctionArguments { ["skillName"] = skillName };
+        await wrapped.InvokeAsync(args, CancellationToken.None);
+
+        observedDuringCall.Should().BeEmpty("an unrecognized or missing skillName must establish no scope, never a guess");
+    }
+
+    [Fact]
+    public void Govern_RunSkillScriptWithNoSkillMapSupplied_WrapsWithoutASkillResolver()
+    {
+        // The default (no disclosableSkills passed to the constructor, e.g. an agent with none, or a
+        // caller that doesn't have this context) must behave exactly as before this parameter existed:
+        // a plain GovernedAIFunction with no skill scope to establish.
+        var inner = MakeFunction(AgentSkillsProvider.RunSkillScriptToolName);
+
+        var result = GoverningToolContextProvider.Govern(inner, AdmissionHarness.PermissiveSanitizer());
+
+        Assert.IsType<GovernedAIFunction>(result);
     }
 
     [Fact]

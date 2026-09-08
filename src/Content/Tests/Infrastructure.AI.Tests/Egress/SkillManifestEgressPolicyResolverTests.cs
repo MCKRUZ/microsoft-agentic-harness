@@ -57,7 +57,7 @@ public sealed class SkillManifestEgressPolicyResolverTests
     public async Task ResolveFor_SkillWithAllowlist_MergesDefaultAndPerSkill()
     {
         var accessor = new CurrentSkillAccessor();
-        using var _ = accessor.BeginScope("github-reader");
+        using var _ = accessor.BeginScope(["github-reader"]);
 
         var skill = SkillWithAllowlist("github-reader", new EgressAllowlistEntry
         {
@@ -97,6 +97,99 @@ public sealed class SkillManifestEgressPolicyResolverTests
     }
 
     /// <summary>
+    /// #589: two skills active at once (the shared-tool-name union case) resolve a policy carrying
+    /// BOTH skills' own allowlist additions, not just the first or the default. Proves the resolver's
+    /// own multi-id path, independent of how <c>ToolChainBuilder</c>/<c>GovernedAIFunction</c> come to
+    /// establish more than one id at a time.
+    /// </summary>
+    [Fact]
+    public async Task ResolveFor_TwoSkillsActive_UnionsBothSkillsOwnAllowlists()
+    {
+        var accessor = new CurrentSkillAccessor();
+        using var _ = accessor.BeginScope(["skill-a", "skill-b"]);
+
+        var skillA = SkillWithAllowlist("skill-a", new EgressAllowlistEntry
+        {
+            Host = "a.example.com", Schemes = ["https"], Ports = [443]
+        });
+        var skillB = SkillWithAllowlist("skill-b", new EgressAllowlistEntry
+        {
+            Host = "b.example.com", Schemes = ["https"], Ports = [443]
+        });
+
+        var registry = new Mock<ISkillMetadataRegistry>(MockBehavior.Strict);
+        registry.Setup(r => r.TryGet("skill-a")).Returns(skillA);
+        registry.Setup(r => r.TryGet("skill-b")).Returns(skillB);
+
+        var resolver = NewResolver(accessor, registry.Object,
+            new EgressAllowlistConfigEntry { Host = "default.example.com", Schemes = ["https"], Ports = [443] });
+
+        var policy = resolver.ResolveFor(TestIdentity.Default);
+
+        var aVerdict = await policy.AllowAsync(new Uri("https://a.example.com/"), TestIdentity.Default, CancellationToken.None);
+        aVerdict.Allowed.Should().BeTrue("skill-a's own allowlist addition must apply even though skill-b is also active");
+
+        var bVerdict = await policy.AllowAsync(new Uri("https://b.example.com/"), TestIdentity.Default, CancellationToken.None);
+        bVerdict.Allowed.Should().BeTrue("skill-b's own allowlist addition must apply even though skill-a is also active");
+
+        var defaultVerdict = await policy.AllowAsync(new Uri("https://default.example.com/"), TestIdentity.Default, CancellationToken.None);
+        defaultVerdict.Allowed.Should().BeTrue("the harness-wide default must still apply under a multi-skill scope");
+
+        var deniedVerdict = await policy.AllowAsync(new Uri("https://attacker.example.org/"), TestIdentity.Default, CancellationToken.None);
+        deniedVerdict.Allowed.Should().BeFalse("a host neither skill nor the default names must still be refused");
+    }
+
+    /// <summary>
+    /// #589 correctness/security review finding on this PR's own first draft: the multi-skill cache
+    /// key's original length-prefix scheme (<c>"{length}{id}"</c>, no delimiter between the length
+    /// digits and the id content) was not actually collision-free — a digit-leading id can extend what
+    /// looks like the length of the preceding segment. Concretely, sorted-and-joined ids
+    /// <c>["2", "abcdefghij", "zzz"]</c> and <c>["10abcdefghij", "zzz"]</c> both produced the identical
+    /// key <c>"1210abcdefghij3zzz"</c> under that scheme, even though they name two entirely different
+    /// skill combinations. This test resolves both sets (with distinct, mutually exclusive allowlist
+    /// entries) and proves neither one's policy leaks into the other's cache slot.
+    /// </summary>
+    [Fact]
+    public async Task ResolveFor_TwoDifferentMultiSkillSetsWithColliderShapedIds_NeverShareACacheEntry()
+    {
+        var accessor = new CurrentSkillAccessor();
+
+        var skillTwo = SkillWithAllowlist("2", new EgressAllowlistEntry
+        { Host = "set-a-only.example.com", Schemes = ["https"], Ports = [443] });
+        var skillAbc = SkillWithAllowlist("abcdefghij");
+        var skillZzz = SkillWithAllowlist("zzz");
+        var skillTenAbc = SkillWithAllowlist("10abcdefghij", new EgressAllowlistEntry
+        { Host = "set-b-only.example.com", Schemes = ["https"], Ports = [443] });
+
+        var registry = new Mock<ISkillMetadataRegistry>(MockBehavior.Strict);
+        registry.Setup(r => r.TryGet("2")).Returns(skillTwo);
+        registry.Setup(r => r.TryGet("abcdefghij")).Returns(skillAbc);
+        registry.Setup(r => r.TryGet("zzz")).Returns(skillZzz);
+        registry.Setup(r => r.TryGet("10abcdefghij")).Returns(skillTenAbc);
+
+        var resolver = NewResolver(accessor, registry.Object);
+
+        using (accessor.BeginScope(["2", "abcdefghij", "zzz"]))
+        {
+            var setAPolicy = resolver.ResolveFor(TestIdentity.Default);
+            var allowed = await setAPolicy.AllowAsync(new Uri("https://set-a-only.example.com/"), TestIdentity.Default, CancellationToken.None);
+            allowed.Allowed.Should().BeTrue("set A's own skill '2' declared this host");
+        }
+
+        using (accessor.BeginScope(["10abcdefghij", "zzz"]))
+        {
+            var setBPolicy = resolver.ResolveFor(TestIdentity.Default);
+
+            var setBHost = await setBPolicy.AllowAsync(new Uri("https://set-b-only.example.com/"), TestIdentity.Default, CancellationToken.None);
+            setBHost.Allowed.Should().BeTrue("set B's own skill '10abcdefghij' declared this host");
+
+            var setAHost = await setBPolicy.AllowAsync(new Uri("https://set-a-only.example.com/"), TestIdentity.Default, CancellationToken.None);
+            setAHost.Allowed.Should().BeFalse(
+                "set B never declared this host - a colliding cache key would have returned set A's cached policy instead");
+        }
+    }
+
+    /// <summary>
     /// Test 6 (brief): the resolver caches by skill key. Two lookups with the
     /// same active skill return the SAME policy instance. Per-skill cache keeps
     /// the merge cost amortized over the lifetime of the process.
@@ -105,7 +198,7 @@ public sealed class SkillManifestEgressPolicyResolverTests
     public void ResolveFor_SameSkillTwice_ReturnsSamePolicyInstance()
     {
         var accessor = new CurrentSkillAccessor();
-        using var _ = accessor.BeginScope("cached-skill");
+        using var _ = accessor.BeginScope(["cached-skill"]);
 
         var skill = SkillWithAllowlist("cached-skill", new EgressAllowlistEntry
         {
@@ -129,8 +222,8 @@ public sealed class SkillManifestEgressPolicyResolverTests
     }
 
     /// <summary>
-    /// No skill in scope (<see cref="ICurrentSkillAccessor.CurrentSkillId"/> is
-    /// null) falls back to a default-only policy. The resolver does not touch
+    /// No skill in scope (<see cref="ICurrentSkillAccessor.CurrentSkillIds"/> is
+    /// empty) falls back to a default-only policy. The resolver does not touch
     /// the registry on the no-skill path.
     /// </summary>
     [Fact]
@@ -168,7 +261,7 @@ public sealed class SkillManifestEgressPolicyResolverTests
     public async Task ResolveFor_UnknownSkill_FallsBackToDefaultOnlyPolicy()
     {
         var accessor = new CurrentSkillAccessor();
-        using var _ = accessor.BeginScope("unknown-skill");
+        using var _ = accessor.BeginScope(["unknown-skill"]);
 
         var registry = new Mock<ISkillMetadataRegistry>(MockBehavior.Strict);
         registry.Setup(r => r.TryGet("unknown-skill")).Returns((SkillDefinition?)null);
@@ -199,7 +292,7 @@ public sealed class SkillManifestEgressPolicyResolverTests
     public async Task ResolveFor_SkillWithEmptyAllowlist_ReturnsDefaultOnly()
     {
         var accessor = new CurrentSkillAccessor();
-        using var _ = accessor.BeginScope("empty-allowlist");
+        using var _ = accessor.BeginScope(["empty-allowlist"]);
 
         var registry = new Mock<ISkillMetadataRegistry>(MockBehavior.Strict);
         registry.Setup(r => r.TryGet("empty-allowlist"))
@@ -258,7 +351,7 @@ public sealed class SkillManifestEgressPolicyResolverTests
             new Uri("https://widened.example.com/"), TestIdentity.Default, CancellationToken.None);
         noSkillVerdict.Allowed.Should().BeFalse("the no-skill policy must never carry a skill's widened allowlist");
 
-        using var _ = accessor.BeginScope("<NO-SKILL>");
+        using var _ = accessor.BeginScope(["<NO-SKILL>"]);
         var skillPolicy = resolver.ResolveFor(TestIdentity.Default);
         var skillVerdict = await skillPolicy.AllowAsync(
             new Uri("https://widened.example.com/"), TestIdentity.Default, CancellationToken.None);
@@ -274,20 +367,20 @@ public sealed class SkillManifestEgressPolicyResolverTests
     public void CurrentSkillAccessor_NestedScopes_RestorePreviousOnDispose()
     {
         var accessor = new CurrentSkillAccessor();
-        accessor.CurrentSkillId.Should().BeNull();
+        accessor.CurrentSkillIds.Should().BeEmpty();
 
-        using (var outer = accessor.BeginScope("outer"))
+        using (var outer = accessor.BeginScope(["outer"]))
         {
-            accessor.CurrentSkillId.Should().Be("outer");
+            accessor.CurrentSkillIds.Should().Equal("outer");
 
-            using (var inner = accessor.BeginScope("inner"))
+            using (var inner = accessor.BeginScope(["inner"]))
             {
-                accessor.CurrentSkillId.Should().Be("inner");
+                accessor.CurrentSkillIds.Should().Equal("inner");
             }
 
-            accessor.CurrentSkillId.Should().Be("outer");
+            accessor.CurrentSkillIds.Should().Equal("outer");
         }
 
-        accessor.CurrentSkillId.Should().BeNull();
+        accessor.CurrentSkillIds.Should().BeEmpty();
     }
 }

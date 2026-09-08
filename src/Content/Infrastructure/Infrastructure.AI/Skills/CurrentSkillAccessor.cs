@@ -18,27 +18,36 @@ namespace Infrastructure.AI.Skills;
 /// </remarks>
 public sealed class CurrentSkillAccessor : ICurrentSkillAccessor
 {
-    private static readonly AsyncLocal<string?> Slot = new();
+    private static readonly IReadOnlyList<string> NoSkills = [];
+    private static readonly AsyncLocal<IReadOnlyList<string>?> Slot = new();
 
     /// <inheritdoc />
-    public string? CurrentSkillId => Slot.Value;
+    public IReadOnlyList<string> CurrentSkillIds => Slot.Value ?? NoSkills;
 
     /// <inheritdoc />
-    public IDisposable BeginScope(string skillId)
+    public IDisposable BeginScope(IReadOnlyList<string> skillIds)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(skillId);
+        ArgumentNullException.ThrowIfNull(skillIds);
+        if (skillIds.Count == 0)
+            throw new ArgumentException("At least one skill id is required.", nameof(skillIds));
+        foreach (var skillId in skillIds)
+            ArgumentException.ThrowIfNullOrWhiteSpace(skillId, nameof(skillIds));
 
         var previous = Slot.Value;
-        Slot.Value = skillId;
+        // Copies rather than stores the caller's reference (#589 security-review finding): every
+        // in-repo caller happens to pass a freshly-built list today, but ICurrentSkillAccessor is a
+        // public interface a template consumer implements against, and a caller who mutated its list
+        // after this call returned would otherwise mutate the live ambient scope past validation.
+        Slot.Value = [.. skillIds];
         return new Restorer(previous);
     }
 
     private sealed class Restorer : IDisposable
     {
-        private readonly string? _previous;
+        private readonly IReadOnlyList<string>? _previous;
         private bool _disposed;
 
-        public Restorer(string? previous)
+        public Restorer(IReadOnlyList<string>? previous)
         {
             _previous = previous;
         }

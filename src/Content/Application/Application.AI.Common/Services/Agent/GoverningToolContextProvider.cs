@@ -1,4 +1,6 @@
+using Application.AI.Common.Helpers;
 using Application.AI.Common.Interfaces.Governance;
+using Application.AI.Common.Interfaces.Skills;
 using Application.AI.Common.Services.Governance;
 using Application.AI.Common.Services.Tools;
 using Microsoft.Agents.AI;
@@ -30,16 +32,18 @@ namespace Application.AI.Common.Services.Agent;
 /// template other consumers extend, so it is written down rather than left implicit.
 /// </para>
 /// <para>
-/// <strong>Known limitation: no per-skill egress scope on this channel either (#531, tracked as #589).</strong> The
-/// same missing provenance that blocks MCP-failure normalization above also blocks
-/// <see cref="GovernedAIFunction"/>'s skill-scoped egress wiring: <see cref="Govern"/>'s
-/// <c>new GovernedAIFunction(fn)</c> call always passes a null skill id, so a tool reaching the model
-/// through this channel — <c>run_skill_script</c> notably, the one tool here that IS fully governed —
-/// runs with whatever skill scope (if any) happens to already be ambient from an outer call, never one
-/// attributed to the skill that actually contributed it. Fails closed (the egress resolver falls back
-/// to the harness-wide default allowlist), never open. Giving this channel real per-tool skill
-/// attribution is the same larger, separate change the MCP-provenance gap above already calls for —
-/// not something to bolt onto one tool here without doing it for the whole channel.
+/// <strong><c>run_skill_script</c> now resolves its skill scope per call (#531, #589).</strong> The
+/// same missing per-tool provenance that still blocks MCP-failure normalization above does NOT block
+/// this tool's egress scope any more: <see cref="Govern"/> wraps it with
+/// <see cref="GovernedAIFunction"/>'s <c>skillIdFromArguments</c> resolver, which reads the model's own
+/// <c>skillName</c> call argument and maps it back to the harness skill that contributed it — see
+/// <see cref="Govern"/>'s remarks for the mechanics. A missing or unrecognized <c>skillName</c>
+/// establishes no NEW scope — never a guess — which on this channel's actual call position means the
+/// harness-wide default allowlist applies, since nothing establishes an outer scope ahead of it here.
+/// That is a fact about where this tool sits on the rail today, not a guarantee this code itself makes;
+/// see <see cref="Govern"/>'s remarks for what "no scope" precisely means. The two other skill-disclosure
+/// tools (<c>load_skill</c>/<c>read_skill_resource</c>) are exempt from <see cref="GovernedAIFunction"/>
+/// entirely, so this does not apply to them — see the exemption rationale below.
 /// </para>
 /// <para>
 /// Register this provider <em>last</em> in the <c>AIContextProviders</c> list (after the skills
@@ -91,6 +95,8 @@ public sealed class GoverningToolContextProvider : AIContextProvider
 
     private readonly ILogger<GoverningToolContextProvider> _logger;
     private readonly ICompositeResponseSanitizer _sanitizer;
+    private readonly ICurrentSkillAccessor? _currentSkillAccessor;
+    private readonly IReadOnlyDictionary<string, string>? _skillIdByFrameworkName;
 
     /// <summary>Initializes a new <see cref="GoverningToolContextProvider"/>.</summary>
     /// <param name="logger">Logger that receives reserved plan-capability collision reports.</param>
@@ -99,8 +105,22 @@ public sealed class GoverningToolContextProvider : AIContextProvider
     /// provider exempts from <see cref="GovernedAIFunction"/> wrapping, and so also from #469's
     /// unconditional sanitize, since that guarantee is carried by the wrapper these two never receive.
     /// </param>
+    /// <param name="disclosableSkills">
+    /// The agent's own framework skills (#589), for attributing a <c>run_skill_script</c> call to the
+    /// harness skill it names — see <see cref="Govern"/>'s remarks. Null (or empty) means the agent
+    /// has no disclosable skills, or the caller does not have this list (e.g. tests); either way
+    /// <c>run_skill_script</c> falls back to no scope, unchanged from before this parameter existed.
+    /// </param>
+    /// <param name="currentSkillAccessor">
+    /// Establishes the ambient current skill for a <c>run_skill_script</c> call, resolved per call
+    /// from <paramref name="disclosableSkills"/> (#589) — see <see cref="Govern"/>'s remarks. Null has
+    /// the same "no scope to establish" effect as a null/empty <paramref name="disclosableSkills"/>.
+    /// </param>
     public GoverningToolContextProvider(
-        ILogger<GoverningToolContextProvider> logger, ICompositeResponseSanitizer sanitizer)
+        ILogger<GoverningToolContextProvider> logger,
+        ICompositeResponseSanitizer sanitizer,
+        IReadOnlyList<DisclosableSkill>? disclosableSkills = null,
+        ICurrentSkillAccessor? currentSkillAccessor = null)
         : base(
             provideInputMessageFilter: messages => messages,
             storeInputRequestMessageFilter: messages => messages,
@@ -108,6 +128,40 @@ public sealed class GoverningToolContextProvider : AIContextProvider
     {
         _logger = logger;
         _sanitizer = sanitizer;
+        _currentSkillAccessor = currentSkillAccessor;
+        _skillIdByFrameworkName = disclosableSkills is { Count: > 0 }
+            ? BuildSkillIdByFrameworkName(disclosableSkills, logger)
+            : null;
+    }
+
+    /// <summary>
+    /// First-wins map from a framework skill's <c>Frontmatter.Name</c> to the harness
+    /// <see cref="Domain.AI.Skills.SkillDefinition.Id"/> that built it. A plain
+    /// <c>ToDictionary</c> would throw on a duplicate name (code-review finding): today's only
+    /// caller, <c>DisclosableSkillFactory.Create</c>, already de-dupes with this exact comparer, so a
+    /// duplicate can't reach here in production — but this constructor is public on a template repo
+    /// other consumers clone and extend, and this diff's own contract everywhere else is fail-closed
+    /// (deny/no-scope), never an unhandled exception. A skipped duplicate keeps its own tool's scope
+    /// resolution behaving exactly as it would with an empty map — no scope, not a crash.
+    /// </summary>
+    private static Dictionary<string, string> BuildSkillIdByFrameworkName(
+        IReadOnlyList<DisclosableSkill> disclosableSkills, ILogger logger)
+    {
+        var map = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var skill in disclosableSkills)
+        {
+            var frameworkName = skill.Skill.Frontmatter.Name;
+            if (!map.TryAdd(frameworkName, skill.SkillId))
+            {
+                logger.LogWarning(
+                    "Skill {SkillId}: framework name '{FrameworkName}' already claimed by another " +
+                    "skill — run_skill_script calls naming it will resolve to whichever skill claimed " +
+                    "it first, not this one.",
+                    skill.SkillId, frameworkName);
+            }
+        }
+
+        return map;
     }
 
     /// <inheritdoc />
@@ -125,7 +179,7 @@ public sealed class GoverningToolContextProvider : AIContextProvider
         // every provider ahead of this one — then filter and wrap what it produced.
         var merged = await base.InvokingCoreAsync(context, cancellationToken).ConfigureAwait(false);
 
-        var tools = FilterAndGovern(merged.Tools, _logger, _sanitizer);
+        var tools = FilterAndGovern(merged.Tools, _logger, _sanitizer, _currentSkillAccessor, _skillIdByFrameworkName);
 
         // Nothing was dropped or needed wrapping — avoid allocating a new AIContext.
         if (tools is null)
@@ -148,8 +202,14 @@ public sealed class GoverningToolContextProvider : AIContextProvider
     /// <param name="tools">The tools accumulated on the context, possibly null or empty.</param>
     /// <param name="logger">Logger that receives reserved plan-capability collision reports.</param>
     /// <param name="sanitizer">Passed through to <see cref="Govern"/> — see its remarks.</param>
+    /// <param name="currentSkillAccessor">Passed through to <see cref="Govern"/> — see its remarks.</param>
+    /// <param name="skillIdByFrameworkName">Passed through to <see cref="Govern"/> — see its remarks.</param>
     internal static List<AITool>? FilterAndGovern(
-        IEnumerable<AITool>? tools, ILogger logger, ICompositeResponseSanitizer sanitizer)
+        IEnumerable<AITool>? tools,
+        ILogger logger,
+        ICompositeResponseSanitizer sanitizer,
+        ICurrentSkillAccessor? currentSkillAccessor = null,
+        IReadOnlyDictionary<string, string>? skillIdByFrameworkName = null)
     {
         var original = tools?.ToList();
         if (original is null or { Count: 0 })
@@ -161,7 +221,7 @@ public sealed class GoverningToolContextProvider : AIContextProvider
 
         for (var i = 0; i < permitted.Count; i++)
         {
-            var governed = Govern(permitted[i], sanitizer);
+            var governed = Govern(permitted[i], sanitizer, currentSkillAccessor, skillIdByFrameworkName);
             if (!ReferenceEquals(governed, permitted[i]))
             {
                 permitted[i] = governed;
@@ -207,15 +267,58 @@ public sealed class GoverningToolContextProvider : AIContextProvider
     /// deliberately <em>not</em> in that set and is fully governed here: executing a skill's script is a
     /// capability, and on a bundle run it is one the caller's envelope must grant.
     /// </para>
+    /// <para>
+    /// <strong><c>run_skill_script</c> resolves its skill scope per call, not at construction (#589).</strong>
+    /// The framework's <c>AgentSkillsProvider</c> publishes exactly one instance of this tool, shared by
+    /// every skill on the agent — the model tells it which skill's script to run via a <c>skillName</c>
+    /// argument (the framework's own kebab-case skill name, confirmed against the installed
+    /// <c>Microsoft.Agents.AI</c> package's <c>AgentSkillsProvider.RunSkillScriptAsync</c> signature),
+    /// not by which instance was invoked. There is no per-tool skill id to bake in the way
+    /// <see cref="ToolChainBuilder.WrapGoverned"/> does for a skill's own first-party/MCP tools, so this
+    /// wraps the tool with <see cref="GovernedAIFunction"/>'s <c>skillIdFromArguments</c> resolver
+    /// instead of a fixed id — it reads the actual call's <c>skillName</c> argument and maps it back to
+    /// the harness skill id via <paramref name="skillIdByFrameworkName"/>. Fails closed: a missing
+    /// argument or a name outside the map establishes no scope, the same as before this parameter
+    /// existed, never a wrong or stale skill's scope.
+    /// </para>
     /// </remarks>
-    internal static AITool Govern(AITool tool, ICompositeResponseSanitizer sanitizer)
+    internal static AITool Govern(
+        AITool tool,
+        ICompositeResponseSanitizer sanitizer,
+        ICurrentSkillAccessor? currentSkillAccessor = null,
+        IReadOnlyDictionary<string, string>? skillIdByFrameworkName = null)
     {
         if (tool is not AIFunction fn || tool is GovernedAIFunction || tool is SanitizingAIFunction)
             return tool;
 
-        return ToolPermissionFilter.SkillDisclosureToolNames.Contains(fn.Name)
-            ? new SanitizingAIFunction(fn, sanitizer)
-            : new GovernedAIFunction(fn);
+        if (ToolPermissionFilter.SkillDisclosureToolNames.Contains(fn.Name))
+            return new SanitizingAIFunction(fn, sanitizer);
+
+        if (fn.Name == AgentSkillsProvider.RunSkillScriptToolName && skillIdByFrameworkName is { Count: > 0 })
+        {
+            return new GovernedAIFunction(
+                fn,
+                currentSkillAccessor: currentSkillAccessor,
+                skillIdFromArguments: arguments => ResolveSkillIdFromArguments(arguments, skillIdByFrameworkName));
+        }
+
+        return new GovernedAIFunction(fn);
+    }
+
+    /// <summary>
+    /// Reads <c>run_skill_script</c>'s own <c>skillName</c> argument (the framework's parameter name)
+    /// and maps it back to the harness <see cref="Domain.AI.Skills.SkillDefinition.Id"/> that
+    /// contributed it, or <see langword="null"/> when the argument is missing or names a skill outside
+    /// <paramref name="skillIdByFrameworkName"/> — either way, no scope is established (#589's
+    /// fail-closed contract), never a guess.
+    /// </summary>
+    private static string? ResolveSkillIdFromArguments(
+        AIFunctionArguments arguments, IReadOnlyDictionary<string, string> skillIdByFrameworkName)
+    {
+        var frameworkName = ToolParameters.ReadStringArgument(arguments, "skillName");
+        return frameworkName is not null && skillIdByFrameworkName.TryGetValue(frameworkName, out var skillId)
+            ? skillId
+            : null;
     }
 
     /// <summary>

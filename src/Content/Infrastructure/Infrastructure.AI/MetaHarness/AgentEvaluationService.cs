@@ -269,14 +269,32 @@ public sealed class AgentEvaluationService : IEvaluationService
     /// <summary>
     /// Builds the eval context's <see cref="AIContextProvider"/> rail: the progressive-disclosure skills
     /// provider over <paramref name="skillDirectory"/> (when present) followed unconditionally by
-    /// <see cref="Application.AI.Common.Services.Agent.GoverningToolContextProvider"/>, mirroring the production wiring in
-    /// <c>AgentExecutionContextFactory.BuildMergedAIContextProviders</c>.
+    /// <see cref="Application.AI.Common.Services.Agent.GoverningToolContextProvider"/>.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// #482: the governance wrapper is attached unconditionally, same as the production factory —
     /// without it, <c>load_skill</c>/<c>read_skill_resource</c> carry no sanitize coverage on this path
     /// at all, since <c>ToolChainBuilder</c> (the other place governance gets wired in) is never
     /// consulted for an eval context built directly from a materialized skill snapshot.
+    /// </para>
+    /// <para>
+    /// This does NOT fully mirror <c>AgentExecutionContextFactory.BuildMergedAIContextProviders</c>'s
+    /// wiring (#589): production passes <c>disclosableSkills</c> and an <see
+    /// cref="Application.AI.Common.Interfaces.Skills.ICurrentSkillAccessor"/> so <c>run_skill_script</c>
+    /// can resolve which skill's egress scope a call belongs to. Neither is available here — this method
+    /// loads the candidate's skill straight from a materialized directory via <c>UseFileSkill</c> rather
+    /// than through <c>DisclosableSkillFactory</c>, so there is no harness <c>SkillId</c> for a candidate
+    /// under evaluation to hand the resolver in the first place; a candidate is a proposed skill mutation,
+    /// never a registered entry in <see cref="Application.AI.Common.Interfaces.ISkillMetadataRegistry"/>.
+    /// Closing this gap for real needs eval to parse the materialized directory into a
+    /// <see cref="Domain.AI.Skills.SkillDefinition"/> and read it through a sandboxed
+    /// <see cref="Application.AI.Common.Interfaces.Skills.ISkillFileReader"/>, the same as the production
+    /// path — tracked as a follow-up rather than folded into #589, since #589 is scoped to the production
+    /// wiring. In practice this path is no worse than production today: both wire
+    /// <c>UseFileScriptRunner(NoOpScriptRunner)</c>, so <c>run_skill_script</c> has nothing to run either
+    /// way.
+    /// </para>
     /// </remarks>
     private IList<AIContextProvider> BuildContextProviders(string? skillDirectory)
     {

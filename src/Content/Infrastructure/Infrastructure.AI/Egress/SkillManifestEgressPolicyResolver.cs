@@ -53,18 +53,25 @@ public sealed class SkillManifestEgressPolicyResolver : IEgressPolicyResolver
     private readonly ILogger<DefaultEgressPolicy> _policyLogger;
     private readonly TimeProvider _timeProvider;
 
-    // Two separate caches rather than one keyed by skill id plus a reserved sentinel string (#531
-    // security-review finding): the prior design's sentinel ("<no-skill>") relied on no real skill
-    // ever being named that, case-insensitively, in a case-insensitive cache — a property nothing
-    // enforced, and one the sentinel's own doc comment misstated (it claimed the safety came from
-    // skill ids never containing spaces, which the sentinel itself doesn't contain and so proves
-    // nothing about). A skill an operator names any case variant of the sentinel would collide in
-    // the shared dictionary with the reserved "no skill" entry, in whichever direction lost the
-    // race to populate the cache first — leaking that skill's widened allowlist onto every
-    // unscoped call, or vice versa. Splitting the "no skill" case onto its own field makes the
-    // collision structurally impossible rather than relying on a string never being reused.
+    // No-skill policy stays on its own field rather than a reserved sentinel key sharing the skill
+    // cache's key space (#531 security-review finding): the prior design's sentinel ("<no-skill>")
+    // relied on no real skill ever being named that, case-insensitively, in a case-insensitive
+    // cache — a property nothing enforced, and one the sentinel's own doc comment misstated (it
+    // claimed the safety came from skill ids never containing spaces, which the sentinel itself
+    // doesn't contain and so proves nothing about). Splitting the "no skill" case onto its own
+    // field makes the collision structurally impossible rather than relying on a string never
+    // being reused.
     private readonly Lazy<IEgressPolicy> _noSkillPolicy;
-    private readonly ConcurrentDictionary<string, IEgressPolicy> _skillCache = new(StringComparer.OrdinalIgnoreCase);
+
+    // One cache for every non-empty skill scope, single- or multi-skill alike, keyed by structural
+    // (order-independent, case-insensitive) list equality rather than a string encoding of the list
+    // (#589 simplification: an earlier version kept a separate string-keyed cache per arity, with a
+    // hand-proved collision-free length-prefix encoding for the multi-skill key — see git history —
+    // that took two review rounds to actually get right. A comparer keyed directly on the list
+    // sidesteps that whole class of encoding-collision reasoning: two lists are the same cache slot
+    // exactly when SkillIdListComparer says they're equal, by construction, for any arity).
+    private readonly ConcurrentDictionary<IReadOnlyList<string>, IEgressPolicy> _skillCache =
+        new(SkillIdListComparer.Instance);
 
     /// <summary>Initializes a new <see cref="SkillManifestEgressPolicyResolver"/>.</summary>
     public SkillManifestEgressPolicyResolver(
@@ -96,8 +103,50 @@ public sealed class SkillManifestEgressPolicyResolver : IEgressPolicyResolver
     {
         ArgumentNullException.ThrowIfNull(identity);
 
-        var skillId = _currentSkill.CurrentSkillId;
-        return skillId is null ? _noSkillPolicy.Value : _skillCache.GetOrAdd(skillId, BuildPolicyForSkill);
+        var skillIds = _currentSkill.CurrentSkillIds;
+        return skillIds.Count == 0
+            ? _noSkillPolicy.Value
+            : _skillCache.GetOrAdd(skillIds, static (ids, self) => self.BuildPolicyForSkills(ids), this);
+    }
+
+    /// <summary>
+    /// Order-independent, case-insensitive structural equality over a skill-id list — what makes
+    /// <see cref="_skillCache"/> safe to key directly on the list rather than on an encoded string.
+    /// </summary>
+    /// <remarks>
+    /// Single-element lists get a dedicated O(1) path in both members (#589 code-review, second
+    /// round): a single active skill is the overwhelming common case — <see cref="ResolveFor"/> runs
+    /// on every governed outbound HTTP request — and the general path's <c>OrderBy</c> sort is pure
+    /// overhead when there is nothing to order. This restores, for that case, the same cost the old
+    /// design's separate bare-string single-skill cache had before the two caches were merged.
+    /// </remarks>
+    private sealed class SkillIdListComparer : IEqualityComparer<IReadOnlyList<string>>
+    {
+        public static readonly SkillIdListComparer Instance = new();
+
+        public bool Equals(IReadOnlyList<string>? x, IReadOnlyList<string>? y)
+        {
+            if (ReferenceEquals(x, y))
+                return true;
+            if (x is null || y is null || x.Count != y.Count)
+                return false;
+            if (x.Count == 1)
+                return string.Equals(x[0], y[0], StringComparison.OrdinalIgnoreCase);
+
+            return x.OrderBy(id => id, StringComparer.OrdinalIgnoreCase)
+                .SequenceEqual(y.OrderBy(id => id, StringComparer.OrdinalIgnoreCase), StringComparer.OrdinalIgnoreCase);
+        }
+
+        public int GetHashCode(IReadOnlyList<string> obj)
+        {
+            if (obj.Count == 1)
+                return StringComparer.OrdinalIgnoreCase.GetHashCode(obj[0]);
+
+            var hash = new HashCode();
+            foreach (var id in obj.OrderBy(id => id, StringComparer.OrdinalIgnoreCase))
+                hash.Add(id, StringComparer.OrdinalIgnoreCase);
+            return hash.ToHashCode();
+        }
     }
 
     private IEgressPolicy BuildDefaultOnlyPolicy()
@@ -106,36 +155,49 @@ public sealed class SkillManifestEgressPolicyResolver : IEgressPolicyResolver
         return new DefaultEgressPolicy(defaultEntries, _policyLogger, _timeProvider);
     }
 
-    private IEgressPolicy BuildPolicyForSkill(string key)
+    /// <summary>
+    /// Default entries plus every named skill's own allowlist additions, unioned — the single
+    /// implementation for both the single- and multi-skill resolve paths (#589 code-review finding:
+    /// these were two near-identical hand-written copies of the same merge; the one-skill case is
+    /// just this with a one-element list, so there is no reason for a second implementation to drift
+    /// from). A tool name shared by two skills must resolve at least as broad an allowlist as either
+    /// skill would grant it alone.
+    /// </summary>
+    private IEgressPolicy BuildPolicyForSkills(IReadOnlyList<string> skillIds)
     {
         var defaultEntries = EgressAllowlistMapper.Map(_appConfig.CurrentValue.AI.Egress.DefaultAllowlist);
 
-        var skill = _skillRegistry.TryGet(key);
+        var merged = new List<EgressAllowlistEntry>(defaultEntries);
+        foreach (var skillId in skillIds)
+            merged.AddRange(SkillAllowlistEntries(skillId));
+
+        if (merged.Count == defaultEntries.Count)
+            return new DefaultEgressPolicy(defaultEntries, _policyLogger, _timeProvider);
+
+        _logger.LogDebug(
+            "Built egress policy for skill(s) '{SkillIds}': {DefaultCount} default + {AddedCount} " +
+            "combined per-skill entries.",
+            string.Join(", ", skillIds), defaultEntries.Count, merged.Count - defaultEntries.Count);
+
+        return new DefaultEgressPolicy(merged, _policyLogger, _timeProvider);
+    }
+
+    /// <summary>
+    /// One skill's own manifest allowlist entries — empty when the skill is unknown (logged) or
+    /// declares none. Shared by the single- and multi-skill resolve paths so the lookup and the
+    /// unknown-skill warning are written once.
+    /// </summary>
+    private IReadOnlyList<EgressAllowlistEntry> SkillAllowlistEntries(string skillId)
+    {
+        var skill = _skillRegistry.TryGet(skillId);
         if (skill is null)
         {
             _logger.LogWarning(
-                "Egress policy lookup for unknown skill '{SkillId}' — falling back to harness-wide default.",
-                key);
-            return new DefaultEgressPolicy(defaultEntries, _policyLogger, _timeProvider);
+                "Egress policy lookup for unknown skill '{SkillId}' — no per-skill entries contributed.",
+                skillId);
+            return [];
         }
 
-        var perSkill = skill.Egress?.Allowlist ?? [];
-        if (perSkill.Count == 0)
-        {
-            // Skill has no additions — reuse the default-only policy shape.
-            return new DefaultEgressPolicy(defaultEntries, _policyLogger, _timeProvider);
-        }
-
-        // Merge default + per-skill (ADDITIVE union). Duplicates are harmless;
-        // the policy's match algorithm short-circuits on the first match.
-        var merged = new List<EgressAllowlistEntry>(defaultEntries.Count + perSkill.Count);
-        merged.AddRange(defaultEntries);
-        merged.AddRange(perSkill);
-
-        _logger.LogDebug(
-            "Built egress policy for skill '{SkillId}': {DefaultCount} default + {PerSkillCount} per-skill entries.",
-            key, defaultEntries.Count, perSkill.Count);
-
-        return new DefaultEgressPolicy(merged, _policyLogger, _timeProvider);
+        return skill.Egress?.Allowlist ?? [];
     }
 }

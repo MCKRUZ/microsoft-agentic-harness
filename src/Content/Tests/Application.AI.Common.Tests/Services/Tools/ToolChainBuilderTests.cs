@@ -479,6 +479,126 @@ public class ToolChainBuilderTests
     }
 
     [Fact]
+    public async Task BuildMergedToolsAsync_TwoSkillsShareACallOnceFirstPartyToolName_StillRegistersIt()
+    {
+        // #589 correctness/security review finding on this PR's own first draft: the union re-wrap
+        // ProjectSurvivors performs when two skills share a first-party tool name replaced the
+        // published instance with a brand-new one, never tagged in callOnceCandidates (a
+        // reference-identity-keyed set) — silently dropping a declared CallOncePerConversation
+        // restriction the moment two skills happened to share a call-once tool's name.
+        var toolMock = new Mock<ITool>();
+        toolMock.Setup(t => t.Name).Returns("shared_once_tool");
+
+        var converter = new Mock<IToolConverter>();
+        converter.Setup(c => c.Convert(toolMock.Object, null))
+            .Returns(AIFunctionFactory.Create(() => "converted", "shared_once_tool"));
+
+        var services = new ServiceCollection();
+        services.AddKeyedSingleton<ITool>("shared_once_tool", toolMock.Object);
+
+        var policy = new ToolCallOncePolicy(NullLogger<ToolCallOncePolicy>.Instance);
+        var builder = CreateBuilder(
+            toolConverter: converter.Object,
+            serviceProvider: services.BuildServiceProvider(),
+            callOncePolicy: policy);
+
+        var skillA = new SkillDefinition
+        {
+            Id = "skill-a", Name = "skill-a", Instructions = "Test",
+            ToolDeclarations = [new ToolDeclaration { Name = "shared_once_tool", CallOncePerConversation = true }]
+        };
+        var skillB = new SkillDefinition
+        {
+            Id = "skill-b", Name = "skill-b", Instructions = "Test",
+            ToolDeclarations = [new ToolDeclaration { Name = "shared_once_tool", CallOncePerConversation = true }]
+        };
+
+        var tools = await builder.BuildMergedToolsAsync([skillA, skillB], new SkillAgentOptions());
+
+        tools.Should().ContainSingle("both skills share one first-party tool name");
+        policy.IsCallOnce("shared_once_tool").Should().BeTrue(
+            "the union re-wrap must carry the call-once candidacy forward onto the new instance");
+    }
+
+    [Fact]
+    public async Task BuildMergedToolsAsync_OneSkillDeclaresTheSameToolTwiceOnlyOneCallOnce_StillRegistersIt()
+    {
+        // #589 round-2 code-review finding: UnionSkillScopeIfNeeded's early return (candidate's skill
+        // ids already fully covered by the published instance's) fires for a SINGLE skill that names
+        // the same tool via two of its own ToolDeclarations - same skill id on both, so no union
+        // rewrap happens at all. The call-once carry-forward used to live only inside the union-rewrap
+        // branch, so it never ran on this path, silently dropping the restriction whenever the
+        // discarded (not the published) declaration was the call-once one.
+        var toolMock = new Mock<ITool>();
+        toolMock.Setup(t => t.Name).Returns("twice_declared_tool");
+
+        var converter = new Mock<IToolConverter>();
+        // A factory delegate, not a fixed value: each ToolDeclaration resolves independently in
+        // production (IToolConverter.Convert is called once per resolution), so each of the two
+        // declarations here must get its OWN AIFunction instance too - a fixed .Returns(value) would
+        // hand both the identical object, aliasing them through WrapGoverned's own callOnceCandidates
+        // tagging (same raw reference tagged once = both wrapped instances tagged) and silently
+        // testing nothing about this method's OWN early-return carry-forward fix.
+        converter.Setup(c => c.Convert(toolMock.Object, null))
+            .Returns(() => AIFunctionFactory.Create(() => "converted", "twice_declared_tool"));
+
+        var services = new ServiceCollection();
+        services.AddKeyedSingleton<ITool>("twice_declared_tool", toolMock.Object);
+
+        var policy = new ToolCallOncePolicy(NullLogger<ToolCallOncePolicy>.Instance);
+        var builder = CreateBuilder(
+            toolConverter: converter.Object,
+            serviceProvider: services.BuildServiceProvider(),
+            callOncePolicy: policy);
+
+        var skill = new SkillDefinition
+        {
+            Id = "skill-a", Name = "skill-a", Instructions = "Test",
+            ToolDeclarations =
+            [
+                new ToolDeclaration { Name = "twice_declared_tool", CallOncePerConversation = false },
+                new ToolDeclaration { Name = "twice_declared_tool", CallOncePerConversation = true }
+            ]
+        };
+
+        var tools = await builder.BuildMergedToolsAsync([skill], new SkillAgentOptions());
+
+        tools.Should().ContainSingle();
+        policy.IsCallOnce("twice_declared_tool").Should().BeTrue(
+            "the second declaration's call-once flag must survive even though the dedup discarded its instance");
+    }
+
+    [Fact]
+    public async Task BuildMergedToolsAsync_TwoSkillsShareAnMcpToolName_UnionsBothSkillsEgressScope()
+    {
+        // #589 code-review finding (second round): DeduplicateMcpCandidates picked g.First() for a
+        // (server, name) group, silently dropping every later skill's independently-scoped instance -
+        // the exact bug ProjectSurvivors' first-party dedup loop was fixed to avoid, left open for the
+        // MCP tool source. Each skill's own GovernedAIFunction wrapper (with that skill's own SkillIds)
+        // is already built before tools from multiple skills are pooled here, so two plugin skills
+        // naming the same MCP server/tool must union rather than first-win.
+        var mcpProvider = new Mock<IMcpToolProvider>();
+        mcpProvider
+            .Setup(p => p.GetAllToolsAsync(It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new Dictionary<string, IList<AITool>>
+            {
+                ["shared-server"] = [AIFunctionFactory.Create(() => "r", "shared_mcp_tool")]
+            });
+
+        var builder = CreateBuilder(mcpToolProvider: mcpProvider.Object);
+
+        var skillA = new SkillDefinition { Id = "skill-a", Name = "skill-a", Instructions = "Test", PluginSource = "plugin" };
+        var skillB = new SkillDefinition { Id = "skill-b", Name = "skill-b", Instructions = "Test", PluginSource = "plugin" };
+
+        var tools = await builder.BuildMergedToolsAsync([skillA, skillB], new SkillAgentOptions());
+
+        var governed = tools.Should().ContainSingle(t => t.Name == "shared_mcp_tool")
+            .Which.Should().BeOfType<GovernedAIFunction>().Subject;
+        governed.SkillIds.Should().BeEquivalentTo(["skill-a", "skill-b"],
+            "both skills declared this MCP tool, so the published instance must carry both skills' scope");
+    }
+
+    [Fact]
     public async Task BuildToolsAsync_ToolNotDeclaredCallOnce_PolicyNeverConsulted()
     {
         var toolMock = new Mock<ITool>();
