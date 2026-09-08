@@ -66,6 +66,14 @@ public sealed class SkillManifestEgressPolicyResolver : IEgressPolicyResolver
     private readonly Lazy<IEgressPolicy> _noSkillPolicy;
     private readonly ConcurrentDictionary<string, IEgressPolicy> _skillCache = new(StringComparer.OrdinalIgnoreCase);
 
+    // A separate cache, not a composite key sharing _skillCache's key space (#589 security-review
+    // finding): the composite key's own U+0001-cannot-collide argument rests on an unverified claim
+    // ("a skill id is validated kebab-case elsewhere") that no validator in this codebase actually
+    // enforces — the same class of mistake the two-cache split above was already introduced to
+    // eliminate for the no-skill/single-skill boundary. A separate dictionary removes the whole
+    // collision class rather than resting on an id-shape assumption a future caller could violate.
+    private readonly ConcurrentDictionary<string, IEgressPolicy> _multiSkillCache = new(StringComparer.OrdinalIgnoreCase);
+
     /// <summary>Initializes a new <see cref="SkillManifestEgressPolicyResolver"/>.</summary>
     public SkillManifestEgressPolicyResolver(
         ICurrentSkillAccessor currentSkill,
@@ -91,10 +99,10 @@ public sealed class SkillManifestEgressPolicyResolver : IEgressPolicyResolver
         _noSkillPolicy = new Lazy<IEgressPolicy>(BuildDefaultOnlyPolicy);
     }
 
-    // Separator between skill ids in a composite multi-skill cache key. A skill id is validated
-    // kebab-case elsewhere in this harness, so U+0001 (a control character no legitimate skill id
-    // can contain) cannot collide with a real id the way a printable separator like ',' could if a
-    // skill id ever legitimately contained one.
+    // Separator joining skill ids into a multi-skill cache key. Only has to be deterministic within
+    // _multiSkillCache's own key space — unlike a composite key sharing _skillCache with bare
+    // single-skill ids, there is no cross-cache collision to defend against, so no claim about what
+    // characters a skill id can or can't contain is load-bearing here.
     private const char CompositeKeySeparator = '';
 
     /// <inheritdoc />
@@ -107,14 +115,13 @@ public sealed class SkillManifestEgressPolicyResolver : IEgressPolicyResolver
         {
             0 => _noSkillPolicy.Value,
             1 => _skillCache.GetOrAdd(skillIds[0], BuildPolicyForSkill),
-            _ => _skillCache.GetOrAdd(CompositeKey(skillIds), _ => BuildPolicyForSkills(skillIds)),
+            _ => _multiSkillCache.GetOrAdd(CompositeKey(skillIds), _ => BuildPolicyForSkills(skillIds)),
         };
     }
 
     /// <summary>
-    /// A cache key for a multi-skill scope (#589) that cannot collide with any single skill id —
-    /// every single-id key is a bare skill id with no <see cref="CompositeKeySeparator"/> in it, so a
-    /// key containing that separator can never equal one.
+    /// A deterministic cache key for a multi-skill scope (#589), for <see cref="_multiSkillCache"/>'s
+    /// own key space only.
     /// </summary>
     private static string CompositeKey(IReadOnlyList<string> skillIds) =>
         string.Join(CompositeKeySeparator, skillIds.OrderBy(id => id, StringComparer.OrdinalIgnoreCase));

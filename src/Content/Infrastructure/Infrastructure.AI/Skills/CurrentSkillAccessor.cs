@@ -34,7 +34,11 @@ public sealed class CurrentSkillAccessor : ICurrentSkillAccessor
             ArgumentException.ThrowIfNullOrWhiteSpace(skillId, nameof(skillIds));
 
         var previous = Slot.Value;
-        Slot.Value = skillIds;
+        // Copies rather than stores the caller's reference (#589 security-review finding): every
+        // in-repo caller happens to pass a freshly-built list today, but ICurrentSkillAccessor is a
+        // public interface a template consumer implements against, and a caller who mutated its list
+        // after this call returned would otherwise mutate the live ambient scope past validation.
+        Slot.Value = [.. skillIds];
         return new Restorer(previous);
     }
 
