@@ -479,6 +479,48 @@ public class ToolChainBuilderTests
     }
 
     [Fact]
+    public async Task BuildMergedToolsAsync_TwoSkillsShareACallOnceFirstPartyToolName_StillRegistersIt()
+    {
+        // #589 correctness/security review finding on this PR's own first draft: the union re-wrap
+        // ProjectSurvivors performs when two skills share a first-party tool name replaced the
+        // published instance with a brand-new one, never tagged in callOnceCandidates (a
+        // reference-identity-keyed set) — silently dropping a declared CallOncePerConversation
+        // restriction the moment two skills happened to share a call-once tool's name.
+        var toolMock = new Mock<ITool>();
+        toolMock.Setup(t => t.Name).Returns("shared_once_tool");
+
+        var converter = new Mock<IToolConverter>();
+        converter.Setup(c => c.Convert(toolMock.Object, null))
+            .Returns(AIFunctionFactory.Create(() => "converted", "shared_once_tool"));
+
+        var services = new ServiceCollection();
+        services.AddKeyedSingleton<ITool>("shared_once_tool", toolMock.Object);
+
+        var policy = new ToolCallOncePolicy(NullLogger<ToolCallOncePolicy>.Instance);
+        var builder = CreateBuilder(
+            toolConverter: converter.Object,
+            serviceProvider: services.BuildServiceProvider(),
+            callOncePolicy: policy);
+
+        var skillA = new SkillDefinition
+        {
+            Id = "skill-a", Name = "skill-a", Instructions = "Test",
+            ToolDeclarations = [new ToolDeclaration { Name = "shared_once_tool", CallOncePerConversation = true }]
+        };
+        var skillB = new SkillDefinition
+        {
+            Id = "skill-b", Name = "skill-b", Instructions = "Test",
+            ToolDeclarations = [new ToolDeclaration { Name = "shared_once_tool", CallOncePerConversation = true }]
+        };
+
+        var tools = await builder.BuildMergedToolsAsync([skillA, skillB], new SkillAgentOptions());
+
+        tools.Should().ContainSingle("both skills share one first-party tool name");
+        policy.IsCallOnce("shared_once_tool").Should().BeTrue(
+            "the union re-wrap must carry the call-once candidacy forward onto the new instance");
+    }
+
+    [Fact]
     public async Task BuildToolsAsync_ToolNotDeclaredCallOnce_PolicyNeverConsulted()
     {
         var toolMock = new Mock<ITool>();

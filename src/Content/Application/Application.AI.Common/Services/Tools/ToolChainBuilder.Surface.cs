@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using Application.AI.Common.Helpers;
 using Application.AI.Common.OpenTelemetry.Metrics;
@@ -33,7 +34,8 @@ public partial class ToolChainBuilder
     /// make the two indistinguishable, because origin was recorded at resolution time, not
     /// reconstructed from what the tools say about themselves.
     /// </remarks>
-    private (List<AITool> Tools, HashSet<string> McpAttributedNames) ResolveSurvivingTools(List<ProvisionedTool> allProvisioned)
+    private (List<AITool> Tools, HashSet<string> McpAttributedNames) ResolveSurvivingTools(
+        List<ProvisionedTool> allProvisioned, ConcurrentDictionary<AITool, byte> callOnceCandidates)
     {
         var firstPartyNames = CollectFirstPartyNames(allProvisioned);
 
@@ -53,7 +55,7 @@ public partial class ToolChainBuilder
         else
             AddScannedMcpNames(mcpCandidates, survivingNames);
 
-        return ProjectSurvivors(allProvisioned, mcpCandidates, survivingNames, firstPartyNames);
+        return ProjectSurvivors(allProvisioned, mcpCandidates, survivingNames, firstPartyNames, callOnceCandidates);
     }
 
     private static HashSet<string> CollectFirstPartyNames(List<ProvisionedTool> allProvisioned)
@@ -125,13 +127,20 @@ public partial class ToolChainBuilder
     /// name and re-wraps the published instance to carry the union of both skills' ids, rather than
     /// silently keeping only whichever skill enumerated first — so a call to the shared tool resolves
     /// an egress policy covering both skills' declared allowlists, regardless of which one the model
-    /// is conceptually driving the turn from.
+    /// is conceptually driving the turn from. The re-wrap also carries <paramref name="callOnceCandidates"/>
+    /// forward onto the new instance — the same alias-preservation <see cref="WrapGoverned"/> already
+    /// does — because that set is keyed by reference identity
+    /// (<see cref="ReferenceEqualityComparer.Instance"/>): a re-wrap that produced a new,
+    /// never-tagged instance without this would silently drop a shared tool's
+    /// <c>CallOncePerConversation</c> restriction the moment two skills happened to share its name
+    /// (correctness/security review finding on this PR's own first draft).
     /// </remarks>
     private static (List<AITool> Tools, HashSet<string> McpAttributedNames) ProjectSurvivors(
         List<ProvisionedTool> allProvisioned,
         List<ProvisionedTool> mcpCandidates,
         HashSet<string> survivingNames,
-        HashSet<string> firstPartyNames)
+        HashSet<string> firstPartyNames,
+        ConcurrentDictionary<AITool, byte> callOnceCandidates)
     {
         var indexByName = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         var result = new List<AITool>();
@@ -150,7 +159,7 @@ public partial class ToolChainBuilder
                 continue;
             }
 
-            result[existingIndex] = UnionSkillScopeIfNeeded(result[existingIndex], p.Tool);
+            result[existingIndex] = UnionSkillScopeIfNeeded(result[existingIndex], p.Tool, callOnceCandidates);
         }
 
         var mcpAttributedNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -180,12 +189,20 @@ public partial class ToolChainBuilder
     /// </summary>
     /// <param name="published">The instance already added to the result list for this name.</param>
     /// <param name="candidate">A later-enumerated skill's own instance of the same-named tool.</param>
+    /// <param name="callOnceCandidates">
+    /// The whole-agent-set call-once candidate tracker (#589 correctness/security review finding):
+    /// keyed by reference identity, so a re-wrap here that produced a new, untagged instance would
+    /// silently fall out of it, dropping a shared tool's <c>CallOncePerConversation</c> restriction
+    /// exactly the way <see cref="WrapGoverned"/>'s own alias-carry-forward comment already warns
+    /// about for its own re-wrap. If either side was tagged, the new instance is tagged too.
+    /// </param>
     /// <returns>
     /// <paramref name="published"/> unchanged when either side isn't a <see cref="GovernedAIFunction"/>
     /// or the candidate's skill ids are already fully covered by the published instance; otherwise a
     /// new instance wrapping the same inner function with the union of both sides' skill ids.
     /// </returns>
-    private static AITool UnionSkillScopeIfNeeded(AITool published, AITool candidate)
+    private static AITool UnionSkillScopeIfNeeded(
+        AITool published, AITool candidate, ConcurrentDictionary<AITool, byte> callOnceCandidates)
     {
         if (published is not GovernedAIFunction publishedGoverned || candidate is not GovernedAIFunction candidateGoverned)
             return published;
@@ -200,8 +217,13 @@ public partial class ToolChainBuilder
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
 
-        return new GovernedAIFunction(
+        var rewrapped = new GovernedAIFunction(
             publishedGoverned.Inner, compositionTaint: null, publishedGoverned.CurrentSkillAccessor, union);
+
+        if (callOnceCandidates.ContainsKey(published) || callOnceCandidates.ContainsKey(candidate))
+            callOnceCandidates.TryAdd(rewrapped, 0);
+
+        return rewrapped;
     }
 
     /// <summary>

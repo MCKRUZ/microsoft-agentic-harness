@@ -105,7 +105,7 @@ public partial class ToolChainBuilder : IToolChainBuilder
     {
         var callOnceCandidates = new ConcurrentDictionary<AITool, byte>(ReferenceEqualityComparer.Instance);
         var provisioned = await BuildProvisionedToolsAsync(skill, options, callOnceCandidates, cancellationToken);
-        var (tools, _) = ResolveSurvivingTools(provisioned);
+        var (tools, _) = ResolveSurvivingTools(provisioned, callOnceCandidates);
 
         // Registration happens here, against the truly final published surface — the point at which
         // every filter (plugin boundary, reserved-capability, first-party/cross-server precedence,
@@ -447,7 +447,7 @@ public partial class ToolChainBuilder : IToolChainBuilder
             allProvisioned.AddRange(skillTools);
         }
 
-        var (deduplicated, attributedMcp) = ResolveSurvivingTools(allProvisioned);
+        var (deduplicated, attributedMcp) = ResolveSurvivingTools(allProvisioned, callOnceCandidates);
 
         // A null allowlist means no restriction; a non-null one is an active restriction that keeps
         // only the listed tools — an empty (but non-null) list therefore denies every tool, which is
