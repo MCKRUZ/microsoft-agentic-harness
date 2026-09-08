@@ -91,14 +91,33 @@ public sealed class SkillManifestEgressPolicyResolver : IEgressPolicyResolver
         _noSkillPolicy = new Lazy<IEgressPolicy>(BuildDefaultOnlyPolicy);
     }
 
+    // Separator between skill ids in a composite multi-skill cache key. A skill id is validated
+    // kebab-case elsewhere in this harness, so U+0001 (a control character no legitimate skill id
+    // can contain) cannot collide with a real id the way a printable separator like ',' could if a
+    // skill id ever legitimately contained one.
+    private const char CompositeKeySeparator = '';
+
     /// <inheritdoc />
     public IEgressPolicy ResolveFor(AgentIdentity identity)
     {
         ArgumentNullException.ThrowIfNull(identity);
 
-        var skillId = _currentSkill.CurrentSkillId;
-        return skillId is null ? _noSkillPolicy.Value : _skillCache.GetOrAdd(skillId, BuildPolicyForSkill);
+        var skillIds = _currentSkill.CurrentSkillIds;
+        return skillIds.Count switch
+        {
+            0 => _noSkillPolicy.Value,
+            1 => _skillCache.GetOrAdd(skillIds[0], BuildPolicyForSkill),
+            _ => _skillCache.GetOrAdd(CompositeKey(skillIds), _ => BuildPolicyForSkills(skillIds)),
+        };
     }
+
+    /// <summary>
+    /// A cache key for a multi-skill scope (#589) that cannot collide with any single skill id —
+    /// every single-id key is a bare skill id with no <see cref="CompositeKeySeparator"/> in it, so a
+    /// key containing that separator can never equal one.
+    /// </summary>
+    private static string CompositeKey(IReadOnlyList<string> skillIds) =>
+        string.Join(CompositeKeySeparator, skillIds.OrderBy(id => id, StringComparer.OrdinalIgnoreCase));
 
     private IEgressPolicy BuildDefaultOnlyPolicy()
     {
@@ -109,17 +128,7 @@ public sealed class SkillManifestEgressPolicyResolver : IEgressPolicyResolver
     private IEgressPolicy BuildPolicyForSkill(string key)
     {
         var defaultEntries = EgressAllowlistMapper.Map(_appConfig.CurrentValue.AI.Egress.DefaultAllowlist);
-
-        var skill = _skillRegistry.TryGet(key);
-        if (skill is null)
-        {
-            _logger.LogWarning(
-                "Egress policy lookup for unknown skill '{SkillId}' — falling back to harness-wide default.",
-                key);
-            return new DefaultEgressPolicy(defaultEntries, _policyLogger, _timeProvider);
-        }
-
-        var perSkill = skill.Egress?.Allowlist ?? [];
+        var perSkill = SkillAllowlistEntries(key);
         if (perSkill.Count == 0)
         {
             // Skill has no additions — reuse the default-only policy shape.
@@ -137,5 +146,50 @@ public sealed class SkillManifestEgressPolicyResolver : IEgressPolicyResolver
             key, defaultEntries.Count, perSkill.Count);
 
         return new DefaultEgressPolicy(merged, _policyLogger, _timeProvider);
+    }
+
+    /// <summary>
+    /// The multi-skill counterpart of <see cref="BuildPolicyForSkill"/> (#589): default entries plus
+    /// EVERY named skill's own allowlist additions, unioned. A tool name shared by two skills must
+    /// resolve at least as broad an allowlist as either skill would grant it alone — this is the same
+    /// additive contract <see cref="BuildPolicyForSkill"/> already applies to a single skill, extended
+    /// to more than one active at once.
+    /// </summary>
+    private IEgressPolicy BuildPolicyForSkills(IReadOnlyList<string> skillIds)
+    {
+        var defaultEntries = EgressAllowlistMapper.Map(_appConfig.CurrentValue.AI.Egress.DefaultAllowlist);
+
+        var merged = new List<EgressAllowlistEntry>(defaultEntries);
+        foreach (var skillId in skillIds)
+            merged.AddRange(SkillAllowlistEntries(skillId));
+
+        if (merged.Count == defaultEntries.Count)
+            return new DefaultEgressPolicy(defaultEntries, _policyLogger, _timeProvider);
+
+        _logger.LogDebug(
+            "Built union egress policy for skills '{SkillIds}': {DefaultCount} default + {MergedCount} " +
+            "combined per-skill entries.",
+            string.Join(", ", skillIds), defaultEntries.Count, merged.Count - defaultEntries.Count);
+
+        return new DefaultEgressPolicy(merged, _policyLogger, _timeProvider);
+    }
+
+    /// <summary>
+    /// One skill's own manifest allowlist entries — empty when the skill is unknown (logged) or
+    /// declares none. Shared by the single- and multi-skill resolve paths so the lookup and the
+    /// unknown-skill warning are written once.
+    /// </summary>
+    private IReadOnlyList<EgressAllowlistEntry> SkillAllowlistEntries(string skillId)
+    {
+        var skill = _skillRegistry.TryGet(skillId);
+        if (skill is null)
+        {
+            _logger.LogWarning(
+                "Egress policy lookup for unknown skill '{SkillId}' — no per-skill entries contributed.",
+                skillId);
+            return [];
+        }
+
+        return skill.Egress?.Allowlist ?? [];
     }
 }

@@ -17,7 +17,7 @@ namespace Application.AI.Common.Tests.Governance;
 
 /// <summary>
 /// #531: proves the missing wire — <see cref="ToolChainBuilder"/> and <see cref="GovernedAIFunction"/>
-/// actually establish <see cref="ICurrentSkillAccessor.CurrentSkillId"/> for the duration of a tool
+/// actually establish <see cref="ICurrentSkillAccessor.CurrentSkillIds"/> for the duration of a tool
 /// call built from a skill, which is the one thing standing between
 /// <c>SkillManifestEgressPolicyResolver</c>'s already-correct merge logic and it ever running in
 /// production. Uses the real <see cref="CurrentSkillAccessor"/> (Infrastructure), not a mock — the
@@ -49,7 +49,7 @@ public sealed class SkillEgressScopeActivationTests
             .Setup(fs => fs.ReadFileAsync("notes.txt", It.IsAny<CancellationToken>()))
             .ReturnsAsync(() =>
             {
-                observedDuringCall = accessor.CurrentSkillId;
+                observedDuringCall = accessor.CurrentSkillIds.FirstOrDefault();
                 return "hello world";
             });
 
@@ -60,7 +60,7 @@ public sealed class SkillEgressScopeActivationTests
         var tools = await builder.BuildToolsAsync(skill, new SkillAgentOptions());
         var aiFunction = (AIFunction)tools.Single();
 
-        accessor.CurrentSkillId.Should().BeNull("no skill scope should be active before the call");
+        accessor.CurrentSkillIds.Should().BeEmpty("no skill scope should be active before the call");
 
         var args = new AIFunctionArguments
         {
@@ -70,7 +70,46 @@ public sealed class SkillEgressScopeActivationTests
         await aiFunction.InvokeAsync(args);
 
         observedDuringCall.Should().Be("reader-skill", "the resolver reads CurrentSkillId from inside the tool's own execution");
-        accessor.CurrentSkillId.Should().BeNull("the scope must be restored once the call returns, not leaked to the next call");
+        accessor.CurrentSkillIds.Should().BeEmpty("the scope must be restored once the call returns, not leaked to the next call");
+    }
+
+    [Fact]
+    public async Task TwoSkillsShareAFirstPartyToolName_InvokingItEstablishesBothSkillsScope()
+    {
+        // #589: before this fix, ToolChainBuilder.ProjectSurvivors' cross-skill dedup kept only the
+        // first-enumerated skill's already-wrapped GovernedAIFunction instance for a shared name,
+        // silently dropping the second skill's SkillIds — a call to the shared tool would only ever
+        // establish "reader-skill-a", never "reader-skill-b" too, no matter which skill the model was
+        // conceptually driving the turn from.
+        var (_, fileSystem, accessor, provider) = BuildFixture();
+
+        IReadOnlyList<string>? observedDuringCall = null;
+        fileSystem
+            .Setup(fs => fs.ReadFileAsync("notes.txt", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(() =>
+            {
+                observedDuringCall = accessor.CurrentSkillIds;
+                return "hello world";
+            });
+
+        var builder = new ToolChainBuilder(
+            NullLogger<ToolChainBuilder>.Instance, provider, new AIToolConverter(NullLogger<AIToolConverter>.Instance));
+
+        var skillA = new SkillDefinition { Id = "reader-skill-a", Name = "reader-skill-a", AllowedTools = ["file_system"] };
+        var skillB = new SkillDefinition { Id = "reader-skill-b", Name = "reader-skill-b", AllowedTools = ["file_system"] };
+        var tools = await builder.BuildMergedToolsAsync([skillA, skillB], new SkillAgentOptions());
+        var aiFunction = (AIFunction)tools.Should().ContainSingle("both skills share one first-party tool name").Which;
+
+        var args = new AIFunctionArguments
+        {
+            ["operation"] = "read",
+            ["parametersJson"] = System.Text.Json.JsonSerializer.SerializeToElement(new { path = "notes.txt" })
+        };
+        await aiFunction.InvokeAsync(args);
+
+        observedDuringCall.Should().BeEquivalentTo(["reader-skill-a", "reader-skill-b"],
+            "the published instance must carry both skills' ids, not just whichever enumerated first");
+        accessor.CurrentSkillIds.Should().BeEmpty("the scope must be restored once the call returns");
     }
 
     [Fact]
@@ -85,7 +124,7 @@ public sealed class SkillEgressScopeActivationTests
             .Setup(fs => fs.ReadFileAsync("notes.txt", It.IsAny<CancellationToken>()))
             .ReturnsAsync(() =>
             {
-                observedDuringCall = accessor.CurrentSkillId;
+                observedDuringCall = accessor.CurrentSkillIds.FirstOrDefault();
                 return "hello world";
             });
 
@@ -131,7 +170,7 @@ public sealed class SkillEgressScopeActivationTests
             .Setup(fs => fs.ReadFileAsync("notes.txt", It.IsAny<CancellationToken>()))
             .ReturnsAsync(() =>
             {
-                observedDuringCall = accessor.CurrentSkillId;
+                observedDuringCall = accessor.CurrentSkillIds.FirstOrDefault();
                 return "hello world";
             });
 

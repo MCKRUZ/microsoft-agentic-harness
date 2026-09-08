@@ -117,21 +117,15 @@ public partial class ToolChainBuilder
     /// the same pass rather than re-derived by the caller.
     /// </summary>
     /// <remarks>
-    /// <strong>Known limitation: two skills sharing a first-party tool name pin the published
-    /// instance's per-skill egress scope (#531, tracked as #589) to whichever skill enumerated
-    /// first.</strong> Each
-    /// skill's tools are already wrapped as <see cref="GovernedAIFunction"/> — one <c>SkillId</c>
-    /// baked in per instance — before <paramref name="allProvisioned"/> reaches this method
-    /// (<c>BuildProvisionedToolsAsync</c>/<c>FinalizeChain</c> runs per skill, upstream). The
-    /// first-party dedup loop below (<c>seen.Add(p.Tool.Name)</c>) keeps only the first-enumerated
-    /// skill's instance, so a call to that shared tool always resolves the first skill's egress
-    /// allowlist, even during a turn the model is conceptually driving from the second skill. Not a
-    /// security hole — the resolved policy is still a real, valid skill's policy, never the harness
-    /// default's absence of one — but it can silently withhold a second skill's declared allowlist
-    /// addition for a tool the two skills happen to share by name. Fixing this precisely needs a
-    /// design decision this PR doesn't make: whether a shared tool name should union every
-    /// contributing skill's allowlist, or something else. Tracked for follow-up rather than guessed at
-    /// here.
+    /// <strong>Two skills sharing a first-party tool name union both skills' egress scope (#531,
+    /// #589).</strong> Each skill's tools are already wrapped as <see cref="GovernedAIFunction"/> —
+    /// one instance's <c>SkillIds</c> baked in per skill — before <paramref name="allProvisioned"/>
+    /// reaches this method (<c>BuildProvisionedToolsAsync</c>/<c>FinalizeChain</c> runs per skill,
+    /// upstream). The first-party dedup loop below detects a second skill sharing an already-published
+    /// name and re-wraps the published instance to carry the union of both skills' ids, rather than
+    /// silently keeping only whichever skill enumerated first — so a call to the shared tool resolves
+    /// an egress policy covering both skills' declared allowlists, regardless of which one the model
+    /// is conceptually driving the turn from.
     /// </remarks>
     private static (List<AITool> Tools, HashSet<string> McpAttributedNames) ProjectSurvivors(
         List<ProvisionedTool> allProvisioned,
@@ -139,7 +133,7 @@ public partial class ToolChainBuilder
         HashSet<string> survivingNames,
         HashSet<string> firstPartyNames)
     {
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var indexByName = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         var result = new List<AITool>();
 
         foreach (var p in allProvisioned)
@@ -148,8 +142,15 @@ public partial class ToolChainBuilder
                 continue;
             if (!survivingNames.Contains(p.Tool.Name))
                 continue;
-            if (seen.Add(p.Tool.Name))
+
+            if (!indexByName.TryGetValue(p.Tool.Name, out var existingIndex))
+            {
+                indexByName[p.Tool.Name] = result.Count;
                 result.Add(p.Tool);
+                continue;
+            }
+
+            result[existingIndex] = UnionSkillScopeIfNeeded(result[existingIndex], p.Tool);
         }
 
         var mcpAttributedNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -160,7 +161,7 @@ public partial class ToolChainBuilder
             // first-party claim, and the first-party-wins policy above is already fully applied.
             if (!survivingNames.Contains(candidate.Tool.Name))
                 continue;
-            if (seen.Add(candidate.Tool.Name))
+            if (indexByName.TryAdd(candidate.Tool.Name, result.Count))
             {
                 result.Add(candidate.Tool);
                 mcpAttributedNames.Add(candidate.Tool.Name);
@@ -168,6 +169,39 @@ public partial class ToolChainBuilder
         }
 
         return (result, mcpAttributedNames);
+    }
+
+    /// <summary>
+    /// When two skills share a first-party tool name, unions the second skill's <see cref="GovernedAIFunction.SkillIds"/>
+    /// into the already-published instance instead of silently dropping them (#589). Re-wraps the same
+    /// way <see cref="ApplyCompositionTaint"/> does — unwrap to <see cref="GovernedAIFunction.Inner"/>,
+    /// rewrap with the combined scope — since this runs before that method, on tools with no
+    /// composition taint yet, so there is nothing else to preserve across the rewrap.
+    /// </summary>
+    /// <param name="published">The instance already added to the result list for this name.</param>
+    /// <param name="candidate">A later-enumerated skill's own instance of the same-named tool.</param>
+    /// <returns>
+    /// <paramref name="published"/> unchanged when either side isn't a <see cref="GovernedAIFunction"/>
+    /// or the candidate's skill ids are already fully covered by the published instance; otherwise a
+    /// new instance wrapping the same inner function with the union of both sides' skill ids.
+    /// </returns>
+    private static AITool UnionSkillScopeIfNeeded(AITool published, AITool candidate)
+    {
+        if (published is not GovernedAIFunction publishedGoverned || candidate is not GovernedAIFunction candidateGoverned)
+            return published;
+
+        var publishedIds = publishedGoverned.SkillIds ?? [];
+        var candidateIds = candidateGoverned.SkillIds ?? [];
+        if (candidateIds.Count == 0 || candidateIds.All(id => publishedIds.Contains(id, StringComparer.OrdinalIgnoreCase)))
+            return published;
+
+        var union = publishedIds
+            .Concat(candidateIds)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        return new GovernedAIFunction(
+            publishedGoverned.Inner, compositionTaint: null, publishedGoverned.CurrentSkillAccessor, union);
     }
 
     /// <summary>

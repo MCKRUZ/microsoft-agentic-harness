@@ -58,7 +58,8 @@ internal sealed class GovernedAIFunction : DelegatingAIFunction
 
     private readonly ToolCompositionTaint? _compositionTaint;
     private readonly ICurrentSkillAccessor? _currentSkillAccessor;
-    private readonly string? _skillId;
+    private readonly IReadOnlyList<string>? _skillIds;
+    private readonly Func<AIFunctionArguments, string?>? _skillIdFromArguments;
 
     /// <param name="innerFunction">The tool function this wrapper governs.</param>
     /// <param name="compositionTaint">
@@ -66,26 +67,42 @@ internal sealed class GovernedAIFunction : DelegatingAIFunction
     /// <see cref="ToolChainBuilder.ApplyCompositionTaint"/>.
     /// </param>
     /// <param name="currentSkillAccessor">
-    /// Establishes <paramref name="skillId"/> as the ambient current skill (#531) for the duration of
-    /// this call, so a per-skill policy resolver (the egress allowlist resolver) sees the right skill
-    /// without the caller threading it through every method. Null when this tool was not built from a
-    /// skill context (e.g. <c>ToolChainBuilder.BuildToolsByName</c>, used for delegated subagents) —
-    /// the call then runs with whatever skill scope, if any, is already ambient.
+    /// Establishes <paramref name="skillIds"/> (or <paramref name="skillIdFromArguments"/>'s result)
+    /// as the ambient current skill(s) (#531) for the duration of this call, so a per-skill policy
+    /// resolver (the egress allowlist resolver) sees the right skill(s) without the caller threading
+    /// it through every method. Null when this tool was not built from a skill context (e.g.
+    /// <c>ToolChainBuilder.BuildToolsByName</c>, used for delegated subagents) — the call then runs
+    /// with whatever skill scope, if any, is already ambient.
     /// </param>
-    /// <param name="skillId">
-    /// The id of the skill this tool was resolved for. Null has the same "no scope to establish"
-    /// effect as a null <paramref name="currentSkillAccessor"/>.
+    /// <param name="skillIds">
+    /// The id(s) of the skill(s) this tool was resolved for — more than one when two skills in a
+    /// merged agent share this tool's name (#589, the union case: see
+    /// <see cref="ToolChainBuilder.ProjectSurvivors"/>). Null or empty has the same "no scope to
+    /// establish" effect as a null <paramref name="currentSkillAccessor"/>. Mutually exclusive with
+    /// <paramref name="skillIdFromArguments"/> in practice — a tool either has a scope fixed at build
+    /// time or resolves one per call, never both; when both are supplied,
+    /// <paramref name="skillIdFromArguments"/> wins.
+    /// </param>
+    /// <param name="skillIdFromArguments">
+    /// Resolves the active skill from this call's own arguments instead of a scope fixed at build
+    /// time — needed when one tool instance is shared by every skill and the caller names which
+    /// skill it means as an argument (#589's <c>run_skill_script</c> case: the framework's
+    /// <c>AgentSkillsProvider</c> is a single agent-wide instance, not one per skill). A null or
+    /// blank result establishes no scope (fail-closed to the harness-wide default), never a wrong
+    /// or stale one.
     /// </param>
     public GovernedAIFunction(
         AIFunction innerFunction,
         ToolCompositionTaint? compositionTaint = null,
         ICurrentSkillAccessor? currentSkillAccessor = null,
-        string? skillId = null)
+        IReadOnlyList<string>? skillIds = null,
+        Func<AIFunctionArguments, string?>? skillIdFromArguments = null)
         : base(innerFunction)
     {
         _compositionTaint = compositionTaint;
         _currentSkillAccessor = currentSkillAccessor;
-        _skillId = skillId;
+        _skillIds = skillIds;
+        _skillIdFromArguments = skillIdFromArguments;
     }
 
     /// <summary>
@@ -99,14 +116,14 @@ internal sealed class GovernedAIFunction : DelegatingAIFunction
     internal AIFunction Inner => InnerFunction;
 
     /// <summary>
-    /// The skill this tool was resolved for (#531), so <c>ToolChainBuilder.ApplyCompositionTaint</c>'s
+    /// The skill(s) this tool was resolved for (#531), so <c>ToolChainBuilder.ApplyCompositionTaint</c>'s
     /// re-wrap can carry it forward onto the new instance instead of silently losing the scope.
     /// </summary>
-    internal string? SkillId => _skillId;
+    internal IReadOnlyList<string>? SkillIds => _skillIds;
 
     /// <summary>
     /// The accessor supplied at construction, for the same re-wrap-forwarding reason as
-    /// <see cref="SkillId"/>.
+    /// <see cref="SkillIds"/>.
     /// </summary>
     internal ICurrentSkillAccessor? CurrentSkillAccessor => _currentSkillAccessor;
 
@@ -114,7 +131,7 @@ internal sealed class GovernedAIFunction : DelegatingAIFunction
         AIFunctionArguments arguments,
         CancellationToken cancellationToken)
     {
-        using var skillScope = BeginSkillScope();
+        using var skillScope = BeginSkillScope(arguments);
 
         var admissionPipeline = ToolAdmissionAccessor.Current;
         if (admissionPipeline is null)
@@ -183,13 +200,27 @@ internal sealed class GovernedAIFunction : DelegatingAIFunction
     }
 
     /// <summary>
-    /// Establishes <see cref="_skillId"/> as the ambient current skill for this call's duration
-    /// (#531), or returns null (no-op scope) when either half is missing. Called once, wrapping the
-    /// whole method body, so both the early-return-no-admission-pipeline branch and the main path get
-    /// the same scope without duplicating the check.
+    /// Establishes the active skill(s) as the ambient current skill(s) for this call's duration
+    /// (#531), or returns null (no-op scope) when there is none to establish. Called once, wrapping
+    /// the whole method body, so both the early-return-no-admission-pipeline branch and the main path
+    /// get the same scope without duplicating the check.
     /// </summary>
-    private IDisposable? BeginSkillScope() =>
-        !string.IsNullOrWhiteSpace(_skillId) ? _currentSkillAccessor?.BeginScope(_skillId) : null;
+    /// <remarks>
+    /// <paramref name="arguments"/>-based resolution (<see cref="_skillIdFromArguments"/>) takes
+    /// priority when both it and <see cref="_skillIds"/> are supplied (#589): a tool that resolves its
+    /// skill per call is telling this wrapper it does not have one fixed scope to fall back to, so a
+    /// stale build-time id would be strictly worse than the per-call answer, never a useful fallback.
+    /// </remarks>
+    private IDisposable? BeginSkillScope(AIFunctionArguments arguments)
+    {
+        if (_skillIdFromArguments is not null)
+        {
+            var resolved = _skillIdFromArguments(arguments);
+            return !string.IsNullOrWhiteSpace(resolved) ? _currentSkillAccessor?.BeginScope([resolved]) : null;
+        }
+
+        return _skillIds is { Count: > 0 } ? _currentSkillAccessor?.BeginScope(_skillIds) : null;
+    }
 
     /// <summary>
     /// Extracts this call's requested paths/hosts (#418), when the wrapped function is a

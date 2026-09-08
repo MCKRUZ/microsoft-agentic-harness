@@ -1,7 +1,7 @@
 namespace Application.AI.Common.Interfaces.Skills;
 
 /// <summary>
-/// Ambient accessor that exposes the identifier of the skill currently driving
+/// Ambient accessor that exposes the identifiers of the skill(s) currently driving
 /// the agent turn. Set by the skill-execution path when a skill activates,
 /// cleared when it deactivates. Consumed by per-skill policy resolvers (e.g.
 /// the egress allowlist resolver) that need to vary behavior by skill without
@@ -15,26 +15,34 @@ namespace Application.AI.Common.Interfaces.Skills;
 /// scope.
 /// </para>
 /// <para>
-/// A null value means "no skill active" — resolvers fall back to the
-/// harness-wide default policy. Implementations are thread-safe; concurrent
-/// agent turns running on different async contexts each see their own value.
+/// An empty list means "no skill active" — resolvers fall back to the
+/// harness-wide default policy. More than one id means the current tool call is
+/// shared by multiple skills (#589) — a policy resolver that varies by skill must
+/// union each named skill's own contribution rather than picking one. Implementations
+/// are thread-safe; concurrent agent turns running on different async contexts each
+/// see their own value.
 /// </para>
 /// </remarks>
 public interface ICurrentSkillAccessor
 {
     /// <summary>
-    /// Gets the identifier of the skill currently active on this async context,
-    /// or null when no skill scope has been established.
+    /// Gets the identifiers of the skill(s) currently active on this async context,
+    /// or an empty list when no skill scope has been established.
     /// </summary>
-    string? CurrentSkillId { get; }
+    IReadOnlyList<string> CurrentSkillIds { get; }
 
     /// <summary>
-    /// Establishes the supplied <paramref name="skillId"/> as the current skill
+    /// Establishes the supplied <paramref name="skillIds"/> as the current skill(s)
     /// for this async context until the returned token is disposed. Restores
     /// the previous value on disposal so nested skill activations compose.
     /// </summary>
-    /// <param name="skillId">The identifier of the skill to make current. Must not be null or whitespace.</param>
+    /// <param name="skillIds">
+    /// The identifier(s) of the skill(s) to make current. Must not be null or empty, and no entry
+    /// may be null or whitespace.
+    /// </param>
     /// <returns>A token that restores the previous current-skill value when disposed.</returns>
-    /// <exception cref="ArgumentException">The supplied <paramref name="skillId"/> is null, empty, or whitespace.</exception>
-    IDisposable BeginScope(string skillId);
+    /// <exception cref="ArgumentException">
+    /// <paramref name="skillIds"/> is null, empty, or contains a null/whitespace entry.
+    /// </exception>
+    IDisposable BeginScope(IReadOnlyList<string> skillIds);
 }

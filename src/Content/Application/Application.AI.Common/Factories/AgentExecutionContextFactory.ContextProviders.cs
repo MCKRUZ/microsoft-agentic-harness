@@ -154,7 +154,9 @@ public partial class AgentExecutionContextFactory
         // rides along with.
         providers.Add(new Services.Agent.GoverningToolContextProvider(
             _loggerFactory.CreateLogger<Services.Agent.GoverningToolContextProvider>(),
-            _sanitizer));
+            _sanitizer,
+            disclosableSkills,
+            _serviceProvider.GetService<Interfaces.Skills.ICurrentSkillAccessor>()));
 
         AppendPerTurnBudgetProvider(providers, baseline);
 
