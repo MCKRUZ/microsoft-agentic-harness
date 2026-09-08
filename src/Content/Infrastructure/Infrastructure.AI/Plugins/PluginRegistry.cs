@@ -32,7 +32,11 @@ public sealed class PluginRegistry : IPluginRegistry
 
     /// <inheritdoc />
     public PluginBoundaryStatus GetBoundaryStatus(string pluginName) =>
-        _boundaryStatus.GetValueOrDefault(pluginName, PluginBoundaryStatus.Verified);
+        // #613: Pending, not Verified — see the interface doc for why. PluginToolBoundaryTracker.Seed
+        // now explicitly marks every loaded plugin it processes (Verified when it has nothing to
+        // verify, Pending/Faulted otherwise), so an absent entry here means genuinely unseeded, not
+        // "seeded with an empty boundary" — the two used to be indistinguishable.
+        _boundaryStatus.GetValueOrDefault(pluginName, PluginBoundaryStatus.Pending);
 
     /// <inheritdoc />
     public void MarkBoundaryPending(string pluginName) =>

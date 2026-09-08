@@ -45,9 +45,11 @@ public interface IPluginToolBoundaryTracker
     /// falsely flag a real, just differently-cased, tool name as nonexistent.
     /// </param>
     /// <param name="allConfiguredMcpServerNames">
-    /// Every enabled MCP server name configured anywhere on the host — <strong>not</strong> narrowed
-    /// to any one plugin's own declared servers. A review-round finding traced
-    /// <c>ToolChainBuilder.ResolveEffectiveMcpServerName</c> and confirmed a plugin skill's
+    /// EVERY MCP server name configured anywhere on the host — enabled AND disabled (#613: a
+    /// disabled server is still a real, named server that could explain a boundary entry the moment
+    /// it's re-enabled; treating it as "doesn't exist" false-triggers this method's existence check).
+    /// <strong>Not</strong> narrowed to any one plugin's own declared servers. A review-round finding
+    /// traced <c>ToolChainBuilder.ResolveEffectiveMcpServerName</c> and confirmed a plugin skill's
     /// <c>ToolDeclaration</c> can resolve against ANY host-configured MCP server when no capability
     /// envelope restricts it — so a plugin that declares zero MCP servers of its own can still
     /// legitimately reference a host-level server's tool in its boundary. Narrowing this list to a

@@ -30,13 +30,14 @@ namespace Infrastructure.AI.MCP.Tests.Services;
 public sealed class McpToolProviderBoundaryTrackerTests
 {
     private static (McpToolProvider Provider, McpConnectionManager Manager) CreateSut(
-        IPluginToolBoundaryTracker? boundaryTracker)
+        IPluginToolBoundaryTracker? boundaryTracker,
+        Domain.Common.Config.AI.MCP.McpServersConfig? config = null)
     {
         var manager = McpConnectionManagerBundleEgressSupport.CreateManager(
             Mock.Of<ILogger<McpConnectionManager>>(),
             new Mock<ILoggerFactory>().Object,
             TestSsrf.HandlerFactory(),
-            new Domain.Common.Config.AI.MCP.McpServersConfig(),
+            config ?? new Domain.Common.Config.AI.MCP.McpServersConfig(),
             new Infrastructure.AI.Bundles.BundleOwnedMcpServerRegistry());
 
         var provider = new McpToolProvider(Mock.Of<ILogger<McpToolProvider>>(), manager, boundaryTracker);
@@ -181,6 +182,31 @@ public sealed class McpToolProviderBoundaryTrackerTests
 
         branchBody.Should().Contain("if (!cancellationToken.IsCancellationRequested)");
         branchBody.Should().Contain("SafeReportDiscoveryToBoundaryTracker");
+    }
+
+    [Fact]
+    public async Task GetToolsAsync_ServerConfiguredButDisabled_ReturnsEmptyWithoutReportingToBoundaryTracker()
+    {
+        // #613: a disabled-but-configured server is fundamentally different information from "I tried
+        // to connect and this server has zero tools" — the tool might be real the moment the server is
+        // re-enabled. Reporting an empty discovery here would permanently fault (or, pre-#613, silently
+        // trust) a plugin whose boundary references it. The fix must short-circuit BEFORE ever
+        // attempting a connection, and skip the report entirely — leaving the entry genuinely pending,
+        // not falsely resolved either way.
+        var servers = new System.Collections.Concurrent.ConcurrentDictionary<string, Domain.Common.Config.AI.MCP.McpServerDefinition>
+        {
+            ["disabled-server"] = new() { Enabled = false },
+        };
+        var config = new Domain.Common.Config.AI.MCP.McpServersConfig { Servers = servers };
+        var tracker = new Mock<IPluginToolBoundaryTracker>();
+        var (sut, _) = CreateSut(tracker.Object, config);
+
+        var tools = await sut.GetToolsAsync("disabled-server");
+
+        tools.Should().BeEmpty();
+        tracker.Verify(
+            t => t.ReportServerToolsDiscovered(It.IsAny<string>(), It.IsAny<IReadOnlyCollection<string>>()),
+            Times.Never);
     }
 
     [Fact]

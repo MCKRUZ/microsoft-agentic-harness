@@ -20,9 +20,26 @@ public interface IPluginRegistry
     /// <summary>
     /// <paramref name="pluginName"/>'s tool boundary (<c>AllowedTools</c>/<c>DeniedTools</c>) trust
     /// state — see <see cref="PluginBoundaryStatus"/>'s remarks for why this is three states, not a
-    /// boolean. Defaults to <see cref="PluginBoundaryStatus.Verified"/> for a plugin never marked
-    /// otherwise (no boundary declaration, or nothing to verify).
+    /// boolean. Defaults to <see cref="PluginBoundaryStatus.Pending"/> for a plugin never marked at
+    /// all (#613).
     /// </summary>
+    /// <remarks>
+    /// <strong>The default is fail-closed, deliberately not Verified.</strong> A plugin with no
+    /// boundary declaration, or one whose every entry is a known first-party name, IS positively
+    /// marked <see cref="PluginBoundaryStatus.Verified"/> — by <c>PluginToolBoundaryTracker.Seed</c>,
+    /// explicitly, every time it processes a loaded plugin, even when there is nothing to verify (see
+    /// its remarks). So an absent entry here means one specific thing: <c>Seed</c> has not processed
+    /// this plugin yet — most plausibly a caller racing ahead of
+    /// <c>PluginToolBoundaryStartupValidator.StartAsync</c>, which is the only place <c>Seed</c> is
+    /// called from. <c>ToolChainBuilder.ApplyPluginBoundaryIfPluginSkill</c> trusts whatever this
+    /// method returns with no separate "has Seed run yet" check of its own — before #613, that race
+    /// window defaulted to Verified, meaning a genuinely never-checked <c>DeniedTools</c> entry (which
+    /// is a silent no-op until proven to match a real tool — see <see cref="MarkBoundaryFaulted"/>)
+    /// would be trusted and applied as if already proven safe. Defaulting to Pending closes that by
+    /// construction: the caller denies all tools for a plugin in this state exactly as it does for one
+    /// already proven <see cref="PluginBoundaryStatus.Faulted"/>, regardless of whether the race is
+    /// even reachable in a given host's actual startup ordering.
+    /// </remarks>
     PluginBoundaryStatus GetBoundaryStatus(string pluginName);
 
     /// <summary>

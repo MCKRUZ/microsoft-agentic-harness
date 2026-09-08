@@ -71,9 +71,16 @@ public class PluginRegistryTests
     }
 
     [Fact]
-    public void GetBoundaryStatus_UnmarkedPlugin_ReturnsVerified()
+    public void GetBoundaryStatus_NeverMarked_ReturnsPending()
     {
-        _sut.GetBoundaryStatus("azure").Should().Be(PluginBoundaryStatus.Verified);
+        // #613: a plugin PluginToolBoundaryTracker.Seed hasn't processed yet (startup race, or any
+        // other bug that leaves a loaded plugin unseeded) must default to the fail-closed state, not
+        // to Verified — Verified means "proven safe," and nothing has proven anything about a plugin
+        // never marked. Seed() now explicitly marks EVERY loaded plugin (see
+        // PluginToolBoundaryTrackerTests.Seed_NothingToVerify_StillMarksTheRegistryVerified) even when
+        // it has nothing to verify, so "never marked" here means genuinely unseeded, not "seeded with
+        // an empty boundary."
+        _sut.GetBoundaryStatus("azure").Should().Be(PluginBoundaryStatus.Pending);
     }
 
     [Fact]
