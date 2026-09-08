@@ -5,6 +5,7 @@ using Domain.Common.Config.AI.MCP;
 using Domain.Common.Config.AI.Plugins;
 using FluentAssertions;
 using Infrastructure.AI.Plugins;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
@@ -241,5 +242,63 @@ public sealed class PluginLoaderTests : IDisposable
 
         result.Should().NotBeNull();
         result!.McpServerNames.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Load_SomethingThrowsAfterSkillsWouldHaveCommitted_LeavesSkillsConfigUntouched()
+    {
+        // #614: the old shape committed the skill path to _skillsConfig.AdditionalPaths immediately
+        // inside LoadSkills, then kept going — if ANYTHING later in the same Load call threw, the
+        // outer catch marked the plugin Failed, but the already-committed skill path stayed in
+        // AdditionalPaths. SkillMetadataRegistry.ResolvePluginSkillPaths only attributes a skill to a
+        // plugin whose Status is Loaded, so that orphaned path's skill would resolve PluginSource =
+        // null (indistinguishable from a built-in skill) and run with NO AllowedTools/DeniedTools
+        // restriction at all — for exactly the plugin that failed to finish loading. Traced during
+        // #614's investigation: no crafted manifest reproduces a live throw from the MCP-loading step
+        // today (it's fully Result<T>-based), so this test injects a fault the honest way that IS
+        // still reachable — a logging call failing, e.g. a broken log sink — to prove the commit is
+        // atomic regardless of WHERE in the load a failure comes from, not just the specific trigger
+        // that was in scope originally.
+        var skillsDir = Path.Combine(_tempDir, "skills");
+        Directory.CreateDirectory(skillsDir);
+
+        var manifest = new PluginManifest
+        {
+            Name = "throws-late",
+            Version = "1.0.0",
+            Skills = "./skills/"
+        };
+
+        var sut = new PluginLoader(_skillsConfig, _mcpServersConfig, new ThrowingLogger());
+
+        var result = sut.Load(_tempDir, MakeDeclaration("throws-late"), manifest);
+
+        result.Should().NotBeNull();
+        result!.Status.Should().Be(PluginLoadStatus.Failed,
+            "the plugin never finished loading, so it must not report as Loaded");
+        _skillsConfig.AdditionalPaths.Should().BeEmpty(
+            "a skill path must never survive in shared config for a plugin that ended up Failed");
+    }
+
+    /// <summary>
+    /// Throws on an Information-level log call specifically — real loggers can fail (a broken sink, a
+    /// full disk, a network-based provider timing out), and #614's fix must hold regardless of which
+    /// step in <see cref="PluginLoader.Load"/> a failure originates from, not just a manifest-content
+    /// one. Deliberately spares Warning: <see cref="PluginLoader.Load"/>'s own catch block logs the
+    /// failure at Warning, and that call must survive for the method to return a value at all rather
+    /// than let a second, unrelated exception escape unhandled out of the test itself.
+    /// </summary>
+    private sealed class ThrowingLogger : ILogger<PluginLoader>
+    {
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            if (logLevel == LogLevel.Information)
+                throw new InvalidOperationException("Simulated logging sink failure.");
+        }
     }
 }
