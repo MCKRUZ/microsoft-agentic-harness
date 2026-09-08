@@ -67,11 +67,10 @@ public sealed class SkillManifestEgressPolicyResolver : IEgressPolicyResolver
     private readonly ConcurrentDictionary<string, IEgressPolicy> _skillCache = new(StringComparer.OrdinalIgnoreCase);
 
     // A separate cache, not a composite key sharing _skillCache's key space (#589 security-review
-    // finding): the composite key's own U+0001-cannot-collide argument rests on an unverified claim
-    // ("a skill id is validated kebab-case elsewhere") that no validator in this codebase actually
-    // enforces — the same class of mistake the two-cache split above was already introduced to
-    // eliminate for the no-skill/single-skill boundary. A separate dictionary removes the whole
-    // collision class rather than resting on an id-shape assumption a future caller could violate.
+    // finding): a composite key sharing the single-skill cache's own key space would need an
+    // unenforced assumption about what characters a skill id can contain to stay collision-free
+    // against a bare id. A separate dictionary removes that collision class entirely — the same
+    // pattern the no-skill/single-skill split above already uses for the identical reason.
     private readonly ConcurrentDictionary<string, IEgressPolicy> _multiSkillCache = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>Initializes a new <see cref="SkillManifestEgressPolicyResolver"/>.</summary>
@@ -99,12 +98,6 @@ public sealed class SkillManifestEgressPolicyResolver : IEgressPolicyResolver
         _noSkillPolicy = new Lazy<IEgressPolicy>(BuildDefaultOnlyPolicy);
     }
 
-    // Separator joining skill ids into a multi-skill cache key. Only has to be deterministic within
-    // _multiSkillCache's own key space — unlike a composite key sharing _skillCache with bare
-    // single-skill ids, there is no cross-cache collision to defend against, so no claim about what
-    // characters a skill id can or can't contain is load-bearing here.
-    private const char CompositeKeySeparator = '';
-
     /// <inheritdoc />
     public IEgressPolicy ResolveFor(AgentIdentity identity)
     {
@@ -114,17 +107,30 @@ public sealed class SkillManifestEgressPolicyResolver : IEgressPolicyResolver
         return skillIds.Count switch
         {
             0 => _noSkillPolicy.Value,
-            1 => _skillCache.GetOrAdd(skillIds[0], BuildPolicyForSkill),
+            1 => _skillCache.GetOrAdd(skillIds[0], key => BuildPolicyForSkills([key])),
             _ => _multiSkillCache.GetOrAdd(CompositeKey(skillIds), _ => BuildPolicyForSkills(skillIds)),
         };
     }
 
     /// <summary>
-    /// A deterministic cache key for a multi-skill scope (#589), for <see cref="_multiSkillCache"/>'s
-    /// own key space only.
+    /// A deterministic, collision-free cache key for a multi-skill scope (#589), for
+    /// <see cref="_multiSkillCache"/>'s own key space only.
     /// </summary>
+    /// <remarks>
+    /// Length-prefixes each sorted id (<c>"{length}{id}"</c>) rather than joining with a bare
+    /// separator (code-review finding: no validator in this codebase restricts what characters a
+    /// skill id can contain — <c>SkillMetadataParser</c> takes it straight from manifest YAML — so a
+    /// bare-separator join could ambiguously collide, e.g. ids <c>["a", "bc"]</c> and
+    /// <c>["ab", "c"]</c> would sort and join to the identical string with no separator, or the same
+    /// collision recurs one level up if the separator itself can appear inside an id). Length-prefixing
+    /// makes every segment's boundary a function of a number the join itself writes, not of what the
+    /// id contains, so two different sorted id lists can never produce the same key regardless of
+    /// content.
+    /// </remarks>
     private static string CompositeKey(IReadOnlyList<string> skillIds) =>
-        string.Join(CompositeKeySeparator, skillIds.OrderBy(id => id, StringComparer.OrdinalIgnoreCase));
+        string.Concat(skillIds
+            .OrderBy(id => id, StringComparer.OrdinalIgnoreCase)
+            .Select(id => $"{id.Length}{id}"));
 
     private IEgressPolicy BuildDefaultOnlyPolicy()
     {
@@ -132,35 +138,13 @@ public sealed class SkillManifestEgressPolicyResolver : IEgressPolicyResolver
         return new DefaultEgressPolicy(defaultEntries, _policyLogger, _timeProvider);
     }
 
-    private IEgressPolicy BuildPolicyForSkill(string key)
-    {
-        var defaultEntries = EgressAllowlistMapper.Map(_appConfig.CurrentValue.AI.Egress.DefaultAllowlist);
-        var perSkill = SkillAllowlistEntries(key);
-        if (perSkill.Count == 0)
-        {
-            // Skill has no additions — reuse the default-only policy shape.
-            return new DefaultEgressPolicy(defaultEntries, _policyLogger, _timeProvider);
-        }
-
-        // Merge default + per-skill (ADDITIVE union). Duplicates are harmless;
-        // the policy's match algorithm short-circuits on the first match.
-        var merged = new List<EgressAllowlistEntry>(defaultEntries.Count + perSkill.Count);
-        merged.AddRange(defaultEntries);
-        merged.AddRange(perSkill);
-
-        _logger.LogDebug(
-            "Built egress policy for skill '{SkillId}': {DefaultCount} default + {PerSkillCount} per-skill entries.",
-            key, defaultEntries.Count, perSkill.Count);
-
-        return new DefaultEgressPolicy(merged, _policyLogger, _timeProvider);
-    }
-
     /// <summary>
-    /// The multi-skill counterpart of <see cref="BuildPolicyForSkill"/> (#589): default entries plus
-    /// EVERY named skill's own allowlist additions, unioned. A tool name shared by two skills must
-    /// resolve at least as broad an allowlist as either skill would grant it alone — this is the same
-    /// additive contract <see cref="BuildPolicyForSkill"/> already applies to a single skill, extended
-    /// to more than one active at once.
+    /// Default entries plus every named skill's own allowlist additions, unioned — the single
+    /// implementation for both the single- and multi-skill resolve paths (#589 code-review finding:
+    /// these were two near-identical hand-written copies of the same merge; the one-skill case is
+    /// just this with a one-element list, so there is no reason for a second implementation to drift
+    /// from). A tool name shared by two skills must resolve at least as broad an allowlist as either
+    /// skill would grant it alone.
     /// </summary>
     private IEgressPolicy BuildPolicyForSkills(IReadOnlyList<string> skillIds)
     {
@@ -174,7 +158,7 @@ public sealed class SkillManifestEgressPolicyResolver : IEgressPolicyResolver
             return new DefaultEgressPolicy(defaultEntries, _policyLogger, _timeProvider);
 
         _logger.LogDebug(
-            "Built union egress policy for skills '{SkillIds}': {DefaultCount} default + {MergedCount} " +
+            "Built egress policy for skill(s) '{SkillIds}': {DefaultCount} default + {AddedCount} " +
             "combined per-skill entries.",
             string.Join(", ", skillIds), defaultEntries.Count, merged.Count - defaultEntries.Count);
 

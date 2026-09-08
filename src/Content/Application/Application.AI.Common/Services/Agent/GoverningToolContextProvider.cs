@@ -32,16 +32,15 @@ namespace Application.AI.Common.Services.Agent;
 /// template other consumers extend, so it is written down rather than left implicit.
 /// </para>
 /// <para>
-/// <strong>Known limitation: no per-skill egress scope on this channel either (#531, tracked as #589).</strong> The
-/// same missing provenance that blocks MCP-failure normalization above also blocks
-/// <see cref="GovernedAIFunction"/>'s skill-scoped egress wiring: <see cref="Govern"/>'s
-/// <c>new GovernedAIFunction(fn)</c> call always passes a null skill id, so a tool reaching the model
-/// through this channel — <c>run_skill_script</c> notably, the one tool here that IS fully governed —
-/// runs with whatever skill scope (if any) happens to already be ambient from an outer call, never one
-/// attributed to the skill that actually contributed it. Fails closed (the egress resolver falls back
-/// to the harness-wide default allowlist), never open. Giving this channel real per-tool skill
-/// attribution is the same larger, separate change the MCP-provenance gap above already calls for —
-/// not something to bolt onto one tool here without doing it for the whole channel.
+/// <strong><c>run_skill_script</c> now resolves its skill scope per call (#531, #589).</strong> The
+/// same missing per-tool provenance that still blocks MCP-failure normalization above does NOT block
+/// this tool's egress scope any more: <see cref="Govern"/> wraps it with
+/// <see cref="GovernedAIFunction"/>'s <c>skillIdFromArguments</c> resolver, which reads the model's own
+/// <c>skillName</c> call argument and maps it back to the harness skill that contributed it — see
+/// <see cref="Govern"/>'s remarks for the mechanics. A missing or unrecognized <c>skillName</c> still
+/// fails closed to the harness-wide default allowlist, never a guess. The two other skill-disclosure
+/// tools (<c>load_skill</c>/<c>read_skill_resource</c>) are exempt from <see cref="GovernedAIFunction"/>
+/// entirely, so this does not apply to them — see the exemption rationale below.
 /// </para>
 /// <para>
 /// Register this provider <em>last</em> in the <c>AIContextProviders</c> list (after the skills
@@ -128,9 +127,38 @@ public sealed class GoverningToolContextProvider : AIContextProvider
         _sanitizer = sanitizer;
         _currentSkillAccessor = currentSkillAccessor;
         _skillIdByFrameworkName = disclosableSkills is { Count: > 0 }
-            ? disclosableSkills.ToDictionary(
-                s => s.Skill.Frontmatter.Name, s => s.SkillId, StringComparer.Ordinal)
+            ? BuildSkillIdByFrameworkName(disclosableSkills, logger)
             : null;
+    }
+
+    /// <summary>
+    /// First-wins map from a framework skill's <c>Frontmatter.Name</c> to the harness
+    /// <see cref="Domain.AI.Skills.SkillDefinition.Id"/> that built it. A plain
+    /// <c>ToDictionary</c> would throw on a duplicate name (code-review finding): today's only
+    /// caller, <c>DisclosableSkillFactory.Create</c>, already de-dupes with this exact comparer, so a
+    /// duplicate can't reach here in production — but this constructor is public on a template repo
+    /// other consumers clone and extend, and this diff's own contract everywhere else is fail-closed
+    /// (deny/no-scope), never an unhandled exception. A skipped duplicate keeps its own tool's scope
+    /// resolution behaving exactly as it would with an empty map — no scope, not a crash.
+    /// </summary>
+    private static Dictionary<string, string> BuildSkillIdByFrameworkName(
+        IReadOnlyList<DisclosableSkill> disclosableSkills, ILogger logger)
+    {
+        var map = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var skill in disclosableSkills)
+        {
+            var frameworkName = skill.Skill.Frontmatter.Name;
+            if (!map.TryAdd(frameworkName, skill.SkillId))
+            {
+                logger.LogWarning(
+                    "Skill {SkillId}: framework name '{FrameworkName}' already claimed by another " +
+                    "skill — run_skill_script calls naming it will resolve to whichever skill claimed " +
+                    "it first, not this one.",
+                    skill.SkillId, frameworkName);
+            }
+        }
+
+        return map;
     }
 
     /// <inheritdoc />

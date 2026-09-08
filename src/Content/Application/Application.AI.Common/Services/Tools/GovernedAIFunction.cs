@@ -101,7 +101,10 @@ internal sealed class GovernedAIFunction : DelegatingAIFunction
     {
         _compositionTaint = compositionTaint;
         _currentSkillAccessor = currentSkillAccessor;
-        _skillIds = skillIds;
+        // Filtered once here, not per call (#589 perf finding): _skillIds never changes after
+        // construction, so re-deriving "the non-blank ones" from scratch on every governed
+        // invocation — this class's hottest path — repeated work with a result fixed at build time.
+        _skillIds = skillIds?.Where(id => !string.IsNullOrWhiteSpace(id)).ToList();
         _skillIdFromArguments = skillIdFromArguments;
     }
 
@@ -219,15 +222,11 @@ internal sealed class GovernedAIFunction : DelegatingAIFunction
             return !string.IsNullOrWhiteSpace(resolved) ? _currentSkillAccessor?.BeginScope([resolved]) : null;
         }
 
-        if (_skillIds is not { Count: > 0 })
-            return null;
-
-        // The single-id predecessor of this method silently skipped a blank _skillId rather than
-        // handing it to BeginScope (which throws on one) — preserve that "a blank id means no scope
-        // for it" leniency here rather than letting Count > 0 alone wave a list containing one
-        // through to a throw (#589 correctness-review finding).
-        var nonBlankIds = _skillIds.Where(id => !string.IsNullOrWhiteSpace(id)).ToList();
-        return nonBlankIds.Count > 0 ? _currentSkillAccessor?.BeginScope(nonBlankIds) : null;
+        // _skillIds was already filtered to non-blank entries in the constructor (the single-id
+        // predecessor of this method silently skipped a blank id rather than handing it to
+        // BeginScope, which throws on one — the constructor-time filter preserves that leniency
+        // without re-deriving it here on every call).
+        return _skillIds is { Count: > 0 } ? _currentSkillAccessor?.BeginScope(_skillIds) : null;
     }
 
     /// <summary>

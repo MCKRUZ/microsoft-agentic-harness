@@ -204,6 +204,16 @@ public partial class ToolChainBuilder
     private static AITool UnionSkillScopeIfNeeded(
         AITool published, AITool candidate, ConcurrentDictionary<AITool, byte> callOnceCandidates)
     {
+        // Checked before the union-needed early return below, not only inside it (code-review
+        // finding: a skill that names the same tool via two of its own ToolDeclarations - same skill
+        // id on both, so the union branch never fires at all - could still have the DISCARDED
+        // candidate be the one call-once-tagged. Since `published` is what survives to
+        // RegisterSurvivingCallOnceTools either way, tag IT the moment either side was a candidate,
+        // independent of whether a union rewrap also happens.
+        var eitherWasCallOnceCandidate = callOnceCandidates.ContainsKey(published) || callOnceCandidates.ContainsKey(candidate);
+        if (eitherWasCallOnceCandidate)
+            callOnceCandidates.TryAdd(published, 0);
+
         if (published is not GovernedAIFunction publishedGoverned || candidate is not GovernedAIFunction candidateGoverned)
             return published;
 
@@ -220,7 +230,7 @@ public partial class ToolChainBuilder
         var rewrapped = new GovernedAIFunction(
             publishedGoverned.Inner, compositionTaint: null, publishedGoverned.CurrentSkillAccessor, union);
 
-        if (callOnceCandidates.ContainsKey(published) || callOnceCandidates.ContainsKey(candidate))
+        if (eitherWasCallOnceCandidate)
             callOnceCandidates.TryAdd(rewrapped, 0);
 
         return rewrapped;

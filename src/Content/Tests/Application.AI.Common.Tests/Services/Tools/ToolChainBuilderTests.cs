@@ -521,6 +521,54 @@ public class ToolChainBuilderTests
     }
 
     [Fact]
+    public async Task BuildMergedToolsAsync_OneSkillDeclaresTheSameToolTwiceOnlyOneCallOnce_StillRegistersIt()
+    {
+        // #589 round-2 code-review finding: UnionSkillScopeIfNeeded's early return (candidate's skill
+        // ids already fully covered by the published instance's) fires for a SINGLE skill that names
+        // the same tool via two of its own ToolDeclarations - same skill id on both, so no union
+        // rewrap happens at all. The call-once carry-forward used to live only inside the union-rewrap
+        // branch, so it never ran on this path, silently dropping the restriction whenever the
+        // discarded (not the published) declaration was the call-once one.
+        var toolMock = new Mock<ITool>();
+        toolMock.Setup(t => t.Name).Returns("twice_declared_tool");
+
+        var converter = new Mock<IToolConverter>();
+        // A factory delegate, not a fixed value: each ToolDeclaration resolves independently in
+        // production (IToolConverter.Convert is called once per resolution), so each of the two
+        // declarations here must get its OWN AIFunction instance too - a fixed .Returns(value) would
+        // hand both the identical object, aliasing them through WrapGoverned's own callOnceCandidates
+        // tagging (same raw reference tagged once = both wrapped instances tagged) and silently
+        // testing nothing about this method's OWN early-return carry-forward fix.
+        converter.Setup(c => c.Convert(toolMock.Object, null))
+            .Returns(() => AIFunctionFactory.Create(() => "converted", "twice_declared_tool"));
+
+        var services = new ServiceCollection();
+        services.AddKeyedSingleton<ITool>("twice_declared_tool", toolMock.Object);
+
+        var policy = new ToolCallOncePolicy(NullLogger<ToolCallOncePolicy>.Instance);
+        var builder = CreateBuilder(
+            toolConverter: converter.Object,
+            serviceProvider: services.BuildServiceProvider(),
+            callOncePolicy: policy);
+
+        var skill = new SkillDefinition
+        {
+            Id = "skill-a", Name = "skill-a", Instructions = "Test",
+            ToolDeclarations =
+            [
+                new ToolDeclaration { Name = "twice_declared_tool", CallOncePerConversation = false },
+                new ToolDeclaration { Name = "twice_declared_tool", CallOncePerConversation = true }
+            ]
+        };
+
+        var tools = await builder.BuildMergedToolsAsync([skill], new SkillAgentOptions());
+
+        tools.Should().ContainSingle();
+        policy.IsCallOnce("twice_declared_tool").Should().BeTrue(
+            "the second declaration's call-once flag must survive even though the dedup discarded its instance");
+    }
+
+    [Fact]
     public async Task BuildToolsAsync_ToolNotDeclaredCallOnce_PolicyNeverConsulted()
     {
         var toolMock = new Mock<ITool>();
