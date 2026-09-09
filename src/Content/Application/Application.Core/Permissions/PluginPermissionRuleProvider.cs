@@ -89,7 +89,14 @@ public sealed class PluginPermissionRuleProvider : IPermissionRuleProvider
     // construction cost for as long as it persists. Cache the computed rule list, keyed on
     // IPluginRegistry.StateVersion, so recomputation happens only when something that could change
     // the result actually did.
-    private readonly object _cacheLock = new();
+    //
+    // Correctness rests on two inputs to ComputeRules that are NOT covered by StateVersion, because
+    // both are immutable after this instance is constructed: FirstPartyToolLookup's registered-key
+    // set is built once at DI registration time, and ISkillMetadataRegistry has exactly one
+    // implementation (SkillMetadataRegistry), whose load is one-shot with no invalidation or
+    // config-change hook. If either ever gains a runtime-mutation path, this cache must be keyed on
+    // that too, or it will silently serve a stale autonomy baseline / tool-name resolution.
+    private readonly Lock _cacheLock = new();
     private long _cachedVersion = -1;
     private IReadOnlyList<ToolPermissionRule>? _cachedRules;
 
@@ -180,22 +187,7 @@ public sealed class PluginPermissionRuleProvider : IPermissionRuleProvider
             // or invalid.
             if (plugin.Declaration.DeniedTools is { Count: > 0 } denied)
                 foreach (var deniedTool in denied)
-                {
-                    rules.Add(DenyRule(deniedTool));
-
-                    // #612: a plugin manifest declares DeniedTools against the DI registration key —
-                    // the same identifier ApplyPluginToolBoundary's existence check validates against
-                    // (see ToolChainBuilder's ProvisionedTool.ToolKey remarks) — but
-                    // ThreePhasePermissionResolver.Matches compares rule.ToolPattern against the
-                    // tool's PUBLISHED (self-reported) name at invocation, and a keyed ITool can
-                    // legitimately report a Name that disagrees with its own key
-                    // (ToolCatalogTests.Catalog_ToolWhoseNameDisagreesWithItsKey_...). Emit a second
-                    // rule against the resolved published name so the deny still fires for such a
-                    // tool; TryResolvePublishedName returns the key itself (a harmless no-op re-add,
-                    // skipped by the equality check) when the two already agree or resolution fails.
-                    if (TryResolvePublishedName(deniedTool, out var publishedName) && publishedName != deniedTool)
-                        rules.Add(DenyRule(publishedName));
-                }
+                    AddDenyRuleWithPublishedNameCoverage(rules, deniedTool);
 
             if (string.IsNullOrEmpty(plugin.Declaration.AutonomyLevel))
                 continue;
@@ -248,16 +240,24 @@ public sealed class PluginPermissionRuleProvider : IPermissionRuleProvider
         // tool agent-wide until every plugin's boundary is Verified. See this type's remarks.
         if (anyBoundaryUnverified)
             foreach (var toolName in _firstPartyToolLookup.RegisteredFirstPartyToolKeys)
-            {
-                rules.Add(DenyRule(toolName));
-
-                // #612: same key-vs-published-name gap as the per-plugin DeniedTools loop above,
-                // applied to every first-party tool this fail-closed response covers.
-                if (TryResolvePublishedName(toolName, out var publishedName) && publishedName != toolName)
-                    rules.Add(DenyRule(publishedName));
-            }
+                AddDenyRuleWithPublishedNameCoverage(rules, toolName);
 
         return rules;
+    }
+
+    /// <summary>
+    /// Adds a bypass-immune Deny rule for <paramref name="toolKey"/>, and — when it resolves to a
+    /// real first-party tool whose self-reported name disagrees with the key — a second Deny rule
+    /// against that resolved name. The identical two-rule shape both the per-plugin
+    /// <c>DeniedTools</c> loop and the unverified-boundary fail-closed response need; see
+    /// <see cref="TryResolvePublishedName"/> for why the two can legitimately disagree.
+    /// </summary>
+    private void AddDenyRuleWithPublishedNameCoverage(List<ToolPermissionRule> rules, string toolKey)
+    {
+        rules.Add(DenyRule(toolKey));
+
+        if (TryResolvePublishedName(toolKey, out var publishedName) && publishedName != toolKey)
+            rules.Add(DenyRule(publishedName));
     }
 
     /// <summary>
@@ -280,6 +280,11 @@ public sealed class PluginPermissionRuleProvider : IPermissionRuleProvider
     /// boundary is unverified, so an uncaught throw here would take down permission resolution for
     /// every tool call in that state, not just the one broken entry. The key-pattern Deny rule for
     /// the affected tool still gets emitted by the caller regardless of this method's outcome.
+    /// A failure here is caught inside <see cref="ComputeRules"/>, so its result — the narrower,
+    /// key-only coverage — is what gets cached: a tool whose constructor throws stays uncovered by
+    /// the published-name rule for as long as the cached result stands (until the next
+    /// <see cref="IPluginRegistry"/> mutation triggers a recompute), not retried on every call. A
+    /// dependency-not-wired failure is deterministic, so a retry would fail identically anyway.
     /// </remarks>
     private bool TryResolvePublishedName(string toolKey, out string publishedName)
     {
@@ -293,7 +298,11 @@ public sealed class PluginPermissionRuleProvider : IPermissionRuleProvider
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex,
+            // Error, not Warning: this is a bypass-immune security control (the unverified-boundary
+            // fail-closed deny, or a plugin's own DeniedTools backstop) now only partially enforced
+            // for this one tool — a level that gets filtered out of most production log
+            // configurations is the wrong fit for that.
+            _logger.LogError(ex,
                 "Could not construct first-party tool '{ToolKey}' to learn its published name for a " +
                 "plugin-boundary Deny rule — the key-pattern rule for it still applies, but a caller " +
                 "invoking it under a self-reported name that disagrees with the key would not be covered.",

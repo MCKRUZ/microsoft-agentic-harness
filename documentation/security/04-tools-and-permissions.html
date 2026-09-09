@@ -376,7 +376,9 @@
                                 contributes</strong> — there is no per-skill knob inside a plugin. A tool listed in a
                                 plugin's <code>DeniedTools</code> is enforced two ways: it is filtered out of that
                                 plugin's own resolved tool set at build time (per-skill provisioning), <em>and</em> it
-                                emits a bypass-immune Deny rule keyed on the tool <em>name</em>. Because the resolver
+                                emits a bypass-immune Deny rule keyed on the <code>DeniedTools</code> entry — and, when
+                                a tool's self-reported name disagrees with that entry, a second rule keyed on the
+                                resolved name too, so the deny still fires either way. Because the resolver
                                 matches Deny rules by name across the whole turn, that name stays denied even if a
                                 different (non-plugin) skill surfaces a tool of the same name — the deny is
                                 cross-skill, not confined to the plugin that declared it. Scope a denial narrowly by
@@ -413,7 +415,10 @@
                     </p>
                     <p>
                         For each entry in <code>DeniedTools</code>, <code>PluginPermissionRuleProvider</code>
-                        constructs this rule:
+                        constructs this rule — and a second one, against the tool's resolved published name, when
+                        that name disagrees with the <code>DeniedTools</code> entry itself (the entry names the
+                        tool's DI registration key, which a tool can legitimately report a different self-reported
+                        name than):
                     </p>
 
                     <div class="code-block">
@@ -421,10 +426,16 @@
                         <pre><code>rules.Add(new ToolPermissionRule(
     denied, null, PermissionBehaviorType.Deny,
     PermissionRuleSource.PluginDeclaration,
-    Priority: 1, IsBypassImmune: true));</code></pre>
+    Priority: 1, IsBypassImmune: true));
+
+if (TryResolvePublishedName(denied, out var publishedName) && publishedName != denied)
+    rules.Add(new ToolPermissionRule(
+        publishedName, null, PermissionBehaviorType.Deny,
+        PermissionRuleSource.PluginDeclaration,
+        Priority: 1, IsBypassImmune: true));</code></pre>
                     </div>
 
-                    <p>Two of those arguments do all the work:</p>
+                    <p>Two of the original rule's arguments do all the work:</p>
 
                     <div class="annotated">
                         <div class="annotated-row">
