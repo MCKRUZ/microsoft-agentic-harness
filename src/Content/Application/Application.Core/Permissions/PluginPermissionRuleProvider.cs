@@ -149,18 +149,29 @@ public sealed class PluginPermissionRuleProvider : IPermissionRuleProvider
                 return Task.FromResult(_cachedRules);
         }
 
-        var rules = ComputeRules();
+        // .AsReadOnly() wraps rather than copies, but its wrapper type gives no writable path back
+        // to the underlying List<T> — a caller can no longer downcast the returned IReadOnlyList and
+        // mutate a list every future caller now shares (correctness-review advisory: before caching,
+        // each call handed out a fresh list, so a mutating caller only ever hurt itself).
+        IReadOnlyList<ToolPermissionRule> rules = ComputeRules().AsReadOnly();
 
         lock (_cacheLock)
         {
-            _cachedRules = rules;
-            _cachedVersion = version;
+            // Guard against a slow thread overwriting a newer cache entry with an older one under
+            // concurrent recomputation (correctness-review advisory) — not a correctness bug either
+            // way (a stale version key just self-heals on the next call), but this avoids the
+            // needless repeat recompute.
+            if (version > _cachedVersion)
+            {
+                _cachedRules = rules;
+                _cachedVersion = version;
+            }
         }
 
         return Task.FromResult(rules);
     }
 
-    private IReadOnlyList<ToolPermissionRule> ComputeRules()
+    private List<ToolPermissionRule> ComputeRules()
     {
         var rules = new List<ToolPermissionRule>();
         var anyBoundaryUnverified = false;
@@ -290,7 +301,12 @@ public sealed class PluginPermissionRuleProvider : IPermissionRuleProvider
     {
         rules.Add(DenyRule(toolKey));
 
-        if (TryResolvePublishedName(toolKey, out var publishedName) && publishedName != toolKey)
+        // OrdinalIgnoreCase: matches FirstPartyToolLookup's key-set comparer and the pattern matcher
+        // both consult (correctness-review advisory) — an ordinal-case-sensitive comparison here
+        // would emit a harmless-but-redundant second Deny rule for a tool whose published name
+        // differs from its key only in case.
+        if (TryResolvePublishedName(toolKey, out var publishedName)
+            && !string.Equals(publishedName, toolKey, StringComparison.OrdinalIgnoreCase))
             rules.Add(DenyRule(publishedName));
     }
 
