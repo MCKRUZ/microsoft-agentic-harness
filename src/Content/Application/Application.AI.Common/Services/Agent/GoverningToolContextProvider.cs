@@ -104,6 +104,13 @@ public sealed class GoverningToolContextProvider : AIContextProvider
     /// Scrubs the output of <c>load_skill</c>/<c>read_skill_resource</c> (#480) — the two tools this
     /// provider exempts from <see cref="GovernedAIFunction"/> wrapping, and so also from #469's
     /// unconditional sanitize, since that guarantee is carried by the wrapper these two never receive.
+    /// <strong>Only actually used on the no-ambient-admission-chain fallback (#544).</strong> When a
+    /// chain IS ambient, scrubbing happens inside <c>ToolCallAdmissionPipeline.ApplyOutputPolicyAsync</c>
+    /// instead, using THAT pipeline's own separately-injected <see cref="ICompositeResponseSanitizer"/>
+    /// — see <see cref="SanitizingAIFunction"/>'s remarks. Production DI registers
+    /// <see cref="ICompositeResponseSanitizer"/> as one singleton both consumers resolve, so the two
+    /// never actually disagree in a real host; a caller that constructs this provider with a
+    /// customized/non-singleton instance should not assume it is the one that runs in a governed turn.
     /// </param>
     /// <param name="disclosableSkills">
     /// The agent's own framework skills (#589), for attributing a <c>run_skill_script</c> call to the
