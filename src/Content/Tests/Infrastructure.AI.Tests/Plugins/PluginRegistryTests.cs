@@ -143,4 +143,64 @@ public class PluginRegistryTests
 
         _sut.GetBoundaryStatus("azure").Should().Be(PluginBoundaryStatus.Faulted);
     }
+
+    // --- #612/#611: StateVersion lets a consumer cache derived state instead of recomputing on
+    // every call (PluginPermissionRuleProvider.GetRulesAsync runs on every tool-permission
+    // resolution) — it must bump on every mutation that could change that derived state.
+
+    [Fact]
+    public void StateVersion_Initially_IsStable()
+    {
+        _sut.StateVersion.Should().Be(_sut.StateVersion);
+    }
+
+    [Fact]
+    public void StateVersion_AfterRegister_Increases()
+    {
+        var before = _sut.StateVersion;
+        _sut.Register(MakePlugin("azure"));
+
+        _sut.StateVersion.Should().BeGreaterThan(before);
+    }
+
+    [Fact]
+    public void StateVersion_AfterMarkBoundaryPending_Increases()
+    {
+        var before = _sut.StateVersion;
+        _sut.MarkBoundaryPending("azure");
+
+        _sut.StateVersion.Should().BeGreaterThan(before);
+    }
+
+    [Fact]
+    public void StateVersion_AfterMarkBoundaryVerified_Increases()
+    {
+        var before = _sut.StateVersion;
+        _sut.MarkBoundaryVerified("azure");
+
+        _sut.StateVersion.Should().BeGreaterThan(before);
+    }
+
+    [Fact]
+    public void StateVersion_AfterMarkBoundaryFaulted_Increases()
+    {
+        var before = _sut.StateVersion;
+        _sut.MarkBoundaryFaulted("azure", "reason");
+
+        _sut.StateVersion.Should().BeGreaterThan(before);
+    }
+
+    [Fact]
+    public void StateVersion_WithNoMutationBetweenReads_DoesNotChange()
+    {
+        _sut.Register(MakePlugin("azure"));
+        var afterRegister = _sut.StateVersion;
+
+        _sut.GetBoundaryStatus("azure");
+        _sut.GetLoadedPlugins();
+        _sut.GetPlugin("azure");
+        _sut.IsLoaded("azure");
+
+        _sut.StateVersion.Should().Be(afterRegister);
+    }
 }
