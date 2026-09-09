@@ -68,6 +68,10 @@ public sealed class PluginPermissionRuleProviderTests : IDisposable
         new(declaration.Name, "1.0", $"/plugins/{declaration.Name}", new PluginManifest(),
             PluginLoadStatus.Loaded, [$"/plugins/{declaration.Name}/skills"], [], declaration);
 
+    private static LoadedPlugin WithStatus(PluginDeclaration declaration, PluginLoadStatus status) =>
+        new(declaration.Name, "1.0", $"/plugins/{declaration.Name}", new PluginManifest(),
+            status, [], [], declaration);
+
     [Fact]
     public void Source_ReturnsPluginDeclaration()
     {
@@ -347,5 +351,32 @@ public sealed class PluginPermissionRuleProviderTests : IDisposable
         var rules = await CreateProvider("file_system").GetRulesAsync("any-agent");
 
         rules.Should().Contain(r => r.ToolPattern == "file_system" && r.Behavior == PermissionBehaviorType.Deny);
+    }
+
+    [Theory]
+    [InlineData(PluginLoadStatus.Disabled)]
+    [InlineData(PluginLoadStatus.Failed)]
+    public async Task GetRulesAsync_ANonLoadedPluginRegistered_DoesNotEmitBlanketDeny(PluginLoadStatus status)
+    {
+        // #613 correctness-review finding: PluginToolBoundaryTracker.Seed is fed only
+        // Status == Loaded plugins (PluginToolBoundaryStartupValidator.StartAsync filters before
+        // calling it) — a Disabled or Failed plugin is never seeded, so it never gets an explicit
+        // MarkBoundaryVerified/Pending/Faulted entry. GetBoundaryStatus.cs's default for an absent
+        // plugin is now Pending (#613's fix for the real startup race), which is correct for a Loaded
+        // plugin Seed hasn't reached YET — but a Disabled/Failed plugin will NEVER be reached by Seed,
+        // contributes zero tools, and has no boundary to distrust. Before this guard, registering any
+        // disabled/failed plugin — a completely normal operational state — silently denied every
+        // first-party tool for the whole agent, for the process lifetime.
+        var healthy = new PluginDeclaration { Name = "healthy" };
+        var notLoaded = new PluginDeclaration { Name = "not-loaded" };
+        _registryMock.Setup(r => r.GetLoadedPlugins())
+            .Returns(new List<LoadedPlugin> { Loaded(healthy), WithStatus(notLoaded, status) });
+        _registryMock.Setup(r => r.GetBoundaryStatus("healthy")).Returns(PluginBoundaryStatus.Verified);
+        _registryMock.Setup(r => r.GetBoundaryStatus("not-loaded")).Returns(PluginBoundaryStatus.Pending);
+
+        var rules = await CreateProvider("file_system", "shell").GetRulesAsync("any-agent");
+
+        rules.Should().NotContain(r => r.ToolPattern == "file_system");
+        rules.Should().NotContain(r => r.ToolPattern == "shell");
     }
 }

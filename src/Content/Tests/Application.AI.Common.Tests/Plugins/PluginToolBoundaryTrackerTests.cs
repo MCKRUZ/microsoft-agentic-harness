@@ -72,6 +72,33 @@ public sealed class PluginToolBoundaryTrackerTests
     }
 
     [Fact]
+    public void Seed_EveryEntryKnownFirstParty_ExplicitlyMarksTheRegistryVerified()
+    {
+        // #613: a plugin whose boundary is already fully decidable at Seed time used to just be
+        // skipped (no registry call at all), leaving GetBoundaryStatus fall through to its default —
+        // which meant "proven safe" and "never checked" were indistinguishable. Seed must be the one
+        // place that positively proves this plugin's boundary, not rely on an absent entry to imply it.
+        var plugin = MakePlugin("azure", deniedTools: ["file_write"]);
+
+        _sut.Seed([plugin], name => name == "file_write", NoServersConfigured);
+
+        _registry.Verify(r => r.MarkBoundaryVerified("azure"), Times.Once);
+    }
+
+    [Fact]
+    public void Seed_PluginDeclaresNoBoundaryAtAll_ExplicitlyMarksTheRegistryVerified()
+    {
+        // Same fix, the far more common real-world shape: most plugins declare neither AllowedTools
+        // nor DeniedTools at all. BoundaryEntries is empty, so the old code's "nothing unresolved"
+        // early-continue never distinguished this from "never seeded" either.
+        var plugin = MakePlugin("azure");
+
+        _sut.Seed([plugin], NoFirstPartyToolsKnown, NoServersConfigured);
+
+        _registry.Verify(r => r.MarkBoundaryVerified("azure"), Times.Once);
+    }
+
+    [Fact]
     public void Seed_PluginDeclaresNoOwnServerButHostHasOneConfigured_DoesNotFaultImmediately()
     {
         // The regression this test guards: a plugin with zero MCP servers of its OWN can still

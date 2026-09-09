@@ -73,7 +73,15 @@ public sealed class PluginToolBoundaryTracker : IPluginToolBoundaryTracker
                 .Select(g => g.FirstOrDefault(e => e.ListKind == DeniedToolsListKind, g.First()))
                 .ToList();
             if (unresolved.Count == 0)
+            {
+                // #613: mark explicitly rather than leaving this plugin absent from the registry.
+                // GetBoundaryStatus's default for an absent plugin is now Pending (fail-closed), not
+                // Verified — that flip only stays correct for the common "nothing to verify" case
+                // (no boundary declared, or every entry is a known first-party name) if THIS is the
+                // one place that positively proves it, instead of relying on absence to imply safety.
+                _registry.MarkBoundaryVerified(plugin.Name);
                 continue;
+            }
 
             if (allConfiguredMcpServerNames.Count == 0)
             {

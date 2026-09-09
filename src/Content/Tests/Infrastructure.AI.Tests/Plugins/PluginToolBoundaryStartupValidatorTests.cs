@@ -106,8 +106,14 @@ public sealed class PluginToolBoundaryStartupValidatorTests
     }
 
     [Fact]
-    public async Task StartAsync_PassesOnlyEnabledConfiguredServerNamesToSeed()
+    public async Task StartAsync_PassesEveryConfiguredServerNameToSeed_IncludingDisabled()
     {
+        // #613: a disabled-but-configured server is still a real, named server that could explain a
+        // plugin's boundary entry the moment it's re-enabled — it is not "the same as not configured
+        // at all." Seed's own existence check ("no MCP server is configured anywhere on this host")
+        // must see it, or a plugin legitimately referencing a merely-disabled server gets refused at
+        // boot (or, on a multi-server host, permanently denied) for no real reason. This replaces the
+        // old, buggy expectation that only enabled servers were passed.
         _registry.Setup(r => r.GetLoadedPlugins()).Returns([MakePlugin("azure")]);
         IReadOnlyCollection<string>? captured = null;
         _tracker.Setup(t => t.Seed(
@@ -126,7 +132,50 @@ public sealed class PluginToolBoundaryStartupValidatorTests
 
         await sut.StartAsync(CancellationToken.None);
 
-        captured.Should().ContainSingle().Which.Should().Be("enabled-server");
+        captured.Should().BeEquivalentTo(["enabled-server", "disabled-server"]);
+    }
+
+    [Fact]
+    public async Task StartAsync_SeedSucceeds_BackgroundProberSkipsDisabledPendingServers()
+    {
+        // #613: PendingServerNames can now legitimately include a disabled server (see the test
+        // above) — but a disabled server can never actually connect (McpConnectionManager.CreateClientAsync
+        // throws "is disabled" deterministically), so proactively probing it would only waste a
+        // retry budget and log noise, and — before the McpToolProvider-level fix — would have
+        // permanently faulted the plugin waiting on it. The proactive loop must never attempt one.
+        _registry.Setup(r => r.GetLoadedPlugins()).Returns([MakePlugin("azure")]);
+        _tracker.Setup(t => t.Seed(
+                It.IsAny<IReadOnlyList<LoadedPlugin>>(), It.IsAny<Func<string, bool>>(), It.IsAny<IReadOnlyCollection<string>>()))
+            .Returns([]);
+        _tracker.Setup(t => t.PendingServerNames).Returns(["enabled-server", "disabled-server"]);
+        _toolProvider
+            .Setup(p => p.IsServerAvailableAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
+        var queried = new ConcurrentBag<string>();
+        var enabledQueried = new TaskCompletionSource();
+        _toolProvider
+            .Setup(p => p.GetToolsAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns((string serverName, CancellationToken _) =>
+            {
+                queried.Add(serverName);
+                enabledQueried.TrySetResult();
+                return Task.FromResult<IList<AITool>>([]);
+            });
+        var servers = new ConcurrentDictionary<string, McpServerDefinition>
+        {
+            ["enabled-server"] = new() { Enabled = true },
+            ["disabled-server"] = new() { Enabled = false },
+        };
+        var aiConfig = new Mock<IOptionsMonitor<AIConfig>>();
+        aiConfig.Setup(m => m.CurrentValue).Returns(new AIConfig { McpServers = new McpServersConfig { Servers = servers } });
+        var sut = MakeSut(_ => true, aiConfig.Object);
+
+        await sut.StartAsync(CancellationToken.None);
+
+        await Task.WhenAny(enabledQueried.Task, Task.Delay(TimeSpan.FromSeconds(2)));
+        queried.Should().BeEquivalentTo(["enabled-server"]);
+        _toolProvider.Verify(p => p.IsServerAvailableAsync("disabled-server", It.IsAny<CancellationToken>()), Times.Never);
+        _toolProvider.Verify(p => p.GetToolsAsync("disabled-server", It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -160,7 +209,7 @@ public sealed class PluginToolBoundaryStartupValidatorTests
                     bothQueried.TrySetResult();
                 return Task.FromResult<IList<AITool>>([]);
             });
-        var sut = MakeSut(_ => true);
+        var sut = MakeSut(_ => true, MakeAiConfig("server-a", "server-b"));
 
         await sut.StartAsync(CancellationToken.None);
 
@@ -195,7 +244,7 @@ public sealed class PluginToolBoundaryStartupValidatorTests
                 getToolsCalled.TrySetResult();
                 return Task.FromResult<IList<AITool>>([]);
             });
-        var sut = MakeSut(_ => true);
+        var sut = MakeSut(_ => true, MakeAiConfig("server-a"));
 
         await sut.StartAsync(CancellationToken.None);
 
@@ -222,7 +271,7 @@ public sealed class PluginToolBoundaryStartupValidatorTests
         _toolProvider
             .Setup(p => p.GetToolsAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .Returns(new TaskCompletionSource<IList<AITool>>().Task); // Never completes.
-        var sut = MakeSut(_ => true);
+        var sut = MakeSut(_ => true, MakeAiConfig("server-a"));
 
         var startTask = sut.StartAsync(CancellationToken.None);
 

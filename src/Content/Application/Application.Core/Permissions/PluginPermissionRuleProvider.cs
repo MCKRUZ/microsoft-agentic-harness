@@ -126,7 +126,18 @@ public sealed class PluginPermissionRuleProvider : IPermissionRuleProvider
 
         foreach (var plugin in _registry.GetLoadedPlugins())
         {
-            if (_registry.GetBoundaryStatus(plugin.Name) != PluginBoundaryStatus.Verified)
+            // #613: IPluginRegistry.GetLoadedPlugins() returns every REGISTERED plugin regardless of
+            // status, despite the name — Disabled and Failed plugins are included. Only Status ==
+            // Loaded plugins are ever fed to PluginToolBoundaryTracker.Seed
+            // (PluginToolBoundaryStartupValidator.StartAsync filters before calling it), so a
+            // Disabled/Failed plugin is never seeded and GetBoundaryStatus's default for it is now
+            // Pending (#613's fix for the real startup race — see that method's remarks). Such a
+            // plugin contributes zero tools and has no boundary to distrust; without this guard,
+            // registering any disabled or failed plugin — a normal operational state — would flip
+            // anyBoundaryUnverified and silently deny every first-party tool, agent-wide, for the
+            // process lifetime.
+            if (plugin.Status == PluginLoadStatus.Loaded
+                && _registry.GetBoundaryStatus(plugin.Name) != PluginBoundaryStatus.Verified)
                 anyBoundaryUnverified = true;
 
             // DeniedTools are bypass-immune and enforced independently of any AutonomyLevel:

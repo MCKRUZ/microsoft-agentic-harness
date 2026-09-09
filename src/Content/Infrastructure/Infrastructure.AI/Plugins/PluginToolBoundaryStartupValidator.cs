@@ -68,8 +68,11 @@ public sealed class PluginToolBoundaryStartupValidator : IHostedService
     /// <see cref="IPluginToolBoundaryTracker.Seed"/>'s remarks for why case-insensitivity matters.
     /// </param>
     /// <param name="aiConfig">
-    /// Supplies the enabled MCP server names configured anywhere on the host, read fresh inside
-    /// <see cref="StartAsync"/> — see this type's remarks for why it cannot be resolved any earlier.
+    /// Supplies every MCP server configured anywhere on the host — enabled and disabled alike (#613) —
+    /// read fresh inside <see cref="StartAsync"/>, which separates them into
+    /// <see cref="IPluginToolBoundaryTracker.Seed"/>'s existence-check list (all of them) and the
+    /// background prober's query list (enabled only). See this type's remarks for why config cannot be
+    /// resolved any earlier than <see cref="StartAsync"/>.
     /// </param>
     /// <param name="toolProvider">
     /// Used to proactively resolve every <see cref="IPluginToolBoundaryTracker.PendingServerNames"/>
@@ -113,10 +116,26 @@ public sealed class PluginToolBoundaryStartupValidator : IHostedService
         // Read fresh here, not captured earlier — see this type's remarks for why. By this point
         // PluginStartupLoader.StartAsync has already merged every plugin's own MCP servers into the
         // SAME McpServersConfig.Servers instance (registration order = StartAsync order).
+        //
+        // #613: deliberately NOT filtered to Enabled — a disabled server is still a real, configured
+        // server that could explain a boundary entry the moment it's re-enabled, so Seed's existence
+        // check ("no MCP server is configured anywhere on this host") must see it too, or a plugin
+        // legitimately referencing a merely-disabled server gets refused at boot. A plugin whose entry
+        // is explained ONLY by a disabled server still ends up denied either way (Pending is fail-closed,
+        // same as Faulted) — what this changes is honesty, not enforcement: Faulted is a provably-fake,
+        // terminal, loudly-logged (Critical) verdict; Pending stays "still unresolved, awaiting real
+        // information" — never definitively wrong, and not terminal by construction, though this
+        // process still only ever seeds once (StartAsync), so an operator re-enabling the server
+        // without restarting resolves it only if something else independently queries that server name
+        // afterward (organic use, or a future restart re-running Seed), not automatically. The
+        // background prober below still only ever queries the ENABLED subset — see
+        // ResolvePendingServersInBackground.
         var allConfiguredMcpServerNames = _aiConfig.CurrentValue.McpServers.Servers
-            .Where(kvp => kvp.Value.Enabled)
             .Select(kvp => kvp.Key)
             .ToList();
+        var enabledMcpServerNames = new HashSet<string>(
+            _aiConfig.CurrentValue.McpServers.Servers.Where(kvp => kvp.Value.Enabled).Select(kvp => kvp.Key),
+            StringComparer.OrdinalIgnoreCase);
 
         var immediateViolations = _tracker.Seed(loadedPlugins, _isKnownFirstPartyToolName, allConfiguredMcpServerNames);
         if (immediateViolations.Count == 0)
@@ -126,14 +145,15 @@ public sealed class PluginToolBoundaryStartupValidator : IHostedService
                 "unresolvable AllowedTools/DeniedTools entries.",
                 loadedPlugins.Count);
 
-            ResolvePendingServersInBackground();
+            ResolvePendingServersInBackground(enabledMcpServerNames);
             return Task.CompletedTask;
         }
 
         // #524 round-2 code-review: this branch fires when NO MCP server is configured anywhere on
         // the host (see Seed's own remarks) — not when this specific plugin declares none of its own.
-        // A plugin can legitimately declare a server that is merely disabled right now; the fix in
-        // that case is re-enabling a server, not touching this plugin's declaration at all.
+        // #613: "configured" genuinely means present in config now, enabled or not — a disabled
+        // server no longer collapses this to the zero-server case, so this message is now accurate
+        // exactly as worded: it fires only when literally nothing is configured, period.
         var lines = immediateViolations.Select(v =>
             $"Plugin '{v.PluginName}': {v.ListKind} entry '{v.ToolName}' matches no first-party tool, " +
             "and no MCP server is configured anywhere on this host that could ever supply it either.");
@@ -146,16 +166,32 @@ public sealed class PluginToolBoundaryStartupValidator : IHostedService
     }
 
     /// <summary>
-    /// Fire-and-forget: queries every <see cref="IPluginToolBoundaryTracker.PendingServerNames"/>
+    /// Fire-and-forget: queries every ENABLED <see cref="IPluginToolBoundaryTracker.PendingServerNames"/>
     /// server once, in the background, so a plugin boundary depending on it resolves promptly instead
     /// of only when the running session organically needs that server — see this type's remarks.
     /// Never awaited by <see cref="StartAsync"/>; each server's task owns its own exception handling
     /// so a connection failure here can neither propagate to an unobserved-task-exception handler nor
     /// block any other server's resolution.
     /// </summary>
-    private void ResolvePendingServersInBackground()
+    /// <param name="enabledServerNames">
+    /// #613: <see cref="IPluginToolBoundaryTracker.PendingServerNames"/> can now legitimately include
+    /// a currently-disabled server (see <see cref="StartAsync"/>'s remarks). A disabled server can
+    /// never actually connect — <c>McpConnectionManager.CreateClientAsync</c> throws deterministically
+    /// — so probing one here would only waste this method's retry budget and log noise for an outcome
+    /// already known before trying; <see cref="IMcpToolProvider.GetToolsAsync"/> also independently
+    /// refuses to report a discovery outcome for one (defense in depth), but skipping it here avoids
+    /// the wasted attempt in the first place. Typed <see cref="HashSet{T}"/>, not a bare
+    /// <see cref="IReadOnlyCollection{T}"/> (#613 security review): server names are matched
+    /// case-insensitively everywhere else in this feature, and only a concrete
+    /// <see cref="HashSet{T}"/> built with <see cref="StringComparer.OrdinalIgnoreCase"/> guarantees
+    /// <c>.Contains</c> below honors that — an interface-typed parameter would still work today (the
+    /// LINQ <c>Contains</c> extension's <c>ICollection&lt;T&gt;</c> fast path happens to reach the same
+    /// set), but only incidentally, and would silently go ordinal-case-sensitive if a future caller
+    /// passed a plain list or array instead.
+    /// </param>
+    private void ResolvePendingServersInBackground(HashSet<string> enabledServerNames)
     {
-        foreach (var serverName in _tracker.PendingServerNames)
+        foreach (var serverName in _tracker.PendingServerNames.Where(enabledServerNames.Contains))
         {
             _ = ResolveOneServerAsync(serverName);
         }

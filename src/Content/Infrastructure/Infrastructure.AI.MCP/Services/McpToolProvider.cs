@@ -79,6 +79,21 @@ public sealed class McpToolProvider : IMcpToolProvider
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
+        // #613: a configured-but-disabled server would otherwise reach TryConnectAsync, fail with
+        // McpConnectionManager's "is disabled" exception, and land in the same "client is null" branch
+        // below that reports an EMPTY discovery to the boundary tracker — indistinguishable from a
+        // server that was reached (or attempted) and genuinely has no matching tool. A disabled
+        // server's tools are unknown, not proven absent, so this must return early WITHOUT reporting
+        // anything: reporting `[]` here would permanently fault a plugin boundary entry that could
+        // still be real the moment an operator re-enables the server.
+        if (_connectionManager.IsConfiguredButDisabled(serverName))
+        {
+            _logger.LogDebug(
+                "MCP server '{ServerName}' is configured but disabled — skipping without reporting to " +
+                "the plugin tool-boundary tracker (#613)", serverName);
+            return [];
+        }
+
         var client = await TryConnectAsync(
             ct => _connectionManager.GetClientAsync(serverName, ct), serverName, "connect", cancellationToken);
         if (client is null)

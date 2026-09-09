@@ -125,6 +125,12 @@ public sealed class PluginGovernanceWiringTests : IDisposable
 
         var declaration = new PluginDeclaration { Name = "myplugin", DeniedTools = ["dangerous"] };
         var pluginRegistry = RegistryWithPlugin(_pluginSkillsDir, declaration);
+        // #613: GetBoundaryStatus now defaults an unseeded plugin to Pending (fail-closed), not
+        // Verified — in a real host, PluginToolBoundaryStartupValidator.StartAsync's Seed() call is
+        // what marks this. That step is orthogonal to what THIS test verifies (DeniedTools filtering
+        // through the real skill-discovery wiring), so it's simulated directly here rather than
+        // standing up the full tracker/Seed pipeline.
+        pluginRegistry.MarkBoundaryVerified("myplugin");
         var skillRegistry = CreateSkillRegistry(pluginRegistry);
         var skill = skillRegistry.TryGet("injected-plugin-skill");
         skill.Should().NotBeNull();

@@ -595,6 +595,25 @@ public sealed class McpConnectionManager : IAsyncDisposable
             .Select(kvp => kvp.Key);
     }
 
+    /// <summary>
+    /// True when <paramref name="serverName"/> names a server present in host config
+    /// (<see cref="_config"/>) whose <see cref="McpServerDefinition.Enabled"/> is currently
+    /// <see langword="false"/> — distinct from not being configured at all. See
+    /// <see cref="GetConfiguredServerNames"/>'s remarks for why this is host-only (never
+    /// <see cref="_bundleOwnedServers"/>).
+    /// </summary>
+    /// <remarks>
+    /// #613: <see cref="McpToolProvider.GetToolsAsync"/> uses this to short-circuit before ever
+    /// attempting <see cref="CreateClientAsync"/> — which would otherwise throw the "is disabled"
+    /// <see cref="McpConnectionException"/> below every time, indistinguishable (once caught) from a
+    /// server that is genuinely unreachable. That distinction matters: a disabled server's tool names
+    /// are unknown, not proven absent, so a caller must be able to tell "skip, still unresolved" apart
+    /// from "connected/attempted and found nothing" before deciding whether to report a discovery
+    /// outcome to <see cref="Application.AI.Common.Interfaces.Plugins.IPluginToolBoundaryTracker"/>.
+    /// </remarks>
+    public bool IsConfiguredButDisabled(string serverName) =>
+        _config.Servers.TryGetValue(serverName, out var definition) && !definition.Enabled;
+
     private async Task<McpClient> CreateClientAsync(string serverName, CancellationToken cancellationToken)
     {
         // Host dictionary first (trusted source wins outright), then the bundle-owned registry as a
