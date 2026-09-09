@@ -166,70 +166,7 @@ public sealed class PluginPermissionRuleProvider : IPermissionRuleProvider
         var anyBoundaryUnverified = false;
 
         foreach (var plugin in _registry.GetLoadedPlugins())
-        {
-            // #613: IPluginRegistry.GetLoadedPlugins() returns every REGISTERED plugin regardless of
-            // status, despite the name — Disabled and Failed plugins are included. Only Status ==
-            // Loaded plugins are ever fed to PluginToolBoundaryTracker.Seed
-            // (PluginToolBoundaryStartupValidator.StartAsync filters before calling it), so a
-            // Disabled/Failed plugin is never seeded and GetBoundaryStatus's default for it is now
-            // Pending (#613's fix for the real startup race — see that method's remarks). Such a
-            // plugin contributes zero tools and has no boundary to distrust; without this guard,
-            // registering any disabled or failed plugin — a normal operational state — would flip
-            // anyBoundaryUnverified and silently deny every first-party tool, agent-wide, for the
-            // process lifetime.
-            if (plugin.Status == PluginLoadStatus.Loaded
-                && _registry.GetBoundaryStatus(plugin.Name) != PluginBoundaryStatus.Verified)
-                anyBoundaryUnverified = true;
-
-            // DeniedTools are bypass-immune and enforced independently of any AutonomyLevel:
-            // a plugin that only denies tools (no autonomy override) must still contribute its
-            // Deny rules. Emitted first so the boundary applies even when AutonomyLevel is unset
-            // or invalid.
-            if (plugin.Declaration.DeniedTools is { Count: > 0 } denied)
-                foreach (var deniedTool in denied)
-                    AddDenyRuleWithPublishedNameCoverage(rules, deniedTool);
-
-            if (string.IsNullOrEmpty(plugin.Declaration.AutonomyLevel))
-                continue;
-
-            // Name-only: the declaration is authored in a plugin manifest, outside this repo. A
-            // numeric AutonomyLevel would map straight into the tier-to-behavior conversion below
-            // and set the plugin's baseline to a tier nobody declared.
-            if (!EnumNameHelper.TryParseName<AutonomyLevel>(plugin.Declaration.AutonomyLevel, out var autonomyLevel))
-            {
-                _logger.LogWarning(
-                    "Plugin {Name}: invalid AutonomyLevel '{Level}', skipping baseline governance rule",
-                    plugin.Name, plugin.Declaration.AutonomyLevel);
-                continue;
-            }
-
-            // Both Restricted and Supervised map to Ask — differentiation is via per-tool
-            // overrides in AutonomyTierRuleProvider config, not at the plugin boundary. Shared mapping so
-            // the plugin and capability-envelope providers cannot drift on the tier-to-behavior rule.
-            var defaultBehavior = autonomyLevel.ToDefaultPermissionBehavior();
-
-            var pluginToolNames = EnumeratePluginToolNames(plugin.Name);
-            if (pluginToolNames.Count == 0)
-            {
-                _logger.LogWarning(
-                    "Plugin {Name}: AutonomyLevel '{Level}' set, but the plugin's skills declare no tool names " +
-                    "(Injected mode) — the autonomy baseline cannot be scoped to specific tools and is skipped. " +
-                    "Declare the tools via the plugin's AllowedTools or a skill's allowed-tools to enforce it.",
-                    plugin.Name, plugin.Declaration.AutonomyLevel);
-                continue;
-            }
-
-            foreach (var toolName in pluginToolNames)
-            {
-                rules.Add(new ToolPermissionRule(
-                    toolName,
-                    null,
-                    defaultBehavior,
-                    PermissionRuleSource.PluginDeclaration,
-                    Priority: 5,
-                    IsAuthoritativeBaseline: true));
-            }
-        }
+            anyBoundaryUnverified |= EmitPluginRules(plugin, rules);
 
         // #524 round-2 code-review: at least one plugin's boundary can't be trusted (an
         // AllowedTools/DeniedTools entry matches no real tool), and this class's own DeniedTools
@@ -239,18 +176,115 @@ public sealed class PluginPermissionRuleProvider : IPermissionRuleProvider
         // fail-closed response is broad, not scoped to the one plugin: deny every known first-party
         // tool agent-wide until every plugin's boundary is Verified. See this type's remarks.
         if (anyBoundaryUnverified)
-            foreach (var toolName in _firstPartyToolLookup.RegisteredFirstPartyToolKeys)
-                AddDenyRuleWithPublishedNameCoverage(rules, toolName);
+            EmitUnverifiedBoundaryFailClosedRules(rules);
 
         return rules;
     }
 
     /// <summary>
+    /// Emits <paramref name="plugin"/>'s own Deny and autonomy-baseline rules into
+    /// <paramref name="rules"/>, and reports whether its boundary is unverified (contributing to
+    /// <see cref="ComputeRules"/>'s agent-wide fail-closed decision).
+    /// </summary>
+    private bool EmitPluginRules(LoadedPlugin plugin, List<ToolPermissionRule> rules)
+    {
+        // #613: IPluginRegistry.GetLoadedPlugins() returns every REGISTERED plugin regardless of
+        // status, despite the name — Disabled and Failed plugins are included. Only Status ==
+        // Loaded plugins are ever fed to PluginToolBoundaryTracker.Seed
+        // (PluginToolBoundaryStartupValidator.StartAsync filters before calling it), so a
+        // Disabled/Failed plugin is never seeded and GetBoundaryStatus's default for it is now
+        // Pending (#613's fix for the real startup race — see that method's remarks). Such a
+        // plugin contributes zero tools and has no boundary to distrust; without this guard,
+        // registering any disabled or failed plugin — a normal operational state — would flip
+        // the agent-wide fail-closed response and silently deny every first-party tool for the
+        // process lifetime.
+        var boundaryUnverified = plugin.Status == PluginLoadStatus.Loaded
+            && _registry.GetBoundaryStatus(plugin.Name) != PluginBoundaryStatus.Verified;
+
+        // DeniedTools are bypass-immune and enforced independently of any AutonomyLevel:
+        // a plugin that only denies tools (no autonomy override) must still contribute its
+        // Deny rules. Emitted first so the boundary applies even when AutonomyLevel is unset
+        // or invalid.
+        if (plugin.Declaration.DeniedTools is { Count: > 0 } denied)
+            foreach (var deniedTool in denied)
+                AddDenyRuleWithPublishedNameCoverage(rules, deniedTool);
+
+        if (string.IsNullOrEmpty(plugin.Declaration.AutonomyLevel))
+            return boundaryUnverified;
+
+        // Name-only: the declaration is authored in a plugin manifest, outside this repo. A
+        // numeric AutonomyLevel would map straight into the tier-to-behavior conversion below
+        // and set the plugin's baseline to a tier nobody declared.
+        if (!EnumNameHelper.TryParseName<AutonomyLevel>(plugin.Declaration.AutonomyLevel, out var autonomyLevel))
+        {
+            _logger.LogWarning(
+                "Plugin {Name}: invalid AutonomyLevel '{Level}', skipping baseline governance rule",
+                plugin.Name, plugin.Declaration.AutonomyLevel);
+            return boundaryUnverified;
+        }
+
+        // Both Restricted and Supervised map to Ask — differentiation is via per-tool
+        // overrides in AutonomyTierRuleProvider config, not at the plugin boundary. Shared mapping so
+        // the plugin and capability-envelope providers cannot drift on the tier-to-behavior rule.
+        var defaultBehavior = autonomyLevel.ToDefaultPermissionBehavior();
+
+        var pluginToolNames = EnumeratePluginToolNames(plugin.Name);
+        if (pluginToolNames.Count == 0)
+        {
+            _logger.LogWarning(
+                "Plugin {Name}: AutonomyLevel '{Level}' set, but the plugin's skills declare no tool names " +
+                "(Injected mode) — the autonomy baseline cannot be scoped to specific tools and is skipped. " +
+                "Declare the tools via the plugin's AllowedTools or a skill's allowed-tools to enforce it.",
+                plugin.Name, plugin.Declaration.AutonomyLevel);
+            return boundaryUnverified;
+        }
+
+        foreach (var toolName in pluginToolNames)
+        {
+            rules.Add(new ToolPermissionRule(
+                toolName,
+                null,
+                defaultBehavior,
+                PermissionRuleSource.PluginDeclaration,
+                Priority: 5,
+                IsAuthoritativeBaseline: true));
+        }
+
+        return boundaryUnverified;
+    }
+
+    /// <summary>
+    /// Emits the agent-wide fail-closed Deny rule for every known first-party tool — see
+    /// <see cref="ComputeRules"/>'s call site for why this fires, and <see cref="EmitPluginRules"/>
+    /// for the per-plugin rules it supplements.
+    /// </summary>
+    /// <remarks>
+    /// #612 code-review: deliberately key-only here, NOT <see cref="AddDenyRuleWithPublishedNameCoverage"/>.
+    /// That helper resolves (constructs) each tool to compare its published name against the key —
+    /// proportionate for <see cref="EmitPluginRules"/>'s DeniedTools loop (a small,
+    /// explicitly-authored list), but this loop iterates EVERY registered first-party tool: doing the
+    /// same resolution here would construct the host's entire tool set as a side effect of a
+    /// permission check whenever any plugin's boundary is merely unverified, not because anything
+    /// actually invoked those tools. Accepted trade-off (Matt's explicit call): this fallback keeps a
+    /// narrower residual gap — a first-party tool whose published name disagrees with its key would
+    /// still evade this blanket deny under that name — in exchange for never running arbitrary tool
+    /// construction as a side effect of this check. No tool in this codebase has that divergence
+    /// today (see <c>ToolCatalogTests.Catalog_ToolWhoseNameDisagreesWithItsKey_...</c> for the one
+    /// place it's exercised, deliberately synthetic). <see cref="EmitPluginRules"/>'s DeniedTools loop
+    /// still closes the gap for the actually-reported, common case: a plugin's own DeniedTools entry.
+    /// </remarks>
+    private void EmitUnverifiedBoundaryFailClosedRules(List<ToolPermissionRule> rules)
+    {
+        foreach (var toolName in _firstPartyToolLookup.RegisteredFirstPartyToolKeys)
+            rules.Add(DenyRule(toolName));
+    }
+
+    /// <summary>
     /// Adds a bypass-immune Deny rule for <paramref name="toolKey"/>, and — when it resolves to a
     /// real first-party tool whose self-reported name disagrees with the key — a second Deny rule
-    /// against that resolved name. The identical two-rule shape both the per-plugin
-    /// <c>DeniedTools</c> loop and the unverified-boundary fail-closed response need; see
-    /// <see cref="TryResolvePublishedName"/> for why the two can legitimately disagree.
+    /// against that resolved name. Used only by the per-plugin <c>DeniedTools</c> loop above, where
+    /// the set of tools to resolve is small and explicitly authored by the plugin manifest — see the
+    /// unverified-boundary fail-closed loop's own comment for why it deliberately does NOT call this.
     /// </summary>
     private void AddDenyRuleWithPublishedNameCoverage(List<ToolPermissionRule> rules, string toolKey)
     {
@@ -264,45 +298,40 @@ public sealed class PluginPermissionRuleProvider : IPermissionRuleProvider
     /// Resolves <paramref name="toolKey"/>'s converted, self-reported <see cref="ITool.Name"/> —
     /// the value the runtime permission resolver (<c>ThreePhasePermissionResolver.Matches</c>,
     /// Infrastructure.AI) actually matches a Deny rule's pattern against at invocation, which can
-    /// legitimately disagree with the DI registration key a plugin manifest names (see the two call
-    /// sites' remarks). Returns <see langword="false"/>, with
-    /// <paramref name="publishedName"/> set to <paramref name="toolKey"/> itself, when the key names
-    /// no known first-party tool OR constructing it throws.
+    /// legitimately disagree with the DI registration key a plugin's <c>DeniedTools</c> entry names.
+    /// Returns <see langword="false"/>, with <paramref name="publishedName"/> set to
+    /// <paramref name="toolKey"/> itself, when the key names no known first-party tool OR
+    /// constructing it throws.
     /// </summary>
     /// <remarks>
     /// A first-party tool can require a dependency this particular host never wired (the same
     /// failure mode that made an earlier, unconditional "construct every registered tool" attempt at
-    /// #524's existence check break host boot). <see cref="FirstPartyToolLookup.Resolve"/> does not
-    /// itself guard against that — it is already used this way, request-time, for one tool at a time,
-    /// by <c>ToolCapabilityResolver</c>/<c>ToolPermissionProfileResolver</c>/<c>ToolRiskClassifier</c>
-    /// — so a construction failure here must be caught and logged, never allowed to propagate out of
-    /// <see cref="ComputeRules"/>: this runs on every tool-permission resolution while any plugin
-    /// boundary is unverified, so an uncaught throw here would take down permission resolution for
-    /// every tool call in that state, not just the one broken entry. The key-pattern Deny rule for
-    /// the affected tool still gets emitted by the caller regardless of this method's outcome.
-    /// A failure here is caught inside <see cref="ComputeRules"/>, so its result — the narrower,
-    /// key-only coverage — is what gets cached: a tool whose constructor throws stays uncovered by
-    /// the published-name rule for as long as the cached result stands (until the next
-    /// <see cref="IPluginRegistry"/> mutation triggers a recompute), not retried on every call. A
-    /// dependency-not-wired failure is deterministic, so a retry would fail identically anyway.
+    /// #524's existence check break host boot) — <see cref="FirstPartyToolLookup.TryResolve"/> guards
+    /// against exactly that, catching and reporting a construction failure instead of propagating it,
+    /// so one broken entry in a plugin's <c>DeniedTools</c> can't take down permission-rule
+    /// computation for every tool call. The key-pattern Deny rule for the affected tool still gets
+    /// emitted by the caller regardless of this method's outcome. A failure here is caught inside
+    /// <see cref="ComputeRules"/>, so its result — the narrower, key-only coverage — is what gets
+    /// cached: a tool whose constructor throws stays uncovered by the published-name rule for as long
+    /// as the cached result stands (until the next <see cref="IPluginRegistry"/> mutation triggers a
+    /// recompute), not retried on every call. A dependency-not-wired failure is deterministic, so a
+    /// retry would fail identically anyway.
     /// </remarks>
     private bool TryResolvePublishedName(string toolKey, out string publishedName)
     {
-        try
+        var tool = _firstPartyToolLookup.TryResolve(toolKey, out var constructionError);
+        if (tool is not null)
         {
-            if (_firstPartyToolLookup.Resolve(toolKey) is { } tool)
-            {
-                publishedName = tool.Name;
-                return true;
-            }
+            publishedName = tool.Name;
+            return true;
         }
-        catch (Exception ex)
+
+        if (constructionError is not null)
         {
-            // Error, not Warning: this is a bypass-immune security control (the unverified-boundary
-            // fail-closed deny, or a plugin's own DeniedTools backstop) now only partially enforced
-            // for this one tool — a level that gets filtered out of most production log
-            // configurations is the wrong fit for that.
-            _logger.LogError(ex,
+            // Error, not Warning: this is a bypass-immune security control (a plugin's DeniedTools
+            // backstop) now only partially enforced for this one tool — a level that gets filtered
+            // out of most production log configurations is the wrong fit for that.
+            _logger.LogError(constructionError,
                 "Could not construct first-party tool '{ToolKey}' to learn its published name for a " +
                 "plugin-boundary Deny rule — the key-pattern rule for it still applies, but a caller " +
                 "invoking it under a self-reported name that disagrees with the key would not be covered.",

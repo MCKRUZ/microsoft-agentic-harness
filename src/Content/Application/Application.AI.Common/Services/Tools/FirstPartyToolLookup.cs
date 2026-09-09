@@ -59,6 +59,41 @@ public sealed class FirstPartyToolLookup
             : null;
 
     /// <summary>
+    /// Same bounded resolution as <see cref="Resolve"/>, but catches and reports a construction
+    /// failure instead of propagating it.
+    /// </summary>
+    /// <remarks>
+    /// A keyed tool's constructor can require a dependency this particular host never wired — the
+    /// exact failure mode that broke host boot when an earlier existence-check attempt (#524)
+    /// unconditionally constructed every registered tool. <see cref="Resolve"/> does not guard
+    /// against that; use this overload whenever a caller can't afford one broken tool's constructor
+    /// to take down whatever loop or request it's part of (#612).
+    /// </remarks>
+    /// <param name="toolName">The tool's registration key.</param>
+    /// <param name="constructionError">
+    /// The exception thrown while constructing the tool, or <see langword="null"/> when the name is
+    /// outside the bounded key set (not a failure — just an unknown/non-first-party name) or
+    /// resolution succeeded.
+    /// </param>
+    public ITool? TryResolve(string toolName, out Exception? constructionError)
+    {
+        constructionError = null;
+
+        if (!_registeredFirstPartyToolKeys.Contains(toolName))
+            return null;
+
+        try
+        {
+            return _serviceProvider.GetKeyedService<ITool>(toolName);
+        }
+        catch (Exception ex)
+        {
+            constructionError = ex;
+            return null;
+        }
+    }
+
+    /// <summary>
     /// Every first-party tool name registered under keyed DI — the same bounded set
     /// <see cref="Resolve"/> checks membership against, exposed for a caller that needs to enumerate
     /// rather than look up one name (#524 round-2 code-review: <c>PluginPermissionRuleProvider</c>'s

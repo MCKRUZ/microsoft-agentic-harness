@@ -432,30 +432,14 @@ public sealed class PluginPermissionRuleProviderTests : IDisposable
     }
 
     [Fact]
-    public async Task GetRulesAsync_UnverifiedBoundary_BlanketDenyAlsoCoversPublishedNameForKeyNameMismatch()
-    {
-        var declaration = new PluginDeclaration { Name = "azure", DeniedTools = ["file_wrte"] };
-        _registryMock.Setup(r => r.GetLoadedPlugins()).Returns(new List<LoadedPlugin> { Loaded(declaration) });
-        _registryMock.Setup(r => r.GetBoundaryStatus("azure")).Returns(PluginBoundaryStatus.Faulted);
-        GivenKeyedToolWithDivergentName("registered_key", "self_reported_name");
-
-        var rules = await CreateProvider("registered_key").GetRulesAsync("any-agent");
-
-        rules.Should().Contain(r => r.ToolPattern == "registered_key" && r.Behavior == PermissionBehaviorType.Deny);
-        rules.Should().Contain(r => r.ToolPattern == "self_reported_name"
-            && r.Behavior == PermissionBehaviorType.Deny && r.IsBypassImmune);
-    }
-
-    [Fact]
-    public async Task GetRulesAsync_UnverifiedBoundary_UnbuildableFirstPartyTool_StillEmitsKeyOnlyDenyWithoutThrowing()
+    public async Task GetRulesAsync_DeniedToolUnbuildable_StillEmitsKeyOnlyDenyWithoutThrowing()
     {
         // A first-party tool whose constructor needs a dependency this host never wired (the exact
         // failure mode that broke boot the first time full-registry construction was tried for #524's
-        // existence check) must not crash GetRulesAsync — it's called on every tool call while any
-        // boundary is unverified. The key-pattern deny rule must still be emitted.
-        var declaration = new PluginDeclaration { Name = "azure", DeniedTools = ["file_wrte"] };
+        // existence check) must not crash GetRulesAsync. The key-pattern deny rule must still be
+        // emitted for it.
+        var declaration = new PluginDeclaration { Name = "limited", DeniedTools = ["unbuildable"] };
         _registryMock.Setup(r => r.GetLoadedPlugins()).Returns(new List<LoadedPlugin> { Loaded(declaration) });
-        _registryMock.Setup(r => r.GetBoundaryStatus("azure")).Returns(PluginBoundaryStatus.Faulted);
         GivenUnbuildableKeyedTool("unbuildable");
         var provider = CreateProvider("unbuildable");
 
@@ -464,6 +448,27 @@ public sealed class PluginPermissionRuleProviderTests : IDisposable
 
         var rules = await provider.GetRulesAsync("any-agent");
         rules.Should().Contain(r => r.ToolPattern == "unbuildable" && r.Behavior == PermissionBehaviorType.Deny);
+    }
+
+    [Fact]
+    public async Task GetRulesAsync_UnverifiedBoundary_BlanketDenyStaysKeyOnly_DoesNotResolveEveryToolsName()
+    {
+        // #612 code-review: the blanket unverified-boundary deny deliberately does NOT resolve
+        // published names for the whole first-party registry — doing so would construct every
+        // registered tool as a side effect of a permission check whenever any plugin's boundary is
+        // merely unverified, not because anything invoked those tools (narrowed after review; see
+        // AddDenyRuleWithPublishedNameCoverage's remarks). Only the per-plugin DeniedTools loop
+        // (above) resolves published names, for its small, explicitly-authored list. This is a pin
+        // for the accepted trade-off, not a gap this PR still owns.
+        var declaration = new PluginDeclaration { Name = "azure", DeniedTools = ["file_wrte"] };
+        _registryMock.Setup(r => r.GetLoadedPlugins()).Returns(new List<LoadedPlugin> { Loaded(declaration) });
+        _registryMock.Setup(r => r.GetBoundaryStatus("azure")).Returns(PluginBoundaryStatus.Faulted);
+        GivenKeyedToolWithDivergentName("registered_key", "self_reported_name");
+
+        var rules = await CreateProvider("registered_key").GetRulesAsync("any-agent");
+
+        rules.Should().Contain(r => r.ToolPattern == "registered_key" && r.Behavior == PermissionBehaviorType.Deny);
+        rules.Should().NotContain(r => r.ToolPattern == "self_reported_name");
     }
 
     // --- #611: GetRulesAsync is called fresh on every tool-permission resolution. Once name

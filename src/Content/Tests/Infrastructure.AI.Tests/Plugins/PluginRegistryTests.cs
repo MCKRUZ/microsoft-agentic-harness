@@ -148,44 +148,20 @@ public class PluginRegistryTests
     // every call (PluginPermissionRuleProvider.GetRulesAsync runs on every tool-permission
     // resolution) — it must bump on every mutation that could change that derived state.
 
-    [Fact]
-    public void StateVersion_Initially_IsStable()
+    public static IEnumerable<object[]> Mutations()
     {
-        _sut.StateVersion.Should().Be(_sut.StateVersion);
+        yield return [new Action<PluginRegistry>(r => r.Register(MakePlugin("azure")))];
+        yield return [new Action<PluginRegistry>(r => r.MarkBoundaryPending("azure"))];
+        yield return [new Action<PluginRegistry>(r => r.MarkBoundaryVerified("azure"))];
+        yield return [new Action<PluginRegistry>(r => r.MarkBoundaryFaulted("azure", "reason"))];
     }
 
-    [Fact]
-    public void StateVersion_AfterRegister_Increases()
+    [Theory]
+    [MemberData(nameof(Mutations))]
+    public void StateVersion_AfterAnyMutation_Increases(Action<PluginRegistry> mutate)
     {
         var before = _sut.StateVersion;
-        _sut.Register(MakePlugin("azure"));
-
-        _sut.StateVersion.Should().BeGreaterThan(before);
-    }
-
-    [Fact]
-    public void StateVersion_AfterMarkBoundaryPending_Increases()
-    {
-        var before = _sut.StateVersion;
-        _sut.MarkBoundaryPending("azure");
-
-        _sut.StateVersion.Should().BeGreaterThan(before);
-    }
-
-    [Fact]
-    public void StateVersion_AfterMarkBoundaryVerified_Increases()
-    {
-        var before = _sut.StateVersion;
-        _sut.MarkBoundaryVerified("azure");
-
-        _sut.StateVersion.Should().BeGreaterThan(before);
-    }
-
-    [Fact]
-    public void StateVersion_AfterMarkBoundaryFaulted_Increases()
-    {
-        var before = _sut.StateVersion;
-        _sut.MarkBoundaryFaulted("azure", "reason");
+        mutate(_sut);
 
         _sut.StateVersion.Should().BeGreaterThan(before);
     }
