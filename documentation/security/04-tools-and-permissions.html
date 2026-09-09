@@ -428,7 +428,8 @@
     PermissionRuleSource.PluginDeclaration,
     Priority: 1, IsBypassImmune: true));
 
-if (TryResolvePublishedName(denied, out var publishedName) && publishedName != denied)
+if (TryResolvePublishedName(denied, out var publishedName)
+    && !string.Equals(publishedName, denied, StringComparison.OrdinalIgnoreCase))
     rules.Add(new ToolPermissionRule(
         publishedName, null, PermissionBehaviorType.Deny,
         PermissionRuleSource.PluginDeclaration,

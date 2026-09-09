@@ -212,16 +212,33 @@ public sealed class PluginPermissionRuleProvider : IPermissionRuleProvider
         var boundaryUnverified = plugin.Status == PluginLoadStatus.Loaded
             && _registry.GetBoundaryStatus(plugin.Name) != PluginBoundaryStatus.Verified;
 
-        // DeniedTools are bypass-immune and enforced independently of any AutonomyLevel:
-        // a plugin that only denies tools (no autonomy override) must still contribute its
-        // Deny rules. Emitted first so the boundary applies even when AutonomyLevel is unset
-        // or invalid.
+        EmitDeniedToolsRules(plugin, rules);
+        EmitAutonomyBaselineRules(plugin, rules);
+
+        return boundaryUnverified;
+    }
+
+    /// <summary>
+    /// DeniedTools are bypass-immune and enforced independently of any AutonomyLevel: a plugin that
+    /// only denies tools (no autonomy override) must still contribute its Deny rules.
+    /// </summary>
+    private void EmitDeniedToolsRules(LoadedPlugin plugin, List<ToolPermissionRule> rules)
+    {
         if (plugin.Declaration.DeniedTools is { Count: > 0 } denied)
             foreach (var deniedTool in denied)
                 AddDenyRuleWithPublishedNameCoverage(rules, deniedTool);
+    }
 
+    /// <summary>
+    /// Emits an authoritative-baseline rule per real, declared tool name for <paramref name="plugin"/>'s
+    /// <c>AutonomyLevel</c> override, if it declares one and can be scoped — see the type remarks for
+    /// the own-surface constraint and the Injected-mode limitation this method's two early returns
+    /// enforce.
+    /// </summary>
+    private void EmitAutonomyBaselineRules(LoadedPlugin plugin, List<ToolPermissionRule> rules)
+    {
         if (string.IsNullOrEmpty(plugin.Declaration.AutonomyLevel))
-            return boundaryUnverified;
+            return;
 
         // Name-only: the declaration is authored in a plugin manifest, outside this repo. A
         // numeric AutonomyLevel would map straight into the tier-to-behavior conversion below
@@ -231,7 +248,7 @@ public sealed class PluginPermissionRuleProvider : IPermissionRuleProvider
             _logger.LogWarning(
                 "Plugin {Name}: invalid AutonomyLevel '{Level}', skipping baseline governance rule",
                 plugin.Name, plugin.Declaration.AutonomyLevel);
-            return boundaryUnverified;
+            return;
         }
 
         // Both Restricted and Supervised map to Ask — differentiation is via per-tool
@@ -247,7 +264,7 @@ public sealed class PluginPermissionRuleProvider : IPermissionRuleProvider
                 "(Injected mode) — the autonomy baseline cannot be scoped to specific tools and is skipped. " +
                 "Declare the tools via the plugin's AllowedTools or a skill's allowed-tools to enforce it.",
                 plugin.Name, plugin.Declaration.AutonomyLevel);
-            return boundaryUnverified;
+            return;
         }
 
         foreach (var toolName in pluginToolNames)
@@ -260,8 +277,6 @@ public sealed class PluginPermissionRuleProvider : IPermissionRuleProvider
                 Priority: 5,
                 IsAuthoritativeBaseline: true));
         }
-
-        return boundaryUnverified;
     }
 
     /// <summary>
@@ -301,10 +316,12 @@ public sealed class PluginPermissionRuleProvider : IPermissionRuleProvider
     {
         rules.Add(DenyRule(toolKey));
 
-        // OrdinalIgnoreCase: matches FirstPartyToolLookup's key-set comparer and the pattern matcher
-        // both consult (correctness-review advisory) — an ordinal-case-sensitive comparison here
-        // would emit a harmless-but-redundant second Deny rule for a tool whose published name
-        // differs from its key only in case.
+        // OrdinalIgnoreCase: matches the runtime permission resolver's actual invocation-time
+        // consumer, GlobPatternMatcher.IsMatch (correctness-review advisory) — an ordinal
+        // case-sensitive comparison here would emit a harmless-but-redundant second Deny rule for a
+        // tool whose published name differs from its key only in case. (FirstPartyToolLookup's own
+        // key set is registered ordinal case-SENSITIVE — that comparer governs which keys resolve at
+        // all, a separate question from how a resolved name compares to its key.)
         if (TryResolvePublishedName(toolKey, out var publishedName)
             && !string.Equals(publishedName, toolKey, StringComparison.OrdinalIgnoreCase))
             rules.Add(DenyRule(publishedName));

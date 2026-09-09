@@ -79,12 +79,9 @@ public sealed class FirstPartyToolLookup
     {
         constructionError = null;
 
-        if (!_registeredFirstPartyToolKeys.Contains(toolName))
-            return null;
-
         try
         {
-            return _serviceProvider.GetKeyedService<ITool>(toolName);
+            return Resolve(toolName);
         }
         catch (Exception ex)
         {

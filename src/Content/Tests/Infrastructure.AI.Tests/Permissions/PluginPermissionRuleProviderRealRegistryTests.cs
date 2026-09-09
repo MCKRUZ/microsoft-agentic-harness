@@ -27,6 +27,11 @@ namespace Infrastructure.AI.Tests.Permissions;
 /// </summary>
 public sealed class PluginPermissionRuleProviderRealRegistryTests
 {
+    private static LoadedPlugin MakePlugin(string name) =>
+        new(name, "1.0", $"/plugins/{name}", new PluginManifest { Name = name },
+            PluginLoadStatus.Loaded, SkillPaths: [], McpServerNames: [],
+            new PluginDeclaration { Name = name });
+
     private static PluginPermissionRuleProvider CreateSut(PluginRegistry registry, params string[] firstPartyKeys)
     {
         var skillRegistry = new Mock<ISkillMetadataRegistry>();
@@ -47,10 +52,7 @@ public sealed class PluginPermissionRuleProviderRealRegistryTests
     public async Task GetRulesAsync_RealRegistryTransitionsVerifiedToFaulted_RulesFlipFromPermissiveToDenyAll()
     {
         var registry = new PluginRegistry();
-        registry.Register(new LoadedPlugin(
-            "azure", "1.0", "/plugins/azure", new PluginManifest { Name = "azure" },
-            PluginLoadStatus.Loaded, SkillPaths: [], McpServerNames: [],
-            new PluginDeclaration { Name = "azure" }));
+        registry.Register(MakePlugin("azure"));
         registry.MarkBoundaryVerified("azure");
 
         var provider = CreateSut(registry, "file_system", "shell");
@@ -75,10 +77,7 @@ public sealed class PluginPermissionRuleProviderRealRegistryTests
         // pass the functional assertions above) — a second call with no intervening mutation must
         // return the exact same cached list, not a freshly recomputed equal one.
         var registry = new PluginRegistry();
-        registry.Register(new LoadedPlugin(
-            "azure", "1.0", "/plugins/azure", new PluginManifest { Name = "azure" },
-            PluginLoadStatus.Loaded, SkillPaths: [], McpServerNames: [],
-            new PluginDeclaration { Name = "azure" }));
+        registry.Register(MakePlugin("azure"));
         registry.MarkBoundaryFaulted("azure", "reason");
 
         var provider = CreateSut(registry, "file_system");

@@ -14,22 +14,32 @@ public sealed class PluginRegistry : IPluginRegistry
     private readonly ConcurrentDictionary<string, PluginBoundaryStatus> _boundaryStatus =
         new(StringComparer.OrdinalIgnoreCase);
 
-    // #612 grader finding: writing the dictionary and bumping _stateVersion as two separate
-    // Interlocked steps left a few-CPU-cycle window where a reader could observe the dictionary
-    // already mutated but StateVersion not yet incremented — a cache keyed on that stale version
-    // would then serve pre-mutation (looser) rules for one call, self-healing on the next. Narrow
-    // and self-healing, but this repo's history (#553, #614) treats "permission state briefly
-    // served stale-and-looser" as worth closing rather than documenting.
+    // #612 grader finding, round 1: writing the dictionary and bumping _stateVersion as two separate
+    // Interlocked steps left a window where a reader could observe the dictionary already mutated
+    // but StateVersion not yet incremented — a cache keyed on that stale version would then serve
+    // pre-mutation (looser) rules. This repo's history (#553, #614) treats "permission state briefly
+    // served stale-and-looser" as worth closing, not documenting.
     //
-    // Fix: each mutator does its ConcurrentDictionary write FIRST (keeping that write lock-free —
-    // no functional need to serialize it, only the version bump needs ordering), THEN bumps the
-    // version under _stateLock via BumpVersion(); StateVersion's getter reads under the same lock.
-    // A reader can only ever observe version N via the locked getter once the writer that produced N
-    // has released _stateLock — and since the dictionary write happened, in program order, before
-    // that same writer entered the lock to bump the version, Monitor's release fence guarantees the
-    // dictionary write is visible too by the time any reader acquires the lock afterward. This gives
-    // the same "no reader can observe write-without-bump" guarantee as locking the whole mutator body,
-    // without pulling ConcurrentDictionary's own already-safe writes through an extra lock.
+    // #612 code-review, round 2 (caught a regression in this comment's own prior claim): an
+    // intermediate version tried to shrink the lock to wrap ONLY the version bump — dictionary write
+    // outside the lock (lock-free), BumpVersion() after it — reasoning that a reader who observes the
+    // BUMPED version is guaranteed to also see the write (true, via Monitor's release/acquire fence).
+    // That reasoning covers only ONE of the two directions that matter: it says nothing about a
+    // reader who reads the OLD (not-yet-bumped) version — which can happen at ANY point relative to
+    // the unlocked dictionary write, including AFTER that write has already landed, since nothing
+    // synchronizes the two. That reader's cache check matches its stale cached version, hits the
+    // cache, and returns the pre-mutation rules — even though the dictionary already reflects the
+    // new (e.g. Faulted) state. Exactly the race this comment already exists to describe, reopened
+    // by trying to shrink the lock for a marginal efficiency gain on a mutation path that isn't hot
+    // (plugin load / boundary transitions, not per-tool-call).
+    //
+    // Fix (restored): every mutator does its dictionary write AND its version bump inside the SAME
+    // _stateLock critical section; StateVersion's getter reads under that same lock. A reader
+    // acquiring the lock therefore always observes a fully-consistent pair — either "before this
+    // mutation" (write hasn't happened yet, version is old) or "after it" (write has happened,
+    // version is bumped) — never the in-between state that let a stale cache hit through. Do not
+    // "optimize" this to Interlocked-only or a narrower lock scope without re-deriving BOTH
+    // directions of the race, not just the one that looks fixed.
     private readonly Lock _stateLock = new();
     private long _stateVersion;
 
@@ -37,11 +47,6 @@ public sealed class PluginRegistry : IPluginRegistry
     public long StateVersion
     {
         get { lock (_stateLock) { return _stateVersion; } }
-    }
-
-    private void BumpVersion()
-    {
-        lock (_stateLock) { _stateVersion++; }
     }
 
     /// <inheritdoc />
@@ -59,8 +64,11 @@ public sealed class PluginRegistry : IPluginRegistry
     /// <inheritdoc />
     public void Register(LoadedPlugin plugin)
     {
-        _plugins[plugin.Name] = plugin;
-        BumpVersion();
+        lock (_stateLock)
+        {
+            _plugins[plugin.Name] = plugin;
+            _stateVersion++;
+        }
     }
 
     /// <inheritdoc />
@@ -74,40 +82,51 @@ public sealed class PluginRegistry : IPluginRegistry
     /// <inheritdoc />
     public void MarkBoundaryPending(string pluginName)
     {
-        // Never downgrades Faulted (terminal) — mirrors MarkBoundaryVerified below (#524 round-2
-        // code-review: this method had no such guard, an asymmetry with no live caller today since
-        // Seed, its only caller, runs once per plugin per startup — but the registry is the shared
-        // trust boundary, not any one caller's discipline, so it should hold regardless of caller count.
-        _boundaryStatus.AddOrUpdate(
-            pluginName,
-            PluginBoundaryStatus.Pending,
-            (_, current) => current == PluginBoundaryStatus.Faulted ? current : PluginBoundaryStatus.Pending);
-        BumpVersion();
+        lock (_stateLock)
+        {
+            // Never downgrades Faulted (terminal) — mirrors MarkBoundaryVerified below (#524
+            // round-2 code-review: this method had no such guard, an asymmetry with no live caller
+            // today since Seed, its only caller, runs once per plugin per startup — but the
+            // registry is the shared trust boundary, not any one caller's discipline, so it should
+            // hold regardless of caller count.
+            _boundaryStatus.AddOrUpdate(
+                pluginName,
+                PluginBoundaryStatus.Pending,
+                (_, current) => current == PluginBoundaryStatus.Faulted ? current : PluginBoundaryStatus.Pending);
+            _stateVersion++;
+        }
     }
 
     /// <inheritdoc />
     public void MarkBoundaryVerified(string pluginName)
     {
-        // Never downgrades Faulted (terminal) — see this method's interface remarks. The
-        // AddOrUpdate factory re-reads the current value under the dictionary's own atomicity
-        // rather than a separate check-then-set, so a concurrent MarkBoundaryFaulted for the same
-        // plugin can't race this into wrongly clearing it.
-        _boundaryStatus.AddOrUpdate(
-            pluginName,
-            PluginBoundaryStatus.Verified,
-            (_, current) => current == PluginBoundaryStatus.Faulted ? current : PluginBoundaryStatus.Verified);
-        BumpVersion();
+        lock (_stateLock)
+        {
+            // Never downgrades Faulted (terminal) — see this method's interface remarks. The
+            // AddOrUpdate factory re-reads the current value under the dictionary's own atomicity
+            // rather than a separate check-then-set, so a concurrent MarkBoundaryFaulted for the
+            // same plugin can't race this into wrongly clearing it.
+            _boundaryStatus.AddOrUpdate(
+                pluginName,
+                PluginBoundaryStatus.Verified,
+                (_, current) => current == PluginBoundaryStatus.Faulted ? current : PluginBoundaryStatus.Verified);
+            _stateVersion++;
+        }
     }
 
     /// <inheritdoc />
     public void MarkBoundaryFaulted(string pluginName, string reason)
     {
-        // reason is a human-readable summary of facts (plugin/list-kind/tool-name) the caller already
-        // surfaces separately at the point of fault — McpToolProvider logs the violation list at
-        // Critical, PluginToolBoundaryStartupValidator throws with the same details — so nothing here
-        // needs it back. Deliberately not stored (#524 round-2 code-review: an earlier version kept a
-        // _faultReasons dictionary "for diagnostics" that nothing ever actually read).
-        _boundaryStatus[pluginName] = PluginBoundaryStatus.Faulted;
-        BumpVersion();
+        lock (_stateLock)
+        {
+            // reason is a human-readable summary of facts (plugin/list-kind/tool-name) the caller
+            // already surfaces separately at the point of fault — McpToolProvider logs the
+            // violation list at Critical, PluginToolBoundaryStartupValidator throws with the same
+            // details — so nothing here needs it back. Deliberately not stored (#524 round-2
+            // code-review: an earlier version kept a _faultReasons dictionary "for diagnostics"
+            // that nothing ever actually read).
+            _boundaryStatus[pluginName] = PluginBoundaryStatus.Faulted;
+            _stateVersion++;
+        }
     }
 }
