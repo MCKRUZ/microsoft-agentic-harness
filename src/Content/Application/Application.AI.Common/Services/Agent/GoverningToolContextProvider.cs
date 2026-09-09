@@ -326,6 +326,21 @@ public sealed class GoverningToolContextProvider : AIContextProvider
     /// today, only <c>load_skill</c>/<c>read_skill_resource</c> — so its output is still sanitized (#480)
     /// even though it is exempt from admission, classification, and every other governance stage.
     /// </summary>
+    /// <remarks>
+    /// <strong>Also bounded, when a chain is ambient (#544).</strong> Sanitizing alone left no cap on
+    /// how much of a plugin-sourced <c>SKILL.md</c>/resource could reach the model, and no scan-cost
+    /// bound on the sanitize pass itself — the one exception to #487's "no upstream bound exists
+    /// anywhere for tool-adjacent text" premise. <see cref="InvokeCoreAsync"/> now runs the result
+    /// through <see cref="IToolCallAdmissionPipeline.ApplyOutputPolicyAsync"/> (via
+    /// <see cref="ToolAdmissionAccessor.Current"/>) instead of calling <see cref="ToolResultText.Sanitize(object?, ICompositeResponseSanitizer, string)"/>
+    /// directly — the same scan-cost pre-cut, sanitize, final bound, aggregate-per-message budget, and
+    /// spill-with-retrieval-id every other tool result already gets. Deliberately passes
+    /// <see cref="ToolCallAdmission.Allow"/>, never calling <c>AdmitAsync</c>: that would ask the
+    /// capability question this class's own remarks explain these two tools are exempt from, and
+    /// undoing that exemption is not this fix's job. The no-ambient-chain fallback still sanitizes
+    /// directly with this instance's own <see cref="_sanitizer"/> — #480's unconditional-sanitize
+    /// guarantee does not depend on a chain being armed, and must not start doing so now.
+    /// </remarks>
     private sealed class SanitizingAIFunction : DelegatingAIFunction
     {
         private readonly ICompositeResponseSanitizer _sanitizer;
@@ -346,7 +361,19 @@ public sealed class GoverningToolContextProvider : AIContextProvider
             // same guarantee GovernedAIFunction does: a ConvertedToolFailure marker must never cross into
             // the framework layer unwrapped, and its error text must be sanitized like any other
             // model-facing text rather than falling into Sanitize's structured/unrecognized default case.
-            return ToolResultText.Sanitize(GovernedAIFunction.Unwrap(result), _sanitizer, Name);
+            var unwrapped = GovernedAIFunction.Unwrap(result);
+
+            var admissionPipeline = ToolAdmissionAccessor.Current;
+            if (admissionPipeline is null)
+                return ToolResultText.Sanitize(unwrapped, _sanitizer, Name);
+
+            // #544: same chokepoint every other tool result already funnels through — CancellationToken.None,
+            // not the caller's token, matching GovernedAIFunction.ReportOutcomeAndApplyPolicyAsync's own
+            // choice: the tool already ran and produced this output, so bounding it should not be abandoned
+            // mid-cut by a caller cancellation racing the call's own completion.
+            return await admissionPipeline
+                .ApplyOutputPolicyAsync(ToolCallAdmission.Allow(), Name, unwrapped, CancellationToken.None)
+                .ConfigureAwait(false);
         }
     }
 }
