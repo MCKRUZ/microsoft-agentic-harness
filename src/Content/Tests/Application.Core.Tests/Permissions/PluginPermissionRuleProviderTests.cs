@@ -34,6 +34,23 @@ public sealed class PluginPermissionRuleProviderTests : IDisposable
     private void GivenGlobalKeyedTool(string toolName) =>
         _services.AddKeyedSingleton<ITool>(toolName, (_, _) => Mock.Of<ITool>());
 
+    /// <summary>
+    /// Registers a first-party tool under <paramref name="key"/> whose self-reported
+    /// <see cref="ITool.Name"/> disagrees with that key — the real, supported shape
+    /// <c>ToolCatalogTests.Catalog_ToolWhoseNameDisagreesWithItsKey_...</c> proves exists.
+    /// </summary>
+    private void GivenKeyedToolWithDivergentName(string key, string publishedName)
+    {
+        var mock = new Mock<ITool>();
+        mock.Setup(t => t.Name).Returns(publishedName);
+        _services.AddKeyedSingleton(key, mock.Object);
+    }
+
+    /// <summary>Registers a keyed-DI tool factory that throws when constructed.</summary>
+    private void GivenUnbuildableKeyedTool(string key) =>
+        _services.AddKeyedSingleton<ITool>(key, (_, _) =>
+            throw new InvalidOperationException("dependency not registered in this host"));
+
     private PluginPermissionRuleProvider CreateProvider(params string[] knownFirstPartyToolNames)
     {
         _serviceProvider = _services.BuildServiceProvider();
@@ -378,5 +395,114 @@ public sealed class PluginPermissionRuleProviderTests : IDisposable
 
         rules.Should().NotContain(r => r.ToolPattern == "file_system");
         rules.Should().NotContain(r => r.ToolPattern == "shell");
+    }
+
+    // --- #612: rule.ToolPattern is matched against a tool's PUBLISHED (self-reported) name at
+    // invocation (ThreePhasePermissionResolver.Matches), but a plugin declares DeniedTools against
+    // the DI registration key (the identifier ApplyPluginToolBoundary's existence check uses) — and
+    // a keyed ITool can legitimately report a Name that disagrees with its own key
+    // (ToolCatalogTests.Catalog_ToolWhoseNameDisagreesWithItsKey_...). Without also emitting a rule
+    // against the resolved published name, the deny silently never fires for such a tool.
+
+    [Fact]
+    public async Task GetRulesAsync_DeniedToolNameDisagreesWithItsKey_AlsoEmitsDenyForThePublishedName()
+    {
+        var declaration = new PluginDeclaration { Name = "limited", DeniedTools = ["registered_key"] };
+        _registryMock.Setup(r => r.GetLoadedPlugins()).Returns(new List<LoadedPlugin> { Loaded(declaration) });
+        GivenKeyedToolWithDivergentName("registered_key", "self_reported_name");
+
+        var rules = await CreateProvider("registered_key").GetRulesAsync("any-agent");
+
+        rules.Should().Contain(r => r.ToolPattern == "registered_key" && r.Behavior == PermissionBehaviorType.Deny);
+        rules.Should().Contain(r => r.ToolPattern == "self_reported_name"
+            && r.Behavior == PermissionBehaviorType.Deny && r.IsBypassImmune);
+    }
+
+    [Fact]
+    public async Task GetRulesAsync_DeniedToolNameMatchesItsKey_EmitsOnlyOneDenyRule()
+    {
+        // No divergence: must not double-emit a redundant rule for the common case.
+        var declaration = new PluginDeclaration { Name = "limited", DeniedTools = ["bash"] };
+        _registryMock.Setup(r => r.GetLoadedPlugins()).Returns(new List<LoadedPlugin> { Loaded(declaration) });
+        GivenKeyedToolWithDivergentName("bash", "bash");
+
+        var rules = await CreateProvider("bash").GetRulesAsync("any-agent");
+
+        rules.Should().ContainSingle(r => r.ToolPattern == "bash");
+    }
+
+    [Fact]
+    public async Task GetRulesAsync_DeniedToolUnbuildable_StillEmitsKeyOnlyDenyWithoutThrowing()
+    {
+        // A first-party tool whose constructor needs a dependency this host never wired (the exact
+        // failure mode that broke boot the first time full-registry construction was tried for #524's
+        // existence check) must not crash GetRulesAsync. The key-pattern deny rule must still be
+        // emitted for it.
+        var declaration = new PluginDeclaration { Name = "limited", DeniedTools = ["unbuildable"] };
+        _registryMock.Setup(r => r.GetLoadedPlugins()).Returns(new List<LoadedPlugin> { Loaded(declaration) });
+        GivenUnbuildableKeyedTool("unbuildable");
+        var provider = CreateProvider("unbuildable");
+
+        var act = async () => await provider.GetRulesAsync("any-agent");
+        await act.Should().NotThrowAsync();
+
+        var rules = await provider.GetRulesAsync("any-agent");
+        rules.Should().Contain(r => r.ToolPattern == "unbuildable" && r.Behavior == PermissionBehaviorType.Deny);
+    }
+
+    [Fact]
+    public async Task GetRulesAsync_UnverifiedBoundary_BlanketDenyStaysKeyOnly_DoesNotResolveEveryToolsName()
+    {
+        // #612 code-review: the blanket unverified-boundary deny deliberately does NOT resolve
+        // published names for the whole first-party registry — doing so would construct every
+        // registered tool as a side effect of a permission check whenever any plugin's boundary is
+        // merely unverified, not because anything invoked those tools (narrowed after review; see
+        // AddDenyRuleWithPublishedNameCoverage's remarks). Only the per-plugin DeniedTools loop
+        // (above) resolves published names, for its small, explicitly-authored list. This is a pin
+        // for the accepted trade-off, not a gap this PR still owns.
+        var declaration = new PluginDeclaration { Name = "azure", DeniedTools = ["file_wrte"] };
+        _registryMock.Setup(r => r.GetLoadedPlugins()).Returns(new List<LoadedPlugin> { Loaded(declaration) });
+        _registryMock.Setup(r => r.GetBoundaryStatus("azure")).Returns(PluginBoundaryStatus.Faulted);
+        GivenKeyedToolWithDivergentName("registered_key", "self_reported_name");
+
+        var rules = await CreateProvider("registered_key").GetRulesAsync("any-agent");
+
+        rules.Should().Contain(r => r.ToolPattern == "registered_key" && r.Behavior == PermissionBehaviorType.Deny);
+        rules.Should().NotContain(r => r.ToolPattern == "self_reported_name");
+    }
+
+    // --- #611: GetRulesAsync is called fresh on every tool-permission resolution. Once name
+    // resolution (above) means it may construct first-party tools, recomputing unconditionally
+    // turns an unverified-boundary state into unbounded repeated construction cost. Cache the
+    // result, keyed on IPluginRegistry.StateVersion, and recompute only when it changes.
+
+    [Fact]
+    public async Task GetRulesAsync_CalledTwiceWithNoRegistryChange_DoesNotRecompute()
+    {
+        var declaration = new PluginDeclaration { Name = "p", AutonomyLevel = "Autonomous" };
+        _registryMock.Setup(r => r.GetLoadedPlugins()).Returns(new List<LoadedPlugin> { Loaded(declaration) });
+        _registryMock.Setup(r => r.StateVersion).Returns(1);
+        GivenPluginSkillDeclaresTools("p", "run_x");
+        var provider = CreateProvider();
+
+        await provider.GetRulesAsync("any-agent");
+        await provider.GetRulesAsync("any-agent");
+
+        _registryMock.Verify(r => r.GetLoadedPlugins(), Times.Once);
+    }
+
+    [Fact]
+    public async Task GetRulesAsync_StateVersionChangesBetweenCalls_Recomputes()
+    {
+        var declaration = new PluginDeclaration { Name = "p", AutonomyLevel = "Autonomous" };
+        _registryMock.Setup(r => r.GetLoadedPlugins()).Returns(new List<LoadedPlugin> { Loaded(declaration) });
+        GivenPluginSkillDeclaresTools("p", "run_x");
+        var provider = CreateProvider();
+        _registryMock.SetupSequence(r => r.StateVersion).Returns(1).Returns(2);
+
+        await provider.GetRulesAsync("any-agent");
+        await provider.GetRulesAsync("any-agent");
+
+        _registryMock.Verify(r => r.GetLoadedPlugins(), Times.Exactly(2));
     }
 }

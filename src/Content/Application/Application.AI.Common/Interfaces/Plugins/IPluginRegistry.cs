@@ -74,4 +74,21 @@ public interface IPluginRegistry
     /// <param name="pluginName">The plugin whose boundary is faulted.</param>
     /// <param name="reason">Human-readable reason, for logging/diagnostics.</param>
     void MarkBoundaryFaulted(string pluginName, string reason);
+
+    /// <summary>
+    /// Monotonically increasing counter, bumped by every mutation (<see cref="Register"/>,
+    /// <see cref="MarkBoundaryPending"/>, <see cref="MarkBoundaryVerified"/>,
+    /// <see cref="MarkBoundaryFaulted"/>).
+    /// </summary>
+    /// <remarks>
+    /// A consumer whose derived state depends on the full loaded-plugin set and every plugin's
+    /// boundary status — <c>PluginPermissionRuleProvider.GetRulesAsync</c>, called on every
+    /// tool-permission resolution — can cache that derived state and detect staleness by comparing
+    /// this value, instead of recomputing on every call (#611) or wiring a bespoke
+    /// change-notification event. Deliberately coarse: it bumps on any mutation regardless of
+    /// whether the mutation actually changed anything observable (e.g. re-marking an already-Verified
+    /// plugin Verified), which only costs an occasional unnecessary recompute — the alternative, a
+    /// missed bump, would serve stale cached state indefinitely.
+    /// </remarks>
+    long StateVersion { get; }
 }
