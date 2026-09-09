@@ -93,6 +93,18 @@ public sealed class PluginGovernanceCompositionTests : IDisposable
     }
 
     /// <summary>
+    /// #613: this suite's fixture plugin declares a synthetic DeniedTools entry that #524's real
+    /// existence-check (<c>PluginToolBoundaryStartupValidator</c>) would refuse to boot on — see
+    /// <see cref="CompositionRootTestHost.RunPluginStartupLoaderAsync"/>'s remarks for why that
+    /// validator is deliberately not run here. Calls the REAL <see cref="IPluginRegistry"/>
+    /// resolved from the composition root — not a test double — to simulate only the one fact
+    /// (#524's check already passed) this suite isn't itself exercising, so every enforcement path
+    /// downstream of it (what this suite actually tests) still runs against production wiring.
+    /// </summary>
+    private static void MarkPluginBoundaryVerified(ServiceProvider provider) =>
+        provider.GetRequiredService<IPluginRegistry>().MarkBoundaryVerified(PluginName);
+
+    /// <summary>
     /// Production-shaped configuration: one declared plugin with a DeniedTools boundary and an
     /// autonomy-level override, tool-invocation enforcement on, and an Allow-by-default
     /// permission environment so that any block observed is attributable to plugin governance
@@ -115,6 +127,7 @@ public sealed class PluginGovernanceCompositionTests : IDisposable
         await using var provider = CompositionRootTestHost.BuildProvider(BaseSettings());
 
         await CompositionRootTestHost.RunPluginStartupLoaderAsync(provider);
+        MarkPluginBoundaryVerified(provider);
 
         var registry = provider.GetRequiredService<IPluginRegistry>();
         var plugin = registry.GetPlugin(PluginName);
@@ -133,6 +146,7 @@ public sealed class PluginGovernanceCompositionTests : IDisposable
     {
         await using var provider = CompositionRootTestHost.BuildProvider(BaseSettings());
         await CompositionRootTestHost.RunPluginStartupLoaderAsync(provider);
+        MarkPluginBoundaryVerified(provider);
 
         var skill = provider.GetRequiredService<ISkillMetadataRegistry>().TryGet(PluginSkillId);
         skill.Should().NotBeNull();
@@ -165,6 +179,7 @@ public sealed class PluginGovernanceCompositionTests : IDisposable
         // → ToolInvocationGovernor → GovernedAIFunction, all resolved from the production graph.
         await using var provider = CompositionRootTestHost.BuildProvider(BaseSettings());
         await CompositionRootTestHost.RunPluginStartupLoaderAsync(provider);
+        MarkPluginBoundaryVerified(provider);
 
         var executed = false;
         var wrapped = await BuildGovernedHostTool(provider,
@@ -190,6 +205,7 @@ public sealed class PluginGovernanceCompositionTests : IDisposable
         // wildcard that no live tool name ever matched, so the baseline was inert.)
         await using var provider = CompositionRootTestHost.BuildProvider(BaseSettings("Supervised"));
         await CompositionRootTestHost.RunPluginStartupLoaderAsync(provider);
+        MarkPluginBoundaryVerified(provider);
 
         var pluginToolExecuted = false;
         var plainExecuted = false;
@@ -226,6 +242,7 @@ public sealed class PluginGovernanceCompositionTests : IDisposable
         settings["AppConfig:AI:Permissions:DefaultBehavior"] = "Ask"; // stricter generic default
         await using var provider = CompositionRootTestHost.BuildProvider(settings);
         await CompositionRootTestHost.RunPluginStartupLoaderAsync(provider);
+        MarkPluginBoundaryVerified(provider);
 
         var pluginToolExecuted = false;
         var plainExecuted = false;

@@ -77,6 +77,19 @@ internal static class CompositionRootTestHost
     /// <see cref="IHostedService"/> collection (proving the registration exists), started once
     /// before the first lazy skill/MCP discovery.
     /// </summary>
+    /// <remarks>
+    /// Deliberately does NOT also run <see cref="Infrastructure.AI.Plugins.PluginToolBoundaryStartupValidator"/>
+    /// (#524's tool-existence check) — this suite's fixture plugin declares a synthetic
+    /// <c>DeniedTools</c> entry ("dangerous_tool") that names no real first-party tool and no MCP
+    /// server is configured here, so that validator would refuse to boot by design (#524's own
+    /// behavior, correctly). This suite tests DOWNSTREAM enforcement of a plugin boundary
+    /// (DeniedTools filtering, autonomy baselines, invocation governance) — #524's existence check
+    /// itself has its own dedicated coverage in <c>PluginToolBoundaryStartupValidatorTests</c> and
+    /// <c>PluginToolBoundaryTrackerTests</c>. See <see cref="PluginGovernanceCompositionTests"/>'s
+    /// own call sites — each explicitly marks the boundary Verified after this step, simulating only
+    /// the ONE fact (#524 already passed) this suite isn't itself exercising, not hand-constructing
+    /// anything else in the graph.
+    /// </remarks>
     /// <param name="provider">The composition-root provider to start plugin loading on.</param>
     public static async Task RunPluginStartupLoaderAsync(ServiceProvider provider)
     {
