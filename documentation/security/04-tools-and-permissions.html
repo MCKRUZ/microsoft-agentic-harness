@@ -355,6 +355,14 @@
                                 <code>DeniedTools</code> entry gives no way to know which specific global tool it
                                 was meant to protect.
                             </p>
+                            <p style="margin: 0.75rem 0 0">
+                                A boundary entry resolvable only through a currently-<strong>disabled</strong> MCP
+                                server is treated as configured (it won't trigger the boot-time failure above), but
+                                it also won't auto-resolve while disabled — the background resolver only probes
+                                enabled servers. The entry, and the agent-wide deny it carries, stays pending until
+                                the server is re-enabled and queried (organic use, or a restart), not automatically
+                                on re-enable.
+                            </p>
                         </div>
                     </div>
 
