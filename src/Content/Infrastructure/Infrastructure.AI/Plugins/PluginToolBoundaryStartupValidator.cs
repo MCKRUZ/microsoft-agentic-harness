@@ -120,9 +120,16 @@ public sealed class PluginToolBoundaryStartupValidator : IHostedService
         // #613: deliberately NOT filtered to Enabled — a disabled server is still a real, configured
         // server that could explain a boundary entry the moment it's re-enabled, so Seed's existence
         // check ("no MCP server is configured anywhere on this host") must see it too, or a plugin
-        // legitimately referencing a merely-disabled server gets refused at boot (or, once other
-        // enabled servers exhaust, permanently denied) for no real reason. The background prober below
-        // still only ever queries the ENABLED subset — see ResolvePendingServersInBackground.
+        // legitimately referencing a merely-disabled server gets refused at boot. A plugin whose entry
+        // is explained ONLY by a disabled server still ends up denied either way (Pending is fail-closed,
+        // same as Faulted) — what this changes is honesty, not enforcement: Faulted is a provably-fake,
+        // terminal, loudly-logged (Critical) verdict; Pending stays "still unresolved, awaiting real
+        // information" — never definitively wrong, and not terminal by construction, though this
+        // process still only ever seeds once (StartAsync), so an operator re-enabling the server
+        // without restarting resolves it only if something else independently queries that server name
+        // afterward (organic use, or a future restart re-running Seed), not automatically. The
+        // background prober below still only ever queries the ENABLED subset — see
+        // ResolvePendingServersInBackground.
         var allConfiguredMcpServerNames = _aiConfig.CurrentValue.McpServers.Servers
             .Select(kvp => kvp.Key)
             .ToList();
@@ -173,9 +180,16 @@ public sealed class PluginToolBoundaryStartupValidator : IHostedService
     /// — so probing one here would only waste this method's retry budget and log noise for an outcome
     /// already known before trying; <see cref="IMcpToolProvider.GetToolsAsync"/> also independently
     /// refuses to report a discovery outcome for one (defense in depth), but skipping it here avoids
-    /// the wasted attempt in the first place.
+    /// the wasted attempt in the first place. Typed <see cref="HashSet{T}"/>, not a bare
+    /// <see cref="IReadOnlyCollection{T}"/> (#613 security review): server names are matched
+    /// case-insensitively everywhere else in this feature, and only a concrete
+    /// <see cref="HashSet{T}"/> built with <see cref="StringComparer.OrdinalIgnoreCase"/> guarantees
+    /// <c>.Contains</c> below honors that — an interface-typed parameter would still work today (the
+    /// LINQ <c>Contains</c> extension's <c>ICollection&lt;T&gt;</c> fast path happens to reach the same
+    /// set), but only incidentally, and would silently go ordinal-case-sensitive if a future caller
+    /// passed a plain list or array instead.
     /// </param>
-    private void ResolvePendingServersInBackground(IReadOnlyCollection<string> enabledServerNames)
+    private void ResolvePendingServersInBackground(HashSet<string> enabledServerNames)
     {
         foreach (var serverName in _tracker.PendingServerNames.Where(enabledServerNames.Contains))
         {
