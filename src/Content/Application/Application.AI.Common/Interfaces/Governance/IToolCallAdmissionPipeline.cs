@@ -87,7 +87,18 @@ public interface IToolCallAdmissionPipeline
     /// <summary>
     /// Applies whatever output policy the admission carried, after the tool has run.
     /// </summary>
-    /// <param name="admission">The verdict returned by <see cref="AdmitAsync"/> for this same call.</param>
+    /// <param name="admission">
+    /// The verdict returned by <see cref="AdmitAsync"/> for this same call. One documented exception:
+    /// <c>GoverningToolContextProvider.SanitizingAIFunction</c> (#544) deliberately never calls
+    /// <see cref="AdmitAsync"/> for the two skill-content transport tools it wraps — they are exempt
+    /// from the capability question that method asks — and passes a synthetic
+    /// <see cref="ToolCallAdmission.Allow"/> instead, to get this method's bounding without asking
+    /// admission anything. Safe only because this method reads nothing off <paramref name="admission"/>
+    /// but <see cref="ToolCallAdmission.RedactsOutput"/> and <see cref="ToolCallAdmission.ApprovedCall"/>
+    /// (both false/absent on a plain <c>Allow()</c>, which is exactly correct for content that was
+    /// never classified and never approved through this chain) — a future admission field this method
+    /// starts reading would need that call site re-examined.
+    /// </param>
     /// <param name="toolName">The tool that produced <paramref name="result"/>.</param>
     /// <param name="result">The tool's raw result.</param>
     /// <returns>
