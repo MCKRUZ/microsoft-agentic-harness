@@ -3,6 +3,7 @@ using Application.AI.Common.Interfaces.SkillTraining;
 using Application.AI.Common.Services.ClaimVerification;
 using Application.AI.Common.Services.SkillTraining;
 using Domain.AI.SkillTraining;
+using Domain.Common;
 using Domain.Common.Config;
 using MediatR;
 using Microsoft.Extensions.Logging;
@@ -65,16 +66,16 @@ public sealed class SkillTrainingExample
         // NotConfigured*, fail-fast) IRolloutRunner/IPatchProposer instead of these stubs.
         // The validator itself has no dependencies, so it's constructed by hand — same
         // style as everything else in BuildHandler() — to restore the coverage the pipeline
-        // would otherwise provide, rather than silently skipping it. See #533.
-        var validationResult = await new TrainSkillCommandValidator().ValidateAsync(cmd, cancellationToken);
-        if (!validationResult.IsValid)
-        {
-            var errors = validationResult.Errors.Select(e => $"{e.PropertyName}: {e.ErrorMessage}");
-            AnsiConsole.MarkupLineInterpolated($"[red]Validation failed:[/] {string.Join("; ", errors)}");
-            return;
-        }
+        // would otherwise provide, rather than silently skipping it. On failure this produces
+        // the exact same Result<T>.ValidationFailure shape TrainSkillCommandHandler's own inline
+        // guards already return for this exact "no pipeline" scenario, so the demo has one
+        // consistent failure-reporting path below instead of two. See #533.
+        var validation = await new TrainSkillCommandValidator().ValidateAsync(cmd, cancellationToken);
+        var result = validation.IsValid
+            ? await handler.Handle(cmd, cancellationToken)
+            : Result<SkillTrainingRunResult>.ValidationFailure(
+                validation.Errors.Select(e => $"{e.PropertyName}: {e.ErrorMessage}").ToList());
 
-        var result = await handler.Handle(cmd, cancellationToken);
         if (!result.IsSuccess)
         {
             AnsiConsole.MarkupLineInterpolated($"[red]Training failed:[/] {string.Join("; ", result.Errors)}");
