@@ -291,5 +291,10 @@
       <BuildType Solution="Debug-AgentHub-Dashboard|*" Project="Debug" />
       <BuildType Solution="Debug-AgentHub-WebUI|*" Project="Debug" />
     </Project>
+    <Project Path="Content/Tests/Presentation.ConsoleUI.Tests/Presentation.ConsoleUI.Tests.csproj">
+      <BuildType Solution="Debug-AgentHub-All|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-Dashboard|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-WebUI|*" Project="Debug" />
+    </Project>
   </Folder>
 </Solution>
