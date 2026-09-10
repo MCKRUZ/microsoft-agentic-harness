@@ -58,24 +58,7 @@ public sealed class SkillTrainingExample
             }
         };
 
-        // This demo bypasses IMediator.Send and calls the handler directly, so
-        // RequestValidationBehavior never runs for TrainSkillCommand here. That's deliberate:
-        // the demo's whole point is running the state machine against deterministic,
-        // LLM-free stubs (DeterministicRolloutRunner/DeterministicProposer); dispatching
-        // through the app's real DI-registered IMediator would resolve the real (or
-        // NotConfigured*, fail-fast) IRolloutRunner/IPatchProposer instead of these stubs.
-        // The validator itself has no dependencies, so it's constructed by hand — same
-        // style as everything else in BuildHandler() — to restore the coverage the pipeline
-        // would otherwise provide, rather than silently skipping it. On failure this produces
-        // the exact same Result<T>.ValidationFailure shape TrainSkillCommandHandler's own inline
-        // guards already return for this exact "no pipeline" scenario, so the demo has one
-        // consistent failure-reporting path below instead of two. See #533.
-        var validation = await new TrainSkillCommandValidator().ValidateAsync(cmd, cancellationToken);
-        var result = validation.IsValid
-            ? await handler.Handle(cmd, cancellationToken)
-            : Result<SkillTrainingRunResult>.ValidationFailure(
-                validation.Errors.Select(e => $"{e.PropertyName}: {e.ErrorMessage}").ToList());
-
+        var result = await ValidateAndDispatchAsync(handler, cmd, cancellationToken);
         if (!result.IsSuccess)
         {
             AnsiConsole.MarkupLineInterpolated($"[red]Training failed:[/] {string.Join("; ", result.Errors)}");
@@ -100,6 +83,33 @@ public sealed class SkillTrainingExample
             $"[bold]Best:[/] step {run.BestStep}, score {run.BestScore:F2}, accepted any: {run.HasAcceptedAny}");
         AnsiConsole.MarkupLineInterpolated(
             $"[grey]Steps executed: {run.StepsExecuted}, consecutive rejects on exit: {run.ConsecutiveRejects}[/]");
+    }
+
+    /// <summary>
+    /// Validates <paramref name="cmd"/> and dispatches to <paramref name="handler"/> on success.
+    /// </summary>
+    /// <remarks>
+    /// This demo bypasses IMediator.Send and calls the handler directly, so
+    /// RequestValidationBehavior never runs for TrainSkillCommand here. That's deliberate:
+    /// the demo's whole point is running the state machine against deterministic,
+    /// LLM-free stubs (DeterministicRolloutRunner/DeterministicProposer); dispatching
+    /// through the app's real DI-registered IMediator would resolve the real (or
+    /// NotConfigured*, fail-fast) IRolloutRunner/IPatchProposer instead of these stubs.
+    /// The validator itself has no dependencies, so it's constructed by hand — same
+    /// style as everything else in BuildHandler() — to restore the coverage the pipeline
+    /// would otherwise provide, rather than silently skipping it. On failure this produces
+    /// the exact same Result&lt;T&gt;.ValidationFailure shape TrainSkillCommandHandler's own inline
+    /// guards already return for this exact "no pipeline" scenario, so the demo has one
+    /// consistent failure-reporting path in <see cref="RunAsync"/> instead of two. See #533.
+    /// </remarks>
+    private static async Task<Result<SkillTrainingRunResult>> ValidateAndDispatchAsync(
+        TrainSkillCommandHandler handler, TrainSkillCommand cmd, CancellationToken cancellationToken)
+    {
+        var validation = await new TrainSkillCommandValidator().ValidateAsync(cmd, cancellationToken);
+        return validation.IsValid
+            ? await handler.Handle(cmd, cancellationToken)
+            : Result<SkillTrainingRunResult>.ValidationFailure(
+                validation.Errors.Select(e => $"{e.PropertyName}: {e.ErrorMessage}").ToList());
     }
 
     private static TrainSkillCommandHandler BuildHandler()
