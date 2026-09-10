@@ -37,26 +37,7 @@ public sealed class SkillTrainingExample
         ConsoleHelper.DisplayModeInfo(isLive: false, "Deterministic stubs — no LLM calls.");
 
         var handler = BuildHandler();
-
-        var cmd = new TrainSkillCommand
-        {
-            RunId = "demo-run-1",
-            SkillId = "demo-skill",
-            InitialSkill = "# Demo Skill\n\n## Approach\n- Start simple.",
-            Config = new TrainSkillConfig
-            {
-                Epochs = 2,
-                StepsPerEpoch = 3,
-                LrStart = 4,
-                LrMin = 1,
-                LrScheduler = "cosine",
-                GateMetric = GateMetric.Hard,
-                Patience = 3,
-                UseSlowUpdate = false,
-                UseMetaSkill = false,
-                Seed = 42
-            }
-        };
+        var cmd = BuildDemoCommand();
 
         var result = await ValidateAndDispatchAsync(handler, cmd, cancellationToken);
         if (!result.IsSuccess)
@@ -111,7 +92,37 @@ public sealed class SkillTrainingExample
         return await handler.Handle(cmd, cancellationToken);
     }
 
-    private static TrainSkillCommandHandler BuildHandler()
+    /// <summary>
+    /// The demo's command. Internal (not private) so <c>Presentation.ConsoleUI.Tests</c> can
+    /// assert against the exact same literal <see cref="RunAsync"/> dispatches, instead of a
+    /// separately-typed copy that could drift from it.
+    /// </summary>
+    internal static TrainSkillCommand BuildDemoCommand() => new()
+    {
+        RunId = "demo-run-1",
+        SkillId = "demo-skill",
+        InitialSkill = "# Demo Skill\n\n## Approach\n- Start simple.",
+        Config = new TrainSkillConfig
+        {
+            Epochs = 2,
+            StepsPerEpoch = 3,
+            LrStart = 4,
+            LrMin = 1,
+            LrScheduler = "cosine",
+            GateMetric = GateMetric.Hard,
+            Patience = 3,
+            UseSlowUpdate = false,
+            UseMetaSkill = false,
+            Seed = 42
+        }
+    };
+
+    /// <summary>
+    /// Builds the handler with deterministic, LLM-free stubs. Internal (not private) so
+    /// <c>Presentation.ConsoleUI.Tests</c> can exercise <see cref="ValidateAndDispatchAsync"/>'s
+    /// success path end-to-end against a real handler, not just its validation short-circuit.
+    /// </summary>
+    internal static TrainSkillCommandHandler BuildHandler()
     {
         var aggregator = new PatchAggregator();
         var selector = new TopKEditSelector();

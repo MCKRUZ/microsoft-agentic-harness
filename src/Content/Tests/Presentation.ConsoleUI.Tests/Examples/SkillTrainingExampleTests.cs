@@ -49,35 +49,21 @@ public sealed class SkillTrainingExampleTests
     }
 
     /// <summary>
-    /// The demo's own hardcoded command must keep passing validation, or the demo would silently
-    /// stop running.
+    /// Exercises ValidateAndDispatchAsync's success path end-to-end: the demo's own command
+    /// (via <see cref="SkillTrainingExample.BuildDemoCommand"/>, not a separately-typed copy)
+    /// against a real handler (via <see cref="SkillTrainingExample.BuildHandler"/>) must pass
+    /// validation and reach handler.Handle, or the demo would silently stop running.
     /// </summary>
     [Fact]
-    public async Task ValidateAndDispatchAsync_DemoCommand_PassesValidation()
+    public async Task ValidateAndDispatchAsync_DemoCommand_PassesValidationAndDispatchesToHandler()
     {
-        var demoCommand = new TrainSkillCommand
-        {
-            RunId = "demo-run-1",
-            SkillId = "demo-skill",
-            InitialSkill = "# Demo Skill\n\n## Approach\n- Start simple.",
-            Config = new TrainSkillConfig
-            {
-                Epochs = 2,
-                StepsPerEpoch = 3,
-                LrStart = 4,
-                LrMin = 1,
-                LrScheduler = "cosine",
-                GateMetric = GateMetric.Hard,
-                Patience = 3,
-                UseSlowUpdate = false,
-                UseMetaSkill = false,
-                Seed = 42
-            }
-        };
+        var handler = SkillTrainingExample.BuildHandler();
+        var demoCommand = SkillTrainingExample.BuildDemoCommand();
 
-        var validator = new TrainSkillCommandValidator();
-        var validationResult = await validator.ValidateAsync(demoCommand);
+        var result = await SkillTrainingExample.ValidateAndDispatchAsync(
+            handler, demoCommand, CancellationToken.None);
 
-        validationResult.IsValid.Should().BeTrue();
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Should().NotBeNull();
     }
 }
