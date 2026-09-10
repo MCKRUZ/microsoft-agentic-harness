@@ -57,6 +57,23 @@ public sealed class SkillTrainingExample
             }
         };
 
+        // This demo bypasses IMediator.Send and calls the handler directly, so
+        // RequestValidationBehavior never runs for TrainSkillCommand here. That's deliberate:
+        // the demo's whole point is running the state machine against deterministic,
+        // LLM-free stubs (DeterministicRolloutRunner/DeterministicProposer); dispatching
+        // through the app's real DI-registered IMediator would resolve the real (or
+        // NotConfigured*, fail-fast) IRolloutRunner/IPatchProposer instead of these stubs.
+        // The validator itself has no dependencies, so it's constructed by hand — same
+        // style as everything else in BuildHandler() — to restore the coverage the pipeline
+        // would otherwise provide, rather than silently skipping it. See #533.
+        var validationResult = await new TrainSkillCommandValidator().ValidateAsync(cmd, cancellationToken);
+        if (!validationResult.IsValid)
+        {
+            var errors = validationResult.Errors.Select(e => $"{e.PropertyName}: {e.ErrorMessage}");
+            AnsiConsole.MarkupLineInterpolated($"[red]Validation failed:[/] {string.Join("; ", errors)}");
+            return;
+        }
+
         var result = await handler.Handle(cmd, cancellationToken);
         if (!result.IsSuccess)
         {
