@@ -89,27 +89,26 @@ public sealed class SkillTrainingExample
     /// Validates <paramref name="cmd"/> and dispatches to <paramref name="handler"/> on success.
     /// </summary>
     /// <remarks>
-    /// This demo bypasses IMediator.Send and calls the handler directly, so
-    /// RequestValidationBehavior never runs for TrainSkillCommand here. That's deliberate:
-    /// the demo's whole point is running the state machine against deterministic,
-    /// LLM-free stubs (DeterministicRolloutRunner/DeterministicProposer); dispatching
-    /// through the app's real DI-registered IMediator would resolve the real (or
-    /// NotConfigured*, fail-fast) IRolloutRunner/IPatchProposer instead of these stubs.
-    /// The validator itself has no dependencies, so it's constructed by hand — same
-    /// style as everything else in BuildHandler() — to restore the coverage the pipeline
-    /// would otherwise provide, rather than silently skipping it. On failure this produces
-    /// the exact same Result&lt;T&gt;.ValidationFailure shape TrainSkillCommandHandler's own inline
-    /// guards already return for this exact "no pipeline" scenario, so the demo has one
-    /// consistent failure-reporting path in <see cref="RunAsync"/> instead of two. See #533.
+    /// This demo calls the handler directly instead of dispatching through IMediator.Send, so
+    /// RequestValidationBehavior never runs — deliberately, since a real DI-resolved IMediator
+    /// would replace this demo's deterministic stubs with the real (or NotConfigured*,
+    /// fail-fast) IRolloutRunner/IPatchProposer. Validating by hand here restores that coverage
+    /// and returns the same <see cref="Result{T}"/>.ValidationFailure shape
+    /// TrainSkillCommandHandler's own inline guards use for this exact "no pipeline" scenario.
+    /// Internal (not private) so <c>Presentation.ConsoleUI.Tests</c> can assert the short-circuit
+    /// directly. See #533.
     /// </remarks>
-    private static async Task<Result<SkillTrainingRunResult>> ValidateAndDispatchAsync(
+    internal static async Task<Result<SkillTrainingRunResult>> ValidateAndDispatchAsync(
         TrainSkillCommandHandler handler, TrainSkillCommand cmd, CancellationToken cancellationToken)
     {
         var validation = await new TrainSkillCommandValidator().ValidateAsync(cmd, cancellationToken);
-        return validation.IsValid
-            ? await handler.Handle(cmd, cancellationToken)
-            : Result<SkillTrainingRunResult>.ValidationFailure(
+        if (!validation.IsValid)
+        {
+            return Result<SkillTrainingRunResult>.ValidationFailure(
                 validation.Errors.Select(e => $"{e.PropertyName}: {e.ErrorMessage}").ToList());
+        }
+
+        return await handler.Handle(cmd, cancellationToken);
     }
 
     private static TrainSkillCommandHandler BuildHandler()
