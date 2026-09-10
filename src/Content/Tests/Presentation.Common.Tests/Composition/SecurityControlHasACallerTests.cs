@@ -617,13 +617,14 @@ public sealed class SecurityControlHasACallerTests
     /// <strong>What this exemption does NOT prove.</strong> It says the type is <em>dispatchable</em>
     /// through MediatR, so a <c>Send</c> would run its validator. It does not prove every caller uses
     /// <c>Send</c>. A caller that constructs a handler and invokes <c>Handle</c> directly bypasses the
-    /// pipeline entirely, and that is not hypothetical — <c>SkillTrainingExample</c> does exactly this
-    /// with <c>TrainSkillCommand</c>, so <c>TrainSkillCommandValidator</c> is certified here while
-    /// that particular path runs none of its rules. Harmless there (the example's config is
-    /// hardcoded valid) but a pattern a template consumer could copy. Detecting it needs call-graph
-    /// analysis rather than a source scan, so it is stated rather than checked — the same honesty this
-    /// file demands of the consumer-resolved exemption, which likewise proves a consumer <em>would</em>
-    /// call each validator, not that one exists to be called.
+    /// pipeline entirely — this was not hypothetical: <c>SkillTrainingExample</c> did exactly this
+    /// with <c>TrainSkillCommand</c> until #533, which restored <c>TrainSkillCommandValidator</c>'s
+    /// coverage on that path by invoking it explicitly (the demo can't dispatch through the real
+    /// <c>IMediator</c> without losing its deterministic, LLM-free stubs — see the call site's own
+    /// comment). The general risk remains real for any future direct-<c>Handle</c> caller. Detecting
+    /// it needs call-graph analysis rather than a source scan, so it is stated rather than checked —
+    /// the same honesty this file demands of the consumer-resolved exemption, which likewise proves a
+    /// consumer <em>would</em> call each validator, not that one exists to be called.
     /// </para>
     /// <para>
     /// The base list is cut at <c>where</c> before matching. The capture runs to the end of the line,
