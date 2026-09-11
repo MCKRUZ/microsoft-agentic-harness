@@ -219,7 +219,9 @@ public sealed partial class CapabilityEnforcer
     /// configured pattern it makes that one entry permanently unmatchable, which
     /// <see cref="WarnIfPatternIsInert"/> already logs as an inert-configuration warning. Either way
     /// the failure is observable through the logging this file already has, rather than adding a new
-    /// logging path for an exception verified (empirically, not exhaustively) never to occur.
+    /// logging path for an exception verified (round-2 code review) to actually occur — a mixed
+    /// valid-character-plus-invalid-Unicode label throws <see cref="UriFormatException"/> from
+    /// <see cref="Uri.IdnHost"/>, not merely a hypothetical this sentinel guards against defensively.
     /// </summary>
     private const string UnnormalizableHostSentinel = "\0";
 
@@ -234,11 +236,12 @@ public sealed partial class CapabilityEnforcer
         {
             // Uri.IdnHost, not Uri.Host: Host preserves a Unicode label separator or a bracketed IPv6
             // literal verbatim, which is exactly the class of string a raw compare against a deny
-            // entry misses (#635). Guarded defensively — verified empirically that IdnHost does not
-            // throw across every adversarial shape tried (overlong labels, invalid punycode-looking
-            // input, invalid surrogates, invalid percent-encoding), but a security gate must not
-            // itself become a crash vector on attacker-controlled input regardless. See
-            // UnnormalizableHostSentinel for why the fallback on an actual throw is NOT uri.Host.
+            // entry misses (#635). Round-2 code review found IdnHost DOES throw
+            // UriFormatException for a mixed valid-character-plus-invalid-Unicode label (verified:
+            // "a￿.com" — a pure-invalid label fails earlier, at Uri.TryCreate itself, and never
+            // reaches this property; a mixed one reaches it and throws) — correcting this file's
+            // earlier, narrower empirical claim. See UnnormalizableHostSentinel for why the fallback
+            // on that throw is NOT uri.Host.
             host = uri.IdnHost;
         }
         catch (Exception)
@@ -263,10 +266,55 @@ public sealed partial class CapabilityEnforcer
         // before this. Mirrors the existing normalization in
         // Infrastructure.AI.Hooks.CompositeHookExecutor.IsReservedAddress for the identical address
         // class, rather than inventing a second way to do the same collapse.
-        if (IPAddress.TryParse(host, out var ip) && ip.IsIPv4MappedToIPv6)
-            host = ip.MapToIPv4().ToString();
+        if (IPAddress.TryParse(host, out var ip))
+        {
+            if (ip.IsIPv4MappedToIPv6)
+                host = ip.MapToIPv4().ToString();
+            else if (TryGetDeprecatedIPv4CompatibleForm(ip, out var ipv4))
+                host = ipv4.ToString();
+        }
 
         return host.TrimEnd('.');
+    }
+
+    /// <summary>
+    /// Round-2 code review: the older, RFC 4291-deprecated "IPv4-compatible" IPv6 form
+    /// (<c>::a.b.c.d</c>, no <c>ffff</c> prefix — distinct from the IPv4-<em>mapped</em> form
+    /// <see cref="IPAddress.IsIPv4MappedToIPv6"/> already handles above) still parses successfully
+    /// today and is not covered by that property. Verified: <c>::127.0.0.1</c> and its equivalent
+    /// compressed form <c>::7f00:1</c> both parse to the identical address, with
+    /// <c>IsIPv4MappedToIPv6</c> false for both — so without this, a plain
+    /// <c>DeniedHosts=["127.0.0.1"]</c> entry does not refuse either spelling.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately NOT a blind "first 12 bytes zero → take the last 4" check: <c>::1</c> (loopback)
+    /// and <c>::</c> (unspecified) both have an all-zero first-12-byte prefix too, but are reserved
+    /// addresses with their own distinct meaning, not IPv4-compatible encodings — verified naively
+    /// extracting the last 4 bytes of <c>::1</c> gives <c>0.0.0.1</c>, not <c>127.0.0.1</c>, which
+    /// would be an outright WRONG collapse (misidentifying loopback as an unrelated address), not
+    /// merely an incomplete one. Excluded via the same well-tested <see cref="IPAddress.IsLoopback"/>
+    /// / <see cref="IPAddress.IPv6Any"/> checks the BCL itself uses, rather than a hand-rolled
+    /// special-case list.
+    /// </remarks>
+    private static bool TryGetDeprecatedIPv4CompatibleForm(IPAddress ip, out IPAddress ipv4)
+    {
+        ipv4 = IPAddress.None;
+
+        if (ip.AddressFamily != System.Net.Sockets.AddressFamily.InterNetworkV6)
+            return false;
+
+        if (IPAddress.IsLoopback(ip) || ip.Equals(IPAddress.IPv6Any))
+            return false;
+
+        var bytes = ip.GetAddressBytes();
+        for (var i = 0; i < 12; i++)
+        {
+            if (bytes[i] != 0)
+                return false;
+        }
+
+        ipv4 = new IPAddress(bytes[12..]);
+        return true;
     }
 
     /// <summary>

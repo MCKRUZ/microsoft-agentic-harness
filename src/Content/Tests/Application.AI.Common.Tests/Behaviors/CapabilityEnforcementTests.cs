@@ -1013,4 +1013,68 @@ public sealed class CapabilityEnforcementTests
 
         result.IsSuccess.Should().BeFalse($"'{ambiguousValue}' must stay refused as malformed, not silently reduced to a bare host");
     }
+
+    [Theory]
+    [InlineData("::127.0.0.1")] // deprecated IPv4-compatible form, expanded
+    [InlineData("::7f00:1")] // same address, compressed hex form
+    public async Task DeniedHost_DeprecatedIpv4CompatibleIpv6Literal_StillMatchesPlainIPv4DenyEntry(string compatibleForm)
+    {
+        // #635 round-2 code-review: distinct from the IPv4-MAPPED form ("::ffff:a.b.c.d") already
+        // covered above — this is the older, RFC 4291-deprecated "IPv4-compatible" form (no "ffff"),
+        // which IPAddress.IsIPv4MappedToIPv6 does NOT recognize.
+        var config = new SandboxConfig
+        {
+            ToolOverrides = new() { ["http_tool"] = new ToolOverrideConfig { DeniedHosts = ["127.0.0.1"] } }
+        };
+        var (_, enforcer) = Build(config, ("http_tool", NetworkFileTool()));
+
+        var result = await enforcer.EnforceAsync(
+            "http_tool", ToolCapability.FileRead | ToolCapability.NetworkAccess,
+            requestedHosts: [compatibleForm]);
+
+        result.IsSuccess.Should().BeFalse(
+            $"'{compatibleForm}' is the same address as the denied 127.0.0.1 to the real HTTP client");
+    }
+
+    [Fact]
+    public async Task AllowedHost_Ipv6Loopback_IsNotMisidentifiedAsAnUnrelatedIPv4Address()
+    {
+        // Guard case: naively taking the last 4 bytes of "::1" (loopback) gives "0.0.0.1", NOT
+        // "127.0.0.1" — the IPv4-compatible-form collapse must exclude loopback/unspecified rather
+        // than blindly treating any all-zero-prefixed IPv6 address as IPv4-compatible. Configuring
+        // the WRONG value ("0.0.0.1") the naive bug would produce, rather than the correct one
+        // ("127.0.0.1"), so this test actually discriminates: refusing "::1" against a
+        // "127.0.0.1" allow entry is ALSO the correct outcome, just for a different reason,
+        // so that pairing can't tell a fixed collapse from a differently-broken one.
+        var config = new SandboxConfig
+        {
+            ToolOverrides = new() { ["http_tool"] = new ToolOverrideConfig { AllowedHosts = ["0.0.0.1"] } }
+        };
+        var (_, enforcer) = Build(config, ("http_tool", NetworkFileTool()));
+
+        var result = await enforcer.EnforceAsync(
+            "http_tool", ToolCapability.FileRead | ToolCapability.NetworkAccess,
+            requestedHosts: ["::1"]);
+
+        result.IsSuccess.Should().BeFalse("\"::1\" (loopback) must not be collapsed into an unrelated \"0.0.0.1\"");
+    }
+
+    [Fact]
+    public async Task DeniedHostOnly_RequestedHostTriggersIdnHostException_StillRefused()
+    {
+        // #635 round-2 code-review: verified live that Uri.IdnHost throws UriFormatException for a
+        // mixed valid-character-plus-invalid-Unicode label — the fail-closed sentinel path
+        // (CanonicalizeParsedHost's catch block) must refuse the call, not silently admit it.
+        var config = new SandboxConfig
+        {
+            ToolOverrides = new() { ["http_tool"] = new ToolOverrideConfig { DeniedHosts = ["*.evil.com"] } }
+        };
+        var (_, enforcer) = Build(config, ("http_tool", NetworkFileTool()));
+
+        var result = await enforcer.EnforceAsync(
+            "http_tool", ToolCapability.FileRead | ToolCapability.NetworkAccess,
+            requestedHosts: ["a￿.com"]);
+
+        result.IsSuccess.Should().BeFalse();
+    }
 }
