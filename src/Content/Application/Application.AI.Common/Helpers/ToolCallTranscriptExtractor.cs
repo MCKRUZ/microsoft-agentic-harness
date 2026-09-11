@@ -136,13 +136,6 @@ public static class ToolCallTranscriptExtractor
     }
 
     /// <summary>
-    /// The longest a tool name or call id may be once persisted for replay (#513). Well above every
-    /// provider's own limit, so a legitimate value is never truncated — a value that reaches this
-    /// ceiling is already suspicious on length alone, independent of what characters it contains.
-    /// </summary>
-    internal const int MaxIdentifierLength = ToolCallIdentifierSanitizer.MaxLength;
-
-    /// <summary>
     /// Narrows a tool name or call id to the shape both are supposed to have, before either is ever
     /// persisted for replay (#513) — previously reaching the conversation store, and the model's own
     /// context on every later turn, with no character-class restriction at all, unlike the free-text

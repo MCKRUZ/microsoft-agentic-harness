@@ -1,4 +1,5 @@
 using Application.AI.Common.Helpers;
+using Domain.Common.Helpers;
 using FluentAssertions;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -252,7 +253,7 @@ public sealed class ToolCallTranscriptExtractorTests
     [Fact]
     public void Extract_ToolNameLongerThanTheCeiling_IsTruncated()
     {
-        var oversizedName = new string('a', ToolCallTranscriptExtractor.MaxIdentifierLength + 50);
+        var oversizedName = new string('a', ToolCallIdentifierSanitizer.MaxLength + 50);
         var messages = new List<ChatMessage>
         {
             new(ChatRole.Assistant, [new FunctionCallContent("call-1", oversizedName)]),
@@ -260,7 +261,7 @@ public sealed class ToolCallTranscriptExtractorTests
 
         var exchanges = ToolCallTranscriptExtractor.Extract(messages, Logger);
 
-        exchanges[0].ToolName.Length.Should().Be(ToolCallTranscriptExtractor.MaxIdentifierLength);
+        exchanges[0].ToolName.Length.Should().Be(ToolCallIdentifierSanitizer.MaxLength);
     }
 
     [Fact]
