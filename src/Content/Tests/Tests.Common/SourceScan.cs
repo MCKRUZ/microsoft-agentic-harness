@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Collections.ObjectModel;
+using System.Runtime.CompilerServices;
 using System.Text.RegularExpressions;
 
 namespace Tests.Common;
@@ -114,5 +115,66 @@ public static class SourceScan
         var withoutBlockComments = Regex.Replace(source, @"/\*.*?\*/", " ", RegexOptions.Singleline);
         var withoutLineComments = Regex.Replace(withoutBlockComments, @"//[^\n]*", " ");
         return Regex.Replace(withoutLineComments, "\"(?:[^\"\\\\\n]|\\\\.)*\"", "\"\"");
+    }
+
+    /// <summary>
+    /// Every <c>class</c>/<c>record</c>/<c>struct</c> declared in <paramref name="code"/>, as
+    /// (type name, base list).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Extracted for #534, shared by three consumers in <c>SecurityControlHasACallerTests</c>
+    /// (<c>Implements</c>, <c>FindMediatRRequestTypes</c>, <c>FindValidatorDeclarations</c>) that had
+    /// each written their own answer to the same question — "what is this type's base list" — at
+    /// different fidelity. The base list is cut at <c>where</c> so a generic constraint
+    /// (<c>where T : IFoo</c>) is never read as a base type.
+    /// </para>
+    /// <para>
+    /// <strong>The primary-constructor group must be nesting-aware.</strong> A first cut used
+    /// <c>(?:\([^)]*\))?</c> — a flat, non-nesting match. A tuple-typed parameter
+    /// (<c>record Foo((int, int) Point)</c>), or an attribute whose own constructor takes arguments
+    /// (<c>record Foo([Range(1, 10)] int Age)</c>), both put a second <c>(...)</c> inside the outer
+    /// one; <c>[^)]*</c> stops at the FIRST inner <c>)</c>, leaves the real closing paren unconsumed,
+    /// and the whole declaration fails to match — silently dropping the type from every consumer's
+    /// view, not just misparsing its parameter list. The balancing-group construct below
+    /// (<c>(?&lt;pcDepth&gt;</c>/<c>(?&lt;-pcDepth&gt;</c>/<c>(?(pcDepth)(?!))</c>) matches parens at
+    /// arbitrary nesting depth instead of assuming exactly one level. (A default value that CALLS a
+    /// method, e.g. <c>= Math.Max(1, 2)</c>, is NOT a real counter-example — C# requires default
+    /// parameter values to be compile-time constants, so that shape can never reach a production
+    /// file; verified by compiling it and getting CS1736.)
+    /// </para>
+    /// </remarks>
+    public static IReadOnlyList<(string Name, string BaseList)> FindTypeDeclarations(string code) =>
+        TypeDeclarationCache.GetValue(code, ParseTypeDeclarations);
+
+    /// <summary>
+    /// Cached by reference identity, not content — every caller in a run reuses the same
+    /// <see cref="ReadProductionSources"/> tuples, so a <see cref="ConditionalWeakTable{TKey,TValue}"/>
+    /// avoids both re-parsing a file's declarations once per contract checked against it (#534) and
+    /// re-hashing multi-KB source strings on every lookup, which a content-keyed
+    /// <see cref="ConcurrentDictionary{TKey,TValue}"/> would not avoid — string hash codes are not
+    /// cached across calls in .NET Core. Never invalidated, matching <see cref="Cache"/>'s own
+    /// reasoning: the source this reads is the committed state for the lifetime of a test run.
+    /// </summary>
+    private static readonly ConditionalWeakTable<string, IReadOnlyList<(string Name, string BaseList)>>
+        TypeDeclarationCache = new();
+
+    private static IReadOnlyList<(string Name, string BaseList)> ParseTypeDeclarations(string code)
+    {
+        var declarations = new List<(string, string)>();
+
+        foreach (Match declaration in Regex.Matches(
+            code,
+            @"\b(?:class|record|struct)\s+(\w+)\s*(?:<[^>]*>)?"
+            + @"\s*(?:\((?:[^()]|(?<pcDepth>\()|(?<-pcDepth>\)))*(?(pcDepth)(?!))\))?"
+            + @"\s*:\s*([^{;]*)"))
+        {
+            // Constraints are not base types. Everything from `where` onward describes what a type
+            // parameter must satisfy, not what this type derives from.
+            var baseList = Regex.Split(declaration.Groups[2].Value, @"\bwhere\b")[0];
+            declarations.Add((declaration.Groups[1].Value, baseList));
+        }
+
+        return declarations;
     }
 }

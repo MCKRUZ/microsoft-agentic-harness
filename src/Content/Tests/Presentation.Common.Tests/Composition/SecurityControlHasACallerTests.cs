@@ -136,6 +136,42 @@ public sealed class SecurityControlHasACallerTests
         Implements("public sealed class X : Base, IAgentToolAuthorizationGate { }", "IAgentToolAuthorizationGate")
             .Should().BeTrue("an implementation is not a consumer when the interface is not first either");
 
+        // #534: a primary-constructor record implementing the contract must still be an
+        // implementation, not a consumer — the dangerous direction, since misreading it as a consumer
+        // makes an uncalled governance contract look called.
+        Implements(
+            "public sealed record X(string Id) : IAgentToolAuthorizationGate;", "IAgentToolAuthorizationGate")
+            .Should().BeTrue("a primary-constructor record implementing the contract is still an "
+                + "implementation, not a consumer");
+
+        // #534's other direction: a `where` constraint naming the contract is not an implementation
+        // of it. A false alarm rather than a silent pass, but still wrong before the base list was
+        // cut at `where`.
+        Implements(
+            "public sealed class Wrapper<T> : Base where T : IAgentToolAuthorizationGate { }",
+            "IAgentToolAuthorizationGate")
+            .Should().BeFalse("a generic constraint naming the contract inside a where clause is not "
+                + "an implementation of it");
+
+        // #534 round 2: the primary-constructor group must handle NESTED parens, not just one flat
+        // level — a tuple-typed parameter, or an attribute on a parameter whose own constructor takes
+        // arguments, both put a second `(...)` inside the outer one. A non-nesting `[^)]*` stops at
+        // the first inner `)`, leaves the real closing paren unconsumed, and the whole declaration
+        // fails to match at all — reproducing #534's dangerous direction (an implementation misread
+        // as a consumer) for a realistic shape neither of the tests above exercises. (A default value
+        // that CALLS a method, e.g. `= Math.Max(1, 2)`, was tried first and rejected: default
+        // parameter values must be compile-time constants in C#, so that shape can never appear in
+        // production source — verified by compiling it and getting CS1736.)
+        Implements(
+            "public sealed record X((double Lat, double Lon) Origin) : IAgentToolAuthorizationGate;",
+            "IAgentToolAuthorizationGate")
+            .Should().BeTrue("a tuple-typed primary constructor parameter is still an implementation");
+        Implements(
+            "public sealed record X([Range(1, 10)] int Age) : IAgentToolAuthorizationGate;",
+            "IAgentToolAuthorizationGate")
+            .Should().BeTrue("an attribute with constructor arguments on a primary constructor "
+                + "parameter is still an implementation");
+
         IsRegistrationOnly(
             "services.AddScoped<IAgentToolAuthorizationGate, DefaultAgentToolAuthorizationGate>();",
             "IAgentToolAuthorizationGate")
@@ -533,6 +569,11 @@ public sealed class SecurityControlHasACallerTests
         }
     }
 
+    // FindTypeDeclarations moved to Tests.Common/SourceScan.cs (#534 round 2) — it depends on no
+    // fixture of this class, and this file was already well past the repo's file-size guideline.
+    // Implements, FindMediatRRequestTypes, and FindValidatorDeclarations below call
+    // SourceScan.FindTypeDeclarations directly.
+
     /// <summary>
     /// Every <c>class X : AbstractValidator&lt;T&gt;</c> declared in one file, as
     /// (validator name, validated type), with the validated type <see langword="null"/> when it cannot
@@ -554,22 +595,30 @@ public sealed class SecurityControlHasACallerTests
     /// shape-based they are in scope, and <c>EgressManifestValidator.cs</c> declares two; attributing
     /// both to a single name would drop a real validator from the scan.
     /// </para>
+    /// <para>
+    /// <see cref="SourceScan.FindTypeDeclarations"/> also finds <c>record</c>/<c>struct</c>
+    /// declarations, but <c>AbstractValidator</c> is a plain <c>class</c>, which neither can ever
+    /// legally derive from — that candidacy branch is permanently unreachable for this consumer
+    /// specifically, confirmed against the real ~2,400-file production tree, and left as-is rather
+    /// than narrowed: the shared parser stays one shape for all three consumers, and an unreachable
+    /// branch here costs nothing at runtime.
+    /// </para>
     /// </remarks>
     private static IReadOnlyList<(string Validator, string? Validated)> FindValidatorDeclarations(
         string strippedSource)
     {
         var found = new List<(string, string?)>();
 
-        // ONE pattern, with the type argument in an optional trailing group. Candidacy is everything
-        // up to the opening angle bracket; attribution is the optional group. A first cut used two
-        // separate regexes — a broad one for candidacy, a precise one re-matched against a substring
-        // — which meant editing one and not the other would let candidacy and attribution disagree
-        // silently, the exact failure this method's remarks warn about.
+        // Candidacy over FindTypeDeclarations's base list, anchored to its START: a class can have at
+        // most one base CLASS and C# requires it first in the list, so if AbstractValidator<T> is
+        // present at all it is always the first thing after the colon — this anchor cannot miss a
+        // real validator declared after some other base, because no such declaration is legal C#.
         //
-        // The fail-closed property is unchanged and is worth restating: the optional group can only
-        // match a BARE identifier followed by '>', so a qualified argument (Governance.EscalationConfig)
-        // or a generic one (Options<FooConfig>) leaves it unsuccessful, yields null, and the
-        // declaration stays a candidate and stays IN scope. Unknown means "must be bound".
+        // The fail-closed property is unchanged and is worth restating: the optional trailing group
+        // can only match a BARE identifier followed by '>', so a qualified argument
+        // (Governance.EscalationConfig) or a generic one (Options<FooConfig>) leaves it unsuccessful,
+        // yields null, and the declaration stays a candidate and stays IN scope. Unknown means "must
+        // be bound".
         //
         // The optional (?:[\w.]+\.)? qualifier before AbstractValidator is load-bearing, exactly as it
         // is in IsRegistrationOnly below. Without it,
@@ -577,15 +626,13 @@ public sealed class SecurityControlHasACallerTests
         // disambiguates a name clash, or writes it with no using directive — matches nothing and is
         // never a candidate at all. Not reported, not exempted, invisible: the same silent-invisibility
         // failure as the *ConfigValidator.cs filename rule this replaced (#529).
-        var declarations = Regex.Matches(
-            strippedSource,
-            @"\bclass\s+(\w+)\s*(?:<[^>]*>)?\s*:\s*(?:[\w.]+\.)?AbstractValidator\s*<(?:\s*([A-Za-z0-9_]+)\s*>)?");
-
-        foreach (Match declaration in declarations)
+        foreach (var (name, baseList) in SourceScan.FindTypeDeclarations(strippedSource))
         {
-            found.Add((
-                declaration.Groups[1].Value,
-                declaration.Groups[2].Success ? declaration.Groups[2].Value : null));
+            var match = Regex.Match(
+                baseList, @"^\s*(?:[\w.]+\.)?AbstractValidator\s*<(?:\s*([A-Za-z0-9_]+)\s*>)?");
+
+            if (match.Success)
+                found.Add((name, match.Groups[1].Success ? match.Groups[1].Value : null));
         }
 
         return found;
@@ -627,9 +674,8 @@ public sealed class SecurityControlHasACallerTests
     /// consumer <em>would</em> call each validator, not that one exists to be called.
     /// </para>
     /// <para>
-    /// The base list is cut at <c>where</c> before matching. The capture runs to the end of the line,
-    /// and a generic constraint sits on that same line — provable in this repo, where
-    /// <c>RequestValidationBehavior</c>'s own declaration ends
+    /// The base list is cut at <c>where</c> before matching (see <see cref="SourceScan.FindTypeDeclarations"/>) —
+    /// provable in this repo, where <c>RequestValidationBehavior</c>'s own declaration ends
     /// <c>: IPipelineBehavior&lt;TRequest, TResponse&gt; where TRequest : notnull</c>. Without the
     /// cut, <c>class Envelope&lt;T&gt; : Base&lt;T&gt; where T : IRequest</c> would register
     /// <c>Envelope</c> as a MediatR request and silently exempt any validator over it.
@@ -642,16 +688,10 @@ public sealed class SecurityControlHasACallerTests
 
         foreach (var (_, code) in sources)
         {
-            foreach (Match declaration in Regex.Matches(
-                code,
-                @"\b(?:record|class|struct)\s+(\w+)\s*(?:<[^>]*>)?\s*(?:\([^)]*\))?\s*:\s*([^{\r\n]+)"))
+            foreach (var (name, baseList) in SourceScan.FindTypeDeclarations(code))
             {
-                // Constraints are not base types. Everything from `where` onward describes what a
-                // type parameter must satisfy, not what this type derives from.
-                var baseList = Regex.Split(declaration.Groups[2].Value, @"\bwhere\b")[0];
-
                 if (Regex.IsMatch(baseList, @"\bIRequest\b|\bIBaseRequest\b"))
-                    requests.Add(declaration.Groups[1].Value);
+                    requests.Add(name);
             }
         }
 
@@ -1208,7 +1248,18 @@ public sealed class SecurityControlHasACallerTests
     /// Whether this file declares a type implementing the contract. An implementation names the
     /// interface without being a caller of it.
     /// </summary>
+    /// <remarks>
+    /// Over <see cref="SourceScan.FindTypeDeclarations"/>'s base list rather than its own pattern
+    /// (#534) — the original pattern had no primary-constructor group, so
+    /// <c>record Foo(string Id) : IContract</c> matched nothing and the declaring file was counted as
+    /// a CONSUMER of the contract instead of an implementation: the dangerous direction, since it
+    /// makes an uncalled governance contract look called. It also had no <c>where</c> cut, so
+    /// <c>class Wrapper&lt;T&gt; : Base where T : IContract</c> was wrongly read as an implementation
+    /// of <c>IContract</c> — a false alarm rather than a silent pass, but still wrong; both are fixed
+    /// by sharing <see cref="SourceScan.FindTypeDeclarations"/>'s parser instead of a third,
+    /// independent pattern.
+    /// </remarks>
     private static bool Implements(string code, string contract) =>
-        Regex.IsMatch(code, $@"\b(?:class|record|struct)\s+\w+(?:<[^>]*>)?\s*:\s*[^{{;]*\b{contract}\b");
+        SourceScan.FindTypeDeclarations(code).Any(d => Regex.IsMatch(d.BaseList, $@"\b{contract}\b"));
 
 }
