@@ -527,7 +527,7 @@ public sealed class FileSystemToolResultStoreTests : IDisposable
     public async Task StoreIfLargeAsync_SessionIdWithinTheAllowedCharset_DoesNotThrow(string sessionId)
     {
         // Correctness-review finding: content must exceed this fixture's 100-char PerResultCharLimit
-        // so StoreIfLargeAsync actually reaches CreateDirectoryOwnerOnly/Path.Combine. A short "data"
+        // so StoreIfLargeAsync actually reaches OwnerOnlyDirectoryHelper.Create/Path.Combine. A short "data"
         // payload stays inline and never touches the filesystem, so a colon-in-the-charset id would
         // pass this test even on a build where Directory.CreateDirectory("conv-1:step-5") throws
         // IOException on Windows — which the pre-fix code did.
