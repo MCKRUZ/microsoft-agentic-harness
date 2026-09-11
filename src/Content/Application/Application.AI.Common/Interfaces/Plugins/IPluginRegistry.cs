@@ -36,9 +36,15 @@ public interface IPluginRegistry
     /// window defaulted to Verified, meaning a genuinely never-checked <c>DeniedTools</c> entry (which
     /// is a silent no-op until proven to match a real tool — see <see cref="MarkBoundaryFaulted"/>)
     /// would be trusted and applied as if already proven safe. Defaulting to Pending closes that by
-    /// construction: the caller denies all tools for a plugin in this state exactly as it does for one
-    /// already proven <see cref="PluginBoundaryStatus.Faulted"/>, regardless of whether the race is
-    /// even reachable in a given host's actual startup ordering.
+    /// construction: the caller denies all tools for a plugin in this state, regardless of whether the
+    /// race is even reachable in a given host's actual startup ordering — the same fail-closed
+    /// treatment a <see cref="PluginBoundaryStatus.Faulted"/> boundary gets when its violations aren't
+    /// (or can't be) proven confined to <c>AllowedTools</c>. Since #608, that "exactly as Faulted"
+    /// equivalence is no longer literal in every case: a Faulted boundary whose violations ARE proven
+    /// confined to <c>AllowedTools</c> runs the caller's normal filter instead of denying everything,
+    /// while Pending still denies everything unconditionally — Pending was deliberately left out of
+    /// that narrowing (see <c>PluginPermissionRuleProvider.BoundaryDemandsAgentWideFailClosed</c>'s
+    /// remarks for why: it's transient by nature, not a #608 scope decision).
     /// </remarks>
     PluginBoundaryStatus GetBoundaryStatus(string pluginName);
 

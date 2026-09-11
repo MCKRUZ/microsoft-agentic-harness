@@ -304,9 +304,13 @@ public sealed class McpToolProvider : IMcpToolProvider
     /// AllowedTools/DeniedTools entries against them. A no-op when no tracker is wired (most tests)
     /// or nothing is pending for this server (the overwhelmingly common case). Logged at Critical,
     /// not thrown — the tracker never throws, and a boundary violation must not disturb this
-    /// otherwise-successful discovery call's own return value; enforcement happens separately, via
-    /// <c>IPluginRegistry.GetBoundaryStatus</c> denying the plugin's tools on its next resolution
-    /// whenever the status isn't <see cref="Application.AI.Common.Interfaces.Plugins.PluginBoundaryStatus.Verified"/>.
+    /// otherwise-successful discovery call's own return value; enforcement happens separately, on the
+    /// plugin's next resolution, via <c>IPluginRegistry.GetBoundaryStatus</c>/<c>GetBoundaryViolations</c>
+    /// — denying the plugin's tools whenever the status is
+    /// <see cref="Application.AI.Common.Interfaces.Plugins.PluginBoundaryStatus.Pending"/>, or
+    /// <see cref="Application.AI.Common.Interfaces.Plugins.PluginBoundaryStatus.Faulted"/> with
+    /// violations that aren't provably confined to <c>AllowedTools</c> (#608) — not unconditionally
+    /// on any non-Verified status.
     /// </summary>
     /// <remarks>
     /// Takes bare tool names rather than <see cref="McpClientTool"/> instances specifically so this

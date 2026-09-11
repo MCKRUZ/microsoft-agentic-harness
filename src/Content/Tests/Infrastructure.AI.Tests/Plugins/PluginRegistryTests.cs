@@ -113,6 +113,22 @@ public class PluginRegistryTests
     }
 
     [Fact]
+    public void GetBoundaryViolations_CallerMutatesReturnedList_DoesNotCorruptTheRegistry()
+    {
+        // #608 code-review round 3: GetBoundaryViolations must hand back a copy, not the registry's
+        // own stored instance -- a caller downcasting and mutating it (e.g. dropping the DeniedTools
+        // entry) would otherwise silently defeat the DeniedTools bypass-immune guarantee for every
+        // later reader.
+        _sut.MarkBoundaryFaulted("azure", "reason",
+            [new PluginToolBoundaryViolation("azure", PluginToolBoundaryListKind.DeniedTools, "file_wrte")]);
+
+        var returned = (List<PluginToolBoundaryViolation>)_sut.GetBoundaryViolations("azure");
+        returned.Clear();
+
+        _sut.GetBoundaryViolations("azure").Should().ContainSingle(v => v.ToolName == "file_wrte");
+    }
+
+    [Fact]
     public void GetBoundaryViolations_CaseInsensitive_ReturnsThem()
     {
         IReadOnlyList<PluginToolBoundaryViolation> violations =

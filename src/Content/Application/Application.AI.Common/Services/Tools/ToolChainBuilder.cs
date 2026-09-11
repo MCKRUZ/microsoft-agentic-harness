@@ -245,10 +245,6 @@ public partial class ToolChainBuilder : IToolChainBuilder
         // one already confirmed fake, and trusting it in the meantime is the specific gap a review
         // round found: a server nothing else happens to query left a plugin's boundary silently
         // trusted forever.
-        var status = pluginRegistry!.GetBoundaryStatus(skill.PluginSource);
-        if (status == PluginBoundaryStatus.Verified)
-            return ApplyPluginToolBoundary(provisioned, loadedPlugin.Declaration);
-
         // #608: a Faulted boundary whose violations are ALL AllowedTools entries can never widen
         // this plugin's access — AllowedTools is a positive allow-set match
         // (ApplyPluginToolBoundary's own `tools.Where(t => allowSet.Contains(...))`), so a name that
@@ -258,11 +254,13 @@ public partial class ToolChainBuilder : IToolChainBuilder
         // entry there means the tool the plugin author meant to block never gets excluded, which is
         // the actual hazard #524 exists to prevent — so that case (and Pending, and an empty/unknown
         // violation set) still denies everything, fail-closed on uncertainty exactly as before.
-        if (status == PluginBoundaryStatus.Faulted
-            && pluginRegistry.GetBoundaryViolations(skill.PluginSource).IsConfinedToAllowedTools())
-        {
+        var status = pluginRegistry!.GetBoundaryStatus(skill.PluginSource);
+        var trustedEnoughToApplyNormally = status == PluginBoundaryStatus.Verified
+            || (status == PluginBoundaryStatus.Faulted
+                && pluginRegistry.GetBoundaryViolations(skill.PluginSource).IsConfinedToAllowedTools());
+
+        if (trustedEnoughToApplyNormally)
             return ApplyPluginToolBoundary(provisioned, loadedPlugin.Declaration);
-        }
 
         _logger.LogWarning(
             "Plugin '{Plugin}' tool boundary is {Status} (an AllowedTools/DeniedTools entry " +

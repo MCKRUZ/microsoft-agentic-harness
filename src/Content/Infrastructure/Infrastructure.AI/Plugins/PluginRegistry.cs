@@ -81,31 +81,22 @@ public sealed class PluginRegistry : IPluginRegistry
     }
 
     /// <inheritdoc />
-    public PluginBoundaryStatus GetBoundaryStatus(string pluginName)
-    {
+    public PluginBoundaryStatus GetBoundaryStatus(string pluginName) =>
         // #613: Pending, not Verified — see the interface doc for why. PluginToolBoundaryTracker.Seed
         // now explicitly marks every loaded plugin it processes (Verified when it has nothing to
         // verify, Pending/Faulted otherwise), so an absent entry here means genuinely unseeded, not
         // "seeded with an empty boundary" — the two used to be indistinguishable.
         //
-        // #608 code-review round 2: reads this dictionary under the same _stateLock every writer
-        // uses (each individual read is torn-write-free), not lock-free.
-        //
-        // What this does NOT guarantee: a caller that calls this method and GetBoundaryViolations as
-        // two SEPARATE calls does not get an atomic combined snapshot — a concurrent MarkBoundaryFaulted
-        // can land between the two. Today this is provably safe rather than merely "usually fine":
-        // MarkBoundaryFaulted MERGES violations (never overwrites/narrows, see its own remarks), so the
-        // worst a racing reader can observe is a violations list from a LATER point in time than the
-        // status it read — which can only ADD violations, never drop the one that made a fault
-        // dangerous. If MarkBoundaryFaulted's merge-only guarantee is ever relaxed, this reasoning
-        // breaks and the two calls would need a single atomic combined accessor instead — do not treat
-        // "each read is individually locked" as equivalent to "the pair is atomic" without re-deriving
-        // this argument.
-        lock (_stateLock)
-        {
-            return _boundaryStatus.GetValueOrDefault(pluginName, PluginBoundaryStatus.Pending);
-        }
-    }
+        // #608 code-review round 3: deliberately lock-free. ConcurrentDictionary already guarantees a
+        // single-key read is never torn, with or without an external lock — a round-2 pass wrapped
+        // this in _stateLock reacting to a finding about atomicity, but that added contention against
+        // every writer for zero real benefit, since it does not (and cannot, as a single-method call)
+        // provide the one guarantee that would actually matter: a JOINT atomic snapshot of status AND
+        // GetBoundaryViolations together. A caller that calls both as two separate calls never gets
+        // that regardless of whether either individual read takes the lock — see GetBoundaryViolations'
+        // remarks for why that gap is safe today anyway (MarkBoundaryFaulted's violations are
+        // merge-only, never narrowed).
+        _boundaryStatus.GetValueOrDefault(pluginName, PluginBoundaryStatus.Pending);
 
     /// <inheritdoc />
     public void MarkBoundaryPending(string pluginName)
@@ -156,8 +147,10 @@ public sealed class PluginRegistry : IPluginRegistry
             // a DeniedTools fault from an AllowedTools-only one).
             //
             // #608 code-review: two hardening fixes on the same field.
-            // 1. Defensive copy (.ToList()) rather than storing the caller's list by reference —
-            //    mirrors PluginPermissionRuleProvider's own .AsReadOnly() cache from this same PR:
+            // 1. Defensive copy (.ToList()) rather than storing the caller's list by reference — a
+            //    different threat model than PluginPermissionRuleProvider's .AsReadOnly() cache in
+            //    this same PR (that one wraps a freshly-built List<T> this class already owns; this
+            //    one copies a foreign, caller-supplied list before taking custody of it), same goal:
             //    a future caller downcasting and mutating the stored instance would otherwise
             //    permanently corrupt the registry's record for every later reader.
             // 2. Merge with any already-recorded violations for this plugin instead of overwriting.
@@ -170,24 +163,18 @@ public sealed class PluginRegistry : IPluginRegistry
             //    discipline — a second call must only ever be able to ADD to the recorded danger,
             //    never silently narrow away an already-recorded DeniedTools violation.
             var existing = _boundaryViolations.GetValueOrDefault(pluginName);
-            _boundaryViolations[pluginName] = existing is null or { Count: 0 }
-                ? violations.ToList()
-                : existing.Concat(violations).ToList();
+            _boundaryViolations[pluginName] = (existing ?? []).Concat(violations).ToList();
             _boundaryStatus[pluginName] = PluginBoundaryStatus.Faulted;
             _stateVersion++;
         }
     }
 
     /// <inheritdoc />
-    public IReadOnlyList<PluginToolBoundaryViolation> GetBoundaryViolations(string pluginName)
-    {
-        // #608 code-review round 2: see GetBoundaryStatus's remarks — each individual read here is
-        // torn-write-free, but pairing this with a separate GetBoundaryStatus call is NOT an atomic
-        // combined snapshot. Safe today only because MarkBoundaryFaulted's violations are merge-only
-        // (never narrowed) — re-read that reasoning before relying on this pairing for anything new.
-        lock (_stateLock)
-        {
-            return _boundaryViolations.GetValueOrDefault(pluginName, []);
-        }
-    }
+    public IReadOnlyList<PluginToolBoundaryViolation> GetBoundaryViolations(string pluginName) =>
+        // #608 code-review round 3: lock-free for the same reason as GetBoundaryStatus above. Returns
+        // a fresh copy (.ToList()), not the stored instance — MarkBoundaryFaulted defensively copies
+        // on write (round 2), but a caller mutating the exact instance handed back by a bare
+        // GetValueOrDefault would still corrupt the registry's own record; this closes the same
+        // hazard on the read side.
+        _boundaryViolations.GetValueOrDefault(pluginName, []).ToList();
 }
