@@ -1,5 +1,6 @@
 using Domain.AI.Sandbox;
 using Domain.Common;
+using Domain.Common.Helpers;
 using Microsoft.Extensions.Logging;
 
 namespace Application.AI.Common.Services.Sandbox;
@@ -61,16 +62,15 @@ public sealed partial class CapabilityEnforcer
         {
             var normalizedHost = NormalizeHostForMatch(host);
 
-            // Closes only the empty-string case of the gap ValidatePaths' unconditional rejection
-            // closes more broadly for paths (#595 code-review) — an empty host is refused regardless
-            // of whether AllowedHosts is configured, not only when it fails to match an allow entry.
-            // Without this, a deny-list-only configuration (no AllowedHosts, so the allow-check below
-            // never runs) would silently admit an empty host that matches no configured deny pattern.
-            // NOT a full mirror of ValidatePaths: a non-empty but malformed host (embedded control
-            // characters, oversized input) still falls through to ordinary deny/allow matching here,
-            // unlike a path, which SecureInputValidatorHelper.ValidateFilePath rejects outright.
-            // Broadening this to match is tracked separately, not part of what #595 set out to fix.
-            if (string.IsNullOrEmpty(normalizedHost))
+            // Rejects the whole class of malformed input outright — empty, oversized, embedded
+            // NUL/control characters, or anything that isn't syntactically a valid host — mirroring
+            // ValidatePaths' unconditional NormalizeRequestedPath rejection for paths (#605; #595
+            // closed only the narrower empty-string case of this gap). Validated against the
+            // NORMALIZED value, not the raw requested value: a legitimate requested host can arrive
+            // as a full absolute URI, which NormalizeHostForMatch's own job is to reduce to a bare
+            // host — SecureInputValidatorHelper.ValidateHost expects that bare-host shape, so running
+            // it against the raw value would reject every URI-shaped legitimate host.
+            if (!SecureInputValidatorHelper.ValidateHost(normalizedHost))
                 return host;
 
             if (deniedPatterns.Any(pattern => HostPatternMatches(normalizedHost, pattern)))

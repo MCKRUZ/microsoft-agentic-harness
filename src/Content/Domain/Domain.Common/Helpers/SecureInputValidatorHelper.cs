@@ -11,6 +11,9 @@ public static class SecureInputValidatorHelper
     private const int DefaultMaxLength = 1024;
     private const int MaxPathLength = 4096;
 
+    /// <summary>RFC 1035's maximum fully-qualified domain name length (253 octets, excluding the root dot).</summary>
+    private const int MaxHostLength = 253;
+
     // #576: anchored with \A/\z, not ^/$ — $ in .NET regex matches immediately before a trailing '\n'
     // as well as at the true end of the string, so a caller-supplied value ending in a newline would
     // otherwise pass (the same bug class already fixed in StorageSegmentSafety.AllowedCharset; see that
@@ -74,6 +77,32 @@ public static class SecureInputValidatorHelper
             return false;
 
         return true;
+    }
+
+    /// <summary>
+    /// Validates a bare network host value (a hostname or IP literal — <em>not</em> a full URL; a
+    /// caller that may receive an absolute URI must reduce it to a bare host first). Rejects the
+    /// whole class of malformed input a host-scoping comparison must never be allowed to silently
+    /// admit — empty, oversized, embedded NUL/control characters, or anything that is not
+    /// syntactically a valid DNS name or IP literal — mirroring <see cref="ValidateFilePath"/>'s role
+    /// for paths (#605).
+    /// </summary>
+    public static bool ValidateHost(string host)
+    {
+        if (string.IsNullOrWhiteSpace(host))
+            return false;
+
+        if (host.Length > MaxHostLength)
+            return false;
+
+        if (host.Contains('\0'))
+            return false;
+
+        // Uri.CheckHostName already rejects control characters, whitespace, and any character
+        // outside DNS-name/IPv4/IPv6 grammar as UriHostNameType.Unknown — the explicit checks above
+        // exist for parity with ValidateFilePath's own explicit NUL check, not because this alone
+        // would miss them.
+        return Uri.CheckHostName(host) != UriHostNameType.Unknown;
     }
 
     /// <summary>

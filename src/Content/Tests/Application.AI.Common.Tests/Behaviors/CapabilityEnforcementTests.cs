@@ -598,6 +598,27 @@ public sealed class CapabilityEnforcementTests
     }
 
     [Fact]
+    public async Task DeniedHostOnly_RequestedHostIsMalformedButNonEmpty_Refuses()
+    {
+        // #605: #595's fix above closed only the empty-string case of this gap. A non-empty but
+        // malformed host (embedded control character) matched no configured deny pattern and fell
+        // through the allow-check (which never runs in a deny-list-only config) unchecked — silently
+        // admitted. SecureInputValidatorHelper.ValidateHost now rejects the whole class outright,
+        // mirroring ValidatePaths' unconditional rejection of an unparsable path.
+        var config = new SandboxConfig
+        {
+            ToolOverrides = new() { ["http_tool"] = new ToolOverrideConfig { DeniedHosts = ["*.evil.com"] } }
+        };
+        var (_, enforcer) = Build(config, ("http_tool", NetworkFileTool()));
+
+        var result = await enforcer.EnforceAsync(
+            "http_tool", ToolCapability.FileRead | ToolCapability.NetworkAccess,
+            requestedHosts: ["evil\0.com"]);
+
+        result.IsSuccess.Should().BeFalse();
+    }
+
+    [Fact]
     public async Task AllowedHostConfigured_ExactMatchWithPortStripped_PassesThrough()
     {
         var config = new SandboxConfig
