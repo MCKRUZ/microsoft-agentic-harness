@@ -103,7 +103,6 @@ public static class ToolCallTranscriptExtractor
         for (var i = 0; i < calls.Count; i++)
         {
             var call = calls[i];
-            var argsJson = TrySerializeArguments(call, logger);
 
             // Pairing above (calls, resultsByCallId) is keyed on the RAW call.CallId — sanitizing
             // before the lookup would risk two distinct raw ids collapsing to the same sanitized
@@ -114,6 +113,12 @@ public static class ToolCallTranscriptExtractor
             // unsanitized via the warning below, only its cleaned replacement.
             var safeCallId = SanitizeIdentifier(call.CallId, logger, "CallId", correlationId: null);
             var safeName = SanitizeIdentifier(call.Name, logger, "ToolName", correlationId: safeCallId);
+
+            // Sanitized identifiers computed first (#556 code-review): TrySerializeArguments has its
+            // own failure-path log (a call whose Arguments fail to JSON-serialize) that must log
+            // safeName/safeCallId, not call.Name/call.CallId — otherwise a hostile CallId/Name reaches
+            // the log sink raw via THIS branch even though the persisted ToolExchange itself is clean.
+            var argsJson = TrySerializeArguments(call, safeName, safeCallId, logger);
 
             if (resultsByCallId.TryGetValue(call.CallId, out var result))
             {
@@ -163,25 +168,10 @@ public static class ToolCallTranscriptExtractor
     /// is what keeps distinct raw values distinct after sanitizing.
     /// </para>
     /// </remarks>
-    private static string SanitizeIdentifier(string value, ILogger logger, string fieldName, string? correlationId)
-    {
-        var (result, changed) = ToolCallIdentifierSanitizer.Sanitize(value);
-        if (!changed)
-            return value;
-
-        // Never log the raw, attacker-controlled value here (CWE-117): a hostile CallId could
-        // otherwise carry log-forging control characters or, since the ceiling above only bounds
-        // what gets persisted, an unbounded payload straight into the log sink. correlationId is
-        // always already-sanitized (or null when this call is sanitizing the CallId itself, in
-        // which case the value's own cleaned replacement is the correlation id).
-        logger.LogWarning(
-            "[ToolCallTranscriptExtractor] {Field} for CallId={CallId} was truncated or contained " +
-            "characters outside the expected identifier shape ([A-Za-z0-9_-]); replaced with " +
-            "{Sanitized} before persisting for replay.",
-            fieldName, correlationId ?? result, result);
-
-        return result;
-    }
+    private static string SanitizeIdentifier(string value, ILogger logger, string fieldName, string? correlationId) =>
+        ToolCallIdentifierLogging.SanitizeAndLogIfChanged(
+            value, logger, nameof(ToolCallTranscriptExtractor), fieldName, correlationId,
+            "before persisting for replay");
 
     /// <summary>Adapter over <see cref="Extract(IEnumerable{ChatMessage}, ILogger)"/> for an agent's response.</summary>
     public static IReadOnlyList<ToolExchange> Extract(AgentResponse response, ILogger logger)
@@ -190,7 +180,7 @@ public static class ToolCallTranscriptExtractor
         return Extract(response.Messages, logger);
     }
 
-    private static string? TrySerializeArguments(FunctionCallContent call, ILogger logger)
+    private static string? TrySerializeArguments(FunctionCallContent call, string safeName, string safeCallId, ILogger logger)
     {
         if (call.Arguments is not { Count: > 0 } args)
             return null;
@@ -203,7 +193,7 @@ public static class ToolCallTranscriptExtractor
         {
             logger.LogWarning(ex,
                 "[ToolCallTranscriptExtractor] Failed to serialize arguments for {Tool} CallId={CallId}",
-                call.Name, call.CallId);
+                safeName, safeCallId);
             return null;
         }
     }
