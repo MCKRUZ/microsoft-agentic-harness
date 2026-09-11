@@ -60,7 +60,9 @@ public sealed class PluginPermissionRuleProviderRealRegistryTests
         var beforeFault = await provider.GetRulesAsync("any-agent");
         beforeFault.Should().BeEmpty("the plugin's boundary is Verified, so no fail-closed rules apply yet");
 
-        registry.MarkBoundaryFaulted("azure", "DeniedTools entry matches no known tool");
+        registry.MarkBoundaryFaulted(
+            "azure", "DeniedTools entry matches no known tool",
+            [new PluginToolBoundaryViolation("azure", PluginToolBoundaryListKind.DeniedTools, "file_wrte")]);
 
         var afterFault = await provider.GetRulesAsync("any-agent");
         afterFault.Should().Contain(r => r.ToolPattern == "file_system"
@@ -78,7 +80,7 @@ public sealed class PluginPermissionRuleProviderRealRegistryTests
         // return the exact same cached list, not a freshly recomputed equal one.
         var registry = new PluginRegistry();
         registry.Register(MakePlugin("azure"));
-        registry.MarkBoundaryFaulted("azure", "reason");
+        registry.MarkBoundaryFaulted("azure", "reason", []);
 
         var provider = CreateSut(registry, "file_system");
 
@@ -86,5 +88,65 @@ public sealed class PluginPermissionRuleProviderRealRegistryTests
         var second = await provider.GetRulesAsync("any-agent");
 
         ReferenceEquals(first, second).Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task GetRulesAsync_RealRegistryFaultedOnAllowedToolsOnly_DoesNotDenyEveryFirstPartyTool()
+    {
+        // #608: a fault confined to AllowedTools can only ever narrow this plugin's own grant -- it
+        // can never widen access, and it can never defeat the DeniedTools bypass-immune guarantee
+        // this agent-wide fallback exists to protect. Regression guard for the OLD behavior (any
+        // non-Verified status denied every known first-party tool, regardless of which list faulted).
+        var registry = new PluginRegistry();
+        registry.Register(MakePlugin("azure"));
+        registry.MarkBoundaryFaulted(
+            "azure", "AllowedTools entry matches no known tool",
+            [new PluginToolBoundaryViolation("azure", PluginToolBoundaryListKind.AllowedTools, "typo_tool")]);
+
+        var provider = CreateSut(registry, "file_system", "shell");
+
+        var rules = await provider.GetRulesAsync("any-agent");
+
+        rules.Should().NotContain(r => r.ToolPattern == "file_system" && r.Behavior == PermissionBehaviorType.Deny);
+        rules.Should().NotContain(r => r.ToolPattern == "shell" && r.Behavior == PermissionBehaviorType.Deny);
+    }
+
+    [Fact]
+    public async Task GetRulesAsync_RealRegistryFaultedOnBothLists_StillDeniesEveryFirstPartyTool()
+    {
+        // A plugin whose fault involves BOTH lists must still get the full agent-wide fallback -- the
+        // DeniedTools violation alone is enough, even though an AllowedTools violation is also present.
+        var registry = new PluginRegistry();
+        registry.Register(MakePlugin("azure"));
+        registry.MarkBoundaryFaulted(
+            "azure", "Both lists have unresolved entries",
+            [
+                new PluginToolBoundaryViolation("azure", PluginToolBoundaryListKind.AllowedTools, "typo_tool"),
+                new PluginToolBoundaryViolation("azure", PluginToolBoundaryListKind.DeniedTools, "file_wrte"),
+            ]);
+
+        var provider = CreateSut(registry, "file_system");
+
+        var rules = await provider.GetRulesAsync("any-agent");
+
+        rules.Should().Contain(r => r.ToolPattern == "file_system"
+            && r.Behavior == PermissionBehaviorType.Deny && r.IsBypassImmune);
+    }
+
+    [Fact]
+    public async Task GetRulesAsync_RealRegistryPendingRegardlessOfEntryListKind_StillDeniesEveryFirstPartyTool()
+    {
+        // Pending keeps the OLD, list-kind-agnostic treatment even under #608 -- it's transient (about
+        // to resolve to Verified or Faulted), so narrowing it isn't part of this fix's scope.
+        var registry = new PluginRegistry();
+        registry.Register(MakePlugin("azure"));
+        registry.MarkBoundaryPending("azure");
+
+        var provider = CreateSut(registry, "file_system");
+
+        var rules = await provider.GetRulesAsync("any-agent");
+
+        rules.Should().Contain(r => r.ToolPattern == "file_system"
+            && r.Behavior == PermissionBehaviorType.Deny && r.IsBypassImmune);
     }
 }

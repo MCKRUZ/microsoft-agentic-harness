@@ -14,6 +14,15 @@ public sealed class PluginRegistry : IPluginRegistry
     private readonly ConcurrentDictionary<string, PluginBoundaryStatus> _boundaryStatus =
         new(StringComparer.OrdinalIgnoreCase);
 
+    // #608: which specific entries proved a Faulted plugin's boundary broken, so a consumer can
+    // distinguish a DeniedTools fault (must still fail closed — the bypass-immune guarantee is at
+    // risk) from an AllowedTools-only fault (can only ever narrow access, never widen it). Written
+    // inside the same _stateLock critical section as _boundaryStatus and _stateVersion below, for the
+    // same reason documented on that lock: a reader must never observe the status flip to Faulted
+    // without also observing the violation list that explains it.
+    private readonly ConcurrentDictionary<string, IReadOnlyList<PluginToolBoundaryViolation>> _boundaryViolations =
+        new(StringComparer.OrdinalIgnoreCase);
+
     // #612 grader finding, round 1: writing the dictionary and bumping _stateVersion as two separate
     // Interlocked steps left a window where a reader could observe the dictionary already mutated
     // but StateVersion not yet incremented — a cache keyed on that stale version would then serve
@@ -115,18 +124,24 @@ public sealed class PluginRegistry : IPluginRegistry
     }
 
     /// <inheritdoc />
-    public void MarkBoundaryFaulted(string pluginName, string reason)
+    public void MarkBoundaryFaulted(
+        string pluginName, string reason, IReadOnlyList<PluginToolBoundaryViolation> violations)
     {
         lock (_stateLock)
         {
             // reason is a human-readable summary of facts (plugin/list-kind/tool-name) the caller
             // already surfaces separately at the point of fault — McpToolProvider logs the
             // violation list at Critical, PluginToolBoundaryStartupValidator throws with the same
-            // details — so nothing here needs it back. Deliberately not stored (#524 round-2
-            // code-review: an earlier version kept a _faultReasons dictionary "for diagnostics"
-            // that nothing ever actually read).
+            // details — so nothing here needs reason back. violations IS stored (#608 — unlike
+            // reason, this now has real readers: GetBoundaryViolations lets a consumer distinguish
+            // a DeniedTools fault from an AllowedTools-only one).
             _boundaryStatus[pluginName] = PluginBoundaryStatus.Faulted;
+            _boundaryViolations[pluginName] = violations;
             _stateVersion++;
         }
     }
+
+    /// <inheritdoc />
+    public IReadOnlyList<PluginToolBoundaryViolation> GetBoundaryViolations(string pluginName) =>
+        _boundaryViolations.GetValueOrDefault(pluginName, []);
 }

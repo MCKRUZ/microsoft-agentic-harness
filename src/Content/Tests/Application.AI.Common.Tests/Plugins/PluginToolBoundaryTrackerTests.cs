@@ -58,7 +58,28 @@ public sealed class PluginToolBoundaryTrackerTests
 
         _sut.Seed([plugin], NoFirstPartyToolsKnown, NoServersConfigured);
 
-        _registry.Verify(r => r.MarkBoundaryFaulted("azure", It.IsAny<string>()), Times.Once);
+        _registry.Verify(r => r.MarkBoundaryFaulted("azure", It.IsAny<string>(), It.IsAny<IReadOnlyList<PluginToolBoundaryViolation>>()), Times.Once);
+    }
+
+    [Fact]
+    public void Seed_ImmediateViolation_PassesTheActualViolationListToTheRegistry()
+    {
+        // #608: MarkBoundaryFaulted's violations argument must be the real, computed list -- not
+        // discarded -- so a consumer can later distinguish a DeniedTools fault from an
+        // AllowedTools-only one via IPluginRegistry.GetBoundaryViolations.
+        var plugin = MakePlugin("azure", deniedTools: ["file_wrte"]);
+
+        _sut.Seed([plugin], NoFirstPartyToolsKnown, NoServersConfigured);
+
+        _registry.Verify(r => r.MarkBoundaryFaulted(
+            "azure",
+            It.IsAny<string>(),
+            It.Is<IReadOnlyList<PluginToolBoundaryViolation>>(v =>
+                v.Count == 1
+                && v[0].PluginName == "azure"
+                && v[0].ListKind == PluginToolBoundaryListKind.DeniedTools
+                && v[0].ToolName == "file_wrte")),
+            Times.Once);
     }
 
     [Fact]
@@ -111,7 +132,7 @@ public sealed class PluginToolBoundaryTrackerTests
         var violations = _sut.Seed([plugin], NoFirstPartyToolsKnown, ["host:github"]);
 
         violations.Should().BeEmpty();
-        _registry.Verify(r => r.MarkBoundaryFaulted(It.IsAny<string>(), It.IsAny<string>()), Times.Never);
+        _registry.Verify(r => r.MarkBoundaryFaulted(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<IReadOnlyList<PluginToolBoundaryViolation>>()), Times.Never);
     }
 
     [Fact]
@@ -139,7 +160,7 @@ public sealed class PluginToolBoundaryTrackerTests
         var violations = _sut.ReportServerToolsDiscovered("host:github", ["delete_repository", "create_issue"]);
 
         violations.Should().BeEmpty();
-        _registry.Verify(r => r.MarkBoundaryFaulted(It.IsAny<string>(), It.IsAny<string>()), Times.Never);
+        _registry.Verify(r => r.MarkBoundaryFaulted(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<IReadOnlyList<PluginToolBoundaryViolation>>()), Times.Never);
     }
 
     [Fact]
@@ -194,7 +215,7 @@ public sealed class PluginToolBoundaryTrackerTests
 
         violations.Should().BeEmpty();
         _registry.Verify(r => r.MarkBoundaryVerified("azure"), Times.Once);
-        _registry.Verify(r => r.MarkBoundaryFaulted(It.IsAny<string>(), It.IsAny<string>()), Times.Never);
+        _registry.Verify(r => r.MarkBoundaryFaulted(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<IReadOnlyList<PluginToolBoundaryViolation>>()), Times.Never);
 
         // The still-unreported "host:jira" server must have nothing left to do for this plugin.
         var laterReport = _sut.ReportServerToolsDiscovered("host:jira", []);
@@ -248,7 +269,7 @@ public sealed class PluginToolBoundaryTrackerTests
         var violations = _sut.ReportServerToolsDiscovered("server1", ["unrelated"]);
 
         violations.Should().ContainSingle(v => v.ToolName == "file_wrte");
-        _registry.Verify(r => r.MarkBoundaryFaulted("azure", It.IsAny<string>()), Times.Once);
+        _registry.Verify(r => r.MarkBoundaryFaulted("azure", It.IsAny<string>(), It.IsAny<IReadOnlyList<PluginToolBoundaryViolation>>()), Times.Once);
     }
 
     [Fact]
@@ -261,7 +282,7 @@ public sealed class PluginToolBoundaryTrackerTests
         var violations = _sut.Seed([plugin], NoFirstPartyToolsKnown, ["server1"]);
 
         violations.Should().BeEmpty();
-        _registry.Verify(r => r.MarkBoundaryFaulted(It.IsAny<string>(), It.IsAny<string>()), Times.Never);
+        _registry.Verify(r => r.MarkBoundaryFaulted(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<IReadOnlyList<PluginToolBoundaryViolation>>()), Times.Never);
     }
 
     [Fact]
@@ -273,7 +294,7 @@ public sealed class PluginToolBoundaryTrackerTests
         var violations = _sut.ReportServerToolsDiscovered("server1", ["real_tool", "other_tool"]);
 
         violations.Should().BeEmpty();
-        _registry.Verify(r => r.MarkBoundaryFaulted(It.IsAny<string>(), It.IsAny<string>()), Times.Never);
+        _registry.Verify(r => r.MarkBoundaryFaulted(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<IReadOnlyList<PluginToolBoundaryViolation>>()), Times.Never);
     }
 
     [Fact]
@@ -286,7 +307,29 @@ public sealed class PluginToolBoundaryTrackerTests
 
         violations.Should().ContainSingle(v =>
             v.PluginName == "azure" && v.ListKind == "DeniedTools" && v.ToolName == "file_wrte");
-        _registry.Verify(r => r.MarkBoundaryFaulted("azure", It.IsAny<string>()), Times.Once);
+        _registry.Verify(r => r.MarkBoundaryFaulted("azure", It.IsAny<string>(), It.IsAny<IReadOnlyList<PluginToolBoundaryViolation>>()), Times.Once);
+    }
+
+    [Fact]
+    public void ReportServerToolsDiscovered_LastPendingServerReports_PassesTheActualViolationListToTheRegistry()
+    {
+        // #608: the lazy fault path (unlike Seed's immediate path above) builds its violation list
+        // from PendingEntries at resolution time -- must confirm it's threaded through too, not just
+        // the immediate branch.
+        var plugin = MakePlugin("azure", allowedTools: ["typo_tool"]);
+        _sut.Seed([plugin], NoFirstPartyToolsKnown, ["server1"]);
+
+        _sut.ReportServerToolsDiscovered("server1", ["unrelated"]);
+
+        _registry.Verify(r => r.MarkBoundaryFaulted(
+            "azure",
+            It.IsAny<string>(),
+            It.Is<IReadOnlyList<PluginToolBoundaryViolation>>(v =>
+                v.Count == 1
+                && v[0].PluginName == "azure"
+                && v[0].ListKind == PluginToolBoundaryListKind.AllowedTools
+                && v[0].ToolName == "typo_tool")),
+            Times.Once);
     }
 
     [Fact]
@@ -297,11 +340,11 @@ public sealed class PluginToolBoundaryTrackerTests
 
         var afterFirst = _sut.ReportServerToolsDiscovered("s1", ["unrelated"]);
         afterFirst.Should().BeEmpty("s2 hasn't reported yet — not provably fake");
-        _registry.Verify(r => r.MarkBoundaryFaulted(It.IsAny<string>(), It.IsAny<string>()), Times.Never);
+        _registry.Verify(r => r.MarkBoundaryFaulted(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<IReadOnlyList<PluginToolBoundaryViolation>>()), Times.Never);
 
         var afterSecond = _sut.ReportServerToolsDiscovered("s2", ["also_unrelated"]);
         afterSecond.Should().ContainSingle(v => v.ToolName == "file_wrte");
-        _registry.Verify(r => r.MarkBoundaryFaulted("azure", It.IsAny<string>()), Times.Once);
+        _registry.Verify(r => r.MarkBoundaryFaulted("azure", It.IsAny<string>(), It.IsAny<IReadOnlyList<PluginToolBoundaryViolation>>()), Times.Once);
     }
 
     [Fact]
@@ -314,7 +357,7 @@ public sealed class PluginToolBoundaryTrackerTests
         var afterSecond = _sut.ReportServerToolsDiscovered("s2", ["real_tool"]);
 
         afterSecond.Should().BeEmpty();
-        _registry.Verify(r => r.MarkBoundaryFaulted(It.IsAny<string>(), It.IsAny<string>()), Times.Never);
+        _registry.Verify(r => r.MarkBoundaryFaulted(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<IReadOnlyList<PluginToolBoundaryViolation>>()), Times.Never);
     }
 
     [Fact]
@@ -329,7 +372,7 @@ public sealed class PluginToolBoundaryTrackerTests
             () => results.Add(_sut.ReportServerToolsDiscovered("s2", ["unrelated2"])));
 
         results.SelectMany(r => r).Should().ContainSingle(v => v.ToolName == "file_wrte");
-        _registry.Verify(r => r.MarkBoundaryFaulted("azure", It.IsAny<string>()), Times.Once);
+        _registry.Verify(r => r.MarkBoundaryFaulted("azure", It.IsAny<string>(), It.IsAny<IReadOnlyList<PluginToolBoundaryViolation>>()), Times.Once);
     }
 
     [Fact]
@@ -348,7 +391,7 @@ public sealed class PluginToolBoundaryTrackerTests
             () => results.Add(_sut.ReportServerToolsDiscovered("s1", ["unrelated"])));
 
         results.SelectMany(r => r).Should().ContainSingle(v => v.ToolName == "file_wrte");
-        _registry.Verify(r => r.MarkBoundaryFaulted("azure", It.IsAny<string>()), Times.Once);
+        _registry.Verify(r => r.MarkBoundaryFaulted("azure", It.IsAny<string>(), It.IsAny<IReadOnlyList<PluginToolBoundaryViolation>>()), Times.Once);
     }
 
     [Fact]

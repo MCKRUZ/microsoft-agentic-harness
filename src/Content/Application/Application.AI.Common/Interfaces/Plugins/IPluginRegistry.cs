@@ -66,14 +66,44 @@ public interface IPluginRegistry
     /// <summary>
     /// Marks <paramref name="pluginName"/>'s tool boundary <see cref="PluginBoundaryStatus.Faulted"/>:
     /// at least one of its <c>AllowedTools</c>/<c>DeniedTools</c> entries has been proven to match no
-    /// real tool (#524). A boundary that can't be trusted is treated fail-closed — <c>ToolChainBuilder</c>
-    /// denies every tool for a faulted plugin rather than run with a partially-broken policy, since a
-    /// typo in <c>DeniedTools</c> (documented as bypass-immune) silently defeats that guarantee
-    /// otherwise. Terminal: once faulted, always faulted for the process lifetime.
+    /// real tool (#524). A boundary that can't be trusted is treated fail-closed by default —
+    /// <c>ToolChainBuilder</c> denies every tool for a faulted plugin rather than run with a
+    /// partially-broken policy, since a typo in <c>DeniedTools</c> (documented as bypass-immune)
+    /// silently defeats that guarantee otherwise. Terminal: once faulted, always faulted for the
+    /// process lifetime.
     /// </summary>
     /// <param name="pluginName">The plugin whose boundary is faulted.</param>
     /// <param name="reason">Human-readable reason, for logging/diagnostics.</param>
-    void MarkBoundaryFaulted(string pluginName, string reason);
+    /// <param name="violations">
+    /// The specific entries that proved fake (#608). Callers that need to distinguish a
+    /// <c>DeniedTools</c> fault (still must fail closed everywhere — the bypass-immune guarantee is at
+    /// risk) from an <c>AllowedTools</c>-only fault (can never widen access, so the narrower
+    /// consequence of just excluding that one name is safe) read this back via
+    /// <see cref="GetBoundaryViolations"/>. Required, not optional: the only production caller
+    /// (<c>PluginToolBoundaryTracker</c>) already computes this list at both places it calls this
+    /// method, so there is no case where passing it is a real burden — and an optional parameter would
+    /// let a future call site silently keep the registry violations-blind for that plugin, defeating
+    /// the whole point of storing this.
+    /// </param>
+    void MarkBoundaryFaulted(
+        string pluginName, string reason, IReadOnlyList<PluginToolBoundaryViolation> violations);
+
+    /// <summary>
+    /// The specific boundary entries that proved <paramref name="pluginName"/>'s tool boundary
+    /// <see cref="PluginBoundaryStatus.Faulted"/> (#608) — empty when the plugin isn't
+    /// <see cref="PluginBoundaryStatus.Faulted"/>, or when it is but no violation detail was recorded
+    /// for it.
+    /// </summary>
+    /// <remarks>
+    /// A caller deciding how broadly to fail closed on a Faulted plugin should treat an empty result
+    /// here the same as "at least one violation is <c>DeniedTools</c>" — i.e. fail closed on
+    /// uncertainty, not just on a confirmed hit. The only way this comes back empty for a genuinely
+    /// Faulted plugin is a registry implementation (or a test double) that never recorded violations at
+    /// all, and that absence of information is exactly the case #524's own reasoning treats as
+    /// dangerous-until-proven-otherwise.
+    /// </remarks>
+    /// <param name="pluginName">The plugin to query.</param>
+    IReadOnlyList<PluginToolBoundaryViolation> GetBoundaryViolations(string pluginName);
 
     /// <summary>
     /// Monotonically increasing counter, bumped by every mutation (<see cref="Register"/>,

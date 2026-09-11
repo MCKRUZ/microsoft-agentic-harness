@@ -61,17 +61,19 @@ namespace Application.Core.Permissions;
 /// tool it does not own (the doc above's "backstop for sensitive global tools"), and
 /// <c>ToolChainBuilder.ApplyPluginBoundaryIfPluginSkill</c> only ever filters the tool SET sourced from
 /// the plugin's OWN skill — a global tool reachable through any OTHER skill in the same agent is never
-/// touched by that filter regardless of this plugin's boundary state. When
-/// <see cref="IPluginRegistry.GetBoundaryStatus"/> is not <see cref="PluginBoundaryStatus.Verified"/>
-/// for a plugin, this provider therefore ALSO emits a bypass-immune Deny rule for every first-party
-/// tool name known to the host (<see cref="FirstPartyToolLookup.RegisteredFirstPartyToolKeys"/>) — not
-/// scoped to this plugin, because a corrupted/unresolved entry gives no way to know which specific
-/// global tool it was meant to protect. This is agent-wide and deliberately broad: Matt's explicit call
-/// (this PR's own review) was that the collateral cost of over-blocking shared tools is acceptable
-/// against the alternative of leaving a sensitive tool's only declared protection silently absent. The
-/// existing, correctly-scoped DeniedTools and autonomy-baseline rules below are still emitted
-/// unconditionally alongside this — harmless overlap for first-party names, and still the only
-/// coverage for any additional, validly-named non-first-party (MCP) entry in the same list.
+/// touched by that filter regardless of this plugin's boundary state. When a plugin's boundary
+/// <see cref="BoundaryDemandsAgentWideFailClosed"/> (Pending, or Faulted with a <c>DeniedTools</c>
+/// violation — see that method's remarks for the #608 narrowing that excludes a fault provably
+/// confined to <c>AllowedTools</c>), this provider therefore ALSO emits a bypass-immune Deny rule for
+/// every first-party tool name known to the host
+/// (<see cref="FirstPartyToolLookup.RegisteredFirstPartyToolKeys"/>) — not scoped to this plugin,
+/// because a corrupted/unresolved entry gives no way to know which specific global tool it was meant
+/// to protect. This is agent-wide and deliberately broad: Matt's explicit call (this PR's own review)
+/// was that the collateral cost of over-blocking shared tools is acceptable against the alternative
+/// of leaving a sensitive tool's only declared protection silently absent. The existing,
+/// correctly-scoped DeniedTools and autonomy-baseline rules below are still emitted unconditionally
+/// alongside this — harmless overlap for first-party names, and still the only coverage for any
+/// additional, validly-named non-first-party (MCP) entry in the same list.
 /// </para>
 /// </remarks>
 public sealed class PluginPermissionRuleProvider : IPermissionRuleProvider
@@ -194,8 +196,8 @@ public sealed class PluginPermissionRuleProvider : IPermissionRuleProvider
 
     /// <summary>
     /// Emits <paramref name="plugin"/>'s own Deny and autonomy-baseline rules into
-    /// <paramref name="rules"/>, and reports whether its boundary is unverified (contributing to
-    /// <see cref="ComputeRules"/>'s agent-wide fail-closed decision).
+    /// <paramref name="rules"/>, and reports whether its boundary contributes to
+    /// <see cref="ComputeRules"/>'s agent-wide fail-closed decision.
     /// </summary>
     private bool EmitPluginRules(LoadedPlugin plugin, List<ToolPermissionRule> rules)
     {
@@ -209,13 +211,41 @@ public sealed class PluginPermissionRuleProvider : IPermissionRuleProvider
         // registering any disabled or failed plugin — a normal operational state — would flip
         // the agent-wide fail-closed response and silently deny every first-party tool for the
         // process lifetime.
-        var boundaryUnverified = plugin.Status == PluginLoadStatus.Loaded
-            && _registry.GetBoundaryStatus(plugin.Name) != PluginBoundaryStatus.Verified;
+        var boundaryContributesToFailClosed = plugin.Status == PluginLoadStatus.Loaded
+            && BoundaryDemandsAgentWideFailClosed(plugin.Name);
 
         EmitDeniedToolsRules(plugin, rules);
         EmitAutonomyBaselineRules(plugin, rules);
 
-        return boundaryUnverified;
+        return boundaryContributesToFailClosed;
+    }
+
+    /// <summary>
+    /// Whether <paramref name="pluginName"/>'s boundary state should contribute to
+    /// <see cref="ComputeRules"/>'s agent-wide fail-closed fallback (#608). <c>Pending</c> always
+    /// does — it's transient by nature (resolves to Verified or Faulted once every configured MCP
+    /// server reports), so it keeps the original list-kind-agnostic treatment. A <c>Faulted</c>
+    /// boundary contributes UNLESS every recorded violation is <c>AllowedTools</c>: that list can
+    /// only ever narrow a plugin's own grant, never widen it, and can never defeat the
+    /// <c>DeniedTools</c> bypass-immune guarantee this fallback exists to protect — so a fault
+    /// provably confined to it doesn't warrant denying every first-party tool agent-wide. An empty
+    /// or unrecorded violation set is treated the same as a <c>DeniedTools</c> hit: fail closed on
+    /// uncertainty, not just on a confirmed one.
+    /// </summary>
+    private bool BoundaryDemandsAgentWideFailClosed(string pluginName)
+    {
+        var status = _registry.GetBoundaryStatus(pluginName);
+        if (status == PluginBoundaryStatus.Verified)
+            return false;
+        if (status == PluginBoundaryStatus.Pending)
+            return true;
+
+        // Null-tolerant: see ToolChainBuilder.ApplyPluginBoundaryIfPluginSkill's identical guard —
+        // "no violation detail was recorded" (including a test double with no explicit setup) is
+        // exactly the documented empty case, not an error.
+        var violations = _registry.GetBoundaryViolations(pluginName);
+        return violations is not { Count: > 0 }
+            || violations.Any(v => v.ListKind == PluginToolBoundaryListKind.DeniedTools);
     }
 
     /// <summary>

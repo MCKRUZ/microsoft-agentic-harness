@@ -12,6 +12,21 @@ namespace Application.AI.Common.Interfaces.Plugins;
 public sealed record PluginToolBoundaryViolation(string PluginName, string ListKind, string ToolName);
 
 /// <summary>
+/// The two values <see cref="PluginToolBoundaryViolation.ListKind"/> can hold. Shared so
+/// <c>PluginToolBoundaryTracker</c> (which produces violations) and every consumer that reads them
+/// back via <see cref="IPluginRegistry.GetBoundaryViolations"/> (#608) compare against the same
+/// symbols rather than each hardcoding the literal strings.
+/// </summary>
+public static class PluginToolBoundaryListKind
+{
+    /// <summary>A <see cref="Domain.Common.Config.AI.Plugins.PluginDeclaration.AllowedTools"/> entry.</summary>
+    public const string AllowedTools = "AllowedTools";
+
+    /// <summary>A <see cref="Domain.Common.Config.AI.Plugins.PluginDeclaration.DeniedTools"/> entry.</summary>
+    public const string DeniedTools = "DeniedTools";
+}
+
+/// <summary>
 /// Tracks whether every <c>AllowedTools</c>/<c>DeniedTools</c> entry a loaded plugin declares
 /// actually matches a real tool — first-party (keyed-DI, known at startup) or MCP-provided (known
 /// only once the owning server's tool list has been discovered at least once).
