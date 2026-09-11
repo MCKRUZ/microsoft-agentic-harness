@@ -56,6 +56,11 @@ public sealed class CapabilityEnforcementTests
 
     private static (ToolPermissionProfileResolver Resolver, CapabilityEnforcer Enforcer) Build(
         SandboxConfig? config = null,
+        params (string Name, ITool Tool)[] tools) => Build(config, null, tools);
+
+    private static (ToolPermissionProfileResolver Resolver, CapabilityEnforcer Enforcer) Build(
+        SandboxConfig? config,
+        Mock<ILogger<CapabilityEnforcer>>? logger,
         params (string Name, ITool Tool)[] tools)
     {
         var services = new ServiceCollection();
@@ -68,9 +73,16 @@ public sealed class CapabilityEnforcementTests
         var lookup = new FirstPartyToolLookup(
             services.BuildServiceProvider(), new HashSet<string>(tools.Select(t => t.Name)));
         var resolver = new ToolPermissionProfileResolver(lookup, configMock.Object);
-        var enforcer = new CapabilityEnforcer(resolver, Mock.Of<ILogger<CapabilityEnforcer>>());
+        var enforcer = new CapabilityEnforcer(resolver, (logger ?? new Mock<ILogger<CapabilityEnforcer>>()).Object);
         return (resolver, enforcer);
     }
+
+    private static bool LogsMessageContaining(Mock<ILogger<CapabilityEnforcer>> logger, string substring) =>
+        logger.Invocations.Any(i =>
+            i.Method.Name == nameof(ILogger.Log) &&
+            i.Arguments.Count > 2 &&
+            i.Arguments[2] is not null &&
+            i.Arguments[2]!.ToString()!.Contains(substring, StringComparison.Ordinal));
 
     // --- Capability Checks ---
 
@@ -742,5 +754,350 @@ public sealed class CapabilityEnforcementTests
             "http_tool", ToolCapability.FileRead | ToolCapability.NetworkAccess, requestedHosts: null);
 
         result.IsSuccess.Should().BeFalse();
+    }
+
+    // --- #635: NormalizeHostForMatch bypasses ---
+
+    [Theory]
+    [InlineData("2130706433")] // decimal IPv4
+    [InlineData("127.1")] // short-form IPv4
+    [InlineData("0x7f.0.0.1")] // hex-octet IPv4
+    public async Task DeniedHost_AlternateIPv4Encoding_StillMatchesDottedQuadDenyEntry(string encodedLoopback)
+    {
+        var config = new SandboxConfig
+        {
+            ToolOverrides = new() { ["http_tool"] = new ToolOverrideConfig { DeniedHosts = ["127.0.0.1"] } }
+        };
+        var (_, enforcer) = Build(config, ("http_tool", NetworkFileTool()));
+
+        var result = await enforcer.EnforceAsync(
+            "http_tool", ToolCapability.FileRead | ToolCapability.NetworkAccess,
+            requestedHosts: [encodedLoopback]);
+
+        result.IsSuccess.Should().BeFalse(
+            $"'{encodedLoopback}' is the same address as the denied 127.0.0.1 to the real HTTP client");
+    }
+
+    [Theory]
+    [InlineData("evil。com")] // U+3002 ideographic full stop
+    [InlineData("evil．com")] // U+FF0E fullwidth full stop
+    [InlineData("evil.com｡")] // U+FF61 halfwidth ideographic full stop (trailing)
+    [InlineData("evil.com​")] // trailing zero-width space
+    public async Task DeniedHost_UnicodeLabelSeparatorOrZeroWidthChar_StillMatchesAsciiDenyEntry(string spoofedHost)
+    {
+        var config = new SandboxConfig
+        {
+            ToolOverrides = new() { ["http_tool"] = new ToolOverrideConfig { DeniedHosts = ["evil.com"] } }
+        };
+        var (_, enforcer) = Build(config, ("http_tool", NetworkFileTool()));
+
+        var result = await enforcer.EnforceAsync(
+            "http_tool", ToolCapability.FileRead | ToolCapability.NetworkAccess,
+            requestedHosts: [spoofedHost]);
+
+        result.IsSuccess.Should().BeFalse(
+            "Uri.IdnHost — what the real HTTP client connects with — normalizes this to plain \"evil.com\"");
+    }
+
+    [Fact]
+    public async Task DeniedHost_UnicodeLabelSeparator_StillDefeatsWildcardDenyEntry()
+    {
+        var config = new SandboxConfig
+        {
+            ToolOverrides = new() { ["http_tool"] = new ToolOverrideConfig { DeniedHosts = ["*.evil.com"] } }
+        };
+        var (_, enforcer) = Build(config, ("http_tool", NetworkFileTool()));
+
+        var result = await enforcer.EnforceAsync(
+            "http_tool", ToolCapability.FileRead | ToolCapability.NetworkAccess,
+            requestedHosts: ["a.evil。com"]);
+
+        result.IsSuccess.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task DeniedHost_BracketedIPv6Literal_StillMatchesBareDenyEntry()
+    {
+        // Before #635: the absolute-URI branch of NormalizeHostForMatch returned Uri.Host verbatim,
+        // which retains brackets ("[::1]") — a bare deny entry of "::1" never matched a requested
+        // "http://[::1]/".
+        var config = new SandboxConfig
+        {
+            ToolOverrides = new() { ["http_tool"] = new ToolOverrideConfig { DeniedHosts = ["::1"] } }
+        };
+        var (_, enforcer) = Build(config, ("http_tool", NetworkFileTool()));
+
+        var result = await enforcer.EnforceAsync(
+            "http_tool", ToolCapability.FileRead | ToolCapability.NetworkAccess,
+            requestedHosts: ["http://[::1]/"]);
+
+        result.IsSuccess.Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData("fe80::1%eth0")]
+    [InlineData("[fe80::1%25eth0]")]
+    public async Task DeniedHost_IPv6ZoneIdentifier_StillMatchesBareDenyEntryWithoutZone(string zoneQualifiedHost)
+    {
+        var config = new SandboxConfig
+        {
+            ToolOverrides = new() { ["http_tool"] = new ToolOverrideConfig { DeniedHosts = ["fe80::1"] } }
+        };
+        var (_, enforcer) = Build(config, ("http_tool", NetworkFileTool()));
+
+        var result = await enforcer.EnforceAsync(
+            "http_tool", ToolCapability.FileRead | ToolCapability.NetworkAccess,
+            requestedHosts: [zoneQualifiedHost]);
+
+        result.IsSuccess.Should().BeFalse(
+            "a bare vs. percent-escaped zone id spelling of the same interface must normalize identically");
+    }
+
+    [Fact]
+    public async Task AllowedHost_UnrelatedPrefixCollisionHost_StillRefused()
+    {
+        // Guard case: the #635 fix must not become OVER-broad — "notevil.com" must never be treated
+        // as if it were "evil.com" just because #635's synthetic-scheme parsing now runs on more
+        // bare-shaped values than before.
+        var config = new SandboxConfig
+        {
+            ToolOverrides = new() { ["http_tool"] = new ToolOverrideConfig { AllowedHosts = ["evil.com"] } }
+        };
+        var (_, enforcer) = Build(config, ("http_tool", NetworkFileTool()));
+
+        var result = await enforcer.EnforceAsync(
+            "http_tool", ToolCapability.FileRead | ToolCapability.NetworkAccess,
+            requestedHosts: ["notevil.com"]);
+
+        result.IsSuccess.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task AllowedHost_PunycodeLookalike_DoesNotCollideWithUnicodeDenyEntry()
+    {
+        // Guard case: a value that is ALREADY in ASCII/punycode form must not be treated as if
+        // IdnHost-canonicalizing it could make it collide with an unrelated Unicode-derived host.
+        var config = new SandboxConfig
+        {
+            ToolOverrides = new() { ["http_tool"] = new ToolOverrideConfig { AllowedHosts = ["evil.com"] } }
+        };
+        var (_, enforcer) = Build(config, ("http_tool", NetworkFileTool()));
+
+        var result = await enforcer.EnforceAsync(
+            "http_tool", ToolCapability.FileRead | ToolCapability.NetworkAccess,
+            requestedHosts: ["xn--vil-9ma.com"]);
+
+        result.IsSuccess.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task DeniedHost_MalformedConfiguredEntry_LogsInertConfigurationWarning()
+    {
+        // #635 LOW: a typo'd deny entry that can never match any requested host previously failed
+        // silently, with no signal to the operator that their configuration does nothing.
+        var config = new SandboxConfig
+        {
+            ToolOverrides = new()
+            {
+                ["http_tool"] = new ToolOverrideConfig { DeniedHosts = ["evil.com/*"] }
+            }
+        };
+        var loggerMock = new Mock<ILogger<CapabilityEnforcer>>();
+        var (_, enforcer) = Build(config, loggerMock, ("http_tool", NetworkFileTool()));
+
+        await enforcer.EnforceAsync(
+            "http_tool", ToolCapability.FileRead | ToolCapability.NetworkAccess,
+            requestedHosts: ["example.com"]);
+
+        LogsMessageContaining(loggerMock, "can never match any requested host").Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task DeniedHost_WellFormedConfiguredEntry_DoesNotLogInertConfigurationWarning()
+    {
+        var config = new SandboxConfig
+        {
+            ToolOverrides = new()
+            {
+                ["http_tool"] = new ToolOverrideConfig { DeniedHosts = ["evil.com"] } // well-formed
+            }
+        };
+        var loggerMock = new Mock<ILogger<CapabilityEnforcer>>();
+        var (_, enforcer) = Build(config, loggerMock, ("http_tool", NetworkFileTool()));
+
+        await enforcer.EnforceAsync(
+            "http_tool", ToolCapability.FileRead | ToolCapability.NetworkAccess,
+            requestedHosts: ["example.com"]);
+
+        LogsMessageContaining(loggerMock, "can never match any requested host").Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData("::ffff:127.0.0.1")] // IPv4-mapped IPv6, colon-hex form
+    [InlineData("[::ffff:127.0.0.1]")] // same, bracketed as a URI would carry it
+    public async Task DeniedHost_Ipv4MappedIpv6Literal_StillMatchesPlainIPv4DenyEntry(string mappedForm)
+    {
+        // #635 code-review (round 2): a well-formed IPv6 literal encoding the SAME address as a
+        // plain IPv4 deny entry — Uri.IdnHost does not collapse this form, so it needs its own
+        // explicit normalization step (mirrors CompositeHookExecutor.IsReservedAddress).
+        var config = new SandboxConfig
+        {
+            ToolOverrides = new() { ["http_tool"] = new ToolOverrideConfig { DeniedHosts = ["127.0.0.1"] } }
+        };
+        var (_, enforcer) = Build(config, ("http_tool", NetworkFileTool()));
+
+        var result = await enforcer.EnforceAsync(
+            "http_tool", ToolCapability.FileRead | ToolCapability.NetworkAccess,
+            requestedHosts: [mappedForm]);
+
+        result.IsSuccess.Should().BeFalse(
+            $"'{mappedForm}' is the same address as the denied 127.0.0.1 to the real HTTP client");
+    }
+
+    [Fact]
+    public async Task DeniedHost_Ipv4MappedIpv6CloudMetadataAddress_StillMatchesDenyEntry()
+    {
+        // The concrete exploit shape from #635's own issue text, restated for the IPv6-mapped form.
+        var config = new SandboxConfig
+        {
+            ToolOverrides = new() { ["http_tool"] = new ToolOverrideConfig { DeniedHosts = ["169.254.169.254"] } }
+        };
+        var (_, enforcer) = Build(config, ("http_tool", NetworkFileTool()));
+
+        var result = await enforcer.EnforceAsync(
+            "http_tool", ToolCapability.FileRead | ToolCapability.NetworkAccess,
+            requestedHosts: ["::ffff:169.254.169.254"]);
+
+        result.IsSuccess.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task AllowedHost_UnrelatedIpv6_DoesNotCollideWithIpv4MappedNormalization()
+    {
+        // Guard case: IPv4-mapped-IPv6 normalization must not over-fire on an ordinary IPv6 address
+        // that is NOT an IPv4-mapped literal.
+        var config = new SandboxConfig
+        {
+            ToolOverrides = new() { ["http_tool"] = new ToolOverrideConfig { AllowedHosts = ["127.0.0.1"] } }
+        };
+        var (_, enforcer) = Build(config, ("http_tool", NetworkFileTool()));
+
+        var result = await enforcer.EnforceAsync(
+            "http_tool", ToolCapability.FileRead | ToolCapability.NetworkAccess,
+            requestedHosts: ["2001:db8::1"]);
+
+        result.IsSuccess.Should().BeFalse("an unrelated IPv6 address must not be treated as 127.0.0.1");
+    }
+
+    [Theory]
+    [InlineData("evil.com@allowed.com")] // userinfo
+    [InlineData("allowed.com#evil.com")] // fragment
+    [InlineData("allowed.com?evil.com")] // query
+    [InlineData("allowed.com\\evil.com")] // backslash
+    public async Task DeniedHostOnly_BareValueWithUserinfoFragmentQueryOrBackslash_StillRefused(string ambiguousValue)
+    {
+        // run-gates correctness/security review: these shapes were refused outright as malformed
+        // before #635 (Uri.CheckHostName rejects them). #635's synthetic-scheme parsing must not
+        // start silently reducing them to just the leading host segment — kept excluded alongside
+        // '/' so this file's own normalization never disagrees with a consumer that isn't Uri/
+        // HttpClient (a raw socket, a DNS lookup, a subprocess) about which host a value names.
+        var config = new SandboxConfig
+        {
+            ToolOverrides = new() { ["http_tool"] = new ToolOverrideConfig { DeniedHosts = ["*.evil.com"] } }
+        };
+        var (_, enforcer) = Build(config, ("http_tool", NetworkFileTool()));
+
+        var result = await enforcer.EnforceAsync(
+            "http_tool", ToolCapability.FileRead | ToolCapability.NetworkAccess,
+            requestedHosts: [ambiguousValue]);
+
+        result.IsSuccess.Should().BeFalse($"'{ambiguousValue}' must stay refused as malformed, not silently reduced to a bare host");
+    }
+
+    [Theory]
+    [InlineData("::127.0.0.1")] // deprecated IPv4-compatible form, expanded
+    [InlineData("::7f00:1")] // same address, compressed hex form
+    public async Task DeniedHost_DeprecatedIpv4CompatibleIpv6Literal_StillMatchesPlainIPv4DenyEntry(string compatibleForm)
+    {
+        // #635 round-2 code-review: distinct from the IPv4-MAPPED form ("::ffff:a.b.c.d") already
+        // covered above — this is the older, RFC 4291-deprecated "IPv4-compatible" form (no "ffff"),
+        // which IPAddress.IsIPv4MappedToIPv6 does NOT recognize.
+        var config = new SandboxConfig
+        {
+            ToolOverrides = new() { ["http_tool"] = new ToolOverrideConfig { DeniedHosts = ["127.0.0.1"] } }
+        };
+        var (_, enforcer) = Build(config, ("http_tool", NetworkFileTool()));
+
+        var result = await enforcer.EnforceAsync(
+            "http_tool", ToolCapability.FileRead | ToolCapability.NetworkAccess,
+            requestedHosts: [compatibleForm]);
+
+        result.IsSuccess.Should().BeFalse(
+            $"'{compatibleForm}' is the same address as the denied 127.0.0.1 to the real HTTP client");
+    }
+
+    [Fact]
+    public async Task AllowedHost_Ipv6Loopback_IsNotMisidentifiedAsAnUnrelatedIPv4Address()
+    {
+        // Guard case: naively taking the last 4 bytes of "::1" (loopback) gives "0.0.0.1", NOT
+        // "127.0.0.1" — the IPv4-compatible-form collapse must exclude loopback/unspecified rather
+        // than blindly treating any all-zero-prefixed IPv6 address as IPv4-compatible. Configuring
+        // the WRONG value ("0.0.0.1") the naive bug would produce, rather than the correct one
+        // ("127.0.0.1"), so this test actually discriminates: refusing "::1" against a
+        // "127.0.0.1" allow entry is ALSO the correct outcome, just for a different reason,
+        // so that pairing can't tell a fixed collapse from a differently-broken one.
+        var config = new SandboxConfig
+        {
+            ToolOverrides = new() { ["http_tool"] = new ToolOverrideConfig { AllowedHosts = ["0.0.0.1"] } }
+        };
+        var (_, enforcer) = Build(config, ("http_tool", NetworkFileTool()));
+
+        var result = await enforcer.EnforceAsync(
+            "http_tool", ToolCapability.FileRead | ToolCapability.NetworkAccess,
+            requestedHosts: ["::1"]);
+
+        result.IsSuccess.Should().BeFalse("\"::1\" (loopback) must not be collapsed into an unrelated \"0.0.0.1\"");
+    }
+
+    [Fact]
+    public async Task DeniedHostOnly_RequestedHostTriggersIdnHostException_StillRefused()
+    {
+        // #635 round-2 code-review: verified live that Uri.IdnHost throws UriFormatException for a
+        // mixed valid-character-plus-invalid-Unicode label — the fail-closed sentinel path
+        // (CanonicalizeParsedHost's catch block) must refuse the call, not silently admit it.
+        var config = new SandboxConfig
+        {
+            ToolOverrides = new() { ["http_tool"] = new ToolOverrideConfig { DeniedHosts = ["*.evil.com"] } }
+        };
+        var (_, enforcer) = Build(config, ("http_tool", NetworkFileTool()));
+
+        var result = await enforcer.EnforceAsync(
+            "http_tool", ToolCapability.FileRead | ToolCapability.NetworkAccess,
+            requestedHosts: ["a￿.com"]);
+
+        result.IsSuccess.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task DeniedHost_FullwidthDigitEncodedDecimalIPv4_StillMatchesDenyEntry()
+    {
+        // CI security-review (post-push, before merge): a fullwidth digit ("２", U+FF12) defeats
+        // Uri's own up-front IPv4-literal recognition ("２852039166" classifies as HostNameType.Dns,
+        // not IPv4), so a single normalization pass only IDNA/NFKC-folds it to the plain-ASCII
+        // decimal string "2852039166" — which IS a legacy decimal encoding of 169.254.169.254 (the
+        // cloud metadata address) but is never re-evaluated as an IP literal. Verified live: the
+        // exact concrete exploit from #635's own issue text, restated with a fullwidth leading digit.
+        var config = new SandboxConfig
+        {
+            ToolOverrides = new() { ["http_tool"] = new ToolOverrideConfig { DeniedHosts = ["169.254.169.254"] } }
+        };
+        var (_, enforcer) = Build(config, ("http_tool", NetworkFileTool()));
+
+        var result = await enforcer.EnforceAsync(
+            "http_tool", ToolCapability.FileRead | ToolCapability.NetworkAccess,
+            requestedHosts: ["２852039166"]);
+
+        result.IsSuccess.Should().BeFalse(
+            "the fullwidth leading digit must not survive normalization as a way to hide a decimal-IPv4-encoded deny entry");
     }
 }
