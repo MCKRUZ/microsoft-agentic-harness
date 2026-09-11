@@ -278,7 +278,8 @@ public partial class ToolChainBuilder
             .ToList();
 
         return new GovernedAIFunction(
-            publishedGoverned.Inner, compositionTaint: null, publishedGoverned.CurrentSkillAccessor, union);
+            publishedGoverned.Inner, compositionTaint: null, publishedGoverned.CurrentSkillAccessor, union,
+            publishedGoverned.SkillIdFromArguments);
     }
 
     /// <summary>

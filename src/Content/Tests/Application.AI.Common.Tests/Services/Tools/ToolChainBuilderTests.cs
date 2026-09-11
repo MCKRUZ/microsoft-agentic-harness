@@ -4,6 +4,7 @@ using Application.AI.Common.Interfaces.Plugins;
 using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Services.Governance;
 using Application.AI.Common.Services.Tools;
+using Domain.AI.Governance;
 using Domain.AI.Sandbox;
 using Domain.AI.Skills;
 using Domain.AI.Tools;
@@ -17,6 +18,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Moq;
+using System.Reflection;
 using Xunit;
 
 namespace Application.AI.Common.Tests.Services.Tools;
@@ -696,6 +698,60 @@ public class ToolChainBuilderTests
             .Which.Should().BeOfType<GovernedAIFunction>().Subject;
         governed.SkillIds.Should().BeEquivalentTo(["skill-a", "skill-b"],
             "both skills declared this MCP tool, so the published instance must carry both skills' scope");
+    }
+
+    // ── #619: SkillIdFromArguments must survive both rewrap sites, same as CurrentSkillAccessor/SkillIds ──
+
+    [Fact]
+    public void ApplyCompositionTaint_RewrapsAToolWithSkillIdFromArguments_ForwardsItUnchanged()
+    {
+        // #619: no production caller supplies both a composition finding AND a per-call skill
+        // resolver on the same tool today, so this exercises the private rewrap method directly
+        // (reflection) rather than end-to-end — the only way to prove this specific forwarding
+        // without waiting for a future tool to combine the two mechanisms.
+        Func<AIFunctionArguments, string?> resolver = _ => "resolved-skill";
+        var inner = AIFunctionFactory.Create(() => "result", "sink_tool");
+        var governed = new GovernedAIFunction(inner, skillIdFromArguments: resolver);
+
+        var analyzer = new Mock<IToolCompositionAnalyzer>();
+        analyzer.Setup(a => a.Analyze(It.IsAny<IReadOnlyList<AITool>>())).Returns(
+            new ToolCompositionAssessment(
+                [new ToolCompositionFinding(
+                    "source_tool", ToolCompositionCapability.IngestsUntrustedInput,
+                    "sink_tool", ToolCompositionCapability.ExecutesCode,
+                    ToolCapabilityOrigin.FirstParty, ToolCapabilityOrigin.FirstParty)],
+                UnclassifiedTools: []));
+
+        var builder = CreateBuilder();
+        typeof(ToolChainBuilder)
+            .GetField("_compositionAnalyzer", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .SetValue(builder, analyzer.Object);
+
+        var method = typeof(ToolChainBuilder).GetMethod("ApplyCompositionTaint", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        var result = (List<AITool>)method.Invoke(builder, [new List<AITool> { governed }, "test-agent"])!;
+
+        var rewrapped = result.Should().ContainSingle().Which.Should().BeOfType<GovernedAIFunction>().Subject;
+        rewrapped.Should().NotBeSameAs(governed, "a composition finding must trigger a rewrap");
+        rewrapped.SkillIdFromArguments.Should().BeSameAs(resolver,
+            "the re-wrap must forward the per-call skill resolver exactly like CurrentSkillAccessor/SkillIds, or a future tool combining both mechanisms would silently lose its scope");
+    }
+
+    [Fact]
+    public void ResolveUnion_PublishedToolHasSkillIdFromArguments_ForwardsItIntoTheRewrappedInstance()
+    {
+        // #619: mirrors the ApplyCompositionTaint test above for the other rewrap site.
+        Func<AIFunctionArguments, string?> resolver = _ => "resolved-skill";
+        var inner = AIFunctionFactory.Create(() => "result", "shared_tool");
+        var published = new GovernedAIFunction(inner, skillIds: ["skill-a"], skillIdFromArguments: resolver);
+        var candidate = new GovernedAIFunction(inner, skillIds: ["skill-b"]);
+
+        var method = typeof(ToolChainBuilder).GetMethod("ResolveUnion", BindingFlags.NonPublic | BindingFlags.Static)!;
+        var result = (AITool)method.Invoke(null, [published, candidate])!;
+
+        var rewrapped = result.Should().BeOfType<GovernedAIFunction>().Subject;
+        rewrapped.SkillIds.Should().BeEquivalentTo(["skill-a", "skill-b"]);
+        rewrapped.SkillIdFromArguments.Should().BeSameAs(resolver,
+            "the union rewrap must forward the published side's per-call skill resolver, not just its SkillIds/CurrentSkillAccessor");
     }
 
     [Fact]

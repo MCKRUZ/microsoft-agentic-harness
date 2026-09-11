@@ -132,6 +132,16 @@ internal sealed class GovernedAIFunction : DelegatingAIFunction
     /// </summary>
     internal ICurrentSkillAccessor? CurrentSkillAccessor => _currentSkillAccessor;
 
+    /// <summary>
+    /// The per-call skill resolver supplied at construction (#589), for the same re-wrap-forwarding
+    /// reason as <see cref="SkillIds"/> — currently unused by either production rewrap site
+    /// (<c>ToolChainBuilder.ApplyCompositionTaint</c>, <c>ToolChainBuilder.ProjectSurvivors.ResolveUnion</c>),
+    /// since no tool built through <c>ToolChainBuilder</c>'s pipeline supplies a per-call resolver
+    /// today (#619) — added defensively so a future tool that does adopt this pattern through that
+    /// pipeline can't have it silently dropped by a rewrap with no compiler or test signal.
+    /// </summary>
+    internal Func<AIFunctionArguments, string?>? SkillIdFromArguments => _skillIdFromArguments;
+
     protected override async ValueTask<object?> InvokeCoreAsync(
         AIFunctionArguments arguments,
         CancellationToken cancellationToken)
