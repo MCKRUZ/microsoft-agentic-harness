@@ -18,6 +18,7 @@ using Domain.AI.Governance;
 using Domain.AI.Skills;
 using Domain.AI.Telemetry.Conventions;
 using Domain.Common.Extensions;
+using Domain.Common.Helpers;
 using MediatR;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
@@ -473,6 +474,33 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 	/// <c>CallId</c>, and a non-empty <c>Name</c> for the call side — and leaves duplicate-start and
 	/// orphaned-result enforcement to the sink.
 	/// </summary>
+	/// <remarks>
+	/// <strong>CallId and Name are sanitized (#556) before either reaches <paramref name="sink"/>.</strong>
+	/// Before this, a hallucinated or injection-shaped provider/model-supplied CallId or tool name
+	/// reached the live dashboard/AG-UI client completely raw — <see cref="RedactedArgsJson"/> and
+	/// <see cref="RedactedResultForStreaming"/> only ever covered the payload, never the identifiers.
+	/// Uses the same deterministic transform as <c>ToolCallTranscriptExtractor.SanitizeIdentifier</c>
+	/// (#513, the replay-persistence path) via the now-shared <see cref="ToolCallIdentifierSanitizer"/>,
+	/// applied consistently to both the call-emit CallId and the result-emit CallId for the same raw
+	/// id. This is safe for <see cref="ToolCallOrderingSink"/>'s correlation, not despite it: the
+	/// transform is a pure function of the raw value alone, so the SAME raw CallId always sanitizes to
+	/// the SAME value on both the call and result side — the ordering sink's plain string-equality
+	/// check never sees the raw id at all, only its (consistently) sanitized replacement, and
+	/// correlation cannot break.
+	/// <para>
+	/// <strong>Sanitizes inline here rather than as an <see cref="IAgentTurnStreamSink"/> decorator</strong>
+	/// (matching <see cref="ToolCallOrderingSink"/>'s own pattern for a cross-cutting sink concern) —
+	/// considered during #556 code-review. A decorator would only pay off if a second production
+	/// caller of <see cref="IAgentTurnStreamSink.EmitToolCallAsync"/>/<see cref="IAgentTurnStreamSink.EmitToolCallResultAsync"/>
+	/// existed to risk forgetting the same protection; a repo-wide search confirms this method is
+	/// still the ONLY one. <c>AgUiClientToolBridge</c> (raised as a candidate second caller) implements
+	/// the unrelated <c>IClientToolBridge</c> interface for the client-invoked tool round-trip and
+	/// never calls either method — it shares only <see cref="ToolPayloadRedactor.RedactForStreaming"/>
+	/// with <see cref="RedactedArgsJson"/>, a different helper for a different purpose. If a genuine
+	/// second caller is ever added, revisit this as a decorator then, rather than preemptively
+	/// building one for a caller that does not exist.
+	/// </para>
+	/// </remarks>
 	private static async Task EmitToolCallActivityAsync(
 		AIContent content,
 		IAgentTurnStreamSink sink,
@@ -486,18 +514,37 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 			// result (an empty toolCallId would violate the wire contract's required field), and
 			// a call with no name has nothing meaningful to announce.
 			case FunctionCallContent { CallId.Length: > 0 } call when !string.IsNullOrEmpty(call.Name):
+				var safeCallId = SanitizeStreamedIdentifier(call.CallId, logger, "CallId", correlationId: null);
+				var safeName = SanitizeStreamedIdentifier(call.Name, logger, "ToolName", correlationId: safeCallId);
 				await sink.EmitToolCallAsync(
-					call.CallId, call.Name, RedactedArgsJson(call, redactor, logger), cancellationToken);
+					safeCallId, safeName,
+					RedactedArgsJson(call, safeName, safeCallId, redactor, logger), cancellationToken);
 				break;
 
 			// A non-empty CallId is the only guard needed here — the sink itself drops a result with
 			// no matching preceding TOOL_CALL_START (e.g. a call skipped above for an empty Name).
 			case FunctionResultContent { CallId.Length: > 0 } result:
+				var safeResultCallId = SanitizeStreamedIdentifier(result.CallId, logger, "CallId", correlationId: null);
 				await sink.EmitToolCallResultAsync(
-					result.CallId, RedactedResultForStreaming(result, redactor, logger), cancellationToken);
+					safeResultCallId,
+					RedactedResultForStreaming(result, safeResultCallId, redactor, logger), cancellationToken);
 				break;
 		}
 	}
+
+	/// <summary>
+	/// Narrows a tool CallId or tool name to identifier shape before it reaches the live streaming
+	/// sink (#556) — the same transform, and the same CWE-117 logging discipline (never log the raw,
+	/// attacker-controlled value; only its already-sanitized replacement or a correlation id derived
+	/// from one), as <c>ToolCallTranscriptExtractor.SanitizeIdentifier</c> uses for the replay-memory
+	/// path. See <see cref="EmitToolCallActivityAsync"/>'s remarks for why applying this consistently
+	/// to both the call-emit and result-emit CallId preserves <see cref="ToolCallOrderingSink"/>
+	/// correlation rather than risking it.
+	/// </summary>
+	private static string SanitizeStreamedIdentifier(string value, ILogger logger, string fieldName, string? correlationId) =>
+		ToolCallIdentifierLogging.SanitizeAndLogIfChanged(
+			value, logger, nameof(ExecuteAgentTurnCommandHandler), fieldName, correlationId,
+			"before streaming to the client");
 
 	/// <summary>
 	/// Serializes and redacts a tool call's arguments for streaming. An unserializable argument value
@@ -511,7 +558,19 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 	/// observability record (#389, investigated and closed as won't-fix) — see that method's comment
 	/// for why.
 	/// </summary>
-	private static StreamedToolCallArguments RedactedArgsJson(FunctionCallContent call, ISecretRedactor? redactor, ILogger logger)
+	/// <param name="call">The call whose arguments are serialized — only <see cref="FunctionCallContent.Arguments"/> is read.</param>
+	/// <param name="safeName">
+	/// <paramref name="call"/>'s tool name, ALREADY sanitized by <see cref="SanitizeStreamedIdentifier"/>
+	/// (#556 code-review: this method's own failure-path logging below, and
+	/// <see cref="ToolPayloadRedactor.RedactForStreaming"/>'s, both log a tool-name/CallId pair on
+	/// their own failure branches — passed explicitly rather than read off <paramref name="call"/>'s
+	/// raw <see cref="FunctionCallContent.Name"/>/<c>CallId</c> so those
+	/// branches can't silently reintroduce the exact raw-identifier-reaches-a-log-sink gap #556 exists
+	/// to close).
+	/// </param>
+	/// <param name="safeCallId"><paramref name="call"/>'s CallId, already sanitized — see <paramref name="safeName"/>.</param>
+	private static StreamedToolCallArguments RedactedArgsJson(
+		FunctionCallContent call, string safeName, string safeCallId, ISecretRedactor? redactor, ILogger logger)
 	{
 		if (call.Arguments is not { Count: > 0 } args)
 			return new StreamedToolCallArguments("{}", Withheld: false);
@@ -525,11 +584,11 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 		{
 			logger.LogWarning(ex,
 				"Failed to serialize streamed tool-call arguments for {ToolName} CallId={CallId}",
-				call.Name, call.CallId);
+				safeName, safeCallId);
 			return new StreamedToolCallArguments("{}", Withheld: true);
 		}
 
-		return ToolPayloadRedactor.RedactForStreaming(serialized, redactor, logger, call.Name, call.CallId);
+		return ToolPayloadRedactor.RedactForStreaming(serialized, redactor, logger, safeName, safeCallId);
 	}
 
 	/// <summary>
@@ -552,8 +611,14 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 	/// applies before persisting to the trace store a dashboard later renders, since that is just as
 	/// much an exposure point as this client-facing SSE frame.
 	/// </summary>
-	private static StreamedToolCallResult RedactedResultForStreaming(FunctionResultContent result, ISecretRedactor? redactor, ILogger logger) =>
-		ToolPayloadRedactor.RedactResultForStreaming(ToolPayloadRedactor.SafeResultText(result), redactor, logger, result.CallId);
+	/// <param name="safeCallId">
+	/// <paramref name="result"/>'s CallId, already sanitized by <see cref="SanitizeStreamedIdentifier"/>
+	/// (#556 code-review) — see <see cref="RedactedArgsJson"/>'s identical parameter for why this is
+	/// passed explicitly rather than read off <paramref name="result"/>'s raw <c>CallId</c>.
+	/// </param>
+	private static StreamedToolCallResult RedactedResultForStreaming(
+		FunctionResultContent result, string safeCallId, ISecretRedactor? redactor, ILogger logger) =>
+		ToolPayloadRedactor.RedactResultForStreaming(ToolPayloadRedactor.SafeResultText(result), redactor, logger, safeCallId);
 
 	private static void RecordTurnError(string agentName)
 	{

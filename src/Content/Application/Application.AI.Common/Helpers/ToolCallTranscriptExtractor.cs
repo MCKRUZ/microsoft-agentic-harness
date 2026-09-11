@@ -103,7 +103,6 @@ public static class ToolCallTranscriptExtractor
         for (var i = 0; i < calls.Count; i++)
         {
             var call = calls[i];
-            var argsJson = TrySerializeArguments(call, logger);
 
             // Pairing above (calls, resultsByCallId) is keyed on the RAW call.CallId — sanitizing
             // before the lookup would risk two distinct raw ids collapsing to the same sanitized
@@ -115,10 +114,16 @@ public static class ToolCallTranscriptExtractor
             var safeCallId = SanitizeIdentifier(call.CallId, logger, "CallId", correlationId: null);
             var safeName = SanitizeIdentifier(call.Name, logger, "ToolName", correlationId: safeCallId);
 
+            // Sanitized identifiers computed first (#556 code-review): TrySerializeArguments has its
+            // own failure-path log (a call whose Arguments fail to JSON-serialize) that must log
+            // safeName/safeCallId, not call.Name/call.CallId — otherwise a hostile CallId/Name reaches
+            // the log sink raw via THIS branch even though the persisted ToolExchange itself is clean.
+            var argsJson = TrySerializeArguments(call, safeName, safeCallId, logger);
+
             if (resultsByCallId.TryGetValue(call.CallId, out var result))
             {
                 exchanges.Add(new ToolExchange(
-                    safeCallId, safeName, argsJson, ResultText(result), HasResult: true, RoundOrdinal: i));
+                    safeCallId, safeName, argsJson, ResultText(result, safeCallId), HasResult: true, RoundOrdinal: i));
             }
             else
             {
@@ -131,18 +136,6 @@ public static class ToolCallTranscriptExtractor
     }
 
     /// <summary>
-    /// The longest a tool name or call id may be once persisted for replay (#513). Well above every
-    /// provider's own limit, so a legitimate value is never truncated — a value that reaches this
-    /// ceiling is already suspicious on length alone, independent of what characters it contains.
-    /// </summary>
-    internal const int MaxIdentifierLength = 128;
-
-    /// <summary>Hex characters of the collision-guard hash suffix — mirrors <c>BundleOwnedMcpToolNaming</c>'s own 5-byte suffix.</summary>
-    private const int HashSuffixHexLength = 10;
-
-    private const string HashSuffixSeparator = "_";
-
-    /// <summary>
     /// Narrows a tool name or call id to the shape both are supposed to have, before either is ever
     /// persisted for replay (#513) — previously reaching the conversation store, and the model's own
     /// context on every later turn, with no character-class restriction at all, unlike the free-text
@@ -151,58 +144,27 @@ public static class ToolCallTranscriptExtractor
     /// <remarks>
     /// Deliberately not <see cref="IToolCallReplayTreatment.Treat"/> — that pass is built for free
     /// text (sanitize an injection payload, then redact secret patterns, then size-tier), and a tool
-    /// name or call id has a much narrower legitimate shape than a payload. Shares the character-class
-    /// scan itself with <c>BundleOwnedMcpToolNaming</c>'s identical need via
-    /// <see cref="Domain.Common.Helpers.IdentifierSanitizer.Sanitize"/> — an allowlist of ASCII
-    /// letters, digits, underscore, and hyphen is both stricter than free-text treatment — nothing
-    /// outside that set survives, so there is no character class left for an injection payload to
-    /// exploit — and cheaper than running the full treatment pipeline on a string that was never meant
-    /// to carry free text in the first place. The extractor does not verify the name resolves to a
-    /// declared tool (a hallucinated or attacker-suggested name still produces a
-    /// <see cref="ToolExchange"/>), so this is the only gate between a provider- or model-supplied
-    /// identifier and durable, model-facing persistence.
+    /// name or call id has a much narrower legitimate shape than a payload. The transform itself is
+    /// <see cref="ToolCallIdentifierSanitizer.Sanitize"/> — shared with the live AG-UI streaming path
+    /// (#556, <c>ExecuteAgentTurnCommandHandler.EmitToolCallActivityAsync</c>) so both consumers of the
+    /// same raw <c>FunctionCallContent</c>/<c>FunctionResultContent</c> CallId apply the IDENTICAL
+    /// deterministic transform — this method only adds the logging side effect, which differs per
+    /// caller. The extractor does not verify the name resolves to a declared tool (a hallucinated or
+    /// attacker-suggested name still produces a <see cref="ToolExchange"/>), so this is the only gate
+    /// between a provider- or model-supplied identifier and durable, model-facing persistence.
     /// <para>
-    /// The truncation-and-collision-guard policy layered on top of that shared primitive is this
-    /// caller's own, matching <c>BundleOwnedMcpToolNaming.SanitizeWithCollisionGuard</c>'s own
-    /// precedent for the identical reason that method carries a guard at all: mapping every disallowed
-    /// character to the same <c>'_'</c> collapses information, so two distinct raw values (e.g.
-    /// <c>"call#1"</c> and <c>"call$1"</c>) can sanitize to an identical string. This type's own dedup
-    /// (by raw, pre-sanitization CallId) runs before either value is sanitized, so both would otherwise
-    /// survive as separate <see cref="ToolExchange"/> records sharing one persisted CallId — the same
-    /// "duplicate tool_call id" hazard the raw-duplicate dedup exists to prevent, reintroduced by
-    /// sanitization itself. A hash suffix of the original raw value, appended only when sanitization
-    /// actually changed something, keeps distinct raw values distinct after sanitizing.
+    /// This type's own dedup (by raw, pre-sanitization CallId, above) runs before either value is
+    /// sanitized, so two distinct raw values that collapse to the same sanitized string would
+    /// otherwise survive as separate <see cref="ToolExchange"/> records sharing one persisted CallId —
+    /// the same "duplicate tool_call id" hazard the raw-duplicate dedup exists to prevent, reintroduced
+    /// by sanitization itself. <see cref="ToolCallIdentifierSanitizer"/>'s collision-guard hash suffix
+    /// is what keeps distinct raw values distinct after sanitizing.
     /// </para>
     /// </remarks>
-    private static string SanitizeIdentifier(string value, ILogger logger, string fieldName, string? correlationId)
-    {
-        var truncated = value.Length > MaxIdentifierLength ? value[..MaxIdentifierLength] : value;
-        var sanitized = IdentifierSanitizer.Sanitize(truncated);
-        var changed = truncated.Length != value.Length || sanitized != truncated;
-
-        // IdentifierSanitizer.Sanitize itself already takes the zero-allocation path for an
-        // already-clean value — this only adds the truncation check on top.
-        if (!changed)
-            return value;
-
-        var suffix = $"{HashSuffixSeparator}{Sha256HexPrefixHelper.Compute(value, HashSuffixHexLength)}";
-        var keep = Math.Max(0, MaxIdentifierLength - suffix.Length);
-        var basePart = sanitized.Length > keep ? sanitized[..keep] : sanitized;
-        var result = $"{basePart}{suffix}";
-
-        // Never log the raw, attacker-controlled value here (CWE-117): a hostile CallId could
-        // otherwise carry log-forging control characters or, since the ceiling above only bounds
-        // what gets persisted, an unbounded payload straight into the log sink. correlationId is
-        // always already-sanitized (or null when this call is sanitizing the CallId itself, in
-        // which case the value's own cleaned replacement is the correlation id).
-        logger.LogWarning(
-            "[ToolCallTranscriptExtractor] {Field} for CallId={CallId} was truncated or contained " +
-            "characters outside the expected identifier shape ([A-Za-z0-9_-]); replaced with " +
-            "{Sanitized} before persisting for replay.",
-            fieldName, correlationId ?? result, result);
-
-        return result;
-    }
+    private static string SanitizeIdentifier(string value, ILogger logger, string fieldName, string? correlationId) =>
+        ToolCallIdentifierLogging.SanitizeAndLogIfChanged(
+            value, logger, nameof(ToolCallTranscriptExtractor), fieldName, correlationId,
+            "before persisting for replay");
 
     /// <summary>Adapter over <see cref="Extract(IEnumerable{ChatMessage}, ILogger)"/> for an agent's response.</summary>
     public static IReadOnlyList<ToolExchange> Extract(AgentResponse response, ILogger logger)
@@ -211,7 +173,7 @@ public static class ToolCallTranscriptExtractor
         return Extract(response.Messages, logger);
     }
 
-    private static string? TrySerializeArguments(FunctionCallContent call, ILogger logger)
+    private static string? TrySerializeArguments(FunctionCallContent call, string safeName, string safeCallId, ILogger logger)
     {
         if (call.Arguments is not { Count: > 0 } args)
             return null;
@@ -224,7 +186,7 @@ public static class ToolCallTranscriptExtractor
         {
             logger.LogWarning(ex,
                 "[ToolCallTranscriptExtractor] Failed to serialize arguments for {Tool} CallId={CallId}",
-                call.Name, call.CallId);
+                safeName, safeCallId);
             return null;
         }
     }
@@ -239,7 +201,7 @@ public static class ToolCallTranscriptExtractor
     /// The exception-substitution policy is still reused: a failed call's raw exception text must not
     /// reach the model any more than it should reach an observability store.
     /// </summary>
-    private static string? ResultText(FunctionResultContent result)
+    private static string? ResultText(FunctionResultContent result, string safeCallId)
     {
         if (result.Exception is not null)
             return "Error: tool call failed.";
@@ -248,11 +210,11 @@ public static class ToolCallTranscriptExtractor
         {
             null => null,
             string text => text,
-            var value => TrySerializeResult(value, result.CallId),
+            var value => TrySerializeResult(value, safeCallId),
         };
     }
 
-    private static string? TrySerializeResult(object value, string? callId)
+    private static string? TrySerializeResult(object value, string callId)
     {
         try
         {

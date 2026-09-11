@@ -99,12 +99,17 @@ public static class ToolPayloadRedactor
     /// <param name="redactor">Optional secret redactor; a no-op when <see langword="null"/>.</param>
     /// <param name="logger">Logs a warning if redaction throws.</param>
     /// <param name="toolName">
-    /// The tool name, logged as a structured field (<c>{ToolName}</c>) rather than interpolated into
-    /// the message text — <paramref name="toolName"/> is model/registry-chosen, and interpolating it
-    /// into a plain-text log line lets a name containing a newline forge a second log entry on a
-    /// plain-text sink.
+    /// The tool name, logged as a structured field (<c>{ToolName}</c>). <paramref name="toolName"/> is
+    /// model/registry-chosen; the structured-field form here is NOT itself what stops a name
+    /// containing a newline from forging a second log entry — both of this repo's console formatters
+    /// substitute argument values straight into the rendered message text, so a raw newline would
+    /// still land in the output regardless of whether it's interpolated or passed as a template arg
+    /// (#556 security review). The actual protection is that every caller now passes an already
+    /// identifier-sanitized value (<see cref="Domain.Common.Helpers.ToolCallIdentifierSanitizer"/>),
+    /// which cannot contain a newline. Kept as a structured field anyway because a sink that DOES
+    /// treat fields specially (structured JSON logging, e.g.) benefits from it.
     /// </param>
-    /// <param name="callId">The provider-assigned call id, logged as a structured field (<c>{CallId}</c>).</param>
+    /// <param name="callId">The provider-assigned call id, logged as a structured field (<c>{CallId}</c>) — same caveat as <paramref name="toolName"/>.</param>
     public static StreamedToolCallArguments RedactForStreaming(
         string json, ISecretRedactor? redactor, ILogger logger, string toolName, string? callId)
     {
@@ -198,11 +203,12 @@ public static class ToolPayloadRedactor
     /// message is simpler than plumbing per-call structured fields through a generic helper.
     /// <see cref="RedactForStreaming"/> does NOT use this helper, despite an identical
     /// try/catch/log/fallback shape: it needs <c>toolName</c> and <c>callId</c> logged as separate
-    /// structured fields (not pre-interpolated into one string) so a model-chosen tool name
-    /// containing control characters can't forge a second entry on a plain-text log sink — a need
-    /// this helper's single-preformatted-string contract deliberately doesn't support. Widening this
-    /// helper to take structured args instead of a plain string was considered and rejected: doing so
-    /// for one caller would force every other caller to plumb a template + args pair for no benefit.
+    /// structured fields, which this helper's single-preformatted-string contract doesn't support.
+    /// The identifier-sanitization callers now apply before reaching either helper (#556) is what
+    /// actually stops a hostile identifier forging a log entry — not the structured-vs-interpolated
+    /// choice itself, see <see cref="RedactForStreaming"/>'s remarks. Widening this helper to take
+    /// structured args instead of a plain string was considered and rejected: doing so for one caller
+    /// would force every other caller to plumb a template + args pair for no benefit.
     /// </remarks>
     public static string TryOrFallback(Func<string> produce, ILogger logger, string failureMessage, string fallback)
     {
