@@ -132,13 +132,16 @@ public static class SourceScan
     /// <para>
     /// <strong>The primary-constructor group must be nesting-aware.</strong> A first cut used
     /// <c>(?:\([^)]*\))?</c> — a flat, non-nesting match. A tuple-typed parameter
-    /// (<c>record Foo((int, int) Point)</c>) or a default value that calls another method
-    /// (<c>record Foo(int X = Math.Max(1, 2))</c>) both put a second <c>(...)</c> inside the outer
+    /// (<c>record Foo((int, int) Point)</c>), or an attribute whose own constructor takes arguments
+    /// (<c>record Foo([Range(1, 10)] int Age)</c>), both put a second <c>(...)</c> inside the outer
     /// one; <c>[^)]*</c> stops at the FIRST inner <c>)</c>, leaves the real closing paren unconsumed,
     /// and the whole declaration fails to match — silently dropping the type from every consumer's
     /// view, not just misparsing its parameter list. The balancing-group construct below
     /// (<c>(?&lt;pcDepth&gt;</c>/<c>(?&lt;-pcDepth&gt;</c>/<c>(?(pcDepth)(?!))</c>) matches parens at
-    /// arbitrary nesting depth instead of assuming exactly one level.
+    /// arbitrary nesting depth instead of assuming exactly one level. (A default value that CALLS a
+    /// method, e.g. <c>= Math.Max(1, 2)</c>, is NOT a real counter-example — C# requires default
+    /// parameter values to be compile-time constants, so that shape can never reach a production
+    /// file; verified by compiling it and getting CS1736.)
     /// </para>
     /// </remarks>
     public static IReadOnlyList<(string Name, string BaseList)> FindTypeDeclarations(string code) =>

@@ -154,20 +154,23 @@ public sealed class SecurityControlHasACallerTests
                 + "an implementation of it");
 
         // #534 round 2: the primary-constructor group must handle NESTED parens, not just one flat
-        // level — a tuple-typed parameter or a default value that calls another method both put a
-        // second `(...)` inside the outer one. A non-nesting `[^)]*` stops at the first inner `)`,
-        // leaves the real closing paren unconsumed, and the whole declaration fails to match at all
-        // — reproducing #534's dangerous direction (an implementation misread as a consumer) for a
-        // realistic shape neither of the tests above exercises.
+        // level — a tuple-typed parameter, or an attribute on a parameter whose own constructor takes
+        // arguments, both put a second `(...)` inside the outer one. A non-nesting `[^)]*` stops at
+        // the first inner `)`, leaves the real closing paren unconsumed, and the whole declaration
+        // fails to match at all — reproducing #534's dangerous direction (an implementation misread
+        // as a consumer) for a realistic shape neither of the tests above exercises. (A default value
+        // that CALLS a method, e.g. `= Math.Max(1, 2)`, was tried first and rejected: default
+        // parameter values must be compile-time constants in C#, so that shape can never appear in
+        // production source — verified by compiling it and getting CS1736.)
         Implements(
             "public sealed record X((double Lat, double Lon) Origin) : IAgentToolAuthorizationGate;",
             "IAgentToolAuthorizationGate")
             .Should().BeTrue("a tuple-typed primary constructor parameter is still an implementation");
         Implements(
-            "public sealed record X(int Retries = Math.Max(1, 2)) : IAgentToolAuthorizationGate;",
+            "public sealed record X([Range(1, 10)] int Age) : IAgentToolAuthorizationGate;",
             "IAgentToolAuthorizationGate")
-            .Should().BeTrue("a primary constructor default value that calls another method is still "
-                + "an implementation");
+            .Should().BeTrue("an attribute with constructor arguments on a primary constructor "
+                + "parameter is still an implementation");
 
         IsRegistrationOnly(
             "services.AddScoped<IAgentToolAuthorizationGate, DefaultAgentToolAuthorizationGate>();",
