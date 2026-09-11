@@ -98,10 +98,12 @@ public static class SecureInputValidatorHelper
         if (host.Contains('\0'))
             return false;
 
-        // Uri.CheckHostName already rejects control characters, whitespace, and any character
-        // outside DNS-name/IPv4/IPv6 grammar as UriHostNameType.Unknown — the explicit checks above
-        // exist for parity with ValidateFilePath's own explicit NUL check, not because this alone
-        // would miss them.
+        // Uri.CheckHostName's own MS Learn doc only guarantees the null/empty-string -> Unknown case
+        // in writing; whitespace-only and embedded-NUL are not explicitly documented, only observed
+        // (#605 /simplify review) to behave the same way today. The checks above are deliberate
+        // defense-in-depth on a security gate: they encode this method's actual invariant explicitly,
+        // rather than resting solely on an undocumented corner of a BCL method's behavior that a
+        // future .NET version is free to change without it counting as a breaking change.
         return Uri.CheckHostName(host) != UriHostNameType.Unknown;
     }
 
