@@ -771,11 +771,15 @@ public sealed class SecurityControlHasACallerTests
     /// consumer would call each one, and each one exists to be called.
     /// </para>
     /// <para>
-    /// One limit remains, tracked in #528: entries are unqualified type names, so a second
-    /// <c>SubPlanConfig</c> in another namespace would inherit this exemption. The filename-candidacy
-    /// limit that used to be recorded here is gone — candidacy is now the <c>: AbstractValidator&lt;</c>
-    /// shape, which is what closed #529 (four <c>Drift*Validator</c> classes registered by assembly
-    /// scan, consumed by nothing, and outside the old scan's reach entirely).
+    /// Entries are unqualified type names, so a second <c>SubPlanConfig</c> in another namespace
+    /// would inherit this exemption — this repo already has a proven instance of the underlying
+    /// hazard (<c>EscalationConfig</c> declared in two namespaces). <see cref="ConsumerResolvedValidatedTypes_HaveNoNamespaceCollision"/>
+    /// closes this (#528) by failing loudly if a second declaration ever appears for any of the six
+    /// names, rather than trying to silently disambiguate which one the exemption "really" means. The
+    /// filename-candidacy limit that used to be recorded here is gone — candidacy is now the
+    /// <c>: AbstractValidator&lt;</c> shape, which is what closed #529 (four <c>Drift*Validator</c>
+    /// classes registered by assembly scan, consumed by nothing, and outside the old scan's reach
+    /// entirely).
     /// </para>
     /// </remarks>
     private static readonly string[] ConsumerResolvedValidatedTypes =
@@ -831,6 +835,66 @@ public sealed class SecurityControlHasACallerTests
             "the exemption list and PlanValidator's dispatch arms must name the same types — a listed "
             + "type with no arm is a stale exemption excusing an inert validator; an arm with no entry "
             + "is a validator this guard would wrongly report as unbound");
+    }
+
+    /// <summary>
+    /// Every entry on <see cref="ConsumerResolvedValidatedTypes"/> must resolve to exactly one
+    /// production type declaration, or the exemption is ambiguous (#528).
+    /// </summary>
+    /// <remarks>
+    /// <see cref="FindValidatorDeclarations"/> deliberately extracts a <em>bare</em> type name from
+    /// <c>AbstractValidator&lt;T&gt;</c> — a qualified argument (<c>Governance.EscalationConfig</c>)
+    /// yields <see langword="null"/> and stays in scope, the fail-closed direction — and
+    /// <see cref="ConsumerResolvedValidatedTypes"/>'s own entries are bare names for the same reason:
+    /// there is nothing qualified on either side to compare against. That means a SECOND production
+    /// type sharing one of these six bare names, in a different namespace, would make an unrelated
+    /// validator over the OTHER type match the exemption too — silently, since
+    /// <c>consumerResolvedTypes.Contains(c.Validated)</c> is a plain string comparison with no
+    /// namespace awareness. This repo already has a proven instance of the underlying hazard —
+    /// <c>EscalationConfig</c> is declared in two namespaces (see this file's own remarks above) — so
+    /// the risk is not hypothetical, only not yet realized for these six names specifically.
+    /// <para>
+    /// Rather than attempt to disambiguate which of two same-named types "really" means the planner
+    /// exemption — the same trap this file's history already names and rejects ("approximating a
+    /// fact with something that correlates") — this fails loudly the moment a second declaration
+    /// appears, forcing a human decision (rename one type, or qualify the validator declaration so it
+    /// no longer matches the bare-name exemption at all) instead of silently trusting whichever one a
+    /// regex happens to have found.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void ConsumerResolvedValidatedTypes_HaveNoNamespaceCollision()
+    {
+        var contentRoot = Path.Combine(RepoRoot.Path, "src", "Content");
+        var sources = SourceScan.ReadProductionSources(contentRoot);
+        sources.Should().NotBeEmpty("the production source this reads must exist for its verdict to mean anything");
+
+        // Control: at least one of the six names must actually resolve — if the declaration regex
+        // below matched nothing at all, every entry would trivially "have no collision" while also
+        // proving nothing, the same vacuous-control shape this file's other guards already avoid.
+        var anyDeclarationFound = false;
+
+        foreach (var typeName in ConsumerResolvedValidatedTypes)
+        {
+            var declaringFiles = sources
+                .Where(s => Regex.IsMatch(s.Code, $@"\b(?:class|record|struct)\s+{Regex.Escape(typeName)}\b"))
+                .Select(s => s.Path)
+                .ToArray();
+
+            if (declaringFiles.Length > 0)
+                anyDeclarationFound = true;
+
+            declaringFiles.Should().HaveCountLessThanOrEqualTo(1,
+                $"'{typeName}' is exempted from the options-binding guard as one of PlanValidator's "
+                + "consumer-resolved step configs — a second production type sharing that bare name "
+                + "would silently inherit the same exemption for an unrelated validator, since the "
+                + "match has no namespace qualification on either side. Found in: "
+                + string.Join(", ", declaringFiles));
+        }
+
+        anyDeclarationFound.Should().BeTrue(
+            "the type-declaration scan must find at least one of the six consumer-resolved types, or "
+            + "this test's HaveCountLessOrEqualTo assertions above are passing vacuously");
     }
 
     /// <summary>
