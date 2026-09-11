@@ -177,7 +177,39 @@ public sealed partial class CapabilityEnforcer
     /// Normalizes a value with any leading <c>"*."</c> wildcard prefix already stripped — either a
     /// full absolute URI or a bare host[:port]/IP literal, never a wildcard pattern itself.
     /// </summary>
+    /// <remarks>
+    /// CI security-review (post-merge-attempt) found a second-order gap in this normalization: a
+    /// non-ASCII digit (a fullwidth <c>２</c>, U+FF12) defeats <see cref="Uri"/>'s own up-front IPv4-
+    /// literal recognition — <c>Uri.TryCreate("http://２852039166/")</c> classifies this as
+    /// <c>HostNameType.Dns</c>, not <c>IPv4</c>, because the leading character isn't an ASCII digit at
+    /// parse time. <see cref="CanonicalizeParsedHost"/>'s <c>IdnHost</c> step then IDNA/NFKC-folds the
+    /// fullwidth digit to plain ASCII as a side effect of DNS-label normalization — producing
+    /// <c>"2852039166"</c>, a pure-ASCII decimal string that IS a legacy decimal-IPv4 encoding of
+    /// <c>169.254.169.254</c> (the cloud metadata address), but <c>Uri</c> never re-evaluates
+    /// <c>HostNameType</c> against its own normalized output, so the value is never collapsed to the
+    /// dotted-quad form the very first #635 fix already handles for a plain (all-ASCII) decimal
+    /// literal. Verified live: feeding <c>NormalizeBareHostOnce</c>'s own output back into itself a
+    /// second time DOES resolve it correctly — the second pass sees pure ASCII digits up front and
+    /// <c>Uri</c> recognizes them as IPv4 immediately. <see cref="NormalizeBareHost"/> below re-runs
+    /// the single-pass normalization to a fixed point (bounded, not unconditional) specifically to
+    /// catch this class regardless of how many confusable/normalization layers an adversarial value
+    /// stacks — not just the two observed here.
+    /// </remarks>
     private static string NormalizeBareHost(string value)
+    {
+        var current = value;
+        for (var i = 0; i < 4; i++)
+        {
+            var next = NormalizeBareHostOnce(current);
+            if (next == current)
+                return next;
+            current = next;
+        }
+
+        return current;
+    }
+
+    private static string NormalizeBareHostOnce(string value)
     {
         if (Uri.TryCreate(value, UriKind.Absolute, out var uri) && !string.IsNullOrEmpty(uri.Host))
             return CanonicalizeParsedHost(uri);

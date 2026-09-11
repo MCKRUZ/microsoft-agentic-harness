@@ -1077,4 +1077,27 @@ public sealed class CapabilityEnforcementTests
 
         result.IsSuccess.Should().BeFalse();
     }
+
+    [Fact]
+    public async Task DeniedHost_FullwidthDigitEncodedDecimalIPv4_StillMatchesDenyEntry()
+    {
+        // CI security-review (post-push, before merge): a fullwidth digit ("２", U+FF12) defeats
+        // Uri's own up-front IPv4-literal recognition ("２852039166" classifies as HostNameType.Dns,
+        // not IPv4), so a single normalization pass only IDNA/NFKC-folds it to the plain-ASCII
+        // decimal string "2852039166" — which IS a legacy decimal encoding of 169.254.169.254 (the
+        // cloud metadata address) but is never re-evaluated as an IP literal. Verified live: the
+        // exact concrete exploit from #635's own issue text, restated with a fullwidth leading digit.
+        var config = new SandboxConfig
+        {
+            ToolOverrides = new() { ["http_tool"] = new ToolOverrideConfig { DeniedHosts = ["169.254.169.254"] } }
+        };
+        var (_, enforcer) = Build(config, ("http_tool", NetworkFileTool()));
+
+        var result = await enforcer.EnforceAsync(
+            "http_tool", ToolCapability.FileRead | ToolCapability.NetworkAccess,
+            requestedHosts: ["２852039166"]);
+
+        result.IsSuccess.Should().BeFalse(
+            "the fullwidth leading digit must not survive normalization as a way to hide a decimal-IPv4-encoded deny entry");
+    }
 }
