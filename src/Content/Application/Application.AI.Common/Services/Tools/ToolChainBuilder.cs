@@ -565,12 +565,12 @@ public partial class ToolChainBuilder : IToolChainBuilder
             // rewrapping — never double-governing, since InnerFunction always points at the real tool.
             // governed.Inner already carries any McpFailureNormalizingAIFunction wrapping intact —
             // there is no separate provenance flag left to forward. governed.CurrentSkillAccessor/
-            // SkillIds (#531/#589) DO need forwarding explicitly — unlike Inner, they are not implicit
-            // in the wrapped function, so a re-wrap that forgot them would silently drop the tool's
-            // skill scope the moment a composition finding implicates it.
+            // SkillIds/SkillIdFromArguments (#531/#589/#619) DO need forwarding explicitly — unlike
+            // Inner, they are not implicit in the wrapped function, so a re-wrap that forgot them
+            // would silently drop the tool's skill scope the moment a composition finding implicates it.
             return (AITool)new GovernedAIFunction(
                 governed.Inner, new ToolCompositionTaint(findings),
-                governed.CurrentSkillAccessor, governed.SkillIds);
+                governed.CurrentSkillAccessor, governed.SkillIds, governed.SkillIdFromArguments);
         }).ToList();
     }
 
