@@ -143,12 +143,16 @@ public sealed partial class CapabilityEnforcer
     /// (<c>notevil.com</c>, <c>xn--vil-9ma.com</c>, a different IP) collides with another. NOT
     /// verified exhaustive — this closes the specific classes above, not every conceivable alternate
     /// host encoding; treat a new one, if found, as its own gap rather than assuming this comment's
-    /// list is complete. Also verified: no tool in this repo issues an outbound network request
-    /// through anything other than <c>Uri</c>/<c>HttpClient</c> today (no raw socket, no shelled
-    /// <c>curl</c>) — the one process-spawning tool
-    /// (<c>Infrastructure.AI.Tools.RestrictedSearchTool</c>) is a read-only, network-incapable local
-    /// shell sandbox — so this canonicalization matches every real consumer that exists, not just the
-    /// one the issue measured.
+    /// list is complete. This <c>Uri</c>-based canonicalization matches every tool that exists TODAY
+    /// — not because every tool connects via <c>Uri</c>/<c>HttpClient</c> (several run subprocesses —
+    /// terraform, npm, kubectl — via <c>ISandboxExecutor</c>, which could resolve a host differently),
+    /// but because grepping every <c>ResourceParametersByOperation</c> declaration in this repo found
+    /// zero production tools that declare a <see cref="Domain.AI.Sandbox.ResourceParameterKind.Host"/>
+    /// parameter — <see cref="EnforceHostScoping"/> never runs with a non-empty <c>requestedHosts</c>
+    /// today regardless of what a given tool's own consumer does with the value. A template consumer
+    /// adding a host-taking tool that resolves the raw value through something other than <c>Uri</c>
+    /// (a raw socket, a DNS lookup, a subprocess) would need this file's normalization to actually
+    /// match — worth re-verifying at that point rather than assuming this comment still holds.
     /// </remarks>
     private static string NormalizeHostForMatch(string value)
     {
@@ -178,7 +182,17 @@ public sealed partial class CapabilityEnforcer
         if (Uri.TryCreate(value, UriKind.Absolute, out var uri) && !string.IsNullOrEmpty(uri.Host))
             return CanonicalizeParsedHost(uri);
 
-        if (value.Contains('/'))
+        // run-gates correctness/security review: not just '/' — a bare value carrying '@' (userinfo),
+        // '#' (fragment), '?' (query), or '\' (a browser/some URI parsers treat this as '/') would
+        // otherwise be silently reduced to just the leading host segment by the synthetic-scheme
+        // parse below, where it was refused outright as malformed before #635. Harmless for a tool
+        // that builds a web request from the result (the real HTTP client resolves the identical
+        // leading host), but a template consumer's future tool that feeds the raw value to a DNS
+        // lookup, a raw socket, or a subprocess would be checked against a different string than it
+        // actually contacts — the same "checked value must match consumed value" hazard #635 exists
+        // to close, just for a shape no tool in this repo produces today. Kept alongside '/' in the
+        // legacy StripPort fallback rather than synthetic-parsed.
+        if (value.IndexOfAny(['/', '@', '#', '?', '\\']) >= 0)
             return StripPort(value).TrimEnd('.');
 
         // Bare IPv6 needs brackets to be syntactically valid inside a URI ("http://::1/" is not a

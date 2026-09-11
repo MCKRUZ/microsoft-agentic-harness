@@ -988,4 +988,29 @@ public sealed class CapabilityEnforcementTests
 
         result.IsSuccess.Should().BeFalse("an unrelated IPv6 address must not be treated as 127.0.0.1");
     }
+
+    [Theory]
+    [InlineData("evil.com@allowed.com")] // userinfo
+    [InlineData("allowed.com#evil.com")] // fragment
+    [InlineData("allowed.com?evil.com")] // query
+    [InlineData("allowed.com\\evil.com")] // backslash
+    public async Task DeniedHostOnly_BareValueWithUserinfoFragmentQueryOrBackslash_StillRefused(string ambiguousValue)
+    {
+        // run-gates correctness/security review: these shapes were refused outright as malformed
+        // before #635 (Uri.CheckHostName rejects them). #635's synthetic-scheme parsing must not
+        // start silently reducing them to just the leading host segment — kept excluded alongside
+        // '/' so this file's own normalization never disagrees with a consumer that isn't Uri/
+        // HttpClient (a raw socket, a DNS lookup, a subprocess) about which host a value names.
+        var config = new SandboxConfig
+        {
+            ToolOverrides = new() { ["http_tool"] = new ToolOverrideConfig { DeniedHosts = ["*.evil.com"] } }
+        };
+        var (_, enforcer) = Build(config, ("http_tool", NetworkFileTool()));
+
+        var result = await enforcer.EnforceAsync(
+            "http_tool", ToolCapability.FileRead | ToolCapability.NetworkAccess,
+            requestedHosts: [ambiguousValue]);
+
+        result.IsSuccess.Should().BeFalse($"'{ambiguousValue}' must stay refused as malformed, not silently reduced to a bare host");
+    }
 }
