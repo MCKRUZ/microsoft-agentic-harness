@@ -153,6 +153,22 @@ public sealed class SecurityControlHasACallerTests
             .Should().BeFalse("a generic constraint naming the contract inside a where clause is not "
                 + "an implementation of it");
 
+        // #534 round 2: the primary-constructor group must handle NESTED parens, not just one flat
+        // level — a tuple-typed parameter or a default value that calls another method both put a
+        // second `(...)` inside the outer one. A non-nesting `[^)]*` stops at the first inner `)`,
+        // leaves the real closing paren unconsumed, and the whole declaration fails to match at all
+        // — reproducing #534's dangerous direction (an implementation misread as a consumer) for a
+        // realistic shape neither of the tests above exercises.
+        Implements(
+            "public sealed record X((double Lat, double Lon) Origin) : IAgentToolAuthorizationGate;",
+            "IAgentToolAuthorizationGate")
+            .Should().BeTrue("a tuple-typed primary constructor parameter is still an implementation");
+        Implements(
+            "public sealed record X(int Retries = Math.Max(1, 2)) : IAgentToolAuthorizationGate;",
+            "IAgentToolAuthorizationGate")
+            .Should().BeTrue("a primary constructor default value that calls another method is still "
+                + "an implementation");
+
         IsRegistrationOnly(
             "services.AddScoped<IAgentToolAuthorizationGate, DefaultAgentToolAuthorizationGate>();",
             "IAgentToolAuthorizationGate")
@@ -550,50 +566,10 @@ public sealed class SecurityControlHasACallerTests
         }
     }
 
-    /// <summary>
-    /// Every <c>class</c>/<c>record</c>/<c>struct</c> declared in <paramref name="code"/>, as
-    /// (type name, base list) — the single base-list parser behind <see cref="Implements"/>,
-    /// <see cref="FindMediatRRequestTypes"/>, and <see cref="FindValidatorDeclarations"/>.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// Extracted for #534: the three consumers above had drifted to different fidelity on the exact
-    /// same question ("what is this type's base list"). Only <see cref="FindMediatRRequestTypes"/>'s
-    /// parser allowed a primary-constructor parameter list (<c>record Foo(string Id) : IContract</c>)
-    /// and cut the base list at <c>where</c> so a generic constraint is never read as a base type —
-    /// <see cref="Implements"/> had neither, so a contract implemented via a primary constructor was
-    /// silently misread as a <em>consumer</em> (the dangerous direction: it makes an uncalled
-    /// governance contract look called), and a base list ending in a <c>where T : IContract</c>
-    /// constraint was wrongly read as an implementation of that contract (a false alarm, not a silent
-    /// pass, but still wrong). This file's own Common Mistakes entry names exactly this shape —
-    /// fixing one instance of a duplicated pattern and stopping there.
-    /// </para>
-    /// <para>
-    /// The base-list capture itself is <see cref="Implements"/>'s original, more permissive one
-    /// (<c>[^{{;]*</c>, no newline exclusion) rather than the other two's <c>[^{{\r\n]+</c> — the
-    /// latter stops at the first line break, so a base list that wraps onto a second line
-    /// (<c>class Foo :\n    IContract1,\n    IContract2</c>) previously lost every base after the
-    /// first line for <see cref="FindMediatRRequestTypes"/> and <see cref="FindValidatorDeclarations"/>
-    /// specifically; unifying on the wider capture closes that gap for both rather than only
-    /// widening <see cref="Implements"/>.
-    /// </para>
-    /// </remarks>
-    private static IReadOnlyList<(string Name, string BaseList)> FindTypeDeclarations(string code)
-    {
-        var declarations = new List<(string, string)>();
-
-        foreach (Match declaration in Regex.Matches(
-            code,
-            @"\b(?:class|record|struct)\s+(\w+)\s*(?:<[^>]*>)?\s*(?:\([^)]*\))?\s*:\s*([^{;]*)"))
-        {
-            // Constraints are not base types. Everything from `where` onward describes what a type
-            // parameter must satisfy, not what this type derives from.
-            var baseList = Regex.Split(declaration.Groups[2].Value, @"\bwhere\b")[0];
-            declarations.Add((declaration.Groups[1].Value, baseList));
-        }
-
-        return declarations;
-    }
+    // FindTypeDeclarations moved to Tests.Common/SourceScan.cs (#534 round 2) — it depends on no
+    // fixture of this class, and this file was already well past the repo's file-size guideline.
+    // Implements, FindMediatRRequestTypes, and FindValidatorDeclarations below call
+    // SourceScan.FindTypeDeclarations directly.
 
     /// <summary>
     /// Every <c>class X : AbstractValidator&lt;T&gt;</c> declared in one file, as
@@ -615,6 +591,14 @@ public sealed class SecurityControlHasACallerTests
     /// only because such files sat outside its filename-based candidacy. Now that candidacy is
     /// shape-based they are in scope, and <c>EgressManifestValidator.cs</c> declares two; attributing
     /// both to a single name would drop a real validator from the scan.
+    /// </para>
+    /// <para>
+    /// <see cref="SourceScan.FindTypeDeclarations"/> also finds <c>record</c>/<c>struct</c>
+    /// declarations, but <c>AbstractValidator</c> is a plain <c>class</c>, which neither can ever
+    /// legally derive from — that candidacy branch is permanently unreachable for this consumer
+    /// specifically, confirmed against the real ~2,400-file production tree, and left as-is rather
+    /// than narrowed: the shared parser stays one shape for all three consumers, and an unreachable
+    /// branch here costs nothing at runtime.
     /// </para>
     /// </remarks>
     private static IReadOnlyList<(string Validator, string? Validated)> FindValidatorDeclarations(
@@ -639,7 +623,7 @@ public sealed class SecurityControlHasACallerTests
         // disambiguates a name clash, or writes it with no using directive — matches nothing and is
         // never a candidate at all. Not reported, not exempted, invisible: the same silent-invisibility
         // failure as the *ConfigValidator.cs filename rule this replaced (#529).
-        foreach (var (name, baseList) in FindTypeDeclarations(strippedSource))
+        foreach (var (name, baseList) in SourceScan.FindTypeDeclarations(strippedSource))
         {
             var match = Regex.Match(
                 baseList, @"^\s*(?:[\w.]+\.)?AbstractValidator\s*<(?:\s*([A-Za-z0-9_]+)\s*>)?");
@@ -687,7 +671,7 @@ public sealed class SecurityControlHasACallerTests
     /// consumer <em>would</em> call each validator, not that one exists to be called.
     /// </para>
     /// <para>
-    /// The base list is cut at <c>where</c> before matching (see <see cref="FindTypeDeclarations"/>) —
+    /// The base list is cut at <c>where</c> before matching (see <see cref="SourceScan.FindTypeDeclarations"/>) —
     /// provable in this repo, where <c>RequestValidationBehavior</c>'s own declaration ends
     /// <c>: IPipelineBehavior&lt;TRequest, TResponse&gt; where TRequest : notnull</c>. Without the
     /// cut, <c>class Envelope&lt;T&gt; : Base&lt;T&gt; where T : IRequest</c> would register
@@ -701,7 +685,7 @@ public sealed class SecurityControlHasACallerTests
 
         foreach (var (_, code) in sources)
         {
-            foreach (var (name, baseList) in FindTypeDeclarations(code))
+            foreach (var (name, baseList) in SourceScan.FindTypeDeclarations(code))
             {
                 if (Regex.IsMatch(baseList, @"\bIRequest\b|\bIBaseRequest\b"))
                     requests.Add(name);
@@ -1262,16 +1246,17 @@ public sealed class SecurityControlHasACallerTests
     /// interface without being a caller of it.
     /// </summary>
     /// <remarks>
-    /// Over <see cref="FindTypeDeclarations"/>'s base list rather than its own pattern (#534) — the
-    /// original pattern had no primary-constructor group, so
+    /// Over <see cref="SourceScan.FindTypeDeclarations"/>'s base list rather than its own pattern
+    /// (#534) — the original pattern had no primary-constructor group, so
     /// <c>record Foo(string Id) : IContract</c> matched nothing and the declaring file was counted as
     /// a CONSUMER of the contract instead of an implementation: the dangerous direction, since it
     /// makes an uncalled governance contract look called. It also had no <c>where</c> cut, so
     /// <c>class Wrapper&lt;T&gt; : Base where T : IContract</c> was wrongly read as an implementation
     /// of <c>IContract</c> — a false alarm rather than a silent pass, but still wrong; both are fixed
-    /// by sharing <see cref="FindTypeDeclarations"/>'s parser instead of a third, independent pattern.
+    /// by sharing <see cref="SourceScan.FindTypeDeclarations"/>'s parser instead of a third,
+    /// independent pattern.
     /// </remarks>
     private static bool Implements(string code, string contract) =>
-        FindTypeDeclarations(code).Any(d => Regex.IsMatch(d.BaseList, $@"\b{contract}\b"));
+        SourceScan.FindTypeDeclarations(code).Any(d => Regex.IsMatch(d.BaseList, $@"\b{contract}\b"));
 
 }
