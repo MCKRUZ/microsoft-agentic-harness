@@ -225,21 +225,17 @@ public sealed class PluginPermissionRuleProvider : IPermissionRuleProvider
     /// <see cref="ComputeRules"/>'s agent-wide fail-closed fallback (#608).
     /// </summary>
     /// <remarks>
-    /// Delegates to <see cref="PluginToolBoundaryViolationExtensions.RequiresFailClosed"/> — the single shared
-    /// decision this and <c>ToolChainBuilder.ApplyPluginBoundaryIfPluginSkill</c> both call, instead
-    /// of each independently re-deriving the same Verified/Pending/Faulted branch (see that method's
-    /// remarks for the full reasoning, including why <c>Pending</c> keeps the original
-    /// list-kind-agnostic treatment).
+    /// Delegates to <see cref="PluginToolBoundaryViolationExtensions.BoundaryRequiresFailClosed"/> —
+    /// the single shared fetch-and-decide both this and
+    /// <c>ToolChainBuilder.ApplyPluginBoundaryIfPluginSkill</c> need, instead of each independently
+    /// re-deriving the same "only fetch violations when Faulted" rule around the same
+    /// Verified/Pending/Faulted branch (see that method's remarks for the full reasoning, including
+    /// why <c>Pending</c> keeps the original list-kind-agnostic treatment, and why it uses the
+    /// lower-level <see cref="PluginToolBoundaryViolationExtensions.RequiresFailClosed"/> overload
+    /// directly rather than this convenience one — it needs the boundary status again afterward).
     /// </remarks>
-    private bool BoundaryDemandsAgentWideFailClosed(string pluginName)
-    {
-        var status = _registry.GetBoundaryStatus(pluginName);
-        var violations = status == PluginBoundaryStatus.Faulted
-            ? _registry.GetBoundaryViolations(pluginName)
-            : null;
-
-        return status.RequiresFailClosed(violations);
-    }
+    private bool BoundaryDemandsAgentWideFailClosed(string pluginName) =>
+        _registry.BoundaryRequiresFailClosed(pluginName);
 
     /// <summary>
     /// DeniedTools are bypass-immune and enforced independently of any AutonomyLevel: a plugin that

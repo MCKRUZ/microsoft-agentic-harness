@@ -141,8 +141,18 @@ public sealed class PluginRegistry : IPluginRegistry
     /// <inheritdoc />
     public void MarkBoundaryFaulted(string pluginName, IReadOnlyList<PluginToolBoundaryViolation> violations)
     {
+        ArgumentNullException.ThrowIfNull(violations);
+
         lock (_stateLock)
         {
+            // security-reviewer finding: set the fail-closed status FIRST, before touching
+            // _boundaryViolations — Faulted-with-no-recorded-violations is itself fail closed (see
+            // RequiresFailClosed), so if anything below this line throws, the plugin lands in a safe
+            // state by construction rather than by coincidence of what its prior status happened to
+            // be. (The null guard above already prevents the one way this could throw today, but the
+            // ordering itself is a general invariant worth holding regardless.)
+            _boundaryStatus[pluginName] = PluginBoundaryStatus.Faulted;
+
             // #608 code-review, /simplify pass: two fixes on the same field.
             // 1. AddOrUpdate, not a manual GetValueOrDefault-then-indexer-write — matches the idiom
             //    MarkBoundaryPending/MarkBoundaryVerified above already established for exactly this
@@ -167,7 +177,6 @@ public sealed class PluginRegistry : IPluginRegistry
                 pluginName,
                 _ => violations.ToList(),
                 (_, existing) => existing.Concat(violations).ToList());
-            _boundaryStatus[pluginName] = PluginBoundaryStatus.Faulted;
             _stateVersion++;
         }
     }

@@ -3,28 +3,30 @@ using Domain.Common.Config.AI.Plugins;
 namespace Application.AI.Common.Interfaces.Plugins;
 
 /// <summary>
+/// Which declared list a <see cref="PluginToolBoundaryViolation"/> came from. An enum, not a
+/// string (#608 code-review/security-reviewer) — since #608, this field is the SOLE discriminator
+/// between "deny everything" and "run the normal boundary filter," so a typo'd or mislabeled string
+/// would have been a silent security decision with no compiler protection. Both producers already
+/// compare against these two symbols rather than hardcoding literals; the enum makes that the only
+/// possible comparison instead of a convention.
+/// </summary>
+public enum PluginToolBoundaryListKind
+{
+    /// <summary>A <see cref="Domain.Common.Config.AI.Plugins.PluginDeclaration.AllowedTools"/> entry.</summary>
+    AllowedTools,
+
+    /// <summary>A <see cref="Domain.Common.Config.AI.Plugins.PluginDeclaration.DeniedTools"/> entry.</summary>
+    DeniedTools,
+}
+
+/// <summary>
 /// One <see cref="PluginDeclaration.AllowedTools"/>/<see cref="PluginDeclaration.DeniedTools"/>
 /// entry that has been confirmed to not match any known tool — first-party or MCP-provided.
 /// </summary>
 /// <param name="PluginName">The plugin whose boundary declared the entry.</param>
-/// <param name="ListKind">Either <c>"AllowedTools"</c> or <c>"DeniedTools"</c>, for the error message.</param>
+/// <param name="ListKind">Which list the offending entry came from.</param>
 /// <param name="ToolName">The offending entry itself.</param>
-public sealed record PluginToolBoundaryViolation(string PluginName, string ListKind, string ToolName);
-
-/// <summary>
-/// The two values <see cref="PluginToolBoundaryViolation.ListKind"/> can hold. Shared so
-/// <c>PluginToolBoundaryTracker</c> (which produces violations) and every consumer that reads them
-/// back via <see cref="IPluginRegistry.GetBoundaryViolations"/> (#608) compare against the same
-/// symbols rather than each hardcoding the literal strings.
-/// </summary>
-public static class PluginToolBoundaryListKind
-{
-    /// <summary>A <see cref="Domain.Common.Config.AI.Plugins.PluginDeclaration.AllowedTools"/> entry.</summary>
-    public const string AllowedTools = "AllowedTools";
-
-    /// <summary>A <see cref="Domain.Common.Config.AI.Plugins.PluginDeclaration.DeniedTools"/> entry.</summary>
-    public const string DeniedTools = "DeniedTools";
-}
+public sealed record PluginToolBoundaryViolation(string PluginName, PluginToolBoundaryListKind ListKind, string ToolName);
 
 /// <summary>
 /// Extension helpers over a <see cref="PluginToolBoundaryViolation"/> list, used to classify a
@@ -78,6 +80,24 @@ public static class PluginToolBoundaryViolationExtensions
             PluginBoundaryStatus.Faulted => !violations.IsConfinedToAllowedTools(),
             _ => true, // Pending, or any future status — fail closed on uncertainty.
         };
+
+    /// <summary>
+    /// Whether <paramref name="pluginName"/>'s CURRENT boundary state (read fresh from
+    /// <paramref name="registry"/>) demands the fail-closed response (#608) — the fetch-and-pair
+    /// both consumers need, not just the leaf decision. Only fetches
+    /// <see cref="IPluginRegistry.GetBoundaryViolations"/> when the status is actually
+    /// <see cref="PluginBoundaryStatus.Faulted"/> (security-reviewer finding: consolidates the
+    /// "only fetch violations when Faulted" rule both call sites previously re-derived by hand).
+    /// </summary>
+    public static bool BoundaryRequiresFailClosed(this IPluginRegistry registry, string pluginName)
+    {
+        var status = registry.GetBoundaryStatus(pluginName);
+        var violations = status == PluginBoundaryStatus.Faulted
+            ? registry.GetBoundaryViolations(pluginName)
+            : null;
+
+        return status.RequiresFailClosed(violations);
+    }
 }
 
 /// <summary>

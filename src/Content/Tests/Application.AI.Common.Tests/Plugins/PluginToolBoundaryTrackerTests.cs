@@ -45,7 +45,7 @@ public sealed class PluginToolBoundaryTrackerTests
         var violations = _sut.Seed([plugin], NoFirstPartyToolsKnown, NoServersConfigured);
 
         violations.Should().ContainSingle(v =>
-            v.PluginName == "azure" && v.ListKind == "DeniedTools" && v.ToolName == "file_wrte");
+            v.PluginName == "azure" && v.ListKind == PluginToolBoundaryListKind.DeniedTools && v.ToolName == "file_wrte");
     }
 
     [Fact]
@@ -242,7 +242,7 @@ public sealed class PluginToolBoundaryTrackerTests
 
         var violations = _sut.Seed([plugin], NoFirstPartyToolsKnown, NoServersConfigured);
 
-        violations.Should().ContainSingle(v => v.ListKind == "DeniedTools");
+        violations.Should().ContainSingle(v => v.ListKind == PluginToolBoundaryListKind.DeniedTools);
     }
 
     [Fact]
@@ -305,7 +305,7 @@ public sealed class PluginToolBoundaryTrackerTests
         var violations = _sut.ReportServerToolsDiscovered("server1", ["some_other_tool"]);
 
         violations.Should().ContainSingle(v =>
-            v.PluginName == "azure" && v.ListKind == "DeniedTools" && v.ToolName == "file_wrte");
+            v.PluginName == "azure" && v.ListKind == PluginToolBoundaryListKind.DeniedTools && v.ToolName == "file_wrte");
         _registry.Verify(r => r.MarkBoundaryFaulted("azure", It.IsAny<IReadOnlyList<PluginToolBoundaryViolation>>()), Times.Once);
     }
 

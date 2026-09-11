@@ -247,15 +247,32 @@ public partial class ToolChainBuilder : IToolChainBuilder
         // normally already produces the narrower "just lose that one tool" outcome the corrupted
         // entry implies, without any special-casing. Every other case (a DeniedTools-involving
         // Faulted, Pending, or an empty/unknown violation set) still denies everything, fail-closed
-        // on uncertainty — see PluginBoundaryStatus.RequiresFailClosed's remarks, the single shared
-        // decision this and PluginPermissionRuleProvider.BoundaryDemandsAgentWideFailClosed both call.
+        // on uncertainty — see PluginToolBoundaryViolationExtensions.RequiresFailClosed's remarks,
+        // the single shared decision this and PluginPermissionRuleProvider.BoundaryDemandsAgentWideFailClosed
+        // both call. Fetched here rather than through the BoundaryRequiresFailClosed(registry, name)
+        // convenience overload next to it, since this method needs `status` again below for the log
+        // message — calling that overload would mean fetching status twice, not once.
         var status = pluginRegistry!.GetBoundaryStatus(skill.PluginSource);
         var violations = status == PluginBoundaryStatus.Faulted
             ? pluginRegistry.GetBoundaryViolations(skill.PluginSource)
             : null;
 
         if (!status.RequiresFailClosed(violations))
+        {
+            if (status == PluginBoundaryStatus.Faulted)
+            {
+                // security-reviewer finding: the run-normally-on-a-Faulted-boundary case is silent
+                // otherwise — visible only by NOT seeing the deny warning below. Log it explicitly at
+                // the enforcement point, not just at the point the fault was first recorded.
+                _logger.LogWarning(
+                    "Plugin '{Plugin}' tool boundary is Faulted, but every violation is confined to " +
+                    "AllowedTools (#608) — running the normal boundary filter for skill '{Skill}' " +
+                    "instead of denying everything.",
+                    skill.PluginSource, skill.Id);
+            }
+
             return ApplyPluginToolBoundary(provisioned, loadedPlugin.Declaration);
+        }
 
         _logger.LogWarning(
             "Plugin '{Plugin}' tool boundary is {Status} (an AllowedTools/DeniedTools entry " +

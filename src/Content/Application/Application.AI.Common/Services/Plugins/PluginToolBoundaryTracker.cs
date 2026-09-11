@@ -10,7 +10,7 @@ public sealed class PluginToolBoundaryTracker : IPluginToolBoundaryTracker
     // call site) is safe and needs no dedicated lock object.
     private sealed class PendingPlugin
     {
-        public required Dictionary<string, string> PendingEntries { get; init; } // name -> list kind
+        public required Dictionary<string, PluginToolBoundaryListKind> PendingEntries { get; init; } // name -> list kind
         public required HashSet<string> PendingServers { get; init; }
 
         // Guards against firing twice for one plugin: a caller can still hold this same instance
@@ -201,9 +201,9 @@ public sealed class PluginToolBoundaryTracker : IPluginToolBoundaryTracker
         return violations;
     }
 
-    private static IReadOnlyList<(string Name, string ListKind)> BoundaryEntries(LoadedPlugin plugin)
+    private static IReadOnlyList<(string Name, PluginToolBoundaryListKind ListKind)> BoundaryEntries(LoadedPlugin plugin)
     {
-        var entries = new List<(string, string)>();
+        var entries = new List<(string, PluginToolBoundaryListKind)>();
         if (plugin.Declaration.AllowedTools is { Count: > 0 } allowed)
             entries.AddRange(allowed.Select(name => (name, PluginToolBoundaryListKind.AllowedTools)));
         if (plugin.Declaration.DeniedTools is { Count: > 0 } denied)

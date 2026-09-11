@@ -325,13 +325,25 @@ public sealed class McpToolProvider : IMcpToolProvider
             return;
 
         var violations = _boundaryTracker.ReportServerToolsDiscovered(serverName, discoveredToolNames.ToList());
-        foreach (var violation in violations)
+
+        // security-reviewer finding: the old message unconditionally claimed "all tools from this
+        // plugin are now denied," which is false since #608 for a fault confined to AllowedTools.
+        // Group by plugin (every violation for one plugin's fault is reported together — see
+        // ReportServerToolsDiscovered's remarks) so the logged consequence matches what actually
+        // happens, not just what used to always happen.
+        foreach (var group in violations.GroupBy(v => v.PluginName))
         {
+            var entries = string.Join(", ", group.Select(v => $"{v.ListKind}:'{v.ToolName}'"));
+            var confined = group.ToList().IsConfinedToAllowedTools();
             _logger.LogCritical(
-                "Plugin '{Plugin}': {ListKind} entry '{ToolName}' matches no known tool (first-party " +
-                "or MCP) — this entry is a no-op, and the plugin's tool boundary can no longer be " +
-                "trusted, so all tools from this plugin are now denied.",
-                violation.PluginName, violation.ListKind, violation.ToolName);
+                "Plugin '{Plugin}': boundary entries match no known tool (first-party or MCP) and are " +
+                "no-ops: {Entries}. {Consequence}",
+                group.Key, entries,
+                confined
+                    ? "Confined to AllowedTools (#608) — can only narrow this plugin's own grant, " +
+                      "never widen it, so the boundary still runs normally; fix the manifest entry."
+                    : "Includes a DeniedTools entry — the boundary can no longer be trusted, so all " +
+                      "tools from this plugin are now denied.");
         }
     }
 

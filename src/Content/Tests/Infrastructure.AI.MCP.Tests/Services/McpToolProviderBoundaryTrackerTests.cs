@@ -79,7 +79,7 @@ public sealed class McpToolProviderBoundaryTrackerTests
         // IPluginRegistry.IsBoundaryFaulted on the plugin's next tool resolution.
         var tracker = new Mock<IPluginToolBoundaryTracker>();
         tracker.Setup(t => t.ReportServerToolsDiscovered(It.IsAny<string>(), It.IsAny<IReadOnlyCollection<string>>()))
-            .Returns([new PluginToolBoundaryViolation("azure", "DeniedTools", "file_wrte")]);
+            .Returns([new PluginToolBoundaryViolation("azure", PluginToolBoundaryListKind.DeniedTools, "file_wrte")]);
         var (sut, _) = CreateSut(tracker.Object);
 
         var act = () => sut.ReportDiscoveryToBoundaryTracker("azure:server1", ["unrelated"]);
