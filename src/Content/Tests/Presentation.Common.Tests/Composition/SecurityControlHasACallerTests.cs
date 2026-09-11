@@ -771,11 +771,15 @@ public sealed class SecurityControlHasACallerTests
     /// consumer would call each one, and each one exists to be called.
     /// </para>
     /// <para>
-    /// One limit remains, tracked in #528: entries are unqualified type names, so a second
-    /// <c>SubPlanConfig</c> in another namespace would inherit this exemption. The filename-candidacy
-    /// limit that used to be recorded here is gone — candidacy is now the <c>: AbstractValidator&lt;</c>
-    /// shape, which is what closed #529 (four <c>Drift*Validator</c> classes registered by assembly
-    /// scan, consumed by nothing, and outside the old scan's reach entirely).
+    /// Entries are unqualified type names, so a second <c>SubPlanConfig</c> in another namespace
+    /// would inherit this exemption — this repo already has a proven instance of the underlying
+    /// hazard (<c>EscalationConfig</c> declared in two namespaces). <see cref="ConsumerResolvedValidatedTypes_HaveNoNamespaceCollision"/>
+    /// closes this (#528) by failing loudly if a second declaration ever appears for any of the six
+    /// names, rather than trying to silently disambiguate which one the exemption "really" means. The
+    /// filename-candidacy limit that used to be recorded here is gone — candidacy is now the
+    /// <c>: AbstractValidator&lt;</c> shape, which is what closed #529 (four <c>Drift*Validator</c>
+    /// classes registered by assembly scan, consumed by nothing, and outside the old scan's reach
+    /// entirely).
     /// </para>
     /// </remarks>
     private static readonly string[] ConsumerResolvedValidatedTypes =
@@ -834,6 +838,183 @@ public sealed class SecurityControlHasACallerTests
     }
 
     /// <summary>
+    /// Every entry on <see cref="ConsumerResolvedValidatedTypes"/> must resolve to declarations in
+    /// exactly one namespace, or the exemption is ambiguous (#528).
+    /// </summary>
+    /// <remarks>
+    /// <see cref="FindValidatorDeclarations"/> deliberately extracts a <em>bare</em> type name from
+    /// <c>AbstractValidator&lt;T&gt;</c> — a qualified argument (<c>Governance.EscalationConfig</c>)
+    /// yields <see langword="null"/> and stays in scope, the fail-closed direction — and
+    /// <see cref="ConsumerResolvedValidatedTypes"/>'s own entries are bare names for the same reason:
+    /// there is nothing qualified on either side to compare against. That means a SECOND production
+    /// type sharing one of these six bare names, in a different namespace, would make an unrelated
+    /// validator over the OTHER type match the exemption too — silently, since
+    /// <c>consumerResolvedTypes.Contains(c.Validated)</c> is a plain string comparison with no
+    /// namespace awareness. This repo already has a proven instance of the underlying hazard —
+    /// <c>EscalationConfig</c> is declared in two namespaces (see this file's own remarks above) — so
+    /// the risk is not hypothetical, only not yet realized for these six names specifically.
+    /// <para>
+    /// Rather than attempt to disambiguate which of two same-named types "really" means the planner
+    /// exemption — the same trap this file's history already names and rejects ("approximating a
+    /// fact with something that correlates") — this fails loudly the moment a second declaration
+    /// appears, forcing a human decision (rename one type, or qualify the validator declaration so it
+    /// no longer matches the bare-name exemption at all) instead of silently trusting whichever one a
+    /// regex happens to have found. Grouped by namespace rather than by file count specifically so a
+    /// type legitimately split across <c>partial</c> declarations in the same namespace — this
+    /// repo's own documented "Partial Class Pattern" — is not itself reported as a false collision.
+    /// </para>
+    /// <para>
+    /// <strong>Positive and negative control:</strong> <see cref="FindDeclaringFilesByName_TwoFilesInDifferentNamespaces_BothNamespacesSurface"/>
+    /// and <see cref="FindDeclaringFilesByName_PartialAcrossFilesInTheSameNamespace_OneNamespaceOnly"/>
+    /// exercise the same <see cref="FindDeclaringFilesByName"/>/namespace-grouping this test uses,
+    /// against synthetic (not real repo) source, precisely because none of the six real names
+    /// currently collides — without a synthetic control, a mutation that silently disabled the
+    /// offender-detection branch (for example widening <c>&gt;</c> to <c>&gt;=</c>, or breaking the
+    /// <c>Distinct</c>) would never turn this test red.
+    /// </para>
+    /// <para>
+    /// <strong>Known residual gaps, named rather than silently accepted:</strong> namespace-string
+    /// equality is not CLR type identity — two same-named, same-namespace types declared in two
+    /// different <c>.csproj</c> projects that are never referenced together by a call site using the
+    /// bare name would compile cleanly and be (wrongly) grouped as one non-colliding declaration; a
+    /// production file with more than one namespace block attributes every declaration in it to
+    /// whichever namespace appears first in the file rather than the one actually enclosing each
+    /// match (a repo-wide scan found zero of this repo's ~2,400 production files do this, so the gap
+    /// is currently dormant, not live); and two declarations differing only by generic arity (a
+    /// non-generic <c>Widget</c> and a hypothetical <c>Widget&lt;T&gt;</c>) are indistinguishable to
+    /// the bare-name regex both this guard and <see cref="EveryValidator_HasAProvenInvocationMechanism"/>
+    /// already share. Closing all three would need a real C# parser in place of this file's
+    /// established crude-regex approach — out of proportion to #528's scope.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void ConsumerResolvedValidatedTypes_HaveNoNamespaceCollision()
+    {
+        var contentRoot = Path.Combine(RepoRoot.Path, "src", "Content");
+        var sources = SourceScan.ReadProductionSources(contentRoot);
+        sources.Should().NotBeEmpty("the production source this reads must exist for its verdict to mean anything");
+
+        var declaringFilesByName = FindDeclaringFilesByName(sources, ConsumerResolvedValidatedTypes);
+
+        // Control: at least one of the six names must actually resolve — if the declaration scan
+        // matched nothing at all, every entry would trivially "have no collision" while also proving
+        // nothing, the same vacuous-control shape this file's other guards already avoid.
+        declaringFilesByName.Values.Any(files => files.Count > 0).Should().BeTrue(
+            "the type-declaration scan must find at least one of the six consumer-resolved types, or "
+            + "this test's namespace-collision check is passing vacuously");
+
+        var offenders = declaringFilesByName
+            .Where(kv => kv.Value.Count > 0)
+            .Select(kv => (TypeName: kv.Key, Files: kv.Value, Namespaces: NamespacesOf(kv.Value)))
+            .Where(x => x.Namespaces.Length > 1)
+            .Select(x =>
+                $"'{x.TypeName}' declared in {x.Namespaces.Length} different namespaces "
+                + $"({string.Join(", ", x.Namespaces)}) across: "
+                + string.Join(", ", x.Files.Select(f => f.Path)))
+            .ToArray();
+
+        offenders.Should().BeEmpty(
+            "each name is exempted from the options-binding guard as one of PlanValidator's "
+            + "consumer-resolved step configs — a second production type sharing that bare name in a "
+            + "DIFFERENT namespace would silently inherit the same exemption for an unrelated "
+            + "validator, since the match has no namespace qualification on either side. Offenders: "
+            + string.Join(" | ", offenders));
+    }
+
+    /// <summary>
+    /// Positive control for <see cref="ConsumerResolvedValidatedTypes_HaveNoNamespaceCollision"/>,
+    /// against fabricated source so it does not depend on the real repo ever containing a live
+    /// collision for one of the six exempted names.
+    /// </summary>
+    [Fact]
+    public void FindDeclaringFilesByName_TwoFilesInDifferentNamespaces_BothNamespacesSurface()
+    {
+        var synthetic = new (string Path, string Code)[]
+        {
+            ("A.cs", "namespace Foo.Bar; public sealed record Widget;"),
+            ("B.cs", "namespace Foo.Baz; public sealed record Widget;"),
+        };
+
+        var namespaces = NamespacesOf(FindDeclaringFilesByName(synthetic, ["Widget"])["Widget"]);
+
+        namespaces.Should().BeEquivalentTo(["Foo.Bar", "Foo.Baz"],
+            "two genuinely different production types sharing a bare name must both surface as "
+            + "distinct namespaces, or the #528 collision guard could never detect the hazard it "
+            + "exists to catch");
+    }
+
+    /// <summary>
+    /// Negative control for <see cref="ConsumerResolvedValidatedTypes_HaveNoNamespaceCollision"/> —
+    /// proves a type legitimately split across <c>partial</c> files in the SAME namespace is not
+    /// itself reported as a false collision.
+    /// </summary>
+    [Fact]
+    public void FindDeclaringFilesByName_PartialAcrossFilesInTheSameNamespace_OneNamespaceOnly()
+    {
+        var synthetic = new (string Path, string Code)[]
+        {
+            ("A.cs", "namespace Foo.Bar; public sealed partial record Widget;"),
+            ("B.cs", "namespace Foo.Bar; public sealed partial record Widget;"),
+        };
+
+        var namespaces = NamespacesOf(FindDeclaringFilesByName(synthetic, ["Widget"])["Widget"]);
+
+        namespaces.Should().ContainSingle(
+                "a type legitimately split across partial declarations in the SAME namespace — this "
+                + "repo's own documented Partial Class Pattern — must not be reported as a false "
+                + "collision")
+            .Which.Should().Be("Foo.Bar");
+    }
+
+    /// <summary>
+    /// Every file in <paramref name="sources"/> declaring (as <c>class</c>, <c>record</c>, or
+    /// <c>struct</c>) any of <paramref name="typeNames"/>, grouped by the bare name matched.
+    /// </summary>
+    /// <remarks>
+    /// One combined-alternation pass over the tree rather than one pass per name — <see cref="SourceScan"/>'s
+    /// own remarks record a prior widened, repeated full-tree scan measurably destabilizing this
+    /// suite's timing-sensitive sandbox-process tests (3/3 passing dropped to 1/3), so a second
+    /// per-name scan loop here would reintroduce the same class of cost. Shared by
+    /// <see cref="ConsumerResolvedValidatedTypes_HaveNoNamespaceCollision"/> and
+    /// <see cref="KnownDeadValidators_AreStillDead"/> so the "find declaring files by bare name" shape
+    /// exists once rather than drifting between two independent inline regexes.
+    /// </remarks>
+    private static Dictionary<string, List<(string Path, string Code)>> FindDeclaringFilesByName(
+        IEnumerable<(string Path, string Code)> sources, IReadOnlyList<string> typeNames)
+    {
+        var byName = typeNames.ToDictionary(n => n, _ => new List<(string Path, string Code)>(), StringComparer.Ordinal);
+        if (typeNames.Count == 0)
+            return byName;
+
+        var pattern = $@"\b(?:class|record|struct)\s+({string.Join("|", typeNames.Select(Regex.Escape))})\b";
+
+        foreach (var source in sources)
+        {
+            foreach (var matchedName in Regex.Matches(source.Code, pattern)
+                .Select(m => m.Groups[1].Value)
+                .Distinct(StringComparer.Ordinal))
+            {
+                byName[matchedName].Add(source);
+            }
+        }
+
+        return byName;
+    }
+
+    /// <summary>
+    /// The distinct namespaces declaring <paramref name="files"/>, in file order. Takes the first
+    /// <c>namespace</c> match per file — a dormant gap for a file with more than one namespace block,
+    /// see the residual-gaps remarks on <see cref="ConsumerResolvedValidatedTypes_HaveNoNamespaceCollision"/>.
+    /// </summary>
+    private static string[] NamespacesOf(IEnumerable<(string Path, string Code)> files) =>
+        files
+            .Select(f => Regex.Match(f.Code, @"namespace\s+([\w.]+)\s*[{;]") is { Success: true } m
+                ? m.Groups[1].Value
+                : "<no namespace>")
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+
+    /// <summary>
     /// Validators confirmed to have no caller, carried openly under a tracked issue rather than
     /// silently skipped. Keyed by validator name, not validated type — the exemption is about a
     /// specific dead class, which is a different fact from
@@ -886,15 +1067,14 @@ public sealed class SecurityControlHasACallerTests
         production.Should().NotBeEmpty("the production source this reads must exist for its verdict to mean anything");
 
         var revived = new List<string>();
+        var declaringFilesByValidator = FindDeclaringFilesByName(production, KnownDeadValidators);
 
         foreach (var validator in KnownDeadValidators)
         {
             // A caller is any production mention outside the file that declares it. The declaring file
             // is excluded because a parent validator legitimately names its child via SetValidator,
             // which is self-reference, not a consumer.
-            var declaringFiles = production
-                .Where(f => Regex.IsMatch(f.Code, $@"\bclass\s+{validator}\b"))
-                .ToArray();
+            var declaringFiles = declaringFilesByValidator[validator].ToArray();
 
             declaringFiles.Select(f => f.Path).Should().ContainSingle(
                 $"{validator} must still be declared exactly once for this exemption to describe anything real");
