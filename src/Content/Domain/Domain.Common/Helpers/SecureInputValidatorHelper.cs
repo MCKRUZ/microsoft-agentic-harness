@@ -11,6 +11,9 @@ public static class SecureInputValidatorHelper
     private const int DefaultMaxLength = 1024;
     private const int MaxPathLength = 4096;
 
+    /// <summary>RFC 1035's maximum fully-qualified domain name length (253 octets, excluding the root dot).</summary>
+    private const int MaxHostLength = 253;
+
     // #576: anchored with \A/\z, not ^/$ — $ in .NET regex matches immediately before a trailing '\n'
     // as well as at the true end of the string, so a caller-supplied value ending in a newline would
     // otherwise pass (the same bug class already fixed in StorageSegmentSafety.AllowedCharset; see that
@@ -74,6 +77,34 @@ public static class SecureInputValidatorHelper
             return false;
 
         return true;
+    }
+
+    /// <summary>
+    /// Validates a bare network host value (a hostname or IP literal — <em>not</em> a full URL; a
+    /// caller that may receive an absolute URI must reduce it to a bare host first). Rejects the
+    /// whole class of malformed input a host-scoping comparison must never be allowed to silently
+    /// admit — empty, oversized, embedded NUL/control characters, or anything that is not
+    /// syntactically a valid DNS name or IP literal — mirroring <see cref="ValidateFilePath"/>'s role
+    /// for paths (#605).
+    /// </summary>
+    public static bool ValidateHost(string host)
+    {
+        if (string.IsNullOrWhiteSpace(host))
+            return false;
+
+        if (host.Length > MaxHostLength)
+            return false;
+
+        if (host.Contains('\0'))
+            return false;
+
+        // Uri.CheckHostName's own MS Learn doc only guarantees the null/empty-string -> Unknown case
+        // in writing; whitespace-only and embedded-NUL are not explicitly documented, only observed
+        // (#605 /simplify review) to behave the same way today. The checks above are deliberate
+        // defense-in-depth on a security gate: they encode this method's actual invariant explicitly,
+        // rather than resting solely on an undocumented corner of a BCL method's behavior that a
+        // future .NET version is free to change without it counting as a breaking change.
+        return Uri.CheckHostName(host) != UriHostNameType.Unknown;
     }
 
     /// <summary>

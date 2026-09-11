@@ -145,6 +145,65 @@ public class SecureInputValidatorHelperLogicTests
         SecureInputValidatorHelper.ValidateFilePath("src/Content/Tests/file.cs").Should().BeTrue();
     }
 
+    // ── ValidateHost (#605) ──
+
+    [Fact]
+    public void ValidateHost_NullHost_ReturnsFalse()
+    {
+        SecureInputValidatorHelper.ValidateHost(null!).Should().BeFalse();
+    }
+
+    [Fact]
+    public void ValidateHost_EmptyHost_ReturnsFalse()
+    {
+        SecureInputValidatorHelper.ValidateHost("").Should().BeFalse();
+    }
+
+    [Fact]
+    public void ValidateHost_WhitespaceHost_ReturnsFalse()
+    {
+        SecureInputValidatorHelper.ValidateHost("   ").Should().BeFalse();
+    }
+
+    [Fact]
+    public void ValidateHost_ExceedsMaxLength_ReturnsFalse()
+    {
+        var longHost = new string('a', 254);
+        SecureInputValidatorHelper.ValidateHost(longHost).Should().BeFalse();
+    }
+
+    [Fact]
+    public void ValidateHost_NullByte_ReturnsFalse()
+    {
+        SecureInputValidatorHelper.ValidateHost("evil\0.com").Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData("evil.com")] // BEL control character
+    [InlineData("evil\n.com")]
+    [InlineData("evil\r.com")]
+    [InlineData("evil .com")] // embedded space
+    [InlineData("*.evil.com")] // wildcard glob is never a valid literal host
+    public void ValidateHost_MalformedNonEmptyHost_ReturnsFalse(string host)
+    {
+        // #605: this is the exact class of input #595's empty-string-only fix left admitted in a
+        // deny-list-only configuration — a non-empty but malformed host fell through untouched.
+        SecureInputValidatorHelper.ValidateHost(host).Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData("example.com")]
+    [InlineData("sub.example.com")]
+    [InlineData("localhost")]
+    [InlineData("internal-server")]
+    [InlineData("192.168.1.1")]
+    [InlineData("::1")]
+    [InlineData("2001:db8::1")]
+    public void ValidateHost_ValidHost_ReturnsTrue(string host)
+    {
+        SecureInputValidatorHelper.ValidateHost(host).Should().BeTrue();
+    }
+
     // ── ValidateIdentifier ──
 
     [Fact]
