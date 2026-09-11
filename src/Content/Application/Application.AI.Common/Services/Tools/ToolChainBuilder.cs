@@ -240,22 +240,45 @@ public partial class ToolChainBuilder : IToolChainBuilder
         // #524: a boundary entry that matches no real tool is provably broken, not just
         // permissive — most dangerously for DeniedTools, documented as bypass-immune. Once
         // PluginToolBoundaryTracker has proven that (see its remarks), the boundary can no longer
-        // be trusted, so this denies every tool from the plugin rather than run with a
-        // partially-broken policy. Pending is treated identically to Faulted, not to Verified — an
-        // entry still awaiting an MCP server's tool list is exactly as unproven as one already
-        // confirmed fake, and trusting it in the meantime is the specific gap a review round found:
-        // a server nothing else happens to query left a plugin's boundary silently trusted forever.
+        // be fully trusted. #608 narrowed this: a Faulted boundary whose violations are ALL
+        // AllowedTools entries can never widen this plugin's access — AllowedTools is a positive
+        // allow-set match (ApplyPluginToolBoundary's own `tools.Where(t => allowSet.Contains(...))`),
+        // so a name that matches no real tool is already an inert no-op there; running the filter
+        // normally already produces the narrower "just lose that one tool" outcome the corrupted
+        // entry implies, without any special-casing. Every other case (a DeniedTools-involving
+        // Faulted, Pending, or an empty/unknown violation set) still denies everything, fail-closed
+        // on uncertainty — see PluginToolBoundaryViolationExtensions.RequiresFailClosed's remarks,
+        // the single shared decision this and PluginPermissionRuleProvider.BoundaryDemandsAgentWideFailClosed
+        // both call. Fetched here rather than through the BoundaryRequiresFailClosed(registry, name)
+        // convenience overload next to it, since this method needs `status` again below for the log
+        // message — calling that overload would mean fetching status twice, not once.
         var status = pluginRegistry!.GetBoundaryStatus(skill.PluginSource);
-        if (status != PluginBoundaryStatus.Verified)
+        var violations = status == PluginBoundaryStatus.Faulted
+            ? pluginRegistry.GetBoundaryViolations(skill.PluginSource)
+            : null;
+
+        if (!status.RequiresFailClosed(violations))
         {
-            _logger.LogWarning(
-                "Plugin '{Plugin}' tool boundary is {Status} (an AllowedTools/DeniedTools entry " +
-                "matches no known tool, or still awaits one) — denying all tools for skill '{Skill}'",
-                skill.PluginSource, status, skill.Id);
-            return [];
+            if (status == PluginBoundaryStatus.Faulted)
+            {
+                // security-reviewer finding: the run-normally-on-a-Faulted-boundary case is silent
+                // otherwise — visible only by NOT seeing the deny warning below. Log it explicitly at
+                // the enforcement point, not just at the point the fault was first recorded.
+                _logger.LogWarning(
+                    "Plugin '{Plugin}' tool boundary is Faulted, but every violation is confined to " +
+                    "AllowedTools (#608) — running the normal boundary filter for skill '{Skill}' " +
+                    "instead of denying everything.",
+                    skill.PluginSource, skill.Id);
+            }
+
+            return ApplyPluginToolBoundary(provisioned, loadedPlugin.Declaration);
         }
 
-        return ApplyPluginToolBoundary(provisioned, loadedPlugin.Declaration);
+        _logger.LogWarning(
+            "Plugin '{Plugin}' tool boundary is {Status} (an AllowedTools/DeniedTools entry " +
+            "matches no known tool, or still awaits one) — denying all tools for skill '{Skill}'",
+            skill.PluginSource, status, skill.Id);
+        return [];
     }
 
     /// <summary>

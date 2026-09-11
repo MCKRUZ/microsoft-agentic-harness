@@ -338,6 +338,106 @@ public class ToolChainBuilderTests
     }
 
     [Fact]
+    public async Task BuildToolsAsync_PluginBoundaryFaultedOnAllowedToolsOnly_StillReturnsOtherValidTools()
+    {
+        // #608: an AllowedTools typo can only ever narrow this plugin's grant, never widen it, and
+        // can never defeat the DeniedTools bypass-immune guarantee — so a fault provably confined to
+        // AllowedTools should run the normal (already-safe) boundary filter instead of denying
+        // everything. ApplyPluginToolBoundary's own positive allow-set match already makes the
+        // faulted name a no-op; no special-casing needed beyond not zeroing the plugin out.
+        var pluginRegistry = new Mock<IPluginRegistry>();
+        pluginRegistry.Setup(r => r.GetPlugin("p")).Returns(
+            new LoadedPlugin("p", "1.0", "/plugins/p", new PluginManifest(),
+                PluginLoadStatus.Loaded, [], ["p:server"],
+                new PluginDeclaration { Name = "p", AllowedTools = ["safe", "typo_tool"] }));
+        pluginRegistry.Setup(r => r.GetBoundaryStatus("p")).Returns(PluginBoundaryStatus.Faulted);
+        pluginRegistry.Setup(r => r.GetBoundaryViolations("p")).Returns(
+            [new PluginToolBoundaryViolation("p", PluginToolBoundaryListKind.AllowedTools, "typo_tool")]);
+
+        var services = new ServiceCollection();
+        services.AddSingleton(pluginRegistry.Object);
+
+        var builder = CreateBuilder(serviceProvider: services.BuildServiceProvider());
+
+        var skill = new SkillDefinition
+        {
+            Id = "p-skill", Name = "p-skill", Instructions = "Test", PluginSource = "p",
+            Tools =
+            [
+                AIFunctionFactory.Create(() => "r", "safe"),
+                AIFunctionFactory.Create(() => "r", "not_declared_allowed")
+            ]
+        };
+
+        var tools = await builder.BuildToolsAsync(skill, new SkillAgentOptions());
+
+        tools.Should().ContainSingle(t => t.Name == "safe");
+    }
+
+    [Fact]
+    public async Task BuildToolsAsync_PluginBoundaryFaultedOnBothLists_StillDeniesAllTools()
+    {
+        // A fault touching BOTH lists must still deny everything -- the DeniedTools violation alone
+        // is the hazard, regardless of an AllowedTools violation also being present.
+        var pluginRegistry = new Mock<IPluginRegistry>();
+        pluginRegistry.Setup(r => r.GetPlugin("p")).Returns(
+            new LoadedPlugin("p", "1.0", "/plugins/p", new PluginManifest(),
+                PluginLoadStatus.Loaded, [], ["p:server"],
+                new PluginDeclaration { Name = "p", DeniedTools = ["dangerous"], AllowedTools = ["safe", "typo_tool"] }));
+        pluginRegistry.Setup(r => r.GetBoundaryStatus("p")).Returns(PluginBoundaryStatus.Faulted);
+        pluginRegistry.Setup(r => r.GetBoundaryViolations("p")).Returns(
+            [
+                new PluginToolBoundaryViolation("p", PluginToolBoundaryListKind.AllowedTools, "typo_tool"),
+                new PluginToolBoundaryViolation("p", PluginToolBoundaryListKind.DeniedTools, "also_typo"),
+            ]);
+
+        var services = new ServiceCollection();
+        services.AddSingleton(pluginRegistry.Object);
+
+        var builder = CreateBuilder(serviceProvider: services.BuildServiceProvider());
+
+        var skill = new SkillDefinition
+        {
+            Id = "p-skill", Name = "p-skill", Instructions = "Test", PluginSource = "p",
+            Tools = [AIFunctionFactory.Create(() => "r", "safe")]
+        };
+
+        var tools = await builder.BuildToolsAsync(skill, new SkillAgentOptions());
+
+        tools.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task BuildToolsAsync_PluginBoundaryFaultedWithNoRecordedViolations_StillDeniesAllTools()
+    {
+        // A registry that reports Faulted but has no violation detail (a real implementation
+        // shouldn't do this, but nothing enforces it) must fail closed exactly like an explicit
+        // DeniedTools hit -- never treated as "safe to narrow" on missing information.
+        var pluginRegistry = new Mock<IPluginRegistry>();
+        pluginRegistry.Setup(r => r.GetPlugin("p")).Returns(
+            new LoadedPlugin("p", "1.0", "/plugins/p", new PluginManifest(),
+                PluginLoadStatus.Loaded, [], ["p:server"],
+                new PluginDeclaration { Name = "p", AllowedTools = ["safe"] }));
+        pluginRegistry.Setup(r => r.GetBoundaryStatus("p")).Returns(PluginBoundaryStatus.Faulted);
+        // Deliberately no GetBoundaryViolations setup -- Moq returns null for it.
+
+        var services = new ServiceCollection();
+        services.AddSingleton(pluginRegistry.Object);
+
+        var builder = CreateBuilder(serviceProvider: services.BuildServiceProvider());
+
+        var skill = new SkillDefinition
+        {
+            Id = "p-skill", Name = "p-skill", Instructions = "Test", PluginSource = "p",
+            Tools = [AIFunctionFactory.Create(() => "r", "safe")]
+        };
+
+        var tools = await builder.BuildToolsAsync(skill, new SkillAgentOptions());
+
+        tools.Should().BeEmpty();
+    }
+
+    [Fact]
     public async Task BuildToolsAsync_PluginBoundaryPending_DeniesAllToolsSameAsFaulted()
     {
         // #524 redesign: an entry still awaiting an MCP server's tool list is exactly as unproven as

@@ -6,14 +6,11 @@ namespace Application.AI.Common.Services.Plugins;
 /// <inheritdoc cref="IPluginToolBoundaryTracker" />
 public sealed class PluginToolBoundaryTracker : IPluginToolBoundaryTracker
 {
-    private const string AllowedToolsListKind = "AllowedTools";
-    private const string DeniedToolsListKind = "DeniedTools";
-
     // Never exposed outside this file, so locking on the instance itself (lock (pending) at each
     // call site) is safe and needs no dedicated lock object.
     private sealed class PendingPlugin
     {
-        public required Dictionary<string, string> PendingEntries { get; init; } // name -> list kind
+        public required Dictionary<string, PluginToolBoundaryListKind> PendingEntries { get; init; } // name -> list kind
         public required HashSet<string> PendingServers { get; init; }
 
         // Guards against firing twice for one plugin: a caller can still hold this same instance
@@ -70,7 +67,7 @@ public sealed class PluginToolBoundaryTracker : IPluginToolBoundaryTracker
                 // A name duplicated across both lists reports as DeniedTools — the list the
                 // bypass-immune security guarantee actually depends on — rather than whichever
                 // list happened to be enumerated first.
-                .Select(g => g.FirstOrDefault(e => e.ListKind == DeniedToolsListKind, g.First()))
+                .Select(g => g.FirstOrDefault(e => e.ListKind == PluginToolBoundaryListKind.DeniedTools, g.First()))
                 .ToList();
             if (unresolved.Count == 0)
             {
@@ -104,7 +101,7 @@ public sealed class PluginToolBoundaryTracker : IPluginToolBoundaryTracker
                 // the registry here too means the fault is recorded independently of whether that
                 // caller rethrows — the same defense-in-depth ReportServerToolsDiscovered already
                 // gives the lazy branch.
-                _registry.MarkBoundaryFaulted(plugin.Name, FaultReason(immediateForPlugin));
+                _registry.MarkBoundaryFaulted(plugin.Name, immediateForPlugin);
                 continue;
             }
 
@@ -196,7 +193,7 @@ public sealed class PluginToolBoundaryTracker : IPluginToolBoundaryTracker
             }
             else if (faulted is { Count: > 0 })
             {
-                _registry.MarkBoundaryFaulted(pluginName, FaultReason(faulted));
+                _registry.MarkBoundaryFaulted(pluginName, faulted);
                 violations.AddRange(faulted);
             }
         }
@@ -204,16 +201,13 @@ public sealed class PluginToolBoundaryTracker : IPluginToolBoundaryTracker
         return violations;
     }
 
-    private static string FaultReason(IReadOnlyList<PluginToolBoundaryViolation> violations) =>
-        $"Tool boundary entries match no known tool: {string.Join(", ", violations.Select(v => $"{v.ListKind}:{v.ToolName}"))}";
-
-    private static IReadOnlyList<(string Name, string ListKind)> BoundaryEntries(LoadedPlugin plugin)
+    private static IReadOnlyList<(string Name, PluginToolBoundaryListKind ListKind)> BoundaryEntries(LoadedPlugin plugin)
     {
-        var entries = new List<(string, string)>();
+        var entries = new List<(string, PluginToolBoundaryListKind)>();
         if (plugin.Declaration.AllowedTools is { Count: > 0 } allowed)
-            entries.AddRange(allowed.Select(name => (name, AllowedToolsListKind)));
+            entries.AddRange(allowed.Select(name => (name, PluginToolBoundaryListKind.AllowedTools)));
         if (plugin.Declaration.DeniedTools is { Count: > 0 } denied)
-            entries.AddRange(denied.Select(name => (name, DeniedToolsListKind)));
+            entries.AddRange(denied.Select(name => (name, PluginToolBoundaryListKind.DeniedTools)));
         return entries;
     }
 }

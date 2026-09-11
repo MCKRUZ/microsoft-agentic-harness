@@ -14,6 +14,20 @@ public sealed class PluginRegistry : IPluginRegistry
     private readonly ConcurrentDictionary<string, PluginBoundaryStatus> _boundaryStatus =
         new(StringComparer.OrdinalIgnoreCase);
 
+    // #608: which specific entries proved a Faulted plugin's boundary broken, so a consumer can
+    // distinguish a DeniedTools fault (must still fail closed — the bypass-immune guarantee is at
+    // risk) from an AllowedTools-only fault (can only ever narrow access, never widen it). Written
+    // inside the same _stateLock critical section as _boundaryStatus and _stateVersion below, for the
+    // same reason documented on that lock: a reader must never observe the status flip to Faulted
+    // without also observing the violation list that explains it.
+    //
+    // Stored as List<T>, not IReadOnlyList<T> — MarkBoundaryFaulted always replaces the dictionary
+    // entry wholesale (never mutates a published list in place), so GetBoundaryViolations can wrap
+    // the stored instance in .AsReadOnly() (O(1), and a caller downcasting to List<T> gets an
+    // InvalidCastException rather than a mutable handle) instead of copying it on every read.
+    private readonly ConcurrentDictionary<string, List<PluginToolBoundaryViolation>> _boundaryViolations =
+        new(StringComparer.OrdinalIgnoreCase);
+
     // #612 grader finding, round 1: writing the dictionary and bumping _stateVersion as two separate
     // Interlocked steps left a window where a reader could observe the dictionary already mutated
     // but StateVersion not yet incremented — a cache keyed on that stale version would then serve
@@ -77,6 +91,16 @@ public sealed class PluginRegistry : IPluginRegistry
         // now explicitly marks every loaded plugin it processes (Verified when it has nothing to
         // verify, Pending/Faulted otherwise), so an absent entry here means genuinely unseeded, not
         // "seeded with an empty boundary" — the two used to be indistinguishable.
+        //
+        // #608 code-review round 3: deliberately lock-free. ConcurrentDictionary already guarantees a
+        // single-key read is never torn, with or without an external lock — a round-2 pass wrapped
+        // this in _stateLock reacting to a finding about atomicity, but that added contention against
+        // every writer for zero real benefit, since it does not (and cannot, as a single-method call)
+        // provide the one guarantee that would actually matter: a JOINT atomic snapshot of status AND
+        // GetBoundaryViolations together. A caller that calls both as two separate calls never gets
+        // that regardless of whether either individual read takes the lock — see GetBoundaryViolations'
+        // remarks for why that gap is safe today anyway (MarkBoundaryFaulted's violations are
+        // merge-only, never narrowed).
         _boundaryStatus.GetValueOrDefault(pluginName, PluginBoundaryStatus.Pending);
 
     /// <inheritdoc />
@@ -115,18 +139,55 @@ public sealed class PluginRegistry : IPluginRegistry
     }
 
     /// <inheritdoc />
-    public void MarkBoundaryFaulted(string pluginName, string reason)
+    public void MarkBoundaryFaulted(string pluginName, IReadOnlyList<PluginToolBoundaryViolation> violations)
     {
+        ArgumentNullException.ThrowIfNull(violations);
+
         lock (_stateLock)
         {
-            // reason is a human-readable summary of facts (plugin/list-kind/tool-name) the caller
-            // already surfaces separately at the point of fault — McpToolProvider logs the
-            // violation list at Critical, PluginToolBoundaryStartupValidator throws with the same
-            // details — so nothing here needs it back. Deliberately not stored (#524 round-2
-            // code-review: an earlier version kept a _faultReasons dictionary "for diagnostics"
-            // that nothing ever actually read).
+            // security-reviewer finding: set the fail-closed status FIRST, before touching
+            // _boundaryViolations — Faulted-with-no-recorded-violations is itself fail closed (see
+            // RequiresFailClosed), so if anything below this line throws, the plugin lands in a safe
+            // state by construction rather than by coincidence of what its prior status happened to
+            // be. (The null guard above already prevents the one way this could throw today, but the
+            // ordering itself is a general invariant worth holding regardless.)
             _boundaryStatus[pluginName] = PluginBoundaryStatus.Faulted;
+
+            // #608 code-review, /simplify pass: two fixes on the same field.
+            // 1. AddOrUpdate, not a manual GetValueOrDefault-then-indexer-write — matches the idiom
+            //    MarkBoundaryPending/MarkBoundaryVerified above already established for exactly this
+            //    "merge into a concurrent dictionary" shape, rather than reintroducing the
+            //    check-then-set pattern that caused #612's own bug (this lock makes it safe either
+            //    way today, but AddOrUpdate's atomicity doesn't *depend* on the lock staying exactly
+            //    this shape, and consistency with the sibling mutators is worth keeping on its own).
+            // 2. Merge with any already-recorded violations for this plugin instead of overwriting.
+            //    MarkBoundaryFaulted has no guard against being called twice for the same plugin
+            //    (its siblings explicitly refuse to downgrade an already-Faulted status, but that
+            //    guard was never extended to this field). Not reachable via today's two callers in
+            //    PluginToolBoundaryTracker (its Resolved flag makes the immediate and lazy paths
+            //    mutually exclusive per plugin), but the registry is documented as the shared trust
+            //    boundary regardless of caller discipline — a second call must only ever be able to
+            //    ADD to the recorded danger, never silently narrow away an already-recorded
+            //    DeniedTools violation. (A /simplify pass suggested dropping this for an
+            //    unreachable-today guard instead, matching the siblings' shape — rejected: for
+            //    THIS field a guard would mean "first call wins," which could permanently lock in an
+            //    incomplete violation set if a later call would have added a DeniedTools entry the
+            //    first one missed. Merge is the only shape that can't get less safe over time.)
+            _boundaryViolations.AddOrUpdate(
+                pluginName,
+                _ => violations.ToList(),
+                (_, existing) => existing.Concat(violations).ToList());
             _stateVersion++;
         }
     }
+
+    /// <inheritdoc />
+    public IReadOnlyList<PluginToolBoundaryViolation> GetBoundaryViolations(string pluginName) =>
+        // #608 code-review round 3 / /simplify: lock-free for the same reason as GetBoundaryStatus
+        // above. .AsReadOnly(), not .ToList() — O(1) instead of a full copy, and a caller downcasting
+        // the result to List<T> (the exact mutation hazard a prior round closed with a copy) now gets
+        // an InvalidCastException instead of a mutable handle, since ReadOnlyCollection<T> is a
+        // distinct type. Safe because MarkBoundaryFaulted above never mutates a published list in
+        // place — every write replaces the dictionary entry with a brand-new list.
+        _boundaryViolations.TryGetValue(pluginName, out var violations) ? violations.AsReadOnly() : [];
 }

@@ -3,13 +3,102 @@ using Domain.Common.Config.AI.Plugins;
 namespace Application.AI.Common.Interfaces.Plugins;
 
 /// <summary>
+/// Which declared list a <see cref="PluginToolBoundaryViolation"/> came from. An enum, not a
+/// string (#608 code-review/security-reviewer) — since #608, this field is the SOLE discriminator
+/// between "deny everything" and "run the normal boundary filter," so a typo'd or mislabeled string
+/// would have been a silent security decision with no compiler protection. Both producers already
+/// compare against these two symbols rather than hardcoding literals; the enum makes that the only
+/// possible comparison instead of a convention.
+/// </summary>
+public enum PluginToolBoundaryListKind
+{
+    /// <summary>A <see cref="Domain.Common.Config.AI.Plugins.PluginDeclaration.AllowedTools"/> entry.</summary>
+    AllowedTools,
+
+    /// <summary>A <see cref="Domain.Common.Config.AI.Plugins.PluginDeclaration.DeniedTools"/> entry.</summary>
+    DeniedTools,
+}
+
+/// <summary>
 /// One <see cref="PluginDeclaration.AllowedTools"/>/<see cref="PluginDeclaration.DeniedTools"/>
 /// entry that has been confirmed to not match any known tool — first-party or MCP-provided.
 /// </summary>
 /// <param name="PluginName">The plugin whose boundary declared the entry.</param>
-/// <param name="ListKind">Either <c>"AllowedTools"</c> or <c>"DeniedTools"</c>, for the error message.</param>
+/// <param name="ListKind">Which list the offending entry came from.</param>
 /// <param name="ToolName">The offending entry itself.</param>
-public sealed record PluginToolBoundaryViolation(string PluginName, string ListKind, string ToolName);
+public sealed record PluginToolBoundaryViolation(string PluginName, PluginToolBoundaryListKind ListKind, string ToolName);
+
+/// <summary>
+/// Extension helpers over a <see cref="PluginToolBoundaryViolation"/> list, used to classify a
+/// <c>Faulted</c> boundary's fault shape (#608).
+/// </summary>
+public static class PluginToolBoundaryViolationExtensions
+{
+    /// <summary>
+    /// Whether a Faulted boundary's <paramref name="violations"/> are provably confined to
+    /// <see cref="PluginToolBoundaryListKind.AllowedTools"/> — the one shape (#608) that can never
+    /// widen a plugin's access and can never defeat the <see cref="PluginToolBoundaryListKind.DeniedTools"/>
+    /// bypass-immune guarantee, so it's safe for a consumer to run its normal boundary filter instead
+    /// of denying everything. <see langword="null"/> or an empty list is NOT confined — a registry
+    /// that recorded nothing gives no way to rule out a <see cref="PluginToolBoundaryListKind.DeniedTools"/>
+    /// hit, so it must be treated the same as a confirmed one: fail closed on uncertainty, not just on
+    /// certainty.
+    /// </summary>
+    /// <remarks>
+    /// The leaf check <see cref="RequiresFailClosed"/> is built from — kept separate because it's a
+    /// pure fact about a violation list, independent of what a caller does with it.
+    /// </remarks>
+    public static bool IsConfinedToAllowedTools(this IReadOnlyList<PluginToolBoundaryViolation>? violations) =>
+        violations is { Count: > 0 } && violations.All(v => v.ListKind == PluginToolBoundaryListKind.AllowedTools);
+
+    /// <summary>
+    /// Whether a plugin's boundary <paramref name="status"/> demands the caller's fail-closed
+    /// response (#608) — deny everything, rather than run the normal boundary filter.
+    /// <see langword="true"/> for <see cref="PluginBoundaryStatus.Pending"/> unconditionally (it's
+    /// transient — resolves to <see cref="PluginBoundaryStatus.Verified"/> or
+    /// <see cref="PluginBoundaryStatus.Faulted"/> once every configured MCP server reports, so
+    /// narrowing it isn't part of what #608 addressed), and for
+    /// <see cref="PluginBoundaryStatus.Faulted"/> unless <paramref name="violations"/> is
+    /// <see cref="IsConfinedToAllowedTools">confined to AllowedTools</see>.
+    /// </summary>
+    /// <remarks>
+    /// The single shared decision both <c>ToolChainBuilder.ApplyPluginBoundaryIfPluginSkill</c> and
+    /// <c>PluginPermissionRuleProvider.BoundaryDemandsAgentWideFailClosed</c> call, instead of each
+    /// independently re-deriving the same Verified/Pending/Faulted branch (#608 code-review /
+    /// /simplify — flagged across two review rounds as a divergence risk: only the leaf
+    /// <see cref="IsConfinedToAllowedTools"/> check was originally shared, not the branch around it).
+    /// <paramref name="violations"/> is only consulted when <paramref name="status"/> is
+    /// <see cref="PluginBoundaryStatus.Faulted"/> — callers should pass <see langword="null"/> (or
+    /// skip fetching it) otherwise, since <see cref="IPluginRegistry.GetBoundaryViolations"/> is
+    /// meaningless for any other status.
+    /// </remarks>
+    public static bool RequiresFailClosed(
+        this PluginBoundaryStatus status, IReadOnlyList<PluginToolBoundaryViolation>? violations) =>
+        status switch
+        {
+            PluginBoundaryStatus.Verified => false,
+            PluginBoundaryStatus.Faulted => !violations.IsConfinedToAllowedTools(),
+            _ => true, // Pending, or any future status — fail closed on uncertainty.
+        };
+
+    /// <summary>
+    /// Whether <paramref name="pluginName"/>'s CURRENT boundary state (read fresh from
+    /// <paramref name="registry"/>) demands the fail-closed response (#608) — the fetch-and-pair
+    /// both consumers need, not just the leaf decision. Only fetches
+    /// <see cref="IPluginRegistry.GetBoundaryViolations"/> when the status is actually
+    /// <see cref="PluginBoundaryStatus.Faulted"/> (security-reviewer finding: consolidates the
+    /// "only fetch violations when Faulted" rule both call sites previously re-derived by hand).
+    /// </summary>
+    public static bool BoundaryRequiresFailClosed(this IPluginRegistry registry, string pluginName)
+    {
+        var status = registry.GetBoundaryStatus(pluginName);
+        var violations = status == PluginBoundaryStatus.Faulted
+            ? registry.GetBoundaryViolations(pluginName)
+            : null;
+
+        return status.RequiresFailClosed(violations);
+    }
+}
 
 /// <summary>
 /// Tracks whether every <c>AllowedTools</c>/<c>DeniedTools</c> entry a loaded plugin declares

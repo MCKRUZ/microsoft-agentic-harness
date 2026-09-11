@@ -75,7 +75,7 @@ public sealed class PluginToolBoundaryStartupValidatorTests
         _registry.Setup(r => r.GetLoadedPlugins()).Returns([MakePlugin("azure")]);
         _tracker.Setup(t => t.Seed(
                 It.IsAny<IReadOnlyList<LoadedPlugin>>(), It.IsAny<Func<string, bool>>(), It.IsAny<IReadOnlyCollection<string>>()))
-            .Returns([new PluginToolBoundaryViolation("azure", "DeniedTools", "file_wrte")]);
+            .Returns([new PluginToolBoundaryViolation("azure", PluginToolBoundaryListKind.DeniedTools, "file_wrte")]);
         var sut = MakeSut(_ => false);
 
         var act = async () => await sut.StartAsync(CancellationToken.None);
