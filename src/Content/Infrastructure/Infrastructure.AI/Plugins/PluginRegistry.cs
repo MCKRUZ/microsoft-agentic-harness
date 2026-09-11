@@ -81,12 +81,26 @@ public sealed class PluginRegistry : IPluginRegistry
     }
 
     /// <inheritdoc />
-    public PluginBoundaryStatus GetBoundaryStatus(string pluginName) =>
+    public PluginBoundaryStatus GetBoundaryStatus(string pluginName)
+    {
         // #613: Pending, not Verified — see the interface doc for why. PluginToolBoundaryTracker.Seed
         // now explicitly marks every loaded plugin it processes (Verified when it has nothing to
         // verify, Pending/Faulted otherwise), so an absent entry here means genuinely unseeded, not
         // "seeded with an empty boundary" — the two used to be indistinguishable.
-        _boundaryStatus.GetValueOrDefault(pluginName, PluginBoundaryStatus.Pending);
+        //
+        // #608 code-review: reads this dictionary AND _boundaryViolations under the same _stateLock
+        // every writer already uses, not lock-free. This method's own status and GetBoundaryViolations'
+        // violation list are two SEPARATE ConcurrentDictionary entries written together inside
+        // MarkBoundaryFaulted's lock — reading either one lock-free reopens the exact
+        // write-locked/read-unlocked race this file's _stateVersion comment already exists to warn
+        // against (PR #628): a caller could observe Faulted here but a stale (or not-yet-written)
+        // violation list from GetBoundaryViolations, since nothing pairs the two reads together
+        // without the lock.
+        lock (_stateLock)
+        {
+            return _boundaryStatus.GetValueOrDefault(pluginName, PluginBoundaryStatus.Pending);
+        }
+    }
 
     /// <inheritdoc />
     public void MarkBoundaryPending(string pluginName)
@@ -135,13 +149,38 @@ public sealed class PluginRegistry : IPluginRegistry
             // details — so nothing here needs reason back. violations IS stored (#608 — unlike
             // reason, this now has real readers: GetBoundaryViolations lets a consumer distinguish
             // a DeniedTools fault from an AllowedTools-only one).
+            //
+            // #608 code-review: two hardening fixes on the same field.
+            // 1. Defensive copy (.ToList()) rather than storing the caller's list by reference —
+            //    mirrors PluginPermissionRuleProvider's own .AsReadOnly() cache from this same PR:
+            //    a future caller downcasting and mutating the stored instance would otherwise
+            //    permanently corrupt the registry's record for every later reader.
+            // 2. Merge with any already-recorded violations for this plugin instead of overwriting.
+            //    MarkBoundaryFaulted has no guard against being called twice for the same plugin
+            //    (its siblings MarkBoundaryPending/MarkBoundaryVerified explicitly refuse to
+            //    downgrade an already-Faulted status, but that guard was never extended to this
+            //    field). Not reachable via today's two callers in PluginToolBoundaryTracker (its
+            //    Resolved flag makes the immediate and lazy paths mutually exclusive per plugin),
+            //    but the registry is documented as the shared trust boundary regardless of caller
+            //    discipline — a second call must only ever be able to ADD to the recorded danger,
+            //    never silently narrow away an already-recorded DeniedTools violation.
+            var existing = _boundaryViolations.GetValueOrDefault(pluginName);
+            _boundaryViolations[pluginName] = existing is null or { Count: 0 }
+                ? violations.ToList()
+                : existing.Concat(violations).ToList();
             _boundaryStatus[pluginName] = PluginBoundaryStatus.Faulted;
-            _boundaryViolations[pluginName] = violations;
             _stateVersion++;
         }
     }
 
     /// <inheritdoc />
-    public IReadOnlyList<PluginToolBoundaryViolation> GetBoundaryViolations(string pluginName) =>
-        _boundaryViolations.GetValueOrDefault(pluginName, []);
+    public IReadOnlyList<PluginToolBoundaryViolation> GetBoundaryViolations(string pluginName)
+    {
+        // #608 code-review: see GetBoundaryStatus's remarks — read under the same lock every writer
+        // uses, so a caller pairing this with GetBoundaryStatus never observes a torn write.
+        lock (_stateLock)
+        {
+            return _boundaryViolations.GetValueOrDefault(pluginName, []);
+        }
+    }
 }

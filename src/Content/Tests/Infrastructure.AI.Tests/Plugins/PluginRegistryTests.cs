@@ -125,6 +125,25 @@ public class PluginRegistryTests
     }
 
     [Fact]
+    public void MarkBoundaryFaulted_CalledTwiceForSamePlugin_MergesViolationsRatherThanOverwriting()
+    {
+        // #608 code-review: a second MarkBoundaryFaulted call must only ever ADD to the recorded
+        // danger, never silently narrow it. Mutation guard for the specific failure this closes: a
+        // second call with a narrower (AllowedTools-only) violation set must not erase a previously
+        // recorded DeniedTools violation.
+        _sut.MarkBoundaryFaulted("azure", "first fault",
+            [new PluginToolBoundaryViolation("azure", PluginToolBoundaryListKind.DeniedTools, "file_wrte")]);
+        _sut.MarkBoundaryFaulted("azure", "second fault",
+            [new PluginToolBoundaryViolation("azure", PluginToolBoundaryListKind.AllowedTools, "typo_tool")]);
+
+        var violations = _sut.GetBoundaryViolations("azure");
+
+        violations.Should().HaveCount(2);
+        violations.Should().Contain(v => v.ListKind == PluginToolBoundaryListKind.DeniedTools && v.ToolName == "file_wrte");
+        violations.Should().Contain(v => v.ListKind == PluginToolBoundaryListKind.AllowedTools && v.ToolName == "typo_tool");
+    }
+
+    [Fact]
     public void GetBoundaryViolations_PluginNeverFaulted_ReturnsEmpty()
     {
         _sut.GetBoundaryViolations("never-faulted").Should().BeEmpty();

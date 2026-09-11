@@ -24,6 +24,24 @@ public static class PluginToolBoundaryListKind
 
     /// <summary>A <see cref="Domain.Common.Config.AI.Plugins.PluginDeclaration.DeniedTools"/> entry.</summary>
     public const string DeniedTools = "DeniedTools";
+
+    /// <summary>
+    /// Whether a Faulted boundary's <paramref name="violations"/> are provably confined to
+    /// <see cref="AllowedTools"/> — the one shape (#608) that can never widen a plugin's access and
+    /// can never defeat the <see cref="DeniedTools"/> bypass-immune guarantee, so it's safe for a
+    /// consumer to run its normal boundary filter instead of denying everything. <see langword="null"/>
+    /// or an empty list is NOT confined — a registry that recorded nothing gives no way to rule out a
+    /// <see cref="DeniedTools"/> hit, so it must be treated the same as a confirmed one: fail closed
+    /// on uncertainty, not just on certainty.
+    /// </summary>
+    /// <remarks>
+    /// The single shared decision both <c>ToolChainBuilder.ApplyPluginBoundaryIfPluginSkill</c> and
+    /// <c>PluginPermissionRuleProvider.BoundaryDemandsAgentWideFailClosed</c> must agree on (#608
+    /// code-review) — two independent reimplementations of the same predicate risk silently
+    /// diverging if this shape is ever revisited (e.g. a third list kind).
+    /// </remarks>
+    public static bool IsFaultConfinedToAllowedTools(IReadOnlyList<PluginToolBoundaryViolation>? violations) =>
+        violations is { Count: > 0 } && violations.All(v => v.ListKind == AllowedTools);
 }
 
 /// <summary>

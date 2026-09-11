@@ -240,12 +240,11 @@ public sealed class PluginPermissionRuleProvider : IPermissionRuleProvider
         if (status == PluginBoundaryStatus.Pending)
             return true;
 
-        // Null-tolerant: see ToolChainBuilder.ApplyPluginBoundaryIfPluginSkill's identical guard —
-        // "no violation detail was recorded" (including a test double with no explicit setup) is
-        // exactly the documented empty case, not an error.
-        var violations = _registry.GetBoundaryViolations(pluginName);
-        return violations is not { Count: > 0 }
-            || violations.Any(v => v.ListKind == PluginToolBoundaryListKind.DeniedTools);
+        // Shared with ToolChainBuilder.ApplyPluginBoundaryIfPluginSkill's identical decision (#608
+        // code-review) — one predicate both consumers agree on, rather than two independent
+        // reimplementations that could silently diverge.
+        return !PluginToolBoundaryListKind.IsFaultConfinedToAllowedTools(
+            _registry.GetBoundaryViolations(pluginName));
     }
 
     /// <summary>

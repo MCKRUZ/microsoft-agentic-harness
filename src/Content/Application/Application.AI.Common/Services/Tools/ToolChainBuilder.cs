@@ -258,18 +258,11 @@ public partial class ToolChainBuilder : IToolChainBuilder
         // entry there means the tool the plugin author meant to block never gets excluded, which is
         // the actual hazard #524 exists to prevent — so that case (and Pending, and an empty/unknown
         // violation set) still denies everything, fail-closed on uncertainty exactly as before.
-        if (status == PluginBoundaryStatus.Faulted)
+        if (status == PluginBoundaryStatus.Faulted
+            && PluginToolBoundaryListKind.IsFaultConfinedToAllowedTools(
+                pluginRegistry.GetBoundaryViolations(skill.PluginSource)))
         {
-            // Null-tolerant: IPluginRegistry.GetBoundaryViolations documents "empty ... when no
-            // violation detail was recorded" — a registry implementation that genuinely recorded
-            // nothing (including a test double with no explicit setup) is exactly that case, and
-            // must be treated identically to an explicit empty list: fail closed on uncertainty.
-            var violations = pluginRegistry.GetBoundaryViolations(skill.PluginSource);
-            if (violations is { Count: > 0 }
-                && violations.All(v => v.ListKind == PluginToolBoundaryListKind.AllowedTools))
-            {
-                return ApplyPluginToolBoundary(provisioned, loadedPlugin.Declaration);
-            }
+            return ApplyPluginToolBoundary(provisioned, loadedPlugin.Declaration);
         }
 
         _logger.LogWarning(
