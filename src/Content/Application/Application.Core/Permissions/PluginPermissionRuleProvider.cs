@@ -222,28 +222,23 @@ public sealed class PluginPermissionRuleProvider : IPermissionRuleProvider
 
     /// <summary>
     /// Whether <paramref name="pluginName"/>'s boundary state should contribute to
-    /// <see cref="ComputeRules"/>'s agent-wide fail-closed fallback (#608). <c>Pending</c> always
-    /// does — it's transient by nature (resolves to Verified or Faulted once every configured MCP
-    /// server reports), so it keeps the original list-kind-agnostic treatment. A <c>Faulted</c>
-    /// boundary contributes UNLESS every recorded violation is <c>AllowedTools</c>: that list can
-    /// only ever narrow a plugin's own grant, never widen it, and can never defeat the
-    /// <c>DeniedTools</c> bypass-immune guarantee this fallback exists to protect — so a fault
-    /// provably confined to it doesn't warrant denying every first-party tool agent-wide. An empty
-    /// or unrecorded violation set is treated the same as a <c>DeniedTools</c> hit: fail closed on
-    /// uncertainty, not just on a confirmed one.
+    /// <see cref="ComputeRules"/>'s agent-wide fail-closed fallback (#608).
     /// </summary>
+    /// <remarks>
+    /// Delegates to <see cref="PluginToolBoundaryViolationExtensions.RequiresFailClosed"/> — the single shared
+    /// decision this and <c>ToolChainBuilder.ApplyPluginBoundaryIfPluginSkill</c> both call, instead
+    /// of each independently re-deriving the same Verified/Pending/Faulted branch (see that method's
+    /// remarks for the full reasoning, including why <c>Pending</c> keeps the original
+    /// list-kind-agnostic treatment).
+    /// </remarks>
     private bool BoundaryDemandsAgentWideFailClosed(string pluginName)
     {
         var status = _registry.GetBoundaryStatus(pluginName);
-        if (status == PluginBoundaryStatus.Verified)
-            return false;
-        if (status == PluginBoundaryStatus.Pending)
-            return true;
+        var violations = status == PluginBoundaryStatus.Faulted
+            ? _registry.GetBoundaryViolations(pluginName)
+            : null;
 
-        // Shared with ToolChainBuilder.ApplyPluginBoundaryIfPluginSkill's identical decision (#608
-        // code-review) — one predicate both consumers agree on, rather than two independent
-        // reimplementations that could silently diverge.
-        return !_registry.GetBoundaryViolations(pluginName).IsConfinedToAllowedTools();
+        return status.RequiresFailClosed(violations);
     }
 
     /// <summary>

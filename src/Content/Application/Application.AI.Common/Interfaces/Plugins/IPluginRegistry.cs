@@ -79,7 +79,6 @@ public interface IPluginRegistry
     /// process lifetime.
     /// </summary>
     /// <param name="pluginName">The plugin whose boundary is faulted.</param>
-    /// <param name="reason">Human-readable reason, for logging/diagnostics.</param>
     /// <param name="violations">
     /// The specific entries that proved fake (#608). Callers that need to distinguish a
     /// <c>DeniedTools</c> fault (still must fail closed everywhere — the bypass-immune guarantee is at
@@ -89,10 +88,12 @@ public interface IPluginRegistry
     /// (<c>PluginToolBoundaryTracker</c>) already computes this list at both places it calls this
     /// method, so there is no case where passing it is a real burden — and an optional parameter would
     /// let a future call site silently keep the registry violations-blind for that plugin, defeating
-    /// the whole point of storing this.
+    /// the whole point of storing this. (An earlier revision also took a human-readable <c>reason</c>
+    /// string here — dropped in a /simplify pass: the implementation never used it (every real caller
+    /// already logs/throws its own formatted detail at the point of fault), and it carried no
+    /// information <paramref name="violations"/> doesn't already carry structurally.)
     /// </param>
-    void MarkBoundaryFaulted(
-        string pluginName, string reason, IReadOnlyList<PluginToolBoundaryViolation> violations);
+    void MarkBoundaryFaulted(string pluginName, IReadOnlyList<PluginToolBoundaryViolation> violations);
 
     /// <summary>
     /// The specific boundary entries that proved <paramref name="pluginName"/>'s tool boundary

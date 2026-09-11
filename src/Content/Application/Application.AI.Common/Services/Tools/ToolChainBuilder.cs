@@ -240,26 +240,21 @@ public partial class ToolChainBuilder : IToolChainBuilder
         // #524: a boundary entry that matches no real tool is provably broken, not just
         // permissive — most dangerously for DeniedTools, documented as bypass-immune. Once
         // PluginToolBoundaryTracker has proven that (see its remarks), the boundary can no longer
-        // be fully trusted. Pending is treated identically to a DeniedTools-involving Faulted, not
-        // to Verified — an entry still awaiting an MCP server's tool list is exactly as unproven as
-        // one already confirmed fake, and trusting it in the meantime is the specific gap a review
-        // round found: a server nothing else happens to query left a plugin's boundary silently
-        // trusted forever.
-        // #608: a Faulted boundary whose violations are ALL AllowedTools entries can never widen
-        // this plugin's access — AllowedTools is a positive allow-set match
-        // (ApplyPluginToolBoundary's own `tools.Where(t => allowSet.Contains(...))`), so a name that
-        // matches no real tool is already an inert no-op there; running the filter normally already
-        // produces the narrower "just lose that one tool" outcome the corrupted entry implies,
-        // without any special-casing. A DeniedTools-involving fault is the opposite shape: a bogus
-        // entry there means the tool the plugin author meant to block never gets excluded, which is
-        // the actual hazard #524 exists to prevent — so that case (and Pending, and an empty/unknown
-        // violation set) still denies everything, fail-closed on uncertainty exactly as before.
+        // be fully trusted. #608 narrowed this: a Faulted boundary whose violations are ALL
+        // AllowedTools entries can never widen this plugin's access — AllowedTools is a positive
+        // allow-set match (ApplyPluginToolBoundary's own `tools.Where(t => allowSet.Contains(...))`),
+        // so a name that matches no real tool is already an inert no-op there; running the filter
+        // normally already produces the narrower "just lose that one tool" outcome the corrupted
+        // entry implies, without any special-casing. Every other case (a DeniedTools-involving
+        // Faulted, Pending, or an empty/unknown violation set) still denies everything, fail-closed
+        // on uncertainty — see PluginBoundaryStatus.RequiresFailClosed's remarks, the single shared
+        // decision this and PluginPermissionRuleProvider.BoundaryDemandsAgentWideFailClosed both call.
         var status = pluginRegistry!.GetBoundaryStatus(skill.PluginSource);
-        var trustedEnoughToApplyNormally = status == PluginBoundaryStatus.Verified
-            || (status == PluginBoundaryStatus.Faulted
-                && pluginRegistry.GetBoundaryViolations(skill.PluginSource).IsConfinedToAllowedTools());
+        var violations = status == PluginBoundaryStatus.Faulted
+            ? pluginRegistry.GetBoundaryViolations(skill.PluginSource)
+            : null;
 
-        if (trustedEnoughToApplyNormally)
+        if (!status.RequiresFailClosed(violations))
             return ApplyPluginToolBoundary(provisioned, loadedPlugin.Declaration);
 
         _logger.LogWarning(

@@ -20,7 +20,12 @@ public sealed class PluginRegistry : IPluginRegistry
     // inside the same _stateLock critical section as _boundaryStatus and _stateVersion below, for the
     // same reason documented on that lock: a reader must never observe the status flip to Faulted
     // without also observing the violation list that explains it.
-    private readonly ConcurrentDictionary<string, IReadOnlyList<PluginToolBoundaryViolation>> _boundaryViolations =
+    //
+    // Stored as List<T>, not IReadOnlyList<T> — MarkBoundaryFaulted always replaces the dictionary
+    // entry wholesale (never mutates a published list in place), so GetBoundaryViolations can wrap
+    // the stored instance in .AsReadOnly() (O(1), and a caller downcasting to List<T> gets an
+    // InvalidCastException rather than a mutable handle) instead of copying it on every read.
+    private readonly ConcurrentDictionary<string, List<PluginToolBoundaryViolation>> _boundaryViolations =
         new(StringComparer.OrdinalIgnoreCase);
 
     // #612 grader finding, round 1: writing the dictionary and bumping _stateVersion as two separate
@@ -134,36 +139,34 @@ public sealed class PluginRegistry : IPluginRegistry
     }
 
     /// <inheritdoc />
-    public void MarkBoundaryFaulted(
-        string pluginName, string reason, IReadOnlyList<PluginToolBoundaryViolation> violations)
+    public void MarkBoundaryFaulted(string pluginName, IReadOnlyList<PluginToolBoundaryViolation> violations)
     {
         lock (_stateLock)
         {
-            // reason is a human-readable summary of facts (plugin/list-kind/tool-name) the caller
-            // already surfaces separately at the point of fault — McpToolProvider logs the
-            // violation list at Critical, PluginToolBoundaryStartupValidator throws with the same
-            // details — so nothing here needs reason back. violations IS stored (#608 — unlike
-            // reason, this now has real readers: GetBoundaryViolations lets a consumer distinguish
-            // a DeniedTools fault from an AllowedTools-only one).
-            //
-            // #608 code-review: two hardening fixes on the same field.
-            // 1. Defensive copy (.ToList()) rather than storing the caller's list by reference — a
-            //    different threat model than PluginPermissionRuleProvider's .AsReadOnly() cache in
-            //    this same PR (that one wraps a freshly-built List<T> this class already owns; this
-            //    one copies a foreign, caller-supplied list before taking custody of it), same goal:
-            //    a future caller downcasting and mutating the stored instance would otherwise
-            //    permanently corrupt the registry's record for every later reader.
+            // #608 code-review, /simplify pass: two fixes on the same field.
+            // 1. AddOrUpdate, not a manual GetValueOrDefault-then-indexer-write — matches the idiom
+            //    MarkBoundaryPending/MarkBoundaryVerified above already established for exactly this
+            //    "merge into a concurrent dictionary" shape, rather than reintroducing the
+            //    check-then-set pattern that caused #612's own bug (this lock makes it safe either
+            //    way today, but AddOrUpdate's atomicity doesn't *depend* on the lock staying exactly
+            //    this shape, and consistency with the sibling mutators is worth keeping on its own).
             // 2. Merge with any already-recorded violations for this plugin instead of overwriting.
             //    MarkBoundaryFaulted has no guard against being called twice for the same plugin
-            //    (its siblings MarkBoundaryPending/MarkBoundaryVerified explicitly refuse to
-            //    downgrade an already-Faulted status, but that guard was never extended to this
-            //    field). Not reachable via today's two callers in PluginToolBoundaryTracker (its
-            //    Resolved flag makes the immediate and lazy paths mutually exclusive per plugin),
-            //    but the registry is documented as the shared trust boundary regardless of caller
-            //    discipline — a second call must only ever be able to ADD to the recorded danger,
-            //    never silently narrow away an already-recorded DeniedTools violation.
-            var existing = _boundaryViolations.GetValueOrDefault(pluginName);
-            _boundaryViolations[pluginName] = (existing ?? []).Concat(violations).ToList();
+            //    (its siblings explicitly refuse to downgrade an already-Faulted status, but that
+            //    guard was never extended to this field). Not reachable via today's two callers in
+            //    PluginToolBoundaryTracker (its Resolved flag makes the immediate and lazy paths
+            //    mutually exclusive per plugin), but the registry is documented as the shared trust
+            //    boundary regardless of caller discipline — a second call must only ever be able to
+            //    ADD to the recorded danger, never silently narrow away an already-recorded
+            //    DeniedTools violation. (A /simplify pass suggested dropping this for an
+            //    unreachable-today guard instead, matching the siblings' shape — rejected: for
+            //    THIS field a guard would mean "first call wins," which could permanently lock in an
+            //    incomplete violation set if a later call would have added a DeniedTools entry the
+            //    first one missed. Merge is the only shape that can't get less safe over time.)
+            _boundaryViolations.AddOrUpdate(
+                pluginName,
+                _ => violations.ToList(),
+                (_, existing) => existing.Concat(violations).ToList());
             _boundaryStatus[pluginName] = PluginBoundaryStatus.Faulted;
             _stateVersion++;
         }
@@ -171,10 +174,11 @@ public sealed class PluginRegistry : IPluginRegistry
 
     /// <inheritdoc />
     public IReadOnlyList<PluginToolBoundaryViolation> GetBoundaryViolations(string pluginName) =>
-        // #608 code-review round 3: lock-free for the same reason as GetBoundaryStatus above. Returns
-        // a fresh copy (.ToList()), not the stored instance — MarkBoundaryFaulted defensively copies
-        // on write (round 2), but a caller mutating the exact instance handed back by a bare
-        // GetValueOrDefault would still corrupt the registry's own record; this closes the same
-        // hazard on the read side.
-        _boundaryViolations.GetValueOrDefault(pluginName, []).ToList();
+        // #608 code-review round 3 / /simplify: lock-free for the same reason as GetBoundaryStatus
+        // above. .AsReadOnly(), not .ToList() — O(1) instead of a full copy, and a caller downcasting
+        // the result to List<T> (the exact mutation hazard a prior round closed with a copy) now gets
+        // an InvalidCastException instead of a mutable handle, since ReadOnlyCollection<T> is a
+        // distinct type. Safe because MarkBoundaryFaulted above never mutates a published list in
+        // place — every write replaces the dictionary entry with a brand-new list.
+        _boundaryViolations.TryGetValue(pluginName, out var violations) ? violations.AsReadOnly() : [];
 }

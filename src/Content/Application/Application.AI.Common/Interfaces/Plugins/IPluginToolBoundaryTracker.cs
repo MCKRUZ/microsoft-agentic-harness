@@ -43,13 +43,41 @@ public static class PluginToolBoundaryViolationExtensions
     /// certainty.
     /// </summary>
     /// <remarks>
-    /// The single shared decision both <c>ToolChainBuilder.ApplyPluginBoundaryIfPluginSkill</c> and
-    /// <c>PluginPermissionRuleProvider.BoundaryDemandsAgentWideFailClosed</c> must agree on (#608
-    /// code-review) — two independent reimplementations of the same predicate risk silently
-    /// diverging if this shape is ever revisited (e.g. a third list kind).
+    /// The leaf check <see cref="RequiresFailClosed"/> is built from — kept separate because it's a
+    /// pure fact about a violation list, independent of what a caller does with it.
     /// </remarks>
     public static bool IsConfinedToAllowedTools(this IReadOnlyList<PluginToolBoundaryViolation>? violations) =>
         violations is { Count: > 0 } && violations.All(v => v.ListKind == PluginToolBoundaryListKind.AllowedTools);
+
+    /// <summary>
+    /// Whether a plugin's boundary <paramref name="status"/> demands the caller's fail-closed
+    /// response (#608) — deny everything, rather than run the normal boundary filter.
+    /// <see langword="true"/> for <see cref="PluginBoundaryStatus.Pending"/> unconditionally (it's
+    /// transient — resolves to <see cref="PluginBoundaryStatus.Verified"/> or
+    /// <see cref="PluginBoundaryStatus.Faulted"/> once every configured MCP server reports, so
+    /// narrowing it isn't part of what #608 addressed), and for
+    /// <see cref="PluginBoundaryStatus.Faulted"/> unless <paramref name="violations"/> is
+    /// <see cref="IsConfinedToAllowedTools">confined to AllowedTools</see>.
+    /// </summary>
+    /// <remarks>
+    /// The single shared decision both <c>ToolChainBuilder.ApplyPluginBoundaryIfPluginSkill</c> and
+    /// <c>PluginPermissionRuleProvider.BoundaryDemandsAgentWideFailClosed</c> call, instead of each
+    /// independently re-deriving the same Verified/Pending/Faulted branch (#608 code-review /
+    /// /simplify — flagged across two review rounds as a divergence risk: only the leaf
+    /// <see cref="IsConfinedToAllowedTools"/> check was originally shared, not the branch around it).
+    /// <paramref name="violations"/> is only consulted when <paramref name="status"/> is
+    /// <see cref="PluginBoundaryStatus.Faulted"/> — callers should pass <see langword="null"/> (or
+    /// skip fetching it) otherwise, since <see cref="IPluginRegistry.GetBoundaryViolations"/> is
+    /// meaningless for any other status.
+    /// </remarks>
+    public static bool RequiresFailClosed(
+        this PluginBoundaryStatus status, IReadOnlyList<PluginToolBoundaryViolation>? violations) =>
+        status switch
+        {
+            PluginBoundaryStatus.Verified => false,
+            PluginBoundaryStatus.Faulted => !violations.IsConfinedToAllowedTools(),
+            _ => true, // Pending, or any future status — fail closed on uncertainty.
+        };
 }
 
 /// <summary>

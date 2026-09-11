@@ -87,7 +87,7 @@ public class PluginRegistryTests
     [Fact]
     public void MarkBoundaryFaulted_ThenGetBoundaryStatus_ReturnsFaulted()
     {
-        _sut.MarkBoundaryFaulted("azure", "DeniedTools entry 'file_wrte' matches no known tool", []);
+        _sut.MarkBoundaryFaulted("azure", []);
 
         _sut.GetBoundaryStatus("azure").Should().Be(PluginBoundaryStatus.Faulted);
     }
@@ -95,7 +95,7 @@ public class PluginRegistryTests
     [Fact]
     public void GetBoundaryStatus_CaseInsensitive_ReturnsFaulted()
     {
-        _sut.MarkBoundaryFaulted("Azure", "reason", []);
+        _sut.MarkBoundaryFaulted("Azure", []);
 
         _sut.GetBoundaryStatus("azure").Should().Be(PluginBoundaryStatus.Faulted);
         _sut.GetBoundaryStatus("AZURE").Should().Be(PluginBoundaryStatus.Faulted);
@@ -107,24 +107,27 @@ public class PluginRegistryTests
         IReadOnlyList<PluginToolBoundaryViolation> violations =
             [new PluginToolBoundaryViolation("azure", PluginToolBoundaryListKind.DeniedTools, "file_wrte")];
 
-        _sut.MarkBoundaryFaulted("azure", "reason", violations);
+        _sut.MarkBoundaryFaulted("azure", violations);
 
         _sut.GetBoundaryViolations("azure").Should().BeEquivalentTo(violations);
     }
 
     [Fact]
-    public void GetBoundaryViolations_CallerMutatesReturnedList_DoesNotCorruptTheRegistry()
+    public void GetBoundaryViolations_ReturnsAReadOnlyWrapper_CannotBeDowncastAndMutated()
     {
-        // #608 code-review round 3: GetBoundaryViolations must hand back a copy, not the registry's
-        // own stored instance -- a caller downcasting and mutating it (e.g. dropping the DeniedTools
-        // entry) would otherwise silently defeat the DeniedTools bypass-immune guarantee for every
-        // later reader.
-        _sut.MarkBoundaryFaulted("azure", "reason",
+        // #608 code-review round 3 / /simplify: GetBoundaryViolations must not hand back a mutable
+        // path to the registry's own stored list -- a caller downcasting and mutating it (e.g.
+        // dropping the DeniedTools entry) would otherwise silently defeat the DeniedTools
+        // bypass-immune guarantee for every later reader. Returning .AsReadOnly() (a
+        // ReadOnlyCollection<T>, a distinct type from List<T>) means the downcast itself throws,
+        // rather than a copy merely making the attempt harmless.
+        _sut.MarkBoundaryFaulted("azure",
             [new PluginToolBoundaryViolation("azure", PluginToolBoundaryListKind.DeniedTools, "file_wrte")]);
 
-        var returned = (List<PluginToolBoundaryViolation>)_sut.GetBoundaryViolations("azure");
-        returned.Clear();
+        var returned = _sut.GetBoundaryViolations("azure");
+        var attemptDowncast = () => (List<PluginToolBoundaryViolation>)returned;
 
+        attemptDowncast.Should().Throw<InvalidCastException>();
         _sut.GetBoundaryViolations("azure").Should().ContainSingle(v => v.ToolName == "file_wrte");
     }
 
@@ -134,7 +137,7 @@ public class PluginRegistryTests
         IReadOnlyList<PluginToolBoundaryViolation> violations =
             [new PluginToolBoundaryViolation("Azure", PluginToolBoundaryListKind.AllowedTools, "typo_tool")];
 
-        _sut.MarkBoundaryFaulted("Azure", "reason", violations);
+        _sut.MarkBoundaryFaulted("Azure", violations);
 
         _sut.GetBoundaryViolations("azure").Should().BeEquivalentTo(violations);
         _sut.GetBoundaryViolations("AZURE").Should().BeEquivalentTo(violations);
@@ -147,9 +150,9 @@ public class PluginRegistryTests
         // danger, never silently narrow it. Mutation guard for the specific failure this closes: a
         // second call with a narrower (AllowedTools-only) violation set must not erase a previously
         // recorded DeniedTools violation.
-        _sut.MarkBoundaryFaulted("azure", "first fault",
+        _sut.MarkBoundaryFaulted("azure",
             [new PluginToolBoundaryViolation("azure", PluginToolBoundaryListKind.DeniedTools, "file_wrte")]);
-        _sut.MarkBoundaryFaulted("azure", "second fault",
+        _sut.MarkBoundaryFaulted("azure",
             [new PluginToolBoundaryViolation("azure", PluginToolBoundaryListKind.AllowedTools, "typo_tool")]);
 
         var violations = _sut.GetBoundaryViolations("azure");
@@ -194,7 +197,7 @@ public class PluginRegistryTests
         // Faulted is terminal (#524 redesign) — a caller resolving one pending entry has no way to
         // know whether some OTHER entry already faulted this same plugin through a different call,
         // so MarkBoundaryVerified must never be able to downgrade it.
-        _sut.MarkBoundaryFaulted("azure", "DeniedTools entry 'file_wrte' matches no known tool", []);
+        _sut.MarkBoundaryFaulted("azure", []);
         _sut.MarkBoundaryVerified("azure");
 
         _sut.GetBoundaryStatus("azure").Should().Be(PluginBoundaryStatus.Faulted);
@@ -208,7 +211,7 @@ public class PluginRegistryTests
         // reachable via any caller today (Seed calls MarkBoundaryPending at most once per plugin, and
         // never after a fault), but the registry is the shared trust boundary, not any one caller's
         // discipline, so it must hold regardless of how many callers exist in the future.
-        _sut.MarkBoundaryFaulted("azure", "DeniedTools entry 'file_wrte' matches no known tool", []);
+        _sut.MarkBoundaryFaulted("azure", []);
         _sut.MarkBoundaryPending("azure");
 
         _sut.GetBoundaryStatus("azure").Should().Be(PluginBoundaryStatus.Faulted);
@@ -223,7 +226,7 @@ public class PluginRegistryTests
         yield return [new Action<PluginRegistry>(r => r.Register(MakePlugin("azure")))];
         yield return [new Action<PluginRegistry>(r => r.MarkBoundaryPending("azure"))];
         yield return [new Action<PluginRegistry>(r => r.MarkBoundaryVerified("azure"))];
-        yield return [new Action<PluginRegistry>(r => r.MarkBoundaryFaulted("azure", "reason", []))];
+        yield return [new Action<PluginRegistry>(r => r.MarkBoundaryFaulted("azure", []))];
     }
 
     [Theory]

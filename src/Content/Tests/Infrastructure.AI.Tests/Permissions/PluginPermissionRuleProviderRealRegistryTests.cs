@@ -61,7 +61,7 @@ public sealed class PluginPermissionRuleProviderRealRegistryTests
         beforeFault.Should().BeEmpty("the plugin's boundary is Verified, so no fail-closed rules apply yet");
 
         registry.MarkBoundaryFaulted(
-            "azure", "DeniedTools entry matches no known tool",
+            "azure",
             [new PluginToolBoundaryViolation("azure", PluginToolBoundaryListKind.DeniedTools, "file_wrte")]);
 
         var afterFault = await provider.GetRulesAsync("any-agent");
@@ -80,7 +80,7 @@ public sealed class PluginPermissionRuleProviderRealRegistryTests
         // return the exact same cached list, not a freshly recomputed equal one.
         var registry = new PluginRegistry();
         registry.Register(MakePlugin("azure"));
-        registry.MarkBoundaryFaulted("azure", "reason", []);
+        registry.MarkBoundaryFaulted("azure", []);
 
         var provider = CreateSut(registry, "file_system");
 
@@ -100,7 +100,7 @@ public sealed class PluginPermissionRuleProviderRealRegistryTests
         var registry = new PluginRegistry();
         registry.Register(MakePlugin("azure"));
         registry.MarkBoundaryFaulted(
-            "azure", "AllowedTools entry matches no known tool",
+            "azure",
             [new PluginToolBoundaryViolation("azure", PluginToolBoundaryListKind.AllowedTools, "typo_tool")]);
 
         var provider = CreateSut(registry, "file_system", "shell");
@@ -119,7 +119,7 @@ public sealed class PluginPermissionRuleProviderRealRegistryTests
         var registry = new PluginRegistry();
         registry.Register(MakePlugin("azure"));
         registry.MarkBoundaryFaulted(
-            "azure", "Both lists have unresolved entries",
+            "azure",
             [
                 new PluginToolBoundaryViolation("azure", PluginToolBoundaryListKind.AllowedTools, "typo_tool"),
                 new PluginToolBoundaryViolation("azure", PluginToolBoundaryListKind.DeniedTools, "file_wrte"),
