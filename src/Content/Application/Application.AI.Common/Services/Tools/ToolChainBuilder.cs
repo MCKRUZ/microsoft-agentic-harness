@@ -259,8 +259,7 @@ public partial class ToolChainBuilder : IToolChainBuilder
         // the actual hazard #524 exists to prevent — so that case (and Pending, and an empty/unknown
         // violation set) still denies everything, fail-closed on uncertainty exactly as before.
         if (status == PluginBoundaryStatus.Faulted
-            && PluginToolBoundaryListKind.IsFaultConfinedToAllowedTools(
-                pluginRegistry.GetBoundaryViolations(skill.PluginSource)))
+            && pluginRegistry.GetBoundaryViolations(skill.PluginSource).IsConfinedToAllowedTools())
         {
             return ApplyPluginToolBoundary(provisioned, loadedPlugin.Declaration);
         }

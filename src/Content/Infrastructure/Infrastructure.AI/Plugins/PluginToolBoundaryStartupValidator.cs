@@ -50,6 +50,21 @@ namespace Infrastructure.AI.Plugins;
 /// which the Host guarantees runs after <c>PluginStartupLoader.StartAsync</c> completes, is what
 /// actually sees the merged list.
 /// </para>
+/// <para>
+/// <strong>Deliberately stays list-kind-agnostic even after #608.</strong> #608 taught the two
+/// RUNTIME consequence sites (<c>ToolChainBuilder.ApplyPluginBoundaryIfPluginSkill</c>,
+/// <c>PluginPermissionRuleProvider</c>'s agent-wide fallback) to run normally instead of denying
+/// everything when a <see cref="PluginBoundaryStatus.Faulted"/> boundary's violations are provably
+/// confined to <c>AllowedTools</c> — a typo there can only narrow a plugin's grant, never widen it.
+/// This boot-time check was NOT given the same leniency, on purpose: it fires only in the immediately
+/// decidable case (no MCP server configured anywhere on the host, so a manifest error is provably a
+/// typo right now, not a maybe-real-later name), and the cost of refusing to boot on any such error —
+/// regardless of which list it's in — is a one-time, loud, fixable-before-traffic failure, not an
+/// ongoing degraded runtime. Extending #608's narrower treatment here would trade that for "boot
+/// succeeds with a plugin quietly missing one tool," which is a worse failure mode for something
+/// this cheap to just fix in the manifest and restart. If this validator's severity is ever revisited,
+/// treat that as its own decision — not an oversight inherited from #608's runtime-only scope.
+/// </para>
 /// </remarks>
 public sealed class PluginToolBoundaryStartupValidator : IHostedService
 {

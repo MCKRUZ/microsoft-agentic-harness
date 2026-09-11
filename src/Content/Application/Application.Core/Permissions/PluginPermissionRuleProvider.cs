@@ -243,8 +243,7 @@ public sealed class PluginPermissionRuleProvider : IPermissionRuleProvider
         // Shared with ToolChainBuilder.ApplyPluginBoundaryIfPluginSkill's identical decision (#608
         // code-review) — one predicate both consumers agree on, rather than two independent
         // reimplementations that could silently diverge.
-        return !PluginToolBoundaryListKind.IsFaultConfinedToAllowedTools(
-            _registry.GetBoundaryViolations(pluginName));
+        return !_registry.GetBoundaryViolations(pluginName).IsConfinedToAllowedTools();
     }
 
     /// <summary>

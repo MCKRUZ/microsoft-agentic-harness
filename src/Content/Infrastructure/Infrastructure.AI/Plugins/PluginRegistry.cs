@@ -88,14 +88,19 @@ public sealed class PluginRegistry : IPluginRegistry
         // verify, Pending/Faulted otherwise), so an absent entry here means genuinely unseeded, not
         // "seeded with an empty boundary" — the two used to be indistinguishable.
         //
-        // #608 code-review: reads this dictionary AND _boundaryViolations under the same _stateLock
-        // every writer already uses, not lock-free. This method's own status and GetBoundaryViolations'
-        // violation list are two SEPARATE ConcurrentDictionary entries written together inside
-        // MarkBoundaryFaulted's lock — reading either one lock-free reopens the exact
-        // write-locked/read-unlocked race this file's _stateVersion comment already exists to warn
-        // against (PR #628): a caller could observe Faulted here but a stale (or not-yet-written)
-        // violation list from GetBoundaryViolations, since nothing pairs the two reads together
-        // without the lock.
+        // #608 code-review round 2: reads this dictionary under the same _stateLock every writer
+        // uses (each individual read is torn-write-free), not lock-free.
+        //
+        // What this does NOT guarantee: a caller that calls this method and GetBoundaryViolations as
+        // two SEPARATE calls does not get an atomic combined snapshot — a concurrent MarkBoundaryFaulted
+        // can land between the two. Today this is provably safe rather than merely "usually fine":
+        // MarkBoundaryFaulted MERGES violations (never overwrites/narrows, see its own remarks), so the
+        // worst a racing reader can observe is a violations list from a LATER point in time than the
+        // status it read — which can only ADD violations, never drop the one that made a fault
+        // dangerous. If MarkBoundaryFaulted's merge-only guarantee is ever relaxed, this reasoning
+        // breaks and the two calls would need a single atomic combined accessor instead — do not treat
+        // "each read is individually locked" as equivalent to "the pair is atomic" without re-deriving
+        // this argument.
         lock (_stateLock)
         {
             return _boundaryStatus.GetValueOrDefault(pluginName, PluginBoundaryStatus.Pending);
@@ -176,8 +181,10 @@ public sealed class PluginRegistry : IPluginRegistry
     /// <inheritdoc />
     public IReadOnlyList<PluginToolBoundaryViolation> GetBoundaryViolations(string pluginName)
     {
-        // #608 code-review: see GetBoundaryStatus's remarks — read under the same lock every writer
-        // uses, so a caller pairing this with GetBoundaryStatus never observes a torn write.
+        // #608 code-review round 2: see GetBoundaryStatus's remarks — each individual read here is
+        // torn-write-free, but pairing this with a separate GetBoundaryStatus call is NOT an atomic
+        // combined snapshot. Safe today only because MarkBoundaryFaulted's violations are merge-only
+        // (never narrowed) — re-read that reasoning before relying on this pairing for anything new.
         lock (_stateLock)
         {
             return _boundaryViolations.GetValueOrDefault(pluginName, []);
