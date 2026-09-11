@@ -61,6 +61,52 @@ public sealed class FileSystemExecutionTraceStoreTests : IDisposable
         StartedAt = DateTimeOffset.UtcNow
     };
 
+    // --- Directory permissions (#527) ---
+
+    [Fact]
+    public async Task StartRunAsync_RunDirectoryIsCreatedOwnerOnly()
+    {
+        // #527: the run directory (and, transitively, its turns/tool_results subdirectories) holds
+        // redacted-but-still-substantive tool-result payloads once tracing is on — it must never be
+        // created with whatever the process umask/inherited ACL happens to grant.
+        var scope = TraceScope.ForExecution(Guid.NewGuid());
+
+        var writer = await _sut.StartRunAsync(scope, DefaultMetadata());
+
+        if (!OperatingSystem.IsWindows())
+        {
+            var mode = File.GetUnixFileMode(writer.RunDirectory);
+            mode.Should().Be(UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute,
+                "the run directory must be readable/writable/executable by the owner only");
+        }
+    }
+
+    [Fact]
+    public async Task WriteTurnAsync_TurnAndToolResultsDirectoriesAreCreatedOwnerOnly()
+    {
+        var scope = TraceScope.ForExecution(Guid.NewGuid());
+        var writer = await _sut.StartRunAsync(scope, DefaultMetadata());
+
+        // MaxFullPayloadKB is 1 KB in this fixture (see constructor) — a result over that spills to
+        // tool_results/<callId>.json, exercising the second, nested owner-only directory creation.
+        var oversizedResult = new string('x', 2048);
+        await writer.WriteTurnAsync(1, new TurnArtifacts
+        {
+            ToolResults = new Dictionary<string, string> { ["call-1"] = oversizedResult }
+        });
+
+        if (!OperatingSystem.IsWindows())
+        {
+            var turnDir = Path.Combine(writer.RunDirectory, "turns", "1");
+            File.GetUnixFileMode(turnDir).Should().Be(
+                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+
+            var toolResultsDir = Path.Combine(turnDir, "tool_results");
+            File.GetUnixFileMode(toolResultsDir).Should().Be(
+                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
+    }
+
     // --- Directory creation ---
 
     [Fact]

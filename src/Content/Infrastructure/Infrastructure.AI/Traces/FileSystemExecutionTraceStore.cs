@@ -5,6 +5,7 @@ using Application.AI.Common.Interfaces.Traces;
 using Domain.Common.Config;
 using Domain.Common.Config.MetaHarness;
 using Domain.Common.MetaHarness;
+using Infrastructure.AI.Helpers;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -45,7 +46,9 @@ public sealed class FileSystemExecutionTraceStore : IExecutionTraceStore
     {
         var config = _appConfig.CurrentValue.MetaHarness;
         var dir = scope.ResolveDirectory(config.TraceDirectoryRoot);
-        Directory.CreateDirectory(dir);
+        // Owner-only (#527): this directory (and its turns/tool_results subdirectories) holds
+        // redacted-but-still-substantive tool-result payloads once ExecutionTracingEnabled is on.
+        OwnerOnlyDirectoryHelper.Create(dir);
 
         var manifest = new
         {
@@ -113,7 +116,7 @@ public sealed class FileSystemExecutionTraceStore : IExecutionTraceStore
             ArgumentOutOfRangeException.ThrowIfNegativeOrZero(turnNumber);
 
             var turnDir = Path.Combine(RunDirectory, "turns", turnNumber.ToString());
-            Directory.CreateDirectory(turnDir);
+            OwnerOnlyDirectoryHelper.Create(turnDir);
 
             if (artifacts.SystemPrompt is { } prompt)
             {
@@ -151,7 +154,7 @@ public sealed class FileSystemExecutionTraceStore : IExecutionTraceStore
                         continue;
                     }
 
-                    Directory.CreateDirectory(toolResultsDir);
+                    OwnerOnlyDirectoryHelper.Create(toolResultsDir);
                     await File.WriteAllTextAsync(targetPath, result, ct);
                 }
             }

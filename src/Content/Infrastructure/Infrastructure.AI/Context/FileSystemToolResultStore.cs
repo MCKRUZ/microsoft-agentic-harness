@@ -6,6 +6,7 @@ using Domain.AI.Context;
 using Domain.AI.Telemetry.Redaction;
 using Domain.Common.Config;
 using Domain.Common.Helpers;
+using Infrastructure.AI.Helpers;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -287,7 +288,9 @@ public sealed class FileSystemToolResultStore : IToolResultStore
 
         var storagePath = Path.Combine(config.StoragePath, safeSessionId, "tool-results", $"{resultId}.txt");
         var directory = Path.GetDirectoryName(storagePath)!;
-        CreateDirectoryOwnerOnly(directory);
+        // Owner-only (#559, pairs with #527): this is the directory a spilled result's raw,
+        // unredacted-since-#563 output lands in.
+        OwnerOnlyDirectoryHelper.Create(directory);
 
         await File.WriteAllTextAsync(storagePath, spillable, cancellationToken);
 
@@ -549,25 +552,6 @@ public sealed class FileSystemToolResultStore : IToolResultStore
                 return;
             directory = parent;
         }
-    }
-
-    /// <summary>
-    /// Creates <paramref name="directory"/> (and any missing parents) with owner-only access on POSIX
-    /// (#559, pairs with #527) — the directory a spilled result's raw, unredacted-since-#563 output
-    /// lands in. Windows is left to its inherited ACL, matching the only other place in this codebase
-    /// that restricts filesystem permissions (<c>SandboxWorkspace</c>) rather than inventing a second,
-    /// untested ACL-setting path.
-    /// </summary>
-    private static void CreateDirectoryOwnerOnly(string directory)
-    {
-        if (OperatingSystem.IsWindows())
-        {
-            Directory.CreateDirectory(directory);
-            return;
-        }
-
-        Directory.CreateDirectory(
-            directory, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
     }
 
     /// <summary>
