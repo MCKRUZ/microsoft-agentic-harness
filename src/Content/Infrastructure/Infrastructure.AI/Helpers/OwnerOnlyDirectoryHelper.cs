@@ -10,6 +10,14 @@ namespace Infrastructure.AI.Helpers;
 /// grants broader access on purpose (a workspace mounted into a container running as a different UID
 /// needs <c>Other</c> permissions) — that is a different security posture for a different reason, not
 /// the same gap.
+/// <para>
+/// <strong>Does not remediate a directory that already exists</strong> (/code-review, round 2) — this
+/// only tightens permissions on the create path. A host upgraded in place, whose storage root was
+/// already created by pre-#527 code with looser default permissions, keeps that root's old mode
+/// indefinitely; only the NEW leaf directories created under it after the upgrade get owner-only.
+/// Closing that gap needs a one-time startup remediation pass, tracked separately rather than folded
+/// into this create-time fix.
+/// </para>
 /// </remarks>
 internal static class OwnerOnlyDirectoryHelper
 {

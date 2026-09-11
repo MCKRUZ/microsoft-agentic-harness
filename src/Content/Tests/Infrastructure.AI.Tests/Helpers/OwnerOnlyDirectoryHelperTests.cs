@@ -62,7 +62,14 @@ public sealed class OwnerOnlyDirectoryHelperTests : IDisposable
     public void Create_SomeParentSegmentsAlreadyExist_OnlyAppliesModeToTheNewlyCreatedOnes()
     {
         var existingParent = Path.Combine(_root, "existing");
-        Directory.CreateDirectory(existingParent); // created with the default (non-restricted) mode
+        Directory.CreateDirectory(existingParent);
+        // A deliberately WIDE mode, distinguishable from owner-only, and set explicitly rather than
+        // relying on whatever the ambient umask happens to produce — the assertion below must prove
+        // this segment was left untouched, not coincide with owner-only by chance.
+        const UnixFileMode wideMode = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute
+            | UnixFileMode.GroupRead | UnixFileMode.GroupExecute | UnixFileMode.OtherRead | UnixFileMode.OtherExecute;
+        if (!OperatingSystem.IsWindows())
+            File.SetUnixFileMode(existingParent, wideMode);
         var leaf = Path.Combine(existingParent, "new-a", "new-b");
 
         var act = () => OwnerOnlyDirectoryHelper.Create(leaf);
@@ -73,6 +80,8 @@ public sealed class OwnerOnlyDirectoryHelperTests : IDisposable
         if (!OperatingSystem.IsWindows())
         {
             const UnixFileMode expected = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
+            File.GetUnixFileMode(existingParent).Should().Be(wideMode,
+                "a pre-existing segment's permissions must never be touched by a call that only needs to create its children");
             File.GetUnixFileMode(Path.Combine(existingParent, "new-a")).Should().Be(expected);
             File.GetUnixFileMode(leaf).Should().Be(expected);
         }
