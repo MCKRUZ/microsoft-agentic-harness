@@ -123,7 +123,7 @@ public static class ToolCallTranscriptExtractor
             if (resultsByCallId.TryGetValue(call.CallId, out var result))
             {
                 exchanges.Add(new ToolExchange(
-                    safeCallId, safeName, argsJson, ResultText(result), HasResult: true, RoundOrdinal: i));
+                    safeCallId, safeName, argsJson, ResultText(result, safeCallId), HasResult: true, RoundOrdinal: i));
             }
             else
             {
@@ -201,7 +201,7 @@ public static class ToolCallTranscriptExtractor
     /// The exception-substitution policy is still reused: a failed call's raw exception text must not
     /// reach the model any more than it should reach an observability store.
     /// </summary>
-    private static string? ResultText(FunctionResultContent result)
+    private static string? ResultText(FunctionResultContent result, string safeCallId)
     {
         if (result.Exception is not null)
             return "Error: tool call failed.";
@@ -210,11 +210,11 @@ public static class ToolCallTranscriptExtractor
         {
             null => null,
             string text => text,
-            var value => TrySerializeResult(value, result.CallId),
+            var value => TrySerializeResult(value, safeCallId),
         };
     }
 
-    private static string? TrySerializeResult(object value, string? callId)
+    private static string? TrySerializeResult(object value, string callId)
     {
         try
         {
