@@ -18,6 +18,7 @@ using Domain.AI.Governance;
 using Domain.AI.Skills;
 using Domain.AI.Telemetry.Conventions;
 using Domain.Common.Extensions;
+using Domain.Common.Helpers;
 using MediatR;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
@@ -473,6 +474,20 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 	/// <c>CallId</c>, and a non-empty <c>Name</c> for the call side — and leaves duplicate-start and
 	/// orphaned-result enforcement to the sink.
 	/// </summary>
+	/// <remarks>
+	/// <strong>CallId and Name are sanitized (#556) before either reaches <paramref name="sink"/>.</strong>
+	/// Before this, a hallucinated or injection-shaped provider/model-supplied CallId or tool name
+	/// reached the live dashboard/AG-UI client completely raw — <see cref="RedactedArgsJson"/> and
+	/// <see cref="RedactedResultForStreaming"/> only ever covered the payload, never the identifiers.
+	/// Uses the same deterministic transform as <c>ToolCallTranscriptExtractor.SanitizeIdentifier</c>
+	/// (#513, the replay-persistence path) via the now-shared <see cref="ToolCallIdentifierSanitizer"/>,
+	/// applied consistently to both the call-emit CallId and the result-emit CallId for the same raw
+	/// id. This is safe for <see cref="ToolCallOrderingSink"/>'s correlation, not despite it: the
+	/// transform is a pure function of the raw value alone, so the SAME raw CallId always sanitizes to
+	/// the SAME value on both the call and result side — the ordering sink's plain string-equality
+	/// check never sees the raw id at all, only its (consistently) sanitized replacement, and
+	/// correlation cannot break.
+	/// </remarks>
 	private static async Task EmitToolCallActivityAsync(
 		AIContent content,
 		IAgentTurnStreamSink sink,
@@ -486,17 +501,44 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 			// result (an empty toolCallId would violate the wire contract's required field), and
 			// a call with no name has nothing meaningful to announce.
 			case FunctionCallContent { CallId.Length: > 0 } call when !string.IsNullOrEmpty(call.Name):
+				var safeCallId = SanitizeStreamedIdentifier(call.CallId, logger, "CallId", correlationId: null);
+				var safeName = SanitizeStreamedIdentifier(call.Name, logger, "ToolName", correlationId: safeCallId);
 				await sink.EmitToolCallAsync(
-					call.CallId, call.Name, RedactedArgsJson(call, redactor, logger), cancellationToken);
+					safeCallId, safeName, RedactedArgsJson(call, redactor, logger), cancellationToken);
 				break;
 
 			// A non-empty CallId is the only guard needed here — the sink itself drops a result with
 			// no matching preceding TOOL_CALL_START (e.g. a call skipped above for an empty Name).
 			case FunctionResultContent { CallId.Length: > 0 } result:
+				var safeResultCallId = SanitizeStreamedIdentifier(result.CallId, logger, "CallId", correlationId: null);
 				await sink.EmitToolCallResultAsync(
-					result.CallId, RedactedResultForStreaming(result, redactor, logger), cancellationToken);
+					safeResultCallId, RedactedResultForStreaming(result, redactor, logger), cancellationToken);
 				break;
 		}
+	}
+
+	/// <summary>
+	/// Narrows a tool CallId or tool name to identifier shape before it reaches the live streaming
+	/// sink (#556) — the same transform, and the same CWE-117 logging discipline (never log the raw,
+	/// attacker-controlled value; only its already-sanitized replacement or a correlation id derived
+	/// from one), as <c>ToolCallTranscriptExtractor.SanitizeIdentifier</c> uses for the replay-memory
+	/// path. See <see cref="EmitToolCallActivityAsync"/>'s remarks for why applying this consistently
+	/// to both the call-emit and result-emit CallId preserves <see cref="ToolCallOrderingSink"/>
+	/// correlation rather than risking it.
+	/// </summary>
+	private static string SanitizeStreamedIdentifier(string value, ILogger logger, string fieldName, string? correlationId)
+	{
+		var (result, changed) = ToolCallIdentifierSanitizer.Sanitize(value);
+		if (!changed)
+			return value;
+
+		logger.LogWarning(
+			"[ExecuteAgentTurnCommandHandler] {Field} for CallId={CallId} was truncated or contained " +
+			"characters outside the expected identifier shape ([A-Za-z0-9_-]); replaced with " +
+			"{Sanitized} before streaming to the client.",
+			fieldName, correlationId ?? result, result);
+
+		return result;
 	}
 
 	/// <summary>
