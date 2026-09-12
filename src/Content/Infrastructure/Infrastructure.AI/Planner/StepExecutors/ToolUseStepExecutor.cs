@@ -412,15 +412,10 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
         // fail-closed design (see this method's own remarks) refuses a scoped tool when the resource
         // request stays unset, so treating "could not construct" like "no declaration" here still
         // fails closed rather than silently bypassing scoping.
-        var tool = _firstPartyToolLookup.TryResolve(toolName, out var constructionError);
-        if (constructionError is not null)
-        {
-            _logger.LogError(constructionError,
-                "Could not construct first-party tool '{ToolName}' to resolve its resource-parameter " +
-                "declaration — treating it as undeclared, which CapabilityEnforcer refuses if the tool " +
-                "has path/host scoping configured.",
-                toolName);
-        }
+        var tool = _firstPartyToolLookup.TryResolveLogged(
+            toolName, _logger,
+            "to resolve its resource-parameter declaration — treating it as undeclared, which " +
+            "CapabilityEnforcer refuses if the tool has path/host scoping configured");
 
         if (tool?.ResourceParametersByOperation is not { Count: > 0 } declared)
             return null;

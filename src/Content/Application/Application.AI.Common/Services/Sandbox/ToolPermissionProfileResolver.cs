@@ -226,20 +226,16 @@ public sealed class ToolPermissionProfileResolver
         SandboxIsolationLevel defaultIsolationLevel = SandboxIsolationLevel.Process,
         string? agentId = null)
     {
-        // Single FirstPartyToolLookup.TryResolve call, reused for the under-declaration check below and
-        // as ResolveOverride's isolation floor — this used to call Resolve(toolName) (itself a lookup,
+        // Single FirstPartyToolLookup lookup, reused for the under-declaration check below and as
+        // ResolveOverride's isolation floor — this used to call Resolve(toolName) (itself a lookup,
         // via ResolveBase) AND a second direct lookup just for RequiredCapabilities (a security-review
         // finding: real keyed-DI resolution, not a dictionary read, paid twice on this dispatch path).
         // A construction failure (#627) takes the same path as "not first-party" below — logged, since
         // that's a host misconfiguration rather than an ordinary external-tool answer.
-        var firstPartyTool = _firstPartyLookup.TryResolve(toolName, out var dispatchConstructionError);
-        if (firstPartyTool is null && dispatchConstructionError is not null)
-        {
-            _logger.LogError(dispatchConstructionError,
-                "Could not construct first-party tool '{ToolName}' to resolve its sandbox permission " +
-                "profile for ungoverned dispatch — treating it as outside the bounded first-party set.",
-                toolName);
-        }
+        var firstPartyTool = _firstPartyLookup.TryResolveLogged(
+            toolName, _logger,
+            "to resolve its sandbox permission profile for ungoverned dispatch — treating it as " +
+            "outside the bounded first-party set");
 
         if (firstPartyTool is not null)
         {
@@ -343,14 +339,10 @@ public sealed class ToolPermissionProfileResolver
     /// </summary>
     private (ToolCapability Capabilities, SandboxIsolationLevel Isolation) ResolveBase(string toolName)
     {
-        var firstParty = _firstPartyLookup.TryResolve(toolName, out var constructionError);
-        if (firstParty is null && constructionError is not null)
-        {
-            _logger.LogError(constructionError,
-                "Could not construct first-party tool '{ToolName}' to resolve its sandbox permission " +
-                "profile — treating it as outside the bounded first-party set.",
-                toolName);
-        }
+        var firstParty = _firstPartyLookup.TryResolveLogged(
+            toolName, _logger,
+            "to resolve its sandbox permission profile — treating it as outside the bounded " +
+            "first-party set");
 
         return firstParty is not null
             ? (firstParty.RequiredCapabilities, firstParty.MinimumIsolation)

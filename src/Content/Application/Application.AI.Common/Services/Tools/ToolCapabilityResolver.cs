@@ -140,15 +140,10 @@ public sealed class ToolCapabilityResolver : IToolCapabilityResolver
         // is not a registration key resolves to null and skips straight to the keyword heuristic below
         // — as does a registered tool whose constructor throws (#627), logged since that case is a
         // host misconfiguration rather than an expected "not first-party" answer.
-        var firstParty = _firstPartyLookup.TryResolve(publishedToolName, out var constructionError);
-        if (firstParty is null && constructionError is not null)
-        {
-            _logger.LogError(constructionError,
-                "Could not construct first-party tool '{ToolName}' to classify its composition " +
-                "capabilities — falling back to the keyword heuristic, the same path taken for a tool " +
-                "outside the bounded first-party set.",
-                publishedToolName);
-        }
+        var firstParty = _firstPartyLookup.TryResolveLogged(
+            publishedToolName, _logger,
+            "to classify its composition capabilities — falling back to the keyword heuristic, the " +
+            "same path taken for a tool outside the bounded first-party set");
 
         if (firstParty is not null)
         {

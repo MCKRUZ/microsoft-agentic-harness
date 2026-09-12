@@ -23,7 +23,7 @@ public sealed class FirstPartyToolLookupTests
         var lookup = new FirstPartyToolLookup(
             services.BuildServiceProvider(), new HashSet<string> { "file_system" });
 
-        lookup.Resolve("file_system").Should().BeSameAs(tool);
+        lookup.TryResolve("file_system", out _).Should().BeSameAs(tool);
     }
 
     [Fact]
@@ -35,7 +35,7 @@ public sealed class FirstPartyToolLookupTests
         services.AddKeyedSingleton<ITool>("mcp_tool", (_, _) => Mock.Of<ITool>());
         var lookup = new FirstPartyToolLookup(services.BuildServiceProvider(), new HashSet<string>());
 
-        lookup.Resolve("mcp_tool").Should().BeNull();
+        lookup.TryResolve("mcp_tool", out _).Should().BeNull();
     }
 
     [Fact]
@@ -45,6 +45,6 @@ public sealed class FirstPartyToolLookupTests
         var lookup = new FirstPartyToolLookup(
             services.BuildServiceProvider(), new HashSet<string> { "unregistered_tool" });
 
-        lookup.Resolve("unregistered_tool").Should().BeNull();
+        lookup.TryResolve("unregistered_tool", out _).Should().BeNull();
     }
 }

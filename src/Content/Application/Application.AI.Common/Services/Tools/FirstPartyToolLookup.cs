@@ -1,5 +1,6 @@
 using Application.AI.Common.Interfaces.Tools;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 
 namespace Application.AI.Common.Services.Tools;
 
@@ -52,22 +53,30 @@ public sealed class FirstPartyToolLookup
     /// <see langword="null"/> when the name is outside the bounded key set or the keyed registration
     /// itself resolves to null.
     /// </summary>
+    /// <remarks>
+    /// Private deliberately (#627 code-review): this propagates a keyed tool's constructor exception
+    /// instead of catching it, which is exactly the footgun #627 closed out the last five production
+    /// callers of. Keeping it private, with <see cref="TryResolve"/>/<see cref="TryResolveLogged"/> as
+    /// the only way in or out of the class, makes that bug class structurally impossible to
+    /// reintroduce rather than relying on every future caller remembering the safe overload.
+    /// </remarks>
     /// <param name="toolName">The tool's published name.</param>
-    public ITool? Resolve(string toolName) =>
+    private ITool? Resolve(string toolName) =>
         _registeredFirstPartyToolKeys.Contains(toolName)
             ? _serviceProvider.GetKeyedService<ITool>(toolName)
             : null;
 
     /// <summary>
-    /// Same bounded resolution as <see cref="Resolve"/>, but catches and reports a construction
+    /// Same bounded resolution as the private <c>Resolve</c>, but catches and reports a construction
     /// failure instead of propagating it.
     /// </summary>
     /// <remarks>
     /// A keyed tool's constructor can require a dependency this particular host never wired — the
     /// exact failure mode that broke host boot when an earlier existence-check attempt (#524)
-    /// unconditionally constructed every registered tool. <see cref="Resolve"/> does not guard
-    /// against that; use this overload whenever a caller can't afford one broken tool's constructor
-    /// to take down whatever loop or request it's part of (#612).
+    /// unconditionally constructed every registered tool. Prefer <see cref="TryResolveLogged"/> over
+    /// this overload directly when the caller can log the failure through an <see cref="ILogger"/> —
+    /// it owns the "resolve, then log on failure" shape once instead of each caller repeating it
+    /// (#627 code-review: found independently duplicated across five call sites).
     /// </remarks>
     /// <param name="toolName">The tool's registration key.</param>
     /// <param name="constructionError">
@@ -88,6 +97,32 @@ public sealed class FirstPartyToolLookup
             constructionError = ex;
             return null;
         }
+    }
+
+    /// <summary>
+    /// As <see cref="TryResolve"/>, but also logs a construction failure — the "resolve, then log if
+    /// it threw" shape (#627 code-review) previously repeated by hand at every call site instead of
+    /// living once here.
+    /// </summary>
+    /// <param name="toolName">The tool's registration key.</param>
+    /// <param name="logger">The caller's own logger, so the error is attributed to the right category.</param>
+    /// <param name="context">
+    /// A caller-specific phrase completing "Could not construct first-party tool '{toolName}' …" —
+    /// e.g. "to classify its risk; falling back to the conservative default". Should name both what
+    /// the caller was trying to do and what it does instead, since the fallback itself is silent.
+    /// </param>
+    /// <returns>The resolved tool, or <see langword="null"/> when unresolved for any reason.</returns>
+    public ITool? TryResolveLogged(string toolName, ILogger logger, string context)
+    {
+        var tool = TryResolve(toolName, out var constructionError);
+
+        if (tool is null && constructionError is not null)
+        {
+            logger.LogError(constructionError,
+                "Could not construct first-party tool '{ToolName}' {Context}.", toolName, context);
+        }
+
+        return tool;
     }
 
     /// <summary>

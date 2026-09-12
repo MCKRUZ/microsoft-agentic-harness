@@ -24,10 +24,11 @@ public sealed class ToolRiskClassifier : IToolRiskClassifier
     /// tool calls, whose names are unbounded, reach this classifier on every governed invocation.
     /// </param>
     /// <param name="logger">
-    /// Logs a construction failure (#627: this used <see cref="FirstPartyToolLookup.Resolve"/>, which
-    /// propagates a keyed tool's constructor exception instead of catching it — the same host-boot
-    /// failure mode #612 fixed for a permission-rule provider). Classification still degrades safely
-    /// to <see cref="ToolRiskProfile.Default"/> either way; the log is what makes the anomaly visible.
+    /// Logs a construction failure via <see cref="FirstPartyToolLookup.TryResolveLogged"/> (#627: this
+    /// used to call the unguarded resolve overload directly, propagating a keyed tool's constructor
+    /// exception instead of catching it — the same host-boot failure mode #612 fixed for a
+    /// permission-rule provider). Classification still degrades safely to
+    /// <see cref="ToolRiskProfile.Default"/> either way; the log is what makes the anomaly visible.
     /// </param>
     public ToolRiskClassifier(FirstPartyToolLookup firstPartyLookup, ILogger<ToolRiskClassifier> logger)
     {
@@ -43,15 +44,10 @@ public sealed class ToolRiskClassifier : IToolRiskClassifier
         if (string.IsNullOrWhiteSpace(toolName))
             return ToolRiskProfile.Default;
 
-        var tool = _firstPartyLookup.TryResolve(toolName, out var constructionError);
-
-        if (tool is null && constructionError is not null)
-        {
-            _logger.LogError(constructionError,
-                "Could not construct first-party tool '{ToolName}' to classify its risk — treating it " +
-                "as {DefaultProfile} (the same conservative answer used for an unrecognized tool).",
-                toolName, ToolRiskProfile.Default);
-        }
+        var tool = _firstPartyLookup.TryResolveLogged(
+            toolName, _logger,
+            $"to classify its risk — treating it as {ToolRiskProfile.Default} (the same conservative " +
+            "answer used for an unrecognized tool)");
 
         return tool is null
             ? ToolRiskProfile.Default

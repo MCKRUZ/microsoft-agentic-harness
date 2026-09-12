@@ -9,6 +9,7 @@ using Domain.Common.Config.AI;
 using Domain.Common.Config.AI.Sandbox;
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Moq;
@@ -88,15 +89,26 @@ public sealed class ToolPermissionProfileResolverTests
         var configMock = new Mock<IOptionsMonitor<SandboxConfig>>();
         configMock.Setup(m => m.CurrentValue).Returns(new SandboxConfig());
         var lookup = new FirstPartyToolLookup(services.BuildServiceProvider(), new HashSet<string> { "unbuildable" });
-        var resolver = new ToolPermissionProfileResolver(
-            lookup, configMock.Object, NullLogger<ToolPermissionProfileResolver>.Instance);
+        var logger = new Mock<ILogger<ToolPermissionProfileResolver>>();
+        var resolver = new ToolPermissionProfileResolver(lookup, configMock.Object, logger.Object);
 
         var profile = resolver.Resolve("unbuildable");
 
         profile.RequiredCapabilities.Should().Be(ToolCapability.None);
         profile.DeniedCapabilities.Should().Be(ToolCapability.None);
         profile.MinimumIsolation.Should().Be(SandboxIsolationLevel.None);
+        // The log is the point of the fix (#627 code-review) — see ToolRiskClassifierTests's sibling
+        // assertion for why a silent fallback defeats the purpose of catching the failure at all.
+        LogsErrorMentioning(logger, "unbuildable").Should().BeTrue();
     }
+
+    private static bool LogsErrorMentioning(Mock<ILogger<ToolPermissionProfileResolver>> logger, string substring) =>
+        logger.Invocations.Any(i =>
+            i.Method.Name == nameof(ILogger.Log) &&
+            i.Arguments.Count > 2 &&
+            (LogLevel)i.Arguments[0]! == LogLevel.Error &&
+            i.Arguments[2] is not null &&
+            i.Arguments[2]!.ToString()!.Contains(substring, StringComparison.Ordinal));
 
     [Fact]
     public void ResolveForUngovernedDispatch_ToolConstructorThrows_DoesNotPropagate()
@@ -109,12 +121,13 @@ public sealed class ToolPermissionProfileResolverTests
         var configMock = new Mock<IOptionsMonitor<SandboxConfig>>();
         configMock.Setup(m => m.CurrentValue).Returns(new SandboxConfig());
         var lookup = new FirstPartyToolLookup(services.BuildServiceProvider(), new HashSet<string> { "unbuildable" });
-        var resolver = new ToolPermissionProfileResolver(
-            lookup, configMock.Object, NullLogger<ToolPermissionProfileResolver>.Instance);
+        var logger = new Mock<ILogger<ToolPermissionProfileResolver>>();
+        var resolver = new ToolPermissionProfileResolver(lookup, configMock.Object, logger.Object);
 
         var result = resolver.ResolveForUngovernedDispatch("unbuildable", ToolCapability.None, []);
 
         result.IsSuccess.Should().BeTrue();
+        LogsErrorMentioning(logger, "unbuildable").Should().BeTrue();
     }
 
     [Fact]
