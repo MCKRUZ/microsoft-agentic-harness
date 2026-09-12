@@ -219,24 +219,24 @@ public sealed class PluginToolBoundaryStartupValidatorTests
     }
 
     [Fact]
-    public async Task StartAsync_SeedSucceeds_ServerNotYetAvailable_RetriesBeforeGivingUp()
+    public async Task StartAsync_SeedSucceeds_CallsGetToolsAsyncDirectlyWithoutProbingAvailabilityFirst()
     {
-        // #524 round-3 code-review: a Stdio/spawned-process MCP server can genuinely take a few
-        // seconds to become reachable. Without this retry, the very first proactive probe racing a
-        // still-starting server would report failure and permanently fault a healthy plugin — the
-        // exact regression this fix closes. Proves GetToolsAsync isn't even attempted until
-        // IsServerAvailableAsync reports true.
+        // #610 round-2 code review: this used to wrap a separate IsServerAvailableAsync retry loop
+        // (5 attempts, 1s apart) around the ONE real GetToolsAsync attempt, added because
+        // McpConnectionManager's own connect path had no retry of its own at the time — see the git
+        // history of this test (formerly *_ServerNotYetAvailable_RetriesBeforeGivingUp) for the old
+        // behavior. #610 moved that retry into McpConnectionManager.CreateClientAsync itself, which
+        // GetToolsAsync already goes through via GetClientAsync — a second, outer retry loop here no
+        // longer adds resilience, it only multiplies worst-case connect attempts with no shared
+        // budget between the two loops. Proves the new, simpler contract: GetToolsAsync is called
+        // directly, exactly once, with no IsServerAvailableAsync probing beforehand.
         _registry.Setup(r => r.GetLoadedPlugins()).Returns([MakePlugin("azure")]);
         _tracker.Setup(t => t.Seed(
                 It.IsAny<IReadOnlyList<LoadedPlugin>>(), It.IsAny<Func<string, bool>>(), It.IsAny<IReadOnlyCollection<string>>()))
             .Returns([]);
         _tracker.Setup(t => t.PendingServerNames).Returns(["server-a"]);
 
-        var availabilityCalls = 0;
         var getToolsCalled = new TaskCompletionSource();
-        _toolProvider
-            .Setup(p => p.IsServerAvailableAsync("server-a", It.IsAny<CancellationToken>()))
-            .ReturnsAsync(() => Interlocked.Increment(ref availabilityCalls) >= 3); // "Available" on the 3rd poll.
         _toolProvider
             .Setup(p => p.GetToolsAsync("server-a", It.IsAny<CancellationToken>()))
             .Returns((string _, CancellationToken _) =>
@@ -250,8 +250,11 @@ public sealed class PluginToolBoundaryStartupValidatorTests
 
         await Task.WhenAny(getToolsCalled.Task, Task.Delay(TimeSpan.FromSeconds(5)));
         getToolsCalled.Task.IsCompletedSuccessfully.Should().BeTrue(
-            "GetToolsAsync must still be attempted once the server becomes available, not abandoned after the first failed poll");
-        availabilityCalls.Should().BeGreaterThanOrEqualTo(3);
+            "GetToolsAsync must be attempted directly, without a separate availability probe first");
+        _toolProvider.Verify(
+            p => p.IsServerAvailableAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            Times.Never,
+            "the outer availability-probe loop was removed (#610) — resilience now lives in McpConnectionManager's own connect retry");
     }
 
     [Fact]
