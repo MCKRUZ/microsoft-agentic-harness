@@ -1,4 +1,5 @@
 using Domain.Common.Helpers;
+using Infrastructure.AI.Helpers;
 
 namespace Infrastructure.AI.Persistence;
 
@@ -81,6 +82,6 @@ public static class GovernanceStatePaths
                 nameof(resolvedDatabasePath));
         }
 
-        Directory.CreateDirectory(directory);
+        OwnerOnlyDirectoryHelper.Create(directory); // #640: holds the approval-verdicts database
     }
 }

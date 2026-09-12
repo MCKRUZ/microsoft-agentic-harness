@@ -4,6 +4,7 @@ using System.Security.Cryptography;
 using System.Text;
 using Domain.AI.Audit;
 using Domain.Common;
+using Infrastructure.AI.Helpers;
 using Microsoft.Extensions.Logging;
 
 namespace Infrastructure.AI.Audit;
@@ -168,7 +169,11 @@ public sealed class HashChainedJsonlWriter : IDisposable
                 sequence.ToString(CultureInfo.InvariantCulture), "\n");
 
             var segmentPath = _currentSegment();
-            Directory.CreateDirectory(Path.GetDirectoryName(segmentPath)!);
+            // Owner-only (#640, following #527's precedent): this is the tamper-evident audit log
+            // covering governance/escalation/drift/change/egress events -- the most security-relevant
+            // of the stores #640 migrated, since its tamper-evidence hash chain protects integrity but
+            // says nothing about confidentiality on a shared host.
+            OwnerOnlyDirectoryHelper.Create(Path.GetDirectoryName(segmentPath)!);
 
             await using (var stream = new FileStream(
                 segmentPath, FileMode.Append, FileAccess.Write, FileShare.ReadWrite))

@@ -4,6 +4,7 @@ using System.Text.Json.Serialization;
 using Application.AI.Common.Interfaces.Agents;
 using Domain.AI.Orchestration;
 using Domain.Common.Config;
+using Infrastructure.AI.Helpers;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -175,7 +176,7 @@ public sealed class JsonlDelegationStore : IDelegationStore, IDisposable
         return _sessionFiles.GetOrAdd(supervisorId, id =>
         {
             var dir = Path.Combine(_basePath, SanitizeSupervisorId(id));
-            Directory.CreateDirectory(dir);
+            OwnerOnlyDirectoryHelper.Create(dir); // #640
 
             var timestamp = DateTimeOffset.UtcNow.ToString("yyyyMMddTHHmmss'Z'");
             var filePath = Path.Combine(dir, $"{timestamp}.jsonl");
@@ -328,6 +329,6 @@ public sealed class JsonlDelegationStore : IDelegationStore, IDisposable
     {
         var dir = Path.GetDirectoryName(filePath);
         if (dir is not null)
-            Directory.CreateDirectory(dir);
+            OwnerOnlyDirectoryHelper.Create(dir); // #640
     }
 }

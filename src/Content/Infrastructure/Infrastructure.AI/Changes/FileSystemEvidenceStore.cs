@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using Application.AI.Common.Interfaces.Changes;
 using Domain.Common.Config;
 using Domain.Common.Helpers;
+using Infrastructure.AI.Helpers;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -58,7 +59,7 @@ public sealed class FileSystemEvidenceStore : IEvidenceStore
         var path = PathFor(hash);
 
         var dir = Path.GetDirectoryName(path)!;
-        Directory.CreateDirectory(dir);
+        OwnerOnlyDirectoryHelper.Create(dir); // #640
 
         // Already present: content addressing makes the write pure, so an
         // existing blob is byte-identical. Skip rewriting to avoid needless I/O

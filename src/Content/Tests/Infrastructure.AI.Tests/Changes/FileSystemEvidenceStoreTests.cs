@@ -25,6 +25,22 @@ public sealed class FileSystemEvidenceStoreTests : IDisposable
         catch { /* best effort */ }
     }
 
+    // --- Directory permissions (#640, following #527's precedent) ---
+
+    [Fact]
+    public async Task StoreAsync_EvidenceDirectoryIsCreatedOwnerOnly()
+    {
+        // #640: evidence blobs are content-addressed copies of whatever content the store was asked
+        // to preserve -- neither the evidence root nor its hash-prefix fan-out subdirectory exist
+        // before this call, so both must be created owner-only rather than inheriting whatever the
+        // process umask/ACL happens to grant.
+        var bytes = Encoding.UTF8.GetBytes("permission check payload");
+        var hash = await _sut.StoreAsync(bytes, "text/plain", CancellationToken.None);
+
+        var prefix = hash["sha256:".Length..][..2];
+        Path.Combine(_tempDir, "evidence", prefix).ShouldBeOwnerOnlyDirectory();
+    }
+
     [Fact]
     public async Task Store_ProducesShaPrefixedHash()
     {

@@ -1,5 +1,6 @@
 using Domain.Common.Config.Infrastructure;
 using Domain.Common.Workflow;
+using Infrastructure.AI.Helpers;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using System.Text.Json;
@@ -57,9 +58,8 @@ public class JsonCheckpointStateManager : IStateManager
             DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull
         };
 
-        // Ensure base path exists
-        if (!Directory.Exists(_settings.BasePath))
-            Directory.CreateDirectory(_settings.BasePath);
+        // Ensure base path exists, owner-only (#640) -- Create is already a no-op for an existing path.
+        OwnerOnlyDirectoryHelper.Create(_settings.BasePath);
     }
 
     public async Task<WorkflowState?> LoadAsync(string workflowId, CancellationToken cancellationToken = default)
@@ -89,8 +89,8 @@ public class JsonCheckpointStateManager : IStateManager
         var stateFilePath = GetStateFilePath(state.WorkflowId);
         var directory = Path.GetDirectoryName(stateFilePath);
 
-        if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
-            Directory.CreateDirectory(directory);
+        if (!string.IsNullOrEmpty(directory))
+            OwnerOnlyDirectoryHelper.Create(directory); // #640
 
         // Write to temp file first for atomic operation
         var tempFilePath = stateFilePath + ".tmp";

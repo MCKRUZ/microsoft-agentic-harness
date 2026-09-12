@@ -63,6 +63,19 @@ public sealed class JsonlDelegationStoreTests : IDisposable
             ParentDelegationId = parentDelegationId
         };
 
+    // --- Directory permissions (#640, following #527's precedent) ---
+
+    [Fact]
+    public async Task AppendAsync_SupervisorDirectoryIsCreatedOwnerOnly()
+    {
+        // #640: delegation records hold task descriptions and required capabilities for subagent
+        // delegations -- the supervisor subdirectory must never inherit whatever the process
+        // umask/ACL happens to grant.
+        await _store.AppendAsync(BuildRecord());
+
+        Path.Combine(_tempDir, "supervisor-1").ShouldBeOwnerOnlyDirectory();
+    }
+
     [Fact]
     public async Task AppendAsync_ThenGetByIdAsync_ReturnsRecord()
     {

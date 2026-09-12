@@ -26,6 +26,23 @@ public sealed class HashChainedJsonlWriterTests : IDisposable
     private HashChainedJsonlWriter NewWriter() =>
         new(_filePath, NullLogger.Instance);
 
+    // --- Directory permissions (#640, following #527's precedent) ---
+
+    [Fact]
+    public async Task AppendAsync_SegmentDirectoryIsCreatedOwnerOnly()
+    {
+        // #640: this is the tamper-evident audit log covering governance/escalation/drift/change/
+        // egress events -- the segment directory (not pre-created by this fixture, unlike _tempDir
+        // above; nested one level deeper so the create actually exercises a new directory) must never
+        // inherit whatever the process umask/ACL happens to grant.
+        var nestedFilePath = Path.Combine(_tempDir, "nested", "audit.jsonl");
+        using var sut = new HashChainedJsonlWriter(nestedFilePath, NullLogger.Instance);
+
+        (await sut.AppendAsync("{\"a\":1}", CancellationToken.None)).IsSuccess.Should().BeTrue();
+
+        Path.Combine(_tempDir, "nested").ShouldBeOwnerOnlyDirectory();
+    }
+
     [Fact]
     public async Task Append_PersistsOneFramedLinePerRecord()
     {

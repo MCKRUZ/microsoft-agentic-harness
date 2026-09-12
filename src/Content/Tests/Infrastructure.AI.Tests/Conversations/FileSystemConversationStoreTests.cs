@@ -41,6 +41,32 @@ public sealed class FileSystemConversationStoreTests : ConversationStoreContract
             Directory.Delete(_tempDir, recursive: true);
     }
 
+    // --- Directory permissions (#640, following #527's precedent) ---
+
+    [Fact]
+    public void Constructor_CreatesConversationsDirectoryOwnerOnly()
+    {
+        // #640: this store holds full conversation transcripts -- must never inherit whatever the
+        // process umask/ACL happens to grant. Uses its own fresh, not-yet-existing directory (unlike
+        // this fixture's own _tempDir, pre-created above for every other test here) since
+        // OwnerOnlyDirectoryHelper.Create is a documented no-op for a directory that already exists.
+        var freshDir = Path.Combine(Path.GetTempPath(), $"convstore-permcheck-{Guid.NewGuid():N}");
+        try
+        {
+            _ = new FileSystemConversationStore(
+                Options.Create(new ConversationsConfig { ConversationsPath = freshDir }),
+                Clock,
+                NullLogger<FileSystemConversationStore>.Instance);
+
+            freshDir.ShouldBeOwnerOnlyDirectory();
+        }
+        finally
+        {
+            if (Directory.Exists(freshDir))
+                Directory.Delete(freshDir, recursive: true);
+        }
+    }
+
     [Fact]
     public async Task CreateAsync_WritesJsonFileAtExpectedPath()
     {
