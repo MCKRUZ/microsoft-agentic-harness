@@ -135,7 +135,8 @@ public static class DependencyInjection
         // runtime re-confirmation, so a first-party tool's key/published-name divergence resolves the
         // same way in both. See CapabilityEnvelopeGrantResolver's remarks.
         services.AddSingleton(sp => new Services.Governance.CapabilityEnvelopeGrantResolver(
-            sp.GetRequiredService<Services.Tools.FirstPartyToolLookup>()));
+            sp.GetRequiredService<Services.Tools.FirstPartyToolLookup>(),
+            sp.GetRequiredService<ILogger<Services.Governance.CapabilityEnvelopeGrantResolver>>()));
 
         // Sandbox capability enforcement — profile resolution and enforcement. The resolver reads a
         // tool's own ITool.RequiredCapabilities/MinimumIsolation declaration via the shared

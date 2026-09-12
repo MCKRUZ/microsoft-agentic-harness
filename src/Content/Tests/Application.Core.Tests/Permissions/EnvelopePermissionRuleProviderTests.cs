@@ -30,7 +30,8 @@ public sealed class EnvelopePermissionRuleProviderTests
             // #626: empty key set is fine — no case in this suite names a tool whose published name
             // disagrees with its key, so TryResolvePublishedName always falls back to the key itself.
             new CapabilityEnvelopeGrantResolver(
-                new FirstPartyToolLookup(new ServiceCollection().BuildServiceProvider(), new HashSet<string>())));
+                new FirstPartyToolLookup(new ServiceCollection().BuildServiceProvider(), new HashSet<string>()),
+                NullLogger<CapabilityEnvelopeGrantResolver>.Instance));
 
     /// <summary>
     /// The rules written for a specific tool name, i.e. everything except the closing catch-all. Most
@@ -228,7 +229,8 @@ public sealed class EnvelopePermissionRuleProviderTests
         services.AddKeyedSingleton(key, mock.Object);
         var lookup = new FirstPartyToolLookup(services.BuildServiceProvider(), new HashSet<string> { key });
         return new EnvelopePermissionRuleProvider(
-            NullLogger<EnvelopePermissionRuleProvider>.Instance, new CapabilityEnvelopeGrantResolver(lookup));
+            NullLogger<EnvelopePermissionRuleProvider>.Instance,
+            new CapabilityEnvelopeGrantResolver(lookup, NullLogger<CapabilityEnvelopeGrantResolver>.Instance));
     }
 
     [Fact]

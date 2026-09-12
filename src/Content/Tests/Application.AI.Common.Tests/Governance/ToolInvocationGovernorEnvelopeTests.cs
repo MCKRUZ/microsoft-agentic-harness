@@ -91,7 +91,8 @@ public sealed class ToolInvocationGovernorEnvelopeTests
             Mock.Of<IOptionsMonitor<SandboxConfig>>(m => m.CurrentValue == _sandbox),
             NullLogger<ToolInvocationGovernor>.Instance,
             envelopeGrantResolver ?? new CapabilityEnvelopeGrantResolver(
-                new FirstPartyToolLookup(new ServiceCollection().BuildServiceProvider(), new HashSet<string>())));
+                new FirstPartyToolLookup(new ServiceCollection().BuildServiceProvider(), new HashSet<string>()),
+                NullLogger<CapabilityEnvelopeGrantResolver>.Instance));
     }
 
     private static CapabilityEnvelope Envelope() => new() { AllowedTools = [Tool] };
@@ -109,7 +110,8 @@ public sealed class ToolInvocationGovernorEnvelopeTests
         mock.Setup(t => t.Name).Returns(publishedName);
         services.AddKeyedSingleton(key, mock.Object);
         return new CapabilityEnvelopeGrantResolver(
-            new FirstPartyToolLookup(services.BuildServiceProvider(), new HashSet<string> { key }));
+            new FirstPartyToolLookup(services.BuildServiceProvider(), new HashSet<string> { key }),
+            NullLogger<CapabilityEnvelopeGrantResolver>.Instance);
     }
 
     [Fact]

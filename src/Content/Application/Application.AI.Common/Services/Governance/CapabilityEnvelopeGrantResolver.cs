@@ -1,5 +1,6 @@
 using Application.AI.Common.Services.Tools;
 using Domain.AI.Bundles;
+using Microsoft.Extensions.Logging;
 
 namespace Application.AI.Common.Services.Governance;
 
@@ -34,13 +35,44 @@ namespace Application.AI.Common.Services.Governance;
 public sealed class CapabilityEnvelopeGrantResolver
 {
     private readonly FirstPartyToolLookup _firstPartyToolLookup;
+    private readonly ILogger<CapabilityEnvelopeGrantResolver> _logger;
 
     /// <summary>Initializes a new instance of the <see cref="CapabilityEnvelopeGrantResolver"/> class.</summary>
     /// <param name="firstPartyToolLookup">Resolves a first-party tool's self-reported published name.</param>
-    public CapabilityEnvelopeGrantResolver(FirstPartyToolLookup firstPartyToolLookup)
+    /// <param name="logger">
+    /// Logs a construction failure per <see cref="FirstPartyToolLookup.TryResolvePublishedName"/>'s
+    /// documented calling contract — that method is deliberately pure, so every caller must supply its
+    /// own one-line log-on-failure.
+    /// </param>
+    public CapabilityEnvelopeGrantResolver(
+        FirstPartyToolLookup firstPartyToolLookup, ILogger<CapabilityEnvelopeGrantResolver> logger)
     {
         ArgumentNullException.ThrowIfNull(firstPartyToolLookup);
+        ArgumentNullException.ThrowIfNull(logger);
         _firstPartyToolLookup = firstPartyToolLookup;
+        _logger = logger;
+    }
+
+    /// <summary>
+    /// Wraps <see cref="FirstPartyToolLookup.TryResolvePublishedName"/> to honor its documented
+    /// calling contract: log a construction failure (not merely "no such first-party tool", which is
+    /// the normal, silent case for an MCP tool name).
+    /// </summary>
+    private bool TryResolvePublishedName(string toolKey, out string publishedName)
+    {
+        var resolved = _firstPartyToolLookup.TryResolvePublishedName(
+            toolKey, out publishedName, out var constructionError);
+
+        if (!resolved && constructionError is not null)
+        {
+            _logger.LogError(constructionError,
+                "Could not construct first-party tool '{ToolKey}' to learn its published name for a " +
+                "capability-envelope grant check — the raw grant entry still applies, but a caller " +
+                "invoking it under a self-reported name that disagrees with the key would not be covered.",
+                toolKey);
+        }
+
+        return resolved;
     }
 
     /// <summary>
@@ -64,7 +96,7 @@ public sealed class CapabilityEnvelopeGrantResolver
             if (string.IsNullOrWhiteSpace(grant))
                 continue;
 
-            if (_firstPartyToolLookup.TryResolvePublishedName(grant, out var publishedName, out _)
+            if (TryResolvePublishedName(grant, out var publishedName)
                 && string.Equals(publishedName, toolName, StringComparison.OrdinalIgnoreCase))
                 return true;
         }
@@ -89,7 +121,7 @@ public sealed class CapabilityEnvelopeGrantResolver
             if (seen.Add(name))
                 expanded.Add(name);
 
-            if (_firstPartyToolLookup.TryResolvePublishedName(name, out var publishedName, out _)
+            if (TryResolvePublishedName(name, out var publishedName)
                 && !string.Equals(publishedName, name, StringComparison.OrdinalIgnoreCase)
                 && seen.Add(publishedName))
                 expanded.Add(publishedName);

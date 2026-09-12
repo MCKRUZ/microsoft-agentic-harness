@@ -117,7 +117,8 @@ public sealed class ToolInvocationGovernorTests
             // EnvelopeGrantsToolWhenArmed short-circuits true without ever consulting this — an empty
             // lookup is fine.
             new CapabilityEnvelopeGrantResolver(
-                new FirstPartyToolLookup(new ServiceCollection().BuildServiceProvider(), new HashSet<string>())));
+                new FirstPartyToolLookup(new ServiceCollection().BuildServiceProvider(), new HashSet<string>()),
+                NullLogger<CapabilityEnvelopeGrantResolver>.Instance));
     }
 
     [Fact]

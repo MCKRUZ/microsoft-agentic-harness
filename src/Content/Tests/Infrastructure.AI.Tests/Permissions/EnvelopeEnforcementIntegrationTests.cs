@@ -146,7 +146,8 @@ public sealed class EnvelopeEnforcementIntegrationTests
                 NullLogger<PluginPermissionRuleProvider>.Instance),
             new EnvelopePermissionRuleProvider(
                 NullLogger<EnvelopePermissionRuleProvider>.Instance,
-                new CapabilityEnvelopeGrantResolver(firstPartyToolLookup)),
+                new CapabilityEnvelopeGrantResolver(
+                    firstPartyToolLookup, NullLogger<CapabilityEnvelopeGrantResolver>.Instance)),
             new ConfigBasedRuleProvider(options)
         ];
 

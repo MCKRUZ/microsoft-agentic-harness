@@ -115,7 +115,7 @@ public sealed class ToolPathScopingEndToEndTests
             Mock.Of<IOptionsMonitor<PermissionsConfig>>(m => m.CurrentValue == new PermissionsConfig()),
             sandboxMonitor,
             NullLogger<ToolInvocationGovernor>.Instance,
-            new CapabilityEnvelopeGrantResolver(lookup));
+            new CapabilityEnvelopeGrantResolver(lookup, NullLogger<CapabilityEnvelopeGrantResolver>.Instance));
 
         return (governor, trace);
     }

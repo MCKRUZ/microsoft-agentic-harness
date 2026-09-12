@@ -162,7 +162,8 @@ public sealed class SubPlanEnvelopeConfinementTests
         // container so the governor's independent re-check, CapabilityEnvelopeGrantResolver, agrees
         // with the rule layer by construction — #626).
         var envelopeGrantResolver = new CapabilityEnvelopeGrantResolver(
-            new FirstPartyToolLookup(new ServiceCollection().BuildServiceProvider(), new HashSet<string>()));
+            new FirstPartyToolLookup(new ServiceCollection().BuildServiceProvider(), new HashSet<string>()),
+            NullLogger<CapabilityEnvelopeGrantResolver>.Instance);
 
         var services = new ServiceCollection();
         services.AddSingleton(typeof(Microsoft.Extensions.Logging.ILogger<>), typeof(NullLogger<>));
