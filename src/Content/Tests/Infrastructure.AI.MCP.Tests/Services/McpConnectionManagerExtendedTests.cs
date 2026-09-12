@@ -4,6 +4,7 @@ using Infrastructure.AI.Bundles;
 using FluentAssertions;
 using Infrastructure.AI.MCP.Services;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using Xunit;
 
@@ -18,9 +19,15 @@ public sealed class McpConnectionManagerExtendedTests
     private static McpConnectionManager CreateManager(
         McpServersConfig? config = null, BundleOwnedMcpServerRegistry? bundleOwned = null)
     {
+        // NullLoggerFactory.Instance, not a bare Moq mock: a Mock<ILoggerFactory> with no CreateLogger
+        // setup returns null from that call, and the real MCP SDK's session-handler construction
+        // (ModelContextProtocol.McpSessionHandler..ctor) calls .IsEnabled() on whatever logger it
+        // gets — a NullReferenceException deep inside the SDK for any test whose connect attempt
+        // reaches that far (a real, valid transport that starts successfully before failing/being
+        // cancelled), unrelated to whatever behavior the test is actually trying to exercise.
         return McpConnectionManagerBundleEgressSupport.CreateManager(
             Mock.Of<ILogger<McpConnectionManager>>(),
-            new Mock<ILoggerFactory>().Object,
+            NullLoggerFactory.Instance,
             TestSsrf.HandlerFactory(),
             config ?? new McpServersConfig(),
             bundleOwned ?? new BundleOwnedMcpServerRegistry());
@@ -195,12 +202,15 @@ public sealed class McpConnectionManagerExtendedTests
     public async Task GetClientAsync_StdioServerFirstConnectAttemptFails_RetriesBeforeThrowing()
     {
         // #610: a server's FIRST connect attempt previously had no retry at all — a single failed
-        // attempt (e.g. a slow cold start) threw immediately. Real (not mocked) failing connect,
-        // same shape as GetClientAsync_StdioServerWithNoCommand_ThrowsMcpConnectionException above —
-        // an empty Command fails fast on every attempt (confirmed empirically: no lingering process,
-        // no multi-second wait per attempt), so elapsed time is dominated by the retry DELAYS between
-        // attempts, not by each attempt itself. Asserting a minimum elapsed time proves multiple
-        // attempts actually happened rather than failing immediately on the first one.
+        // attempt (e.g. a slow cold start) threw immediately. Real (not mocked) failing connect: a
+        // real, cross-platform binary that starts and exits immediately with a nonzero code before
+        // ever speaking the MCP protocol — confirmed empirically this produces
+        // ClientTransportClosedException (NOT McpConnectionException, NOT OperationCanceledException),
+        // exactly the "transient-shaped" failure this retry exists for. Round-2 code review found an
+        // empty Command is the WRONG shape for this test: it throws a raw ArgumentException from
+        // StdioClientTransportOptions's own property setter, which #610's round-2 fix now explicitly
+        // excludes from retry (see GetClientAsync_StdioServerWithNoCommand... below) — asserting a
+        // multi-second elapsed time against that case would validate the exact bug being fixed.
         var mcpConfig = new McpServersConfig
         {
             Servers = new ConcurrentDictionary<string, McpServerDefinition>
@@ -209,7 +219,8 @@ public sealed class McpConnectionManagerExtendedTests
                 {
                     Enabled = true,
                     Type = McpServerType.Stdio,
-                    Command = "",
+                    Command = OperatingSystem.IsWindows() ? "cmd" : "sh",
+                    Args = OperatingSystem.IsWindows() ? ["/c", "exit 1"] : ["-c", "exit 1"],
                     StartupTimeoutSeconds = 1
                 }
             }
@@ -226,6 +237,86 @@ public sealed class McpConnectionManagerExtendedTests
         // per-attempt hangs.
         stopwatch.Elapsed.Should().BeGreaterThan(TimeSpan.FromMilliseconds(1800),
             "a single failed attempt must not throw immediately — the connect must retry at least twice more first");
+    }
+
+    [Fact]
+    public async Task GetClientAsync_StdioServerWithNoCommand_FailsFastWithoutRetrying()
+    {
+        // #610 round-2 code review: an empty Command is a deterministic config error (identical to a
+        // missing HTTP URL) — StdioClientTransportOptions's own property setter throws a raw
+        // ArgumentException for it, which must be excluded from retry the same way McpConnectionException
+        // already is, or a misconfigured server burns the full ~2s retry budget on an error retrying
+        // can never fix.
+        var config = new McpServersConfig
+        {
+            Servers = new ConcurrentDictionary<string, McpServerDefinition>
+            {
+                ["stdio-no-command"] = new()
+                {
+                    Enabled = true,
+                    Type = McpServerType.Stdio,
+                    Command = "",
+                    StartupTimeoutSeconds = 1
+                }
+            }
+        };
+        var sut = CreateManager(config);
+
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        var act = () => sut.GetClientAsync("stdio-no-command");
+        await act.Should().ThrowAsync<Application.AI.Common.Exceptions.McpConnectionException>();
+        stopwatch.Stop();
+
+        stopwatch.Elapsed.Should().BeLessThan(TimeSpan.FromMilliseconds(500),
+            "a missing Command is a deterministic config error and must fail on the first attempt, not retry");
+    }
+
+    [Fact]
+    public async Task ReconnectAsync_CancelledOnItsOnlyAttempt_PropagatesCancellationNotConnectionException()
+    {
+        // #610 round-2 code review: a genuine caller-requested cancellation must always propagate as
+        // a cancellation, never get wrapped into McpConnectionException — including on the LAST
+        // (here, only) attempt, which has no following Task.Delay call to re-surface it the way an
+        // earlier attempt's delay incidentally would. ReconnectAsync uses retryOnFirstConnect: false
+        // (a single attempt, #610's own fix — see its remarks), making attempt 1 trivially the last
+        // attempt, so a pre-cancelled token exercises exactly the buggy branch directly and
+        // deterministically — using GetClientAsync's 3-attempt first-connect path instead would only
+        // hit this on attempt 3, which a pre-cancelled token cannot reach (Task.Delay's own
+        // cancellation check on an earlier attempt would re-surface it correctly either way, masking
+        // the bug this test exists to catch).
+        //
+        // failedClient: null! is safe here — nothing is cached for this server name yet, so
+        // ReconnectAsync's ReferenceEquals(current, failedClient) check short-circuits on
+        // _clients.TryGetValue returning false and never dereferences it.
+        var config = new McpServersConfig
+        {
+            Servers = new ConcurrentDictionary<string, McpServerDefinition>
+            {
+                ["stdio-cancel-test"] = new()
+                {
+                    Enabled = true,
+                    Type = McpServerType.Stdio,
+                    Command = OperatingSystem.IsWindows() ? "powershell" : "sh",
+                    Args = OperatingSystem.IsWindows()
+                        ? ["-NoProfile", "-Command", "Start-Sleep -Seconds 5"]
+                        : ["-c", "sleep 5"],
+                    StartupTimeoutSeconds = 10
+                }
+            }
+        };
+        var sut = CreateManager(config);
+        // CancelAfter, not an already-cancelled token: an already-cancelled token throws from
+        // AcquireConnectionLockAsync's own SemaphoreSlim.WaitAsync(cancellationToken) before this
+        // method's retry loop is ever reached at all, which would pass regardless of this fix — the
+        // delay lets the lock acquire and the process spawn first, then cancels while
+        // McpClient.CreateAsync is genuinely in flight (well before the 5s sleep / 10s startup
+        // timeout would end the attempt on their own).
+        using var cts = new CancellationTokenSource();
+        cts.CancelAfter(TimeSpan.FromMilliseconds(300));
+
+        var act = () => sut.ReconnectAsync("stdio-cancel-test", null!, cts.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
     }
 
     [Fact]
