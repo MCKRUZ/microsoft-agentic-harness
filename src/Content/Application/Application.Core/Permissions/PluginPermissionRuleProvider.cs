@@ -367,18 +367,17 @@ public sealed class PluginPermissionRuleProvider : IPermissionRuleProvider
     /// cached: a tool whose constructor throws stays uncovered by the published-name rule for as long
     /// as the cached result stands (until the next <see cref="IPluginRegistry"/> mutation triggers a
     /// recompute), not retried on every call. A dependency-not-wired failure is deterministic, so a
-    /// retry would fail identically anyway.
+    /// retry would fail identically anyway. The resolve-or-fall-back-to-key logic itself lives on
+    /// <see cref="FirstPartyToolLookup.TryResolvePublishedName"/> (#626 code-review: was duplicated
+    /// near-verbatim with <c>EnvelopePermissionRuleProvider</c>'s copy) — only the log-on-failure
+    /// message, specific to this caller's DeniedTools context, stays here.
     /// </remarks>
     private bool TryResolvePublishedName(string toolKey, out string publishedName)
     {
-        var tool = _firstPartyToolLookup.TryResolve(toolKey, out var constructionError);
-        if (tool is not null)
-        {
-            publishedName = tool.Name;
-            return true;
-        }
+        var resolved = _firstPartyToolLookup.TryResolvePublishedName(
+            toolKey, out publishedName, out var constructionError);
 
-        if (constructionError is not null)
+        if (!resolved && constructionError is not null)
         {
             // Error, not Warning: this is a bypass-immune security control (a plugin's DeniedTools
             // backstop) now only partially enforced for this one tool — a level that gets filtered
@@ -390,8 +389,7 @@ public sealed class PluginPermissionRuleProvider : IPermissionRuleProvider
                 toolKey);
         }
 
-        publishedName = toolKey;
-        return false;
+        return resolved;
     }
 
     /// <summary>
