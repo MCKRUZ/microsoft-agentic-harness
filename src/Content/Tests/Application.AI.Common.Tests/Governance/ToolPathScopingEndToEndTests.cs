@@ -79,7 +79,8 @@ public sealed class ToolPathScopingEndToEndTests
     {
         var sandboxMonitor = Mock.Of<IOptionsMonitor<SandboxConfig>>(m => m.CurrentValue == sandboxConfig);
         var lookup = new FirstPartyToolLookup(toolProvider, toolNames ?? new HashSet<string> { "file_system" });
-        var resolver = new ToolPermissionProfileResolver(lookup, sandboxMonitor);
+        var resolver = new ToolPermissionProfileResolver(
+            lookup, sandboxMonitor, NullLogger<ToolPermissionProfileResolver>.Instance);
         var enforcer = new CapabilityEnforcer(resolver, NullLogger<CapabilityEnforcer>.Instance);
 
         var governance = new GovernanceConfig { EnforceToolInvocation = true, Enabled = false, EnableAudit = true };
@@ -361,7 +362,8 @@ public sealed class ToolPathScopingEndToEndTests
     {
         var lookup = new FirstPartyToolLookup(toolProvider, new HashSet<string> { "file_system" });
         var resolver = new ToolPermissionProfileResolver(
-            lookup, Mock.Of<IOptionsMonitor<SandboxConfig>>(m => m.CurrentValue == sandboxConfig));
+            lookup, Mock.Of<IOptionsMonitor<SandboxConfig>>(m => m.CurrentValue == sandboxConfig),
+            NullLogger<ToolPermissionProfileResolver>.Instance);
         return new CapabilityEnforcer(resolver, NullLogger<CapabilityEnforcer>.Instance);
     }
 

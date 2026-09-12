@@ -5,6 +5,8 @@ using Domain.Common.Config.AI;
 using Domain.Common.Config.AI.Governance;
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Moq;
 using Xunit;
@@ -163,17 +165,49 @@ public sealed class ToolCapabilityResolverTests
         profile.Origin.Should().Be(ToolCapabilityOrigin.McpAnnotation);
     }
 
+    [Fact]
+    public void Resolve_ToolConstructorThrows_FallsBackToKeywordHeuristicInsteadOfPropagating()
+    {
+        // #627: this used FirstPartyToolLookup.Resolve, which propagates a keyed tool's constructor
+        // exception instead of catching it. "run_shell" also keyword-matches, so this proves the
+        // fallback is the SAME path an out-of-bounded-set name already takes, not a special case.
+        var services = new ServiceCollection();
+        services.AddKeyedSingleton<ITool>("run_shell", (_, _) =>
+            throw new InvalidOperationException("dependency not registered in this host"));
+        var logger = new Mock<ILogger<ToolCapabilityResolver>>();
+        var resolver = BuildResolver(
+            serviceProvider: services.BuildServiceProvider(),
+            registeredKeys: new HashSet<string> { "run_shell" },
+            logger: logger.Object);
+
+        var profile = resolver.Resolve("run_shell");
+
+        profile.Capabilities.Should().HaveFlag(ToolCompositionCapability.ExecutesCode);
+        profile.Origin.Should().Be(ToolCapabilityOrigin.KeywordHeuristic);
+        // The log is the point of the fix (#627 code-review) — see ToolRiskClassifierTests's sibling
+        // assertion for why a silent fallback defeats the purpose of catching the failure at all.
+        logger.Invocations.Any(i =>
+            i.Method.Name == nameof(ILogger.Log) &&
+            i.Arguments.Count > 2 &&
+            (LogLevel)i.Arguments[0]! == LogLevel.Error &&
+            i.Arguments[2] is not null &&
+            i.Arguments[2]!.ToString()!.Contains("run_shell", StringComparison.Ordinal))
+            .Should().BeTrue();
+    }
+
     private static ToolCapabilityResolver BuildResolver(
         IServiceProvider? serviceProvider = null,
         GovernanceConfig? governance = null,
         IToolBehaviorRegistry? behaviorRegistry = null,
-        IReadOnlySet<string>? registeredKeys = null) =>
+        IReadOnlySet<string>? registeredKeys = null,
+        ILogger<ToolCapabilityResolver>? logger = null) =>
         new(
             new FirstPartyToolLookup(
                 serviceProvider ?? new ServiceCollection().BuildServiceProvider(),
                 registeredKeys ?? new HashSet<string>()),
             behaviorRegistry ?? new ToolBehaviorRegistry(new ServiceCollection().BuildServiceProvider()),
-            Mock.Of<IOptionsMonitor<GovernanceConfig>>(m => m.CurrentValue == (governance ?? new GovernanceConfig())));
+            Mock.Of<IOptionsMonitor<GovernanceConfig>>(m => m.CurrentValue == (governance ?? new GovernanceConfig())),
+            logger ?? NullLogger<ToolCapabilityResolver>.Instance);
 
     private static GovernanceConfig Governance(ToolCompositionGatingConfig gating) =>
         new() { ToolCompositionGating = gating };

@@ -4,6 +4,9 @@ using Domain.AI.Changes;
 using Domain.AI.Models;
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
+using Moq;
 using Xunit;
 
 namespace Application.AI.Common.Tests.Services.Tools;
@@ -23,7 +26,7 @@ public sealed class ToolRiskClassifierTests
         var toolNames = new HashSet<string>(tools.Select(t => t.Name), StringComparer.Ordinal);
         var lookup = new FirstPartyToolLookup(services.BuildServiceProvider(), toolNames);
 
-        return new ToolRiskClassifier(lookup);
+        return new ToolRiskClassifier(lookup, NullLogger<ToolRiskClassifier>.Instance);
     }
 
     [Fact]
@@ -69,6 +72,35 @@ public sealed class ToolRiskClassifierTests
 
         sut.Classify(name).Should().Be(ToolRiskProfile.Default);
     }
+
+    [Fact]
+    public void Classify_ToolConstructorThrows_ReturnsFailSafeDefaultInsteadOfPropagating()
+    {
+        // #627: this used FirstPartyToolLookup.Resolve, which propagates a keyed tool's constructor
+        // exception instead of catching it — the same host-boot failure mode #612 fixed elsewhere.
+        var services = new ServiceCollection();
+        services.AddKeyedSingleton<ITool>("unbuildable", (_, _) =>
+            throw new InvalidOperationException("dependency not registered in this host"));
+        var lookup = new FirstPartyToolLookup(services.BuildServiceProvider(), new HashSet<string> { "unbuildable" });
+        var logger = new Mock<ILogger<ToolRiskClassifier>>();
+        var sut = new ToolRiskClassifier(lookup, logger.Object);
+
+        var profile = sut.Classify("unbuildable");
+
+        profile.Should().Be(ToolRiskProfile.Default);
+        // The log is the point of the fix (#627 code-review) — a silent fallback with no error
+        // signal is indistinguishable from an ordinary unrecognized tool, which defeats the whole
+        // purpose of catching the construction failure instead of propagating it.
+        LogsErrorMentioning(logger, "unbuildable").Should().BeTrue();
+    }
+
+    private static bool LogsErrorMentioning(Mock<ILogger<ToolRiskClassifier>> logger, string substring) =>
+        logger.Invocations.Any(i =>
+            i.Method.Name == nameof(ILogger.Log) &&
+            i.Arguments.Count > 2 &&
+            (LogLevel)i.Arguments[0]! == LogLevel.Error &&
+            i.Arguments[2] is not null &&
+            i.Arguments[2]!.ToString()!.Contains(substring, StringComparison.Ordinal));
 
     private sealed class FakeTool(string name, BlastRadius risk, bool isReadOnly) : ITool
     {

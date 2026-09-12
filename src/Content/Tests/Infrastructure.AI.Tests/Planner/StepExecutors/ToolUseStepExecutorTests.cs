@@ -14,6 +14,7 @@ using Domain.AI.Sandbox;
 using Infrastructure.AI.Planner.StepExecutors;
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Moq;
@@ -120,6 +121,56 @@ public sealed class ToolUseStepExecutorTests
 
         Assert.Equal(StepExecutionStatus.Completed, result.Status);
         Assert.Contains("a.txt", result.Output);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_ResourceParameterToolConstructorThrows_StillCompletesInsteadOfPropagating()
+    {
+        // #627: ExtractResourceRequest used FirstPartyToolLookup.Resolve, which propagates a keyed
+        // tool's constructor exception instead of catching it. A construction failure now takes the
+        // same "no resource-parameter declaration" path a name outside the bounded first-party set
+        // already takes — this step must still complete, not fail with an unhandled exception.
+        var services = new ServiceCollection();
+        services.AddKeyedSingleton<ISandboxExecutor>(SandboxIsolationLevel.Process, _sandboxExecutor.Object);
+        services.AddKeyedSingleton<ISandboxExecutor>(SandboxIsolationLevel.Container, _sandboxExecutor.Object);
+        services.AddKeyedSingleton<Application.AI.Common.Interfaces.Tools.ITool>("file_system", (_, _) =>
+            throw new InvalidOperationException("dependency not registered in this host"));
+        var sp = services.BuildServiceProvider();
+        var logger = new Mock<ILogger<ToolUseStepExecutor>>();
+
+        var sut = new ToolUseStepExecutor(
+            _capabilityEnforcer.Object,
+            BuildAdmissionPipeline(Mock.Of<IToolCallObserverChain>()),
+            sp,
+            _attestationService.Object,
+            _notifier.Object,
+            _context,
+            logger.Object,
+            new FirstPartyToolLookup(sp, new HashSet<string> { "file_system" }));
+
+        var config = new ToolUseConfig { ToolName = "file_system" };
+        var step = CreateStep(config);
+
+        _sandboxExecutor.Setup(s => s.ExecuteAsync(It.IsAny<SandboxExecutionRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new SandboxExecutionResult
+            {
+                Success = true,
+                Output = "{}",
+                ResourceUsage = new ResourceUsage()
+            });
+
+        var result = await sut.ExecuteAsync(step, new Dictionary<PlanStepId, string>(), CancellationToken.None);
+
+        Assert.Equal(StepExecutionStatus.Completed, result.Status);
+        // The log is the point of the fix (#627 code-review) — a silent fallback with no error
+        // signal is indistinguishable from an ordinary unrecognized tool, which defeats the whole
+        // purpose of catching the construction failure instead of propagating it.
+        Assert.Contains(logger.Invocations, i =>
+            i.Method.Name == nameof(ILogger.Log) &&
+            i.Arguments.Count > 2 &&
+            (LogLevel)i.Arguments[0]! == LogLevel.Error &&
+            i.Arguments[2] is not null &&
+            i.Arguments[2]!.ToString()!.Contains("file_system", StringComparison.Ordinal));
     }
 
     [Fact]
