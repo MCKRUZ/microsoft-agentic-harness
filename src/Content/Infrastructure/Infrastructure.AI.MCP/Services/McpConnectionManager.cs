@@ -614,6 +614,25 @@ public sealed class McpConnectionManager : IAsyncDisposable
     public bool IsConfiguredButDisabled(string serverName) =>
         _config.Servers.TryGetValue(serverName, out var definition) && !definition.Enabled;
 
+    // #610: a Stdio/spawned-process MCP server (npx, a container) can genuinely take a few seconds to
+    // become reachable — this is not a failure, just a cold start still in progress — but before this,
+    // a server's FIRST connect attempt had no retry at all, so losing that race once permanently denied
+    // a plugin's entire tool surface (PluginBoundaryStatus.Faulted has no un-fault path, by design).
+    // Deliberately a SMALLER budget than PluginToolBoundaryStartupValidator's own
+    // MaxAvailabilityAttempts (5): that type's retry loop wraps THIS method (via IsServerAvailableAsync
+    // -> GetClientAsync -> here) for its own, separate reason (avoiding a race with
+    // ReportServerToolsDiscovered's first-report-wins semantics) — giving this layer the SAME 5-attempt
+    // budget would make that caller's worst case 5x this many attempts, not 5. 3 total attempts here
+    // still meaningfully closes the gap for every OTHER caller (organic GetToolsAsync calls during a
+    // live agent turn, ReconnectAsync, run-scoped bundle connects) that had zero retry of their own
+    // before this. Verified empirically (throwaway console app against the pinned SDK, both a fast
+    // process-exit failure and a genuine InitializationTimeout): a failed StdioClientTransport connect
+    // leaves no lingering child process — StdioClientTransport itself implements neither IDisposable
+    // nor IAsyncDisposable, so a fresh transport per attempt (not a reused one) is the only option, and
+    // is safe.
+    private const int MaxConnectAttempts = 3;
+    private static readonly TimeSpan ConnectRetryDelay = TimeSpan.FromSeconds(1);
+
     private async Task<McpClient> CreateClientAsync(string serverName, CancellationToken cancellationToken)
     {
         // Host dictionary first (trusted source wins outright), then the bundle-owned registry as a
@@ -637,27 +656,50 @@ public sealed class McpConnectionManager : IAsyncDisposable
             "Connecting to MCP server '{ServerName}' via {Transport}...",
             serverName, definition.Type);
 
-        try
+        Exception lastFailure = new McpConnectionException($"MCP server '{serverName}' connect loop exited with no attempt recorded — unreachable.");
+        for (var attempt = 1; attempt <= MaxConnectAttempts; attempt++)
         {
-            var transport = CreateTransport(serverName, definition, isBundleOwned);
+            try
+            {
+                // A fresh transport every attempt, not one reused across retries: for Stdio this spawns
+                // a new child process (the only way to retry — see this method's remarks above), and
+                // reconstructing an Http/Sse transport is cheap since no connection is actually
+                // established until McpClient.CreateAsync below.
+                var transport = CreateTransport(serverName, definition, isBundleOwned);
 
-            var client = await McpClient.CreateAsync(
-                transport,
-                new McpClientOptions
+                var client = await McpClient.CreateAsync(
+                    transport,
+                    new McpClientOptions
+                    {
+                        ClientInfo = new() { Name = "agentic-harness", Version = "1.0.0" },
+                        InitializationTimeout = TimeSpan.FromSeconds(definition.StartupTimeoutSeconds)
+                    },
+                    _loggerFactory,
+                    cancellationToken);
+
+                _logger.LogInformation("Connected to MCP server '{ServerName}'", serverName);
+                return client;
+            }
+            catch (Exception ex) when (ex is not McpConnectionException)
+            {
+                // A McpConnectionException here (CreateTransport's own config-validation throws — a
+                // missing URL, a blocked host) is a deterministic error retrying can never fix, so it
+                // is NOT caught by this filter and propagates immediately without wasting the retry
+                // budget on it. Everything else — a timed-out handshake, a not-yet-listening remote, a
+                // stdio process that exits before completing initialization — is exactly the transient
+                // cold-start shape this retry exists for.
+                lastFailure = ex;
+                if (attempt < MaxConnectAttempts)
                 {
-                    ClientInfo = new() { Name = "agentic-harness", Version = "1.0.0" },
-                    InitializationTimeout = TimeSpan.FromSeconds(definition.StartupTimeoutSeconds)
-                },
-                _loggerFactory,
-                cancellationToken);
+                    _logger.LogWarning(ex,
+                        "Connect attempt {Attempt}/{MaxAttempts} to MCP server '{ServerName}' failed; retrying in {Delay}...",
+                        attempt, MaxConnectAttempts, serverName, ConnectRetryDelay);
+                    await Task.Delay(ConnectRetryDelay, cancellationToken);
+                }
+            }
+        }
 
-            _logger.LogInformation("Connected to MCP server '{ServerName}'", serverName);
-            return client;
-        }
-        catch (Exception ex) when (ex is not McpConnectionException)
-        {
-            throw new McpConnectionException(serverName, definition.Type.ToString().ToLowerInvariant(), ex);
-        }
+        throw new McpConnectionException(serverName, definition.Type.ToString().ToLowerInvariant(), lastFailure);
     }
 
     private IClientTransport CreateTransport(string serverName, McpServerDefinition definition, bool isBundleOwned)

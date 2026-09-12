@@ -192,6 +192,43 @@ public sealed class McpConnectionManagerExtendedTests
     }
 
     [Fact]
+    public async Task GetClientAsync_StdioServerFirstConnectAttemptFails_RetriesBeforeThrowing()
+    {
+        // #610: a server's FIRST connect attempt previously had no retry at all — a single failed
+        // attempt (e.g. a slow cold start) threw immediately. Real (not mocked) failing connect,
+        // same shape as GetClientAsync_StdioServerWithNoCommand_ThrowsMcpConnectionException above —
+        // an empty Command fails fast on every attempt (confirmed empirically: no lingering process,
+        // no multi-second wait per attempt), so elapsed time is dominated by the retry DELAYS between
+        // attempts, not by each attempt itself. Asserting a minimum elapsed time proves multiple
+        // attempts actually happened rather than failing immediately on the first one.
+        var mcpConfig = new McpServersConfig
+        {
+            Servers = new ConcurrentDictionary<string, McpServerDefinition>
+            {
+                ["stdio-retry-test"] = new()
+                {
+                    Enabled = true,
+                    Type = McpServerType.Stdio,
+                    Command = "",
+                    StartupTimeoutSeconds = 1
+                }
+            }
+        };
+        var sut = CreateManager(mcpConfig);
+
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        var act = () => sut.GetClientAsync("stdio-retry-test");
+        await act.Should().ThrowAsync<Application.AI.Common.Exceptions.McpConnectionException>();
+        stopwatch.Stop();
+
+        // 2 retry delays at ~1s each between 3 attempts — bounded well below what a single
+        // StartupTimeoutSeconds-driven timeout would take, so this is measuring retry delays, not
+        // per-attempt hangs.
+        stopwatch.Elapsed.Should().BeGreaterThan(TimeSpan.FromMilliseconds(1800),
+            "a single failed attempt must not throw immediately — the connect must retry at least twice more first");
+    }
+
+    [Fact]
     public async Task GetClientAsync_HttpServerWithNoUrl_ThrowsMcpConnectionException()
     {
         var config = new McpServersConfig
