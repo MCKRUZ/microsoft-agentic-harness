@@ -6,6 +6,7 @@ using Application.AI.Common.Interfaces.Sandbox;
 using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Services.Agent;
 using Application.AI.Common.Services.Governance;
+using Application.AI.Common.Services.Tools;
 using Application.Core.Permissions;
 using Domain.AI.Bundles;
 using Domain.AI.Changes;
@@ -162,7 +163,9 @@ public sealed class SubPlanEnvelopeConfinementTests
         services.AddSingleton(decisions);
         services.AddScoped<IAgentExecutionContext, AgentExecutionContext>();
         services.AddSingleton<IToolPermissionService>(new ThreePhasePermissionResolver(
-            [new EnvelopePermissionRuleProvider(NullLogger<EnvelopePermissionRuleProvider>.Instance)],
+            [new EnvelopePermissionRuleProvider(
+                NullLogger<EnvelopePermissionRuleProvider>.Instance,
+                new FirstPartyToolLookup(new ServiceCollection().BuildServiceProvider(), new HashSet<string>()))],
             safetyGates.Object,
             new GlobPatternMatcher(),
             new Mock<IDenialTracker>().Object,

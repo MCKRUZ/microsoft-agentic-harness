@@ -130,18 +130,21 @@ public sealed class EnvelopeEnforcementIntegrationTests
         var skillRegistry = new Mock<ISkillMetadataRegistry>();
         skillRegistry.Setup(r => r.GetAll()).Returns(skills ?? []);
 
+        // #524 round-2 / #626: empty key set is fine — pluginRegistry never configures
+        // GetBoundaryStatus, so Moq's default (PluginBoundaryStatus.Verified) means the
+        // blanket-deny path this lookup feeds never fires here, and no case in this suite names a
+        // tool whose published name disagrees with its key.
+        var firstPartyToolLookup = new FirstPartyToolLookup(new ServiceCollection().BuildServiceProvider(), new HashSet<string>());
+
         IPermissionRuleProvider[] providers =
         [
             new AutonomyTierRuleProvider(
                 tierResolver.Object, options, NullLogger<AutonomyTierRuleProvider>.Instance),
             new PluginPermissionRuleProvider(
                 pluginRegistry.Object, skillRegistry.Object, new ServiceCollection().BuildServiceProvider(),
-                // #524 round-2: empty key set is fine — pluginRegistry never configures
-                // GetBoundaryStatus, so Moq's default (PluginBoundaryStatus.Verified) means the
-                // blanket-deny path this lookup feeds never fires here.
-                new FirstPartyToolLookup(new ServiceCollection().BuildServiceProvider(), new HashSet<string>()),
+                firstPartyToolLookup,
                 NullLogger<PluginPermissionRuleProvider>.Instance),
-            new EnvelopePermissionRuleProvider(NullLogger<EnvelopePermissionRuleProvider>.Instance),
+            new EnvelopePermissionRuleProvider(NullLogger<EnvelopePermissionRuleProvider>.Instance, firstPartyToolLookup),
             new ConfigBasedRuleProvider(options)
         ];
 

@@ -1,5 +1,6 @@
 using Application.AI.Common.Services.Bundles;
 using Application.AI.Common.Services.Governance;
+using Application.AI.Common.Services.Tools;
 using Application.Core.Permissions;
 using Domain.AI.Agents;
 using Domain.AI.Bundles;
@@ -8,6 +9,7 @@ using Domain.AI.Permissions;
 using Domain.AI.Skills;
 using Domain.AI.Tools;
 using FluentAssertions;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
@@ -23,7 +25,11 @@ namespace Application.Core.Tests.Permissions;
 public sealed class EnvelopePermissionRuleProviderTests
 {
     private readonly EnvelopePermissionRuleProvider _provider =
-        new(NullLogger<EnvelopePermissionRuleProvider>.Instance);
+        new(
+            NullLogger<EnvelopePermissionRuleProvider>.Instance,
+            // #626: empty key set is fine — no case in this suite names a tool whose published name
+            // disagrees with its key, so TryResolvePublishedName always falls back to the key itself.
+            new FirstPartyToolLookup(new ServiceCollection().BuildServiceProvider(), new HashSet<string>()));
 
     /// <summary>
     /// The rules written for a specific tool name, i.e. everything except the closing catch-all. Most
@@ -204,6 +210,76 @@ public sealed class EnvelopePermissionRuleProviderTests
             PerTool(rules).Select(r => r.ToolPattern).Should().BeEquivalentTo(
                 ["file_system"],
                 "only the exact-name grant survives; wildcard entries are rejected");
+        }
+    }
+
+    // --- #626: rule.ToolPattern is matched against a tool's PUBLISHED (self-reported) name at
+    // invocation, but an envelope grant / a bundle's declared tools can legitimately name a tool by
+    // its DI registration key instead — the identical failure shape #612 fixed for
+    // PluginPermissionRuleProvider's DeniedTools. Uses its own provider instance (not the shared
+    // _provider field) so each test can register its own divergent-name tool.
+
+    private static EnvelopePermissionRuleProvider ProviderWithDivergentTool(string key, string publishedName)
+    {
+        var services = new ServiceCollection();
+        var mock = new Moq.Mock<Application.AI.Common.Interfaces.Tools.ITool>();
+        mock.Setup(t => t.Name).Returns(publishedName);
+        services.AddKeyedSingleton(key, mock.Object);
+        var lookup = new FirstPartyToolLookup(services.BuildServiceProvider(), new HashSet<string> { key });
+        return new EnvelopePermissionRuleProvider(NullLogger<EnvelopePermissionRuleProvider>.Instance, lookup);
+    }
+
+    [Fact]
+    public async Task GrantByKeyDisagreeingWithPublishedName_AlsoEmitsBaselineForThePublishedName()
+    {
+        var provider = ProviderWithDivergentTool("registered_key", "self_reported_name");
+        var overlay = Overlay(Agent("bundle", "registered_key"));
+        using (EphemeralAgentOverlayAccessor.Begin(overlay))
+        using (CapabilityEnvelopeAccessor.Begin(Envelope(tools: ["registered_key"], ceiling: AutonomyLevel.Autonomous)))
+        {
+            var rules = await provider.GetRulesAsync("bundle");
+
+            PerTool(rules).Should().NotContain(r => r.Behavior == PermissionBehaviorType.Deny,
+                "the declared tool IS granted (just under a name that disagrees with its published name) " +
+                "and must not be spuriously denied");
+            PerTool(rules).Should().Contain(r => r.ToolPattern == "registered_key" && r.IsAuthoritativeBaseline);
+            PerTool(rules).Should().Contain(r => r.ToolPattern == "self_reported_name" && r.IsAuthoritativeBaseline,
+                "without resolving the published name, the grant silently never matches at invocation, " +
+                "since ThreePhasePermissionResolver.Matches compares against the published name");
+        }
+    }
+
+    [Fact]
+    public async Task DeclaredByKey_GrantedByPublishedName_IsNotSpuriouslyDenied()
+    {
+        // Isolates the DECLARED-tools expansion specifically (distinct from the grant expansion):
+        // the bundle declares the tool by its DI key, but the operator's grant already used the
+        // tool's published name directly (a legitimate, arguably more natural way to author a grant).
+        // Without resolving the DECLARED key to its published name too, "registered_key" is checked
+        // against a granted set that only contains "self_reported_name" and is wrongly denied, even
+        // though the tool is genuinely granted.
+        var provider = ProviderWithDivergentTool("registered_key", "self_reported_name");
+        var overlay = Overlay(Agent("bundle", "registered_key"));
+        using (EphemeralAgentOverlayAccessor.Begin(overlay))
+        using (CapabilityEnvelopeAccessor.Begin(Envelope(tools: ["self_reported_name"], ceiling: AutonomyLevel.Autonomous)))
+        {
+            var rules = await provider.GetRulesAsync("bundle");
+
+            PerTool(rules).Should().NotContain(r => r.Behavior == PermissionBehaviorType.Deny,
+                "the declared tool (by key) IS granted (by published name) and must not be spuriously denied");
+        }
+    }
+
+    [Fact]
+    public async Task GrantByKeyMatchingPublishedName_EmitsOnlyOneBaselineRule()
+    {
+        // No divergence: must not double-emit a redundant rule for the common case.
+        var provider = ProviderWithDivergentTool("bash", "bash");
+        using (CapabilityEnvelopeAccessor.Begin(Envelope(tools: ["bash"], ceiling: AutonomyLevel.Autonomous)))
+        {
+            var rules = await provider.GetRulesAsync("bundle");
+
+            PerTool(rules).Should().ContainSingle(r => r.ToolPattern == "bash");
         }
     }
 
