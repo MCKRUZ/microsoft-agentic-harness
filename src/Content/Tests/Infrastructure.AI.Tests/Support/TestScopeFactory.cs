@@ -5,6 +5,7 @@ using Domain.AI.Sandbox;
 using Domain.Common.Config.AI.Sandbox;
 using MediatR;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
@@ -90,6 +91,7 @@ internal static class TestScopeFactory
         var services = new ServiceCollection();
         services.AddOptions<SandboxConfig>();
         services.AddSingleton(sp => new FirstPartyToolLookup(sp, new HashSet<string>()));
+        services.AddSingleton<ILogger<ToolPermissionProfileResolver>>(NullLogger<ToolPermissionProfileResolver>.Instance);
         services.AddSingleton<ToolPermissionProfileResolver>();
         return services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
     }

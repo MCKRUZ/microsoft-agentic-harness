@@ -11,6 +11,7 @@ using Infrastructure.AI.Iac;
 using Infrastructure.AI.Tests.Support;
 using Infrastructure.AI.Tools.Iac;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
@@ -59,6 +60,7 @@ public sealed class IacSandboxRunnerSolutionReviewFixTests
                 c.ToolOverrides[overrideToolName] = overrideConfig;
         });
         services.AddSingleton(sp => new FirstPartyToolLookup(sp, new HashSet<string>()));
+        services.AddSingleton<ILogger<ToolPermissionProfileResolver>>(NullLogger<ToolPermissionProfileResolver>.Instance);
         services.AddSingleton<ToolPermissionProfileResolver>();
         return services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
     }
