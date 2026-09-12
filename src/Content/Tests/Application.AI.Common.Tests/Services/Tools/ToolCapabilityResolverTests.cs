@@ -5,6 +5,7 @@ using Domain.Common.Config.AI;
 using Domain.Common.Config.AI.Governance;
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Moq;
 using Xunit;
@@ -163,6 +164,25 @@ public sealed class ToolCapabilityResolverTests
         profile.Origin.Should().Be(ToolCapabilityOrigin.McpAnnotation);
     }
 
+    [Fact]
+    public void Resolve_ToolConstructorThrows_FallsBackToKeywordHeuristicInsteadOfPropagating()
+    {
+        // #627: this used FirstPartyToolLookup.Resolve, which propagates a keyed tool's constructor
+        // exception instead of catching it. "run_shell" also keyword-matches, so this proves the
+        // fallback is the SAME path an out-of-bounded-set name already takes, not a special case.
+        var services = new ServiceCollection();
+        services.AddKeyedSingleton<ITool>("run_shell", (_, _) =>
+            throw new InvalidOperationException("dependency not registered in this host"));
+        var resolver = BuildResolver(
+            serviceProvider: services.BuildServiceProvider(),
+            registeredKeys: new HashSet<string> { "run_shell" });
+
+        var profile = resolver.Resolve("run_shell");
+
+        profile.Capabilities.Should().HaveFlag(ToolCompositionCapability.ExecutesCode);
+        profile.Origin.Should().Be(ToolCapabilityOrigin.KeywordHeuristic);
+    }
+
     private static ToolCapabilityResolver BuildResolver(
         IServiceProvider? serviceProvider = null,
         GovernanceConfig? governance = null,
@@ -173,7 +193,8 @@ public sealed class ToolCapabilityResolverTests
                 serviceProvider ?? new ServiceCollection().BuildServiceProvider(),
                 registeredKeys ?? new HashSet<string>()),
             behaviorRegistry ?? new ToolBehaviorRegistry(new ServiceCollection().BuildServiceProvider()),
-            Mock.Of<IOptionsMonitor<GovernanceConfig>>(m => m.CurrentValue == (governance ?? new GovernanceConfig())));
+            Mock.Of<IOptionsMonitor<GovernanceConfig>>(m => m.CurrentValue == (governance ?? new GovernanceConfig())),
+            NullLogger<ToolCapabilityResolver>.Instance);
 
     private static GovernanceConfig Governance(ToolCompositionGatingConfig gating) =>
         new() { ToolCompositionGating = gating };

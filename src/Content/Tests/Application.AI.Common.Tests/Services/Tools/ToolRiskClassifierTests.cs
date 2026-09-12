@@ -4,6 +4,7 @@ using Domain.AI.Changes;
 using Domain.AI.Models;
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
 namespace Application.AI.Common.Tests.Services.Tools;
@@ -23,7 +24,7 @@ public sealed class ToolRiskClassifierTests
         var toolNames = new HashSet<string>(tools.Select(t => t.Name), StringComparer.Ordinal);
         var lookup = new FirstPartyToolLookup(services.BuildServiceProvider(), toolNames);
 
-        return new ToolRiskClassifier(lookup);
+        return new ToolRiskClassifier(lookup, NullLogger<ToolRiskClassifier>.Instance);
     }
 
     [Fact]
@@ -68,6 +69,22 @@ public sealed class ToolRiskClassifierTests
         var sut = CreateClassifier(new FakeTool("known", BlastRadius.High, isReadOnly: false));
 
         sut.Classify(name).Should().Be(ToolRiskProfile.Default);
+    }
+
+    [Fact]
+    public void Classify_ToolConstructorThrows_ReturnsFailSafeDefaultInsteadOfPropagating()
+    {
+        // #627: this used FirstPartyToolLookup.Resolve, which propagates a keyed tool's constructor
+        // exception instead of catching it — the same host-boot failure mode #612 fixed elsewhere.
+        var services = new ServiceCollection();
+        services.AddKeyedSingleton<ITool>("unbuildable", (_, _) =>
+            throw new InvalidOperationException("dependency not registered in this host"));
+        var lookup = new FirstPartyToolLookup(services.BuildServiceProvider(), new HashSet<string> { "unbuildable" });
+        var sut = new ToolRiskClassifier(lookup, NullLogger<ToolRiskClassifier>.Instance);
+
+        var profile = sut.Classify("unbuildable");
+
+        profile.Should().Be(ToolRiskProfile.Default);
     }
 
     private sealed class FakeTool(string name, BlastRadius risk, bool isReadOnly) : ITool

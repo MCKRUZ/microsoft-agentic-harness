@@ -145,6 +145,7 @@ public static class DependencyInjection
         services.AddSingleton(sp => new ToolPermissionProfileResolver(
             sp.GetRequiredService<Services.Tools.FirstPartyToolLookup>(),
             sp.GetRequiredService<IOptionsMonitor<SandboxConfig>>(),
+            sp.GetRequiredService<ILogger<ToolPermissionProfileResolver>>(),
             // Both optional (#419): a composition root that never calls AddGovernance still
             // constructs this widely-used singleton — it just gets no durable audit trail for an
             // ungoverned-dispatch refusal, and (absent an EnableAudit toggle to read) defaults to
@@ -184,7 +185,8 @@ public static class DependencyInjection
         // bounded; this call site was missed by the original #387 sweep and probed keyed DI directly
         // (found during a later code-review pass on this same diff).
         services.AddSingleton<Interfaces.Tools.IToolRiskClassifier>(sp => new Services.Tools.ToolRiskClassifier(
-            sp.GetRequiredService<Services.Tools.FirstPartyToolLookup>()));
+            sp.GetRequiredService<Services.Tools.FirstPartyToolLookup>(),
+            sp.GetRequiredService<ILogger<Services.Tools.ToolRiskClassifier>>()));
 
         // Tool behaviour registry — what each tool declared it does, and who declared it. Singleton
         // because an external MCP server's declaration arrives on a discovery call and must still be
@@ -202,7 +204,8 @@ public static class DependencyInjection
         services.AddSingleton<Interfaces.Tools.IToolCapabilityResolver>(sp => new Services.Tools.ToolCapabilityResolver(
             sp.GetRequiredService<Services.Tools.FirstPartyToolLookup>(),
             sp.GetRequiredService<Interfaces.Tools.IToolBehaviorRegistry>(),
-            sp.GetRequiredService<IOptionsMonitor<Domain.Common.Config.AI.GovernanceConfig>>()));
+            sp.GetRequiredService<IOptionsMonitor<Domain.Common.Config.AI.GovernanceConfig>>(),
+            sp.GetRequiredService<ILogger<Services.Tools.ToolCapabilityResolver>>()));
 
         // Tool composition analyzer + reporter — flags an agent's assembled tool set for an
         // untrusted-input/credential-reading tool co-resident with a file-write/code-exec/outbound-send

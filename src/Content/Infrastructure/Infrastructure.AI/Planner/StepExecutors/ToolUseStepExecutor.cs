@@ -408,7 +408,20 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
     {
         // Resolved first so a tool with no resource-parameter declaration (or one outside the bounded
         // first-party set) skips the normalization pass below entirely — Extract would return null anyway.
-        var tool = _firstPartyToolLookup.Resolve(toolName);
+        // A tool whose constructor throws (#627) takes the identical null path: CapabilityEnforcer's
+        // fail-closed design (see this method's own remarks) refuses a scoped tool when the resource
+        // request stays unset, so treating "could not construct" like "no declaration" here still
+        // fails closed rather than silently bypassing scoping.
+        var tool = _firstPartyToolLookup.TryResolve(toolName, out var constructionError);
+        if (constructionError is not null)
+        {
+            _logger.LogError(constructionError,
+                "Could not construct first-party tool '{ToolName}' to resolve its resource-parameter " +
+                "declaration — treating it as undeclared, which CapabilityEnforcer refuses if the tool " +
+                "has path/host scoping configured.",
+                toolName);
+        }
+
         if (tool?.ResourceParametersByOperation is not { Count: > 0 } declared)
             return null;
 

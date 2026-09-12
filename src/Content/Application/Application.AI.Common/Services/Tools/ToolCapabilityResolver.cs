@@ -2,6 +2,7 @@ using Application.AI.Common.Interfaces.Tools;
 using Domain.AI.Governance;
 using Domain.Common.Config.AI;
 using Domain.Common.Config.AI.Governance;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace Application.AI.Common.Services.Tools;
@@ -23,24 +24,34 @@ public sealed class ToolCapabilityResolver : IToolCapabilityResolver
     private readonly FirstPartyToolLookup _firstPartyLookup;
     private readonly IToolBehaviorRegistry _behaviorRegistry;
     private readonly IOptionsMonitor<GovernanceConfig> _governanceConfig;
+    private readonly ILogger<ToolCapabilityResolver> _logger;
 
     /// <summary>Initializes a new instance of the <see cref="ToolCapabilityResolver"/> class.</summary>
     /// <param name="firstPartyLookup">
     /// The shared bounded-key-set-gated first-party tool lookup — see its remarks for why probing
     /// keyed DI outside its bounded key set is unsafe.
     /// </param>
+    /// <param name="logger">
+    /// Logs a construction failure (#627: this used <see cref="FirstPartyToolLookup.Resolve"/>, which
+    /// propagates a keyed tool's constructor exception instead of catching it). Classification still
+    /// degrades safely to the keyword heuristic either way — the same path an MCP/bundle tool outside
+    /// the bounded first-party set already takes — the log is what makes the anomaly visible.
+    /// </param>
     public ToolCapabilityResolver(
         FirstPartyToolLookup firstPartyLookup,
         IToolBehaviorRegistry behaviorRegistry,
-        IOptionsMonitor<GovernanceConfig> governanceConfig)
+        IOptionsMonitor<GovernanceConfig> governanceConfig,
+        ILogger<ToolCapabilityResolver> logger)
     {
         ArgumentNullException.ThrowIfNull(firstPartyLookup);
         ArgumentNullException.ThrowIfNull(behaviorRegistry);
         ArgumentNullException.ThrowIfNull(governanceConfig);
+        ArgumentNullException.ThrowIfNull(logger);
 
         _firstPartyLookup = firstPartyLookup;
         _behaviorRegistry = behaviorRegistry;
         _governanceConfig = governanceConfig;
+        _logger = logger;
     }
 
     /// <inheritdoc />
@@ -126,8 +137,19 @@ public sealed class ToolCapabilityResolver : IToolCapabilityResolver
     private (ToolCompositionCapability Capabilities, ToolCapabilityOrigin Origin) ResolveBase(string publishedToolName)
     {
         // Bounded-key-set-gated — see FirstPartyToolLookup's remarks. An MCP or bundle-owned name that
-        // is not a registration key resolves to null and skips straight to the keyword heuristic below.
-        var firstParty = _firstPartyLookup.Resolve(publishedToolName);
+        // is not a registration key resolves to null and skips straight to the keyword heuristic below
+        // — as does a registered tool whose constructor throws (#627), logged since that case is a
+        // host misconfiguration rather than an expected "not first-party" answer.
+        var firstParty = _firstPartyLookup.TryResolve(publishedToolName, out var constructionError);
+        if (firstParty is null && constructionError is not null)
+        {
+            _logger.LogError(constructionError,
+                "Could not construct first-party tool '{ToolName}' to classify its composition " +
+                "capabilities — falling back to the keyword heuristic, the same path taken for a tool " +
+                "outside the bounded first-party set.",
+                publishedToolName);
+        }
+
         if (firstParty is not null)
         {
             return firstParty.Capabilities != ToolCompositionCapability.None

@@ -10,6 +10,7 @@ using Domain.Common.Helpers;
 using Domain.AI.Sandbox;
 using Domain.Common.Config.AI.Sandbox;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace Application.AI.Common.Services.Sandbox;
@@ -34,6 +35,7 @@ public sealed class ToolPermissionProfileResolver
     private readonly IOptionsMonitor<SandboxConfig> _config;
     private readonly IGovernanceAuditService? _auditService;
     private readonly IOptionsMonitor<GovernanceConfig>? _governanceConfig;
+    private readonly ILogger<ToolPermissionProfileResolver> _logger;
 
     /// <summary>Initializes a new instance of the <see cref="ToolPermissionProfileResolver"/> class.</summary>
     /// <param name="firstPartyLookup">
@@ -61,17 +63,30 @@ public sealed class ToolPermissionProfileResolver
     /// composition root that doesn't wire this still gets the historically-correct "audit on" behavior
     /// rather than silently losing the trail.
     /// </param>
+    /// <param name="logger">
+    /// Logs a construction failure (#627: both call sites into <see cref="FirstPartyToolLookup"/> used
+    /// the unguarded <c>Resolve</c>, which propagates a keyed tool's constructor exception instead of
+    /// catching it). The resolved profile still degrades to the same
+    /// <see cref="ToolCapability.None"/>/<see cref="SandboxIsolationLevel.None"/> base a name outside
+    /// the bounded first-party set already gets — this only extends that existing, accepted fallback to
+    /// cover a construction failure too, rather than crashing the caller — the log is what makes a
+    /// genuine host misconfiguration visible instead of silently indistinguishable from an ordinary
+    /// external tool.
+    /// </param>
     public ToolPermissionProfileResolver(
         FirstPartyToolLookup firstPartyLookup,
         IOptionsMonitor<SandboxConfig> config,
+        ILogger<ToolPermissionProfileResolver> logger,
         IGovernanceAuditService? auditService = null,
         IOptionsMonitor<GovernanceConfig>? governanceConfig = null)
     {
         ArgumentNullException.ThrowIfNull(firstPartyLookup);
         ArgumentNullException.ThrowIfNull(config);
+        ArgumentNullException.ThrowIfNull(logger);
 
         _firstPartyLookup = firstPartyLookup;
         _config = config;
+        _logger = logger;
         _auditService = auditService;
         _governanceConfig = governanceConfig;
     }
@@ -211,11 +226,20 @@ public sealed class ToolPermissionProfileResolver
         SandboxIsolationLevel defaultIsolationLevel = SandboxIsolationLevel.Process,
         string? agentId = null)
     {
-        // Single FirstPartyToolLookup.Resolve call, reused for the under-declaration check below and
+        // Single FirstPartyToolLookup.TryResolve call, reused for the under-declaration check below and
         // as ResolveOverride's isolation floor — this used to call Resolve(toolName) (itself a lookup,
         // via ResolveBase) AND a second direct lookup just for RequiredCapabilities (a security-review
         // finding: real keyed-DI resolution, not a dictionary read, paid twice on this dispatch path).
-        var firstPartyTool = _firstPartyLookup.Resolve(toolName);
+        // A construction failure (#627) takes the same path as "not first-party" below — logged, since
+        // that's a host misconfiguration rather than an ordinary external-tool answer.
+        var firstPartyTool = _firstPartyLookup.TryResolve(toolName, out var dispatchConstructionError);
+        if (firstPartyTool is null && dispatchConstructionError is not null)
+        {
+            _logger.LogError(dispatchConstructionError,
+                "Could not construct first-party tool '{ToolName}' to resolve its sandbox permission " +
+                "profile for ungoverned dispatch — treating it as outside the bounded first-party set.",
+                toolName);
+        }
 
         if (firstPartyTool is not null)
         {
@@ -314,11 +338,19 @@ public sealed class ToolPermissionProfileResolver
     /// <see cref="ITool.RequiredCapabilities"/>/<see cref="ITool.MinimumIsolation"/>, or
     /// <see cref="ToolCapability.None"/>/<see cref="SandboxIsolationLevel.None"/> for a name outside
     /// the bounded registered-key set (MCP or bundle-owned tools — never covered by capability
-    /// declarations either way).
+    /// declarations either way) — the same fallback a registered tool whose constructor throws (#627)
+    /// now also takes, logged since that case is a host misconfiguration, not an ordinary external tool.
     /// </summary>
     private (ToolCapability Capabilities, SandboxIsolationLevel Isolation) ResolveBase(string toolName)
     {
-        var firstParty = _firstPartyLookup.Resolve(toolName);
+        var firstParty = _firstPartyLookup.TryResolve(toolName, out var constructionError);
+        if (firstParty is null && constructionError is not null)
+        {
+            _logger.LogError(constructionError,
+                "Could not construct first-party tool '{ToolName}' to resolve its sandbox permission " +
+                "profile — treating it as outside the bounded first-party set.",
+                toolName);
+        }
 
         return firstParty is not null
             ? (firstParty.RequiredCapabilities, firstParty.MinimumIsolation)

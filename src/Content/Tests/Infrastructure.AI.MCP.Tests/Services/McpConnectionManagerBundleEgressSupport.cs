@@ -116,8 +116,10 @@ internal static class McpConnectionManagerBundleEgressSupport
         // a real sandbox path via this shared provider.
         services.AddOptions<AppConfig>();
         services.AddSingleton(sp => new FirstPartyToolLookup(sp, new HashSet<string>(StringComparer.Ordinal)));
+        services.AddSingleton<ILogger<ToolPermissionProfileResolver>>(NullLogger<ToolPermissionProfileResolver>.Instance);
         services.AddSingleton(sp => new ToolPermissionProfileResolver(
-            sp.GetRequiredService<FirstPartyToolLookup>(), sp.GetRequiredService<IOptionsMonitor<SandboxConfig>>()));
+            sp.GetRequiredService<FirstPartyToolLookup>(), sp.GetRequiredService<IOptionsMonitor<SandboxConfig>>(),
+            sp.GetRequiredService<ILogger<ToolPermissionProfileResolver>>()));
         extra?.Invoke(services);
         return services.BuildServiceProvider();
     }

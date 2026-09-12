@@ -9,6 +9,7 @@ using Domain.Common.Config.AI;
 using Domain.Common.Config.AI.Sandbox;
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Moq;
 using Xunit;
@@ -47,7 +48,9 @@ public sealed class ToolPermissionProfileResolverTests
 
         var lookup = new FirstPartyToolLookup(
             services.BuildServiceProvider(), new HashSet<string>(tools.Select(t => t.Name)));
-        return new ToolPermissionProfileResolver(lookup, configMock.Object, auditService, governanceConfig);
+        return new ToolPermissionProfileResolver(
+            lookup, configMock.Object, NullLogger<ToolPermissionProfileResolver>.Instance,
+            auditService, governanceConfig);
     }
 
     private static ITool FileTool() => Mock.Of<ITool>(t =>
@@ -70,6 +73,48 @@ public sealed class ToolPermissionProfileResolverTests
         profile.RequiredCapabilities.Should().Be(ToolCapability.None);
         profile.DeniedCapabilities.Should().Be(ToolCapability.None);
         profile.MinimumIsolation.Should().Be(SandboxIsolationLevel.None);
+    }
+
+    [Fact]
+    public void Resolve_ToolConstructorThrows_FallsBackToTheSameProfileAsUnregistered()
+    {
+        // #627: ResolveBase used FirstPartyToolLookup.Resolve, which propagates a keyed tool's
+        // constructor exception instead of catching it. A construction failure now takes the same
+        // path as a name outside the bounded first-party set — proven by asserting an identical
+        // result to Resolve_UnregisteredName_NoOverride_ReturnsDefaultProfile above.
+        var services = new ServiceCollection();
+        services.AddKeyedSingleton<ITool>("unbuildable", (_, _) =>
+            throw new InvalidOperationException("dependency not registered in this host"));
+        var configMock = new Mock<IOptionsMonitor<SandboxConfig>>();
+        configMock.Setup(m => m.CurrentValue).Returns(new SandboxConfig());
+        var lookup = new FirstPartyToolLookup(services.BuildServiceProvider(), new HashSet<string> { "unbuildable" });
+        var resolver = new ToolPermissionProfileResolver(
+            lookup, configMock.Object, NullLogger<ToolPermissionProfileResolver>.Instance);
+
+        var profile = resolver.Resolve("unbuildable");
+
+        profile.RequiredCapabilities.Should().Be(ToolCapability.None);
+        profile.DeniedCapabilities.Should().Be(ToolCapability.None);
+        profile.MinimumIsolation.Should().Be(SandboxIsolationLevel.None);
+    }
+
+    [Fact]
+    public void ResolveForUngovernedDispatch_ToolConstructorThrows_DoesNotPropagate()
+    {
+        // Same failure mode as above, exercised through the ungoverned-dispatch entry point — the
+        // live tool-dispatch path code-review flagged as more consequential than a permission check.
+        var services = new ServiceCollection();
+        services.AddKeyedSingleton<ITool>("unbuildable", (_, _) =>
+            throw new InvalidOperationException("dependency not registered in this host"));
+        var configMock = new Mock<IOptionsMonitor<SandboxConfig>>();
+        configMock.Setup(m => m.CurrentValue).Returns(new SandboxConfig());
+        var lookup = new FirstPartyToolLookup(services.BuildServiceProvider(), new HashSet<string> { "unbuildable" });
+        var resolver = new ToolPermissionProfileResolver(
+            lookup, configMock.Object, NullLogger<ToolPermissionProfileResolver>.Instance);
+
+        var result = resolver.ResolveForUngovernedDispatch("unbuildable", ToolCapability.None, []);
+
+        result.IsSuccess.Should().BeTrue();
     }
 
     [Fact]
@@ -162,7 +207,8 @@ public sealed class ToolPermissionProfileResolverTests
         var configMock = new Mock<IOptionsMonitor<SandboxConfig>>();
         configMock.Setup(m => m.CurrentValue).Returns(new SandboxConfig());
         var lookup = new FirstPartyToolLookup(services.BuildServiceProvider(), new HashSet<string>());
-        var resolver = new ToolPermissionProfileResolver(lookup, configMock.Object);
+        var resolver = new ToolPermissionProfileResolver(
+            lookup, configMock.Object, NullLogger<ToolPermissionProfileResolver>.Instance);
 
         var profile = resolver.Resolve("mcp_tool");
 

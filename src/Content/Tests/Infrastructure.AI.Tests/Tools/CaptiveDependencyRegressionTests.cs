@@ -16,6 +16,7 @@ using Infrastructure.AI.Tools.Iac;
 using Infrastructure.AI.Tools.Workspace;
 using MediatR;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using Xunit;
 
@@ -66,7 +67,8 @@ public sealed class CaptiveDependencyRegressionTests
         services.AddSingleton(sp => new FirstPartyToolLookup(sp, new HashSet<string>()));
         services.AddSingleton(sp => new ToolPermissionProfileResolver(
             sp.GetRequiredService<FirstPartyToolLookup>(),
-            sp.GetRequiredService<Microsoft.Extensions.Options.IOptionsMonitor<SandboxConfig>>()));
+            sp.GetRequiredService<Microsoft.Extensions.Options.IOptionsMonitor<SandboxConfig>>(),
+            NullLogger<ToolPermissionProfileResolver>.Instance));
 
         return services.BuildServiceProvider(new ServiceProviderOptions
         {

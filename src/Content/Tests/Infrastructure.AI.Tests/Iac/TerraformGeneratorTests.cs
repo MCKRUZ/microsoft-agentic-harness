@@ -82,7 +82,8 @@ public sealed class TerraformGeneratorTests
         var services = new ServiceCollection().AddKeyedSingleton(SandboxIsolationLevel.Process, sandbox);
         services.AddSingleton(sp => new FirstPartyToolLookup(sp, new HashSet<string>()));
         services.AddSingleton(sp => new ToolPermissionProfileResolver(
-            sp.GetRequiredService<FirstPartyToolLookup>(), configMock.Object));
+            sp.GetRequiredService<FirstPartyToolLookup>(), configMock.Object,
+            NullLogger<ToolPermissionProfileResolver>.Instance));
         var scopeFactory = services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
 
         return new TerraformGenerator(
