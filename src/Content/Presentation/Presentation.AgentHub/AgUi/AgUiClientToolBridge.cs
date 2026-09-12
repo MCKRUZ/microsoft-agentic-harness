@@ -2,6 +2,7 @@ using System.Text.Json;
 using Application.AI.Common.Helpers;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Tools;
+using Domain.Common.Helpers;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Application.AI.Common.Interfaces.AI;
@@ -128,8 +129,28 @@ public sealed class AgUiClientToolBridge : IClientToolBridge
     /// an oversized payload withholds the arguments here exactly the same way it does there, rather
     /// than the two transports drifting to different failure behavior.
     /// </summary>
-    private StreamedToolCallArguments RedactAndCapArguments(string toolName, string callId, string? argumentsJson) =>
-        ToolPayloadRedactor.RedactForStreaming(argumentsJson ?? "{}", _redactor, _logger, toolName, callId);
+    /// <remarks>
+    /// <paramref name="toolName"/> is the model/provider-chosen tool name for this client round-trip
+    /// call — the same origin as a <c>FunctionCallContent.Name</c> — so it is sanitized here before
+    /// reaching <see cref="ToolPayloadRedactor.RedactForStreaming"/>'s own failure-path log (#633: this
+    /// call previously passed the raw value directly, a gap #556's identifier sanitization never
+    /// closed for this transport, since that PR's own scope deliberately excluded this type — see
+    /// <c>ExecuteAgentTurnCommandHandler.EmitToolCallActivityAsync</c>'s remarks). <paramref name="callId"/>
+    /// needs no such treatment: it is generated locally via <c>Guid.NewGuid().ToString("N")</c>, always
+    /// lowercase hex and therefore always already identifier-shaped — wrapping it directly documents
+    /// why it is safe rather than paying for a sanitize pass that can only ever be a no-op. Passed as
+    /// the ToolName sanitize warning's <c>correlationId</c> too, matching every other caller's
+    /// convention (never the raw, attacker-controlled value itself — the paired, already-safe CallId).
+    /// </remarks>
+    private StreamedToolCallArguments RedactAndCapArguments(string toolName, string callId, string? argumentsJson)
+    {
+        var safeToolName = ToolCallIdentifierLogging.SanitizeAndLogIfChanged(
+            toolName, _logger, nameof(AgUiClientToolBridge), "ToolName", correlationId: callId,
+            "before redacting streamed tool-call arguments");
+
+        return ToolPayloadRedactor.RedactForStreaming(
+            argumentsJson ?? "{}", _redactor, _logger, safeToolName, new SanitizedIdentifier(callId));
+    }
 
     /// <summary>
     /// Appends an assistant message carrying the widget spec (empty text, so it renders as the widget

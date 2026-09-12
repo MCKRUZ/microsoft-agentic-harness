@@ -541,7 +541,7 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 	/// to both the call-emit and result-emit CallId preserves <see cref="ToolCallOrderingSink"/>
 	/// correlation rather than risking it.
 	/// </summary>
-	private static string SanitizeStreamedIdentifier(string value, ILogger logger, string fieldName, string? correlationId) =>
+	private static SanitizedIdentifier SanitizeStreamedIdentifier(string value, ILogger logger, string fieldName, string? correlationId) =>
 		ToolCallIdentifierLogging.SanitizeAndLogIfChanged(
 			value, logger, nameof(ExecuteAgentTurnCommandHandler), fieldName, correlationId,
 			"before streaming to the client");
@@ -570,7 +570,7 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 	/// </param>
 	/// <param name="safeCallId"><paramref name="call"/>'s CallId, already sanitized — see <paramref name="safeName"/>.</param>
 	private static StreamedToolCallArguments RedactedArgsJson(
-		FunctionCallContent call, string safeName, string safeCallId, ISecretRedactor? redactor, ILogger logger)
+		FunctionCallContent call, SanitizedIdentifier safeName, SanitizedIdentifier safeCallId, ISecretRedactor? redactor, ILogger logger)
 	{
 		if (call.Arguments is not { Count: > 0 } args)
 			return new StreamedToolCallArguments("{}", Withheld: false);
@@ -617,7 +617,7 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 	/// passed explicitly rather than read off <paramref name="result"/>'s raw <c>CallId</c>.
 	/// </param>
 	private static StreamedToolCallResult RedactedResultForStreaming(
-		FunctionResultContent result, string safeCallId, ISecretRedactor? redactor, ILogger logger) =>
+		FunctionResultContent result, SanitizedIdentifier safeCallId, ISecretRedactor? redactor, ILogger logger) =>
 		ToolPayloadRedactor.RedactResultForStreaming(ToolPayloadRedactor.SafeResultText(result), redactor, logger, safeCallId);
 
 	private static void RecordTurnError(string agentName)

@@ -1,5 +1,6 @@
 using Application.AI.Common.Helpers;
 using Application.AI.Common.Interfaces;
+using Domain.Common.Helpers;
 using FluentAssertions;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -100,7 +101,7 @@ public sealed class ToolPayloadRedactorTests
         var redactor = new MarkerRedactor();
         var payload = $"before {MarkerRedactor.Secret} after";
 
-        var result = ToolPayloadRedactor.RedactForStreaming(payload, redactor, NullLogger.Instance, "search", "call-1");
+        var result = ToolPayloadRedactor.RedactForStreaming(payload, redactor, NullLogger.Instance, new SanitizedIdentifier("search"), new SanitizedIdentifier("call-1"));
 
         result.Withheld.Should().BeFalse();
         result.Json.Should().Contain(MarkerRedactor.Replacement).And.NotContain("super-secret");
@@ -111,7 +112,7 @@ public sealed class ToolPayloadRedactorTests
     {
         var payload = new string('x', ToolPayloadRedactor.MaxStreamedToolCallPayloadLength + 1);
 
-        var result = ToolPayloadRedactor.RedactForStreaming(payload, redactor: null, NullLogger.Instance, "search", "call-1");
+        var result = ToolPayloadRedactor.RedactForStreaming(payload, redactor: null, NullLogger.Instance, new SanitizedIdentifier("search"), new SanitizedIdentifier("call-1"));
 
         result.Withheld.Should().BeTrue();
         result.Json.Should().Be("{}");
@@ -131,7 +132,7 @@ public sealed class ToolPayloadRedactorTests
         payload.Length.Should().BeLessThan(ToolPayloadRedactor.MaxStreamedToolCallPayloadLength,
             "the test must exercise the OUTPUT check, not the input pre-check");
 
-        var result = ToolPayloadRedactor.RedactForStreaming(payload, new InflatingRedactor(), NullLogger.Instance, "search", "call-1");
+        var result = ToolPayloadRedactor.RedactForStreaming(payload, new InflatingRedactor(), NullLogger.Instance, new SanitizedIdentifier("search"), new SanitizedIdentifier("call-1"));
 
         result.Withheld.Should().BeTrue();
         result.Json.Should().Be("{}");
@@ -149,7 +150,7 @@ public sealed class ToolPayloadRedactorTests
     {
         var redactor = new NullReturningRedactor();
 
-        var result = ToolPayloadRedactor.RedactForStreaming("api_key=super-secret", redactor, NullLogger.Instance, "search", "call-1");
+        var result = ToolPayloadRedactor.RedactForStreaming("api_key=super-secret", redactor, NullLogger.Instance, new SanitizedIdentifier("search"), new SanitizedIdentifier("call-1"));
 
         result.Withheld.Should().BeTrue();
         result.Json.Should().Be("{}");
@@ -166,7 +167,9 @@ public sealed class ToolPayloadRedactorTests
         var redactor = new NullReturningRedactor();
         var logger = new Mock<ILogger>();
 
-        ToolPayloadRedactor.RedactForStreaming("api_key=super-secret", redactor, logger.Object, "search", "call-1");
+        ToolPayloadRedactor.RedactForStreaming(
+            "api_key=super-secret", redactor, logger.Object,
+            new SanitizedIdentifier("search"), new SanitizedIdentifier("call-1"));
 
         logger.Verify(l => l.Log(
             LogLevel.Warning,
@@ -184,7 +187,8 @@ public sealed class ToolPayloadRedactorTests
         var redactor = new NullReturningRedactor();
         var logger = new Mock<ILogger>();
 
-        ToolPayloadRedactor.RedactResultForStreaming("some result text", redactor, logger.Object, "call-1");
+        ToolPayloadRedactor.RedactResultForStreaming(
+            "some result text", redactor, logger.Object, new SanitizedIdentifier("call-1"));
 
         logger.Verify(l => l.Log(
             LogLevel.Warning,
@@ -203,7 +207,7 @@ public sealed class ToolPayloadRedactorTests
     {
         var redactor = new NullReturningRedactor();
 
-        var result = ToolPayloadRedactor.RedactResultForStreaming("some result text", redactor, NullLogger.Instance, "call-1");
+        var result = ToolPayloadRedactor.RedactResultForStreaming("some result text", redactor, NullLogger.Instance, new SanitizedIdentifier("call-1"));
 
         result.Withheld.Should().BeTrue();
         result.Text.Should().BeEmpty();
@@ -215,7 +219,7 @@ public sealed class ToolPayloadRedactorTests
     {
         var oversized = new string('x', ToolPayloadRedactor.MaxStreamedToolCallPayloadLength + 1);
 
-        var result = ToolPayloadRedactor.RedactResultForStreaming(oversized, redactor: null, NullLogger.Instance, "call-1");
+        var result = ToolPayloadRedactor.RedactResultForStreaming(oversized, redactor: null, NullLogger.Instance, new SanitizedIdentifier("call-1"));
 
         result.Withheld.Should().BeTrue();
         result.Text.Should().BeEmpty();
@@ -228,7 +232,7 @@ public sealed class ToolPayloadRedactorTests
         payload.Length.Should().BeLessThan(ToolPayloadRedactor.MaxStreamedToolCallPayloadLength,
             "the test must exercise the OUTPUT check, not the input pre-check");
 
-        var result = ToolPayloadRedactor.RedactResultForStreaming(payload, new InflatingRedactor(), NullLogger.Instance, "call-1");
+        var result = ToolPayloadRedactor.RedactResultForStreaming(payload, new InflatingRedactor(), NullLogger.Instance, new SanitizedIdentifier("call-1"));
 
         result.Withheld.Should().BeTrue();
         result.Text.Should().BeEmpty();
@@ -238,7 +242,7 @@ public sealed class ToolPayloadRedactorTests
     public void RedactResultForStreaming_UnderCeiling_ReturnsRedactedTextUnwithheld()
     {
         var result = ToolPayloadRedactor.RedactResultForStreaming(
-            $"contains {MarkerRedactor.Secret}", new MarkerRedactor(), NullLogger.Instance, "call-1");
+            $"contains {MarkerRedactor.Secret}", new MarkerRedactor(), NullLogger.Instance, new SanitizedIdentifier("call-1"));
 
         result.Withheld.Should().BeFalse();
         result.Text.Should().Be($"contains {MarkerRedactor.Replacement}");

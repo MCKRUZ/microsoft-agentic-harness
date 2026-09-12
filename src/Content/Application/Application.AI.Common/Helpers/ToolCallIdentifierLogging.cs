@@ -35,17 +35,22 @@ public static class ToolCallIdentifierLogging
     /// What happens to the sanitized value next, for the log message's trailing phrase — e.g.
     /// <c>"before persisting for replay"</c> or <c>"before streaming to the client"</c>.
     /// </param>
-    public static string SanitizeAndLogIfChanged(
+    /// <returns>
+    /// The sanitized value, as a <see cref="SanitizedIdentifier"/> (#633) — never the raw
+    /// <paramref name="value"/> reinterpreted as safe, so a caller cannot accidentally forward the
+    /// unsanitized input to a consumer that requires an already-cleaned identifier.
+    /// </returns>
+    public static SanitizedIdentifier SanitizeAndLogIfChanged(
         string value, ILogger logger, string source, string fieldName, string? correlationId, string consequence)
     {
         var (result, changed) = ToolCallIdentifierSanitizer.Sanitize(value);
         if (!changed)
-            return value;
+            return new SanitizedIdentifier(value);
 
         logger.LogWarning(
             "[{Source}] {Field} for CallId={CallId} was truncated or contained characters outside " +
             "the expected identifier shape ([A-Za-z0-9_-]); replaced with {Sanitized} {Consequence}.",
-            source, fieldName, correlationId ?? result, result, consequence);
+            source, fieldName, correlationId ?? result.ToString(), result, consequence);
 
         return result;
     }

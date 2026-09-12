@@ -1,4 +1,5 @@
 using Application.AI.Common.Interfaces;
+using Domain.Common.Helpers;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 
@@ -111,7 +112,7 @@ public static class ToolPayloadRedactor
     /// </param>
     /// <param name="callId">The provider-assigned call id, logged as a structured field (<c>{CallId}</c>) — same caveat as <paramref name="toolName"/>.</param>
     public static StreamedToolCallArguments RedactForStreaming(
-        string json, ISecretRedactor? redactor, ILogger logger, string toolName, string? callId)
+        string json, ISecretRedactor? redactor, ILogger logger, SanitizedIdentifier toolName, SanitizedIdentifier? callId)
     {
         var (value, withheld) = RedactWithCeiling(json, redactor,
             ex => logger.LogWarning(ex,
@@ -139,7 +140,7 @@ public static class ToolPayloadRedactor
     /// it resolves against.
     /// </param>
     public static StreamedToolCallResult RedactResultForStreaming(
-        string text, ISecretRedactor? redactor, ILogger logger, string? callId)
+        string text, ISecretRedactor? redactor, ILogger logger, SanitizedIdentifier? callId)
     {
         var (value, withheld) = RedactWithCeiling(text, redactor,
             ex => logger.LogWarning(ex, "Failed to redact streamed tool-call result for CallId={CallId}", callId));
