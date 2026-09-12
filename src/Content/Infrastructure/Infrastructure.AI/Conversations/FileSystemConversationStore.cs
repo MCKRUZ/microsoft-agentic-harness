@@ -3,6 +3,7 @@ using Application.AI.Common.Interfaces.AI;
 using Application.AI.Common.Services;
 using Application.AI.Common.Models.Conversations;
 using Domain.Common.Config.AI.Conversations;
+using Infrastructure.AI.Helpers;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -59,7 +60,7 @@ public sealed class FileSystemConversationStore : IConversationStore
         _basePath = Path.GetFullPath(config.Value.ConversationsPath);
         _timeProvider = timeProvider;
         _logger = logger;
-        Directory.CreateDirectory(_basePath);
+        OwnerOnlyDirectoryHelper.Create(_basePath); // #640: full conversation transcripts
     }
 
     /// <inheritdoc/>

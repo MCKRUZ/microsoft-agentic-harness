@@ -62,6 +62,33 @@ public sealed class MarkdownCheckpointDecoratorTests : IDisposable
     private string GetMarkdownPath(string workflowId) =>
         Path.Combine(_basePath, workflowId, "inputs", "workflow-state.md");
 
+    // ── Directory permissions (#640, following #527's precedent) ──────────────
+
+    [Fact]
+    public async Task SaveAsync_MarkdownInputsDirectoryIsCreatedOwnerOnly()
+    {
+        // #640: the markdown checkpoint is a human-readable rendering of the same workflow state the
+        // JSON checkpoint holds -- the per-workflow "inputs" directory (not pre-created by this
+        // fixture, unlike _basePath above) must never inherit whatever the process umask/ACL happens
+        // to grant.
+        var state = new WorkflowState
+        {
+            WorkflowId = "wf-md-perm-check",
+            WorkflowStatus = "in_progress",
+            CurrentNodeId = "phase-1",
+            WorkflowStarted = DateTime.UtcNow
+        };
+
+        await _sut.SaveAsync(state);
+
+        if (!OperatingSystem.IsWindows())
+        {
+            var inputsDir = Path.Combine(_basePath, "wf-md-perm-check", "inputs");
+            File.GetUnixFileMode(inputsDir).Should().Be(
+                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
+    }
+
     // ── SaveAsync: markdown generation ───────────────────────────────────────
 
     [Fact]

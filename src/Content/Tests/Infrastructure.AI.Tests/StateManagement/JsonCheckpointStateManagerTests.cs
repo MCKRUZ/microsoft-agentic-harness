@@ -42,6 +42,24 @@ public sealed class JsonCheckpointStateManagerTests : IDisposable
             Directory.Delete(_basePath, recursive: true);
     }
 
+    // ── Directory permissions (#640, following #527's precedent) ──────────────
+
+    [Fact]
+    public async Task CreateAsync_CheckpointsDirectoryIsCreatedOwnerOnly()
+    {
+        // #640: checkpoint state can carry intermediate tool arguments/outputs -- the per-workflow
+        // checkpoints directory (not pre-created by this fixture, unlike _basePath above) must never
+        // inherit whatever the process umask/ACL happens to grant.
+        await _sut.CreateAsync("wf-perm-check");
+
+        if (!OperatingSystem.IsWindows())
+        {
+            var checkpointsDir = Path.Combine(_basePath, "wf-perm-check", "checkpoints");
+            File.GetUnixFileMode(checkpointsDir).Should().Be(
+                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
+    }
+
     // ── CreateAsync ──────────────────────────────────────────────────────────
 
     [Fact]
