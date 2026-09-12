@@ -322,7 +322,9 @@ public sealed class ToolBehaviorPostureTests
             monitor,
             Mock.Of<IOptionsMonitor<PermissionsConfig>>(m => m.CurrentValue == new PermissionsConfig()),
             Mock.Of<IOptionsMonitor<SandboxConfig>>(m => m.CurrentValue == new SandboxConfig()),
-            NullLogger<ToolInvocationGovernor>.Instance);
+            NullLogger<ToolInvocationGovernor>.Instance,
+            new CapabilityEnvelopeGrantResolver(
+                new FirstPartyToolLookup(new ServiceCollection().BuildServiceProvider(), new HashSet<string>())));
 
         return AdmissionHarness.Pipeline(governor: governor, trace: trace);
     }

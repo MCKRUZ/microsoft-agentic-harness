@@ -1,7 +1,6 @@
 using Application.AI.Common.Interfaces.Permissions;
 using Application.AI.Common.Services.Bundles;
 using Application.AI.Common.Services.Governance;
-using Application.AI.Common.Services.Tools;
 using Domain.AI.Bundles;
 using Domain.AI.Governance;
 using Domain.AI.Permissions;
@@ -99,21 +98,22 @@ public sealed class EnvelopePermissionRuleProvider : IPermissionRuleProvider
     private const int BaselinePriority = 5;
 
     private readonly ILogger<EnvelopePermissionRuleProvider> _logger;
-    private readonly FirstPartyToolLookup _firstPartyToolLookup;
+    private readonly CapabilityEnvelopeGrantResolver _envelopeGrantResolver;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="EnvelopePermissionRuleProvider"/> class.
     /// </summary>
     /// <param name="logger">Logger for rejected wildcard grants in an envelope's allowlist.</param>
-    /// <param name="firstPartyToolLookup">
-    /// Resolves a granted/declared name's self-reported published name for #626 — see
-    /// <see cref="TryResolvePublishedName"/>.
+    /// <param name="envelopeGrantResolver">
+    /// Resolves a granted/declared name's self-reported published name for #626, shared with
+    /// <c>ToolInvocationGovernor</c>'s independent runtime re-confirmation so the two agree by
+    /// construction — see <see cref="CapabilityEnvelopeGrantResolver"/>'s remarks.
     /// </param>
     public EnvelopePermissionRuleProvider(
-        ILogger<EnvelopePermissionRuleProvider> logger, FirstPartyToolLookup firstPartyToolLookup)
+        ILogger<EnvelopePermissionRuleProvider> logger, CapabilityEnvelopeGrantResolver envelopeGrantResolver)
     {
         _logger = logger;
-        _firstPartyToolLookup = firstPartyToolLookup;
+        _envelopeGrantResolver = envelopeGrantResolver;
     }
 
     /// <inheritdoc />
@@ -136,7 +136,7 @@ public sealed class EnvelopePermissionRuleProvider : IPermissionRuleProvider
         // compares against the published name), so the tool falls through to the closing Deny despite
         // being "granted" in config — a real functional defect masked as fail-closed-by-accident (see
         // this type's remarks on the closing Deny).
-        var grantedNames = ExpandWithPublishedNameCoverage(ValidGrants(envelope));
+        var grantedNames = _envelopeGrantResolver.ExpandWithPublishedNameCoverage(ValidGrants(envelope));
 
         var rules = new List<ToolPermissionRule>();
         AddDeclaredButUngrantedDenyRules(rules, agentId, grantedNames);
@@ -162,7 +162,7 @@ public sealed class EnvelopePermissionRuleProvider : IPermissionRuleProvider
 
         foreach (var declaredName in EnumerateDeclaredTools(agentId))
         {
-            var declaredForms = WithPublishedNameForms(declaredName);
+            var declaredForms = _envelopeGrantResolver.ExpandWithPublishedNameCoverage([declaredName]);
             if (declaredForms.Any(granted.Contains))
                 continue;
 
@@ -223,70 +223,6 @@ public sealed class EnvelopePermissionRuleProvider : IPermissionRuleProvider
             Priority: int.MaxValue,
             IsAuthoritativeBaseline: true,
             BaselineTier: PermissionBaselineTier.GrantBoundary));
-    }
-
-    /// <summary>
-    /// Expands <paramref name="names"/> to also include each name's resolved, self-reported published
-    /// name (#626) via <see cref="WithPublishedNameForms"/>, flattened and deduplicated
-    /// case-insensitively. Safe only for a set consumed as a flat membership test (the granted-names
-    /// set, used by <see cref="GetRulesAsync"/>'s baseline loop and as the Deny-check's membership
-    /// target) — <em>not</em> for the declared-tools Deny loop itself, which must decide per ORIGINAL
-    /// declared tool whether ANY of its forms is granted before emitting a Deny for any of them; see
-    /// that loop's own comment for the bug this distinction fixes.
-    /// </summary>
-    private IReadOnlyList<string> ExpandWithPublishedNameCoverage(IReadOnlyCollection<string> names)
-    {
-        var expanded = new List<string>(names.Count);
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-        foreach (var name in names)
-            foreach (var form in WithPublishedNameForms(name))
-                if (seen.Add(form))
-                    expanded.Add(form);
-
-        return expanded;
-    }
-
-    /// <summary>
-    /// <paramref name="name"/> alone, or <paramref name="name"/> plus its resolved, self-reported
-    /// published name when it resolves to a real first-party tool whose name disagrees (#626) — the
-    /// value <c>ThreePhasePermissionResolver.Matches</c> actually compares a rule's pattern against at
-    /// invocation, which can legitimately disagree with a DI registration key an envelope grant or a
-    /// bundle's declared-tools list names it by.
-    /// </summary>
-    private IReadOnlyList<string> WithPublishedNameForms(string name)
-    {
-        if (TryResolvePublishedName(name, out var publishedName)
-            && !string.Equals(publishedName, name, StringComparison.OrdinalIgnoreCase))
-            return [name, publishedName];
-
-        return [name];
-    }
-
-    /// <summary>
-    /// Resolves <paramref name="toolKey"/>'s converted, self-reported <see cref="Application.AI.Common.Interfaces.Tools.ITool.Name"/> —
-    /// see <see cref="FirstPartyToolLookup.TryResolvePublishedName"/>'s remarks for the full rationale
-    /// (#612/#626; the resolve-or-fall-back-to-key logic itself now lives there, shared with
-    /// <c>PluginPermissionRuleProvider</c>'s identical need, per #626 code-review). Returns
-    /// <see langword="false"/>, with <paramref name="publishedName"/> set to <paramref name="toolKey"/>
-    /// itself, when the key names no known first-party tool (an MCP tool name, for which no
-    /// first-party resolution is possible or needed) OR constructing it throws.
-    /// </summary>
-    private bool TryResolvePublishedName(string toolKey, out string publishedName)
-    {
-        var resolved = _firstPartyToolLookup.TryResolvePublishedName(
-            toolKey, out publishedName, out var constructionError);
-
-        if (!resolved && constructionError is not null)
-        {
-            _logger.LogError(constructionError,
-                "Could not construct first-party tool '{ToolKey}' to learn its published name for a " +
-                "capability-envelope rule — the key-pattern rule for it still applies, but a caller " +
-                "invoking it under a self-reported name that disagrees with the key would not be covered.",
-                toolKey);
-        }
-
-        return resolved;
     }
 
     /// <summary>

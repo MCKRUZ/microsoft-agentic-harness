@@ -144,7 +144,9 @@ public sealed class EnvelopeEnforcementIntegrationTests
                 pluginRegistry.Object, skillRegistry.Object, new ServiceCollection().BuildServiceProvider(),
                 firstPartyToolLookup,
                 NullLogger<PluginPermissionRuleProvider>.Instance),
-            new EnvelopePermissionRuleProvider(NullLogger<EnvelopePermissionRuleProvider>.Instance, firstPartyToolLookup),
+            new EnvelopePermissionRuleProvider(
+                NullLogger<EnvelopePermissionRuleProvider>.Instance,
+                new CapabilityEnvelopeGrantResolver(firstPartyToolLookup)),
             new ConfigBasedRuleProvider(options)
         ];
 
@@ -297,9 +299,10 @@ public sealed class EnvelopeEnforcementIntegrationTests
         // outright and the bundle could invoke a tool the caller was never granted.
         //
         // The bundle's overlay declares only file_system, so EnumerateDeclaredTools never sees
-        // k8sgpt_analyze and phase 1b emits no bypass-immune Deny for it. The resolver is the sole
-        // enforcement point for tool names — ToolInvocationGovernor has no independent GrantsTool check —
-        // so if this resolves to anything but Deny, the tool runs.
+        // k8sgpt_analyze and phase 1b emits no bypass-immune Deny for it. ToolInvocationGovernor's
+        // independent re-check (via CapabilityEnvelopeGrantResolver, #626) would also refuse an
+        // ungranted tool here, but this test exercises the resolver alone — so if this resolves to
+        // anything but Deny, the resolver itself (not a second gate) has to be relied on to stop it.
         var plugin = AutonomousPlugin("k8s-ops");
         var skill = PluginSkill("k8s-ops", "k8sgpt_analyze");
 

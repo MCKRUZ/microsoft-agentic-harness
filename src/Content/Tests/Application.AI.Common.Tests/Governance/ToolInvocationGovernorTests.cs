@@ -4,6 +4,7 @@ using Application.AI.Common.Interfaces.Permissions;
 using Application.AI.Common.Interfaces.Sandbox;
 using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Services.Governance;
+using Application.AI.Common.Services.Tools;
 using Domain.AI.Changes;
 using Domain.AI.Governance;
 using Domain.AI.Permissions;
@@ -11,6 +12,7 @@ using Domain.Common;
 using Domain.Common.Config.AI;
 using Domain.Common.Config.AI.Permissions;
 using Domain.Common.Config.AI.Sandbox;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Moq;
@@ -110,7 +112,12 @@ public sealed class ToolInvocationGovernorTests
             governanceMonitor,
             Mock.Of<IOptionsMonitor<PermissionsConfig>>(m => m.CurrentValue == _permissionsConfig),
             Mock.Of<IOptionsMonitor<SandboxConfig>>(m => m.CurrentValue == _sandbox),
-            NullLogger<ToolInvocationGovernor>.Instance);
+            NullLogger<ToolInvocationGovernor>.Instance,
+            // No ambient envelope in this suite (see ToolInvocationGovernorEnvelopeTests for that), so
+            // EnvelopeGrantsToolWhenArmed short-circuits true without ever consulting this — an empty
+            // lookup is fine.
+            new CapabilityEnvelopeGrantResolver(
+                new FirstPartyToolLookup(new ServiceCollection().BuildServiceProvider(), new HashSet<string>())));
     }
 
     [Fact]
