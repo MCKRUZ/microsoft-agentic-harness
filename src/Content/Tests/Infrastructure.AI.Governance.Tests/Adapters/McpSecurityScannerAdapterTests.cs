@@ -235,10 +235,7 @@ public sealed class McpSecurityScannerAdapterTests
             }
             else
             {
-                var skillParser = new SkillMetadataParser(
-                    NullLogger<SkillMetadataParser>.Instance, new UnsandboxedSkillFileReader(),
-                    _scanner, config, new EgressManifestValidator());
-                skillParser.ParseFromFile(manifestPath, baseDirectory);
+                CreateSkillParser(config).ParseFromFile(manifestPath, baseDirectory);
             }
         }
         catch (ManifestRefusedException ex)
@@ -252,6 +249,10 @@ public sealed class McpSecurityScannerAdapterTests
     private static IOptionsMonitor<AIConfig> SecurityEnabledConfig() =>
         Mock.Of<IOptionsMonitor<AIConfig>>(m => m.CurrentValue ==
             new AIConfig { Governance = new GovernanceConfig { EnableMcpSecurity = true } });
+
+    private SkillMetadataParser CreateSkillParser(IOptionsMonitor<AIConfig> config) =>
+        new(NullLogger<SkillMetadataParser>.Instance, new UnsandboxedSkillFileReader(),
+            _scanner, config, new EgressManifestValidator());
 
     /// <summary>
     /// The regression test #645 exists for: a synthetic skill whose name/description/body are all
@@ -285,9 +286,7 @@ public sealed class McpSecurityScannerAdapterTests
                 Do the thing. Nothing unusual here.
                 """);
 
-            var parser = new SkillMetadataParser(
-                NullLogger<SkillMetadataParser>.Instance, new UnsandboxedSkillFileReader(),
-                _scanner, SecurityEnabledConfig(), new EgressManifestValidator());
+            var parser = CreateSkillParser(SecurityEnabledConfig());
 
             var ex = Assert.Throws<ManifestRefusedException>(() => parser.ParseFromFile(skillPath, tempDir));
 
