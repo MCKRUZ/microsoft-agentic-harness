@@ -97,4 +97,34 @@ public sealed class FirstPartyToolLookup
     /// fail-closed response to an unverified plugin boundary needs every name to deny, not one).
     /// </summary>
     public IReadOnlySet<string> RegisteredFirstPartyToolKeys => _registeredFirstPartyToolKeys;
+
+    /// <summary>
+    /// Resolves <paramref name="toolKey"/>'s converted, self-reported <see cref="ITool.Name"/> — the
+    /// value a permission resolver actually matches a rule's pattern against at invocation, which can
+    /// legitimately disagree with a DI registration key a manifest (a plugin's <c>DeniedTools</c>, a
+    /// capability envelope's grant, a bundle's declared tools) names it by. Returns
+    /// <see langword="false"/>, with <paramref name="publishedName"/> set to <paramref name="toolKey"/>
+    /// itself, when the key names no known first-party tool (an MCP tool name, for which no
+    /// first-party resolution is possible or needed) OR constructing it throws.
+    /// </summary>
+    /// <remarks>
+    /// #626 code-review: originally duplicated near-verbatim between <c>PluginPermissionRuleProvider</c>
+    /// (#612) and <c>EnvelopePermissionRuleProvider</c> (#626) — exactly the anti-pattern this type's
+    /// own class remarks say it exists to prevent (#387: "found duplicated — twice"). Deliberately pure
+    /// (no logging): a construction failure is a caller-specific concern (each rule provider names a
+    /// different kind of manifest entry in its own log message), so each caller still wraps this with
+    /// its own one-line log-on-failure — only the resolve-or-fall-back-to-key logic itself is shared.
+    /// </remarks>
+    public bool TryResolvePublishedName(string toolKey, out string publishedName, out Exception? constructionError)
+    {
+        var tool = TryResolve(toolKey, out constructionError);
+        if (tool is not null)
+        {
+            publishedName = tool.Name;
+            return true;
+        }
+
+        publishedName = toolKey;
+        return false;
+    }
 }
