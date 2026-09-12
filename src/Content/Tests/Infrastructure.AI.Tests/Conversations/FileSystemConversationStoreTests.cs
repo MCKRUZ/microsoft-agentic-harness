@@ -58,11 +58,7 @@ public sealed class FileSystemConversationStoreTests : ConversationStoreContract
                 Clock,
                 NullLogger<FileSystemConversationStore>.Instance);
 
-            if (!OperatingSystem.IsWindows())
-            {
-                File.GetUnixFileMode(freshDir).Should().Be(
-                    UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-            }
+            freshDir.ShouldBeOwnerOnlyDirectory();
         }
         finally
         {

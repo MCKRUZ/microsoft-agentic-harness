@@ -52,12 +52,7 @@ public sealed class JsonCheckpointStateManagerTests : IDisposable
         // inherit whatever the process umask/ACL happens to grant.
         await _sut.CreateAsync("wf-perm-check");
 
-        if (!OperatingSystem.IsWindows())
-        {
-            var checkpointsDir = Path.Combine(_basePath, "wf-perm-check", "checkpoints");
-            File.GetUnixFileMode(checkpointsDir).Should().Be(
-                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-        }
+        Path.Combine(_basePath, "wf-perm-check", "checkpoints").ShouldBeOwnerOnlyDirectory();
     }
 
     // ── CreateAsync ──────────────────────────────────────────────────────────

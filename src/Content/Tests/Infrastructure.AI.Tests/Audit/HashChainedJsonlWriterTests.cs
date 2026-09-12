@@ -40,12 +40,7 @@ public sealed class HashChainedJsonlWriterTests : IDisposable
 
         (await sut.AppendAsync("{\"a\":1}", CancellationToken.None)).IsSuccess.Should().BeTrue();
 
-        if (!OperatingSystem.IsWindows())
-        {
-            var segmentDir = Path.Combine(_tempDir, "nested");
-            File.GetUnixFileMode(segmentDir).Should().Be(
-                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-        }
+        Path.Combine(_tempDir, "nested").ShouldBeOwnerOnlyDirectory();
     }
 
     [Fact]

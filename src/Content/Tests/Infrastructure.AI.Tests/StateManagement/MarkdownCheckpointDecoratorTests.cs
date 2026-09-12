@@ -81,12 +81,7 @@ public sealed class MarkdownCheckpointDecoratorTests : IDisposable
 
         await _sut.SaveAsync(state);
 
-        if (!OperatingSystem.IsWindows())
-        {
-            var inputsDir = Path.Combine(_basePath, "wf-md-perm-check", "inputs");
-            File.GetUnixFileMode(inputsDir).Should().Be(
-                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-        }
+        Path.Combine(_basePath, "wf-md-perm-check", "inputs").ShouldBeOwnerOnlyDirectory();
     }
 
     // ── SaveAsync: markdown generation ───────────────────────────────────────

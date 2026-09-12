@@ -37,13 +37,8 @@ public sealed class FileSystemEvidenceStoreTests : IDisposable
         var bytes = Encoding.UTF8.GetBytes("permission check payload");
         var hash = await _sut.StoreAsync(bytes, "text/plain", CancellationToken.None);
 
-        if (!OperatingSystem.IsWindows())
-        {
-            var prefix = hash["sha256:".Length..][..2];
-            var evidenceDir = Path.Combine(_tempDir, "evidence", prefix);
-            File.GetUnixFileMode(evidenceDir).Should().Be(
-                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-        }
+        var prefix = hash["sha256:".Length..][..2];
+        Path.Combine(_tempDir, "evidence", prefix).ShouldBeOwnerOnlyDirectory();
     }
 
     [Fact]

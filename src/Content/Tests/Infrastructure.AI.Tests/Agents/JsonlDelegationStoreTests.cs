@@ -73,12 +73,7 @@ public sealed class JsonlDelegationStoreTests : IDisposable
         // umask/ACL happens to grant.
         await _store.AppendAsync(BuildRecord());
 
-        if (!OperatingSystem.IsWindows())
-        {
-            var supervisorDir = Path.Combine(_tempDir, "supervisor-1");
-            File.GetUnixFileMode(supervisorDir).Should().Be(
-                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-        }
+        Path.Combine(_tempDir, "supervisor-1").ShouldBeOwnerOnlyDirectory();
     }
 
     [Fact]

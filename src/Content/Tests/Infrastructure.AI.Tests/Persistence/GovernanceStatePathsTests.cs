@@ -1,4 +1,3 @@
-using FluentAssertions;
 using Infrastructure.AI.Persistence;
 using Xunit;
 
@@ -25,12 +24,7 @@ public sealed class GovernanceStatePathsTests
         {
             GovernanceStatePaths.EnsureDirectory(resolved);
 
-            if (!OperatingSystem.IsWindows())
-            {
-                var directory = Path.GetDirectoryName(resolved)!;
-                File.GetUnixFileMode(directory).Should().Be(
-                    UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-            }
+            Path.GetDirectoryName(resolved)!.ShouldBeOwnerOnlyDirectory();
         }
         finally
         {
