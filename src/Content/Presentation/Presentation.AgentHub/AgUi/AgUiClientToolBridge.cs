@@ -138,12 +138,14 @@ public sealed class AgUiClientToolBridge : IClientToolBridge
     /// <c>ExecuteAgentTurnCommandHandler.EmitToolCallActivityAsync</c>'s remarks). <paramref name="callId"/>
     /// needs no such treatment: it is generated locally via <c>Guid.NewGuid().ToString("N")</c>, always
     /// lowercase hex and therefore always already identifier-shaped — wrapping it directly documents
-    /// why it is safe rather than paying for a sanitize pass that can only ever be a no-op.
+    /// why it is safe rather than paying for a sanitize pass that can only ever be a no-op. Passed as
+    /// the ToolName sanitize warning's <c>correlationId</c> too, matching every other caller's
+    /// convention (never the raw, attacker-controlled value itself — the paired, already-safe CallId).
     /// </remarks>
     private StreamedToolCallArguments RedactAndCapArguments(string toolName, string callId, string? argumentsJson)
     {
         var safeToolName = ToolCallIdentifierLogging.SanitizeAndLogIfChanged(
-            toolName, _logger, nameof(AgUiClientToolBridge), "ToolName", correlationId: null,
+            toolName, _logger, nameof(AgUiClientToolBridge), "ToolName", correlationId: callId,
             "before redacting streamed tool-call arguments");
 
         return ToolPayloadRedactor.RedactForStreaming(
