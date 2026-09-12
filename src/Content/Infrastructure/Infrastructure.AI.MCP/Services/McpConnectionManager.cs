@@ -703,6 +703,26 @@ public sealed class McpConnectionManager : IAsyncDisposable
     /// deterministic-vs-transient failure distinction. A single attempt, no retry, when
     /// <see langword="false"/> (a reconnect, not a first connect).
     /// </summary>
+    /// <remarks>
+    /// The catch filter excludes two exception shapes from retry, both round-2 code-review findings
+    /// verified against the pinned SDK:
+    /// <list type="bullet">
+    /// <item><description><see cref="McpConnectionException"/> — <see cref="CreateTransport"/>'s own
+    /// config-validation throws (a missing URL, a blocked host, and — since this fix — an empty Stdio
+    /// <c>Command</c>, see that method's remarks) are deterministic errors retrying can never fix.</description></item>
+    /// <item><description><see cref="OperationCanceledException"/> (and <c>TaskCanceledException</c>,
+    /// its subclass — confirmed this is what <see cref="McpClient.CreateAsync"/> throws for a canceled
+    /// token) — a genuine caller-requested cancellation must propagate as cancellation on EVERY
+    /// attempt, not just the ones followed by a <see cref="Task.Delay(TimeSpan, CancellationToken)"/>
+    /// call that happens to re-surface it. The LAST attempt has no such delay, so without this
+    /// exclusion a cancellation landing there was silently wrapped into an
+    /// <see cref="McpConnectionException"/>, which could spuriously record a permanent
+    /// <c>PluginBoundaryStatus.Faulted</c> for a server that was never actually unreachable.</description></item>
+    /// </list>
+    /// Everything else — a timed-out handshake, a not-yet-listening remote, a stdio process that exits
+    /// before completing initialization — is exactly the transient cold-start shape this retry exists
+    /// for.
+    /// </remarks>
     private async Task<McpClient> ConnectWithRetryAsync(
         string serverName, McpServerDefinition definition, bool isBundleOwned, bool retryOnFirstConnect,
         CancellationToken cancellationToken)
@@ -733,22 +753,8 @@ public sealed class McpConnectionManager : IAsyncDisposable
             }
             catch (Exception ex) when (ex is not McpConnectionException and not OperationCanceledException)
             {
-                // Two exclusions from retry, both round-2 code-review findings verified against the
-                // pinned SDK:
-                //  - McpConnectionException: CreateTransport's own config-validation throws (a missing
-                //    URL, a blocked host, and — since this fix — an empty Stdio Command, see
-                //    CreateTransport's remarks) are deterministic errors retrying can never fix.
-                //  - OperationCanceledException (and TaskCanceledException, its subclass — confirmed
-                //    this is what McpClient.CreateAsync throws for a canceled token): a genuine
-                //    caller-requested cancellation must propagate as cancellation on EVERY attempt,
-                //    not just the ones followed by a Task.Delay call that happens to re-surface it —
-                //    the last attempt has no such delay, so without this exclusion a cancellation that
-                //    landed on the final attempt was silently wrapped into an McpConnectionException,
-                //    which could spuriously record a permanent PluginBoundaryStatus.Faulted for a
-                //    server that was never actually unreachable.
-                // Everything else — a timed-out handshake, a not-yet-listening remote, a stdio process
-                // that exits before completing initialization — is exactly the transient cold-start
-                // shape this retry exists for.
+                // See this method's <remarks> for why McpConnectionException and
+                // OperationCanceledException are excluded from this filter.
                 if (attempt == maxAttempts)
                     throw new McpConnectionException(serverName, definition.Type.ToString().ToLowerInvariant(), ex);
 
