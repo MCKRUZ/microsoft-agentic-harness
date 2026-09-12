@@ -161,7 +161,7 @@ public static class ToolCallTranscriptExtractor
     /// is what keeps distinct raw values distinct after sanitizing.
     /// </para>
     /// </remarks>
-    private static string SanitizeIdentifier(string value, ILogger logger, string fieldName, string? correlationId) =>
+    private static SanitizedIdentifier SanitizeIdentifier(string value, ILogger logger, string fieldName, string? correlationId) =>
         ToolCallIdentifierLogging.SanitizeAndLogIfChanged(
             value, logger, nameof(ToolCallTranscriptExtractor), fieldName, correlationId,
             "before persisting for replay");
@@ -173,7 +173,8 @@ public static class ToolCallTranscriptExtractor
         return Extract(response.Messages, logger);
     }
 
-    private static string? TrySerializeArguments(FunctionCallContent call, string safeName, string safeCallId, ILogger logger)
+    private static string? TrySerializeArguments(
+        FunctionCallContent call, SanitizedIdentifier safeName, SanitizedIdentifier safeCallId, ILogger logger)
     {
         if (call.Arguments is not { Count: > 0 } args)
             return null;
@@ -201,7 +202,7 @@ public static class ToolCallTranscriptExtractor
     /// The exception-substitution policy is still reused: a failed call's raw exception text must not
     /// reach the model any more than it should reach an observability store.
     /// </summary>
-    private static string? ResultText(FunctionResultContent result, string safeCallId)
+    private static string? ResultText(FunctionResultContent result, SanitizedIdentifier safeCallId)
     {
         if (result.Exception is not null)
             return "Error: tool call failed.";
@@ -214,7 +215,7 @@ public static class ToolCallTranscriptExtractor
         };
     }
 
-    private static string? TrySerializeResult(object value, string callId)
+    private static string? TrySerializeResult(object value, SanitizedIdentifier callId)
     {
         try
         {

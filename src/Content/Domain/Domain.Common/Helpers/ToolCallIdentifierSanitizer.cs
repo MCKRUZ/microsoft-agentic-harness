@@ -35,7 +35,10 @@ public static class ToolCallIdentifierSanitizer
 
     /// <param name="Value">
     /// The original raw value unchanged when <see cref="Changed"/> is <see langword="false"/>;
-    /// otherwise the sanitized, truncated, collision-guarded replacement.
+    /// otherwise the sanitized, truncated, collision-guarded replacement. Either way, the value is
+    /// already identifier-shaped by the time it is returned (#633) — wrapped as a
+    /// <see cref="SanitizedIdentifier"/> so a caller cannot pass it, or a raw value in its place, to a
+    /// consumer that requires one already sanitized without a compile error.
     /// </param>
     /// <param name="Changed">
     /// Whether the raw value needed truncation, character-class narrowing, or both, or was already
@@ -44,7 +47,7 @@ public static class ToolCallIdentifierSanitizer
     /// merely resembles rewritten output (see <see cref="IsInOutputShape"/>); that's the accepted cost
     /// of keeping the two output namespaces disjoint.
     /// </param>
-    public readonly record struct Result(string Value, bool Changed);
+    public readonly record struct Result(SanitizedIdentifier Value, bool Changed);
 
     /// <summary>
     /// Sanitizes <paramref name="raw"/>. Mapping every disallowed character to the same <c>'_'</c>
@@ -72,12 +75,12 @@ public static class ToolCallIdentifierSanitizer
         // IdentifierSanitizer.Sanitize itself already takes the zero-allocation path for an
         // already-clean value — this only adds the truncation/output-shape checks on top.
         if (!changed)
-            return new Result(raw, Changed: false);
+            return new Result(new SanitizedIdentifier(raw), Changed: false);
 
         var suffix = $"{HashSuffixSeparator}{Sha256HexPrefixHelper.Compute(raw, HashSuffixHexLength)}";
         var keep = Math.Max(0, MaxLength - suffix.Length);
         var basePart = sanitized.Length > keep ? sanitized[..keep] : sanitized;
-        return new Result($"{basePart}{suffix}", Changed: true);
+        return new Result(new SanitizedIdentifier($"{basePart}{suffix}"), Changed: true);
     }
 
     /// <summary>

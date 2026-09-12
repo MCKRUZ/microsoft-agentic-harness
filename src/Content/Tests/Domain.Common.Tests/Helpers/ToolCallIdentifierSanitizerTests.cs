@@ -19,7 +19,9 @@ public sealed class ToolCallIdentifierSanitizerTests
         var result = ToolCallIdentifierSanitizer.Sanitize(raw);
 
         result.Changed.Should().BeFalse();
-        ReferenceEquals(result.Value, raw).Should().BeTrue();
+        // Unwraps the SanitizedIdentifier's own string field for the reference check (#633) — boxing
+        // the struct itself for ReferenceEquals would never match raw regardless of the underlying value.
+        ReferenceEquals(result.Value.Value, raw).Should().BeTrue();
     }
 
     [Fact]
@@ -28,7 +30,7 @@ public sealed class ToolCallIdentifierSanitizerTests
         var result = ToolCallIdentifierSanitizer.Sanitize("call#1;DROP TABLE conversations;--");
 
         result.Changed.Should().BeTrue();
-        result.Value.Should().MatchRegex("^[A-Za-z0-9_-]+$");
+        result.Value.ToString().Should().MatchRegex("^[A-Za-z0-9_-]+$");
     }
 
     [Fact]
@@ -39,7 +41,7 @@ public sealed class ToolCallIdentifierSanitizerTests
         var result = ToolCallIdentifierSanitizer.Sanitize(raw);
 
         result.Changed.Should().BeTrue();
-        result.Value.Length.Should().BeLessThanOrEqualTo(ToolCallIdentifierSanitizer.MaxLength);
+        result.Value.ToString().Length.Should().BeLessThanOrEqualTo(ToolCallIdentifierSanitizer.MaxLength);
     }
 
     [Fact]
@@ -73,7 +75,7 @@ public sealed class ToolCallIdentifierSanitizerTests
         var result = ToolCallIdentifierSanitizer.Sanitize(string.Empty);
 
         result.Changed.Should().BeFalse();
-        result.Value.Should().BeEmpty();
+        result.Value.ToString().Should().BeEmpty();
     }
 
     [Fact]
