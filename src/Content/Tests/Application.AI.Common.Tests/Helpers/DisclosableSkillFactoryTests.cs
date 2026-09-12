@@ -4,6 +4,7 @@ using Domain.AI.Skills;
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
+using Tests.Common;
 using Xunit;
 
 namespace Application.AI.Common.Tests.Helpers;
