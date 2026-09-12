@@ -1,16 +1,18 @@
 using Application.AI.Common.Interfaces.Skills;
 
-namespace Infrastructure.AI.Tests;
+namespace Tests.Common;
 
 /// <summary>
 /// An <see cref="ISkillFileReader"/> with <b>no sandbox at all</b>, for tests whose subject is
-/// parsing or discovery rather than confinement.
+/// parsing, discovery, or agent/skill composition rather than confinement.
 /// </summary>
 /// <remarks>
 /// <para>
-/// Those tests write fixtures to a temporary directory, which no correctly-configured skill sandbox
-/// would permit — so injecting the real <c>SkillFileReader</c> would make every one of them fail for
-/// a reason unrelated to what it asserts.
+/// Shared across <c>Infrastructure.AI.Tests</c>, <c>Application.AI.Common.Tests</c>, and
+/// <c>Infrastructure.AI.Governance.Tests</c> — previously duplicated byte-for-byte in the first two
+/// (issue #645). Parsing/discovery tests write fixtures to a temporary directory, which no
+/// correctly-configured skill sandbox would permit — so injecting the real <c>SkillFileReader</c>
+/// would make every one of them fail for a reason unrelated to what it asserts.
 /// </para>
 /// <para>
 /// <b>This double proves nothing about the sandbox.</b> Confinement is covered by
@@ -19,7 +21,7 @@ namespace Infrastructure.AI.Tests;
 /// asserting nothing.
 /// </para>
 /// </remarks>
-internal sealed class UnsandboxedSkillFileReader : ISkillFileReader
+public sealed class UnsandboxedSkillFileReader : ISkillFileReader
 {
     /// <inheritdoc />
     public string ReadText(string path) => File.ReadAllText(path);

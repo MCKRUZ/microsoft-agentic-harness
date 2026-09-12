@@ -1,6 +1,7 @@
 using FluentAssertions;
 using Infrastructure.AI.Skills;
 using Microsoft.Extensions.Logging.Abstractions;
+using Tests.Common;
 using Xunit;
 
 namespace Infrastructure.AI.Tests.Skills;

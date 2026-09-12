@@ -8,6 +8,7 @@ using Infrastructure.AI.Skills;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using Tests.Common;
 using Xunit;
 
 namespace Infrastructure.AI.Tests.Agents;
