@@ -117,21 +117,11 @@ public sealed class GovernedAIFunctionTests
         var (inner, _) = MakeInner();
         bool? seenIsFromMcp = null;
         var sawCall = false;
-        var pipeline = new Mock<IToolCallAdmissionPipeline>();
-        pipeline
-            .Setup(p => p.AdmitAsync(It.IsAny<ToolCallAdmissionRequest>(), It.IsAny<CancellationToken>()))
-            .Returns(ValueTask.FromResult(ToolCallAdmission.Allow()));
-        pipeline
-            .Setup(p => p.ApplyOutputPolicyAsync(
-                It.IsAny<ToolCallAdmission>(), It.IsAny<string>(), It.IsAny<object?>(), It.IsAny<CancellationToken>(),
-                It.IsAny<bool?>()))
-            .Callback<ToolCallAdmission, string, object?, CancellationToken, bool?>((_, _, _, _, isFromMcp) =>
-            {
-                sawCall = true;
-                seenIsFromMcp = isFromMcp;
-            })
-            .Returns<ToolCallAdmission, string, object?, CancellationToken, bool?>(
-                (_, _, result, _, _) => ValueTask.FromResult(result));
+        var pipeline = ApprovingPipeline(ApprovedCall(), (_, _, _, _, isFromMcp) =>
+        {
+            sawCall = true;
+            seenIsFromMcp = isFromMcp;
+        });
 
         var governedInner = wrapInMcpNormalizer ? new McpFailureNormalizingAIFunction(inner) : inner;
         using var armed = ToolAdmissionAccessor.Begin(pipeline.Object);
@@ -174,18 +164,39 @@ public sealed class GovernedAIFunctionTests
     private static ApprovedCall ApprovedCall() =>
         new(Guid.NewGuid(), new ApprovalFailureKey("conv-1", "agent-1", "file_system"));
 
-    private static Mock<IToolCallAdmissionPipeline> ApprovingPipeline(ApprovedCall call)
+    /// <param name="onApplyOutputPolicy">
+    /// Observes every <see cref="IToolCallAdmissionPipeline.ApplyOutputPolicyAsync"/> call without
+    /// changing its passthrough return — reused by #553's <c>isFromMcp</c> wiring test instead of that
+    /// test hand-rolling its own copy of this same mock (caught in review: a later signature change to
+    /// this method would otherwise need updating this helper AND every ad hoc duplicate separately).
+    /// </param>
+    private static Mock<IToolCallAdmissionPipeline> ApprovingPipeline(
+        ApprovedCall call,
+        Action<ToolCallAdmission, string, object?, CancellationToken, bool?>? onApplyOutputPolicy = null)
     {
         var pipeline = new Mock<IToolCallAdmissionPipeline>();
         pipeline
             .Setup(p => p.AdmitAsync(It.IsAny<ToolCallAdmissionRequest>(), It.IsAny<CancellationToken>()))
             .Returns(ValueTask.FromResult(ToolCallAdmission.Allow().WithApproval(call)));
-        pipeline
-            .Setup(p => p.ApplyOutputPolicyAsync(
-                It.IsAny<ToolCallAdmission>(), It.IsAny<string>(), It.IsAny<object?>(), It.IsAny<CancellationToken>(),
-                It.IsAny<bool?>()))
-            .Returns<ToolCallAdmission, string, object?, CancellationToken, bool?>(
-                (_, _, result, _, _) => ValueTask.FromResult(result));
+        if (onApplyOutputPolicy is null)
+        {
+            pipeline
+                .Setup(p => p.ApplyOutputPolicyAsync(
+                    It.IsAny<ToolCallAdmission>(), It.IsAny<string>(), It.IsAny<object?>(), It.IsAny<CancellationToken>(),
+                    It.IsAny<bool?>()))
+                .Returns<ToolCallAdmission, string, object?, CancellationToken, bool?>(
+                    (_, _, result, _, _) => ValueTask.FromResult(result));
+        }
+        else
+        {
+            pipeline
+                .Setup(p => p.ApplyOutputPolicyAsync(
+                    It.IsAny<ToolCallAdmission>(), It.IsAny<string>(), It.IsAny<object?>(), It.IsAny<CancellationToken>(),
+                    It.IsAny<bool?>()))
+                .Callback(onApplyOutputPolicy)
+                .Returns<ToolCallAdmission, string, object?, CancellationToken, bool?>(
+                    (_, _, result, _, _) => ValueTask.FromResult(result));
+        }
         return pipeline;
     }
 

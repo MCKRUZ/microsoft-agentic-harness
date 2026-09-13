@@ -376,7 +376,7 @@ internal static class ToolResultText
                 return nestedReserve + (entries > 1 ? (entries - 1) * Environment.NewLine.Length : 0);
             }
             case JsonElement { ValueKind: JsonValueKind.Object } element
-                when isFromMcp != false && TryGetContentArray(element, out var content):
+                when TryGetContentArray(element, isFromMcp, out var content):
             {
                 var (entries, nestedReserve) = CountJoinableEntries(content, MaxToolResultNestingDepth);
                 return nestedReserve + (entries > 1 ? (entries - 1) * Environment.NewLine.Length : 0);
@@ -589,7 +589,7 @@ internal static class ToolResultText
             // remarks), so the shape is recognized by what it looks like, not by decoding it as a
             // specific SDK type.
             case JsonElement { ValueKind: JsonValueKind.Object } element
-                when isFromMcp != false && TryGetContentArray(element, out var content):
+                when TryGetContentArray(element, isFromMcp, out var content):
             {
                 var transformed = TransformSerializedContentBlocks(element, content, transform);
                 return transformed ?? result;
@@ -621,7 +621,7 @@ internal static class ToolResultText
         FunctionResultContent frc => ExtractFunctionResultText(frc.Result, MaxToolResultNestingDepth),
         AIContent[] blocks => JoinAIContentText(blocks),
         JsonElement { ValueKind: JsonValueKind.Object } element
-            when isFromMcp != false && TryGetContentArray(element, out var content) =>
+            when TryGetContentArray(element, isFromMcp, out var content) =>
             ExtractContentArrayText(content),
         JsonElement element => element.GetRawText(),
         _ => JsonSerializer.Serialize(result)
@@ -807,6 +807,20 @@ internal static class ToolResultText
 
         nested = default;
         return false;
+    }
+
+    /// <summary>
+    /// #553: <paramref name="isFromMcp"/>-gated overload for <see cref="Transform"/> and
+    /// <see cref="SeparatorReserve"/> — the three internal callers all need the identical gate, so it
+    /// lives here once rather than being copy-pasted into each <c>when</c> clause, where a future edit
+    /// could update some call sites and miss others (caught in review). <see langword="false"/> (a
+    /// confirmed non-MCP result) short-circuits without ever calling the shape check below;
+    /// <see langword="null"/>/<see langword="true"/> defers to it unchanged.
+    /// </summary>
+    internal static bool TryGetContentArray(JsonElement element, bool? isFromMcp, out JsonElement content)
+    {
+        content = default;
+        return isFromMcp != false && TryGetContentArray(element, out content);
     }
 
     /// <summary>
