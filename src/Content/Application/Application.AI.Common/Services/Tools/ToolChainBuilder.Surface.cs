@@ -230,11 +230,17 @@ public partial class ToolChainBuilder
     /// silently fall out of it, dropping a shared tool's <c>CallOncePerConversation</c> restriction
     /// exactly the way <see cref="WrapGoverned"/>'s own alias-carry-forward comment already warns
     /// about for its own re-wrap. If either side was tagged, the new instance is tagged too.
+    /// <strong>Kept as a belt-and-suspenders check alongside <see cref="GovernedAIFunction.IsCallOnceCandidate"/>
+    /// (#621) rather than replaced by it</strong> — the field only exists on a
+    /// <see cref="GovernedAIFunction"/> instance, so this dictionary remains the correct mechanism for
+    /// the (rare) case where <paramref name="published"/>/<paramref name="candidate"/> is some other
+    /// <see cref="AITool"/> shape with no field to carry candidacy on at all.
     /// </param>
     /// <returns>
-    /// <paramref name="published"/> unchanged when either side isn't a <see cref="GovernedAIFunction"/>
-    /// or the candidate's skill ids are already fully covered by the published instance; otherwise a
-    /// new instance wrapping the same inner function with the union of both sides' skill ids.
+    /// <paramref name="published"/> unchanged when either side isn't a <see cref="GovernedAIFunction"/>,
+    /// or neither the candidate's skill ids nor its call-once candidacy (#621) add anything
+    /// <paramref name="published"/> doesn't already have; otherwise a new instance wrapping the same
+    /// inner function with the union of both sides' skill ids and call-once candidacy.
     /// </returns>
     private static AITool UnionSkillScopeIfNeeded(
         AITool published, AITool candidate, ConcurrentDictionary<AITool, byte> callOnceCandidates)
@@ -262,6 +268,21 @@ public partial class ToolChainBuilder
     /// here is a candidate for <see cref="UnionSkillScopeIfNeeded"/>'s single call-once tag, so this
     /// method must never tag anything itself.
     /// </summary>
+    /// <remarks>
+    /// <strong>#621: rewraps on call-once divergence too, not just skill-id divergence.</strong>
+    /// <see cref="GovernedAIFunction.IsCallOnceCandidate"/> is a first-class field now, carried
+    /// forward by a rewrap the same way <see cref="GovernedAIFunction.SkillIds"/> already is — but a
+    /// field only travels onto an instance this method actually constructs. Before this, a case where
+    /// <paramref name="candidate"/> was call-once-tagged but its skill ids were already fully covered
+    /// by <paramref name="published"/> would return <paramref name="published"/> UNCHANGED, so
+    /// <c>published.IsCallOnceCandidate</c> would stay <see langword="false"/> even though the caller's
+    /// dictionary-based tag (<see cref="UnionSkillScopeIfNeeded"/>, unchanged, still the belt to this
+    /// field's suspenders) correctly marks the returned reference as a candidate — the exact "the field
+    /// says one thing, the side channel says another" drift #621 exists to close. Checking call-once
+    /// divergence as an independent, second reason to construct a new instance closes it: the returned
+    /// instance's own field is now trustworthy on its own, not just correct because something else also
+    /// happens to be tracking it.
+    /// </remarks>
     private static AITool ResolveUnion(AITool published, AITool candidate)
     {
         if (published is not GovernedAIFunction publishedGoverned || candidate is not GovernedAIFunction candidateGoverned)
@@ -269,7 +290,11 @@ public partial class ToolChainBuilder
 
         var publishedIds = publishedGoverned.SkillIds ?? [];
         var candidateIds = candidateGoverned.SkillIds ?? [];
-        if (candidateIds.Count == 0 || candidateIds.All(id => publishedIds.Contains(id, StringComparer.OrdinalIgnoreCase)))
+        var needsIdUnion = candidateIds.Count > 0
+            && !candidateIds.All(id => publishedIds.Contains(id, StringComparer.OrdinalIgnoreCase));
+        var needsCallOnceUnion = candidateGoverned.IsCallOnceCandidate && !publishedGoverned.IsCallOnceCandidate;
+
+        if (!needsIdUnion && !needsCallOnceUnion)
             return published;
 
         var union = publishedIds
@@ -279,7 +304,8 @@ public partial class ToolChainBuilder
 
         return new GovernedAIFunction(
             publishedGoverned.Inner, compositionTaint: null, publishedGoverned.CurrentSkillAccessor, union,
-            publishedGoverned.SkillIdFromArguments);
+            publishedGoverned.SkillIdFromArguments,
+            isCallOnceCandidate: publishedGoverned.IsCallOnceCandidate || candidateGoverned.IsCallOnceCandidate);
     }
 
     /// <summary>

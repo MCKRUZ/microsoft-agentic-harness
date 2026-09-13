@@ -407,15 +407,22 @@ public partial class ToolChainBuilder : IToolChainBuilder
         var result = new List<AITool>();
         foreach (var p in provisioned)
         {
+            var isCallOnceCandidate = callOnceCandidates is not null && callOnceCandidates.ContainsKey(p.Tool);
             var wrapped = p.Tool is AIFunction fn and not GovernedAIFunction
                 ? new GovernedAIFunction(
                     p.McpServerName is not null ? new McpFailureNormalizingAIFunction(fn) : fn,
                     currentSkillAccessor: currentSkillAccessor,
-                    skillIds: p.SkillId is not null ? [p.SkillId] : null)
+                    skillIds: p.SkillId is not null ? [p.SkillId] : null,
+                    // #621: seeded directly onto the new instance's own field, the same forward-
+                    // through-rewrap pattern SkillIds already uses. The dictionary TryAdd just below
+                    // is kept too, unconditionally, as the pre-#621 mechanism still is — belt and
+                    // suspenders: RegisterSurvivingCallOnceTools now consults both, so neither being
+                    // wrong alone loses a registration.
+                    isCallOnceCandidate: isCallOnceCandidate)
                 : p.Tool;
 
-            if (callOnceCandidates is not null && callOnceCandidates.ContainsKey(p.Tool))
-                callOnceCandidates.TryAdd(wrapped, 0);
+            if (isCallOnceCandidate)
+                callOnceCandidates!.TryAdd(wrapped, 0);
 
             result.Add(wrapped);
         }
@@ -568,9 +575,14 @@ public partial class ToolChainBuilder : IToolChainBuilder
             // SkillIds/SkillIdFromArguments (#531/#589/#619) DO need forwarding explicitly — unlike
             // Inner, they are not implicit in the wrapped function, so a re-wrap that forgot them
             // would silently drop the tool's skill scope the moment a composition finding implicates it.
+            // IsCallOnceCandidate (#621) forwarded the same way — not load-bearing here today, since
+            // RegisterSurvivingCallOnceTools already runs before this method in every caller, but
+            // forwarding it keeps the field trustworthy on every GovernedAIFunction instance rather
+            // than correct only until the first re-wrap that happens to come after registration.
             return (AITool)new GovernedAIFunction(
                 governed.Inner, new ToolCompositionTaint(findings),
-                governed.CurrentSkillAccessor, governed.SkillIds, governed.SkillIdFromArguments);
+                governed.CurrentSkillAccessor, governed.SkillIds, governed.SkillIdFromArguments,
+                governed.IsCallOnceCandidate);
         }).ToList();
     }
 
@@ -783,7 +795,16 @@ public partial class ToolChainBuilder : IToolChainBuilder
 
         foreach (var tool in survivors)
         {
-            if (!callOnceCandidates.ContainsKey(tool))
+            // #621: OR of both signals, not a replacement of one by the other. The dictionary is the
+            // pre-#621 mechanism (still populated by TagCallOnceCandidates/WrapGoverned exactly as
+            // before); the field is the new one (carried forward through a re-wrap automatically, the
+            // same way SkillIds already is). Checking only the field would miss a tool that was never
+            // re-wrapped as a GovernedAIFunction at all (a non-AIFunction AITool has no field to carry
+            // candidacy on) — checking only the dictionary is exactly the out-of-band side channel
+            // #621 exists to stop relying on. Neither check alone is sufficient by construction; both
+            // together lose nothing either previously covered.
+            var isCandidate = callOnceCandidates.ContainsKey(tool) || (tool as GovernedAIFunction)?.IsCallOnceCandidate == true;
+            if (!isCandidate)
                 continue;
 
             if (_callOncePolicy.IsCallOnce(tool.Name))
