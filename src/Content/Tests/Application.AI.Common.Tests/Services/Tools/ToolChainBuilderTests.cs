@@ -773,12 +773,12 @@ public class ToolChainBuilderTests
     [Fact]
     public void ResolveGroupUnion_ThreeSkillsShareATool_UnionsAllThreeInOnePass()
     {
-        // #638: proves the group union is computed across the WHOLE group in one pass, not folded
-        // pairwise — a design that would still produce the correct end result for this case (the old
-        // pairwise ResolveUnion did too), but this test's real point is that only ONE new instance is
-        // constructed for three sharing skills, not up to two intermediate ones. Distinguished from a
-        // same-object-reference assertion below, since the pairwise version could coincidentally return
-        // the same reference on its final fold too.
+        // #638: proves every one of three sharing skills' contributions (two skill ids plus one
+        // call-once flag) survives into the final result. Correct here whether the union is computed
+        // in one pass or folded pairwise (code-review finding: this test alone doesn't distinguish the
+        // two, since a correct pairwise fold reaches the same end state for this scenario) — the
+        // single-pass mechanism itself is what ResolveGroupUnion's own remarks document and what the
+        // "no fields dropped across N-1 rewrap sites" property actually rests on.
         var inner = AIFunctionFactory.Create(() => "result", "shared_tool");
         var toolA = new GovernedAIFunction(inner, skillIds: ["skill-a"]);
         var toolB = new GovernedAIFunction(inner, skillIds: ["skill-b"]);
