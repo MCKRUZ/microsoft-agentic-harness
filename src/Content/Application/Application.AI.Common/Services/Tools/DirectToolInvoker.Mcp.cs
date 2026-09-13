@@ -254,7 +254,11 @@ public sealed partial class DirectToolInvoker
             // ShapeTextAsync never reads successText on the failure branch, and ExtractText's own
             // default case does a full JsonSerializer.Serialize of the raw result — not worth paying on
             // every MCP failure just to build a value that gets thrown away.
-            failureText is null ? ToolResultText.ExtractText(rawResult) : string.Empty,
+            // #553: isFromMcp: true, not left null — ShapeMcpAsync is only ever entered on a confirmed
+            // MCP invocation path (see this method's own name and its one caller). Behaviorally a no-op
+            // (null already defaults to running detection, the correct answer for genuine MCP data), but
+            // stated explicitly since this call site can know the answer rather than falling back to it.
+            failureText is null ? ToolResultText.ExtractText(rawResult, isFromMcp: true) : string.Empty,
             toolName,
             admissionPipeline,
             admission,

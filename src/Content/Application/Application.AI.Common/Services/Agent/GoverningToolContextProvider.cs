@@ -31,14 +31,24 @@ namespace Application.AI.Common.Services.Agent;
 /// </para>
 /// <para>
 /// <strong>That same consumer-side wrapping convention IS enough for output-scrubbing provenance
-/// (#553), with no separate tracking needed.</strong> <c>GovernedAIFunction.IsFromMcp</c> is computed
-/// from whether its own wrapped function is an <see cref="McpFailureNormalizingAIFunction"/> — so a
-/// consumer that already follows the convention above (pre-wrapping an MCP-backed tool before
-/// contributing it here) gets accurate provenance for free the moment <see cref="Govern"/> wraps that
-/// tool in <see cref="GovernedAIFunction"/>, with no change needed in <see cref="Govern"/> itself. This
-/// closes the narrower "provenance is not tracked once it reaches <c>AIContext.Tools</c>" gap this
-/// remark used to describe — the broader MCP-failure-detection limitation above is separate and still
-/// open.
+/// (#553), with no separate tracking needed — but skipping it now costs strictly more than it used
+/// to.</strong> <c>GovernedAIFunction.IsFromMcp</c> is computed from whether its own wrapped function
+/// is an <see cref="McpFailureNormalizingAIFunction"/> — so a consumer that already follows the
+/// convention above (pre-wrapping an MCP-backed tool before contributing it here) gets accurate
+/// provenance for free the moment <see cref="Govern"/> wraps that tool in
+/// <see cref="GovernedAIFunction"/>, with no change needed in <see cref="Govern"/> itself. This closes
+/// the narrower "provenance is not tracked once it reaches <c>AIContext.Tools</c>" gap this remark used
+/// to describe — the broader MCP-failure-detection limitation above is separate and still open.
+/// <strong>The stakes of skipping the convention changed, though</strong> (caught in review): before
+/// #553, an un-pre-wrapped MCP tool's result still got <c>ToolResultText</c>'s shape-based content-block
+/// scrubbing unconditionally — imperfect, but real. Now, <see cref="Govern"/>'s generic fallback
+/// (<c>new GovernedAIFunction(fn)</c>, no pre-wrap) reports <c>IsFromMcp: false</c> for that same tool,
+/// which <c>ToolResultText</c> reads as "confirmed not MCP" and SKIPS content-block detection entirely
+/// — a genuinely MCP-shaped result then reaches the model with no sanitize/redact/bound applied to its
+/// structured payload at all. Not reachable today (same "no production path does this" fact as above),
+/// but a future consumer that skips the pre-wrap convention now silently loses a security control, not
+/// just a status-reporting nicety — solving that for certain, on this channel, needs the same broader
+/// provenance-tracking initiative the limitation above has always needed; it is not a #553 side effect.
 /// </para>
 /// <para>
 /// <strong><c>run_skill_script</c> now resolves its skill scope per call (#531, #589).</strong> The
