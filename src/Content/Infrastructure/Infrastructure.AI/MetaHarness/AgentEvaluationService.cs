@@ -327,6 +327,11 @@ public sealed class AgentEvaluationService : IEvaluationService
                 "matches its own directory; cannot materialize a loadable skill directory.");
         }
 
+        // Resolved here, before anything is written — see ResolveBareSkillNameOrThrowOnCollision.
+        var bareSkillName = hasBareTopLevelSkillMd
+            ? ResolveBareSkillNameOrThrowOnCollision(snapshot, recognizedSiblingDirs, executionRunId)
+            : null;
+
         // Canonicalize once so the containment check compares like-for-like (handles symlinked
         // temp roots on macOS and 8.3 short names on Windows).
         var runRoot = Path.GetFullPath(
@@ -338,15 +343,12 @@ public sealed class AgentEvaluationService : IEvaluationService
 
             // #618: the bare-rooted group's files live one level down, in a subdirectory named
             // after the declared frontmatter name — SafeResolveWithinRoot is reused here (not a new
-            // sanitizer) since skillName is candidate-authored, untrusted input with exactly the
-            // same path-traversal risk as any other snapshot key. Only computed when a bare
-            // top-level SKILL.md actually exists — an already-prefixed-only snapshot needs no name
-            // resolution at all.
+            // sanitizer) since bareSkillName is candidate-authored, untrusted input with exactly the
+            // same path-traversal risk as any other snapshot key.
             string? bareRootedGroupRoot = null;
-            if (hasBareTopLevelSkillMd)
+            if (bareSkillName is not null)
             {
-                var skillName = ResolveDeclaredSkillName(snapshot, executionRunId);
-                bareRootedGroupRoot = SafeResolveWithinRoot(runRoot, skillName);
+                bareRootedGroupRoot = SafeResolveWithinRoot(runRoot, bareSkillName);
                 Directory.CreateDirectory(bareRootedGroupRoot);
             }
 
@@ -447,6 +449,31 @@ public sealed class AgentEvaluationService : IEvaluationService
         }
 
         return skillName;
+    }
+
+    /// <summary>
+    /// Resolves the bare-rooted skill's declared name and asserts it doesn't collide with a genuine
+    /// recognized sibling of the same name.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">
+    /// The declared name is missing (see <see cref="ResolveDeclaredSkillName"/>), or matches a
+    /// recognized sibling directory. A collision would resolve both groups to the identical path —
+    /// silently merging two distinct skills' files into one directory with no error, caught by CI's
+    /// grader gate.
+    /// </exception>
+    private static string ResolveBareSkillNameOrThrowOnCollision(
+        HarnessSnapshot snapshot, IReadOnlySet<string> recognizedSiblingDirs, Guid executionRunId)
+    {
+        var bareSkillName = ResolveDeclaredSkillName(snapshot, executionRunId);
+        if (recognizedSiblingDirs.Contains(bareSkillName))
+        {
+            throw new InvalidOperationException(
+                $"Candidate for execution run {executionRunId}'s bare top-level SKILL.md declares " +
+                $"name '{bareSkillName}', which collides with a genuine sibling skill directory of " +
+                "the same name; cannot materialize an unambiguous skill directory.");
+        }
+
+        return bareSkillName;
     }
 
     /// <summary>
