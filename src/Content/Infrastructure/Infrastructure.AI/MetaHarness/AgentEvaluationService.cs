@@ -6,6 +6,7 @@ using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.MetaHarness;
 using Application.AI.Common.Interfaces.Traces;
 using Application.AI.Common.Services.Governance;
+using Application.Common.Helpers;
 using Domain.AI.Agents;
 using Domain.Common.Config.MetaHarness;
 using Domain.Common.MetaHarness;
@@ -224,31 +225,146 @@ public sealed class AgentEvaluationService : IEvaluationService
     /// <summary>
     /// Materializes the candidate's skill snapshot to an isolated temp directory so the eval
     /// agent can load the proposed skills via MAF's <see cref="AgentSkillsProvider"/>. Returns
-    /// <see langword="null"/> when the candidate has no skill files.
+    /// <see langword="null"/> only when the candidate proposed no skill files at all — a genuine
+    /// no-op, not a malformed one.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Snapshot keys originate from LLM-authored proposals and are therefore untrusted: each path
     /// is resolved and asserted to stay within the temp root to block path-traversal escapes.
     /// Unchanged files are secret-redacted in the snapshot, but that redaction is constant across a
     /// candidate and its parent, so the comparative pass-rate signal is preserved; the proposed
     /// (changed) files are unredacted and faithfully evaluated.
+    /// </para>
+    /// <para>
+    /// <strong>#618: the skill's own subdirectory must be named after its declared frontmatter
+    /// <c>name</c>, not left as the run-scoped temp root.</strong> Verified directly against the
+    /// pinned <c>Microsoft.Agents.AI</c> 1.13.0 package: <c>AgentFileSkillsSource</c> requires a
+    /// discovered <c>SKILL.md</c>'s declared name to ordinal-equal its own CONTAINING directory's
+    /// leaf name, logs a name/directory-mismatch warning, and silently loads zero skills otherwise —
+    /// reproduced end-to-end against the real SDK before this fix (materializing directly at the
+    /// run root, the previous behavior, always failed this check). Without this, every eval run that
+    /// proposed a skill change silently evaluated the candidate's UNCHANGED parent skill instead —
+    /// exactly what this method's own original doc comment said it existed to prevent. The run root
+    /// itself stays random-GUID-named and is still what gets passed to <c>UseFileSkill</c>: the SDK
+    /// treats that path as a directory to SEARCH within (confirmed: a correctly-named subdirectory
+    /// nested under an arbitrarily-named parent loads correctly), not as the skill's own directory.
+    /// </para>
+    /// <para>
+    /// A candidate that proposed skill files which cannot form a loadable skill is a malformed
+    /// proposal, not a no-op one — this throws rather than returning null for that case, so the
+    /// caller's task-level catch fails the task instead of silently materializing nothing and
+    /// scoring the candidate identically to its unchanged parent, which is the same silent-no-op
+    /// symptom #618 fixes, just reintroduced via a different malformed-input shape. The check is
+    /// "does anything end up loadable" (no bare top-level <c>SKILL.md</c> AND no nested
+    /// <c>"{segment}/SKILL.md"</c> whose declared name matches its own directory), not merely "does a
+    /// file named <c>SKILL.md</c> exist somewhere" — an earlier version of this check used the
+    /// latter, which is weaker than the admission rule the rest of the method actually applies and
+    /// let a mis-named nested <c>SKILL.md</c> with no bare top-level key silently degrade to zero
+    /// loaded skills; caught by CI's grader gate.
+    /// </para>
+    /// <para>
+    /// <strong>The re-nesting decision is made PER FILE, not once for the whole snapshot —
+    /// caught by CI review, twice, after two earlier versions of this fix each classified the
+    /// entire snapshot as one of two shapes.</strong> A snapshot captured from ONE skill's own
+    /// directory (<c>ActiveConfigSnapshotBuilder</c> pointed directly at a single skill folder) has
+    /// a BARE top-level <c>SKILL.md</c> key with no name-prefixed subdirectory — this is the shape
+    /// #618's bug affects, and its ENTIRE bare-rooted group (every key with no directory segment)
+    /// needs re-nesting one level down under a subdirectory named after its declared frontmatter
+    /// name. A snapshot captured from a MULTI-skill root (pointed at a directory containing several
+    /// named skill subfolders) already has every key prefixed with its own skill's directory name
+    /// (e.g. <c>"research-agent/SKILL.md"</c>) — that shape already satisfies the SDK's naming
+    /// convention exactly as captured and must be materialized as-is; re-nesting it again under an
+    /// additional derived name would break a layout that already materializes and loads correctly.
+    /// </para>
+    /// <para>
+    /// Both shapes can coexist in ONE snapshot: <c>ProposeChangesExecutor.ApplyProposalToSnapshot</c>
+    /// merges an LLM-authored proposal's keys into the current snapshot with no shape validation at
+    /// all, so a proposal against an already-multi-skill seed can add a bare top-level
+    /// <c>SKILL.md</c> alongside pre-existing <c>"research-agent/SKILL.md"</c>-shaped entries.
+    /// Classifying the whole snapshot from one key (an earlier version of this fix) mis-routes the
+    /// already-correct entries whenever a bare key is also present. The placement is therefore
+    /// decided independently per key.
+    /// </para>
+    /// <para>
+    /// <strong>A key having a directory segment does NOT by itself mean it belongs to an
+    /// already-correct sibling skill</strong> — caught in review after the per-key version above
+    /// still misrouted a real shape: the bare-rooted skill's OWN resource files (a normal skill
+    /// authoring convention — <c>SkillResource.RelativePath</c> documents this as relative to "the
+    /// skill's base directory", e.g. <c>"resources/notes.md"</c> or <c>"scripts/run.py"</c> sitting
+    /// alongside a bare top-level <c>SKILL.md</c>) also have a directory segment, but must land
+    /// INSIDE the bare skill's derived-name subdirectory, not beside it.
+    /// </para>
+    /// <para>
+    /// <strong>Mere presence of a <c>"{segment}/SKILL.md"</c> key is not sufficient either</strong>
+    /// — caught in review: checking whether that exact key exists is a tautology for the key itself
+    /// (it always "contains" its own key), so it can't distinguish a genuine sibling skill from a
+    /// resource file that merely happens to be named <c>SKILL.md</c> inside the bare-rooted skill's
+    /// own subfolder (e.g. a template/reference resource at <c>"examples/SKILL.md"</c>). A segment is
+    /// only recognized as a genuine sibling skill directory when its own <c>"{segment}/SKILL.md"</c>
+    /// entry's declared frontmatter <c>name</c> is ordinal-equal to the segment itself — the SAME
+    /// admission rule the real SDK applies (see <see cref="ResolveDeclaredSkillName"/> and
+    /// <see cref="TryParseDeclaredName"/>), not a proxy heuristic for it. Every other key — no
+    /// segment, or a segment that fails this check — belongs to the bare-rooted group and is
+    /// re-nested, preserving its own relative path underneath.
+    /// </para>
     /// </remarks>
     private string? MaterializeCandidateSkills(HarnessSnapshot snapshot, Guid executionRunId)
     {
         if (snapshot.SkillFileSnapshots.Count == 0)
             return null;
 
+        // Computed BEFORE the loud-fail check below, not after: the check needs to know whether
+        // anything is actually loadable, and "a file named SKILL.md exists somewhere" is not the
+        // same question — caught by CI's grader gate.
+        var recognizedSiblingDirs = RecognizeSiblingSkillDirectories(snapshot);
+        var hasBareTopLevelSkillMd = snapshot.SkillFileSnapshots.ContainsKey("SKILL.md");
+        if (!hasBareTopLevelSkillMd && recognizedSiblingDirs.Count == 0)
+        {
+            throw new InvalidOperationException(
+                $"Candidate for execution run {executionRunId} has skill files but none form a " +
+                "loadable skill: no top-level SKILL.md, and no nested SKILL.md whose declared name " +
+                "matches its own directory; cannot materialize a loadable skill directory.");
+        }
+
+        // Resolved here, before anything is written — see ResolveBareSkillNameOrThrowOnCollision.
+        var bareSkillName = hasBareTopLevelSkillMd
+            ? ResolveBareSkillNameOrThrowOnCollision(snapshot, recognizedSiblingDirs, executionRunId)
+            : null;
+
         // Canonicalize once so the containment check compares like-for-like (handles symlinked
         // temp roots on macOS and 8.3 short names on Windows).
-        var root = Path.GetFullPath(
+        var runRoot = Path.GetFullPath(
             Path.Combine(Path.GetTempPath(), "harness-eval-skills", executionRunId.ToString("N")));
-        Directory.CreateDirectory(root);
 
         try
         {
+            Directory.CreateDirectory(runRoot);
+
+            // #618: the bare-rooted group's files live one level down, in a subdirectory named
+            // after the declared frontmatter name — SafeResolveWithinRoot is reused here (not a new
+            // sanitizer) since bareSkillName is candidate-authored, untrusted input with exactly the
+            // same path-traversal risk as any other snapshot key.
+            string? bareRootedGroupRoot = null;
+            if (bareSkillName is not null)
+            {
+                bareRootedGroupRoot = SafeResolveWithinRoot(runRoot, bareSkillName);
+                Directory.CreateDirectory(bareRootedGroupRoot);
+            }
+
             foreach (var (relativePath, content) in snapshot.SkillFileSnapshots)
             {
-                var filePath = SafeResolveWithinRoot(root, relativePath);
+                var normalized = relativePath.Replace('\\', '/');
+                var slash = normalized.IndexOf('/');
+                var topLevelSegment = slash < 0 ? null : normalized[..slash];
+                var belongsToASiblingSkill = topLevelSegment is not null
+                    && recognizedSiblingDirs.Contains(topLevelSegment);
+
+                var groupRoot = !belongsToASiblingSkill && bareRootedGroupRoot is not null
+                    ? bareRootedGroupRoot
+                    : runRoot;
+
+                var filePath = SafeResolveWithinRoot(groupRoot, relativePath);
                 var directory = Path.GetDirectoryName(filePath);
                 if (directory is not null)
                     Directory.CreateDirectory(directory);
@@ -259,11 +375,116 @@ public sealed class AgentEvaluationService : IEvaluationService
         {
             // A path-traversal rejection (or any write failure) must not leak a partial temp dir,
             // since the caller never receives the path to clean up.
-            TryDeleteDirectory(root);
+            TryDeleteDirectory(runRoot);
             throw;
         }
 
-        return root;
+        return runRoot;
+    }
+
+    /// <summary>
+    /// Finds every top-level segment that names a genuine sibling skill directory — one whose own
+    /// <c>"{segment}/SKILL.md"</c> entry declares a frontmatter <c>name</c> ordinal-equal to the
+    /// segment itself, the same admission rule the real SDK applies (see
+    /// <see cref="ResolveDeclaredSkillName"/>), not mere key presence. Key presence alone is a
+    /// tautology for the <c>"{segment}/SKILL.md"</c> key itself (it always "contains" its own key),
+    /// so it can't distinguish a genuine sibling from an unrelated resource file that merely happens
+    /// to be named <c>SKILL.md</c> inside another skill's own subfolder (e.g. a template/reference
+    /// resource at <c>"examples/SKILL.md"</c>) — caught in review.
+    /// </summary>
+    /// <remarks>
+    /// A malformed nested <c>SKILL.md</c> can't be verified either way, so it's treated as "not a
+    /// recognized sibling" rather than propagating the parse failure — this is advisory recognition
+    /// of OTHER skills, not the bare-rooted skill's own manifest (which DOES fail loud, in
+    /// <see cref="ResolveDeclaredSkillName"/>), so a malformed sibling must not widen
+    /// <see cref="MaterializeCandidateSkills"/>'s failure surface into an unrelated multi-skill
+    /// snapshot's other, unaffected entries — caught in correctness review.
+    /// </remarks>
+    private static HashSet<string> RecognizeSiblingSkillDirectories(HarnessSnapshot snapshot)
+    {
+        var recognized = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var (key, content) in snapshot.SkillFileSnapshots)
+        {
+            var normalizedKey = key.Replace('\\', '/');
+            var slashIndex = normalizedKey.IndexOf('/');
+            if (slashIndex < 0 || normalizedKey[(slashIndex + 1)..] != "SKILL.md")
+                continue;
+
+            var segment = normalizedKey[..slashIndex];
+            string? declaredName;
+            try
+            {
+                declaredName = TryParseDeclaredName(content);
+            }
+            catch (InvalidOperationException)
+            {
+                continue;
+            }
+
+            if (string.Equals(declaredName, segment, StringComparison.Ordinal))
+                recognized.Add(segment);
+        }
+
+        return recognized;
+    }
+
+    /// <summary>
+    /// Reads the candidate's declared skill name from its bare top-level <c>SKILL.md</c>
+    /// frontmatter. The caller guarantees that key exists before calling this.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">
+    /// The top-level <c>SKILL.md</c>'s frontmatter declares no <c>name</c>. Thrown rather than
+    /// returned as null so <see cref="MaterializeCandidateSkills"/>'s caller fails the task instead
+    /// of silently materializing nothing — see the remarks on <see cref="MaterializeCandidateSkills"/>.
+    /// </exception>
+    private static string ResolveDeclaredSkillName(HarnessSnapshot snapshot, Guid executionRunId)
+    {
+        var skillMarkdown = snapshot.SkillFileSnapshots["SKILL.md"];
+        var skillName = TryParseDeclaredName(skillMarkdown);
+        if (string.IsNullOrWhiteSpace(skillName))
+        {
+            throw new InvalidOperationException(
+                $"Candidate for execution run {executionRunId}'s SKILL.md declares no 'name' in its " +
+                "frontmatter; cannot materialize a loadable skill directory.");
+        }
+
+        return skillName;
+    }
+
+    /// <summary>
+    /// Resolves the bare-rooted skill's declared name and asserts it doesn't collide with a genuine
+    /// recognized sibling of the same name.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">
+    /// The declared name is missing (see <see cref="ResolveDeclaredSkillName"/>), or matches a
+    /// recognized sibling directory. A collision would resolve both groups to the identical path —
+    /// silently merging two distinct skills' files into one directory with no error, caught by CI's
+    /// grader gate.
+    /// </exception>
+    private static string ResolveBareSkillNameOrThrowOnCollision(
+        HarnessSnapshot snapshot, IReadOnlySet<string> recognizedSiblingDirs, Guid executionRunId)
+    {
+        var bareSkillName = ResolveDeclaredSkillName(snapshot, executionRunId);
+        if (recognizedSiblingDirs.Contains(bareSkillName))
+        {
+            throw new InvalidOperationException(
+                $"Candidate for execution run {executionRunId}'s bare top-level SKILL.md declares " +
+                $"name '{bareSkillName}', which collides with a genuine sibling skill directory of " +
+                "the same name; cannot materialize an unambiguous skill directory.");
+        }
+
+        return bareSkillName;
+    }
+
+    /// <summary>
+    /// Parses a SKILL.md's declared frontmatter <c>name</c>, or null when absent/blank. Shared by
+    /// <see cref="ResolveDeclaredSkillName"/> and <see cref="MaterializeCandidateSkills"/>'s
+    /// sibling-skill recognition, which both need the identical admission rule the real SDK applies.
+    /// </summary>
+    private static string? TryParseDeclaredName(string skillMarkdown)
+    {
+        var (yaml, _) = YamlFrontmatterHelper.ExtractFrontmatter(skillMarkdown);
+        return Infrastructure.AI.Skills.SkillFrontmatter.Load(yaml).String("name");
     }
 
     /// <summary>

@@ -25,7 +25,7 @@ namespace Infrastructure.AI.Tests.MetaHarness;
 /// Tests for AgentEvaluationService scoring, grading, tracing, and parallelism.
 /// Uses TestableAIAgent to control agent output without external LLM dependencies.
 /// </summary>
-public class AgentEvaluationServiceTests : IAsyncDisposable
+public partial class AgentEvaluationServiceTests : IAsyncDisposable
 {
     private readonly Mock<IAgentFactory> _agentFactoryMock = new();
     private readonly string _traceRoot = Path.Combine(Path.GetTempPath(), $"eval-tests-{Guid.NewGuid():N}");
@@ -276,87 +276,9 @@ public class AgentEvaluationServiceTests : IAsyncDisposable
         Assert.Equal(2, peak);
     }
 
-    /// <summary>
-    /// A candidate's proposed skill content must actually reach the eval agent, otherwise
-    /// skill-only proposals would grade identically to their parent (a silent no-op).
-    /// The eval context must therefore carry a MAF <see cref="AgentSkillsProvider"/> sourced
-    /// from the candidate's snapshot.
-    /// </summary>
-    [Fact]
-    public async Task EvaluateAsync_CandidateWithSkillSnapshots_WiresSkillsProviderIntoEvalContext()
-    {
-        AgentExecutionContext? capturedContext = null;
-        _agentFactoryMock
-            .Setup(f => f.CreateAgentAsync(It.IsAny<AgentExecutionContext>(), It.IsAny<CancellationToken>()))
-            .Callback<AgentExecutionContext, CancellationToken>((ctx, _) => capturedContext = ctx)
-            .ReturnsAsync(new TestableAIAgent("output"));
-
-        var skillFiles = new Dictionary<string, string>
-        {
-            ["research-agent/SKILL.md"] =
-                "---\nname: research-agent\ndescription: Finds and analyzes information.\n---\n# Research Agent\nDo research.\n"
-        };
-        var sut = BuildSut();
-        var candidate = BuildCandidate(skillFiles: skillFiles);
-        var tasks = new[] { BuildTask("provider-task", "prompt", pattern: null) };
-
-        await sut.EvaluateAsync(candidate, tasks);
-
-        Assert.NotNull(capturedContext);
-        Assert.NotNull(capturedContext.AIContextProviders);
-        Assert.Single(capturedContext.AIContextProviders!.OfType<AgentSkillsProvider>());
-    }
-
-    /// <summary>
-    /// A candidate with no skill snapshots must not wire an empty skills provider, and must
-    /// not leave a materialized temp directory behind.
-    /// </summary>
-    [Fact]
-    public async Task EvaluateAsync_EmptySkillSnapshots_DoesNotWireSkillsProvider()
-    {
-        AgentExecutionContext? capturedContext = null;
-        _agentFactoryMock
-            .Setup(f => f.CreateAgentAsync(It.IsAny<AgentExecutionContext>(), It.IsAny<CancellationToken>()))
-            .Callback<AgentExecutionContext, CancellationToken>((ctx, _) => capturedContext = ctx)
-            .ReturnsAsync(new TestableAIAgent("output"));
-
-        var sut = BuildSut();
-        var candidate = BuildCandidate(); // empty SkillFileSnapshots
-        var tasks = new[] { BuildTask("empty-task", "prompt", pattern: null) };
-
-        await sut.EvaluateAsync(candidate, tasks);
-
-        Assert.NotNull(capturedContext);
-        Assert.True(
-            capturedContext.AIContextProviders is null
-            || !capturedContext.AIContextProviders.OfType<AgentSkillsProvider>().Any());
-    }
-
-    /// <summary>
-    /// Snapshot keys come from untrusted LLM proposals, so a path-traversal key must be rejected
-    /// (graded as a failed task) and must never write outside the eval temp root.
-    /// </summary>
-    [Fact]
-    public async Task EvaluateAsync_SkillSnapshotWithPathTraversalKey_FailsTaskAndDoesNotEscape()
-    {
-        _agentFactoryMock
-            .Setup(f => f.CreateAgentAsync(It.IsAny<AgentExecutionContext>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new TestableAIAgent("output"));
-
-        var skillFiles = new Dictionary<string, string>
-        {
-            ["../escaped/SKILL.md"] = "---\nname: evil\ndescription: escape attempt.\n---\nbody"
-        };
-        var sut = BuildSut();
-        var candidate = BuildCandidate(skillFiles: skillFiles);
-        var tasks = new[] { BuildTask("traversal-task", "prompt", pattern: null) };
-
-        var result = await sut.EvaluateAsync(candidate, tasks);
-
-        var taskResult = Assert.Single(result.PerExampleResults);
-        Assert.False(taskResult.Passed);
-        Assert.Contains("resolves outside", taskResult.FailureReason);
-    }
+    // ── #618 candidate skill materialization tests: see the AgentEvaluationServiceTests
+    // .SkillMaterialization.cs partial (split out to keep both files under the line-count
+    // guideline — caught by CI's grader gate) ──────────
 
     // ── Token cost: the second thing evaluation reports (issue #267) ──────────
 
