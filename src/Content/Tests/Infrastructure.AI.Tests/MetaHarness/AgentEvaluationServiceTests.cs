@@ -536,6 +536,55 @@ public class AgentEvaluationServiceTests : IAsyncDisposable
     }
 
     /// <summary>
+    /// #618 (3rd CI/review-caught regression): a key having a directory segment does NOT by itself
+    /// mean it belongs to an already-correct sibling skill. A bare-rooted skill's OWN resource files
+    /// (a normal skill-authoring convention - SkillResource.RelativePath documents resources as
+    /// relative to "the skill's base directory") also have a directory segment, e.g.
+    /// "resources/notes.md" alongside a bare top-level SKILL.md. Classifying by "has a slash" alone
+    /// (the previous version of this fix) routes that resource file to the run root as a sibling of
+    /// the skill's derived-name subdirectory instead of inside it, severing it from its own skill -
+    /// the same silent-degradation failure class this whole PR chain exists to close.
+    /// </summary>
+    [Fact]
+    public async Task EvaluateAsync_BareSkillWithItsOwnResourceSubfolder_NestsTheResourceUnderTheSameDerivedName()
+    {
+        var evalSkillsRoot = Path.Combine(Path.GetTempPath(), "harness-eval-skills");
+        var preExistingRunRoots = Directory.Exists(evalSkillsRoot)
+            ? Directory.EnumerateDirectories(evalSkillsRoot).ToHashSet(StringComparer.OrdinalIgnoreCase)
+            : [];
+
+        bool? resourceLandedInsideTheSkillDirectory = null;
+        _agentFactoryMock
+            .Setup(f => f.CreateAgentAsync(It.IsAny<AgentExecutionContext>(), It.IsAny<CancellationToken>()))
+            .Callback<AgentExecutionContext, CancellationToken>((_, _) =>
+            {
+                var thisRunRoot = Directory.Exists(evalSkillsRoot)
+                    ? Directory.EnumerateDirectories(evalSkillsRoot)
+                        .FirstOrDefault(d => !preExistingRunRoots.Contains(d))
+                    : null;
+                resourceLandedInsideTheSkillDirectory = thisRunRoot is not null
+                    && File.Exists(Path.Combine(thisRunRoot, "research-agent", "resources", "notes.md"));
+            })
+            .ReturnsAsync(new TestableAIAgent("output"));
+
+        var skillFiles = new Dictionary<string, string>
+        {
+            ["SKILL.md"] =
+                "---\nname: research-agent\ndescription: Finds and analyzes information.\n---\nDo research.\n",
+            ["resources/notes.md"] = "some research notes"
+        };
+        var sut = BuildSut();
+        var candidate = BuildCandidate(skillFiles: skillFiles);
+        var tasks = new[] { BuildTask("bare-with-resources-task", "prompt", pattern: null) };
+
+        var result = await sut.EvaluateAsync(candidate, tasks);
+
+        var taskResult = Assert.Single(result.PerExampleResults);
+        Assert.True(taskResult.Passed);
+        Assert.True(resourceLandedInsideTheSkillDirectory);
+    }
+
+    /// <summary>
     /// #618: a SKILL.md with no 'name' in its frontmatter has nothing to derive the required
     /// correctly-named subdirectory from. This must fail the task rather than silently degrade to no
     /// skills provider, for the same reason as the missing-SKILL.md case above.

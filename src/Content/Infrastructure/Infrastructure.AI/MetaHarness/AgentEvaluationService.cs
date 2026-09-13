@@ -279,9 +279,20 @@ public sealed class AgentEvaluationService : IEvaluationService
     /// <c>SKILL.md</c> alongside pre-existing <c>"research-agent/SKILL.md"</c>-shaped entries.
     /// Classifying the whole snapshot from one key (an earlier version of this fix) mis-routes the
     /// already-correct entries whenever a bare key is also present. The placement is therefore
-    /// decided independently per key: a key with no directory segment belongs to the bare-rooted
-    /// group and is re-nested; anything already nested under its own subdirectory is left exactly
-    /// where the snapshot says it is.
+    /// decided independently per key.
+    /// </para>
+    /// <para>
+    /// <strong>A key having a directory segment does NOT by itself mean it belongs to an
+    /// already-correct sibling skill</strong> — caught in review after the per-key version above
+    /// still misrouted a real shape: the bare-rooted skill's OWN resource files (a normal skill
+    /// authoring convention — <c>SkillResource.RelativePath</c> documents this as relative to "the
+    /// skill's base directory", e.g. <c>"resources/notes.md"</c> or <c>"scripts/run.py"</c> sitting
+    /// alongside a bare top-level <c>SKILL.md</c>) also have a directory segment, but must land
+    /// INSIDE the bare skill's derived-name subdirectory, not beside it. A key's top-level segment
+    /// is only treated as an already-correct sibling skill directory when that segment has ITS OWN
+    /// <c>"{segment}/SKILL.md"</c> entry in the snapshot; every other key — no segment, or a segment
+    /// that names no sibling skill — belongs to the bare-rooted group and is re-nested, preserving
+    /// its own relative path underneath.
     /// </para>
     /// </remarks>
     private string? MaterializeCandidateSkills(HarnessSnapshot snapshot, Guid executionRunId)
@@ -319,10 +330,23 @@ public sealed class AgentEvaluationService : IEvaluationService
                 Directory.CreateDirectory(bareRootedGroupRoot);
             }
 
+            // A key's top-level segment names an already-correct SIBLING skill only when that
+            // segment itself has its own "{segment}/SKILL.md" entry — everything else (no segment,
+            // or a segment that names no sibling skill, e.g. the bare skill's own "resources/"
+            // subfolder) belongs to the bare-rooted group.
+            var normalizedKeys = new HashSet<string>(
+                snapshot.SkillFileSnapshots.Keys.Select(k => k.Replace('\\', '/')),
+                StringComparer.Ordinal);
+
             foreach (var (relativePath, content) in snapshot.SkillFileSnapshots)
             {
-                var isBareRooted = !relativePath.Contains('/') && !relativePath.Contains('\\');
-                var groupRoot = isBareRooted && bareRootedGroupRoot is not null
+                var normalized = relativePath.Replace('\\', '/');
+                var slash = normalized.IndexOf('/');
+                var topLevelSegment = slash < 0 ? null : normalized[..slash];
+                var belongsToASiblingSkill = topLevelSegment is not null
+                    && normalizedKeys.Contains($"{topLevelSegment}/SKILL.md");
+
+                var groupRoot = !belongsToASiblingSkill && bareRootedGroupRoot is not null
                     ? bareRootedGroupRoot
                     : runRoot;
 
