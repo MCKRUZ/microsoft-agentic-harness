@@ -13,20 +13,15 @@ namespace Application.AI.Common.Tests.Plugins;
 /// </summary>
 public sealed class PluginToolBoundaryViolationExtensionsTests
 {
-    [Fact]
-    public void DescribeEntry_FormatsListKindAndToolNameWithoutPluginName()
+    [Theory]
+    [InlineData(PluginToolBoundaryListKind.DeniedTools, "some_tool", "DeniedTools entry 'some_tool'")]
+    [InlineData(PluginToolBoundaryListKind.AllowedTools, "other_tool", "AllowedTools entry 'other_tool'")]
+    public void DescribeEntry_FormatsListKindAndToolNameWithoutPluginName(
+        PluginToolBoundaryListKind listKind, string toolName, string expected)
     {
-        var violation = new PluginToolBoundaryViolation("my-plugin", PluginToolBoundaryListKind.DeniedTools, "some_tool");
+        var violation = new PluginToolBoundaryViolation("my-plugin", listKind, toolName);
 
-        violation.DescribeEntry().Should().Be("DeniedTools entry 'some_tool'");
-    }
-
-    [Fact]
-    public void DescribeEntry_AllowedToolsListKind_IsReflectedInOutput()
-    {
-        var violation = new PluginToolBoundaryViolation("my-plugin", PluginToolBoundaryListKind.AllowedTools, "other_tool");
-
-        violation.DescribeEntry().Should().Be("AllowedTools entry 'other_tool'");
+        violation.DescribeEntry().Should().Be(expected);
     }
 
     [Fact]
