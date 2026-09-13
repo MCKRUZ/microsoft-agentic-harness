@@ -314,44 +314,10 @@ public sealed class AgentEvaluationService : IEvaluationService
         if (snapshot.SkillFileSnapshots.Count == 0)
             return null;
 
-        // A key's top-level segment names an already-correct SIBLING skill only when that
-        // segment's OWN "{segment}/SKILL.md" entry declares a frontmatter name ordinal-equal to
-        // the segment itself — the same admission rule the real SDK applies (see
-        // ResolveDeclaredSkillName), not mere key presence. Key presence alone is a tautology for
-        // the "{segment}/SKILL.md" key itself (it always "contains" its own key), so it can't
-        // distinguish a genuine sibling from an unrelated resource file that merely happens to be
-        // named SKILL.md inside the bare-rooted skill's own subfolder (e.g. a template/reference
-        // resource at "examples/SKILL.md") — caught in review. Computed BEFORE the loud-fail check
-        // below, not after: the check needs to know whether anything is actually loadable, and "a
-        // file named SKILL.md exists somewhere" is not the same question — caught by CI's grader
-        // gate. A malformed nested SKILL.md can't be verified either way, so it's treated as "not a
-        // recognized sibling" rather than failing the whole task here — this loop is advisory
-        // recognition of OTHER skills, not the bare-rooted skill's own manifest (which DOES fail
-        // loud, in ResolveDeclaredSkillName below), so a malformed sibling must not widen this fix's
-        // failure surface into an unrelated multi-skill snapshot's other, unaffected entries.
-        var recognizedSiblingDirs = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var (key, content) in snapshot.SkillFileSnapshots)
-        {
-            var normalizedKey = key.Replace('\\', '/');
-            var slashIndex = normalizedKey.IndexOf('/');
-            if (slashIndex < 0 || normalizedKey[(slashIndex + 1)..] != "SKILL.md")
-                continue;
-
-            var segment = normalizedKey[..slashIndex];
-            string? declaredName;
-            try
-            {
-                declaredName = TryParseDeclaredName(content);
-            }
-            catch (InvalidOperationException)
-            {
-                continue;
-            }
-
-            if (string.Equals(declaredName, segment, StringComparison.Ordinal))
-                recognizedSiblingDirs.Add(segment);
-        }
-
+        // Computed BEFORE the loud-fail check below, not after: the check needs to know whether
+        // anything is actually loadable, and "a file named SKILL.md exists somewhere" is not the
+        // same question — caught by CI's grader gate.
+        var recognizedSiblingDirs = RecognizeSiblingSkillDirectories(snapshot);
         var hasBareTopLevelSkillMd = snapshot.SkillFileSnapshots.ContainsKey("SKILL.md");
         if (!hasBareTopLevelSkillMd && recognizedSiblingDirs.Count == 0)
         {
@@ -412,6 +378,52 @@ public sealed class AgentEvaluationService : IEvaluationService
         }
 
         return runRoot;
+    }
+
+    /// <summary>
+    /// Finds every top-level segment that names a genuine sibling skill directory — one whose own
+    /// <c>"{segment}/SKILL.md"</c> entry declares a frontmatter <c>name</c> ordinal-equal to the
+    /// segment itself, the same admission rule the real SDK applies (see
+    /// <see cref="ResolveDeclaredSkillName"/>), not mere key presence. Key presence alone is a
+    /// tautology for the <c>"{segment}/SKILL.md"</c> key itself (it always "contains" its own key),
+    /// so it can't distinguish a genuine sibling from an unrelated resource file that merely happens
+    /// to be named <c>SKILL.md</c> inside another skill's own subfolder (e.g. a template/reference
+    /// resource at <c>"examples/SKILL.md"</c>) — caught in review.
+    /// </summary>
+    /// <remarks>
+    /// A malformed nested <c>SKILL.md</c> can't be verified either way, so it's treated as "not a
+    /// recognized sibling" rather than propagating the parse failure — this is advisory recognition
+    /// of OTHER skills, not the bare-rooted skill's own manifest (which DOES fail loud, in
+    /// <see cref="ResolveDeclaredSkillName"/>), so a malformed sibling must not widen
+    /// <see cref="MaterializeCandidateSkills"/>'s failure surface into an unrelated multi-skill
+    /// snapshot's other, unaffected entries — caught in correctness review.
+    /// </remarks>
+    private static HashSet<string> RecognizeSiblingSkillDirectories(HarnessSnapshot snapshot)
+    {
+        var recognized = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var (key, content) in snapshot.SkillFileSnapshots)
+        {
+            var normalizedKey = key.Replace('\\', '/');
+            var slashIndex = normalizedKey.IndexOf('/');
+            if (slashIndex < 0 || normalizedKey[(slashIndex + 1)..] != "SKILL.md")
+                continue;
+
+            var segment = normalizedKey[..slashIndex];
+            string? declaredName;
+            try
+            {
+                declaredName = TryParseDeclaredName(content);
+            }
+            catch (InvalidOperationException)
+            {
+                continue;
+            }
+
+            if (string.Equals(declaredName, segment, StringComparison.Ordinal))
+                recognized.Add(segment);
+        }
+
+        return recognized;
     }
 
     /// <summary>
