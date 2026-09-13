@@ -259,18 +259,29 @@ public sealed class AgentEvaluationService : IEvaluationService
     /// symptom #618 fixes, just reintroduced via a different malformed-input shape.
     /// </para>
     /// <para>
-    /// <strong>Two distinct snapshot shapes, caught by CI review after an earlier version of this
-    /// fix assumed only the first:</strong> a snapshot captured from ONE skill's own directory
-    /// (<c>ActiveConfigSnapshotBuilder</c> pointed directly at a single skill folder) has a BARE
-    /// top-level <c>SKILL.md</c> key with no name-prefixed subdirectory — this is the shape #618's
-    /// bug affects, and needs re-nesting one level down under a subdirectory named after its
-    /// declared frontmatter name. A snapshot captured from a MULTI-skill root (pointed at a
-    /// directory containing several named skill subfolders) already has every key prefixed with its
-    /// own skill's directory name (e.g. <c>"research-agent/SKILL.md"</c>) — that shape already
-    /// satisfies the SDK's naming convention exactly as captured and must be materialized as-is;
-    /// re-nesting it again under an additional derived name would break a layout that already
-    /// materializes and loads correctly. Distinguished by presence of a bare top-level
-    /// <c>"SKILL.md"</c> key.
+    /// <strong>The re-nesting decision is made PER FILE, not once for the whole snapshot —
+    /// caught by CI review, twice, after two earlier versions of this fix each classified the
+    /// entire snapshot as one of two shapes.</strong> A snapshot captured from ONE skill's own
+    /// directory (<c>ActiveConfigSnapshotBuilder</c> pointed directly at a single skill folder) has
+    /// a BARE top-level <c>SKILL.md</c> key with no name-prefixed subdirectory — this is the shape
+    /// #618's bug affects, and its ENTIRE bare-rooted group (every key with no directory segment)
+    /// needs re-nesting one level down under a subdirectory named after its declared frontmatter
+    /// name. A snapshot captured from a MULTI-skill root (pointed at a directory containing several
+    /// named skill subfolders) already has every key prefixed with its own skill's directory name
+    /// (e.g. <c>"research-agent/SKILL.md"</c>) — that shape already satisfies the SDK's naming
+    /// convention exactly as captured and must be materialized as-is; re-nesting it again under an
+    /// additional derived name would break a layout that already materializes and loads correctly.
+    /// </para>
+    /// <para>
+    /// Both shapes can coexist in ONE snapshot: <c>ProposeChangesExecutor.ApplyProposalToSnapshot</c>
+    /// merges an LLM-authored proposal's keys into the current snapshot with no shape validation at
+    /// all, so a proposal against an already-multi-skill seed can add a bare top-level
+    /// <c>SKILL.md</c> alongside pre-existing <c>"research-agent/SKILL.md"</c>-shaped entries.
+    /// Classifying the whole snapshot from one key (an earlier version of this fix) mis-routes the
+    /// already-correct entries whenever a bare key is also present. The placement is therefore
+    /// decided independently per key: a key with no directory segment belongs to the bare-rooted
+    /// group and is re-nested; anything already nested under its own subdirectory is left exactly
+    /// where the snapshot says it is.
     /// </para>
     /// </remarks>
     private string? MaterializeCandidateSkills(HarnessSnapshot snapshot, Guid executionRunId)
@@ -278,8 +289,7 @@ public sealed class AgentEvaluationService : IEvaluationService
         if (snapshot.SkillFileSnapshots.Count == 0)
             return null;
 
-        var hasBareTopLevelSkillMd = snapshot.SkillFileSnapshots.ContainsKey("SKILL.md");
-        if (!hasBareTopLevelSkillMd && !snapshot.SkillFileSnapshots.Keys.Any(k => Path.GetFileName(k) == "SKILL.md"))
+        if (!snapshot.SkillFileSnapshots.Keys.Any(k => Path.GetFileName(k) == "SKILL.md"))
         {
             throw new InvalidOperationException(
                 $"Candidate for execution run {executionRunId} has skill files but no SKILL.md " +
@@ -291,29 +301,32 @@ public sealed class AgentEvaluationService : IEvaluationService
         var runRoot = Path.GetFullPath(
             Path.Combine(Path.GetTempPath(), "harness-eval-skills", executionRunId.ToString("N")));
 
-        string root;
         try
         {
-            if (hasBareTopLevelSkillMd)
-            {
-                // #618: the skill's OWN materialized files live one level down, in a subdirectory
-                // named after its declared frontmatter name — SafeResolveWithinRoot is reused here
-                // (not a new sanitizer) since skillName is candidate-authored, untrusted input with
-                // exactly the same path-traversal risk as any other snapshot key.
-                var skillName = ResolveDeclaredSkillName(snapshot, executionRunId);
-                root = SafeResolveWithinRoot(runRoot, skillName);
-            }
-            else
-            {
-                // Already correctly shaped — see the type-level remarks above.
-                root = runRoot;
-            }
+            Directory.CreateDirectory(runRoot);
 
-            Directory.CreateDirectory(root);
+            // #618: the bare-rooted group's files live one level down, in a subdirectory named
+            // after the declared frontmatter name — SafeResolveWithinRoot is reused here (not a new
+            // sanitizer) since skillName is candidate-authored, untrusted input with exactly the
+            // same path-traversal risk as any other snapshot key. Only computed when a bare
+            // top-level SKILL.md actually exists — an already-prefixed-only snapshot needs no name
+            // resolution at all.
+            string? bareRootedGroupRoot = null;
+            if (snapshot.SkillFileSnapshots.ContainsKey("SKILL.md"))
+            {
+                var skillName = ResolveDeclaredSkillName(snapshot, executionRunId);
+                bareRootedGroupRoot = SafeResolveWithinRoot(runRoot, skillName);
+                Directory.CreateDirectory(bareRootedGroupRoot);
+            }
 
             foreach (var (relativePath, content) in snapshot.SkillFileSnapshots)
             {
-                var filePath = SafeResolveWithinRoot(root, relativePath);
+                var isBareRooted = !relativePath.Contains('/') && !relativePath.Contains('\\');
+                var groupRoot = isBareRooted && bareRootedGroupRoot is not null
+                    ? bareRootedGroupRoot
+                    : runRoot;
+
+                var filePath = SafeResolveWithinRoot(groupRoot, relativePath);
                 var directory = Path.GetDirectoryName(filePath);
                 if (directory is not null)
                     Directory.CreateDirectory(directory);

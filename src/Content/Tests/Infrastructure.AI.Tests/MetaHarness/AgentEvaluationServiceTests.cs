@@ -479,6 +479,63 @@ public class AgentEvaluationServiceTests : IAsyncDisposable
     }
 
     /// <summary>
+    /// #618 (2nd CI-caught regression, hybrid shape): both shapes can coexist in ONE snapshot -
+    /// ProposeChangesExecutor.ApplyProposalToSnapshot merges an LLM-authored proposal's keys into the
+    /// current snapshot with no shape validation, so a proposal against an already-multi-skill seed
+    /// can add a bare top-level SKILL.md alongside pre-existing "research-agent/SKILL.md"-shaped
+    /// entries. Classifying the WHOLE snapshot from one key (the previous version of this fix)
+    /// mis-routes the already-correct "other-skill" entry into the bare skill's derived-name
+    /// subdirectory whenever a bare key is also present. Both groups must land independently and
+    /// correctly in the same materialization.
+    /// </summary>
+    [Fact]
+    public async Task EvaluateAsync_HybridSnapshotWithBareAndPrefixedKeys_PlacesEachGroupIndependently()
+    {
+        var evalSkillsRoot = Path.Combine(Path.GetTempPath(), "harness-eval-skills");
+        var preExistingRunRoots = Directory.Exists(evalSkillsRoot)
+            ? Directory.EnumerateDirectories(evalSkillsRoot).ToHashSet(StringComparer.OrdinalIgnoreCase)
+            : [];
+
+        bool? bareSkillLandedUnderItsDerivedName = null;
+        bool? prefixedSkillLandedAtItsOwnUnmodifiedPath = null;
+        _agentFactoryMock
+            .Setup(f => f.CreateAgentAsync(It.IsAny<AgentExecutionContext>(), It.IsAny<CancellationToken>()))
+            .Callback<AgentExecutionContext, CancellationToken>((_, _) =>
+            {
+                var thisRunRoot = Directory.Exists(evalSkillsRoot)
+                    ? Directory.EnumerateDirectories(evalSkillsRoot)
+                        .FirstOrDefault(d => !preExistingRunRoots.Contains(d))
+                    : null;
+                bareSkillLandedUnderItsDerivedName = thisRunRoot is not null
+                    && File.Exists(Path.Combine(thisRunRoot, "bare-skill", "SKILL.md"));
+                // Must NOT have been dragged one level deeper under "bare-skill/other-skill/..." -
+                // it belongs at the run root, exactly as its own key says.
+                prefixedSkillLandedAtItsOwnUnmodifiedPath = thisRunRoot is not null
+                    && File.Exists(Path.Combine(thisRunRoot, "other-skill", "SKILL.md"))
+                    && !File.Exists(Path.Combine(thisRunRoot, "bare-skill", "other-skill", "SKILL.md"));
+            })
+            .ReturnsAsync(new TestableAIAgent("output"));
+
+        var skillFiles = new Dictionary<string, string>
+        {
+            ["SKILL.md"] =
+                "---\nname: bare-skill\ndescription: Captured from its own directory directly.\n---\nbody",
+            ["other-skill/SKILL.md"] =
+                "---\nname: other-skill\ndescription: Already correctly shaped.\n---\nbody"
+        };
+        var sut = BuildSut();
+        var candidate = BuildCandidate(skillFiles: skillFiles);
+        var tasks = new[] { BuildTask("hybrid-task", "prompt", pattern: null) };
+
+        var result = await sut.EvaluateAsync(candidate, tasks);
+
+        var taskResult = Assert.Single(result.PerExampleResults);
+        Assert.True(taskResult.Passed);
+        Assert.True(bareSkillLandedUnderItsDerivedName);
+        Assert.True(prefixedSkillLandedAtItsOwnUnmodifiedPath);
+    }
+
+    /// <summary>
     /// #618: a SKILL.md with no 'name' in its frontmatter has nothing to derive the required
     /// correctly-named subdirectory from. This must fail the task rather than silently degrade to no
     /// skills provider, for the same reason as the missing-SKILL.md case above.
