@@ -256,28 +256,50 @@ public partial class ToolChainBuilder
         IReadOnlyList<AITool> instances, ConcurrentDictionary<AITool, byte> callOnceCandidates)
     {
         var canonical = instances[0];
-        if (instances.Count == 1 || canonical is not GovernedAIFunction canonicalGoverned)
+        if (instances.Count == 1)
             return canonical;
 
-        // Every instance not itself a GovernedAIFunction contributes nothing here (mirrors the old
-        // pairwise ResolveUnion's identical early-return for a non-governed side) — in practice this
-        // never happens, since WrapGoverned wraps every first-party AIFunction before it reaches this
-        // pipeline, but a mixed group degrades to "use whatever the governed members declare" rather
-        // than throwing.
+        // Computed across every ORIGINAL instance up front, before either early return below —
+        // correctness-review finding: the first cut of this method checked callOnceCandidates only
+        // inside the "canonical is governed" branch, so a group where a LATER instance was
+        // dictionary-tagged (or field-tagged) but the returned reference was the untouched canonical
+        // — either because the canonical isn't a GovernedAIFunction at all, or because it already
+        // embodies the full skill-id union and so needs no rewrap — silently returned WITHOUT ever
+        // re-tagging that returned reference into the dictionary. The old pairwise
+        // UnionSkillScopeIfNeeded tagged its result unconditionally whenever EITHER side was a
+        // candidate, regardless of whether ResolveUnion's inner logic decided to rewrap at all; every
+        // return path here must preserve that same guarantee.
+        var anyCallOnce = instances.Any(t =>
+            callOnceCandidates.ContainsKey(t) || (t as GovernedAIFunction)?.IsCallOnceCandidate == true);
+
+        // Every instance not itself a GovernedAIFunction contributes nothing to the skill-id union
+        // (mirrors the old pairwise ResolveUnion's identical early-return for a non-governed side) —
+        // in practice this never happens, since WrapGoverned wraps every first-party AIFunction
+        // before it reaches this pipeline, but a mixed group degrades to "use whatever the governed
+        // members declare" rather than throwing. The dictionary tag above still applies regardless.
+        if (canonical is not GovernedAIFunction canonicalGoverned)
+        {
+            if (anyCallOnce)
+                callOnceCandidates.TryAdd(canonical, 0);
+            return canonical;
+        }
+
         var unionedIds = instances
             .OfType<GovernedAIFunction>()
             .SelectMany(g => g.SkillIds ?? [])
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
-        var anyCallOnce = instances.Any(t =>
-            callOnceCandidates.ContainsKey(t) || (t as GovernedAIFunction)?.IsCallOnceCandidate == true);
 
         var canonicalIds = canonicalGoverned.SkillIds ?? [];
         var canonicalAlreadyComplete = unionedIds.All(id => canonicalIds.Contains(id, StringComparer.OrdinalIgnoreCase))
             && (!anyCallOnce || canonicalGoverned.IsCallOnceCandidate);
 
         if (canonicalAlreadyComplete)
+        {
+            if (anyCallOnce)
+                callOnceCandidates.TryAdd(canonical, 0);
             return canonical;
+        }
 
         var result = new GovernedAIFunction(
             canonicalGoverned.Inner, compositionTaint: null, canonicalGoverned.CurrentSkillAccessor,

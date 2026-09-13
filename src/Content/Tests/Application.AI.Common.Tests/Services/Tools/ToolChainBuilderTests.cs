@@ -816,6 +816,72 @@ public class ToolChainBuilderTests
     }
 
     [Fact]
+    public void ResolveGroupUnion_CanonicalAlreadyCompleteViaItsOwnFieldButNotDictionaryTagged_StillTagsCanonicalIntoDictionary()
+    {
+        // Correctness-review finding on this PR's own first draft: a GovernedAIFunction constructed
+        // directly with isCallOnceCandidate: true (bypassing WrapGoverned's own field+dictionary
+        // co-tagging -- the shape ApplyCompositionTaint's own rewrap produces, per its remarks, since
+        // it deliberately runs after registration and so never re-tags the dictionary) has its field
+        // true but is NOT independently present in callOnceCandidates. When such an instance is the
+        // canonical in a group with no skill-id divergence, canonicalAlreadyComplete is correctly
+        // true (its OWN field already satisfies the union) and no rewrap happens -- but the returned
+        // reference must still be re-tagged into the dictionary, or a caller that checks
+        // callOnceCandidates.ContainsKey(...) directly (rather than the field) would wrongly see it
+        // as not a candidate. The old pairwise UnionSkillScopeIfNeeded tagged unconditionally whenever
+        // EITHER side was a candidate, regardless of whether ResolveUnion decided to rewrap; the first
+        // cut of ResolveGroupUnion's "no rewrap needed" early return silently skipped that.
+        var inner = AIFunctionFactory.Create(() => "result", "shared_tool");
+        var canonical = new GovernedAIFunction(inner, skillIds: ["skill-a"], isCallOnceCandidate: true);
+        var other = new GovernedAIFunction(inner, skillIds: ["skill-a"]);
+
+        var method = typeof(ToolChainBuilder).GetMethod("ResolveGroupUnion", BindingFlags.NonPublic | BindingFlags.Static)!;
+        var callOnceCandidates = new ConcurrentDictionary<AITool, byte>();
+
+        var result = (AITool)method.Invoke(null, [new List<AITool> { canonical, other }, callOnceCandidates])!;
+
+        result.Should().BeSameAs(canonical,
+            "no skill id divergence and the canonical's own field already reflects call-once candidacy, so no rewrap is needed");
+        callOnceCandidates.ContainsKey(result).Should().BeTrue(
+            "the canonical's field-level call-once candidacy must also be reflected in the dictionary " +
+            "for whatever reference survives, even though no rewrap happened");
+    }
+
+    [Fact]
+    public void ResolveGroupUnion_NonGovernedCanonicalWithDictionaryTaggedCandidate_StillTagsCanonicalIntoDictionary()
+    {
+        // Correctness-review finding on this PR's own first draft, named explicitly: "ResolveGroupUnion's
+        // non-governed-canonical early return drops the callOnceCandidates dictionary tag that
+        // UnionSkillScopeIfNeeded applied on that same path." A non-GovernedAIFunction AITool has no
+        // field at all, so the dictionary is its ONLY way to carry call-once candidacy across this
+        // method — the old pairwise UnionSkillScopeIfNeeded tagged its returned reference into the
+        // dictionary unconditionally whenever EITHER side was a candidate, even when ResolveUnion's
+        // own non-governed early return left the reference unchanged.
+        var canonical = new PlainAITool("shared_tool");
+        var other = new GovernedAIFunction(
+            AIFunctionFactory.Create(() => "result", "shared_tool"), isCallOnceCandidate: true);
+
+        var method = typeof(ToolChainBuilder).GetMethod("ResolveGroupUnion", BindingFlags.NonPublic | BindingFlags.Static)!;
+        var callOnceCandidates = new ConcurrentDictionary<AITool, byte>();
+
+        var result = (AITool)method.Invoke(null, [new List<AITool> { canonical, other }, callOnceCandidates])!;
+
+        result.Should().BeSameAs(canonical, "a non-GovernedAIFunction canonical has no field to union anything onto");
+        callOnceCandidates.ContainsKey(result).Should().BeTrue(
+            "the OTHER instance's call-once candidacy must still be tagged onto whatever reference " +
+            "survives, even when the canonical isn't a GovernedAIFunction at all");
+    }
+
+    /// <summary>
+    /// A minimal non-<see cref="GovernedAIFunction"/> (and non-<see cref="AIFunction"/>) <see cref="AITool"/>
+    /// shape, for exercising <see cref="ToolChainBuilder"/>'s "some other AITool shape with no field to
+    /// carry call-once candidacy on" fallback path (#611/#621/#638's own remarks all name this case).
+    /// </summary>
+    private sealed class PlainAITool(string name) : AITool
+    {
+        public override string Name => name;
+    }
+
+    [Fact]
     public async Task BuildToolsAsync_ToolNotDeclaredCallOnce_PolicyNeverConsulted()
     {
         var toolMock = new Mock<ITool>();
