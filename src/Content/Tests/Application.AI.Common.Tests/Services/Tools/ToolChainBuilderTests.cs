@@ -665,49 +665,18 @@ public class ToolChainBuilderTests
 
         var tools = await builder.BuildMergedToolsAsync([skill], new SkillAgentOptions());
 
-        tools.Should().ContainSingle();
+        var survivor = tools.Should().ContainSingle().Subject;
         policy.IsCallOnce("twice_declared_tool").Should().BeTrue(
             "the second declaration's call-once flag must survive even though the dedup discarded its instance");
-    }
 
-    [Fact]
-    public async Task BuildMergedToolsAsync_OneSkillDeclaresTheSameToolTwiceOnlyOneCallOnce_SurvivorsFieldItselfIsTrue()
-    {
-        // #621: the test above (BuildMergedToolsAsync_OneSkillDeclaresTheSameToolTwiceOnlyOneCallOnce_StillRegistersIt)
-        // only proves the OVERALL registration outcome, which the pre-#621 callOnceCandidates
-        // dictionary safety net alone can already produce -- it would pass even if
-        // GovernedAIFunction.IsCallOnceCandidate (the new first-class field) were never correctly set
-        // on the SURVIVING instance itself, because ResolveUnion's early return (candidate's single
-        // skill id already covered by published's) means no rewrap happens, so `published` -- built
-        // when its OWN declaration was CallOncePerConversation: false -- is what survives verbatim.
-        // This test asserts the field on that exact surviving instance directly, so it fails if
-        // ResolveUnion's call-once-divergence check (needsCallOnceUnion) is ever removed, even though
-        // the dictionary-based registration test above would keep passing.
-        var toolMock = new Mock<ITool>();
-        toolMock.Setup(t => t.Name).Returns("twice_declared_tool_field_check");
-
-        var converter = new Mock<IToolConverter>();
-        converter.Setup(c => c.Convert(toolMock.Object, null))
-            .Returns(() => AIFunctionFactory.Create(() => "converted", "twice_declared_tool_field_check"));
-
-        var services = new ServiceCollection();
-        services.AddKeyedSingleton<ITool>("twice_declared_tool_field_check", toolMock.Object);
-
-        var builder = CreateBuilder(toolConverter: converter.Object, serviceProvider: services.BuildServiceProvider());
-
-        var skill = new SkillDefinition
-        {
-            Id = "skill-a", Name = "skill-a", Instructions = "Test",
-            ToolDeclarations =
-            [
-                new ToolDeclaration { Name = "twice_declared_tool_field_check", CallOncePerConversation = false },
-                new ToolDeclaration { Name = "twice_declared_tool_field_check", CallOncePerConversation = true }
-            ]
-        };
-
-        var tools = await builder.BuildMergedToolsAsync([skill], new SkillAgentOptions());
-
-        var survivor = tools.Should().ContainSingle().Subject;
+        // #621: the assertion above alone would still pass off the pre-#621 callOnceCandidates
+        // dictionary safety net even if GovernedAIFunction.IsCallOnceCandidate (the new first-class
+        // field) were never correctly set on the SURVIVING instance itself -- ResolveUnion's early
+        // return (candidate's single skill id already covered by published's) means no rewrap
+        // happens, so `published`, built when its OWN declaration was CallOncePerConversation: false,
+        // is what survives verbatim. Asserting the field on that exact surviving instance directly
+        // makes this fail if ResolveUnion's call-once-divergence check (needsCallOnceUnion) is ever
+        // removed, even though the policy-registration assertion above would keep passing.
         survivor.Should().BeOfType<GovernedAIFunction>()
             .Which.IsCallOnceCandidate.Should().BeTrue(
                 "the surviving instance's OWN field must reflect call-once candidacy, not just the " +

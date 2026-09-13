@@ -297,10 +297,13 @@ public partial class ToolChainBuilder
         if (!needsIdUnion && !needsCallOnceUnion)
             return published;
 
-        var union = publishedIds
-            .Concat(candidateIds)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
+        // Skip the union computation entirely when call-once divergence is the ONLY reason to
+        // rewrap — publishedIds already covers candidateIds in that case, so Concat/Distinct/ToList
+        // would just reproduce publishedIds at the cost of an allocation and a full pass (/simplify
+        // efficiency finding).
+        var union = needsIdUnion
+            ? publishedIds.Concat(candidateIds).Distinct(StringComparer.OrdinalIgnoreCase).ToList()
+            : publishedIds;
 
         return new GovernedAIFunction(
             publishedGoverned.Inner, compositionTaint: null, publishedGoverned.CurrentSkillAccessor, union,
