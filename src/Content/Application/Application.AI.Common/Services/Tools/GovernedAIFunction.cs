@@ -98,7 +98,7 @@ internal sealed class GovernedAIFunction : DelegatingAIFunction
     /// Whether the tool declaration this instance was resolved for was marked
     /// <c>CallOncePerConversation</c> (#621) — a first-class field carried forward by every
     /// constructor call the same way <paramref name="skillIds"/> already is, so a re-wrap site
-    /// (<c>ToolChainBuilder.ApplyCompositionTaint</c>, <c>ToolChainBuilder.ResolveUnion</c>) forwards
+    /// (<c>ToolChainBuilder.ApplyCompositionTaint</c>, <c>ToolChainBuilder.ResolveGroupUnion</c>) forwards
     /// it by threading a constructor argument rather than by remembering to separately maintain an
     /// out-of-band <c>ConcurrentDictionary&lt;AITool, byte&gt;</c> keyed by reference identity — the
     /// side channel this field replaces, which had already silently dropped call-once candidacy
@@ -152,7 +152,7 @@ internal sealed class GovernedAIFunction : DelegatingAIFunction
     /// <summary>
     /// The per-call skill resolver supplied at construction (#589), for the same re-wrap-forwarding
     /// reason as <see cref="SkillIds"/> — currently unused by either production rewrap site
-    /// (<c>ToolChainBuilder.ApplyCompositionTaint</c>, <c>ToolChainBuilder.ProjectSurvivors.ResolveUnion</c>),
+    /// (<c>ToolChainBuilder.ApplyCompositionTaint</c>, <c>ToolChainBuilder.ResolveGroupUnion</c>),
     /// since no tool built through <c>ToolChainBuilder</c>'s pipeline supplies a per-call resolver
     /// today (#619) — added defensively so a future tool that does adopt this pattern through that
     /// pipeline can't have it silently dropped by a rewrap with no compiler or test signal.

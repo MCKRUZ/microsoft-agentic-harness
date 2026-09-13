@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Plugins;
@@ -625,12 +626,12 @@ public class ToolChainBuilderTests
     [Fact]
     public async Task BuildMergedToolsAsync_OneSkillDeclaresTheSameToolTwiceOnlyOneCallOnce_StillRegistersIt()
     {
-        // #589 round-2 code-review finding: UnionSkillScopeIfNeeded's early return (candidate's skill
-        // ids already fully covered by the published instance's) fires for a SINGLE skill that names
-        // the same tool via two of its own ToolDeclarations - same skill id on both, so no union
-        // rewrap happens at all. The call-once carry-forward used to live only inside the union-rewrap
-        // branch, so it never ran on this path, silently dropping the restriction whenever the
-        // discarded (not the published) declaration was the call-once one.
+        // #589 round-2 code-review finding: ResolveGroupUnion's "canonical already embodies the full
+        // union" early return fires for a SINGLE skill that names the same tool via two of its own
+        // ToolDeclarations - same skill id on both, so no rewrap happens at all. The call-once
+        // carry-forward used to live only inside the (then pairwise) union-rewrap branch, so it never
+        // ran on this path, silently dropping the restriction whenever the discarded (not the
+        // canonical) declaration was the call-once one.
         var toolMock = new Mock<ITool>();
         toolMock.Setup(t => t.Name).Returns("twice_declared_tool");
 
@@ -671,12 +672,13 @@ public class ToolChainBuilderTests
 
         // #621: the assertion above alone would still pass off the pre-#621 callOnceCandidates
         // dictionary safety net even if GovernedAIFunction.IsCallOnceCandidate (the new first-class
-        // field) were never correctly set on the SURVIVING instance itself -- ResolveUnion's early
-        // return (candidate's single skill id already covered by published's) means no rewrap
-        // happens, so `published`, built when its OWN declaration was CallOncePerConversation: false,
-        // is what survives verbatim. Asserting the field on that exact surviving instance directly
-        // makes this fail if ResolveUnion's call-once-divergence check (needsCallOnceUnion) is ever
-        // removed, even though the policy-registration assertion above would keep passing.
+        // field) were never correctly set on the SURVIVING instance itself -- ResolveGroupUnion's
+        // "canonical already embodies the full union" early return (the single skill id already
+        // covered) means no rewrap happens, so the canonical instance, built when its OWN declaration
+        // was CallOncePerConversation: false, is what survives verbatim. Asserting the field on that
+        // exact surviving instance directly makes this fail if the call-once-divergence check in
+        // ResolveGroupUnion is ever removed, even though the policy-registration assertion above
+        // would keep passing.
         survivor.Should().BeOfType<GovernedAIFunction>()
             .Which.IsCallOnceCandidate.Should().BeTrue(
                 "the surviving instance's OWN field must reflect call-once candidacy, not just the " +
@@ -750,21 +752,67 @@ public class ToolChainBuilderTests
     }
 
     [Fact]
-    public void ResolveUnion_PublishedToolHasSkillIdFromArguments_ForwardsItIntoTheRewrappedInstance()
+    public void ResolveGroupUnion_CanonicalHasSkillIdFromArguments_ForwardsItIntoTheRewrappedInstance()
     {
         // #619: mirrors the ApplyCompositionTaint test above for the other rewrap site.
         Func<AIFunctionArguments, string?> resolver = _ => "resolved-skill";
         var inner = AIFunctionFactory.Create(() => "result", "shared_tool");
-        var published = new GovernedAIFunction(inner, skillIds: ["skill-a"], skillIdFromArguments: resolver);
-        var candidate = new GovernedAIFunction(inner, skillIds: ["skill-b"]);
+        var canonical = new GovernedAIFunction(inner, skillIds: ["skill-a"], skillIdFromArguments: resolver);
+        var other = new GovernedAIFunction(inner, skillIds: ["skill-b"]);
 
-        var method = typeof(ToolChainBuilder).GetMethod("ResolveUnion", BindingFlags.NonPublic | BindingFlags.Static)!;
-        var result = (AITool)method.Invoke(null, [published, candidate])!;
+        var method = typeof(ToolChainBuilder).GetMethod("ResolveGroupUnion", BindingFlags.NonPublic | BindingFlags.Static)!;
+        var callOnceCandidates = new ConcurrentDictionary<AITool, byte>();
+        var result = (AITool)method.Invoke(null, [new List<AITool> { canonical, other }, callOnceCandidates])!;
 
         var rewrapped = result.Should().BeOfType<GovernedAIFunction>().Subject;
         rewrapped.SkillIds.Should().BeEquivalentTo(["skill-a", "skill-b"]);
         rewrapped.SkillIdFromArguments.Should().BeSameAs(resolver,
-            "the union rewrap must forward the published side's per-call skill resolver, not just its SkillIds/CurrentSkillAccessor");
+            "the group union rewrap must forward the canonical instance's per-call skill resolver, not just its SkillIds/CurrentSkillAccessor");
+    }
+
+    [Fact]
+    public void ResolveGroupUnion_ThreeSkillsShareATool_UnionsAllThreeInOnePass()
+    {
+        // #638: proves the group union is computed across the WHOLE group in one pass, not folded
+        // pairwise — a design that would still produce the correct end result for this case (the old
+        // pairwise ResolveUnion did too), but this test's real point is that only ONE new instance is
+        // constructed for three sharing skills, not up to two intermediate ones. Distinguished from a
+        // same-object-reference assertion below, since the pairwise version could coincidentally return
+        // the same reference on its final fold too.
+        var inner = AIFunctionFactory.Create(() => "result", "shared_tool");
+        var toolA = new GovernedAIFunction(inner, skillIds: ["skill-a"]);
+        var toolB = new GovernedAIFunction(inner, skillIds: ["skill-b"]);
+        var toolC = new GovernedAIFunction(inner, skillIds: ["skill-c"], isCallOnceCandidate: true);
+
+        var method = typeof(ToolChainBuilder).GetMethod("ResolveGroupUnion", BindingFlags.NonPublic | BindingFlags.Static)!;
+        var callOnceCandidates = new ConcurrentDictionary<AITool, byte>();
+        var result = (AITool)method.Invoke(null, [new List<AITool> { toolA, toolB, toolC }, callOnceCandidates])!;
+
+        var rewrapped = result.Should().BeOfType<GovernedAIFunction>().Subject;
+        rewrapped.SkillIds.Should().BeEquivalentTo(["skill-a", "skill-b", "skill-c"],
+            "all three skills' ids must be unioned, not just the first two or the canonical plus one other");
+        rewrapped.IsCallOnceCandidate.Should().BeTrue(
+            "the third instance's call-once candidacy must survive into the group union even though it " +
+            "contributed no new skill id the canonical didn't already have");
+        callOnceCandidates.ContainsKey(rewrapped).Should().BeTrue(
+            "the belt-and-suspenders dictionary must also be tagged, same as the field");
+    }
+
+    [Fact]
+    public void ResolveGroupUnion_CanonicalAlreadyEmbodiesTheFullUnion_ReturnsCanonicalUnchanged()
+    {
+        // No rewrap needed at all when the canonical (first-seen) instance already has every skill id
+        // and the call-once candidacy every other instance in the group contributes.
+        var inner = AIFunctionFactory.Create(() => "result", "shared_tool");
+        var canonical = new GovernedAIFunction(
+            inner, skillIds: ["skill-a", "skill-b"], isCallOnceCandidate: true);
+        var other = new GovernedAIFunction(inner, skillIds: ["skill-b"]);
+
+        var method = typeof(ToolChainBuilder).GetMethod("ResolveGroupUnion", BindingFlags.NonPublic | BindingFlags.Static)!;
+        var callOnceCandidates = new ConcurrentDictionary<AITool, byte>();
+        var result = (AITool)method.Invoke(null, [new List<AITool> { canonical, other }, callOnceCandidates])!;
+
+        result.Should().BeSameAs(canonical, "the canonical instance already embodies the full union, so no rewrap is needed");
     }
 
     [Fact]

@@ -93,7 +93,7 @@ public partial class ToolChainBuilder
     /// is already built by the time tools from multiple skills are pooled into <paramref name="allProvisioned"/>
     /// here (<c>WrapGoverned</c>, via <c>FinalizeChain</c>, runs per skill upstream of this method), so
     /// two skills naming the same MCP server/tool each produce their own independently-scoped instance.
-    /// Folding the group through <see cref="UnionSkillScopeIfNeeded"/> — the same primitive the
+    /// Folding the group through <see cref="ResolveGroupUnion"/> — the same primitive the
     /// first-party loop uses — closes this the same way, rather than leaving the MCP source exempt from
     /// a fix its own tool-source counterpart already received.
     /// </para>
@@ -107,22 +107,16 @@ public partial class ToolChainBuilder
             .ToList();
 
     /// <summary>
-    /// Folds every skill's independently-wrapped instance of the same (server, name) MCP tool into one
-    /// published <see cref="ProvisionedTool"/>, carrying the union of every instance's skill scope —
-    /// the MCP-source counterpart to <see cref="ProjectSurvivors"/>'s first-party dedup loop.
+    /// Computes the full union of every skill's independently-wrapped instance of the same
+    /// (server, name) MCP tool in one pass via <see cref="ResolveGroupUnion"/> — the MCP-source
+    /// counterpart to <see cref="ProjectSurvivors"/>'s first-party dedup loop (#638).
     /// </summary>
     private static ProvisionedTool UnionMcpGroup(
         IEnumerable<ProvisionedTool> group, ConcurrentDictionary<AITool, byte> callOnceCandidates)
     {
-        using var enumerator = group.GetEnumerator();
-        enumerator.MoveNext();
-        var canonical = enumerator.Current;
-        var unionedTool = canonical.Tool;
-
-        while (enumerator.MoveNext())
-            unionedTool = UnionSkillScopeIfNeeded(unionedTool, enumerator.Current.Tool, callOnceCandidates);
-
-        return canonical with { Tool = unionedTool };
+        var instances = group.ToList();
+        var unionedTool = ResolveGroupUnion(instances.ConvertAll(p => p.Tool), callOnceCandidates);
+        return instances[0] with { Tool = unionedTool };
     }
 
     /// <summary>
@@ -154,21 +148,22 @@ public partial class ToolChainBuilder
     /// the same pass rather than re-derived by the caller.
     /// </summary>
     /// <remarks>
-    /// <strong>Two skills sharing a first-party tool name union both skills' egress scope (#531,
-    /// #589).</strong> Each skill's tools are already wrapped as <see cref="GovernedAIFunction"/> —
-    /// one instance's <c>SkillIds</c> baked in per skill — before <paramref name="allProvisioned"/>
-    /// reaches this method (<c>BuildProvisionedToolsAsync</c>/<c>FinalizeChain</c> runs per skill,
-    /// upstream). The first-party dedup loop below detects a second skill sharing an already-published
-    /// name and re-wraps the published instance to carry the union of both skills' ids, rather than
-    /// silently keeping only whichever skill enumerated first — so a call to the shared tool resolves
-    /// an egress policy covering both skills' declared allowlists, regardless of which one the model
-    /// is conceptually driving the turn from. The re-wrap also carries <paramref name="callOnceCandidates"/>
-    /// forward onto the new instance — the same alias-preservation <see cref="WrapGoverned"/> already
+    /// <strong>Two (or more) skills sharing a first-party tool name union every sharing skill's egress
+    /// scope (#531, #589, #638).</strong> Each skill's tools are already wrapped as
+    /// <see cref="GovernedAIFunction"/> — one instance's <c>SkillIds</c> baked in per skill — before
+    /// <paramref name="allProvisioned"/> reaches this method (<c>BuildProvisionedToolsAsync</c>/
+    /// <c>FinalizeChain</c> runs per skill, upstream). The first-party dedup loop below groups every
+    /// name's contributing instances and, via <see cref="ResolveGroupUnion"/>, computes the FULL union
+    /// across the whole group in one pass rather than silently keeping only whichever skill enumerated
+    /// first — so a call to the shared tool resolves an egress policy covering every sharing skill's
+    /// declared allowlist, regardless of which one the model is conceptually driving the turn from.
+    /// <see cref="ResolveGroupUnion"/> also carries <paramref name="callOnceCandidates"/> forward onto
+    /// any new instance it constructs — the same alias-preservation <see cref="WrapGoverned"/> already
     /// does — because that set is keyed by reference identity
-    /// (<see cref="ReferenceEqualityComparer.Instance"/>): a re-wrap that produced a new,
-    /// never-tagged instance without this would silently drop a shared tool's
-    /// <c>CallOncePerConversation</c> restriction the moment two skills happened to share its name
-    /// (correctness/security review finding on this PR's own first draft).
+    /// (<see cref="ReferenceEqualityComparer.Instance"/>): a rewrap that produced a new, never-tagged
+    /// instance without this would silently drop a shared tool's <c>CallOncePerConversation</c>
+    /// restriction the moment two or more skills happened to share its name (correctness/security
+    /// review finding on #589's own first draft).
     /// </remarks>
     private static (List<AITool> Tools, HashSet<string> McpAttributedNames) ProjectSurvivors(
         List<ProvisionedTool> allProvisioned,
@@ -180,21 +175,17 @@ public partial class ToolChainBuilder
         var indexByName = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         var result = new List<AITool>();
 
-        foreach (var p in allProvisioned)
+        // #638: grouped, then unioned once per name — see ResolveGroupUnion's remarks for why this
+        // replaced a loop that repaired the published instance pairwise on each subsequent same-named
+        // tool. GroupBy preserves each group's original relative order and yields groups in order of
+        // each key's first appearance in the source, so this produces the identical ordering the old
+        // incremental loop did.
+        foreach (var group in allProvisioned
+            .Where(p => p.McpServerName is null && survivingNames.Contains(p.Tool.Name))
+            .GroupBy(p => p.Tool.Name, StringComparer.OrdinalIgnoreCase))
         {
-            if (p.McpServerName is not null)
-                continue;
-            if (!survivingNames.Contains(p.Tool.Name))
-                continue;
-
-            if (!indexByName.TryGetValue(p.Tool.Name, out var existingIndex))
-            {
-                indexByName[p.Tool.Name] = result.Count;
-                result.Add(p.Tool);
-                continue;
-            }
-
-            result[existingIndex] = UnionSkillScopeIfNeeded(result[existingIndex], p.Tool, callOnceCandidates);
+            indexByName[group.Key] = result.Count;
+            result.Add(ResolveGroupUnion(group.Select(p => p.Tool).ToList(), callOnceCandidates));
         }
 
         var mcpAttributedNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -216,99 +207,87 @@ public partial class ToolChainBuilder
     }
 
     /// <summary>
-    /// When two skills share a first-party tool name, unions the second skill's <see cref="GovernedAIFunction.SkillIds"/>
-    /// into the already-published instance instead of silently dropping them (#589). Re-wraps the same
-    /// way <see cref="ApplyCompositionTaint"/> does — unwrap to <see cref="GovernedAIFunction.Inner"/>,
-    /// rewrap with the combined scope — since this runs before that method, on tools with no
-    /// composition taint yet, so there is nothing else to preserve across the rewrap.
+    /// Computes the full union of every skill's independently-wrapped instance of the same tool name
+    /// in one pass, and wraps at most once with the complete result (#638) — the general form both
+    /// <see cref="ProjectSurvivors"/>'s first-party dedup loop and <see cref="UnionMcpGroup"/>'s MCP
+    /// dedup loop call, replacing the pairwise incremental repair (<c>UnionSkillScopeIfNeeded</c>/
+    /// <c>ResolveUnion</c>) both used before this fix.
     /// </summary>
-    /// <param name="published">The instance already added to the result list for this name.</param>
-    /// <param name="candidate">A later-enumerated skill's own instance of the same-named tool.</param>
-    /// <param name="callOnceCandidates">
-    /// The whole-agent-set call-once candidate tracker (#589 correctness/security review finding):
-    /// keyed by reference identity, so a re-wrap here that produced a new, untagged instance would
-    /// silently fall out of it, dropping a shared tool's <c>CallOncePerConversation</c> restriction
-    /// exactly the way <see cref="WrapGoverned"/>'s own alias-carry-forward comment already warns
-    /// about for its own re-wrap. If either side was tagged, the new instance is tagged too.
+    /// <remarks>
+    /// <para>
+    /// <strong>Why pairwise repair was the wrong shape.</strong> For N skills sharing a tool name, the
+    /// old per-name loop unwrapped and re-wrapped the published instance up to N-1 times — once per
+    /// additional skill discovered — each rewrap a fresh, independent chance for whichever field list
+    /// that rewrap site threads through the <see cref="GovernedAIFunction"/> constructor to be missing
+    /// one. That is exactly the shape that dropped call-once candidacy twice across #589's own review
+    /// history and <see cref="GovernedAIFunction.SkillIdFromArguments"/> once in #619 — not a specific
+    /// bug in any one field's forwarding, but a structural property of "repair after the fact,
+    /// incrementally." Computing every field's full union across the WHOLE group up front, then
+    /// deciding in one step whether the canonical instance already embodies it, removes the incremental
+    /// chain entirely: at most one rewrap happens regardless of how many skills share the name, and
+    /// every field this method reads is unioned in the same single pass — there is no longer a
+    /// "rewrap site" for a future field addition to forget, because there is only ever one rewrap.
+    /// </para>
+    /// <para>
     /// <strong>Kept as a belt-and-suspenders check alongside <see cref="GovernedAIFunction.IsCallOnceCandidate"/>
-    /// (#621) rather than replaced by it</strong> — the field only exists on a
-    /// <see cref="GovernedAIFunction"/> instance, so this dictionary remains the correct mechanism for
-    /// the (rare) case where <paramref name="published"/>/<paramref name="candidate"/> is some other
-    /// <see cref="AITool"/> shape with no field to carry candidacy on at all.
+    /// (#621) rather than replaced by it:</strong> <paramref name="callOnceCandidates"/> is consulted
+    /// on every ORIGINAL instance in <paramref name="instances"/> (never a synthetic intermediate —
+    /// there are none now), because the field only exists on a <see cref="GovernedAIFunction"/>
+    /// instance; the dictionary remains the correct mechanism for the (rare) case where an instance is
+    /// some other <see cref="AITool"/> shape with no field to carry candidacy on at all. If any
+    /// original instance was dictionary-tagged or field-tagged, the returned instance is tagged (both
+    /// the field, if a rewrap happens, and the dictionary).
+    /// </para>
+    /// </remarks>
+    /// <param name="instances">
+    /// Every skill's own instance of the same-named tool, in original discovery order.
+    /// <paramref name="instances"/>[0] is the canonical instance: what's returned unchanged when no
+    /// rewrap is needed, and what a rewrap's inner function/<see cref="GovernedAIFunction.CurrentSkillAccessor"/>/
+    /// <see cref="GovernedAIFunction.SkillIdFromArguments"/> are drawn from.
     /// </param>
+    /// <param name="callOnceCandidates">See this method's remarks.</param>
     /// <returns>
-    /// <paramref name="published"/> unchanged when either side isn't a <see cref="GovernedAIFunction"/>,
-    /// or neither the candidate's skill ids nor its call-once candidacy (#621) add anything
-    /// <paramref name="published"/> doesn't already have; otherwise a new instance wrapping the same
-    /// inner function with the union of both sides' skill ids and call-once candidacy.
+    /// <paramref name="instances"/>[0] unchanged when there is only one instance, the canonical
+    /// instance isn't a <see cref="GovernedAIFunction"/>, or it already embodies the full computed
+    /// union of every instance's skill ids and call-once candidacy; otherwise a new instance wrapping
+    /// the canonical's inner function with that complete union.
     /// </returns>
-    private static AITool UnionSkillScopeIfNeeded(
-        AITool published, AITool candidate, ConcurrentDictionary<AITool, byte> callOnceCandidates)
+    private static AITool ResolveGroupUnion(
+        IReadOnlyList<AITool> instances, ConcurrentDictionary<AITool, byte> callOnceCandidates)
     {
-        // Evaluated up front, on the two ORIGINAL instances, not on whatever ResolveUnion returns —
-        // a skill that names the same tool via two of its own ToolDeclarations (same skill id on
-        // both) never triggers a rewrap at all, so the DISCARDED candidate could still have been the
-        // one call-once-tagged. Since `published` is what survives to RegisterSurvivingCallOnceTools
-        // either way (a rewrap or not), tag whichever instance ResolveUnion actually returns, exactly
-        // once, right here — not once per return branch inside it (code-simplifier: an earlier version
-        // repeated the identical tag-then-return pair in all three of ResolveUnion's branches instead
-        // of tagging the one result this method actually produces).
-        var eitherWasCallOnceCandidate = callOnceCandidates.ContainsKey(published) || callOnceCandidates.ContainsKey(candidate);
-        var result = ResolveUnion(published, candidate);
+        var canonical = instances[0];
+        if (instances.Count == 1 || canonical is not GovernedAIFunction canonicalGoverned)
+            return canonical;
 
-        if (eitherWasCallOnceCandidate)
+        // Every instance not itself a GovernedAIFunction contributes nothing here (mirrors the old
+        // pairwise ResolveUnion's identical early-return for a non-governed side) — in practice this
+        // never happens, since WrapGoverned wraps every first-party AIFunction before it reaches this
+        // pipeline, but a mixed group degrades to "use whatever the governed members declare" rather
+        // than throwing.
+        var unionedIds = instances
+            .OfType<GovernedAIFunction>()
+            .SelectMany(g => g.SkillIds ?? [])
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var anyCallOnce = instances.Any(t =>
+            callOnceCandidates.ContainsKey(t) || (t as GovernedAIFunction)?.IsCallOnceCandidate == true);
+
+        var canonicalIds = canonicalGoverned.SkillIds ?? [];
+        var canonicalAlreadyComplete = unionedIds.All(id => canonicalIds.Contains(id, StringComparer.OrdinalIgnoreCase))
+            && (!anyCallOnce || canonicalGoverned.IsCallOnceCandidate);
+
+        if (canonicalAlreadyComplete)
+            return canonical;
+
+        var result = new GovernedAIFunction(
+            canonicalGoverned.Inner, compositionTaint: null, canonicalGoverned.CurrentSkillAccessor,
+            unionedIds, canonicalGoverned.SkillIdFromArguments,
+            isCallOnceCandidate: anyCallOnce);
+
+        if (anyCallOnce)
             callOnceCandidates.TryAdd(result, 0);
 
         return result;
-    }
-
-    /// <summary>
-    /// The pure "what tool should this name now publish as" decision behind
-    /// <see cref="UnionSkillScopeIfNeeded"/>, with no side effects of its own — <em>every</em> return
-    /// here is a candidate for <see cref="UnionSkillScopeIfNeeded"/>'s single call-once tag, so this
-    /// method must never tag anything itself.
-    /// </summary>
-    /// <remarks>
-    /// <strong>#621: rewraps on call-once divergence too, not just skill-id divergence.</strong>
-    /// <see cref="GovernedAIFunction.IsCallOnceCandidate"/> is a first-class field now, carried
-    /// forward by a rewrap the same way <see cref="GovernedAIFunction.SkillIds"/> already is — but a
-    /// field only travels onto an instance this method actually constructs. Before this, a case where
-    /// <paramref name="candidate"/> was call-once-tagged but its skill ids were already fully covered
-    /// by <paramref name="published"/> would return <paramref name="published"/> UNCHANGED, so
-    /// <c>published.IsCallOnceCandidate</c> would stay <see langword="false"/> even though the caller's
-    /// dictionary-based tag (<see cref="UnionSkillScopeIfNeeded"/>, unchanged, still the belt to this
-    /// field's suspenders) correctly marks the returned reference as a candidate — the exact "the field
-    /// says one thing, the side channel says another" drift #621 exists to close. Checking call-once
-    /// divergence as an independent, second reason to construct a new instance closes it: the returned
-    /// instance's own field is now trustworthy on its own, not just correct because something else also
-    /// happens to be tracking it.
-    /// </remarks>
-    private static AITool ResolveUnion(AITool published, AITool candidate)
-    {
-        if (published is not GovernedAIFunction publishedGoverned || candidate is not GovernedAIFunction candidateGoverned)
-            return published;
-
-        var publishedIds = publishedGoverned.SkillIds ?? [];
-        var candidateIds = candidateGoverned.SkillIds ?? [];
-        var needsIdUnion = candidateIds.Count > 0
-            && !candidateIds.All(id => publishedIds.Contains(id, StringComparer.OrdinalIgnoreCase));
-        var needsCallOnceUnion = candidateGoverned.IsCallOnceCandidate && !publishedGoverned.IsCallOnceCandidate;
-
-        if (!needsIdUnion && !needsCallOnceUnion)
-            return published;
-
-        // Skip the union computation entirely when call-once divergence is the ONLY reason to
-        // rewrap — publishedIds already covers candidateIds in that case, so Concat/Distinct/ToList
-        // would just reproduce publishedIds at the cost of an allocation and a full pass (/simplify
-        // efficiency finding).
-        var union = needsIdUnion
-            ? publishedIds.Concat(candidateIds).Distinct(StringComparer.OrdinalIgnoreCase).ToList()
-            : publishedIds;
-
-        return new GovernedAIFunction(
-            publishedGoverned.Inner, compositionTaint: null, publishedGoverned.CurrentSkillAccessor, union,
-            publishedGoverned.SkillIdFromArguments,
-            isCallOnceCandidate: publishedGoverned.IsCallOnceCandidate || candidateGoverned.IsCallOnceCandidate);
     }
 
     /// <summary>
