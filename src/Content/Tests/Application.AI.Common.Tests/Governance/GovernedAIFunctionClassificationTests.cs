@@ -64,7 +64,7 @@ public sealed class GovernedAIFunctionClassificationTests
     {
         var (inner, wasInvoked) = MakeInner();
         var gate = GateReturning(ClassificationVerdict.RedactOutput());
-        gate.Setup(g => g.RedactResult("file_system", It.IsAny<object?>())).Returns("[redacted]");
+        gate.Setup(g => g.RedactResult("file_system", It.IsAny<object?>(), It.IsAny<bool?>())).Returns("[redacted]");
 
         var result = await InvokeUnder(AdmissionHarness.Pipeline(classificationGate: gate.Object), inner);
 
@@ -72,7 +72,7 @@ public sealed class GovernedAIFunctionClassificationTests
         Assert.Equal("[redacted]", result?.ToString());
         // The tool result reaches the gate as the pipeline's serialized form (a JsonElement), not a bare
         // string, so the redactor is verified on the call rather than the exact argument type.
-        gate.Verify(g => g.RedactResult("file_system", It.IsAny<object?>()), Times.Once);
+        gate.Verify(g => g.RedactResult("file_system", It.IsAny<object?>(), It.IsAny<bool?>()), Times.Once);
     }
 
     [Fact]
@@ -85,7 +85,7 @@ public sealed class GovernedAIFunctionClassificationTests
 
         Assert.True(wasInvoked());
         Assert.Equal("inner-result", result?.ToString());
-        gate.Verify(g => g.RedactResult(It.IsAny<string>(), It.IsAny<object?>()), Times.Never);
+        gate.Verify(g => g.RedactResult(It.IsAny<string>(), It.IsAny<object?>(), It.IsAny<bool?>()), Times.Never);
     }
 
     [Fact]

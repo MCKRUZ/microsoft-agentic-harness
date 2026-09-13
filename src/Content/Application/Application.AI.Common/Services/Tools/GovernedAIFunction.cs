@@ -165,6 +165,23 @@ internal sealed class GovernedAIFunction : DelegatingAIFunction
     /// </summary>
     internal bool IsCallOnceCandidate => _isCallOnceCandidate;
 
+    /// <summary>
+    /// Whether this tool's provenance is a genuine MCP server (#553) — used to gate
+    /// <c>ToolResultText</c>'s MCP content-block shape detection so a non-MCP tool's own JSON, if it
+    /// happens to match that shape, is never mistaken for one.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately COMPUTED, not a stored field forwarded through every constructor call the way
+    /// <see cref="SkillIds"/>/<see cref="IsCallOnceCandidate"/> are — <c>ToolChainBuilder.WrapGoverned</c>
+    /// already wraps an MCP-backed tool in <see cref="McpFailureNormalizingAIFunction"/> BEFORE
+    /// constructing this instance, and every re-wrap site (<c>ApplyCompositionTaint</c>,
+    /// <c>ResolveGroupUnion</c>) already passes <see cref="Inner"/> through unchanged — so that inner
+    /// wrapping, and this property's answer, survives automatically with no separate value to
+    /// remember to forward. A stored flag would be redundant state that could drift from what
+    /// <see cref="Inner"/> actually is; this can't drift, because it IS what <see cref="Inner"/> is.
+    /// </remarks>
+    internal bool IsFromMcp => InnerFunction is McpFailureNormalizingAIFunction;
+
     protected override async ValueTask<object?> InvokeCoreAsync(
         AIFunctionArguments arguments,
         CancellationToken cancellationToken)
@@ -233,7 +250,7 @@ internal sealed class GovernedAIFunction : DelegatingAIFunction
             ReportedBy, CancellationToken.None).ConfigureAwait(false);
 
         return await admissionPipeline
-            .ApplyOutputPolicyAsync(admission, Name, Unwrap(result), CancellationToken.None)
+            .ApplyOutputPolicyAsync(admission, Name, Unwrap(result), CancellationToken.None, IsFromMcp)
             .ConfigureAwait(false);
     }
 

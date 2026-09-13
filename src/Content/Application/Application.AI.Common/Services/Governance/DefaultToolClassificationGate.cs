@@ -126,15 +126,15 @@ public sealed class DefaultToolClassificationGate : IToolClassificationGate
     /// #484: a <c>Redact</c> verdict must do strictly more than the unconditional sanitize every other
     /// tool result already gets (<see cref="ToolCallAdmissionPipeline.ApplyOutputPolicyAsync"/>) — otherwise
     /// an operator-configured classification policy is a control with no distinct effect. Routes through
-    /// <see cref="ToolResultText.SanitizeAndRedact(object?, ICompositeResponseSanitizer, IContentRedactionFilter, string)"/>
-    /// rather than <see cref="ToolResultText.Sanitize(object?, ICompositeResponseSanitizer, string)"/>,
+    /// <see cref="ToolResultText.SanitizeAndRedact(object?, ICompositeResponseSanitizer, IContentRedactionFilter, string, bool?)"/>
+    /// rather than <see cref="ToolResultText.Sanitize(object?, ICompositeResponseSanitizer, string, bool?)"/>,
     /// which also applies <see cref="_redactionFilter"/>'s known-secret-pattern scrub. See
-    /// <see cref="ToolResultText.Sanitize(object?, ICompositeResponseSanitizer, string)"/> for why the result's shape (raw string vs. serialized JSON
+    /// <see cref="ToolResultText.Sanitize(object?, ICompositeResponseSanitizer, string, bool?)"/> for why the result's shape (raw string vs. serialized JSON
     /// string element) must survive the round trip, and why a structured result is left unchanged — such
     /// cases are better handled by a Block policy.
     /// </remarks>
-    public object? RedactResult(string toolName, object? result) =>
-        ToolResultText.SanitizeAndRedact(result, _sanitizer, _redactionFilter, toolName);
+    public object? RedactResult(string toolName, object? result, bool? isFromMcp = null) =>
+        ToolResultText.SanitizeAndRedact(result, _sanitizer, _redactionFilter, toolName, isFromMcp);
 
     /// <inheritdoc />
     public string? RedactResult(string toolName, string? content) =>

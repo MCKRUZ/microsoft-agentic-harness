@@ -153,6 +153,9 @@ public class ToolChainBuilderTests
         var governed = tools.Should().ContainSingle(t => t.Name == "mcp_tool")
             .Which.Should().BeOfType<GovernedAIFunction>().Subject;
         governed.Inner.Should().BeOfType<McpFailureNormalizingAIFunction>();
+        // #553: IsFromMcp is computed from this exact wrapping, so WrapGoverned needs no separate
+        // change to report accurate provenance to ApplyOutputPolicyAsync.
+        governed.IsFromMcp.Should().BeTrue();
     }
 
     // --- Plugin governance ---

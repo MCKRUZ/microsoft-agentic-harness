@@ -1054,7 +1054,8 @@ public sealed class DirectToolInvokerTests
         /// <summary>When set, the gate answers redaction with a non-string, as a consumer gate may.</summary>
         public object? RedactionResult { get; set; }
 
-        public object? RedactResult(string toolName, object? result) => RedactionResult ?? Redacted;
+        public object? RedactResult(string toolName, object? result, bool? isFromMcp = null) =>
+            RedactionResult ?? Redacted;
 
         /// <summary>
         /// The string-typed overload <see cref="Application.AI.Common.Services.Governance.ToolCallAdmissionPipeline.TryApplyTextOutputPolicyAsync"/>

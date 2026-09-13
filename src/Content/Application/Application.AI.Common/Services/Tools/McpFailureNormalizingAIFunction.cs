@@ -55,8 +55,9 @@ internal sealed class McpFailureNormalizingAIFunction : DelegatingAIFunction
     /// </summary>
     /// <remarks>
     /// The inner loop gates each block on <see cref="ToolResultText.IsContentBlock"/> — the same
-    /// predicate <see cref="ToolResultText.TryGetContentArray"/> already gates the outer
-    /// <c>content</c>-array recognition on — so this stops being a fourth independent re-derivation of
+    /// predicate <see cref="ToolResultText.TryGetContentArray(JsonElement, out JsonElement)"/> already
+    /// gates the outer <c>content</c>-array recognition on — so this stops being a fourth independent
+    /// re-derivation of
     /// "what counts as a content block" (#554; <c>ToolResultText.cs</c> itself had three before #488).
     /// This does not recover a message from a non-protocol-legal block that carries a top-level
     /// <c>text</c> property with no <c>type</c> discriminator (e.g. <c>{"text":"disk full"}</c>) — a

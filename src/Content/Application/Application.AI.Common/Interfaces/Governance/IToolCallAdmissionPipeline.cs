@@ -101,11 +101,21 @@ public interface IToolCallAdmissionPipeline
     /// </param>
     /// <param name="toolName">The tool that produced <paramref name="result"/>.</param>
     /// <param name="result">The tool's raw result.</param>
+    /// <param name="isFromMcp">
+    /// Whether <paramref name="result"/> is confirmed to have come from a genuine MCP server (#553):
+    /// <see langword="true"/> keeps <c>ToolResultText</c>'s MCP content-block shape detection running
+    /// exactly as before; <see langword="false"/> (confirmed NOT MCP) skips it entirely, so a non-MCP
+    /// tool's own JSON never risks being mistaken for an MCP content block merely because it happens to
+    /// share the shape; <see langword="null"/> (provenance not established by this caller) also keeps
+    /// detection running — the safe default, since the detection is an EXTRA scrutiny pass, not a
+    /// relaxation, so an unconfirmed origin must never skip it. See <c>GovernedAIFunction.IsFromMcp</c>
+    /// for how a governed tool call knows the answer.
+    /// </param>
     /// <returns>
     /// <paramref name="result"/>'s text, run unconditionally through the general-purpose sanitizer
     /// (injection payloads, invisible characters, exfiltration URLs) regardless of whether the admission
     /// carried a redact verdict; a redact verdict additionally routes through
-    /// <see cref="IToolClassificationGate.RedactResult(string, object?)"/>'s known-secret-pattern scrub (#484) — a strict
+    /// <see cref="IToolClassificationGate.RedactResult(string, object?, bool?)"/>'s known-secret-pattern scrub (#484) — a strict
     /// superset of the baseline sanitize, not a substitute for it. A structured (non-text) result is
     /// returned unchanged — the sanitizer operates on free text, and every recognized text-carrying
     /// shape (a plain string, a serialized MCP <c>CallToolResult</c>'s text and embedded-resource content
@@ -138,7 +148,8 @@ public interface IToolCallAdmissionPipeline
     /// its own failure rather than honoring this token.
     /// </param>
     ValueTask<object?> ApplyOutputPolicyAsync(
-        ToolCallAdmission admission, string toolName, object? result, CancellationToken cancellationToken);
+        ToolCallAdmission admission, string toolName, object? result, CancellationToken cancellationToken,
+        bool? isFromMcp = null);
 
     /// <summary>
     /// Applies the admission's output policy to a result that must leave as <em>text</em>, reporting
