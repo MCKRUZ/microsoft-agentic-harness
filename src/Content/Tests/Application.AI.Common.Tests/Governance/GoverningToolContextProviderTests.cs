@@ -38,6 +38,36 @@ public sealed class GoverningToolContextProviderTests
         Assert.Equal(inner.Name, result.Name); // schema/name preserved by the decorator
     }
 
+    /// <summary>
+    /// #553: this channel carries no separate MCP-provenance signal of its own — a consumer's own
+    /// <c>AIContextProvider</c> is expected to pre-wrap an MCP-backed tool in
+    /// <see cref="McpFailureNormalizingAIFunction"/> before contributing it here (see the class
+    /// remarks), and <see cref="GoverningToolContextProvider.Govern"/> needs no special-case code to
+    /// recognize that: the resulting <see cref="GovernedAIFunction.IsFromMcp"/> is computed from
+    /// whatever that method already wraps as-is.
+    /// </summary>
+    [Fact]
+    public void Govern_ConsumerPreWrappedMcpTool_ResultingGovernedFunctionReportsIsFromMcpTrue()
+    {
+        var mcpBacked = new McpFailureNormalizingAIFunction(MakeFunction());
+
+        var result = GoverningToolContextProvider.Govern(mcpBacked, AdmissionHarness.PermissiveSanitizer());
+
+        var governed = Assert.IsType<GovernedAIFunction>(result);
+        Assert.True(governed.IsFromMcp);
+    }
+
+    [Fact]
+    public void Govern_PlainUnwrappedTool_ResultingGovernedFunctionReportsIsFromMcpFalse()
+    {
+        var inner = MakeFunction();
+
+        var result = GoverningToolContextProvider.Govern(inner, AdmissionHarness.PermissiveSanitizer());
+
+        var governed = Assert.IsType<GovernedAIFunction>(result);
+        Assert.False(governed.IsFromMcp);
+    }
+
     [Fact]
     public void Govern_AlreadyGoverned_ReturnsSameInstance_NoDoubleWrap()
     {

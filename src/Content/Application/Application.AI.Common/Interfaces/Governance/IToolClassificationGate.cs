@@ -32,7 +32,7 @@ public interface IToolClassificationGate
     /// <returns>
     /// <see cref="ClassificationVerdict.Allow"/> to proceed, <see cref="ClassificationVerdict.Block"/> to
     /// deny with a model-facing message, or <see cref="ClassificationVerdict.RedactOutput"/> to proceed but
-    /// scrub the result via <see cref="RedactResult(string, object?)"/>. Always <see cref="ClassificationVerdict.Allow"/>
+    /// scrub the result via <see cref="RedactResult(string, object?, bool?)"/>. Always <see cref="ClassificationVerdict.Allow"/>
     /// when the gate is off or in audit mode.
     /// </returns>
     ValueTask<ClassificationVerdict> EvaluateAsync(
@@ -45,6 +45,12 @@ public interface IToolClassificationGate
     /// </summary>
     /// <param name="toolName">The tool whose result is being redacted (passed to the sanitizers as context).</param>
     /// <param name="result">The tool's raw result object.</param>
+    /// <param name="isFromMcp">
+    /// Whether <paramref name="result"/> is confirmed to have come from a genuine MCP server (#553) —
+    /// forwarded to <c>ToolResultText</c> to gate its MCP content-block shape detection. See
+    /// <see cref="IToolCallAdmissionPipeline.ApplyOutputPolicyAsync"/>'s identical parameter for the
+    /// full contract.
+    /// </param>
     /// <returns>
     /// The redacted result. A text result — a raw string, a serialized JSON string, or (for an MCP tool)
     /// a <c>TextContent</c>/<c>AIContent[]</c> — is scrubbed and returned in its original shape; a
@@ -54,10 +60,10 @@ public interface IToolClassificationGate
     /// data must not reach the model. See <c>ToolResultText</c>, which this method delegates the
     /// shape-preserving scrub to, for the exact set of shapes recognized as text.
     /// </returns>
-    object? RedactResult(string toolName, object? result);
+    object? RedactResult(string toolName, object? result, bool? isFromMcp = null);
 
     /// <summary>
-    /// String-typed overload of <see cref="RedactResult(string, object?)"/> for a caller that already
+    /// String-typed overload of <see cref="RedactResult(string, object?, bool?)"/> for a caller that already
     /// knows its content is plain text and needs to leave as text — the
     /// <c>ToolCallAdmissionPipeline.TryApplyTextOutputPolicy</c> boundary (the plan step executor and
     /// the Execution API, neither of which replays structured content back to a model).
@@ -66,7 +72,7 @@ public interface IToolClassificationGate
     /// <param name="content">The tool's raw text.</param>
     /// <returns>
     /// The redacted text. <strong>Contract: non-null <paramref name="content"/> must produce a non-null
-    /// result.</strong> <see cref="RedactResult(string, object?)"/>'s general <c>object?</c> signature
+    /// result.</strong> <see cref="RedactResult(string, object?, bool?)"/>'s general <c>object?</c> signature
     /// legitimately returns a structured, non-string value unchanged — but a string in, string out
     /// call site has no structured shape to preserve, so a non-null-input/null-output response here can
     /// only mean this implementation broke that contract, and the caller
@@ -87,7 +93,7 @@ public enum ClassificationGateOutcome
     /// <summary>The call is denied; the model receives <see cref="ClassificationVerdict.BlockedMessage"/>.</summary>
     Block,
 
-    /// <summary>The call proceeds, but its result is scrubbed via <see cref="IToolClassificationGate.RedactResult(string, object?)"/>.</summary>
+    /// <summary>The call proceeds, but its result is scrubbed via <see cref="IToolClassificationGate.RedactResult(string, object?, bool?)"/>.</summary>
     RedactOutput
 }
 

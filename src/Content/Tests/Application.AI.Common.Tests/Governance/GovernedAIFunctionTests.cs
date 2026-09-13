@@ -24,6 +24,27 @@ public sealed class GovernedAIFunctionTests
         return (inner, () => invoked);
     }
 
+    // ── #553: IsFromMcp is computed from whether the wrapped function is an
+    // McpFailureNormalizingAIFunction, not a separately stored/forwarded field ──────────
+
+    [Fact]
+    public void IsFromMcp_WrappingAnMcpFailureNormalizingAIFunction_IsTrue()
+    {
+        var (inner, _) = MakeInner();
+        var governed = new GovernedAIFunction(new McpFailureNormalizingAIFunction(inner));
+
+        Assert.True(governed.IsFromMcp);
+    }
+
+    [Fact]
+    public void IsFromMcp_WrappingAPlainFunction_IsFalse()
+    {
+        var (inner, _) = MakeInner();
+        var governed = new GovernedAIFunction(inner);
+
+        Assert.False(governed.IsFromMcp);
+    }
+
     /// <summary>
     /// An inner function shaped like what <c>AIToolConverter</c> produces for a <c>ToolResult.Fail</c>:
     /// a <see cref="ConvertedToolFailure"/> return, paired with the same <c>MarshalResult</c> override
@@ -82,6 +103,44 @@ public sealed class GovernedAIFunctionTests
         Assert.True(wasInvoked(), "inner tool must run when no admission chain is ambient");
     }
 
+    /// <summary>
+    /// #553: the actual wiring from <see cref="GovernedAIFunction.IsFromMcp"/> to the argument
+    /// <see cref="IToolCallAdmissionPipeline.ApplyOutputPolicyAsync"/> receives — the two IsFromMcp_*
+    /// tests above prove the property's own value, this proves that value actually reaches the pipeline
+    /// call, for both a genuinely MCP-wrapped tool and a plain one.
+    /// </summary>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task InvokeAsync_PassesIsFromMcpToApplyOutputPolicy(bool wrapInMcpNormalizer)
+    {
+        var (inner, _) = MakeInner();
+        bool? seenIsFromMcp = null;
+        var sawCall = false;
+        var pipeline = new Mock<IToolCallAdmissionPipeline>();
+        pipeline
+            .Setup(p => p.AdmitAsync(It.IsAny<ToolCallAdmissionRequest>(), It.IsAny<CancellationToken>()))
+            .Returns(ValueTask.FromResult(ToolCallAdmission.Allow()));
+        pipeline
+            .Setup(p => p.ApplyOutputPolicyAsync(
+                It.IsAny<ToolCallAdmission>(), It.IsAny<string>(), It.IsAny<object?>(), It.IsAny<CancellationToken>(),
+                It.IsAny<bool?>()))
+            .Callback<ToolCallAdmission, string, object?, CancellationToken, bool?>((_, _, _, _, isFromMcp) =>
+            {
+                sawCall = true;
+                seenIsFromMcp = isFromMcp;
+            })
+            .Returns<ToolCallAdmission, string, object?, CancellationToken, bool?>(
+                (_, _, result, _, _) => ValueTask.FromResult(result));
+
+        var governedInner = wrapInMcpNormalizer ? new McpFailureNormalizingAIFunction(inner) : inner;
+        using var armed = ToolAdmissionAccessor.Begin(pipeline.Object);
+        await new GovernedAIFunction(governedInner).InvokeAsync(new AIFunctionArguments(), CancellationToken.None);
+
+        Assert.True(sawCall);
+        Assert.Equal(wrapInMcpNormalizer, seenIsFromMcp);
+    }
+
     [Fact]
     public async Task InvokeAsync_AsksForLoopDetection_UnlikeEveryOtherCaller()
     {
@@ -98,8 +157,10 @@ public sealed class GovernedAIFunctionTests
             .Returns(ValueTask.FromResult(ToolCallAdmission.Allow()));
         pipeline
             .Setup(p => p.ApplyOutputPolicyAsync(
-                It.IsAny<ToolCallAdmission>(), It.IsAny<string>(), It.IsAny<object?>(), It.IsAny<CancellationToken>()))
-            .Returns<ToolCallAdmission, string, object?, CancellationToken>((_, _, result, _) => ValueTask.FromResult(result));
+                It.IsAny<ToolCallAdmission>(), It.IsAny<string>(), It.IsAny<object?>(), It.IsAny<CancellationToken>(),
+                It.IsAny<bool?>()))
+            .Returns<ToolCallAdmission, string, object?, CancellationToken, bool?>(
+                (_, _, result, _, _) => ValueTask.FromResult(result));
 
         await InvokeUnder(pipeline.Object, inner);
 
@@ -121,8 +182,10 @@ public sealed class GovernedAIFunctionTests
             .Returns(ValueTask.FromResult(ToolCallAdmission.Allow().WithApproval(call)));
         pipeline
             .Setup(p => p.ApplyOutputPolicyAsync(
-                It.IsAny<ToolCallAdmission>(), It.IsAny<string>(), It.IsAny<object?>(), It.IsAny<CancellationToken>()))
-            .Returns<ToolCallAdmission, string, object?, CancellationToken>((_, _, result, _) => ValueTask.FromResult(result));
+                It.IsAny<ToolCallAdmission>(), It.IsAny<string>(), It.IsAny<object?>(), It.IsAny<CancellationToken>(),
+                It.IsAny<bool?>()))
+            .Returns<ToolCallAdmission, string, object?, CancellationToken, bool?>(
+                (_, _, result, _, _) => ValueTask.FromResult(result));
         return pipeline;
     }
 

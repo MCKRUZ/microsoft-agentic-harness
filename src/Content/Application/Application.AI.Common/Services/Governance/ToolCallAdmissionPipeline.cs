@@ -313,7 +313,7 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
     /// How much beyond <see cref="OutputCeiling"/> is kept while sanitizing and redacting, so a secret
     /// or an injection pattern straddling the ceiling stays inside the scanned region rather than being
     /// sliced in half — removed again by the final cut. See
-    /// <see cref="ToolResultText.PreCutForScan(object?, int, int, string)"/> for the full rationale and
+    /// <see cref="ToolResultText.PreCutForScan(object?, int, int, string, bool?)"/> for the full rationale and
     /// the residual risk it accepts.
     /// </summary>
     /// <remarks>
@@ -435,7 +435,8 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
 
     /// <inheritdoc />
     public async ValueTask<object?> ApplyOutputPolicyAsync(
-        ToolCallAdmission admission, string toolName, object? result, CancellationToken cancellationToken)
+        ToolCallAdmission admission, string toolName, object? result, CancellationToken cancellationToken,
+        bool? isFromMcp = null)
     {
         ArgumentNullException.ThrowIfNull(admission);
         cancellationToken.ThrowIfCancellationRequested();
@@ -458,13 +459,14 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
         // final cut: a hot reload between the two reads would otherwise let them disagree about what
         // ceiling this one call is bounding to (run-gates' correctness gate, advisory).
         var ceiling = OutputCeiling;
-        var (preCut, _) = ToolResultText.PreCutForScan(result, ceiling, ScrubOverlapMargin, OutputTruncationMarker);
+        var (preCut, _) = ToolResultText.PreCutForScan(
+            result, ceiling, ScrubOverlapMargin, OutputTruncationMarker, isFromMcp);
 
         // #469: the sanitize pass below is unconditional — see the interface remarks for why. It stays
         // in shape-preserving lockstep with RedactResult below via the shared ToolResultText.Sanitize.
         // Delegated to SanitizeOrRedact (see its own remarks) so a sanitizer/redaction-gate exception
         // degrades gracefully instead of faulting the whole tool call.
-        var treated = SanitizeOrRedact(admission, toolName, preCut);
+        var treated = SanitizeOrRedact(admission, toolName, preCut, isFromMcp);
 
         // #532: bound AFTER sanitize and redact, never before the FINAL cut — the pre-cut above is a
         // different, wider, scan-cost-only bound, not a substitute for this one. It also mirrors
@@ -476,10 +478,10 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
         // cost, not output size (see ReserveAggregateCeiling's remarks for why a smaller pre-cut would
         // still be safe but is not necessary here).
         var effectiveCeiling = ReserveAggregateCeiling(ceiling);
-        var (bounded, dropped) = ToolResultText.Bound(treated, effectiveCeiling, OutputTruncationMarker);
+        var (bounded, dropped) = ToolResultText.Bound(treated, effectiveCeiling, OutputTruncationMarker, isFromMcp);
         if (!dropped)
         {
-            SettleAggregateReservation(effectiveCeiling, ToolResultText.ExtractText(bounded).Length);
+            SettleAggregateReservation(effectiveCeiling, ToolResultText.ExtractText(bounded, isFromMcp).Length);
             return bounded;
         }
 
@@ -510,11 +512,11 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
         // on exactly the path its own factory-laziness (see that method's remarks) exists to avoid
         // paying for.
         var rawFullTextCache = (string?)null;
-        string RawFullText() => rawFullTextCache ??= ToolResultText.ExtractText(result);
+        string RawFullText() => rawFullTextCache ??= ToolResultText.ExtractText(result, isFromMcp);
 
         if (_executionContext.HasRetrievableToolResultScope && RawFullText().Length <= effectiveCeiling)
         {
-            SettleAggregateReservation(effectiveCeiling, ToolResultText.ExtractText(bounded).Length);
+            SettleAggregateReservation(effectiveCeiling, ToolResultText.ExtractText(bounded, isFromMcp).Length);
             return bounded;
         }
 
@@ -540,7 +542,7 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
         // for the #577 check does not walk-and-rejoin every block of `result` a second time.
         var marker = await SpillAndBuildMarkerAsync(toolName, RawFullText, effectiveCeiling)
             .ConfigureAwait(false);
-        var (reboundedWithId, _) = ToolResultText.Bound(treated, effectiveCeiling, marker);
+        var (reboundedWithId, _) = ToolResultText.Bound(treated, effectiveCeiling, marker, isFromMcp);
 
         // A code-review found this residual gap: ToolResultText.Bound/BudgetedCut walks a multi-block
         // result with a single shared per-block budget, and cuts whichever block first exceeds it.
@@ -559,10 +561,12 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
         // reboundedText is extracted once and reused for both the Contains check and the settle
         // length below — ExtractText walks and rejoins every text block, so re-running it on the same
         // object a second time would double that cost on every truncated multi-block result.
-        var reboundedText = ToolResultText.ExtractText(reboundedWithId);
+        var reboundedText = ToolResultText.ExtractText(reboundedWithId, isFromMcp);
         var idMarkerLanded = reboundedText.Contains(marker, StringComparison.Ordinal);
         var final = idMarkerLanded ? reboundedWithId : bounded;
-        var finalLength = idMarkerLanded ? reboundedText.Length : ToolResultText.ExtractText(bounded).Length;
+        var finalLength = idMarkerLanded
+            ? reboundedText.Length
+            : ToolResultText.ExtractText(bounded, isFromMcp).Length;
         SettleAggregateReservation(effectiveCeiling, finalLength);
         return final;
     }
@@ -759,7 +763,7 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
     /// <para>
     /// <strong>Capped only by MaxSpillChars, not by the scan-cost bound (#563).</strong> Before #563
     /// this spilled <paramref name="rawFullTextFactory"/> already cut to
-    /// <see cref="ToolResultText.PreCutForScan(object?, int, int, string)"/>'s scan-cost bound, so it
+    /// <see cref="ToolResultText.PreCutForScan(object?, int, int, string, bool?)"/>'s scan-cost bound, so it
     /// could never actually hold more than roughly <see cref="OutputCeiling"/> +
     /// <see cref="ScrubOverlapMargin"/> characters: the "full output available via tool_result_fetch"
     /// marker overpromised for anything past that, permanently. Spilling the original instead — capped
@@ -866,8 +870,8 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
     /// <summary>
     /// Runs the sanitize-or-redact step both output-policy methods share, degrading rather than
     /// faulting the turn if <see cref="ICompositeResponseSanitizer"/> or <see cref="IContentRedactionFilter"/>
-    /// throws. <see cref="ToolResultText.Sanitize(object?, ICompositeResponseSanitizer, string)"/> and
-    /// <see cref="IToolClassificationGate.RedactResult(string, object?)"/> are both must-not-throw
+    /// throws. <see cref="ToolResultText.Sanitize(object?, ICompositeResponseSanitizer, string, bool?)"/> and
+    /// <see cref="IToolClassificationGate.RedactResult(string, object?, bool?)"/> are both must-not-throw
     /// contracts against the SHIPPED <see cref="ICompositeResponseSanitizer"/> implementation, which
     /// now fails each of its own rules open on a regex timeout rather than letting one propagate — so
     /// this guards specifically against a consumer-replaced sanitizer or redaction filter, both of
@@ -887,13 +891,13 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
     /// null branch below already withholds the result rather than emitting it, and this call site now
     /// reaches that same branch by the same route, whether the gate returned null or threw.
     /// </remarks>
-    private object? SanitizeOrRedact(ToolCallAdmission admission, string toolName, object? preCut)
+    private object? SanitizeOrRedact(ToolCallAdmission admission, string toolName, object? preCut, bool? isFromMcp)
     {
         try
         {
             return admission.RedactsOutput
-                ? _classificationGate.RedactResult(toolName, preCut)
-                : ToolResultText.Sanitize(preCut, _sanitizer, toolName);
+                ? _classificationGate.RedactResult(toolName, preCut, isFromMcp)
+                : ToolResultText.Sanitize(preCut, _sanitizer, toolName, isFromMcp);
         }
         catch (Exception ex)
         {
@@ -908,13 +912,13 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
     /// </summary>
     /// <remarks>
     /// <strong>Deliberately NOT a cast-through-the-object-overload delegation</strong>, unlike
-    /// <see cref="ToolResultText.Sanitize(string?, ICompositeResponseSanitizer, string)"/>'s equivalent
+    /// <see cref="ToolResultText.Sanitize(string?, ICompositeResponseSanitizer, string, bool?)"/>'s equivalent
     /// split — a /simplify suggestion to match that shape was tried and reverted (broke 4 real tests,
     /// not just their mocks). The difference: <c>ToolResultText.Sanitize</c>'s two overloads both
     /// funnel into the SAME <see cref="ICompositeResponseSanitizer.Sanitize"/> method, so casting
     /// through the object overload calls identical code either way. <see cref="IToolClassificationGate"/>'s <c>RedactResult</c>
     /// is two SEPARATE interface members —
-    /// <see cref="IToolClassificationGate.RedactResult(string, object?)"/> and
+    /// <see cref="IToolClassificationGate.RedactResult(string, object?, bool?)"/> and
     /// <see cref="IToolClassificationGate.RedactResult(string, string?)"/> — which a consumer-supplied
     /// implementation is free to give different behavior (the shipped one happens not to, but the
     /// interface makes no such promise). Delegating through the object overload silently calls the

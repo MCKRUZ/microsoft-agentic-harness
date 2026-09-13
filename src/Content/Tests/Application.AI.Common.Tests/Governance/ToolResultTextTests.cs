@@ -13,9 +13,9 @@ using Xunit;
 namespace Application.AI.Common.Tests.Governance;
 
 /// <summary>
-/// Tests for <see cref="ToolResultText.Sanitize(object?, ICompositeResponseSanitizer, string)"/> directly, across every shape a tool result can
+/// Tests for <see cref="ToolResultText.Sanitize(object?, ICompositeResponseSanitizer, string, bool?)"/> directly, across every shape a tool result can
 /// arrive in at a policy boundary — the two callers (<see cref="ToolCallAdmissionPipeline.ApplyOutputPolicyAsync"/>,
-/// <see cref="DefaultToolClassificationGate.RedactResult(string, object?)"/>) each get one routing test instead of
+/// <see cref="DefaultToolClassificationGate.RedactResult(string, object?, bool?)"/>) each get one routing test instead of
 /// re-proving every shape's behavior twice.
 /// </summary>
 /// <remarks>
@@ -1006,5 +1006,80 @@ public sealed class ToolResultTextTests
         var result = new { Rows = 3 };
 
         ToolResultText.ExtractText(result).Should().Be(JsonSerializer.Serialize(result));
+    }
+
+    // ── #553: gate MCP content-block recognition on provenance, not shape alone ──────────
+
+    /// <summary>
+    /// Unlike <see cref="ExtractText_FirstPartyResultWithACoincidentalContentArrayButNoMcpMarker_ReturnsRawJsonNotJoinedText"/>'s
+    /// payload (which the existing shape test already correctly rejects, since its elements have no
+    /// "type" discriminator at all), THIS payload's element genuinely satisfies the MCP content-block
+    /// shape test — no shape-based heuristic can ever distinguish it from real MCP content, because it
+    /// deliberately looks identical. Only provenance can: a first-party tool whose own domain JSON
+    /// happens to use this exact shape is definitively not MCP-backed, and <c>isFromMcp: false</c> must
+    /// skip content-array detection entirely rather than mis-joining this tool's own structured field as
+    /// if it were MCP block text — this is the actual bug #553 is filed against, and the case every
+    /// prior shape-only fix (#488) could never close no matter how the heuristic was narrowed.
+    /// </summary>
+    [Fact]
+    public void ExtractText_NonMcpResultWithAGenuineContentBlockShape_IsFromMcpFalse_ReturnsRawJsonNotJoinedText()
+    {
+        var structured = JsonSerializer.SerializeToElement(new
+        {
+            content = new object[] { new { type = "text", text = "genuinely MCP-shaped but not MCP" } }
+        });
+
+        ToolResultText.ExtractText(structured, isFromMcp: false).Should().Be(structured.GetRawText());
+    }
+
+    /// <summary>
+    /// The identical payload as the test above, but WITHOUT <c>isFromMcp: false</c> — proving the
+    /// difference in outcome is provenance-gated, not a change to the shape detector itself. This is
+    /// the default (<c>isFromMcp: null</c>) behavior every existing caller keeps getting unchanged.
+    /// </summary>
+    [Fact]
+    public void ExtractText_SameGenuineContentBlockShape_IsFromMcpNull_StillJoinsTheText()
+    {
+        var structured = JsonSerializer.SerializeToElement(new
+        {
+            content = new object[] { new { type = "text", text = "genuinely MCP-shaped but not MCP" } }
+        });
+
+        ToolResultText.ExtractText(structured).Should().Be("genuinely MCP-shaped but not MCP");
+    }
+
+    [Fact]
+    public void Sanitize_NonMcpResultWithAGenuineContentBlockShape_IsFromMcpFalse_LeavesItUntouched()
+    {
+        // Strict, with no Setup: the same idiom Sanitize_NonTextResult_ReturnedUnchangedWithoutCallingTheSanitizer
+        // above uses to prove the sanitizer is never invoked at all — a stronger guarantee than a
+        // Times.Never verification, since Moq throws immediately on any unconfigured call.
+        var sanitizer = new Mock<ICompositeResponseSanitizer>(MockBehavior.Strict);
+        var structured = JsonSerializer.SerializeToElement(new
+        {
+            content = new object[] { new { type = "text", text = "genuinely MCP-shaped but not MCP" } }
+        });
+
+        var result = ToolResultText.Sanitize(structured, sanitizer.Object, "first_party_tool", isFromMcp: false);
+
+        ((JsonElement)result!).GetRawText().Should().Be(structured.GetRawText());
+    }
+
+    [Fact]
+    public void Bound_NonMcpResultWithAGenuineContentBlockShape_IsFromMcpFalse_IsNotCutAsMultiBlock()
+    {
+        // A ceiling far smaller than the payload's own text would normally force a mid-block cut if the
+        // content array were walked - isFromMcp: false means the whole JsonElement is treated as one
+        // opaque, uncut structured value instead (Bound's own documented behavior for a structured
+        // result it doesn't recognize as text-carrying).
+        var structured = JsonSerializer.SerializeToElement(new
+        {
+            content = new object[] { new { type = "text", text = "genuinely MCP-shaped but not MCP, and long" } }
+        });
+
+        var (boundResult, dropped) = ToolResultText.Bound(structured, ceiling: 5, "...", isFromMcp: false);
+
+        dropped.Should().BeFalse();
+        ((JsonElement)boundResult!).GetRawText().Should().Be(structured.GetRawText());
     }
 }

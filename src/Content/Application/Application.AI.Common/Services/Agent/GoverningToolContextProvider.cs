@@ -18,10 +18,8 @@ namespace Application.AI.Common.Services.Agent;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <strong>Known limitation: admission is governed here, MCP failure detection is not.</strong> This
-/// channel carries no equivalent of <c>ToolChainBuilder.ProvisionedTool.McpServerName</c> — a
-/// tool's provenance is not tracked once it reaches <c>AIContext.Tools</c> — so <see cref="Govern"/>
-/// never wraps a tool in <see cref="McpFailureNormalizingAIFunction"/> the way
+/// <strong>Known limitation: <see cref="Govern"/> never wraps a tool in
+/// <see cref="McpFailureNormalizingAIFunction"/> itself</strong> the way
 /// <see cref="ToolChainBuilder.WrapGoverned"/> does. A consumer whose own <see cref="AIContextProvider"/>
 /// contributes an MCP-backed <see cref="AIFunction"/> onto this channel gets admission enforcement, but
 /// that tool's non-throwing MCP failure is never normalized to <c>ConvertedToolFailure</c> and is
@@ -30,6 +28,17 @@ namespace Application.AI.Common.Services.Agent;
 /// path in this harness does this today (confirmed: <c>IMcpToolProvider</c> is only consumed from
 /// <see cref="ToolChainBuilder"/>), so this is a documented gap rather than a live one — but it is a
 /// template other consumers extend, so it is written down rather than left implicit.
+/// </para>
+/// <para>
+/// <strong>That same consumer-side wrapping convention IS enough for output-scrubbing provenance
+/// (#553), with no separate tracking needed.</strong> <c>GovernedAIFunction.IsFromMcp</c> is computed
+/// from whether its own wrapped function is an <see cref="McpFailureNormalizingAIFunction"/> — so a
+/// consumer that already follows the convention above (pre-wrapping an MCP-backed tool before
+/// contributing it here) gets accurate provenance for free the moment <see cref="Govern"/> wraps that
+/// tool in <see cref="GovernedAIFunction"/>, with no change needed in <see cref="Govern"/> itself. This
+/// closes the narrower "provenance is not tracked once it reaches <c>AIContext.Tools</c>" gap this
+/// remark used to describe — the broader MCP-failure-detection limitation above is separate and still
+/// open.
 /// </para>
 /// <para>
 /// <strong><c>run_skill_script</c> now resolves its skill scope per call (#531, #589).</strong> The
@@ -339,7 +348,7 @@ public sealed class GoverningToolContextProvider : AIContextProvider
     /// bound on the sanitize pass itself — the one exception to #487's "no upstream bound exists
     /// anywhere for tool-adjacent text" premise. <see cref="InvokeCoreAsync"/> now runs the result
     /// through <see cref="IToolCallAdmissionPipeline.ApplyOutputPolicyAsync"/> (via
-    /// <see cref="ToolAdmissionAccessor.Current"/>) instead of calling <see cref="ToolResultText.Sanitize(object?, ICompositeResponseSanitizer, string)"/>
+    /// <see cref="ToolAdmissionAccessor.Current"/>) instead of calling <see cref="ToolResultText.Sanitize(object?, ICompositeResponseSanitizer, string, bool?)"/>
     /// directly — the same scan-cost pre-cut, sanitize, final bound, aggregate-per-message budget, and
     /// spill-with-retrieval-id every other tool result already gets. Deliberately passes
     /// <see cref="ToolCallAdmission.Allow"/>, never calling <c>AdmitAsync</c>: that would ask the
@@ -370,16 +379,22 @@ public sealed class GoverningToolContextProvider : AIContextProvider
             // model-facing text rather than falling into Sanitize's structured/unrecognized default case.
             var unwrapped = GovernedAIFunction.Unwrap(result);
 
+            // #553: isFromMcp is confirmed false, not left null, on both branches below — this wrapper
+            // only ever wraps load_skill/read_skill_resource (see the class remarks), the two framework
+            // skill-disclosure tools, which are never MCP-backed. Passing the confirmed answer lets
+            // ToolResultText skip its MCP content-block shape detection here rather than falling back to
+            // running it anyway.
             var admissionPipeline = ToolAdmissionAccessor.Current;
             if (admissionPipeline is null)
-                return ToolResultText.Sanitize(unwrapped, _sanitizer, Name);
+                return ToolResultText.Sanitize(unwrapped, _sanitizer, Name, isFromMcp: false);
 
             // #544: same chokepoint every other tool result already funnels through — CancellationToken.None,
             // not the caller's token, matching GovernedAIFunction.ReportOutcomeAndApplyPolicyAsync's own
             // choice: the tool already ran and produced this output, so bounding it should not be abandoned
             // mid-cut by a caller cancellation racing the call's own completion.
             return await admissionPipeline
-                .ApplyOutputPolicyAsync(ToolCallAdmission.Allow(), Name, unwrapped, CancellationToken.None)
+                .ApplyOutputPolicyAsync(
+                    ToolCallAdmission.Allow(), Name, unwrapped, CancellationToken.None, isFromMcp: false)
                 .ConfigureAwait(false);
         }
     }
