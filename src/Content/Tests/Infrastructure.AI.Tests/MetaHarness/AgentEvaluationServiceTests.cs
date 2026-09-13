@@ -324,6 +324,16 @@ public class AgentEvaluationServiceTests : IAsyncDisposable
     [Fact]
     public async Task EvaluateAsync_CandidateWithSkillSnapshots_MaterializesSkillUnderACorrectlyNamedDirectory()
     {
+        // Scoped to the one run-root this test's own EvaluateAsync call creates, not the whole shared
+        // %TEMP%\harness-eval-skills tree - an unscoped SearchOption.AllDirectories scan there would
+        // both be an unbounded-cost walk of every past run's leftovers and risk a false pass if a
+        // concurrently-running test (e.g. the wiring test above, which uses the same skill name)
+        // leaves a same-named directory behind (caught in review).
+        var evalSkillsRoot = Path.Combine(Path.GetTempPath(), "harness-eval-skills");
+        var preExistingRunRoots = Directory.Exists(evalSkillsRoot)
+            ? Directory.EnumerateDirectories(evalSkillsRoot).ToHashSet(StringComparer.OrdinalIgnoreCase)
+            : [];
+
         string? capturedSkillDirectory = null;
         _agentFactoryMock
             .Setup(f => f.CreateAgentAsync(It.IsAny<AgentExecutionContext>(), It.IsAny<CancellationToken>()))
@@ -331,11 +341,16 @@ public class AgentEvaluationServiceTests : IAsyncDisposable
             {
                 // Read the materialized directory back off disk rather than reflecting into the SDK's
                 // provider internals - what matters is proving a "research-agent"-named directory
-                // containing SKILL.md exists somewhere under the eval temp root while the agent is
-                // still being constructed (before EvaluateAsync's finally block deletes it).
-                capturedSkillDirectory = Directory
-                    .EnumerateDirectories(Path.Combine(Path.GetTempPath(), "harness-eval-skills"), "*", SearchOption.AllDirectories)
-                    .FirstOrDefault(d => Path.GetFileName(d) == "research-agent" && File.Exists(Path.Combine(d, "SKILL.md")));
+                // containing SKILL.md exists somewhere under this test's OWN run root while the agent
+                // is still being constructed (before EvaluateAsync's finally block deletes it).
+                var thisRunRoot = Directory.Exists(evalSkillsRoot)
+                    ? Directory.EnumerateDirectories(evalSkillsRoot)
+                        .FirstOrDefault(d => !preExistingRunRoots.Contains(d))
+                    : null;
+                capturedSkillDirectory = thisRunRoot is null
+                    ? null
+                    : Directory.EnumerateDirectories(thisRunRoot, "*", SearchOption.AllDirectories)
+                        .FirstOrDefault(d => Path.GetFileName(d) == "research-agent" && File.Exists(Path.Combine(d, "SKILL.md")));
             })
             .ReturnsAsync(new TestableAIAgent("output"));
 
@@ -380,16 +395,16 @@ public class AgentEvaluationServiceTests : IAsyncDisposable
 
     /// <summary>
     /// #618: a candidate with skill files but no top-level SKILL.md cannot be materialized into a
-    /// loadable directory at all (there's no name to derive the subdirectory from) - must degrade to
-    /// no skills provider rather than throw, same as the empty-snapshot case.
+    /// loadable directory at all (there's no name to derive the subdirectory from). This must fail the
+    /// task rather than silently degrade to no skills provider - a silent degrade would score this
+    /// malformed proposal identically to its unchanged parent, the same silent-no-op symptom #618
+    /// fixes, just reintroduced via a different malformed-input shape (caught in review).
     /// </summary>
     [Fact]
-    public async Task EvaluateAsync_SkillSnapshotsWithNoTopLevelSkillMd_DoesNotWireSkillsProvider()
+    public async Task EvaluateAsync_SkillSnapshotsWithNoTopLevelSkillMd_FailsTask()
     {
-        AgentExecutionContext? capturedContext = null;
         _agentFactoryMock
             .Setup(f => f.CreateAgentAsync(It.IsAny<AgentExecutionContext>(), It.IsAny<CancellationToken>()))
-            .Callback<AgentExecutionContext, CancellationToken>((ctx, _) => capturedContext = ctx)
             .ReturnsAsync(new TestableAIAgent("output"));
 
         var skillFiles = new Dictionary<string, string> { ["resources/notes.md"] = "some notes" };
@@ -397,26 +412,23 @@ public class AgentEvaluationServiceTests : IAsyncDisposable
         var candidate = BuildCandidate(skillFiles: skillFiles);
         var tasks = new[] { BuildTask("no-skillmd-task", "prompt", pattern: null) };
 
-        await sut.EvaluateAsync(candidate, tasks);
+        var result = await sut.EvaluateAsync(candidate, tasks);
 
-        Assert.NotNull(capturedContext);
-        Assert.True(
-            capturedContext.AIContextProviders is null
-            || !capturedContext.AIContextProviders.OfType<AgentSkillsProvider>().Any());
+        var taskResult = Assert.Single(result.PerExampleResults);
+        Assert.False(taskResult.Passed);
+        Assert.Contains("no top-level SKILL.md", taskResult.FailureReason);
     }
 
     /// <summary>
     /// #618: a SKILL.md with no 'name' in its frontmatter has nothing to derive the required
-    /// correctly-named subdirectory from - must degrade to no skills provider rather than throw or
-    /// materialize a directory the SDK will silently reject anyway.
+    /// correctly-named subdirectory from. This must fail the task rather than silently degrade to no
+    /// skills provider, for the same reason as the missing-SKILL.md case above.
     /// </summary>
     [Fact]
-    public async Task EvaluateAsync_SkillMdWithNoDeclaredName_DoesNotWireSkillsProvider()
+    public async Task EvaluateAsync_SkillMdWithNoDeclaredName_FailsTask()
     {
-        AgentExecutionContext? capturedContext = null;
         _agentFactoryMock
             .Setup(f => f.CreateAgentAsync(It.IsAny<AgentExecutionContext>(), It.IsAny<CancellationToken>()))
-            .Callback<AgentExecutionContext, CancellationToken>((ctx, _) => capturedContext = ctx)
             .ReturnsAsync(new TestableAIAgent("output"));
 
         var skillFiles = new Dictionary<string, string>
@@ -427,12 +439,11 @@ public class AgentEvaluationServiceTests : IAsyncDisposable
         var candidate = BuildCandidate(skillFiles: skillFiles);
         var tasks = new[] { BuildTask("no-name-task", "prompt", pattern: null) };
 
-        await sut.EvaluateAsync(candidate, tasks);
+        var result = await sut.EvaluateAsync(candidate, tasks);
 
-        Assert.NotNull(capturedContext);
-        Assert.True(
-            capturedContext.AIContextProviders is null
-            || !capturedContext.AIContextProviders.OfType<AgentSkillsProvider>().Any());
+        var taskResult = Assert.Single(result.PerExampleResults);
+        Assert.False(taskResult.Passed);
+        Assert.Contains("declares no 'name'", taskResult.FailureReason);
     }
 
     /// <summary>

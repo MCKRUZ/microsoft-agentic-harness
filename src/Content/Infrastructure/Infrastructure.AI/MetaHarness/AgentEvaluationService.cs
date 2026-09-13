@@ -225,9 +225,8 @@ public sealed class AgentEvaluationService : IEvaluationService
     /// <summary>
     /// Materializes the candidate's skill snapshot to an isolated temp directory so the eval
     /// agent can load the proposed skills via MAF's <see cref="AgentSkillsProvider"/>. Returns
-    /// <see langword="null"/> when the candidate has no skill files, has no top-level <c>SKILL.md</c>,
-    /// or that manifest declares no <c>name</c> — each logged, since silently skipping candidate skill
-    /// evaluation is a real behavior change a caller should be able to notice.
+    /// <see langword="null"/> only when the candidate proposed no skill files at all — a genuine
+    /// no-op, not a malformed one.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -251,37 +250,26 @@ public sealed class AgentEvaluationService : IEvaluationService
     /// treats that path as a directory to SEARCH within (confirmed: a correctly-named subdirectory
     /// nested under an arbitrarily-named parent loads correctly), not as the skill's own directory.
     /// </para>
+    /// <para>
+    /// A candidate that proposed skill files which cannot form a loadable skill (no top-level
+    /// <c>SKILL.md</c>, or a manifest declaring no <c>name</c>) is a malformed proposal, not a no-op
+    /// one — <see cref="ResolveDeclaredSkillName"/> throws rather than returning null for that case,
+    /// so the caller's task-level catch fails the task instead of silently materializing nothing and
+    /// scoring the candidate identically to its unchanged parent, which is the same silent-no-op
+    /// symptom #618 fixes, just reintroduced via a different malformed-input shape.
+    /// </para>
     /// </remarks>
     private string? MaterializeCandidateSkills(HarnessSnapshot snapshot, Guid executionRunId)
     {
         if (snapshot.SkillFileSnapshots.Count == 0)
             return null;
 
-        if (!snapshot.SkillFileSnapshots.TryGetValue("SKILL.md", out var skillMarkdown))
-        {
-            _logger.LogWarning(
-                "Candidate for execution run {ExecutionRunId} has skill files but no top-level SKILL.md; " +
-                "cannot materialize a loadable skill directory, so this eval run will not exercise the " +
-                "candidate's skill changes", executionRunId);
-            return null;
-        }
-
-        var (yaml, _) = YamlFrontmatterHelper.ExtractFrontmatter(skillMarkdown);
-        var skillName = Infrastructure.AI.Skills.SkillFrontmatter.Load(yaml).String("name");
-        if (string.IsNullOrWhiteSpace(skillName))
-        {
-            _logger.LogWarning(
-                "Candidate for execution run {ExecutionRunId}'s SKILL.md declares no 'name' in its " +
-                "frontmatter; cannot materialize a loadable skill directory, so this eval run will not " +
-                "exercise the candidate's skill changes", executionRunId);
-            return null;
-        }
+        var skillName = ResolveDeclaredSkillName(snapshot, executionRunId);
 
         // Canonicalize once so the containment check compares like-for-like (handles symlinked
         // temp roots on macOS and 8.3 short names on Windows).
         var runRoot = Path.GetFullPath(
             Path.Combine(Path.GetTempPath(), "harness-eval-skills", executionRunId.ToString("N")));
-        Directory.CreateDirectory(runRoot);
 
         string root;
         try
@@ -311,6 +299,36 @@ public sealed class AgentEvaluationService : IEvaluationService
         }
 
         return runRoot;
+    }
+
+    /// <summary>
+    /// Reads the candidate's declared skill name from its top-level <c>SKILL.md</c> frontmatter.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">
+    /// The candidate proposed skill files that cannot form a loadable skill: no top-level
+    /// <c>SKILL.md</c>, or its frontmatter declares no <c>name</c>. Thrown rather than returned as
+    /// null so <see cref="MaterializeCandidateSkills"/>'s caller fails the task instead of silently
+    /// materializing nothing — see the remarks on <see cref="MaterializeCandidateSkills"/>.
+    /// </exception>
+    private static string ResolveDeclaredSkillName(HarnessSnapshot snapshot, Guid executionRunId)
+    {
+        if (!snapshot.SkillFileSnapshots.TryGetValue("SKILL.md", out var skillMarkdown))
+        {
+            throw new InvalidOperationException(
+                $"Candidate for execution run {executionRunId} has skill files but no top-level " +
+                "SKILL.md; cannot materialize a loadable skill directory.");
+        }
+
+        var (yaml, _) = YamlFrontmatterHelper.ExtractFrontmatter(skillMarkdown);
+        var skillName = Infrastructure.AI.Skills.SkillFrontmatter.Load(yaml).String("name");
+        if (string.IsNullOrWhiteSpace(skillName))
+        {
+            throw new InvalidOperationException(
+                $"Candidate for execution run {executionRunId}'s SKILL.md declares no 'name' in its " +
+                "frontmatter; cannot materialize a loadable skill directory.");
+        }
+
+        return skillName;
     }
 
     /// <summary>
