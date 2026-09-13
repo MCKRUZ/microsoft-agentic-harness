@@ -98,6 +98,24 @@ public static class PluginToolBoundaryViolationExtensions
 
         return status.RequiresFailClosed(violations);
     }
+
+    /// <summary>
+    /// The "which list, which name" fragment of a violation — <c>"DeniedTools entry 'foo'"</c> — shared
+    /// by every caller that reports one (#611: previously two independently hand-written formats that
+    /// had already drifted in tone; a wording fix or added detail meant editing both instead of one).
+    /// Omits the plugin name — a caller reporting several violations already grouped by plugin (e.g.
+    /// <c>McpToolProvider.ReportDiscoveryToBoundaryTracker</c>) states it once, not per entry.
+    /// </summary>
+    public static string DescribeEntry(this PluginToolBoundaryViolation violation) =>
+        $"{violation.ListKind} entry '{violation.ToolName}'";
+
+    /// <summary>
+    /// <see cref="DescribeEntry"/> prefixed with the owning plugin's name — for a caller reporting
+    /// violations that are NOT already grouped by plugin (e.g.
+    /// <c>PluginToolBoundaryStartupValidator</c>'s boot-refusal message, one line per violation).
+    /// </summary>
+    public static string DescribeWithPlugin(this PluginToolBoundaryViolation violation) =>
+        $"Plugin '{violation.PluginName}': {violation.DescribeEntry()}";
 }
 
 /// <summary>

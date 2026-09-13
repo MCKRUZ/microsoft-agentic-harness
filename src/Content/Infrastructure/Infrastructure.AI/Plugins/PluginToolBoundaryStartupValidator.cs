@@ -170,7 +170,7 @@ public sealed class PluginToolBoundaryStartupValidator : IHostedService
         // server no longer collapses this to the zero-server case, so this message is now accurate
         // exactly as worded: it fires only when literally nothing is configured, period.
         var lines = immediateViolations.Select(v =>
-            $"Plugin '{v.PluginName}': {v.ListKind} entry '{v.ToolName}' matches no first-party tool, " +
+            $"{v.DescribeWithPlugin()} matches no first-party tool, " +
             "and no MCP server is configured anywhere on this host that could ever supply it either.");
 
         throw new InvalidOperationException(

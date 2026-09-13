@@ -333,7 +333,7 @@ public sealed class McpToolProvider : IMcpToolProvider
         // happens, not just what used to always happen.
         foreach (var group in violations.GroupBy(v => v.PluginName))
         {
-            var entries = string.Join(", ", group.Select(v => $"{v.ListKind}:'{v.ToolName}'"));
+            var entries = string.Join(", ", group.Select(v => v.DescribeEntry()));
             var confined = group.ToList().IsConfinedToAllowedTools();
             _logger.LogCritical(
                 "Plugin '{Plugin}': boundary entries match no known tool (first-party or MCP) and are " +
