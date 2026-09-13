@@ -291,9 +291,14 @@ public class AgentEvaluationServiceTests : IAsyncDisposable
             .Callback<AgentExecutionContext, CancellationToken>((ctx, _) => capturedContext = ctx)
             .ReturnsAsync(new TestableAIAgent("output"));
 
+        // #618: keys are relative to the active agent's OWN skill directory (matching the real
+        // production capture path, ActiveConfigSnapshotBuilder.EnumerateSkillFilesAsync, which uses
+        // Path.GetRelativePath(skillDirectory, filePath) against that ONE skill's own root) - no
+        // skill-name-prefixed subdirectory. The previous fixture's "research-agent/SKILL.md" key
+        // never matched what production actually captures.
         var skillFiles = new Dictionary<string, string>
         {
-            ["research-agent/SKILL.md"] =
+            ["SKILL.md"] =
                 "---\nname: research-agent\ndescription: Finds and analyzes information.\n---\n# Research Agent\nDo research.\n"
         };
         var sut = BuildSut();
@@ -305,6 +310,47 @@ public class AgentEvaluationServiceTests : IAsyncDisposable
         Assert.NotNull(capturedContext);
         Assert.NotNull(capturedContext.AIContextProviders);
         Assert.Single(capturedContext.AIContextProviders!.OfType<AgentSkillsProvider>());
+    }
+
+    /// <summary>
+    /// #618: the wiring test above only proves an <see cref="AgentSkillsProvider"/> object exists in
+    /// the context - it never proved the underlying materialized directory would actually be
+    /// DISCOVERED by the real SDK, which is exactly how this gap went unnoticed. Verified directly
+    /// against the pinned Microsoft.Agents.AI 1.13.0 package (see MaterializeCandidateSkills' own
+    /// remarks): AgentFileSkillsSource requires a SKILL.md's declared name to ordinal-equal its own
+    /// containing directory's leaf name. This asserts that invariant directly on disk, independent of
+    /// the SDK's own (log-only, not exception-based) failure signal.
+    /// </summary>
+    [Fact]
+    public async Task EvaluateAsync_CandidateWithSkillSnapshots_MaterializesSkillUnderACorrectlyNamedDirectory()
+    {
+        string? capturedSkillDirectory = null;
+        _agentFactoryMock
+            .Setup(f => f.CreateAgentAsync(It.IsAny<AgentExecutionContext>(), It.IsAny<CancellationToken>()))
+            .Callback<AgentExecutionContext, CancellationToken>((ctx, _) =>
+            {
+                // Read the materialized directory back off disk rather than reflecting into the SDK's
+                // provider internals - what matters is proving a "research-agent"-named directory
+                // containing SKILL.md exists somewhere under the eval temp root while the agent is
+                // still being constructed (before EvaluateAsync's finally block deletes it).
+                capturedSkillDirectory = Directory
+                    .EnumerateDirectories(Path.Combine(Path.GetTempPath(), "harness-eval-skills"), "*", SearchOption.AllDirectories)
+                    .FirstOrDefault(d => Path.GetFileName(d) == "research-agent" && File.Exists(Path.Combine(d, "SKILL.md")));
+            })
+            .ReturnsAsync(new TestableAIAgent("output"));
+
+        var skillFiles = new Dictionary<string, string>
+        {
+            ["SKILL.md"] =
+                "---\nname: research-agent\ndescription: Finds and analyzes information.\n---\n# Research Agent\nDo research.\n"
+        };
+        var sut = BuildSut();
+        var candidate = BuildCandidate(skillFiles: skillFiles);
+        var tasks = new[] { BuildTask("materialize-task", "prompt", pattern: null) };
+
+        await sut.EvaluateAsync(candidate, tasks);
+
+        Assert.NotNull(capturedSkillDirectory);
     }
 
     /// <summary>
@@ -333,6 +379,63 @@ public class AgentEvaluationServiceTests : IAsyncDisposable
     }
 
     /// <summary>
+    /// #618: a candidate with skill files but no top-level SKILL.md cannot be materialized into a
+    /// loadable directory at all (there's no name to derive the subdirectory from) - must degrade to
+    /// no skills provider rather than throw, same as the empty-snapshot case.
+    /// </summary>
+    [Fact]
+    public async Task EvaluateAsync_SkillSnapshotsWithNoTopLevelSkillMd_DoesNotWireSkillsProvider()
+    {
+        AgentExecutionContext? capturedContext = null;
+        _agentFactoryMock
+            .Setup(f => f.CreateAgentAsync(It.IsAny<AgentExecutionContext>(), It.IsAny<CancellationToken>()))
+            .Callback<AgentExecutionContext, CancellationToken>((ctx, _) => capturedContext = ctx)
+            .ReturnsAsync(new TestableAIAgent("output"));
+
+        var skillFiles = new Dictionary<string, string> { ["resources/notes.md"] = "some notes" };
+        var sut = BuildSut();
+        var candidate = BuildCandidate(skillFiles: skillFiles);
+        var tasks = new[] { BuildTask("no-skillmd-task", "prompt", pattern: null) };
+
+        await sut.EvaluateAsync(candidate, tasks);
+
+        Assert.NotNull(capturedContext);
+        Assert.True(
+            capturedContext.AIContextProviders is null
+            || !capturedContext.AIContextProviders.OfType<AgentSkillsProvider>().Any());
+    }
+
+    /// <summary>
+    /// #618: a SKILL.md with no 'name' in its frontmatter has nothing to derive the required
+    /// correctly-named subdirectory from - must degrade to no skills provider rather than throw or
+    /// materialize a directory the SDK will silently reject anyway.
+    /// </summary>
+    [Fact]
+    public async Task EvaluateAsync_SkillMdWithNoDeclaredName_DoesNotWireSkillsProvider()
+    {
+        AgentExecutionContext? capturedContext = null;
+        _agentFactoryMock
+            .Setup(f => f.CreateAgentAsync(It.IsAny<AgentExecutionContext>(), It.IsAny<CancellationToken>()))
+            .Callback<AgentExecutionContext, CancellationToken>((ctx, _) => capturedContext = ctx)
+            .ReturnsAsync(new TestableAIAgent("output"));
+
+        var skillFiles = new Dictionary<string, string>
+        {
+            ["SKILL.md"] = "---\ndescription: Missing a name field.\n---\nbody"
+        };
+        var sut = BuildSut();
+        var candidate = BuildCandidate(skillFiles: skillFiles);
+        var tasks = new[] { BuildTask("no-name-task", "prompt", pattern: null) };
+
+        await sut.EvaluateAsync(candidate, tasks);
+
+        Assert.NotNull(capturedContext);
+        Assert.True(
+            capturedContext.AIContextProviders is null
+            || !capturedContext.AIContextProviders.OfType<AgentSkillsProvider>().Any());
+    }
+
+    /// <summary>
     /// Snapshot keys come from untrusted LLM proposals, so a path-traversal key must be rejected
     /// (graded as a failed task) and must never write outside the eval temp root.
     /// </summary>
@@ -343,13 +446,45 @@ public class AgentEvaluationServiceTests : IAsyncDisposable
             .Setup(f => f.CreateAgentAsync(It.IsAny<AgentExecutionContext>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new TestableAIAgent("output"));
 
+        // #618: a valid top-level SKILL.md is required to reach the per-file materialization loop at
+        // all (see MaterializeCandidateSkills' own remarks) - a traversal key with no valid SKILL.md
+        // entry would be rejected earlier, for a different reason, proving nothing about THIS
+        // protection. The traversal attempt lives in a second, non-SKILL.md entry instead.
         var skillFiles = new Dictionary<string, string>
         {
-            ["../escaped/SKILL.md"] = "---\nname: evil\ndescription: escape attempt.\n---\nbody"
+            ["SKILL.md"] = "---\nname: evil\ndescription: escape attempt.\n---\nbody",
+            ["../escaped/resource.md"] = "malicious resource content"
         };
         var sut = BuildSut();
         var candidate = BuildCandidate(skillFiles: skillFiles);
         var tasks = new[] { BuildTask("traversal-task", "prompt", pattern: null) };
+
+        var result = await sut.EvaluateAsync(candidate, tasks);
+
+        var taskResult = Assert.Single(result.PerExampleResults);
+        Assert.False(taskResult.Passed);
+        Assert.Contains("resolves outside", taskResult.FailureReason);
+    }
+
+    /// <summary>
+    /// #618: the skill NAME itself is untrusted, candidate-authored input with exactly the same
+    /// traversal risk as any snapshot file key - SafeResolveWithinRoot is reused for it rather than a
+    /// new, unverified sanitizer, so this proves that reuse actually rejects a malicious name.
+    /// </summary>
+    [Fact]
+    public async Task EvaluateAsync_SkillSnapshotWithPathTraversalName_FailsTaskAndDoesNotEscape()
+    {
+        _agentFactoryMock
+            .Setup(f => f.CreateAgentAsync(It.IsAny<AgentExecutionContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new TestableAIAgent("output"));
+
+        var skillFiles = new Dictionary<string, string>
+        {
+            ["SKILL.md"] = "---\nname: \"../../escaped\"\ndescription: escape attempt via name.\n---\nbody"
+        };
+        var sut = BuildSut();
+        var candidate = BuildCandidate(skillFiles: skillFiles);
+        var tasks = new[] { BuildTask("name-traversal-task", "prompt", pattern: null) };
 
         var result = await sut.EvaluateAsync(candidate, tasks);
 

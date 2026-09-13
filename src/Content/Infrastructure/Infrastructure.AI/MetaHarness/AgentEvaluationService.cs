@@ -1,5 +1,6 @@
 using System.Text.RegularExpressions;
 using Application.AI.Common.Extensions;
+using Application.Common.Helpers;
 using Application.AI.Common.Helpers;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Governance;
@@ -224,28 +225,74 @@ public sealed class AgentEvaluationService : IEvaluationService
     /// <summary>
     /// Materializes the candidate's skill snapshot to an isolated temp directory so the eval
     /// agent can load the proposed skills via MAF's <see cref="AgentSkillsProvider"/>. Returns
-    /// <see langword="null"/> when the candidate has no skill files.
+    /// <see langword="null"/> when the candidate has no skill files, has no top-level <c>SKILL.md</c>,
+    /// or that manifest declares no <c>name</c> — each logged, since silently skipping candidate skill
+    /// evaluation is a real behavior change a caller should be able to notice.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Snapshot keys originate from LLM-authored proposals and are therefore untrusted: each path
     /// is resolved and asserted to stay within the temp root to block path-traversal escapes.
     /// Unchanged files are secret-redacted in the snapshot, but that redaction is constant across a
     /// candidate and its parent, so the comparative pass-rate signal is preserved; the proposed
     /// (changed) files are unredacted and faithfully evaluated.
+    /// </para>
+    /// <para>
+    /// <strong>#618: the skill's own subdirectory must be named after its declared frontmatter
+    /// <c>name</c>, not left as the run-scoped temp root.</strong> Verified directly against the
+    /// pinned <c>Microsoft.Agents.AI</c> 1.13.0 package: <c>AgentFileSkillsSource</c> requires a
+    /// discovered <c>SKILL.md</c>'s declared name to ordinal-equal its own CONTAINING directory's
+    /// leaf name, logs a name/directory-mismatch warning, and silently loads zero skills otherwise —
+    /// reproduced end-to-end against the real SDK before this fix (materializing directly at the
+    /// run root, the previous behavior, always failed this check). Without this, every eval run that
+    /// proposed a skill change silently evaluated the candidate's UNCHANGED parent skill instead —
+    /// exactly what this method's own original doc comment said it existed to prevent. The run root
+    /// itself stays random-GUID-named and is still what gets passed to <c>UseFileSkill</c>: the SDK
+    /// treats that path as a directory to SEARCH within (confirmed: a correctly-named subdirectory
+    /// nested under an arbitrarily-named parent loads correctly), not as the skill's own directory.
+    /// </para>
     /// </remarks>
     private string? MaterializeCandidateSkills(HarnessSnapshot snapshot, Guid executionRunId)
     {
         if (snapshot.SkillFileSnapshots.Count == 0)
             return null;
 
+        if (!snapshot.SkillFileSnapshots.TryGetValue("SKILL.md", out var skillMarkdown))
+        {
+            _logger.LogWarning(
+                "Candidate for execution run {ExecutionRunId} has skill files but no top-level SKILL.md; " +
+                "cannot materialize a loadable skill directory, so this eval run will not exercise the " +
+                "candidate's skill changes", executionRunId);
+            return null;
+        }
+
+        var (yaml, _) = YamlFrontmatterHelper.ExtractFrontmatter(skillMarkdown);
+        var skillName = Infrastructure.AI.Skills.SkillFrontmatter.Load(yaml).String("name");
+        if (string.IsNullOrWhiteSpace(skillName))
+        {
+            _logger.LogWarning(
+                "Candidate for execution run {ExecutionRunId}'s SKILL.md declares no 'name' in its " +
+                "frontmatter; cannot materialize a loadable skill directory, so this eval run will not " +
+                "exercise the candidate's skill changes", executionRunId);
+            return null;
+        }
+
         // Canonicalize once so the containment check compares like-for-like (handles symlinked
         // temp roots on macOS and 8.3 short names on Windows).
-        var root = Path.GetFullPath(
+        var runRoot = Path.GetFullPath(
             Path.Combine(Path.GetTempPath(), "harness-eval-skills", executionRunId.ToString("N")));
-        Directory.CreateDirectory(root);
+        Directory.CreateDirectory(runRoot);
 
+        string root;
         try
         {
+            // #618: the skill's OWN materialized files live one level down, in a subdirectory named
+            // after its declared frontmatter name — SafeResolveWithinRoot is reused here (not a new
+            // sanitizer) since skillName is candidate-authored, untrusted input with exactly the same
+            // path-traversal risk as any other snapshot key.
+            root = SafeResolveWithinRoot(runRoot, skillName);
+            Directory.CreateDirectory(root);
+
             foreach (var (relativePath, content) in snapshot.SkillFileSnapshots)
             {
                 var filePath = SafeResolveWithinRoot(root, relativePath);
@@ -259,11 +306,11 @@ public sealed class AgentEvaluationService : IEvaluationService
         {
             // A path-traversal rejection (or any write failure) must not leak a partial temp dir,
             // since the caller never receives the path to clean up.
-            TryDeleteDirectory(root);
+            TryDeleteDirectory(runRoot);
             throw;
         }
 
-        return root;
+        return runRoot;
     }
 
     /// <summary>
