@@ -417,7 +417,74 @@ public class AgentEvaluationServiceTests : IAsyncDisposable
 
         var taskResult = Assert.Single(result.PerExampleResults);
         Assert.False(taskResult.Passed);
-        Assert.Contains("no SKILL.md anywhere in the snapshot", taskResult.FailureReason);
+        Assert.Contains("none form a loadable skill", taskResult.FailureReason);
+    }
+
+    /// <summary>
+    /// #618 (5th CI-caught regression, found by the grader gate): a nested SKILL.md whose declared
+    /// name does NOT match its own directory segment is not a genuine sibling skill, and there's no
+    /// bare top-level SKILL.md either - so NOTHING in this snapshot is actually loadable. An earlier
+    /// version of the loud-fail check only asked "does a file named SKILL.md exist anywhere",
+    /// which is true here, so it let this candidate through silently: nothing threw, the file landed
+    /// unrecognized at the run root, and the SDK would load zero skills - the exact silent-no-op
+    /// #618 exists to prevent, via a shape the guard never checked against the same admission rule
+    /// the rest of the method uses.
+    /// </summary>
+    [Fact]
+    public async Task EvaluateAsync_OnlyNestedSkillMdWithMismatchedDeclaredName_FailsTask()
+    {
+        _agentFactoryMock
+            .Setup(f => f.CreateAgentAsync(It.IsAny<AgentExecutionContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new TestableAIAgent("output"));
+
+        var skillFiles = new Dictionary<string, string>
+        {
+            ["misnamed/SKILL.md"] =
+                "---\nname: something-else\ndescription: Declared name doesn't match its directory.\n---\nbody"
+        };
+        var sut = BuildSut();
+        var candidate = BuildCandidate(skillFiles: skillFiles);
+        var tasks = new[] { BuildTask("mismatched-nested-task", "prompt", pattern: null) };
+
+        var result = await sut.EvaluateAsync(candidate, tasks);
+
+        var taskResult = Assert.Single(result.PerExampleResults);
+        Assert.False(taskResult.Passed);
+        Assert.Contains("none form a loadable skill", taskResult.FailureReason);
+    }
+
+    /// <summary>
+    /// A malformed sibling's frontmatter must not fail an unrelated multi-skill snapshot's OTHER,
+    /// unaffected entries. Sibling recognition is advisory (best-effort classification of files that
+    /// are already correctly shaped, not the bare-rooted skill's own manifest that #618's fix is
+    /// actually about) - a nested SKILL.md with invalid YAML can't be verified as a genuine sibling
+    /// either way, so it's treated as "not recognized" rather than propagating the parse failure and
+    /// taking down the whole task, which would be a NEW failure mode this fix introduces into a path
+    /// that previously never read file content at all for a pure multi-skill snapshot (caught in
+    /// correctness review).
+    /// </summary>
+    [Fact]
+    public async Task EvaluateAsync_MultiSkillSnapshotWithOneMalformedSiblingFrontmatter_StillMaterializesTheOthers()
+    {
+        _agentFactoryMock
+            .Setup(f => f.CreateAgentAsync(It.IsAny<AgentExecutionContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new TestableAIAgent("output"));
+
+        var skillFiles = new Dictionary<string, string>
+        {
+            ["good-skill/SKILL.md"] =
+                "---\nname: good-skill\ndescription: Valid.\n---\nbody",
+            // Invalid YAML (unterminated flow mapping) - SkillFrontmatter.Load throws for this.
+            ["broken-skill/SKILL.md"] = "---\nname: [unterminated\n---\nbody"
+        };
+        var sut = BuildSut();
+        var candidate = BuildCandidate(skillFiles: skillFiles);
+        var tasks = new[] { BuildTask("malformed-sibling-task", "prompt", pattern: null) };
+
+        var result = await sut.EvaluateAsync(candidate, tasks);
+
+        var taskResult = Assert.Single(result.PerExampleResults);
+        Assert.True(taskResult.Passed);
     }
 
     /// <summary>
