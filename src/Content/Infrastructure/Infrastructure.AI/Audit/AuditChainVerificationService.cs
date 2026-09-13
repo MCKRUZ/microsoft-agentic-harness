@@ -4,6 +4,7 @@ using Application.AI.Common.Interfaces.Audit;
 using Application.AI.Common.OpenTelemetry.Metrics;
 using Domain.AI.Telemetry.Conventions;
 using Domain.Common.Config;
+using Infrastructure.AI.Helpers;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -167,7 +168,10 @@ public sealed class AuditChainVerificationService : BackgroundService
                 FailureReason = result.FailureReason
             };
 
-            Directory.CreateDirectory(receiptPath);
+            // Owner-only (#660, following #640/#527's precedent): a receipt reports which audit
+            // chains verified clean or broken, including a failure reason -- confidentiality-
+            // relevant on a shared host, not just tamper-evident.
+            OwnerOnlyDirectoryHelper.Create(receiptPath);
             var file = Path.Combine(receiptPath, $"{now:yyyy-MM-dd}.jsonl");
             var line = JsonSerializer.Serialize(receipt, ReceiptOptions) + "\n";
 

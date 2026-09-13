@@ -70,6 +70,19 @@ public sealed class AuditChainVerificationServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task VerifyAllChains_ReceiptDirectoryIsCreatedOwnerOnly()
+    {
+        // #660, following #640/#527's precedent: a receipt reports which audit chains verified
+        // clean or broken, including a failure reason -- confidentiality-relevant on a shared host.
+        var a = new FakeChain("a", AuditChainVerificationResult.Valid(1));
+        var sut = NewService(_receiptDir, a);
+
+        await sut.VerifyAllChainsAsync(CancellationToken.None);
+
+        _receiptDir.ShouldBeOwnerOnlyDirectory();
+    }
+
+    [Fact]
     public async Task VerifyAllChains_WhenReceiptPathEmpty_DoesNotWriteButStillVerifies()
     {
         var a = new FakeChain("a", AuditChainVerificationResult.Valid(1));

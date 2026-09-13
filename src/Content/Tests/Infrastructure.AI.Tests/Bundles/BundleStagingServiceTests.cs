@@ -66,6 +66,20 @@ public sealed class BundleStagingServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task StageAsync_StagedRootDirectoryIsCreatedOwnerOnly()
+    {
+        // #660, following #640/#527's precedent: an uploaded bundle's unpacked contents (skills,
+        // plugin manifests, MCP server config) sit here before this host's own trusted parsers see
+        // them -- confidentiality-relevant on a shared host.
+        using var zip = ZipOf(("AGENT.md", "---\nid: b\nname: B\n---\nx"));
+
+        var result = await CreateService().StageAsync(zip);
+
+        result.IsSuccess.Should().BeTrue(string.Join("; ", result.Errors));
+        result.Value!.StagedRootDirectory.ShouldBeOwnerOnlyDirectory();
+    }
+
+    [Fact]
     public async Task StageAsync_NestedSkillDirWithoutSkillMd_IsSkippedNotFatal()
     {
         // A skills/ subdirectory with no SKILL.md (or an otherwise unreadable one) must be skipped without

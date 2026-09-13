@@ -4,6 +4,7 @@ using System.Text.Json.Serialization;
 using Application.AI.Common.Interfaces.MetaHarness;
 using Domain.Common.Config.MetaHarness;
 using Domain.Common.MetaHarness;
+using Infrastructure.AI.Helpers;
 using Microsoft.Extensions.Options;
 
 namespace Infrastructure.AI.MetaHarness;
@@ -50,7 +51,9 @@ public sealed class FileSystemHarnessCandidateRepository : IHarnessCandidateRepo
     public async Task SaveAsync(HarnessCandidate candidate, CancellationToken ct = default)
     {
         var dir = CandidateDir(candidate.OptimizationRunId, candidate.CandidateId);
-        Directory.CreateDirectory(dir);
+        // Owner-only (#660, following #640/#527's precedent): a candidate is a proposed skill
+        // edit plus its rollout results -- IP-sensitive training state, not just tamper-evident.
+        OwnerOnlyDirectoryHelper.Create(dir);
 
         var dto = new CandidateFileContent { Candidate = candidate, WriteCompleted = true };
         var json = JsonSerializer.Serialize(dto, JsonOptions);

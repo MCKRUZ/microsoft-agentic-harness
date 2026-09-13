@@ -165,6 +165,47 @@ public sealed class DependencyInjectionTests
     }
 
     [Fact]
+    public void AddInfrastructureAIDependencies_ConversationsAndPlannerDatabaseDirectories_AreOwnerOnly()
+    {
+        // #660, following #640/#527's precedent: both directories are created directly inside DI
+        // registration (RegisterConversationDbContext / RegisterPlannerDbContext), not deferred to a
+        // store class's own constructor -- so the real composition root, not a hand-built directory
+        // call, is what must be exercised here.
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"di-owner-only-{Guid.NewGuid():N}");
+        var conversationsDbPath = Path.Combine(tempRoot, "conversations", "conversations.db");
+        var plannerDbPath = Path.Combine(tempRoot, "planner", "planner.db");
+
+        try
+        {
+            var config = IsolatedAppConfig.Isolate(new Domain.Common.Config.AppConfig
+            {
+                AI = new Domain.Common.Config.AI.AIConfig
+                {
+                    Conversations = new Domain.Common.Config.AI.Conversations.ConversationsConfig
+                    {
+                        DatabasePath = conversationsDbPath
+                    },
+                    Planner = new Domain.Common.Config.AI.Planner.PlannerOptions
+                    {
+                        DatabasePath = plannerDbPath
+                    }
+                }
+            });
+            var services = CreateBaseServices(config);
+
+            services.AddInfrastructureAIDependencies(config);
+
+            Path.GetDirectoryName(conversationsDbPath)!.ShouldBeOwnerOnlyDirectory();
+            Path.GetDirectoryName(plannerDbPath)!.ShouldBeOwnerOnlyDirectory();
+        }
+        finally
+        {
+            if (Directory.Exists(tempRoot))
+                Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public void RegisterAIClients_UnconfiguredConfig_DoesNotRegisterAnyClients()
     {
         var config = IsolatedAppConfig.Create(); // ApiKey is null => IsConfigured = false

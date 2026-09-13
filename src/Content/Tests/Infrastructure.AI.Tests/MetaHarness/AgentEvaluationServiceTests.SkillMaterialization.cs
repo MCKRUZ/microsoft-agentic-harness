@@ -110,6 +110,54 @@ public partial class AgentEvaluationServiceTests
     }
 
     /// <summary>
+    /// #660, following #640/#527's precedent: both the run root (materialized directly under the
+    /// SYSTEM temp root, which is typically world-listable) and the bare-rooted skill's own
+    /// subdirectory must be owner-only. Captured mid-flight, during the mocked agent-factory
+    /// callback, because both are deleted once the task completes.
+    /// </summary>
+    [Fact]
+    public async Task EvaluateAsync_CandidateWithSkillSnapshots_MaterializedDirectoriesAreOwnerOnly()
+    {
+        var evalSkillsRoot = Path.Combine(Path.GetTempPath(), "harness-eval-skills");
+        var preExistingRunRoots = Directory.Exists(evalSkillsRoot)
+            ? Directory.EnumerateDirectories(evalSkillsRoot).ToHashSet(StringComparer.OrdinalIgnoreCase)
+            : [];
+
+        string? capturedRunRoot = null;
+        string? capturedSkillDirectory = null;
+        _agentFactoryMock
+            .Setup(f => f.CreateAgentAsync(It.IsAny<AgentExecutionContext>(), It.IsAny<CancellationToken>()))
+            .Callback<AgentExecutionContext, CancellationToken>((ctx, _) =>
+            {
+                capturedRunRoot = Directory.Exists(evalSkillsRoot)
+                    ? Directory.EnumerateDirectories(evalSkillsRoot)
+                        .FirstOrDefault(d => !preExistingRunRoots.Contains(d))
+                    : null;
+                capturedSkillDirectory = capturedRunRoot is null
+                    ? null
+                    : Directory.EnumerateDirectories(capturedRunRoot, "*", SearchOption.AllDirectories)
+                        .FirstOrDefault(d => Path.GetFileName(d) == "research-agent" && File.Exists(Path.Combine(d, "SKILL.md")));
+            })
+            .ReturnsAsync(new TestableAIAgent("output"));
+
+        var skillFiles = new Dictionary<string, string>
+        {
+            ["SKILL.md"] =
+                "---\nname: research-agent\ndescription: Finds and analyzes information.\n---\nbody"
+        };
+        var sut = BuildSut();
+        var candidate = BuildCandidate(skillFiles: skillFiles);
+        var tasks = new[] { BuildTask("owner-only-task", "prompt", pattern: null) };
+
+        await sut.EvaluateAsync(candidate, tasks);
+
+        Assert.NotNull(capturedRunRoot);
+        Assert.NotNull(capturedSkillDirectory);
+        capturedRunRoot!.ShouldBeOwnerOnlyDirectory();
+        capturedSkillDirectory!.ShouldBeOwnerOnlyDirectory();
+    }
+
+    /// <summary>
     /// A candidate with no skill snapshots must not wire an empty skills provider, and must
     /// not leave a materialized temp directory behind.
     /// </summary>

@@ -10,6 +10,7 @@ using Application.Common.Helpers;
 using Domain.AI.Agents;
 using Domain.Common.Config.MetaHarness;
 using Domain.Common.MetaHarness;
+using Infrastructure.AI.Helpers;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
@@ -339,7 +340,11 @@ public sealed class AgentEvaluationService : IEvaluationService
 
         try
         {
-            Directory.CreateDirectory(runRoot);
+            // Owner-only (#660, following #640/#527's precedent): materialized under the SYSTEM
+            // temp root, which is typically world-listable -- unlike the other migrated stores,
+            // this one sits directly in a shared location by default, not just a configured
+            // app-output directory.
+            OwnerOnlyDirectoryHelper.Create(runRoot);
 
             // #618: the bare-rooted group's files live one level down, in a subdirectory named
             // after the declared frontmatter name — SafeResolveWithinRoot is reused here (not a new
@@ -349,7 +354,7 @@ public sealed class AgentEvaluationService : IEvaluationService
             if (bareSkillName is not null)
             {
                 bareRootedGroupRoot = SafeResolveWithinRoot(runRoot, bareSkillName);
-                Directory.CreateDirectory(bareRootedGroupRoot);
+                OwnerOnlyDirectoryHelper.Create(bareRootedGroupRoot);
             }
 
             foreach (var (relativePath, content) in snapshot.SkillFileSnapshots)
@@ -367,7 +372,7 @@ public sealed class AgentEvaluationService : IEvaluationService
                 var filePath = SafeResolveWithinRoot(groupRoot, relativePath);
                 var directory = Path.GetDirectoryName(filePath);
                 if (directory is not null)
-                    Directory.CreateDirectory(directory);
+                    OwnerOnlyDirectoryHelper.Create(directory);
                 File.WriteAllText(filePath, content);
             }
         }
