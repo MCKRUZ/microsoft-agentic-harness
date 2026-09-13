@@ -288,11 +288,20 @@ public sealed class AgentEvaluationService : IEvaluationService
     /// authoring convention — <c>SkillResource.RelativePath</c> documents this as relative to "the
     /// skill's base directory", e.g. <c>"resources/notes.md"</c> or <c>"scripts/run.py"</c> sitting
     /// alongside a bare top-level <c>SKILL.md</c>) also have a directory segment, but must land
-    /// INSIDE the bare skill's derived-name subdirectory, not beside it. A key's top-level segment
-    /// is only treated as an already-correct sibling skill directory when that segment has ITS OWN
-    /// <c>"{segment}/SKILL.md"</c> entry in the snapshot; every other key — no segment, or a segment
-    /// that names no sibling skill — belongs to the bare-rooted group and is re-nested, preserving
-    /// its own relative path underneath.
+    /// INSIDE the bare skill's derived-name subdirectory, not beside it.
+    /// </para>
+    /// <para>
+    /// <strong>Mere presence of a <c>"{segment}/SKILL.md"</c> key is not sufficient either</strong>
+    /// — caught in review: checking whether that exact key exists is a tautology for the key itself
+    /// (it always "contains" its own key), so it can't distinguish a genuine sibling skill from a
+    /// resource file that merely happens to be named <c>SKILL.md</c> inside the bare-rooted skill's
+    /// own subfolder (e.g. a template/reference resource at <c>"examples/SKILL.md"</c>). A segment is
+    /// only recognized as a genuine sibling skill directory when its own <c>"{segment}/SKILL.md"</c>
+    /// entry's declared frontmatter <c>name</c> is ordinal-equal to the segment itself — the SAME
+    /// admission rule the real SDK applies (see <see cref="ResolveDeclaredSkillName"/> and
+    /// <see cref="TryParseDeclaredName"/>), not a proxy heuristic for it. Every other key — no
+    /// segment, or a segment that fails this check — belongs to the bare-rooted group and is
+    /// re-nested, preserving its own relative path underneath.
     /// </para>
     /// </remarks>
     private string? MaterializeCandidateSkills(HarnessSnapshot snapshot, Guid executionRunId)
@@ -331,12 +340,25 @@ public sealed class AgentEvaluationService : IEvaluationService
             }
 
             // A key's top-level segment names an already-correct SIBLING skill only when that
-            // segment itself has its own "{segment}/SKILL.md" entry — everything else (no segment,
-            // or a segment that names no sibling skill, e.g. the bare skill's own "resources/"
-            // subfolder) belongs to the bare-rooted group.
-            var normalizedKeys = new HashSet<string>(
-                snapshot.SkillFileSnapshots.Keys.Select(k => k.Replace('\\', '/')),
-                StringComparer.Ordinal);
+            // segment's OWN "{segment}/SKILL.md" entry declares a frontmatter name ordinal-equal to
+            // the segment itself — the same admission rule the real SDK applies (see
+            // ResolveDeclaredSkillName), not mere key presence. Key presence alone is a tautology
+            // for the "{segment}/SKILL.md" key itself (it always "contains" its own key), so it
+            // can't distinguish a genuine sibling from an unrelated resource file that merely
+            // happens to be named SKILL.md inside the bare-rooted skill's own subfolder (e.g. a
+            // template/reference resource at "examples/SKILL.md") — caught in review.
+            var recognizedSiblingDirs = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var (key, content) in snapshot.SkillFileSnapshots)
+            {
+                var normalizedKey = key.Replace('\\', '/');
+                var slashIndex = normalizedKey.IndexOf('/');
+                if (slashIndex < 0 || normalizedKey[(slashIndex + 1)..] != "SKILL.md")
+                    continue;
+
+                var segment = normalizedKey[..slashIndex];
+                if (string.Equals(TryParseDeclaredName(content), segment, StringComparison.Ordinal))
+                    recognizedSiblingDirs.Add(segment);
+            }
 
             foreach (var (relativePath, content) in snapshot.SkillFileSnapshots)
             {
@@ -344,7 +366,7 @@ public sealed class AgentEvaluationService : IEvaluationService
                 var slash = normalized.IndexOf('/');
                 var topLevelSegment = slash < 0 ? null : normalized[..slash];
                 var belongsToASiblingSkill = topLevelSegment is not null
-                    && normalizedKeys.Contains($"{topLevelSegment}/SKILL.md");
+                    && recognizedSiblingDirs.Contains(topLevelSegment);
 
                 var groupRoot = !belongsToASiblingSkill && bareRootedGroupRoot is not null
                     ? bareRootedGroupRoot
@@ -380,8 +402,7 @@ public sealed class AgentEvaluationService : IEvaluationService
     private static string ResolveDeclaredSkillName(HarnessSnapshot snapshot, Guid executionRunId)
     {
         var skillMarkdown = snapshot.SkillFileSnapshots["SKILL.md"];
-        var (yaml, _) = YamlFrontmatterHelper.ExtractFrontmatter(skillMarkdown);
-        var skillName = Infrastructure.AI.Skills.SkillFrontmatter.Load(yaml).String("name");
+        var skillName = TryParseDeclaredName(skillMarkdown);
         if (string.IsNullOrWhiteSpace(skillName))
         {
             throw new InvalidOperationException(
@@ -390,6 +411,17 @@ public sealed class AgentEvaluationService : IEvaluationService
         }
 
         return skillName;
+    }
+
+    /// <summary>
+    /// Parses a SKILL.md's declared frontmatter <c>name</c>, or null when absent/blank. Shared by
+    /// <see cref="ResolveDeclaredSkillName"/> and <see cref="MaterializeCandidateSkills"/>'s
+    /// sibling-skill recognition, which both need the identical admission rule the real SDK applies.
+    /// </summary>
+    private static string? TryParseDeclaredName(string skillMarkdown)
+    {
+        var (yaml, _) = YamlFrontmatterHelper.ExtractFrontmatter(skillMarkdown);
+        return Infrastructure.AI.Skills.SkillFrontmatter.Load(yaml).String("name");
     }
 
     /// <summary>

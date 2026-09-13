@@ -585,6 +585,59 @@ public class AgentEvaluationServiceTests : IAsyncDisposable
     }
 
     /// <summary>
+    /// #618 (4th CI/review-caught regression): mere presence of a "{segment}/SKILL.md" key is a
+    /// tautology for that key itself (it always "contains" its own key), so it can't distinguish a
+    /// genuine sibling skill from a resource file that merely happens to be named SKILL.md inside
+    /// the bare-rooted skill's own subfolder (e.g. a template/reference resource at
+    /// "examples/SKILL.md" whose frontmatter declares a DIFFERENT name than "examples", or no name
+    /// at all). The previous version of this fix treated key-presence alone as sufficient and
+    /// misrouted this resource - and everything else sharing its "examples/" segment - to the run
+    /// root instead of nesting it inside the bare skill's own directory.
+    /// </summary>
+    [Fact]
+    public async Task EvaluateAsync_NestedFileNamedSkillMdWithNonMatchingDeclaredName_IsTreatedAsAResourceNotASibling()
+    {
+        var evalSkillsRoot = Path.Combine(Path.GetTempPath(), "harness-eval-skills");
+        var preExistingRunRoots = Directory.Exists(evalSkillsRoot)
+            ? Directory.EnumerateDirectories(evalSkillsRoot).ToHashSet(StringComparer.OrdinalIgnoreCase)
+            : [];
+
+        bool? templateResourceLandedInsideTheSkillDirectory = null;
+        _agentFactoryMock
+            .Setup(f => f.CreateAgentAsync(It.IsAny<AgentExecutionContext>(), It.IsAny<CancellationToken>()))
+            .Callback<AgentExecutionContext, CancellationToken>((_, _) =>
+            {
+                var thisRunRoot = Directory.Exists(evalSkillsRoot)
+                    ? Directory.EnumerateDirectories(evalSkillsRoot)
+                        .FirstOrDefault(d => !preExistingRunRoots.Contains(d))
+                    : null;
+                templateResourceLandedInsideTheSkillDirectory = thisRunRoot is not null
+                    && File.Exists(Path.Combine(thisRunRoot, "my-skill", "examples", "SKILL.md"))
+                    && !File.Exists(Path.Combine(thisRunRoot, "examples", "SKILL.md"));
+            })
+            .ReturnsAsync(new TestableAIAgent("output"));
+
+        var skillFiles = new Dictionary<string, string>
+        {
+            ["SKILL.md"] =
+                "---\nname: my-skill\ndescription: Has a template resource shaped like a manifest.\n---\nbody",
+            // A template/reference resource that happens to be named SKILL.md but is NOT a real
+            // sibling skill - its declared name doesn't match its own directory segment "examples".
+            ["examples/SKILL.md"] =
+                "---\nname: not-a-real-sibling\ndescription: Template content, not a loadable skill.\n---\nbody"
+        };
+        var sut = BuildSut();
+        var candidate = BuildCandidate(skillFiles: skillFiles);
+        var tasks = new[] { BuildTask("false-sibling-task", "prompt", pattern: null) };
+
+        var result = await sut.EvaluateAsync(candidate, tasks);
+
+        var taskResult = Assert.Single(result.PerExampleResults);
+        Assert.True(taskResult.Passed);
+        Assert.True(templateResourceLandedInsideTheSkillDirectory);
+    }
+
+    /// <summary>
     /// #618: a SKILL.md with no 'name' in its frontmatter has nothing to derive the required
     /// correctly-named subdirectory from. This must fail the task rather than silently degrade to no
     /// skills provider, for the same reason as the missing-SKILL.md case above.
