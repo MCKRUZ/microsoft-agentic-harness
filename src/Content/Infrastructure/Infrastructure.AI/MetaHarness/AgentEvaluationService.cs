@@ -251,12 +251,26 @@ public sealed class AgentEvaluationService : IEvaluationService
     /// nested under an arbitrarily-named parent loads correctly), not as the skill's own directory.
     /// </para>
     /// <para>
-    /// A candidate that proposed skill files which cannot form a loadable skill (no top-level
-    /// <c>SKILL.md</c>, or a manifest declaring no <c>name</c>) is a malformed proposal, not a no-op
-    /// one — <see cref="ResolveDeclaredSkillName"/> throws rather than returning null for that case,
-    /// so the caller's task-level catch fails the task instead of silently materializing nothing and
+    /// A candidate that proposed skill files which cannot form a loadable skill (no <c>SKILL.md</c>
+    /// anywhere in the snapshot, or a bare top-level one declaring no <c>name</c>) is a malformed
+    /// proposal, not a no-op one — this throws rather than returning null for that case, so the
+    /// caller's task-level catch fails the task instead of silently materializing nothing and
     /// scoring the candidate identically to its unchanged parent, which is the same silent-no-op
     /// symptom #618 fixes, just reintroduced via a different malformed-input shape.
+    /// </para>
+    /// <para>
+    /// <strong>Two distinct snapshot shapes, caught by CI review after an earlier version of this
+    /// fix assumed only the first:</strong> a snapshot captured from ONE skill's own directory
+    /// (<c>ActiveConfigSnapshotBuilder</c> pointed directly at a single skill folder) has a BARE
+    /// top-level <c>SKILL.md</c> key with no name-prefixed subdirectory — this is the shape #618's
+    /// bug affects, and needs re-nesting one level down under a subdirectory named after its
+    /// declared frontmatter name. A snapshot captured from a MULTI-skill root (pointed at a
+    /// directory containing several named skill subfolders) already has every key prefixed with its
+    /// own skill's directory name (e.g. <c>"research-agent/SKILL.md"</c>) — that shape already
+    /// satisfies the SDK's naming convention exactly as captured and must be materialized as-is;
+    /// re-nesting it again under an additional derived name would break a layout that already
+    /// materializes and loads correctly. Distinguished by presence of a bare top-level
+    /// <c>"SKILL.md"</c> key.
     /// </para>
     /// </remarks>
     private string? MaterializeCandidateSkills(HarnessSnapshot snapshot, Guid executionRunId)
@@ -264,7 +278,13 @@ public sealed class AgentEvaluationService : IEvaluationService
         if (snapshot.SkillFileSnapshots.Count == 0)
             return null;
 
-        var skillName = ResolveDeclaredSkillName(snapshot, executionRunId);
+        var hasBareTopLevelSkillMd = snapshot.SkillFileSnapshots.ContainsKey("SKILL.md");
+        if (!hasBareTopLevelSkillMd && !snapshot.SkillFileSnapshots.Keys.Any(k => Path.GetFileName(k) == "SKILL.md"))
+        {
+            throw new InvalidOperationException(
+                $"Candidate for execution run {executionRunId} has skill files but no SKILL.md " +
+                "anywhere in the snapshot; cannot materialize a loadable skill directory.");
+        }
 
         // Canonicalize once so the containment check compares like-for-like (handles symlinked
         // temp roots on macOS and 8.3 short names on Windows).
@@ -274,11 +294,21 @@ public sealed class AgentEvaluationService : IEvaluationService
         string root;
         try
         {
-            // #618: the skill's OWN materialized files live one level down, in a subdirectory named
-            // after its declared frontmatter name — SafeResolveWithinRoot is reused here (not a new
-            // sanitizer) since skillName is candidate-authored, untrusted input with exactly the same
-            // path-traversal risk as any other snapshot key.
-            root = SafeResolveWithinRoot(runRoot, skillName);
+            if (hasBareTopLevelSkillMd)
+            {
+                // #618: the skill's OWN materialized files live one level down, in a subdirectory
+                // named after its declared frontmatter name — SafeResolveWithinRoot is reused here
+                // (not a new sanitizer) since skillName is candidate-authored, untrusted input with
+                // exactly the same path-traversal risk as any other snapshot key.
+                var skillName = ResolveDeclaredSkillName(snapshot, executionRunId);
+                root = SafeResolveWithinRoot(runRoot, skillName);
+            }
+            else
+            {
+                // Already correctly shaped — see the type-level remarks above.
+                root = runRoot;
+            }
+
             Directory.CreateDirectory(root);
 
             foreach (var (relativePath, content) in snapshot.SkillFileSnapshots)
@@ -302,23 +332,17 @@ public sealed class AgentEvaluationService : IEvaluationService
     }
 
     /// <summary>
-    /// Reads the candidate's declared skill name from its top-level <c>SKILL.md</c> frontmatter.
+    /// Reads the candidate's declared skill name from its bare top-level <c>SKILL.md</c>
+    /// frontmatter. The caller guarantees that key exists before calling this.
     /// </summary>
     /// <exception cref="InvalidOperationException">
-    /// The candidate proposed skill files that cannot form a loadable skill: no top-level
-    /// <c>SKILL.md</c>, or its frontmatter declares no <c>name</c>. Thrown rather than returned as
-    /// null so <see cref="MaterializeCandidateSkills"/>'s caller fails the task instead of silently
-    /// materializing nothing — see the remarks on <see cref="MaterializeCandidateSkills"/>.
+    /// The top-level <c>SKILL.md</c>'s frontmatter declares no <c>name</c>. Thrown rather than
+    /// returned as null so <see cref="MaterializeCandidateSkills"/>'s caller fails the task instead
+    /// of silently materializing nothing — see the remarks on <see cref="MaterializeCandidateSkills"/>.
     /// </exception>
     private static string ResolveDeclaredSkillName(HarnessSnapshot snapshot, Guid executionRunId)
     {
-        if (!snapshot.SkillFileSnapshots.TryGetValue("SKILL.md", out var skillMarkdown))
-        {
-            throw new InvalidOperationException(
-                $"Candidate for execution run {executionRunId} has skill files but no top-level " +
-                "SKILL.md; cannot materialize a loadable skill directory.");
-        }
-
+        var skillMarkdown = snapshot.SkillFileSnapshots["SKILL.md"];
         var (yaml, _) = YamlFrontmatterHelper.ExtractFrontmatter(skillMarkdown);
         var skillName = Infrastructure.AI.Skills.SkillFrontmatter.Load(yaml).String("name");
         if (string.IsNullOrWhiteSpace(skillName))

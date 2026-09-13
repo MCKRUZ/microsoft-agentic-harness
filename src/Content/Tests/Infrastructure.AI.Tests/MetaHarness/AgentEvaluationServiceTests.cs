@@ -394,14 +394,15 @@ public class AgentEvaluationServiceTests : IAsyncDisposable
     }
 
     /// <summary>
-    /// #618: a candidate with skill files but no top-level SKILL.md cannot be materialized into a
-    /// loadable directory at all (there's no name to derive the subdirectory from). This must fail the
-    /// task rather than silently degrade to no skills provider - a silent degrade would score this
-    /// malformed proposal identically to its unchanged parent, the same silent-no-op symptom #618
-    /// fixes, just reintroduced via a different malformed-input shape (caught in review).
+    /// #618: a candidate with skill files but no SKILL.md ANYWHERE in the snapshot (neither a bare
+    /// top-level key nor one nested under a skill-name subdirectory) cannot be materialized into a
+    /// loadable directory at all. This must fail the task rather than silently degrade to no skills
+    /// provider - a silent degrade would score this malformed proposal identically to its unchanged
+    /// parent, the same silent-no-op symptom #618 fixes, just reintroduced via a different
+    /// malformed-input shape (caught in review).
     /// </summary>
     [Fact]
-    public async Task EvaluateAsync_SkillSnapshotsWithNoTopLevelSkillMd_FailsTask()
+    public async Task EvaluateAsync_SkillSnapshotsWithNoSkillMdAnywhere_FailsTask()
     {
         _agentFactoryMock
             .Setup(f => f.CreateAgentAsync(It.IsAny<AgentExecutionContext>(), It.IsAny<CancellationToken>()))
@@ -416,7 +417,65 @@ public class AgentEvaluationServiceTests : IAsyncDisposable
 
         var taskResult = Assert.Single(result.PerExampleResults);
         Assert.False(taskResult.Passed);
-        Assert.Contains("no top-level SKILL.md", taskResult.FailureReason);
+        Assert.Contains("no SKILL.md anywhere in the snapshot", taskResult.FailureReason);
+    }
+
+    /// <summary>
+    /// #618 (regression caught by CI review): a snapshot captured from a MULTI-skill root has every
+    /// key already prefixed with its own skill's directory name (e.g. "research-agent/SKILL.md") -
+    /// that shape already satisfies the pinned SDK's naming convention exactly as captured, and must
+    /// be materialized as-is, NOT re-nested under an additional derived subdirectory. An earlier
+    /// version of this fix unconditionally assumed every snapshot was the bare top-level SKILL.md
+    /// shape and threw for this one instead, breaking a layout that materialized and loaded
+    /// correctly before #618's fix ever existed.
+    /// </summary>
+    [Fact]
+    public async Task EvaluateAsync_MultiSkillSnapshotWithPrefixedKeys_MaterializesAsIsWithoutRenesting()
+    {
+        var evalSkillsRoot = Path.Combine(Path.GetTempPath(), "harness-eval-skills");
+        var preExistingRunRoots = Directory.Exists(evalSkillsRoot)
+            ? Directory.EnumerateDirectories(evalSkillsRoot).ToHashSet(StringComparer.OrdinalIgnoreCase)
+            : [];
+
+        AgentExecutionContext? capturedContext = null;
+        // Checked INSIDE the callback, before EvaluateAsync's own finally block deletes the temp
+        // directory - the caller never gets the path back, so this is the only window it exists in.
+        bool? researchAgentSkillMdExistedAtTheRightPath = null;
+        _agentFactoryMock
+            .Setup(f => f.CreateAgentAsync(It.IsAny<AgentExecutionContext>(), It.IsAny<CancellationToken>()))
+            .Callback<AgentExecutionContext, CancellationToken>((ctx, _) =>
+            {
+                capturedContext = ctx;
+                var thisRunRoot = Directory.Exists(evalSkillsRoot)
+                    ? Directory.EnumerateDirectories(evalSkillsRoot)
+                        .FirstOrDefault(d => !preExistingRunRoots.Contains(d))
+                    : null;
+                // Must land exactly one level under the run root (not re-nested a second time under
+                // an additional derived-name subdirectory).
+                researchAgentSkillMdExistedAtTheRightPath = thisRunRoot is not null
+                    && File.Exists(Path.Combine(thisRunRoot, "research-agent", "SKILL.md"));
+            })
+            .ReturnsAsync(new TestableAIAgent("output"));
+
+        var skillFiles = new Dictionary<string, string>
+        {
+            ["research-agent/SKILL.md"] =
+                "---\nname: research-agent\ndescription: Finds and analyzes information.\n---\nDo research.\n",
+            ["other-skill/SKILL.md"] =
+                "---\nname: other-skill\ndescription: Does something else.\n---\nDo other things.\n"
+        };
+        var sut = BuildSut();
+        var candidate = BuildCandidate(skillFiles: skillFiles);
+        var tasks = new[] { BuildTask("multi-skill-task", "prompt", pattern: null) };
+
+        var result = await sut.EvaluateAsync(candidate, tasks);
+
+        var taskResult = Assert.Single(result.PerExampleResults);
+        Assert.True(taskResult.Passed);
+        Assert.NotNull(capturedContext);
+        Assert.NotNull(capturedContext.AIContextProviders);
+        Assert.Single(capturedContext.AIContextProviders!.OfType<AgentSkillsProvider>());
+        Assert.True(researchAgentSkillMdExistedAtTheRightPath);
     }
 
     /// <summary>
