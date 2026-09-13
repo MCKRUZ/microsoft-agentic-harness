@@ -177,20 +177,13 @@ public sealed class DependencyInjectionTests
 
         try
         {
-            var config = IsolatedAppConfig.Isolate(new Domain.Common.Config.AppConfig
-            {
-                AI = new Domain.Common.Config.AI.AIConfig
-                {
-                    Conversations = new Domain.Common.Config.AI.Conversations.ConversationsConfig
-                    {
-                        DatabasePath = conversationsDbPath
-                    },
-                    Planner = new Domain.Common.Config.AI.Planner.PlannerOptions
-                    {
-                        DatabasePath = plannerDbPath
-                    }
-                }
-            });
+            // IsolatedAppConfig.Isolate overwrites both DatabasePath fields with its own temp slot
+            // (and eagerly creates that slot with plain permissions before registration ever runs) --
+            // so the paths this test actually wants to assert on must be set AFTER Isolate returns,
+            // not passed into the object it isolates (caught by CI's correctness-review gate).
+            var config = IsolatedAppConfig.Isolate(new Domain.Common.Config.AppConfig());
+            config.AI.Conversations.DatabasePath = conversationsDbPath;
+            config.AI.Planner.DatabasePath = plannerDbPath;
             var services = CreateBaseServices(config);
 
             services.AddInfrastructureAIDependencies(config);
