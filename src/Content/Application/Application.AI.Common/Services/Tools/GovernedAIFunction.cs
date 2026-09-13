@@ -60,6 +60,7 @@ internal sealed class GovernedAIFunction : DelegatingAIFunction
     private readonly ICurrentSkillAccessor? _currentSkillAccessor;
     private readonly IReadOnlyList<string>? _skillIds;
     private readonly Func<AIFunctionArguments, string?>? _skillIdFromArguments;
+    private readonly bool _isCallOnceCandidate;
 
     /// <param name="innerFunction">The tool function this wrapper governs.</param>
     /// <param name="compositionTaint">
@@ -93,12 +94,27 @@ internal sealed class GovernedAIFunction : DelegatingAIFunction
     /// ambient from an outer call — never a wrong or stale one. Not the same claim as "falls back to
     /// the harness-wide default": that only follows when nothing established an outer scope either.
     /// </param>
+    /// <param name="isCallOnceCandidate">
+    /// Whether the tool declaration this instance was resolved for was marked
+    /// <c>CallOncePerConversation</c> (#621) — a first-class field carried forward by every
+    /// constructor call the same way <paramref name="skillIds"/> already is, so a re-wrap site
+    /// (<c>ToolChainBuilder.ApplyCompositionTaint</c>, <c>ToolChainBuilder.ResolveUnion</c>) forwards
+    /// it by threading a constructor argument rather than by remembering to separately maintain an
+    /// out-of-band <c>ConcurrentDictionary&lt;AITool, byte&gt;</c> keyed by reference identity — the
+    /// side channel this field replaces, which had already silently dropped call-once candidacy
+    /// twice in #589's own review history before this field existed. Read by
+    /// <c>ToolChainBuilder.RegisterSurvivingCallOnceTools</c> at the whole-agent-set exit to decide
+    /// which tool names to register with <c>IToolCallOncePolicy</c> — never consulted at invocation
+    /// time by this class itself, since per-call enforcement is name-based, through the ambient
+    /// admission pipeline's own call-once gate, not instance-based.
+    /// </param>
     public GovernedAIFunction(
         AIFunction innerFunction,
         ToolCompositionTaint? compositionTaint = null,
         ICurrentSkillAccessor? currentSkillAccessor = null,
         IReadOnlyList<string>? skillIds = null,
-        Func<AIFunctionArguments, string?>? skillIdFromArguments = null)
+        Func<AIFunctionArguments, string?>? skillIdFromArguments = null,
+        bool isCallOnceCandidate = false)
         : base(innerFunction)
     {
         _compositionTaint = compositionTaint;
@@ -108,6 +124,7 @@ internal sealed class GovernedAIFunction : DelegatingAIFunction
         // invocation — this class's hottest path — repeated work with a result fixed at build time.
         _skillIds = skillIds?.Where(id => !string.IsNullOrWhiteSpace(id)).ToList();
         _skillIdFromArguments = skillIdFromArguments;
+        _isCallOnceCandidate = isCallOnceCandidate;
     }
 
     /// <summary>
@@ -141,6 +158,12 @@ internal sealed class GovernedAIFunction : DelegatingAIFunction
     /// pipeline can't have it silently dropped by a rewrap with no compiler or test signal.
     /// </summary>
     internal Func<AIFunctionArguments, string?>? SkillIdFromArguments => _skillIdFromArguments;
+
+    /// <summary>
+    /// Whether this instance's tool declaration was marked <c>CallOncePerConversation</c> (#621) — see
+    /// this type's constructor docs for the re-wrap-forwarding reasoning shared with <see cref="SkillIds"/>.
+    /// </summary>
+    internal bool IsCallOnceCandidate => _isCallOnceCandidate;
 
     protected override async ValueTask<object?> InvokeCoreAsync(
         AIFunctionArguments arguments,
