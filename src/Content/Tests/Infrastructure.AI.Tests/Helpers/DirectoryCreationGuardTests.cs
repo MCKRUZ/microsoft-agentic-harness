@@ -92,6 +92,21 @@ public sealed class DirectoryCreationGuardTests
     /// inline idiom <c>new DirectoryInfo(...).Create()</c>.
     /// </summary>
     /// <remarks>
+    /// <para>
+    /// <strong>The <c>DirectoryInfo</c> constructor argument must be nesting-aware</strong> (CI
+    /// correctness-review finding, caught on the PR that introduced this test — a real defect, verified
+    /// by probe file, not a false alarm): a first cut used <c>\([^)]*\)</c>, a flat, non-nesting match.
+    /// A call whose own
+    /// argument contains parentheses — <c>new DirectoryInfo(Path.Combine(a, b)).Create()</c>, the exact
+    /// idiom this branch of the pattern exists to catch — has <c>[^)]*</c> stop at the FIRST inner
+    /// <c>)</c>, leaving the real closing paren unconsumed and the whole alternative failing to match:
+    /// a real directory-creating call site would pass this guard silently. The balancing-group construct
+    /// below (<c>(?&lt;paren&gt;</c>/<c>(?&lt;-paren&gt;</c>/<c>(?(paren)(?!))</c>) matches parentheses at
+    /// arbitrary nesting depth instead of assuming exactly one level — the identical technique, and the
+    /// identical prior mistake, <see cref="SourceScan.FindTypeDeclarations"/> already documents for its
+    /// own primary-constructor group.
+    /// </para>
+    /// <para>
     /// <strong>Residual gap (/code-review finding on the first cut, which matched only
     /// <c>Directory.CreateDirectory</c>):</strong> a <c>DirectoryInfo</c> obtained some other way — a
     /// stored variable, a method return value — and then <c>.Create()</c>d on a later, separate
@@ -101,11 +116,13 @@ public sealed class DirectoryCreationGuardTests
     /// scan cannot presently reach without real type information. Not live today (verified against the
     /// current tree) and, like every gap <see cref="SourceScan"/> itself documents, a false positive
     /// here would be a named file to review, never a silent miss.
+    /// </para>
     /// </remarks>
     private static readonly Regex PlainCreateDirectory = new(
         @"\b(?:System\.IO\.)?Directory\.(?:CreateDirectory|CreateTempSubdirectory)\b" +
         @"|\.CreateSubdirectory\s*\(" +
-        @"|\bnew\s+(?:System\.IO\.)?DirectoryInfo\s*\([^)]*\)\s*\.\s*Create\b",
+        @"|\bnew\s+(?:System\.IO\.)?DirectoryInfo\s*\(" +
+        @"(?:[^()]|(?<paren>\()|(?<-paren>\)))*(?(paren)(?!))\)\s*\.\s*Create\b",
         RegexOptions.Compiled);
 
     [Fact]
