@@ -65,9 +65,9 @@ public partial class AgentEvaluationServiceTests
     [Fact]
     public async Task EvaluateAsync_CandidateWithSkillSnapshots_MaterializesSkillUnderACorrectlyNamedDirectory()
     {
-        var (_, capturedSkillDirectory) = await MaterializeAndCaptureDirectoriesAsync("materialize-task");
+        var result = await MaterializeAndCaptureDirectoriesAsync("materialize-task");
 
-        Assert.NotNull(capturedSkillDirectory);
+        Assert.NotNull(result.SkillDirectory);
     }
 
     /// <summary>
@@ -75,23 +75,35 @@ public partial class AgentEvaluationServiceTests
     /// SYSTEM temp root, which is typically world-listable) and the bare-rooted skill's own
     /// subdirectory must be owner-only.
     /// </summary>
+    /// <remarks>
+    /// The permission itself is checked INSIDE the mocked agent-factory callback, not against the
+    /// paths returned here — <c>EvaluateAsync</c>'s own <c>finally</c> block deletes both directories
+    /// before it returns, so asserting on live filesystem state afterward throws on Linux CI instead
+    /// of validating anything (caught by CI's grader gate).
+    /// </remarks>
     [Fact]
     public async Task EvaluateAsync_CandidateWithSkillSnapshots_MaterializedDirectoriesAreOwnerOnly()
     {
-        var (capturedRunRoot, capturedSkillDirectory) =
-            await MaterializeAndCaptureDirectoriesAsync("owner-only-task");
+        var result = await MaterializeAndCaptureDirectoriesAsync("owner-only-task");
 
-        Assert.NotNull(capturedRunRoot);
-        Assert.NotNull(capturedSkillDirectory);
-        capturedRunRoot!.ShouldBeOwnerOnlyDirectory();
-        capturedSkillDirectory!.ShouldBeOwnerOnlyDirectory();
+        Assert.NotNull(result.RunRoot);
+        Assert.NotNull(result.SkillDirectory);
+        Assert.NotNull(result.RunRootMode);
+        Assert.NotNull(result.SkillDirectoryMode);
+        if (!OperatingSystem.IsWindows())
+        {
+            const UnixFileMode ownerOnly = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
+            Assert.Equal(ownerOnly, result.RunRootMode!.Value);
+            Assert.Equal(ownerOnly, result.SkillDirectoryMode!.Value);
+        }
     }
 
     /// <summary>
     /// Runs one candidate with a single bare-rooted "research-agent" skill through
     /// <c>AgentEvaluationService.EvaluateAsync</c> and returns the run root and the skill's own
-    /// subdirectory, captured mid-flight during the mocked agent-factory callback — both are deleted
-    /// once the task completes, so they cannot be read back afterward. Shared by the two tests above
+    /// subdirectory, PLUS each one's Unix file mode -- all captured mid-flight during the mocked
+    /// agent-factory callback, because both directories are deleted once the task completes and
+    /// cannot be read back (permissions included) afterward. Shared by the two tests above
     /// (code-review finding on #660: the capture logic was duplicated verbatim between them).
     /// </summary>
     /// <remarks>
@@ -101,8 +113,8 @@ public partial class AgentEvaluationServiceTests
     /// pass if a concurrently-running test using the same skill name leaves a same-named directory
     /// behind (caught in review).
     /// </remarks>
-    private async Task<(string? RunRoot, string? SkillDirectory)> MaterializeAndCaptureDirectoriesAsync(
-        string taskId)
+    private async Task<(string? RunRoot, string? SkillDirectory, UnixFileMode? RunRootMode, UnixFileMode? SkillDirectoryMode)>
+        MaterializeAndCaptureDirectoriesAsync(string taskId)
     {
         var evalSkillsRoot = Path.Combine(Path.GetTempPath(), "harness-eval-skills");
         var preExistingRunRoots = Directory.Exists(evalSkillsRoot)
@@ -111,6 +123,8 @@ public partial class AgentEvaluationServiceTests
 
         string? capturedRunRoot = null;
         string? capturedSkillDirectory = null;
+        UnixFileMode? capturedRunRootMode = null;
+        UnixFileMode? capturedSkillDirectoryMode = null;
         _agentFactoryMock
             .Setup(f => f.CreateAgentAsync(It.IsAny<AgentExecutionContext>(), It.IsAny<CancellationToken>()))
             .Callback<AgentExecutionContext, CancellationToken>((_, _) =>
@@ -118,7 +132,8 @@ public partial class AgentEvaluationServiceTests
                 // Read the materialized directory back off disk rather than reflecting into the SDK's
                 // provider internals - what matters is proving a "research-agent"-named directory
                 // containing SKILL.md exists somewhere under this run's OWN run root while the agent
-                // is still being constructed (before EvaluateAsync's finally block deletes it).
+                // is still being constructed (before EvaluateAsync's finally block deletes it). The
+                // mode is read here too, for the same reason: it must never be read after that delete.
                 capturedRunRoot = Directory.Exists(evalSkillsRoot)
                     ? Directory.EnumerateDirectories(evalSkillsRoot)
                         .FirstOrDefault(d => !preExistingRunRoots.Contains(d))
@@ -127,6 +142,12 @@ public partial class AgentEvaluationServiceTests
                     ? null
                     : Directory.EnumerateDirectories(capturedRunRoot, "*", SearchOption.AllDirectories)
                         .FirstOrDefault(d => Path.GetFileName(d) == "research-agent" && File.Exists(Path.Combine(d, "SKILL.md")));
+
+                if (!OperatingSystem.IsWindows())
+                {
+                    capturedRunRootMode = capturedRunRoot is null ? null : File.GetUnixFileMode(capturedRunRoot);
+                    capturedSkillDirectoryMode = capturedSkillDirectory is null ? null : File.GetUnixFileMode(capturedSkillDirectory);
+                }
             })
             .ReturnsAsync(new TestableAIAgent("output"));
 
@@ -141,7 +162,9 @@ public partial class AgentEvaluationServiceTests
 
         await sut.EvaluateAsync(candidate, tasks);
 
-        return (capturedRunRoot, capturedSkillDirectory);
+        return (capturedRunRoot, capturedSkillDirectory,
+            OperatingSystem.IsWindows() ? UnixFileMode.None : capturedRunRootMode,
+            OperatingSystem.IsWindows() ? UnixFileMode.None : capturedSkillDirectoryMode);
     }
 
     /// <summary>
