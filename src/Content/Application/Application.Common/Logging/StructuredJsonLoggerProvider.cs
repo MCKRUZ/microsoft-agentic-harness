@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
+using Application.Common.Interfaces.Common;
 using Domain.Common.Config;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -23,6 +24,7 @@ public sealed class StructuredJsonLoggerProvider : ILoggerProvider
     private readonly BlockingCollection<string> _messageQueue = new(1000);
     private readonly IOptionsMonitor<LoggingConfig> _config;
     private readonly IExternalScopeProvider? _scopeProvider;
+    private readonly IOwnerOnlyDirectoryCreator _directoryCreator;
     private readonly object _lock = new();
 
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -41,12 +43,18 @@ public sealed class StructuredJsonLoggerProvider : ILoggerProvider
     /// Initializes a new instance of the <see cref="StructuredJsonLoggerProvider"/> class.
     /// </summary>
     /// <param name="config">Application configuration for resolving log paths.</param>
+    /// <param name="directoryCreator">
+    /// Creates the per-run log directory with owner-only permissions on POSIX (#672).
+    /// </param>
     /// <param name="scopeProvider">Optional scope provider for agent context extraction.</param>
     public StructuredJsonLoggerProvider(
         IOptionsMonitor<LoggingConfig> config,
+        IOwnerOnlyDirectoryCreator directoryCreator,
         IExternalScopeProvider? scopeProvider = null)
     {
+        ArgumentNullException.ThrowIfNull(directoryCreator);
         _config = config;
+        _directoryCreator = directoryCreator;
         _scopeProvider = scopeProvider;
     }
 
@@ -85,7 +93,7 @@ public sealed class StructuredJsonLoggerProvider : ILoggerProvider
             if (!fullRun.StartsWith(fullBase, StringComparison.OrdinalIgnoreCase))
                 throw new ArgumentException("Resolved run path escapes the base log directory.");
 
-            Directory.CreateDirectory(runPath);
+            _directoryCreator.Create(runPath);
 
             _writer = new StreamWriter(
                 Path.Combine(runPath, "structured.jsonl"), append: false);

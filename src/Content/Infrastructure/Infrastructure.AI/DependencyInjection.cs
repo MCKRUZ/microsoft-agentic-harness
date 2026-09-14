@@ -19,6 +19,7 @@ using Application.AI.Common.Interfaces.Routing;
 using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Interfaces.Traces;
 using Application.Common.Factories;
+using Application.Common.Interfaces.Common;
 using Microsoft.Extensions.Caching.Memory;
 using Domain.Common.Config;
 using Domain.Common.Workflow;
@@ -99,6 +100,13 @@ public static partial class DependencyInjection
     {
         // --- Core cross-cutting services ---
 
+        // Owner-only directory creation — the internal OwnerOnlyDirectoryHelper's public DI-facing
+        // seam for callers outside this assembly (Application.Core, Application.Common,
+        // Infrastructure.AI.RAG), which cannot see it directly (#671, #672, #673). No constructor
+        // dependencies (see the interface's own remarks on why), so this can never participate in an
+        // ILoggerFactory construction cycle regardless of what resolves it.
+        services.AddSingleton<IOwnerOnlyDirectoryCreator, Helpers.OwnerOnlyDirectoryCreator>();
+
         // Secret redaction — applied at all persistence boundaries (traces, snapshots, manifests)
         services.AddSingleton<ISecretRedactor, PatternSecretRedactor>();
 
@@ -143,11 +151,16 @@ public static partial class DependencyInjection
         // This ensures appsettings entries like "../../../../../../.." navigate correctly
         // from bin/Debug/net10.0/ up to the repository root regardless of launch CWD.
         var exeDir = AppContext.BaseDirectory;
-        var allowedBasePaths = appConfig.Infrastructure.FileSystem.AllowedBasePaths
+        var resolvedSandboxBasePaths = appConfig.Infrastructure.FileSystem.AllowedBasePaths
             .Select(p => Path.IsPathRooted(p) ? p : Path.GetFullPath(p, exeDir))
-            .Append(appConfig.Logging.LogsBasePath is { Length: > 0 } lp
-                ? Path.GetFullPath(lp, exeDir)
-                : string.Empty)
+            .Where(p => !string.IsNullOrEmpty(p))
+            .Distinct()
+            .ToArray();
+        var resolvedLogsBasePath = appConfig.Logging.LogsBasePath is { Length: > 0 } lp
+            ? Path.GetFullPath(lp, exeDir)
+            : string.Empty;
+        var allowedBasePaths = resolvedSandboxBasePaths
+            .Append(resolvedLogsBasePath)
             .Where(p => !string.IsNullOrEmpty(p))
             .Distinct()
             .ToArray();
@@ -156,8 +169,23 @@ public static partial class DependencyInjection
         // out-of-box 'workspace' directory instead of failing on a missing folder. Idempotent for
         // pre-existing paths (repo root, logs). A genuinely uncreatable path is a misconfiguration
         // and surfaces loudly at startup rather than being silently masked.
-        foreach (var basePath in allowedBasePaths)
+        //
+        // LogsBasePath is deliberately NOT created via the plain loop below (#672): unlike
+        // AllowedBasePaths, which are genuinely agent-directed file-system-tool roots, this is
+        // harness-internal structured/file log output — the same sensitivity argument #527/#640/#660
+        // make for receipts and audit logs applies directly. Kept as two SEPARATE source lists
+        // (resolvedSandboxBasePaths vs. resolvedLogsBasePath) rather than one merged list filtered by
+        // string comparison (/code-review finding: an OrdinalIgnoreCase skip-check against a
+        // Distinct()-deduplicated list, which defaults to ordinal/case-sensitive, could silently skip
+        // creating an unrelated AllowedBasePaths entry that merely resembled LogsBasePath in case on a
+        // case-sensitive filesystem) — LogsBasePath still ends up IN allowedBasePaths below (and
+        // therefore in the tool's own allow-list passed to RegisterToolServices) so the agent can still
+        // read its own logs through the file-system tool; only which API creates the directory changes.
+        foreach (var basePath in resolvedSandboxBasePaths)
             Directory.CreateDirectory(basePath);
+
+        if (!string.IsNullOrEmpty(resolvedLogsBasePath))
+            Helpers.OwnerOnlyDirectoryHelper.Create(resolvedLogsBasePath);
 
         RegisterToolServices(services, appConfig, allowedBasePaths);
 

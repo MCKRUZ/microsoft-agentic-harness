@@ -21,7 +21,7 @@ public sealed class LeidenCommunityDetectorTests : IDisposable
     {
         _tempDir = Path.Combine(Path.GetTempPath(), $"leiden_test_{Guid.NewGuid():N}");
         Directory.CreateDirectory(_tempDir);
-        _graph = new KuzuGraphBackend(_tempDir, NullLogger<KuzuGraphBackend>.Instance);
+        _graph = new KuzuGraphBackend(_tempDir, NullLogger<KuzuGraphBackend>.Instance, new PlainDirectoryCreator());
         _sut = new LeidenCommunityDetector(NullLogger<LeidenCommunityDetector>.Instance);
     }
 

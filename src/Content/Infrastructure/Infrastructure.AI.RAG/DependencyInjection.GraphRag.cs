@@ -1,6 +1,7 @@
 using Application.AI.Common.Interfaces.KnowledgeGraph;
 using Application.AI.Common.Interfaces.RAG;
 using Application.AI.Common.Interfaces.Routing;
+using Application.Common.Interfaces.Common;
 using Domain.Common.Config;
 using Infrastructure.AI.RAG.GraphRag;
 using Infrastructure.AI.RAG.Retrieval;
@@ -28,7 +29,8 @@ public static partial class DependencyInjection
             new KuzuGraphBackend(
                 sp.GetRequiredService<IOptionsMonitor<AppConfig>>()
                     .CurrentValue.AI.Rag.GraphDatabase.DataDirectory,
-                sp.GetRequiredService<ILogger<KuzuGraphBackend>>()));
+                sp.GetRequiredService<ILogger<KuzuGraphBackend>>(),
+                sp.GetRequiredService<IOwnerOnlyDirectoryCreator>()));
 
         // Default graph backend from config
         services.AddSingleton<IGraphDatabaseBackend>(sp =>

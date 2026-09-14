@@ -28,7 +28,7 @@ public sealed class MemoryDecayServiceTests : IDisposable
         _tempDir = Path.Combine(Path.GetTempPath(), $"decay_test_{Guid.NewGuid():N}");
         Directory.CreateDirectory(_tempDir);
 
-        _graphBackend = new KuzuGraphBackend(_tempDir, NullLogger<KuzuGraphBackend>.Instance);
+        _graphBackend = new KuzuGraphBackend(_tempDir, NullLogger<KuzuGraphBackend>.Instance, new PlainDirectoryCreator());
         _memoryStoreMock = new Mock<ICrossSessionMemoryStore>();
 
         var config = new AppConfig

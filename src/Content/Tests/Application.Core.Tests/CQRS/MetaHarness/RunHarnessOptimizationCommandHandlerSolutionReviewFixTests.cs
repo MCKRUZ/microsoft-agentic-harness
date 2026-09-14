@@ -72,7 +72,8 @@ public sealed class RunHarnessOptimizationCommandHandlerSolutionReviewFixTests :
 
     private RunHarnessOptimizationCommandHandler BuildHandler() =>
         new(_proposer.Object, _evaluator.Object, _repository.Object,
-            _snapshotBuilder.Object, _regressionService.Object, _configMonitor.Object, _logger.Object);
+            _snapshotBuilder.Object, _regressionService.Object, _configMonitor.Object, _logger.Object,
+            new PlainDirectoryCreator());
 
     private static HarnessSnapshot BuildSnapshot() => new()
     {

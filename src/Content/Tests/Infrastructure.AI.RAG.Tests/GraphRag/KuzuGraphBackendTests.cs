@@ -18,7 +18,7 @@ public sealed class KuzuGraphBackendTests : IDisposable
     {
         _tempDir = Path.Combine(Path.GetTempPath(), $"kuzu_test_{Guid.NewGuid():N}");
         Directory.CreateDirectory(_tempDir);
-        _sut = new KuzuGraphBackend(_tempDir, NullLogger<KuzuGraphBackend>.Instance);
+        _sut = new KuzuGraphBackend(_tempDir, NullLogger<KuzuGraphBackend>.Instance, new PlainDirectoryCreator());
     }
 
     public void Dispose()

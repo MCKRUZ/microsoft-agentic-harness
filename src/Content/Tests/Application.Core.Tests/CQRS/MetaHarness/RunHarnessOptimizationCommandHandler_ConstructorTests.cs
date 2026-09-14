@@ -1,4 +1,5 @@
 using Application.AI.Common.Interfaces.MetaHarness;
+using Application.Common.Interfaces.Common;
 using Application.Core.CQRS.MetaHarness;
 using Domain.Common.Config.MetaHarness;
 using FluentAssertions;
@@ -22,6 +23,7 @@ public class RunHarnessOptimizationCommandHandler_ConstructorTests
     private readonly Mock<IRegressionSuiteService> _regressionService = new();
     private readonly Mock<IOptionsMonitor<MetaHarnessConfig>> _configMonitor = new();
     private readonly Mock<ILogger<RunHarnessOptimizationCommandHandler>> _logger = new();
+    private readonly IOwnerOnlyDirectoryCreator _directoryCreator = new PlainDirectoryCreator();
 
     [Fact]
     public void Constructor_NullProposer_ThrowsArgumentNullException()
@@ -29,7 +31,7 @@ public class RunHarnessOptimizationCommandHandler_ConstructorTests
         var act = () => new RunHarnessOptimizationCommandHandler(
             null!, _evaluator.Object, _repository.Object,
             _snapshotBuilder.Object, _regressionService.Object,
-            _configMonitor.Object, _logger.Object);
+            _configMonitor.Object, _logger.Object, _directoryCreator);
 
         act.Should().Throw<ArgumentNullException>()
             .WithParameterName("proposer");
@@ -41,7 +43,7 @@ public class RunHarnessOptimizationCommandHandler_ConstructorTests
         var act = () => new RunHarnessOptimizationCommandHandler(
             _proposer.Object, null!, _repository.Object,
             _snapshotBuilder.Object, _regressionService.Object,
-            _configMonitor.Object, _logger.Object);
+            _configMonitor.Object, _logger.Object, _directoryCreator);
 
         act.Should().Throw<ArgumentNullException>()
             .WithParameterName("evaluationService");
@@ -53,7 +55,7 @@ public class RunHarnessOptimizationCommandHandler_ConstructorTests
         var act = () => new RunHarnessOptimizationCommandHandler(
             _proposer.Object, _evaluator.Object, null!,
             _snapshotBuilder.Object, _regressionService.Object,
-            _configMonitor.Object, _logger.Object);
+            _configMonitor.Object, _logger.Object, _directoryCreator);
 
         act.Should().Throw<ArgumentNullException>()
             .WithParameterName("candidateRepository");
@@ -65,7 +67,7 @@ public class RunHarnessOptimizationCommandHandler_ConstructorTests
         var act = () => new RunHarnessOptimizationCommandHandler(
             _proposer.Object, _evaluator.Object, _repository.Object,
             null!, _regressionService.Object,
-            _configMonitor.Object, _logger.Object);
+            _configMonitor.Object, _logger.Object, _directoryCreator);
 
         act.Should().Throw<ArgumentNullException>()
             .WithParameterName("snapshotBuilder");
@@ -77,7 +79,7 @@ public class RunHarnessOptimizationCommandHandler_ConstructorTests
         var act = () => new RunHarnessOptimizationCommandHandler(
             _proposer.Object, _evaluator.Object, _repository.Object,
             _snapshotBuilder.Object, null!,
-            _configMonitor.Object, _logger.Object);
+            _configMonitor.Object, _logger.Object, _directoryCreator);
 
         act.Should().Throw<ArgumentNullException>()
             .WithParameterName("regressionService");
@@ -89,7 +91,7 @@ public class RunHarnessOptimizationCommandHandler_ConstructorTests
         var act = () => new RunHarnessOptimizationCommandHandler(
             _proposer.Object, _evaluator.Object, _repository.Object,
             _snapshotBuilder.Object, _regressionService.Object,
-            null!, _logger.Object);
+            null!, _logger.Object, _directoryCreator);
 
         act.Should().Throw<ArgumentNullException>()
             .WithParameterName("config");
@@ -101,10 +103,22 @@ public class RunHarnessOptimizationCommandHandler_ConstructorTests
         var act = () => new RunHarnessOptimizationCommandHandler(
             _proposer.Object, _evaluator.Object, _repository.Object,
             _snapshotBuilder.Object, _regressionService.Object,
-            _configMonitor.Object, null!);
+            _configMonitor.Object, null!, _directoryCreator);
 
         act.Should().Throw<ArgumentNullException>()
             .WithParameterName("logger");
+    }
+
+    [Fact]
+    public void Constructor_NullDirectoryCreator_ThrowsArgumentNullException()
+    {
+        var act = () => new RunHarnessOptimizationCommandHandler(
+            _proposer.Object, _evaluator.Object, _repository.Object,
+            _snapshotBuilder.Object, _regressionService.Object,
+            _configMonitor.Object, _logger.Object, null!);
+
+        act.Should().Throw<ArgumentNullException>()
+            .WithParameterName("directoryCreator");
     }
 
     [Fact]
@@ -113,7 +127,7 @@ public class RunHarnessOptimizationCommandHandler_ConstructorTests
         var act = () => new RunHarnessOptimizationCommandHandler(
             _proposer.Object, _evaluator.Object, _repository.Object,
             _snapshotBuilder.Object, _regressionService.Object,
-            _configMonitor.Object, _logger.Object);
+            _configMonitor.Object, _logger.Object, _directoryCreator);
 
         act.Should().NotThrow();
     }

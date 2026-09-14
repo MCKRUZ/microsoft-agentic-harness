@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Application.AI.Common.Interfaces.KnowledgeGraph;
+using Application.Common.Interfaces.Common;
 using Domain.AI.KnowledgeGraph.Models;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
@@ -44,13 +45,20 @@ public sealed partial class KuzuGraphBackend : IGraphDatabaseBackend, IDisposabl
     /// </summary>
     /// <param name="dataDirectory">Directory where <c>graph.db</c> will be stored.</param>
     /// <param name="logger">Logger for recording graph operations.</param>
-    public KuzuGraphBackend(string dataDirectory, ILogger<KuzuGraphBackend> logger)
+    /// <param name="directoryCreator">
+    /// Creates <paramref name="dataDirectory"/> with owner-only permissions on POSIX (#673) — this
+    /// store holds cross-session knowledge-graph data, the same sensitivity argument #527/#640/#660
+    /// make for receipts, audit logs, and bundle staging.
+    /// </param>
+    public KuzuGraphBackend(
+        string dataDirectory, ILogger<KuzuGraphBackend> logger, IOwnerOnlyDirectoryCreator directoryCreator)
     {
         ArgumentNullException.ThrowIfNull(dataDirectory);
         ArgumentNullException.ThrowIfNull(logger);
+        ArgumentNullException.ThrowIfNull(directoryCreator);
         _logger = logger;
 
-        Directory.CreateDirectory(dataDirectory);
+        directoryCreator.Create(dataDirectory, logger);
 
         var dbPath = Path.Combine(dataDirectory, "graph.db");
         _connection = new SqliteConnection($"Data Source={dbPath};");

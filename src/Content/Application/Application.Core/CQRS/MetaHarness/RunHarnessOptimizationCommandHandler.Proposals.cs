@@ -2,8 +2,10 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Application.AI.Common.Interfaces.MetaHarness;
+using Application.Common.Interfaces.Common;
 using Domain.Common.Config.MetaHarness;
 using Domain.Common.MetaHarness;
+using Microsoft.Extensions.Logging;
 
 namespace Application.Core.CQRS.MetaHarness;
 
@@ -125,37 +127,45 @@ public sealed partial class RunHarnessOptimizationCommandHandler
         return Convert.ToHexStringLower(bytes);
     }
 
-    private static void WriteSnapshotFiles(string runDir, HarnessCandidate candidate)
+    private static void WriteSnapshotFiles(
+        string runDir,
+        HarnessCandidate candidate,
+        IOwnerOnlyDirectoryCreator directoryCreator,
+        ILogger logger)
     {
         var snapshotDir = Path.Combine(
             runDir, "candidates", candidate.CandidateId.ToString(), "snapshot");
-        Directory.CreateDirectory(snapshotDir);
+        directoryCreator.Create(snapshotDir, logger);
 
         foreach (var (relativePath, content) in candidate.Snapshot.SkillFileSnapshots)
         {
             var filePath = SafeResolvePath(snapshotDir, relativePath);
             var dir = Path.GetDirectoryName(filePath);
             if (dir is not null)
-                Directory.CreateDirectory(dir);
+                directoryCreator.Create(dir, logger);
             File.WriteAllText(filePath, content);
         }
     }
 
-    private static void WriteProposedSnapshot(string proposedDir, HarnessCandidate? best)
+    private static void WriteProposedSnapshot(
+        string proposedDir,
+        HarnessCandidate? best,
+        IOwnerOnlyDirectoryCreator directoryCreator,
+        ILogger logger)
     {
         if (best is null)
             return;
 
         if (Directory.Exists(proposedDir))
             Directory.Delete(proposedDir, recursive: true);
-        Directory.CreateDirectory(proposedDir);
+        directoryCreator.Create(proposedDir, logger);
 
         foreach (var (relativePath, content) in best.Snapshot.SkillFileSnapshots)
         {
             var filePath = SafeResolvePath(proposedDir, relativePath);
             var dir = Path.GetDirectoryName(filePath);
             if (dir is not null)
-                Directory.CreateDirectory(dir);
+                directoryCreator.Create(dir, logger);
             File.WriteAllText(filePath, content);
         }
     }
