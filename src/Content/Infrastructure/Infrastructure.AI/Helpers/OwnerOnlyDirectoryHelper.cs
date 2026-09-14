@@ -42,16 +42,23 @@ namespace Infrastructure.AI.Helpers;
 /// Linux), so a writer with access to the same parent directory could, in the gap between this call's
 /// create and its permission re-assert, delete the just-created segment and replace it with a symlink
 /// to an attacker-owned directory — turning the re-assert into an attacker-controlled <c>chmod</c>.
-/// On Linux this is closed with a direct <c>open(O_NOFOLLOW | O_DIRECTORY)</c> + <c>fchmod</c> pair
-/// (<see cref="ApplyOwnerOnlyModeSafely"/>): opening refuses outright (<c>ELOOP</c>) if the path is
-/// now a symlink, and the subsequent <c>fchmod</c> targets the already-open descriptor, not the path,
-/// so nothing resolved after the open can change what gets chmod'd. Every other POSIX platform (only
-/// macOS/BSD, since Windows never reaches this code path) keeps the plain, symlink-following
-/// <c>File.SetUnixFileMode</c> call — narrower coverage than Linux, but no worse than this helper's
-/// behavior before this paragraph's fix. Shipping an unverified <c>open</c>/<c>fchmod</c> flag-value
-/// guess for a platform this template cannot test would risk silently doing the wrong thing, which is
-/// strictly worse than an honest, narrower fallback — the same reasoning <c>HardLinkInspector</c>
-/// documents for its own platform coverage.
+/// On Linux/x86_64 this is closed with a direct <c>open(O_NOFOLLOW | O_DIRECTORY)</c> + <c>fchmod</c>
+/// pair (<see cref="ApplyOwnerOnlyModeSafely"/>): opening refuses outright (<c>ELOOP</c>) if the path
+/// is now a symlink, and the subsequent <c>fchmod</c> targets the already-open descriptor, not the
+/// path, so nothing resolved after the open can change what gets chmod'd. <c>O_NOFOLLOW</c>/
+/// <c>O_DIRECTORY</c>'s numeric values are NOT the same on every architecture — ARM64/PowerPC define
+/// them differently than x86_64/s390x (a real defect caught by <c>correctness</c> review on the first
+/// attempt at this fix, which hard-coded the x86_64 values unconditionally: on ARM64 those same bits
+/// mean <c>O_LARGEFILE</c>/<c>O_DIRECT</c>, silently disarming the whole protection instead of failing
+/// loudly). Rather than hand-type a second set of guessed values for ARM64/PowerPC with no way to
+/// verify them on this template's own hosts, the safe path is gated to Linux **x86_64 only**
+/// (<c>RuntimeInformation.OSArchitecture == Architecture.X64</c>); every other POSIX combination
+/// (macOS/BSD, or Linux on any other architecture) keeps the plain, symlink-following
+/// <c>File.SetUnixFileMode</c> call — narrower coverage, but no worse than this helper's behavior
+/// before this paragraph's fix, and never silently wrong. Shipping an unverified flag-value guess for
+/// a platform this template cannot test would risk silently doing the wrong thing, which is strictly
+/// worse than an honest, narrower fallback — the same reasoning <c>HardLinkInspector</c> documents for
+/// its own platform coverage.
 /// </para>
 /// </remarks>
 internal static class OwnerOnlyDirectoryHelper
@@ -126,7 +133,7 @@ internal static class OwnerOnlyDirectoryHelper
             // with the BCL's loose default mode — CreateDirectory is then a silent no-op for
             // permissions on an already-existing directory, so the mode argument above is not a
             // guarantee. Re-asserting the mode here, unconditionally, closes that.
-            if (OperatingSystem.IsLinux())
+            if (OperatingSystem.IsLinux() && RuntimeInformation.OSArchitecture == Architecture.X64)
                 ReassertModeOnLinux(segment, logger);
             else
                 ReassertModeFollowingSymlinks(segment, logger);
@@ -175,7 +182,8 @@ internal static class OwnerOnlyDirectoryHelper
     [SupportedOSPlatform("linux")]
     private static void ReassertModeOnLinux(string segment, ILogger? logger)
     {
-        switch (ApplyOwnerOnlyModeSafely(segment))
+        var (outcome, errno) = ApplyOwnerOnlyModeSafely(segment);
+        switch (outcome)
         {
             case ChmodOutcome.Applied:
                 break;
@@ -202,6 +210,13 @@ internal static class OwnerOnlyDirectoryHelper
                     "(likely owned by a different user than this process). Something other than " +
                     "this application created it — investigate if unexpected.", segment);
                 break;
+
+            case ChmodOutcome.OperationFailed:
+                logger?.LogWarning(
+                    "Could not re-assert owner-only permissions on {Directory}: the operation " +
+                    "failed with errno {Errno}, not an ownership problem — investigate separately.",
+                    segment, errno);
+                break;
         }
     }
 
@@ -220,8 +235,15 @@ internal static class OwnerOnlyDirectoryHelper
         /// </summary>
         NotASafeDirectory,
 
-        /// <summary>The mode could not be changed (<c>EACCES</c>/<c>EPERM</c>, or an unrecognized errno).</summary>
+        /// <summary>The mode could not be changed because it is owned by a different user (<c>EACCES</c>/<c>EPERM</c>).</summary>
         AccessDenied,
+
+        /// <summary>
+        /// <c>open</c>/<c>fchmod</c> failed for a reason other than the above (e.g. <c>EMFILE</c>,
+        /// <c>ENOMEM</c>) — not an ownership problem, so logged distinctly rather than folded into
+        /// <see cref="AccessDenied"/>'s "owned by a different user" framing (/code-review finding).
+        /// </summary>
+        OperationFailed,
     }
 
     /// <summary>
@@ -230,33 +252,48 @@ internal static class OwnerOnlyDirectoryHelper
     /// at that exact path between this call's own create and this call is refused rather than
     /// followed — see the class remarks for the race this closes. Never throws.
     /// </summary>
+    /// <remarks>
+    /// Only ever called for Linux/x86_64 (gated in <see cref="Create"/>) — the flag values below are
+    /// specific to that architecture family. See the class remarks for why no other architecture is
+    /// guessed at.
+    /// </remarks>
     [SupportedOSPlatform("linux")]
-    private static ChmodOutcome ApplyOwnerOnlyModeSafely(string segment)
+    private static (ChmodOutcome Outcome, int Errno) ApplyOwnerOnlyModeSafely(string segment)
     {
         const int oRdOnly = 0;
-        const int oNoFollow = 0x20000;   // O_NOFOLLOW (Linux, all supported architectures)
-        const int oDirectory = 0x10000;  // O_DIRECTORY (Linux, all supported architectures)
+        const int oNoFollow = 0x20000;   // O_NOFOLLOW (Linux/x86_64 and s390x; NOT ARM64/PowerPC)
+        const int oDirectory = 0x10000;  // O_DIRECTORY (Linux/x86_64 and s390x; NOT ARM64/PowerPC)
         const int enoent = 2;
+        const int eacces = 13;
+        const int eperm = 1;
         const int eloop = 40;
         const int enotdir = 20;
 
         var fd = Open(segment, oRdOnly | oNoFollow | oDirectory);
         if (fd < 0)
         {
-            return Marshal.GetLastPInvokeError() switch
+            var errno = Marshal.GetLastPInvokeError();
+            var outcome = errno switch
             {
                 enoent => ChmodOutcome.SegmentGone,
                 eloop or enotdir => ChmodOutcome.NotASafeDirectory,
-                // EACCES/EPERM, or anything unrecognized: never guess a success. A directory whose
-                // mode could not be verified as changed must be reported as not secured.
-                _ => ChmodOutcome.AccessDenied,
+                eacces or eperm => ChmodOutcome.AccessDenied,
+                // Anything unrecognized (EMFILE, ENOMEM, ...): never guess a success, but never
+                // mislabel it as an ownership problem either — that sends an investigator the wrong
+                // direction (/code-review finding).
+                _ => ChmodOutcome.OperationFailed,
             };
+            return (outcome, errno);
         }
 
         // Wrapping the already-known fd guarantees close() runs even if FChmod throws (it doesn't,
         // but this keeps the descriptor lifetime unconditional rather than relying on that).
         using var handle = new SafeFileHandle((IntPtr)fd, ownsHandle: true);
-        return FChmod(fd, (int)OwnerOnlyMode) == 0 ? ChmodOutcome.Applied : ChmodOutcome.AccessDenied;
+        if (FChmod(fd, (int)OwnerOnlyMode) == 0)
+            return (ChmodOutcome.Applied, 0);
+
+        var chmodErrno = Marshal.GetLastPInvokeError();
+        return (chmodErrno is eacces or eperm ? ChmodOutcome.AccessDenied : ChmodOutcome.OperationFailed, chmodErrno);
     }
 
     [DllImport("libc", EntryPoint = "open", SetLastError = true)]

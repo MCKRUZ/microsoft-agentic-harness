@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using FluentAssertions;
 using Infrastructure.AI.Helpers;
 using Infrastructure.AI.Tests.Resilience;
@@ -98,8 +99,9 @@ public sealed class OwnerOnlyDirectoryHelperTests : IDisposable
     [Fact]
     public void Create_SegmentReplacedWithSymlinkBeforeReassert_RefusesToFollowAndDoesNotChmodTarget()
     {
-        if (!OperatingSystem.IsLinux())
-            return; // the symlink-safe reassert (open(O_NOFOLLOW) + fchmod) only exists on Linux.
+        if (!OperatingSystem.IsLinux() || RuntimeInformation.OSArchitecture != Architecture.X64)
+            return; // the symlink-safe reassert (open(O_NOFOLLOW) + fchmod) is gated to Linux/x86_64
+                    // only — see the class remarks on why other architectures use the plain fallback.
 
         // #648 round 2 (/code-review): the plain File.SetUnixFileMode reassert follows symlinks, so a
         // segment swapped for a symlink between create and reassert would chmod whatever the symlink
