@@ -180,12 +180,24 @@ public sealed class DependencyInjectionTests
         // eagerly creates that slot with plain permissions before registration ever runs) -- so the
         // path this test actually wants to assert on must be set AFTER Isolate returns, not passed
         // into the object it isolates (caught by CI's correctness-review gate).
+        //
+        // CreateBaseServices() is called with NO argument here -- unlike most other tests in this
+        // file -- because it calls Isolate internally too, and Isolate re-clobbers
+        // Planner.DatabasePath with a THIRD random value every time it runs. Reusing `config` across
+        // both calls (the pattern other tests use safely, since they only configure fields Isolate
+        // never touches) silently discarded plannerDbPath a second time here (caught by CI's grader
+        // gate; confirmed by temporarily reintroducing the bug and watching this test fail).
         var config = IsolatedAppConfig.Isolate(new Domain.Common.Config.AppConfig());
         config.AI.Planner.DatabasePath = plannerDbPath;
-        var services = CreateBaseServices(config);
+        var services = CreateBaseServices();
 
         services.AddInfrastructureAIDependencies(config);
 
+        // Platform-independent half of the assertion: proves the real composition root actually
+        // created the directory this test's config named, not some other path. The permission check
+        // below is Windows-inert by design, so without this a config-plumbing bug (like the one this
+        // test itself had) could pass silently on the dev machine.
+        Directory.Exists(Path.GetDirectoryName(plannerDbPath)).Should().BeTrue();
         Path.GetDirectoryName(plannerDbPath)!.ShouldBeOwnerOnlyDirectory();
     }
 
