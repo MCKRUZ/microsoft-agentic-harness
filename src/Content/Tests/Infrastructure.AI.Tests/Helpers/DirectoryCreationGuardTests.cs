@@ -164,4 +164,30 @@ public sealed class DirectoryCreationGuardTests
             "these files no longer exist, or no longer call the plain BCL method — remove the stale " +
             $"{nameof(ExcludedFiles)} entry so the allowlist keeps matching reality");
     }
+
+    // /code-review finding: neither test above exercises PlainCreateDirectory's own matching behavior
+    // directly — both only infer correctness indirectly from what today's source tree happens to
+    // contain, which is currently zero DirectoryInfo(...).Create() call sites of any kind. These cases
+    // run the pattern directly, against input shaped exactly like what SourceScan.ReadProductionSources
+    // hands it — already comment/string-stripped, per SourceScan.StripCommentsAndStrings — since that
+    // is the only input this regex is ever actually evaluated against in production use.
+    [Theory]
+    [InlineData("new DirectoryInfo(path).Create();", true, "the simple, non-nested case")]
+    [InlineData("new DirectoryInfo(Path.Combine(a, b)).Create();", true,
+        "nested parens in the constructor argument — the exact defect a flat [^)]* regex misses " +
+        "(CI correctness-review finding on this class)")]
+    [InlineData("new DirectoryInfo(Path.Combine(a, Path.Combine(b, c))).Create();", true,
+        "doubly-nested parens, proving the balancing group isn't just one level deep")]
+    [InlineData("new DirectoryInfo(\"\").Create();", true,
+        "a string-literal argument as it actually appears after StripCommentsAndStrings collapses " +
+        "it to \"\" — including one that originally contained an unbalanced literal paren, since " +
+        "stripping removes the paren along with the rest of the literal's content before this regex " +
+        "ever runs")]
+    [InlineData("new DirectoryInfo(a).ToString();", false, "no .Create() call at all")]
+    [InlineData("someVar.Create();", false, "a bare .Create() with no DirectoryInfo constructor")]
+    public void PlainCreateDirectory_DirectoryInfoIdiom_MatchesExpected(
+        string strippedSourceShapedInput, bool expectedMatch, string because)
+    {
+        PlainCreateDirectory.IsMatch(strippedSourceShapedInput).Should().Be(expectedMatch, because);
+    }
 }
