@@ -2,7 +2,6 @@ using Application.AI.Common.Interfaces.AI;
 using Domain.Common.Config.AI.Conversations;
 using FluentAssertions;
 using Infrastructure.AI.Conversations;
-using Infrastructure.AI.Tests.Helpers;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Time.Testing;
@@ -15,13 +14,6 @@ namespace Infrastructure.AI.Tests.Conversations;
 /// <see cref="ConversationStoreContractTests"/>, plus the few behaviours that only make sense for a
 /// store whose records are files.
 /// </summary>
-/// <remarks>
-/// In <see cref="OwnerOnlyDirectoryRaceHookCollection"/> (#676): this store's directory creation goes
-/// through <c>OwnerOnlyDirectoryHelper.Create</c>, which could otherwise transiently observe
-/// <see cref="Helpers.OwnerOnlyDirectoryHelperTests"/>'s test-only race-simulation hook if the two
-/// classes ran concurrently.
-/// </remarks>
-[Collection(OwnerOnlyDirectoryRaceHookCollection.Name)]
 public sealed class FileSystemConversationStoreTests : ConversationStoreContractTests, IDisposable
 {
     private readonly string _tempDir;

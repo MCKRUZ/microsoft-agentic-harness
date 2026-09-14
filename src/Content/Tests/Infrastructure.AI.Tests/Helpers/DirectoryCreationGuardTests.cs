@@ -15,10 +15,9 @@ namespace Infrastructure.AI.Tests.Helpers;
 /// This exact class of gap has been closed three separate times by ad hoc grep-and-patch: #527
 /// (original fix + trace stores), #640 (7 more call sites), #660 (6 more) — each found by manually
 /// repeating the same grep sweep. Nothing durable prevented a fourth (#674). This is the durable
-/// version: every occurrence of <c>Directory.CreateDirectory</c> (or the fully-qualified
-/// <c>System.IO.Directory.CreateDirectory</c>, and a bare method-group reference with no call
-/// parentheses at all) in <c>Infrastructure.AI</c> production source must be either the helper's own
-/// implementation or a file named in <see cref="ExcludedFiles"/>, with a reason recorded next to it.
+/// version: every occurrence of a directory-creating BCL API (see <see cref="PlainCreateDirectory"/>
+/// for the exact set matched) in <c>Infrastructure.AI</c> production source must be either the helper's
+/// own implementation or a file named in <see cref="ExcludedFiles"/>, with a reason recorded next to it.
 /// </para>
 /// <para>
 /// <strong>Fail-closed, not fail-quiet.</strong> A file that starts calling the plain BCL method and is
@@ -84,13 +83,30 @@ public sealed class DirectoryCreationGuardTests
     }.AsReadOnly();
 
     /// <summary>
-    /// Matches a call to (or bare method-group reference to) the plain BCL directory-creation method,
-    /// optionally qualified with <c>System.IO.</c>. No trailing <c>\(</c> requirement — a bare method
-    /// group (e.g. passed as an <c>Action&lt;string&gt;</c>) would otherwise be a silent miss rather
-    /// than the false positive this scan's own philosophy tolerates.
+    /// Matches every BCL API this guard knows of that creates a directory outside
+    /// <see cref="Infrastructure.AI.Helpers.OwnerOnlyDirectoryHelper"/>: <c>Directory.CreateDirectory</c>
+    /// and <c>Directory.CreateTempSubdirectory</c> (optionally qualified with <c>System.IO.</c>, and with
+    /// no trailing <c>\(</c> requirement for the former — a bare method group, e.g. passed as an
+    /// <c>Action&lt;string&gt;</c>, would otherwise be a silent miss rather than the false positive this
+    /// scan's own philosophy tolerates), <c>DirectoryInfo.CreateSubdirectory(</c> on any instance, and the
+    /// inline idiom <c>new DirectoryInfo(...).Create()</c>.
     /// </summary>
+    /// <remarks>
+    /// <strong>Residual gap (/code-review finding on the first cut, which matched only
+    /// <c>Directory.CreateDirectory</c>):</strong> a <c>DirectoryInfo</c> obtained some other way — a
+    /// stored variable, a method return value — and then <c>.Create()</c>d on a later, separate
+    /// statement is not caught; matching bare <c>.Create()</c> on any receiver would flag every
+    /// unrelated API of that shape in the codebase (<c>ILoggerFactory.Create</c>,
+    /// <c>HttpRequestMessage.Create</c>, ...), which is not a workable trade for one more construct this
+    /// scan cannot presently reach without real type information. Not live today (verified against the
+    /// current tree) and, like every gap <see cref="SourceScan"/> itself documents, a false positive
+    /// here would be a named file to review, never a silent miss.
+    /// </remarks>
     private static readonly Regex PlainCreateDirectory = new(
-        @"\b(?:System\.IO\.)?Directory\.CreateDirectory\b", RegexOptions.Compiled);
+        @"\b(?:System\.IO\.)?Directory\.(?:CreateDirectory|CreateTempSubdirectory)\b" +
+        @"|\.CreateSubdirectory\s*\(" +
+        @"|\bnew\s+(?:System\.IO\.)?DirectoryInfo\s*\([^)]*\)\s*\.\s*Create\b",
+        RegexOptions.Compiled);
 
     [Fact]
     public void EveryPlainDirectoryCreateDirectoryCall_IsOnTheDocumentedExclusionList()
