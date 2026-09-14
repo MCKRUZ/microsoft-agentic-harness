@@ -1,6 +1,7 @@
 using Infrastructure.AI.RAG.GraphRag;
 using Infrastructure.AI.RAG.Tests.Helpers;
 using Microsoft.Extensions.Logging.Abstractions;
+using Tests.Common;
 using Xunit;
 
 namespace Infrastructure.AI.RAG.Tests.GraphRag;
@@ -21,7 +22,7 @@ public sealed class LeidenCommunityDetectorTests : IDisposable
     {
         _tempDir = Path.Combine(Path.GetTempPath(), $"leiden_test_{Guid.NewGuid():N}");
         Directory.CreateDirectory(_tempDir);
-        _graph = new KuzuGraphBackend(_tempDir, NullLogger<KuzuGraphBackend>.Instance);
+        _graph = new KuzuGraphBackend(_tempDir, NullLogger<KuzuGraphBackend>.Instance, new PlainDirectoryCreator());
         _sut = new LeidenCommunityDetector(NullLogger<LeidenCommunityDetector>.Instance);
     }
 

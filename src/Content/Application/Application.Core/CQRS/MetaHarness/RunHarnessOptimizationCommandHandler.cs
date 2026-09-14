@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using Application.AI.Common.Exceptions;
 using Application.AI.Common.Interfaces.MetaHarness;
+using Application.Common.Interfaces.Common;
 using Domain.Common.Config.MetaHarness;
 using Domain.Common.MetaHarness;
 using MediatR;
@@ -39,6 +40,7 @@ public sealed partial class RunHarnessOptimizationCommandHandler
     private readonly IRegressionSuiteService _regressionService;
     private readonly IOptionsMonitor<MetaHarnessConfig> _config;
     private readonly ILogger<RunHarnessOptimizationCommandHandler> _logger;
+    private readonly IOwnerOnlyDirectoryCreator _directoryCreator;
 
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
@@ -54,7 +56,8 @@ public sealed partial class RunHarnessOptimizationCommandHandler
         ISnapshotBuilder snapshotBuilder,
         IRegressionSuiteService regressionService,
         IOptionsMonitor<MetaHarnessConfig> config,
-        ILogger<RunHarnessOptimizationCommandHandler> logger)
+        ILogger<RunHarnessOptimizationCommandHandler> logger,
+        IOwnerOnlyDirectoryCreator directoryCreator)
     {
         ArgumentNullException.ThrowIfNull(proposer);
         ArgumentNullException.ThrowIfNull(evaluationService);
@@ -63,6 +66,7 @@ public sealed partial class RunHarnessOptimizationCommandHandler
         ArgumentNullException.ThrowIfNull(regressionService);
         ArgumentNullException.ThrowIfNull(config);
         ArgumentNullException.ThrowIfNull(logger);
+        ArgumentNullException.ThrowIfNull(directoryCreator);
         _proposer = proposer;
         _evaluationService = evaluationService;
         _candidateRepository = candidateRepository;
@@ -70,6 +74,7 @@ public sealed partial class RunHarnessOptimizationCommandHandler
         _regressionService = regressionService;
         _config = config;
         _logger = logger;
+        _directoryCreator = directoryCreator;
     }
 
     /// <inheritdoc />
@@ -81,7 +86,7 @@ public sealed partial class RunHarnessOptimizationCommandHandler
         var maxIterations = command.MaxIterations ?? cfg.MaxIterations;
         var runDir = Path.Combine(
             cfg.TraceDirectoryRoot, "optimizations", command.OptimizationRunId.ToString());
-        Directory.CreateDirectory(runDir);
+        _directoryCreator.Create(runDir, _logger);
 
         // Abort early if no eval tasks — not a crash, just a no-op with a warning
         var evalTasks = await LoadEvalTasksAsync(cfg.EvalTasksPath, cancellationToken);
@@ -183,7 +188,7 @@ public sealed partial class RunHarnessOptimizationCommandHandler
                 Status = HarnessCandidateStatus.Proposed,
             };
             await _candidateRepository.SaveAsync(candidate, cancellationToken);
-            WriteSnapshotFiles(runDir, candidate);
+            WriteSnapshotFiles(runDir, candidate, _directoryCreator, _logger);
 
             // Step 3: Evaluate
             EvaluationResult evalResult;
@@ -288,7 +293,7 @@ public sealed partial class RunHarnessOptimizationCommandHandler
         // safe outcome rather than emitting a gate-failing (regressive) artifact.
         var bestCandidate = currentBestCandidate;
         var proposedDir = Path.Combine(runDir, "_proposed");
-        WriteProposedSnapshot(proposedDir, bestCandidate);
+        WriteProposedSnapshot(proposedDir, bestCandidate, _directoryCreator, _logger);
         await WriteSummaryMarkdownAsync(runDir, command.OptimizationRunId, cancellationToken);
 
         return new OptimizationResult

@@ -5,6 +5,7 @@ using FluentAssertions;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Moq;
+using Tests.Common;
 using Xunit;
 
 namespace Application.Common.Tests.Logging;
@@ -21,7 +22,7 @@ public sealed class FileLoggerProviderTests : IDisposable
 
         var config = Mock.Of<IOptionsMonitor<LoggingConfig>>(m =>
             m.CurrentValue == new LoggingConfig { LogsBasePath = _tempDir });
-        _provider = new FileLoggerProvider(config);
+        _provider = new FileLoggerProvider(config, new PlainDirectoryCreator());
     }
 
     public void Dispose()
@@ -77,7 +78,7 @@ public sealed class FileLoggerProviderTests : IDisposable
     {
         var config = Mock.Of<IOptionsMonitor<LoggingConfig>>(m =>
             m.CurrentValue == new LoggingConfig { LogsBasePath = "" });
-        using var provider = new FileLoggerProvider(config);
+        using var provider = new FileLoggerProvider(config, new PlainDirectoryCreator());
 
         provider.StartNewRun("run-1");
 

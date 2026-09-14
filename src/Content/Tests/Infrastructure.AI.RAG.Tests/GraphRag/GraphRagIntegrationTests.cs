@@ -14,6 +14,7 @@ using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Moq;
+using Tests.Common;
 using Xunit;
 
 namespace Infrastructure.AI.RAG.Tests.GraphRag;
@@ -41,7 +42,7 @@ public sealed class GraphRagIntegrationTests : IDisposable
     {
         _tempDir = Path.Combine(Path.GetTempPath(), $"graphrag_integration_{Guid.NewGuid():N}");
         Directory.CreateDirectory(_tempDir);
-        _graphBackend = new KuzuGraphBackend(_tempDir, NullLogger<KuzuGraphBackend>.Instance);
+        _graphBackend = new KuzuGraphBackend(_tempDir, NullLogger<KuzuGraphBackend>.Instance, new PlainDirectoryCreator());
 
         _mockChatClient = new Mock<IChatClient>();
         _mockModelRouter = new Mock<IModelRouter>();

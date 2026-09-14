@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
+using Application.Common.Interfaces.Common;
 using Domain.Common.Config;
 using Domain.Common.Models;
 using Microsoft.Extensions.Logging;
@@ -38,6 +39,7 @@ public sealed class FileLoggerProvider : ILoggerProvider
     private readonly BlockingCollection<(string Structured, string Console)> _messageQueue = new(1000);
     private readonly IOptionsMonitor<LoggingConfig> _config;
     private readonly IExternalScopeProvider? _scopeProvider;
+    private readonly IOwnerOnlyDirectoryCreator _directoryCreator;
     private readonly object _lock = new();
 
     private static readonly JsonSerializerOptions ManifestJsonOptions = new()
@@ -60,10 +62,18 @@ public sealed class FileLoggerProvider : ILoggerProvider
     /// Initializes a new instance of the <see cref="FileLoggerProvider"/> class.
     /// </summary>
     /// <param name="config">Application configuration for resolving log paths.</param>
+    /// <param name="directoryCreator">
+    /// Creates the per-run log directory with owner-only permissions on POSIX (#672).
+    /// </param>
     /// <param name="scopeProvider">Optional scope provider for agent context propagation.</param>
-    public FileLoggerProvider(IOptionsMonitor<LoggingConfig> config, IExternalScopeProvider? scopeProvider = null)
+    public FileLoggerProvider(
+        IOptionsMonitor<LoggingConfig> config,
+        IOwnerOnlyDirectoryCreator directoryCreator,
+        IExternalScopeProvider? scopeProvider = null)
     {
+        ArgumentNullException.ThrowIfNull(directoryCreator);
         _config = config;
+        _directoryCreator = directoryCreator;
         _scopeProvider = scopeProvider;
     }
 
@@ -96,7 +106,7 @@ public sealed class FileLoggerProvider : ILoggerProvider
             if (!fullRun.StartsWith(fullBase, StringComparison.OrdinalIgnoreCase))
                 throw new ArgumentException("Resolved run path escapes the base log directory.");
 
-            Directory.CreateDirectory(runPath);
+            _directoryCreator.Create(runPath);
 
             _structuredWriter = new StreamWriter(
                 Path.Combine(runPath, "log.txt"), append: false);

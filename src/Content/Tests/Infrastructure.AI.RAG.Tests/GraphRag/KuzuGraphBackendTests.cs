@@ -1,6 +1,7 @@
 using Domain.AI.KnowledgeGraph.Models;
 using Infrastructure.AI.RAG.GraphRag;
 using Microsoft.Extensions.Logging.Abstractions;
+using Tests.Common;
 using Xunit;
 
 namespace Infrastructure.AI.RAG.Tests.GraphRag;
@@ -18,7 +19,7 @@ public sealed class KuzuGraphBackendTests : IDisposable
     {
         _tempDir = Path.Combine(Path.GetTempPath(), $"kuzu_test_{Guid.NewGuid():N}");
         Directory.CreateDirectory(_tempDir);
-        _sut = new KuzuGraphBackend(_tempDir, NullLogger<KuzuGraphBackend>.Instance);
+        _sut = new KuzuGraphBackend(_tempDir, NullLogger<KuzuGraphBackend>.Instance, new PlainDirectoryCreator());
     }
 
     public void Dispose()

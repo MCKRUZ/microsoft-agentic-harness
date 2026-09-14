@@ -7,6 +7,7 @@ using Infrastructure.AI.RAG.GraphRag;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Moq;
+using Tests.Common;
 using Xunit;
 
 namespace Infrastructure.AI.RAG.Tests.GraphRag;
@@ -28,7 +29,7 @@ public sealed class MemoryDecayServiceTests : IDisposable
         _tempDir = Path.Combine(Path.GetTempPath(), $"decay_test_{Guid.NewGuid():N}");
         Directory.CreateDirectory(_tempDir);
 
-        _graphBackend = new KuzuGraphBackend(_tempDir, NullLogger<KuzuGraphBackend>.Instance);
+        _graphBackend = new KuzuGraphBackend(_tempDir, NullLogger<KuzuGraphBackend>.Instance, new PlainDirectoryCreator());
         _memoryStoreMock = new Mock<ICrossSessionMemoryStore>();
 
         var config = new AppConfig

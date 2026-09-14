@@ -6,6 +6,7 @@ using Domain.Common.MetaHarness;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Moq;
+using Tests.Common;
 using System.Text.Json;
 using Xunit;
 
@@ -68,7 +69,8 @@ public sealed class RunHarnessOptimizationCommandHandlerTests : IDisposable
 
     private RunHarnessOptimizationCommandHandler BuildHandler() =>
         new(_proposer.Object, _evaluator.Object, _repository.Object,
-            _snapshotBuilder.Object, _regressionService.Object, _configMonitor.Object, _logger.Object);
+            _snapshotBuilder.Object, _regressionService.Object, _configMonitor.Object, _logger.Object,
+            new PlainDirectoryCreator());
 
     private static RunHarnessOptimizationCommand BuildCommand(
         Guid? runId = null, int? maxIterations = null) =>

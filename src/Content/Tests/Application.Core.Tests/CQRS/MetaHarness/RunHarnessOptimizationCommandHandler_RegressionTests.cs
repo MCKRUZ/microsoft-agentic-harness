@@ -6,6 +6,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Moq;
 using System.Text.Json;
+using Tests.Common;
 using Xunit;
 
 namespace Application.Core.Tests.CQRS.MetaHarness;
@@ -58,7 +59,8 @@ public sealed class RunHarnessOptimizationCommandHandler_RegressionTests : IDisp
 
     private RunHarnessOptimizationCommandHandler BuildHandler() =>
         new(_proposer.Object, _evaluator.Object, _repository.Object,
-            _snapshotBuilder.Object, _regressionService.Object, _configMonitor.Object, _logger.Object);
+            _snapshotBuilder.Object, _regressionService.Object, _configMonitor.Object, _logger.Object,
+            new PlainDirectoryCreator());
 
     private static HarnessSnapshot BuildSnapshot() => new()
     {

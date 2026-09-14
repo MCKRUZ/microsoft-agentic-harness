@@ -26,17 +26,18 @@ namespace Infrastructure.AI.Tests.Helpers;
 /// decision with a comment explaining the exclusion, not a default.
 /// </para>
 /// <para>
-/// <strong>The allowlist is expected to shrink, not just grow.</strong> #671/#672/#673 track migrating
-/// three of today's exclusions (the MetaHarness optimization-run directories, the structured/file
-/// logger directories, and the sandbox base-path loop's <c>LogsBasePath</c> entry) to the owner-only
-/// helper once a cross-layer exposure mechanism exists for callers outside <c>Infrastructure.AI</c>
-/// (the helper is <see langword="internal"/> to this assembly). This test does not require the
-/// allowlist to be minimal — only that every occurrence outside it is caught.
+/// <strong>The allowlist is expected to shrink, not just grow.</strong> #671/#672/#673 added
+/// <c>IOwnerOnlyDirectoryCreator</c> (<c>Application.Common.Interfaces.Common</c>) — a public DI-facing
+/// seam over this internal helper — so callers outside <c>Infrastructure.AI</c> can route through it
+/// too. The sandbox base-path loop's own <c>LogsBasePath</c> entry was migrated as part of that work;
+/// the MetaHarness optimization-run directories (<c>Application.Core</c>), the structured/file logger
+/// directories (<c>Application.Common</c>), and <c>Infrastructure.AI.RAG</c>'s <c>KuzuGraphBackend</c>
+/// were migrated too, but live outside this guard's scanned tree and were never entries here. This
+/// test does not require the allowlist to be minimal — only that every occurrence outside it is
+/// caught.
 /// </para>
 /// <para>
-/// Scoped to <c>Infrastructure.AI</c> only, matching every prior sweep's own scope (#673 already
-/// documents why <c>Infrastructure.AI.RAG</c>'s <c>KuzuGraphBackend</c> needs a separate cross-assembly
-/// decision before it can even reach the internal helper).
+/// Scoped to <c>Infrastructure.AI</c> only, matching every prior sweep's own scope.
 /// </para>
 /// </remarks>
 public sealed class DirectoryCreationGuardTests
@@ -56,8 +57,9 @@ public sealed class DirectoryCreationGuardTests
         ["DependencyInjection.cs"] =
             "The sandbox allowed-base-path loop: agent-directed file-system-tool workspace roots, " +
             "which intentionally do not get owner-only treatment (see SandboxWorkspace's own remarks " +
-            "on why it grants broader access on purpose). Also currently sweeps in LogsBasePath, which " +
-            "is NOT agent-directed and should not stay excluded on that basis — tracked in #672.",
+            "on why it grants broader access on purpose). LogsBasePath is no longer created via this " +
+            "loop (#672) — it now routes through OwnerOnlyDirectoryHelper.Create directly, before this " +
+            "loop runs, so a collision between the two doesn't silently inherit the loose default.",
 
         ["DependencyInjection.Conversations.cs"] =
             "The conversation database directory: deliberately excluded after review found it is " +

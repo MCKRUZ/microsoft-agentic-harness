@@ -5,6 +5,7 @@ using FluentAssertions;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Moq;
+using Tests.Common;
 using Xunit;
 
 namespace Application.Common.Tests.Logging;
@@ -21,7 +22,7 @@ public sealed class StructuredJsonLoggerProviderTests : IDisposable
 
         var config = Mock.Of<IOptionsMonitor<LoggingConfig>>(m =>
             m.CurrentValue == new LoggingConfig { LogsBasePath = _tempDir });
-        _provider = new StructuredJsonLoggerProvider(config);
+        _provider = new StructuredJsonLoggerProvider(config, new PlainDirectoryCreator());
     }
 
     public void Dispose()
@@ -190,7 +191,7 @@ public sealed class StructuredJsonLoggerProviderTests : IDisposable
     {
         var config = Mock.Of<IOptionsMonitor<LoggingConfig>>(m =>
             m.CurrentValue == new LoggingConfig { LogsBasePath = "" });
-        using var provider = new StructuredJsonLoggerProvider(config);
+        using var provider = new StructuredJsonLoggerProvider(config, new PlainDirectoryCreator());
 
         provider.StartNewRun("run-1");
 

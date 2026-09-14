@@ -12,6 +12,7 @@ using Infrastructure.AI.Escalation;
 using Infrastructure.AI.KnowledgeGraph;
 using Infrastructure.AI.MCP;
 using Infrastructure.AI.Plugins;
+using Infrastructure.AI.RAG;
 using Infrastructure.AI.Resilience;
 using Infrastructure.AI.Tests.Planner.StepExecutors;
 using MediatR;
@@ -77,6 +78,89 @@ public sealed class DependencyInjectionTests
             sp, new HashSet<string>()));
 
         return services;
+    }
+
+    [Fact]
+    public void AddInfrastructureAIDependencies_RegistersIOwnerOnlyDirectoryCreator()
+    {
+        // #671/#672/#673: the seam Application.Core, Application.Common, and
+        // Infrastructure.AI.RAG all depend on to route directory creation through
+        // OwnerOnlyDirectoryHelper — must actually resolve, not just compile against the
+        // interface (see this repo's own history of controls that were wired but never
+        // bound into the real DI graph).
+        var services = CreateBaseServices();
+        services.AddInfrastructureAIDependencies(IsolatedAppConfig.Create());
+        using var provider = services.BuildServiceProvider();
+
+        var creator = provider.GetService<Application.Common.Interfaces.Common.IOwnerOnlyDirectoryCreator>();
+
+        creator.Should().NotBeNull();
+    }
+
+    [Fact]
+    public void AddInfrastructureAIDependencies_LogsBasePathCollidesWithAnAllowedBasePath_StillEndsUpOwnerOnly()
+    {
+        // /code-review finding (#671/#672/#673): OwnerOnlyDirectoryHelper.Create is a documented no-op,
+        // permission-wise, for a segment that already exists. If a misconfiguration makes LogsBasePath
+        // resolve to the same path as an AllowedBasePaths entry and the plain sandbox loop created it
+        // FIRST, the owner-only call afterward would silently do nothing — defeating this fix for
+        // exactly the path it exists to protect. The fix creates LogsBasePath via the owner-only path
+        // BEFORE the sandbox loop, so the plain loop's own Directory.CreateDirectory later finds it
+        // already owner-only and correctly no-ops instead.
+        var config = IsolatedAppConfig.Create();
+        var sharedPath = Path.Combine(
+            Path.GetTempPath(), "infra-ai-tests-shared-logs-" + Guid.NewGuid().ToString("N"));
+        config.Logging.LogsBasePath = sharedPath;
+        config.Infrastructure.FileSystem.AllowedBasePaths = [sharedPath];
+
+        try
+        {
+            var services = CreateBaseServices();
+            services.AddInfrastructureAIDependencies(config);
+            using var provider = services.BuildServiceProvider();
+
+            Directory.Exists(sharedPath).Should().BeTrue();
+
+            if (!OperatingSystem.IsWindows())
+            {
+                File.GetUnixFileMode(sharedPath).Should().Be(
+                    UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute,
+                    "the security-sensitive path must win the collision, not silently inherit the " +
+                    "sandbox loop's loose default");
+            }
+        }
+        finally
+        {
+            if (Directory.Exists(sharedPath))
+                Directory.Delete(sharedPath, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void AddRagDependencies_ComposedWithInfrastructureAIDependencies_KuzuGraphBackendResolves()
+    {
+        // /code-review (grader) finding on #671/#672/#673: KuzuGraphBackend's factory in
+        // Infrastructure.AI.RAG now requires IOwnerOnlyDirectoryCreator, which only
+        // AddInfrastructureAIDependencies registers — Infrastructure.AI.RAG has no project reference
+        // back to Infrastructure.AI and cannot register it itself. This works in production only
+        // because the one real composition root (Presentation.Common's
+        // AddGlobalProjectDependencies) happens to call both AddRagDependencies and
+        // AddInfrastructureAIDependencies into the same collection — an untested coincidence, not an
+        // enforced contract, and exactly the "control shipped, nothing verifies it's bound" pattern
+        // this codebase has hit repeatedly. This resolves the keyed "kuzu" backend through the real
+        // factory, proving the cross-project wiring holds rather than just compiling.
+        var config = IsolatedAppConfig.Create();
+        config.AI.Rag.GraphDatabase.Enabled = true;
+        config.AI.Rag.GraphDatabase.Provider = "kuzu";
+
+        var services = CreateBaseServices();
+        services.AddInfrastructureAIDependencies(config);
+        services.AddRagDependencies(config);
+        using var provider = services.BuildServiceProvider();
+
+        var backend = provider.GetRequiredKeyedService<Application.AI.Common.Interfaces.KnowledgeGraph.IGraphDatabaseBackend>("kuzu");
+
+        backend.Should().NotBeNull().And.BeOfType<Infrastructure.AI.RAG.GraphRag.KuzuGraphBackend>();
     }
 
     [Fact]
