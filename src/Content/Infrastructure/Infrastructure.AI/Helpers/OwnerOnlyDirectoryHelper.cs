@@ -51,14 +51,30 @@ namespace Infrastructure.AI.Helpers;
 /// attempt at this fix, which hard-coded the x86_64 values unconditionally: on ARM64 those same bits
 /// mean <c>O_LARGEFILE</c>/<c>O_DIRECT</c>, silently disarming the whole protection instead of failing
 /// loudly). Rather than hand-type a second set of guessed values for ARM64/PowerPC with no way to
-/// verify them on this template's own hosts, the safe path is gated to Linux **x86_64 only**
-/// (<c>RuntimeInformation.OSArchitecture == Architecture.X64</c>); every other POSIX combination
-/// (macOS/BSD, or Linux on any other architecture) keeps the plain, symlink-following
-/// <c>File.SetUnixFileMode</c> call — narrower coverage, but no worse than this helper's behavior
-/// before this paragraph's fix, and never silently wrong. Shipping an unverified flag-value guess for
-/// a platform this template cannot test would risk silently doing the wrong thing, which is strictly
-/// worse than an honest, narrower fallback — the same reasoning <c>HardLinkInspector</c> documents for
-/// its own platform coverage.
+/// verify them on this template's own hosts, the safe path is gated to Linux **x86_64 only** — the
+/// architecture of the RUNNING PROCESS, via <c>RuntimeInformation.ProcessArchitecture</c>, not
+/// <c>OSArchitecture</c> (a second real defect, caught by <c>/code-review</c> round 3:
+/// <c>OSArchitecture</c> reflects the host, and Microsoft's own docs say it does not account for
+/// QEMU-based cross-architecture emulation on Linux — exactly how a multi-platform container image
+/// can end up running x86_64 code on an ARM64 host or vice versa; <c>ProcessArchitecture</c> reflects
+/// what this running process's own code, and therefore its libc calls, actually is). Every other
+/// POSIX combination (macOS/BSD, or Linux with a mismatched process architecture) keeps the plain,
+/// symlink-following <c>File.SetUnixFileMode</c> call — narrower coverage, but no worse than this
+/// helper's behavior before this paragraph's fix, and never silently wrong. Shipping an unverified
+/// flag-value guess for a platform this template cannot test would risk silently doing the wrong
+/// thing, which is strictly worse than an honest, narrower fallback — the same reasoning
+/// <c>HardLinkInspector</c> documents for its own platform coverage.
+/// </para>
+/// <para>
+/// <strong>A compromised segment must stop the whole call, not just itself (#648, round 3)</strong>:
+/// the very first two attempts at this fix logged a failed re-assert and moved on to create the NEXT
+/// segment anyway. Ordinary path resolution follows a symlink at ANY component of a multi-segment
+/// path, not only the exact segment <see cref="ApplyOwnerOnlyModeSafely"/> opens with
+/// <c>O_NOFOLLOW</c> — so for the multi-level path essentially every real caller uses, a compromised
+/// PARENT segment meant every segment created under it (including the caller's actual target
+/// directory) was silently built inside whatever that parent actually resolved to, with only a log
+/// line as the trace. <see cref="Create"/> now throws the instant any segment cannot be confirmed
+/// owner-only, before creating anything further under it — see its own <c>&lt;exception&gt;</c> doc.
 /// </para>
 /// </remarks>
 internal static class OwnerOnlyDirectoryHelper
@@ -81,13 +97,20 @@ internal static class OwnerOnlyDirectoryHelper
     /// </summary>
     /// <param name="directory">The directory to create.</param>
     /// <param name="logger">
-    /// Used only to report the benign races this call tolerates instead of throwing (a concurrent
-    /// cleanup sweep deleting a just-created segment, or a non-cooperating writer racing to create or
-    /// even symlink-swap a segment this call cannot secure). <see langword="null"/> is accepted for
-    /// the handful of call sites that run before any host container exists to resolve a logger from
-    /// (see <c>DependencyInjection.Planner.cs</c>) — those call sites lose observability into this
-    /// method's rare failure paths, not correctness.
+    /// Used to report why this call aborted, when it does. <see langword="null"/> is accepted for the
+    /// handful of call sites that run before any host container exists to resolve a logger from (see
+    /// <c>DependencyInjection.Planner.cs</c>) — those call sites lose observability into why a rare
+    /// abort happened, not correctness.
     /// </param>
+    /// <exception cref="IOException">
+    /// A segment this call is responsible for could not be confirmed as an owner-only directory this
+    /// process controls after creating it (/code-review finding, round 3): a concurrent writer deleted
+    /// it, symlink-swapped it, or owns it under a different user. Continuing to build further segments
+    /// under an unverified parent would silently create them inside whatever that parent actually is —
+    /// the exact confidentiality break this whole method exists to prevent — so this call stops
+    /// immediately instead of logging and continuing. Any segment already confirmed secure before the
+    /// failing one stays on disk, correctly owner-only; nothing below the failure point is created.
+    /// </exception>
     /// <remarks>
     /// <c>Directory.CreateDirectory(path, mode)</c>'s single-call overload does NOT do this
     /// (/code-review finding, verified against <c>dotnet/runtime</c>'s <c>FileSystem.Unix.cs</c>):
@@ -133,90 +156,134 @@ internal static class OwnerOnlyDirectoryHelper
             // with the BCL's loose default mode — CreateDirectory is then a silent no-op for
             // permissions on an already-existing directory, so the mode argument above is not a
             // guarantee. Re-asserting the mode here, unconditionally, closes that.
-            if (OperatingSystem.IsLinux() && RuntimeInformation.OSArchitecture == Architecture.X64)
-                ReassertModeOnLinux(segment, logger);
-            else
-                ReassertModeFollowingSymlinks(segment, logger);
+            //
+            // ProcessArchitecture, not OSArchitecture (/code-review finding, round 3): OSArchitecture
+            // reflects the HOST, and Microsoft's own docs say it does not account for QEMU-based
+            // cross-architecture emulation on Linux — exactly how a Docker buildx multi-platform image
+            // runs on a mismatched host. ProcessArchitecture reflects what THIS running process's own
+            // code (and therefore its libc calls) actually is, which is the only thing that determines
+            // whether the flag values below are correct.
+            var secured = OperatingSystem.IsLinux() && RuntimeInformation.ProcessArchitecture == Architecture.X64
+                ? ReassertModeOnLinux(segment, logger)
+                : ReassertModeFollowingSymlinks(segment, logger);
+
+            if (!secured)
+            {
+                // /code-review finding, round 3: logging and continuing here — as every earlier
+                // version of this fix did — creates every remaining segment through a parent this
+                // call just determined it could NOT confirm as owner-only. Normal path resolution
+                // follows a symlink at ANY component, not just the leaf being opened, so continuing
+                // would silently build (and let callers write confidential content into) whatever
+                // that unverified parent actually is. Stopping here is the only way the re-assert
+                // above means anything for a multi-level path — which is every real caller.
+                throw new IOException(
+                    $"Refusing to create '{fullPath}': could not confirm '{segment}' as an " +
+                    "owner-only directory this process controls after creating it (see the " +
+                    "preceding log entry for why). Continuing would silently create further " +
+                    "directories under a path that could not be verified as secure.");
+            }
         }
     }
 
     /// <summary>
-    /// Non-Linux POSIX fallback (macOS/BSD): the plain, symlink-following <c>File.SetUnixFileMode</c>,
-    /// tolerating the same two benign races <see cref="ReassertModeOnLinux"/> tolerates, now logged
-    /// instead of silently swallowed.
+    /// Non-Linux/x86_64 POSIX fallback (macOS, BSD, or Linux on any other architecture): the plain,
+    /// symlink-following <c>File.SetUnixFileMode</c>. Returns whether <paramref name="segment"/> is
+    /// confirmed owner-only and safe to build further segments under; never throws.
     /// </summary>
     [UnsupportedOSPlatform("windows")]
-    private static void ReassertModeFollowingSymlinks(string segment, ILogger? logger)
+    private static bool ReassertModeFollowingSymlinks(string segment, ILogger? logger)
     {
         try
         {
             File.SetUnixFileMode(segment, OwnerOnlyMode);
+            return true;
         }
         catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
         {
             // A legitimate concurrent cleanup sweep (e.g. FileSystemToolResultStore's expiry prune,
             // which deletes an empty result directory the instant it observes one) deleted this
-            // just-created, still-empty segment in the gap between the create call and this one.
-            // Nothing is left to protect at that point — not a failure of this call's job.
-            logger?.LogDebug(ex,
-                "Owner-only permission re-assert on {Directory} skipped: the directory no longer " +
-                "existed, most likely deleted by a concurrent cleanup sweep.", segment);
+            // just-created, still-empty segment in the gap between the create call and this one. If
+            // Create() continued past this, its own next CreateDirectory call would silently
+            // re-create this segment with the BCL's loose default mode — the exact bug this whole
+            // fix exists to close, just via a benign race instead of an adversarial one.
+            logger?.LogWarning(ex,
+                "Owner-only permission re-assert on {Directory} failed: the directory no longer " +
+                "existed, most likely deleted by a concurrent process.", segment);
+            return false;
         }
         catch (UnauthorizedAccessException ex)
         {
             // The non-cooperating writer this fix defends against (see the class remarks) won the
             // race running as a DIFFERENT OS user, so this process cannot chmod a directory it does
-            // not own. Throwing here would make the adversarial case this fix targets crash instead
-            // of just leaving the pre-existing, already-undefended permission gap.
+            // not own — and must not build further segments under a directory it does not control.
             logger?.LogWarning(ex,
                 "Could not re-assert owner-only permissions on {Directory}: it is owned by a " +
                 "different user than this process, so it cannot be secured here. Something other " +
                 "than this application created it — investigate if unexpected.", segment);
+            return false;
+        }
+        catch (IOException ex)
+        {
+            // /code-review finding, round 3: a plain IOException (e.g. ENOTDIR/EROFS-class chmod
+            // failures) was previously left uncaught here — a new crash risk this fix introduced,
+            // since no caller of Create() wraps it in a try/catch. Tolerated like the other benign
+            // races above, and — like them — reported as "cannot continue" rather than swallowed.
+            logger?.LogWarning(ex,
+                "Could not re-assert owner-only permissions on {Directory}: {Reason}", segment, ex.Message);
+            return false;
         }
     }
 
     /// <summary>
-    /// Linux path: re-asserts owner-only mode via <see cref="ApplyOwnerOnlyModeSafely"/>, which never
-    /// follows a symlink planted at <paramref name="segment"/> between the create call and this one.
+    /// Linux/x86_64 path: re-asserts owner-only mode via <see cref="ApplyOwnerOnlyModeSafely"/>, which
+    /// never follows a symlink planted at <paramref name="segment"/> between the create call and this
+    /// one. Returns whether <paramref name="segment"/> is confirmed owner-only and safe to build
+    /// further segments under; never throws.
     /// </summary>
     [SupportedOSPlatform("linux")]
-    private static void ReassertModeOnLinux(string segment, ILogger? logger)
+    private static bool ReassertModeOnLinux(string segment, ILogger? logger)
     {
         var (outcome, errno) = ApplyOwnerOnlyModeSafely(segment);
         switch (outcome)
         {
             case ChmodOutcome.Applied:
-                break;
+                return true;
 
             case ChmodOutcome.SegmentGone:
-                logger?.LogDebug(
-                    "Owner-only permission re-assert on {Directory} skipped: the directory no " +
-                    "longer existed, most likely deleted by a concurrent cleanup sweep.", segment);
-                break;
+                // If Create() continued past this, its own next CreateDirectory call would silently
+                // re-create this segment with the BCL's loose default mode — the exact bug this whole
+                // fix exists to close, just via a benign race instead of an adversarial one.
+                logger?.LogWarning(
+                    "Owner-only permission re-assert on {Directory} failed: the directory no " +
+                    "longer existed, most likely deleted by a concurrent process.", segment);
+                return false;
 
             case ChmodOutcome.NotASafeDirectory:
                 // ELOOP or ENOTDIR: the segment stopped being a plain directory between the create
-                // call and this one — most plausibly a symlink swap. Refusing to follow it is the
-                // entire point; this is the case worth the loudest signal.
+                // call and this one — most plausibly a symlink swap. Refusing to follow it, and
+                // refusing to build further segments under it, is the entire point.
                 logger?.LogWarning(
                     "Owner-only permission re-assert on {Directory} refused: it is no longer a " +
                     "plain directory (possible symlink swap). Nothing was chmod'd through it. " +
                     "Investigate what replaced it.", segment);
-                break;
+                return false;
 
             case ChmodOutcome.AccessDenied:
                 logger?.LogWarning(
                     "Could not re-assert owner-only permissions on {Directory}: access was denied " +
                     "(likely owned by a different user than this process). Something other than " +
                     "this application created it — investigate if unexpected.", segment);
-                break;
+                return false;
 
             case ChmodOutcome.OperationFailed:
                 logger?.LogWarning(
                     "Could not re-assert owner-only permissions on {Directory}: the operation " +
                     "failed with errno {Errno}, not an ownership problem — investigate separately.",
                     segment, errno);
-                break;
+                return false;
+
+            default:
+                return false;
         }
     }
 

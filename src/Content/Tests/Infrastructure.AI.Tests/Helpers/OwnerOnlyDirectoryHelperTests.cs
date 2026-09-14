@@ -97,17 +97,17 @@ public sealed class OwnerOnlyDirectoryHelperTests : IDisposable
     }
 
     [Fact]
-    public void Create_SegmentReplacedWithSymlinkBeforeReassert_RefusesToFollowAndDoesNotChmodTarget()
+    public void Create_IntermediateSegmentReplacedWithSymlink_AbortsBeforeBuildingUnderIt()
     {
-        if (!OperatingSystem.IsLinux() || RuntimeInformation.OSArchitecture != Architecture.X64)
+        if (!OperatingSystem.IsLinux() || RuntimeInformation.ProcessArchitecture != Architecture.X64)
             return; // the symlink-safe reassert (open(O_NOFOLLOW) + fchmod) is gated to Linux/x86_64
                     // only — see the class remarks on why other architectures use the plain fallback.
 
-        // #648 round 2 (/code-review): the plain File.SetUnixFileMode reassert follows symlinks, so a
-        // segment swapped for a symlink between create and reassert would chmod whatever the symlink
-        // points to instead of refusing. Simulates the swap deterministically via the same hook used
-        // for the create race, and proves the Linux path refuses rather than follows: the symlink
-        // TARGET's permissions must stay untouched, nothing throws, and a Warning is logged.
+        // #648 round 3 (/code-review): the first two attempts at this fix logged a failed reassert
+        // and kept building deeper segments anyway. Ordinary path resolution follows a symlink at ANY
+        // component of a multi-segment path, not just the one open(O_NOFOLLOW) refuses to follow — so
+        // swapping an INTERMEDIATE segment (not the leaf) proves the property this fix actually needs:
+        // nothing gets created under a parent this call could not confirm as owner-only.
         var attackerOwnedTarget = Path.Combine(
             Path.GetTempPath(), "owner-only-dir-tests-target-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(attackerOwnedTarget);
@@ -117,18 +117,19 @@ public sealed class OwnerOnlyDirectoryHelperTests : IDisposable
 
         try
         {
-            var leaf = Path.Combine(_root, "a", "b", "c");
+            var compromisedSegment = Path.Combine(_root, "a");
+            var leaf = Path.Combine(compromisedSegment, "b", "c");
             var logger = new RecordingLogger<OwnerOnlyDirectoryHelperTests>();
             OwnerOnlyDirectoryHelper.RaceSimulationHookForTests = segment =>
             {
-                if (segment == leaf)
+                if (segment == compromisedSegment)
                     Directory.CreateSymbolicLink(segment, attackerOwnedTarget);
             };
 
             Action act = () => OwnerOnlyDirectoryHelper.Create(leaf, logger);
             try
             {
-                act.Should().NotThrow();
+                act.Should().Throw<IOException>().WithMessage($"*{compromisedSegment}*");
             }
             finally
             {
@@ -137,8 +138,10 @@ public sealed class OwnerOnlyDirectoryHelperTests : IDisposable
 
             File.GetUnixFileMode(attackerOwnedTarget).Should().Be(wideMode,
                 "the symlink target must never be chmod'd through the swapped segment");
+            Directory.Exists(Path.Combine(attackerOwnedTarget, "b")).Should().BeFalse(
+                "nothing may be created under a segment this call could not confirm as owner-only");
             logger.Entries.Should().Contain(e =>
-                e.Level == LogLevel.Warning && e.Message.Contains(leaf, StringComparison.Ordinal));
+                e.Level == LogLevel.Warning && e.Message.Contains(compromisedSegment, StringComparison.Ordinal));
         }
         finally
         {
