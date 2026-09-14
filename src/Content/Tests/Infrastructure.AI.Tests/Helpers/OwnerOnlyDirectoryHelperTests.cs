@@ -10,12 +10,6 @@ namespace Infrastructure.AI.Tests.Helpers;
 /// <summary>
 /// Tests for <see cref="OwnerOnlyDirectoryHelper"/>.
 /// </summary>
-/// <remarks>
-/// In <see cref="OwnerOnlyDirectoryRaceHookCollection"/> (#676): several tests here set the shared
-/// static <see cref="OwnerOnlyDirectoryHelper.RaceSimulationHookForTests"/> seam, which xUnit's default
-/// cross-class parallelization could otherwise let another test class transiently observe.
-/// </remarks>
-[Collection(OwnerOnlyDirectoryRaceHookCollection.Name)]
 public sealed class OwnerOnlyDirectoryHelperTests : IDisposable
 {
     private readonly string _root = Path.Combine(Path.GetTempPath(), "owner-only-dir-tests-" + Guid.NewGuid().ToString("N"));
@@ -85,14 +79,14 @@ public sealed class OwnerOnlyDirectoryHelperTests : IDisposable
         // deterministically, instead of relying on real thread scheduling to land in a timing window
         // real concurrency can't reliably force.
         var leaf = Path.Combine(_root, "a", "b", "c");
-        OwnerOnlyDirectoryHelper.RaceSimulationHookForTests = segment => Directory.CreateDirectory(segment);
+        OwnerOnlyDirectoryHelper.RaceSimulationHookForTests.Value = segment => Directory.CreateDirectory(segment);
         try
         {
             OwnerOnlyDirectoryHelper.Create(leaf);
         }
         finally
         {
-            OwnerOnlyDirectoryHelper.RaceSimulationHookForTests = null;
+            OwnerOnlyDirectoryHelper.RaceSimulationHookForTests.Value = null;
         }
 
         const UnixFileMode expected = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
@@ -126,7 +120,7 @@ public sealed class OwnerOnlyDirectoryHelperTests : IDisposable
             var compromisedSegment = Path.Combine(_root, "a");
             var leaf = Path.Combine(compromisedSegment, "b", "c");
             var logger = new RecordingLogger<OwnerOnlyDirectoryHelperTests>();
-            OwnerOnlyDirectoryHelper.RaceSimulationHookForTests = segment =>
+            OwnerOnlyDirectoryHelper.RaceSimulationHookForTests.Value = segment =>
             {
                 if (segment == compromisedSegment)
                     Directory.CreateSymbolicLink(segment, attackerOwnedTarget);
@@ -139,7 +133,7 @@ public sealed class OwnerOnlyDirectoryHelperTests : IDisposable
             }
             finally
             {
-                OwnerOnlyDirectoryHelper.RaceSimulationHookForTests = null;
+                OwnerOnlyDirectoryHelper.RaceSimulationHookForTests.Value = null;
             }
 
             File.GetUnixFileMode(attackerOwnedTarget).Should().Be(wideMode,

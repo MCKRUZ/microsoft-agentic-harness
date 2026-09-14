@@ -86,9 +86,19 @@ internal static class OwnerOnlyDirectoryHelper
     /// Test-only seam: when set, invoked with each segment immediately before this method's own
     /// creation attempt for it, letting a test deterministically simulate a concurrent, non-
     /// cooperating writer creating that exact segment first — instead of relying on real thread
-    /// scheduling to land in a narrow timing window. Always <see langword="null"/> in production.
+    /// scheduling to land in a narrow timing window. Always unset in production.
     /// </summary>
-    internal static Action<string>? RaceSimulationHookForTests;
+    /// <remarks>
+    /// <see cref="AsyncLocal{T}"/>, not a plain shared <see langword="static"/> field (/simplify
+    /// finding on #676's first cut, which instead isolated the one consumer test class into a
+    /// dedicated xUnit collection): a plain static field is visible process-wide, so a test that sets
+    /// it could transiently leak into any OTHER test calling <see cref="Create"/> concurrently under
+    /// xUnit's default cross-class parallelization — fixable per-consumer with a collection, but only
+    /// for the consumers that remember to join it. Scoping to the logical call context instead removes
+    /// the cross-test visibility problem structurally, for every current and future test that sets it,
+    /// with nothing to opt into.
+    /// </remarks>
+    internal static readonly AsyncLocal<Action<string>?> RaceSimulationHookForTests = new();
 
     /// <summary>
     /// Creates <paramref name="directory"/> (and any missing parents) with owner-only read/write/execute
@@ -149,7 +159,7 @@ internal static class OwnerOnlyDirectoryHelper
         while (missingSegments.Count > 0)
         {
             var segment = missingSegments.Pop();
-            RaceSimulationHookForTests?.Invoke(segment);
+            RaceSimulationHookForTests.Value?.Invoke(segment);
             Directory.CreateDirectory(segment, OwnerOnlyMode);
 
             // #648: a non-cooperating writer can win the race to create this exact segment first,
