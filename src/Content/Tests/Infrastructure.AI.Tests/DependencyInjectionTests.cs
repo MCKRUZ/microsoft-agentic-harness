@@ -12,6 +12,7 @@ using Infrastructure.AI.Escalation;
 using Infrastructure.AI.KnowledgeGraph;
 using Infrastructure.AI.MCP;
 using Infrastructure.AI.Plugins;
+using Infrastructure.AI.RAG;
 using Infrastructure.AI.Resilience;
 using Infrastructure.AI.Tests.Planner.StepExecutors;
 using MediatR;
@@ -133,6 +134,33 @@ public sealed class DependencyInjectionTests
             if (Directory.Exists(sharedPath))
                 Directory.Delete(sharedPath, recursive: true);
         }
+    }
+
+    [Fact]
+    public void AddRagDependencies_ComposedWithInfrastructureAIDependencies_KuzuGraphBackendResolves()
+    {
+        // /code-review (grader) finding on #671/#672/#673: KuzuGraphBackend's factory in
+        // Infrastructure.AI.RAG now requires IOwnerOnlyDirectoryCreator, which only
+        // AddInfrastructureAIDependencies registers — Infrastructure.AI.RAG has no project reference
+        // back to Infrastructure.AI and cannot register it itself. This works in production only
+        // because the one real composition root (Presentation.Common's
+        // AddGlobalProjectDependencies) happens to call both AddRagDependencies and
+        // AddInfrastructureAIDependencies into the same collection — an untested coincidence, not an
+        // enforced contract, and exactly the "control shipped, nothing verifies it's bound" pattern
+        // this codebase has hit repeatedly. This resolves the keyed "kuzu" backend through the real
+        // factory, proving the cross-project wiring holds rather than just compiling.
+        var config = IsolatedAppConfig.Create();
+        config.AI.Rag.GraphDatabase.Enabled = true;
+        config.AI.Rag.GraphDatabase.Provider = "kuzu";
+
+        var services = CreateBaseServices();
+        services.AddInfrastructureAIDependencies(config);
+        services.AddRagDependencies(config);
+        using var provider = services.BuildServiceProvider();
+
+        var backend = provider.GetRequiredKeyedService<Application.AI.Common.Interfaces.KnowledgeGraph.IGraphDatabaseBackend>("kuzu");
+
+        backend.Should().NotBeNull().And.BeOfType<Infrastructure.AI.RAG.GraphRag.KuzuGraphBackend>();
     }
 
     [Fact]
