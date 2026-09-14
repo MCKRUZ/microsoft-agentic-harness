@@ -49,8 +49,11 @@ public static partial class DependencyInjection
         services.AddDbContextFactory<GovernanceStateDbContext>((sp, options) =>
         {
             // Runs on first context materialization, not at registration — hosts that never
-            // enable durable governance state get zero filesystem side effects.
-            var logger = sp.GetRequiredService<ILoggerFactory>().CreateLogger(typeof(GovernanceStatePaths).FullName!);
+            // enable durable governance state get zero filesystem side effects. GetService, not
+            // GetRequiredService (/code-review advisory): EnsureDirectory already accepts a null
+            // logger, so a host with no logging registered should lose observability here, not fail
+            // to materialize its database context over a missing diagnostic dependency.
+            var logger = sp.GetService<ILoggerFactory>()?.CreateLogger(typeof(GovernanceStatePaths).FullName!);
             GovernanceStatePaths.EnsureDirectory(dbPath, logger);
             options.UseSqlite(connectionString);
         });
