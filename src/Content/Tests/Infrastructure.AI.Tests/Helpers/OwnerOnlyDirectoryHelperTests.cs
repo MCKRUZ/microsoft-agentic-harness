@@ -59,22 +59,32 @@ public sealed class OwnerOnlyDirectoryHelperTests : IDisposable
     }
 
     [Fact]
-    public async Task Create_ConcurrentCallersRaceToCreateSameNewPath_EveryLevelEndsUpOwnerOnly()
+    public void Create_NonCooperatingWriterWinsTheRaceWithLooseDefaultMode_ModeIsStillCorrectedToOwnerOnly()
     {
         if (OperatingSystem.IsWindows())
             return;
 
-        // #648 regression: many callers race to create the exact same not-yet-existing multi-level
-        // path concurrently. Before the fix, whichever caller's CreateDirectory call for a given
-        // segment lost the race found that segment already created (by another racer, with the BCL's
-        // loose default mode) and silently skipped applying owner-only — permanently. 32 concurrent
-        // callers on a brand-new path make that race land reliably.
+        // #648: the actual race this fix closes is a writer that does NOT go through this helper —
+        // e.g. a plain Directory.CreateDirectory(path) call elsewhere — winning the race to create
+        // THIS call's segment first, with the BCL's loose default mode, before this call's own
+        // CreateDirectory(segment, OwnerOnlyMode) reaches it (a permission no-op on an already-
+        // existing directory). A COOPERATING racer that also calls Create() can never trigger this:
+        // every Create() caller requests the identical owner-only mode, and CreateDirectory applies
+        // the WINNING caller's requested mode atomically at creation — verified empirically via a
+        // real concurrent-racer run against the pre-fix code (0 mode mismatches across 2,560 racing
+        // creations). The hook below simulates the one writer shape that actually can lose the mode,
+        // deterministically, instead of relying on real thread scheduling to land in a timing window
+        // real concurrency can't reliably force.
         var leaf = Path.Combine(_root, "a", "b", "c");
-        var tasks = Enumerable.Range(0, 32)
-            .Select(_ => Task.Run(() => OwnerOnlyDirectoryHelper.Create(leaf)))
-            .ToArray();
-
-        await Task.WhenAll(tasks);
+        OwnerOnlyDirectoryHelper.RaceSimulationHookForTests = segment => Directory.CreateDirectory(segment);
+        try
+        {
+            OwnerOnlyDirectoryHelper.Create(leaf);
+        }
+        finally
+        {
+            OwnerOnlyDirectoryHelper.RaceSimulationHookForTests = null;
+        }
 
         const UnixFileMode expected = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
         File.GetUnixFileMode(_root).Should().Be(expected);

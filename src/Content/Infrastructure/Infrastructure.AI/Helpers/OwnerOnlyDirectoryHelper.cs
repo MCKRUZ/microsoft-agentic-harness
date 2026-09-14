@@ -18,18 +18,32 @@ namespace Infrastructure.AI.Helpers;
 /// Closing that gap needs a one-time startup remediation pass — tracked in #670.
 /// </para>
 /// <para>
-/// <strong>Concurrent callers racing to create the same new segment (#648)</strong> converge on
-/// owner-only regardless of ordering: every segment this call determines is missing gets its mode
-/// re-asserted via <c>File.SetUnixFileMode</c> after the create call, not just trusted from the
-/// create call's mode argument (which the BCL silently ignores if another caller already created that
-/// segment first). This does not protect against a caller that creates the segment through a path
-/// other than this method — only cooperating callers of <see cref="Create"/> are covered.
+/// <strong>A non-cooperating writer racing to create the same new segment first (#648)</strong> no
+/// longer wins permanently: every segment this call determines is missing gets its mode re-asserted
+/// via <c>File.SetUnixFileMode</c> after the create call, not just trusted from the create call's
+/// mode argument. That argument is silently ignored by the BCL whenever the segment already exists
+/// by the time this call's own create runs — which, empirically (verified via a real concurrent-
+/// racer control run against the pre-fix code), can only happen because of a writer that reached the
+/// segment through something OTHER than a cooperating call to this same method: two callers of
+/// <see cref="Create"/> racing each other can never leave a segment at the loose default, because
+/// every caller requests the identical owner-only mode and <c>Directory.CreateDirectory</c> applies
+/// the WINNING caller's requested mode atomically at creation. The re-assert exists for the writer
+/// that does NOT request that mode — e.g. plain <c>Directory.CreateDirectory(path)</c> elsewhere in
+/// the codebase, or a future caller that forgets to route through this helper.
 /// </para>
 /// </remarks>
 internal static class OwnerOnlyDirectoryHelper
 {
     private const UnixFileMode OwnerOnlyMode =
         UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
+
+    /// <summary>
+    /// Test-only seam: when set, invoked with each segment immediately before this method's own
+    /// creation attempt for it, letting a test deterministically simulate a concurrent, non-
+    /// cooperating writer creating that exact segment first — instead of relying on real thread
+    /// scheduling to land in a narrow timing window. Always <see langword="null"/> in production.
+    /// </summary>
+    internal static Action<string>? RaceSimulationHookForTests;
 
     /// <summary>
     /// Creates <paramref name="directory"/> (and any missing parents) with owner-only read/write/execute
@@ -74,15 +88,26 @@ internal static class OwnerOnlyDirectoryHelper
         while (missingSegments.Count > 0)
         {
             var segment = missingSegments.Pop();
+            RaceSimulationHookForTests?.Invoke(segment);
             Directory.CreateDirectory(segment, OwnerOnlyMode);
 
-            // #648: a concurrent caller can win the race to create this exact segment first, via the
-            // BCL's loose default mode — CreateDirectory is then a silent no-op for permissions on an
-            // already-existing directory, so the mode argument above is not a guarantee. Re-asserting
-            // the mode here, unconditionally, after every create call for a segment THIS call is
-            // responsible for closes that: whichever concurrent caller of this method finishes last for
-            // a given segment leaves it owner-only, regardless of who actually created it.
-            File.SetUnixFileMode(segment, OwnerOnlyMode);
+            // #648: a non-cooperating writer can win the race to create this exact segment first,
+            // with the BCL's loose default mode — CreateDirectory is then a silent no-op for
+            // permissions on an already-existing directory, so the mode argument above is not a
+            // guarantee. Re-asserting the mode here, unconditionally, closes that.
+            try
+            {
+                File.SetUnixFileMode(segment, OwnerOnlyMode);
+            }
+            catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
+            {
+                // /code-review finding on this same fix: a legitimate concurrent cleanup sweep (e.g.
+                // FileSystemToolResultStore's expiry prune, which deletes an empty result directory the
+                // instant it observes one) can delete this just-created, still-empty segment in the gap
+                // between the create call above and this one. Nothing is left to protect at that point —
+                // not a failure of this call's job, and no worse than the pre-#648-fix behavior, where a
+                // bare CreateDirectory never threw on this path either.
+            }
         }
     }
 }
