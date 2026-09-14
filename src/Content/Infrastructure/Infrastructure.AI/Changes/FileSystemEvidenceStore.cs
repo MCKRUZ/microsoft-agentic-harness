@@ -59,7 +59,7 @@ public sealed class FileSystemEvidenceStore : IEvidenceStore
         var path = PathFor(hash);
 
         var dir = Path.GetDirectoryName(path)!;
-        OwnerOnlyDirectoryHelper.Create(dir); // #640
+        OwnerOnlyDirectoryHelper.Create(dir, _logger); // #640
 
         // Already present: content addressing makes the write pure, so an
         // existing blob is byte-identical. Skip rewriting to avoid needless I/O

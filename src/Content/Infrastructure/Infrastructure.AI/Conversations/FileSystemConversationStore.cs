@@ -60,7 +60,7 @@ public sealed class FileSystemConversationStore : IConversationStore
         _basePath = Path.GetFullPath(config.Value.ConversationsPath);
         _timeProvider = timeProvider;
         _logger = logger;
-        OwnerOnlyDirectoryHelper.Create(_basePath); // #640: full conversation transcripts
+        OwnerOnlyDirectoryHelper.Create(_basePath, _logger); // #640: full conversation transcripts
     }
 
     /// <inheritdoc/>

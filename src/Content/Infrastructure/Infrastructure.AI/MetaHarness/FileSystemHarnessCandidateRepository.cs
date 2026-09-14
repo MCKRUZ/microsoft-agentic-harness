@@ -5,6 +5,7 @@ using Application.AI.Common.Interfaces.MetaHarness;
 using Domain.Common.Config.MetaHarness;
 using Domain.Common.MetaHarness;
 using Infrastructure.AI.Helpers;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace Infrastructure.AI.MetaHarness;
@@ -18,6 +19,7 @@ namespace Infrastructure.AI.MetaHarness;
 public sealed class FileSystemHarnessCandidateRepository : IHarnessCandidateRepository, IDisposable
 {
     private readonly IOptionsMonitor<MetaHarnessConfig> _options;
+    private readonly ILogger<FileSystemHarnessCandidateRepository> _logger;
     private readonly ConcurrentDictionary<Guid, IndexLock> _indexLocks = new();
 
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -36,9 +38,12 @@ public sealed class FileSystemHarnessCandidateRepository : IHarnessCandidateRepo
     /// <summary>
     /// Initializes a new instance of <see cref="FileSystemHarnessCandidateRepository"/>.
     /// </summary>
-    public FileSystemHarnessCandidateRepository(IOptionsMonitor<MetaHarnessConfig> options)
+    public FileSystemHarnessCandidateRepository(
+        IOptionsMonitor<MetaHarnessConfig> options,
+        ILogger<FileSystemHarnessCandidateRepository> logger)
     {
         _options = options;
+        _logger = logger;
     }
 
     /// <summary>
@@ -53,7 +58,7 @@ public sealed class FileSystemHarnessCandidateRepository : IHarnessCandidateRepo
         var dir = CandidateDir(candidate.OptimizationRunId, candidate.CandidateId);
         // Owner-only (#660, following #640/#527's precedent): a candidate is a proposed skill
         // edit plus its rollout results -- IP-sensitive training state, not just tamper-evident.
-        OwnerOnlyDirectoryHelper.Create(dir);
+        OwnerOnlyDirectoryHelper.Create(dir, _logger);
 
         var dto = new CandidateFileContent { Candidate = candidate, WriteCompleted = true };
         var json = JsonSerializer.Serialize(dto, JsonOptions);

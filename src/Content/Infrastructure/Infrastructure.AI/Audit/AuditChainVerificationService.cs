@@ -171,7 +171,7 @@ public sealed class AuditChainVerificationService : BackgroundService
             // Owner-only (#660, following #640/#527's precedent): a receipt reports which audit
             // chains verified clean or broken, including a failure reason -- confidentiality-
             // relevant on a shared host, not just tamper-evident.
-            OwnerOnlyDirectoryHelper.Create(receiptPath);
+            OwnerOnlyDirectoryHelper.Create(receiptPath, _logger);
             var file = Path.Combine(receiptPath, $"{now:yyyy-MM-dd}.jsonl");
             var line = JsonSerializer.Serialize(receipt, ReceiptOptions) + "\n";
 

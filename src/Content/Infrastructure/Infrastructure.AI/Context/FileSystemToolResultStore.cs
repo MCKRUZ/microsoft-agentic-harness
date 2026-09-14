@@ -290,7 +290,7 @@ public sealed class FileSystemToolResultStore : IToolResultStore
         var directory = Path.GetDirectoryName(storagePath)!;
         // Owner-only (#559, pairs with #527): this is the directory a spilled result's raw,
         // unredacted-since-#563 output lands in.
-        OwnerOnlyDirectoryHelper.Create(directory);
+        OwnerOnlyDirectoryHelper.Create(directory, _logger);
 
         await File.WriteAllTextAsync(storagePath, spillable, cancellationToken);
 

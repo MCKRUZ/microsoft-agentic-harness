@@ -36,6 +36,9 @@ public static partial class DependencyInjection
         var dbPath = appConfig.AI.Planner.DatabasePath;
         var dataDir = Path.GetDirectoryName(Path.Combine(AppContext.BaseDirectory, dbPath))!;
         // Owner-only (#660, following #640/#527's precedent): plan/checkpoint execution state.
+        // No logger is threaded through here: this runs during DI registration, before the
+        // container exists to resolve one from — the only OwnerOnlyDirectoryHelper.Create call site
+        // with that constraint (see the ILogger? parameter doc on Create).
         OwnerOnlyDirectoryHelper.Create(dataDir);
         var connectionString = $"DataSource={Path.Combine(AppContext.BaseDirectory, dbPath)}";
 

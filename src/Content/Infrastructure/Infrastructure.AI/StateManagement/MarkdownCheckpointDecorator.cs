@@ -59,7 +59,7 @@ public class MarkdownCheckpointDecorator : IStateManager
         _settings = infraConfig.CurrentValue.StateManagement;
 
         // Ensure base path exists, owner-only (#640) -- Create is already a no-op for an existing path.
-        OwnerOnlyDirectoryHelper.Create(_settings.BasePath);
+        OwnerOnlyDirectoryHelper.Create(_settings.BasePath, _logger);
     }
 
     public async Task<WorkflowState?> LoadAsync(string workflowId, CancellationToken cancellationToken = default)
@@ -170,7 +170,7 @@ public class MarkdownCheckpointDecorator : IStateManager
         var directory = Path.GetDirectoryName(markdownPath);
 
         if (!string.IsNullOrEmpty(directory))
-            OwnerOnlyDirectoryHelper.Create(directory); // #640
+            OwnerOnlyDirectoryHelper.Create(directory, _logger); // #640
 
         // Write to temp file first for atomic operation
         var tempFilePath = markdownPath + ".tmp";

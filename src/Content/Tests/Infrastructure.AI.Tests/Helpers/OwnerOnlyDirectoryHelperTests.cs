@@ -1,5 +1,8 @@
+using System.Runtime.InteropServices;
 using FluentAssertions;
 using Infrastructure.AI.Helpers;
+using Infrastructure.AI.Tests.Resilience;
+using Microsoft.Extensions.Logging;
 using Xunit;
 
 namespace Infrastructure.AI.Tests.Helpers;
@@ -56,6 +59,94 @@ public sealed class OwnerOnlyDirectoryHelperTests : IDisposable
         var act = () => OwnerOnlyDirectoryHelper.Create(_root);
 
         act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void Create_NonCooperatingWriterWinsTheRaceWithLooseDefaultMode_ModeIsStillCorrectedToOwnerOnly()
+    {
+        if (OperatingSystem.IsWindows())
+            return;
+
+        // #648: the actual race this fix closes is a writer that does NOT go through this helper —
+        // e.g. a plain Directory.CreateDirectory(path) call elsewhere — winning the race to create
+        // THIS call's segment first, with the BCL's loose default mode, before this call's own
+        // CreateDirectory(segment, OwnerOnlyMode) reaches it (a permission no-op on an already-
+        // existing directory). A COOPERATING racer that also calls Create() can never trigger this:
+        // every Create() caller requests the identical owner-only mode, and CreateDirectory applies
+        // the WINNING caller's requested mode atomically at creation — verified empirically via a
+        // real concurrent-racer run against the pre-fix code (0 mode mismatches across 2,560 racing
+        // creations). The hook below simulates the one writer shape that actually can lose the mode,
+        // deterministically, instead of relying on real thread scheduling to land in a timing window
+        // real concurrency can't reliably force.
+        var leaf = Path.Combine(_root, "a", "b", "c");
+        OwnerOnlyDirectoryHelper.RaceSimulationHookForTests = segment => Directory.CreateDirectory(segment);
+        try
+        {
+            OwnerOnlyDirectoryHelper.Create(leaf);
+        }
+        finally
+        {
+            OwnerOnlyDirectoryHelper.RaceSimulationHookForTests = null;
+        }
+
+        const UnixFileMode expected = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
+        File.GetUnixFileMode(_root).Should().Be(expected);
+        File.GetUnixFileMode(Path.Combine(_root, "a")).Should().Be(expected);
+        File.GetUnixFileMode(Path.Combine(_root, "a", "b")).Should().Be(expected);
+        File.GetUnixFileMode(leaf).Should().Be(expected);
+    }
+
+    [Fact]
+    public void Create_IntermediateSegmentReplacedWithSymlink_AbortsBeforeBuildingUnderIt()
+    {
+        if (!OperatingSystem.IsLinux() || RuntimeInformation.ProcessArchitecture != Architecture.X64)
+            return; // the symlink-safe reassert (open(O_NOFOLLOW) + fchmod) is gated to Linux/x86_64
+                    // only — see the class remarks on why other architectures use the plain fallback.
+
+        // #648 round 3 (/code-review): the first two attempts at this fix logged a failed reassert
+        // and kept building deeper segments anyway. Ordinary path resolution follows a symlink at ANY
+        // component of a multi-segment path, not just the one open(O_NOFOLLOW) refuses to follow — so
+        // swapping an INTERMEDIATE segment (not the leaf) proves the property this fix actually needs:
+        // nothing gets created under a parent this call could not confirm as owner-only.
+        var attackerOwnedTarget = Path.Combine(
+            Path.GetTempPath(), "owner-only-dir-tests-target-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(attackerOwnedTarget);
+        const UnixFileMode wideMode = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute
+            | UnixFileMode.GroupRead | UnixFileMode.OtherRead;
+        File.SetUnixFileMode(attackerOwnedTarget, wideMode);
+
+        try
+        {
+            var compromisedSegment = Path.Combine(_root, "a");
+            var leaf = Path.Combine(compromisedSegment, "b", "c");
+            var logger = new RecordingLogger<OwnerOnlyDirectoryHelperTests>();
+            OwnerOnlyDirectoryHelper.RaceSimulationHookForTests = segment =>
+            {
+                if (segment == compromisedSegment)
+                    Directory.CreateSymbolicLink(segment, attackerOwnedTarget);
+            };
+
+            Action act = () => OwnerOnlyDirectoryHelper.Create(leaf, logger);
+            try
+            {
+                act.Should().Throw<IOException>().WithMessage($"*{compromisedSegment}*");
+            }
+            finally
+            {
+                OwnerOnlyDirectoryHelper.RaceSimulationHookForTests = null;
+            }
+
+            File.GetUnixFileMode(attackerOwnedTarget).Should().Be(wideMode,
+                "the symlink target must never be chmod'd through the swapped segment");
+            Directory.Exists(Path.Combine(attackerOwnedTarget, "b")).Should().BeFalse(
+                "nothing may be created under a segment this call could not confirm as owner-only");
+            logger.Entries.Should().Contain(e =>
+                e.Level == LogLevel.Warning && e.Message.Contains(compromisedSegment, StringComparison.Ordinal));
+        }
+        finally
+        {
+            Directory.Delete(attackerOwnedTarget, recursive: true);
+        }
     }
 
     [Fact]

@@ -173,7 +173,7 @@ public sealed class HashChainedJsonlWriter : IDisposable
             // covering governance/escalation/drift/change/egress events -- the most security-relevant
             // of the stores #640 migrated, since its tamper-evidence hash chain protects integrity but
             // says nothing about confidentiality on a shared host.
-            OwnerOnlyDirectoryHelper.Create(Path.GetDirectoryName(segmentPath)!);
+            OwnerOnlyDirectoryHelper.Create(Path.GetDirectoryName(segmentPath)!, _logger);
 
             await using (var stream = new FileStream(
                 segmentPath, FileMode.Append, FileAccess.Write, FileShare.ReadWrite))
