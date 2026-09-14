@@ -15,8 +15,8 @@ namespace Infrastructure.AI.Helpers;
 /// only tightens permissions on the create path. A host upgraded in place, whose storage root was
 /// already created by pre-#527 code with looser default permissions, keeps that root's old mode
 /// indefinitely; only the NEW leaf directories created under it after the upgrade get owner-only.
-/// Closing that gap needs a one-time startup remediation pass, tracked separately rather than folded
-/// into this create-time fix.
+/// Closing that gap needs a one-time startup remediation pass — tracked in #670 (the prior tracking
+/// issue, #640's Gap 2, was closed with none ever opened; found during #660's code review).
 /// </para>
 /// </remarks>
 internal static class OwnerOnlyDirectoryHelper

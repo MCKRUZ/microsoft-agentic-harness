@@ -3,7 +3,6 @@ using Application.AI.Common.Services.AI;
 using Domain.Common.Config;
 using Domain.Common.Config.AI.Conversations;
 using Infrastructure.AI.Conversations;
-using Infrastructure.AI.Helpers;
 using Infrastructure.AI.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -167,10 +166,13 @@ public static partial class DependencyInjection
                 nameof(config));
         }
 
-        // Owner-only (#660, following #640/#527's precedent): the directory holding conversation
-        // transcripts, not just the file itself. UID-scoped, so it does not conflict with two hosts
-        // sharing this path under the SAME service account -- the arrangement this path is for.
-        OwnerOnlyDirectoryHelper.Create(directory);
+        // NOT owner-only (#660 considered this, reverted after review): the remark above documents
+        // that this path is deliberately shared across hosts that continue each other's
+        // conversations, and nothing in config guarantees those hosts run under the same service
+        // account. Locking this to 0700 would silently break that arrangement for any deployment
+        // where they don't -- tightening it needs an explicit same-account deployment guarantee
+        // first, tracked separately rather than assumed here.
+        Directory.CreateDirectory(directory);
 
         services.AddDbContextFactory<ConversationDbContext>(options => options
             .UseSqlite($"DataSource={databasePath}"));

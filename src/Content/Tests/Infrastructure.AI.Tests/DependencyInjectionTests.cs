@@ -165,37 +165,28 @@ public sealed class DependencyInjectionTests
     }
 
     [Fact]
-    public void AddInfrastructureAIDependencies_ConversationsAndPlannerDatabaseDirectories_AreOwnerOnly()
+    public void AddInfrastructureAIDependencies_PlannerDatabaseDirectory_IsOwnerOnly()
     {
-        // #660, following #640/#527's precedent: both directories are created directly inside DI
-        // registration (RegisterConversationDbContext / RegisterPlannerDbContext), not deferred to a
-        // store class's own constructor -- so the real composition root, not a hand-built directory
-        // call, is what must be exercised here.
-        var tempRoot = Path.Combine(Path.GetTempPath(), $"di-owner-only-{Guid.NewGuid():N}");
-        var conversationsDbPath = Path.Combine(tempRoot, "conversations", "conversations.db");
-        var plannerDbPath = Path.Combine(tempRoot, "planner", "planner.db");
+        // #660, following #640/#527's precedent: the directory is created directly inside DI
+        // registration (RegisterPlannerDbContext), not deferred to a store class's own constructor --
+        // so the real composition root, not a hand-built directory call, is what must be exercised
+        // here. The conversations DB directory is deliberately NOT included: #660 considered it and
+        // reverted after review, since that path is documented elsewhere as shared across hosts that
+        // may not run under the same account -- see DependencyInjection.Conversations.cs's remarks.
+        using var tempDir = new TempDirectory();
+        var plannerDbPath = Path.Combine(tempDir.Path, "planner", "planner.db");
 
-        try
-        {
-            // IsolatedAppConfig.Isolate overwrites both DatabasePath fields with its own temp slot
-            // (and eagerly creates that slot with plain permissions before registration ever runs) --
-            // so the paths this test actually wants to assert on must be set AFTER Isolate returns,
-            // not passed into the object it isolates (caught by CI's correctness-review gate).
-            var config = IsolatedAppConfig.Isolate(new Domain.Common.Config.AppConfig());
-            config.AI.Conversations.DatabasePath = conversationsDbPath;
-            config.AI.Planner.DatabasePath = plannerDbPath;
-            var services = CreateBaseServices(config);
+        // IsolatedAppConfig.Isolate overwrites Planner.DatabasePath with its own temp slot (and
+        // eagerly creates that slot with plain permissions before registration ever runs) -- so the
+        // path this test actually wants to assert on must be set AFTER Isolate returns, not passed
+        // into the object it isolates (caught by CI's correctness-review gate).
+        var config = IsolatedAppConfig.Isolate(new Domain.Common.Config.AppConfig());
+        config.AI.Planner.DatabasePath = plannerDbPath;
+        var services = CreateBaseServices(config);
 
-            services.AddInfrastructureAIDependencies(config);
+        services.AddInfrastructureAIDependencies(config);
 
-            Path.GetDirectoryName(conversationsDbPath)!.ShouldBeOwnerOnlyDirectory();
-            Path.GetDirectoryName(plannerDbPath)!.ShouldBeOwnerOnlyDirectory();
-        }
-        finally
-        {
-            if (Directory.Exists(tempRoot))
-                Directory.Delete(tempRoot, recursive: true);
-        }
+        Path.GetDirectoryName(plannerDbPath)!.ShouldBeOwnerOnlyDirectory();
     }
 
     [Fact]
