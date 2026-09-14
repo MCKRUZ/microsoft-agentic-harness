@@ -79,14 +79,14 @@ public sealed class OwnerOnlyDirectoryHelperTests : IDisposable
         // deterministically, instead of relying on real thread scheduling to land in a timing window
         // real concurrency can't reliably force.
         var leaf = Path.Combine(_root, "a", "b", "c");
-        OwnerOnlyDirectoryHelper.RaceSimulationHookForTests = segment => Directory.CreateDirectory(segment);
+        OwnerOnlyDirectoryHelper.RaceSimulationHookForTests.Value = segment => Directory.CreateDirectory(segment);
         try
         {
             OwnerOnlyDirectoryHelper.Create(leaf);
         }
         finally
         {
-            OwnerOnlyDirectoryHelper.RaceSimulationHookForTests = null;
+            OwnerOnlyDirectoryHelper.RaceSimulationHookForTests.Value = null;
         }
 
         const UnixFileMode expected = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
@@ -120,7 +120,7 @@ public sealed class OwnerOnlyDirectoryHelperTests : IDisposable
             var compromisedSegment = Path.Combine(_root, "a");
             var leaf = Path.Combine(compromisedSegment, "b", "c");
             var logger = new RecordingLogger<OwnerOnlyDirectoryHelperTests>();
-            OwnerOnlyDirectoryHelper.RaceSimulationHookForTests = segment =>
+            OwnerOnlyDirectoryHelper.RaceSimulationHookForTests.Value = segment =>
             {
                 if (segment == compromisedSegment)
                     Directory.CreateSymbolicLink(segment, attackerOwnedTarget);
@@ -133,7 +133,7 @@ public sealed class OwnerOnlyDirectoryHelperTests : IDisposable
             }
             finally
             {
-                OwnerOnlyDirectoryHelper.RaceSimulationHookForTests = null;
+                OwnerOnlyDirectoryHelper.RaceSimulationHookForTests.Value = null;
             }
 
             File.GetUnixFileMode(attackerOwnedTarget).Should().Be(wideMode,
