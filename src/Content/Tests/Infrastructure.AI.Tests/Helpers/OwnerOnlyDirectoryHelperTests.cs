@@ -1,5 +1,7 @@
 using FluentAssertions;
 using Infrastructure.AI.Helpers;
+using Infrastructure.AI.Tests.Resilience;
+using Microsoft.Extensions.Logging;
 using Xunit;
 
 namespace Infrastructure.AI.Tests.Helpers;
@@ -91,6 +93,55 @@ public sealed class OwnerOnlyDirectoryHelperTests : IDisposable
         File.GetUnixFileMode(Path.Combine(_root, "a")).Should().Be(expected);
         File.GetUnixFileMode(Path.Combine(_root, "a", "b")).Should().Be(expected);
         File.GetUnixFileMode(leaf).Should().Be(expected);
+    }
+
+    [Fact]
+    public void Create_SegmentReplacedWithSymlinkBeforeReassert_RefusesToFollowAndDoesNotChmodTarget()
+    {
+        if (!OperatingSystem.IsLinux())
+            return; // the symlink-safe reassert (open(O_NOFOLLOW) + fchmod) only exists on Linux.
+
+        // #648 round 2 (/code-review): the plain File.SetUnixFileMode reassert follows symlinks, so a
+        // segment swapped for a symlink between create and reassert would chmod whatever the symlink
+        // points to instead of refusing. Simulates the swap deterministically via the same hook used
+        // for the create race, and proves the Linux path refuses rather than follows: the symlink
+        // TARGET's permissions must stay untouched, nothing throws, and a Warning is logged.
+        var attackerOwnedTarget = Path.Combine(
+            Path.GetTempPath(), "owner-only-dir-tests-target-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(attackerOwnedTarget);
+        const UnixFileMode wideMode = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute
+            | UnixFileMode.GroupRead | UnixFileMode.OtherRead;
+        File.SetUnixFileMode(attackerOwnedTarget, wideMode);
+
+        try
+        {
+            var leaf = Path.Combine(_root, "a", "b", "c");
+            var logger = new RecordingLogger<OwnerOnlyDirectoryHelperTests>();
+            OwnerOnlyDirectoryHelper.RaceSimulationHookForTests = segment =>
+            {
+                if (segment == leaf)
+                    Directory.CreateSymbolicLink(segment, attackerOwnedTarget);
+            };
+
+            Action act = () => OwnerOnlyDirectoryHelper.Create(leaf, logger);
+            try
+            {
+                act.Should().NotThrow();
+            }
+            finally
+            {
+                OwnerOnlyDirectoryHelper.RaceSimulationHookForTests = null;
+            }
+
+            File.GetUnixFileMode(attackerOwnedTarget).Should().Be(wideMode,
+                "the symlink target must never be chmod'd through the swapped segment");
+            logger.Entries.Should().Contain(e =>
+                e.Level == LogLevel.Warning && e.Message.Contains(leaf, StringComparison.Ordinal));
+        }
+        finally
+        {
+            Directory.Delete(attackerOwnedTarget, recursive: true);
+        }
     }
 
     [Fact]

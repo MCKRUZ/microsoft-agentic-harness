@@ -1,5 +1,6 @@
 using Domain.Common.Helpers;
 using Infrastructure.AI.Helpers;
+using Microsoft.Extensions.Logging;
 
 namespace Infrastructure.AI.Persistence;
 
@@ -70,7 +71,11 @@ public static class GovernanceStatePaths
     /// context materialization, so a host that never enables durable state creates nothing.
     /// </summary>
     /// <param name="resolvedDatabasePath">A path already returned by <see cref="Resolve"/>.</param>
-    public static void EnsureDirectory(string resolvedDatabasePath)
+    /// <param name="logger">
+    /// Used only to report the benign races <see cref="OwnerOnlyDirectoryHelper.Create"/> tolerates
+    /// instead of throwing. <see langword="null"/> is accepted for callers with no logger available.
+    /// </param>
+    public static void EnsureDirectory(string resolvedDatabasePath, ILogger? logger = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(resolvedDatabasePath);
 
@@ -82,6 +87,6 @@ public static class GovernanceStatePaths
                 nameof(resolvedDatabasePath));
         }
 
-        OwnerOnlyDirectoryHelper.Create(directory); // #640: holds the approval-verdicts database
+        OwnerOnlyDirectoryHelper.Create(directory, logger); // #640: holds the approval-verdicts database
     }
 }

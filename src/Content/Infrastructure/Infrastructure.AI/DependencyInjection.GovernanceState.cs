@@ -8,6 +8,7 @@ using Infrastructure.AI.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace Infrastructure.AI;
@@ -45,11 +46,12 @@ public static partial class DependencyInjection
         var dbPath = GovernanceStatePaths.Resolve(appConfig.AI.Governance.DurableState.DatabasePath);
         var connectionString = $"DataSource={dbPath}";
 
-        services.AddDbContextFactory<GovernanceStateDbContext>(options =>
+        services.AddDbContextFactory<GovernanceStateDbContext>((sp, options) =>
         {
             // Runs on first context materialization, not at registration — hosts that never
             // enable durable governance state get zero filesystem side effects.
-            GovernanceStatePaths.EnsureDirectory(dbPath);
+            var logger = sp.GetRequiredService<ILoggerFactory>().CreateLogger(typeof(GovernanceStatePaths).FullName!);
+            GovernanceStatePaths.EnsureDirectory(dbPath, logger);
             options.UseSqlite(connectionString);
         });
 

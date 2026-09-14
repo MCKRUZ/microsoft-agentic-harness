@@ -48,7 +48,7 @@ public sealed class FileSystemExecutionTraceStore : IExecutionTraceStore
         var dir = scope.ResolveDirectory(config.TraceDirectoryRoot);
         // Owner-only (#527): this directory (and its turns/tool_results subdirectories) holds
         // redacted-but-still-substantive tool-result payloads once ExecutionTracingEnabled is on.
-        OwnerOnlyDirectoryHelper.Create(dir);
+        OwnerOnlyDirectoryHelper.Create(dir, _logger);
 
         var manifest = new
         {
@@ -116,7 +116,7 @@ public sealed class FileSystemExecutionTraceStore : IExecutionTraceStore
             ArgumentOutOfRangeException.ThrowIfNegativeOrZero(turnNumber);
 
             var turnDir = Path.Combine(RunDirectory, "turns", turnNumber.ToString());
-            OwnerOnlyDirectoryHelper.Create(turnDir);
+            OwnerOnlyDirectoryHelper.Create(turnDir, _logger);
 
             if (artifacts.SystemPrompt is { } prompt)
             {
@@ -154,7 +154,7 @@ public sealed class FileSystemExecutionTraceStore : IExecutionTraceStore
                         continue;
                     }
 
-                    OwnerOnlyDirectoryHelper.Create(toolResultsDir);
+                    OwnerOnlyDirectoryHelper.Create(toolResultsDir, _logger);
                     await File.WriteAllTextAsync(targetPath, result, ct);
                 }
             }

@@ -176,7 +176,7 @@ public sealed class JsonlDelegationStore : IDelegationStore, IDisposable
         return _sessionFiles.GetOrAdd(supervisorId, id =>
         {
             var dir = Path.Combine(_basePath, SanitizeSupervisorId(id));
-            OwnerOnlyDirectoryHelper.Create(dir); // #640
+            OwnerOnlyDirectoryHelper.Create(dir, _logger); // #640
 
             var timestamp = DateTimeOffset.UtcNow.ToString("yyyyMMddTHHmmss'Z'");
             var filePath = Path.Combine(dir, $"{timestamp}.jsonl");
@@ -325,10 +325,10 @@ public sealed class JsonlDelegationStore : IDelegationStore, IDisposable
     /// <summary>
     /// Ensures the parent directory for the given file path exists.
     /// </summary>
-    private static void EnsureDirectoryExists(string filePath)
+    private void EnsureDirectoryExists(string filePath)
     {
         var dir = Path.GetDirectoryName(filePath);
         if (dir is not null)
-            OwnerOnlyDirectoryHelper.Create(dir); // #640
+            OwnerOnlyDirectoryHelper.Create(dir, _logger); // #640
     }
 }

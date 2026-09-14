@@ -344,7 +344,7 @@ public sealed class AgentEvaluationService : IEvaluationService
             // temp root, which is typically world-listable -- unlike the other migrated stores,
             // this one sits directly in a shared location by default, not just a configured
             // app-output directory.
-            OwnerOnlyDirectoryHelper.Create(runRoot);
+            OwnerOnlyDirectoryHelper.Create(runRoot, _logger);
 
             // #618: the bare-rooted group's files live one level down, in a subdirectory named
             // after the declared frontmatter name — SafeResolveWithinRoot is reused here (not a new
@@ -354,7 +354,7 @@ public sealed class AgentEvaluationService : IEvaluationService
             if (bareSkillName is not null)
             {
                 bareRootedGroupRoot = SafeResolveWithinRoot(runRoot, bareSkillName);
-                OwnerOnlyDirectoryHelper.Create(bareRootedGroupRoot);
+                OwnerOnlyDirectoryHelper.Create(bareRootedGroupRoot, _logger);
             }
 
             foreach (var (relativePath, content) in snapshot.SkillFileSnapshots)
@@ -372,7 +372,7 @@ public sealed class AgentEvaluationService : IEvaluationService
                 var filePath = SafeResolveWithinRoot(groupRoot, relativePath);
                 var directory = Path.GetDirectoryName(filePath);
                 if (directory is not null)
-                    OwnerOnlyDirectoryHelper.Create(directory);
+                    OwnerOnlyDirectoryHelper.Create(directory, _logger);
                 File.WriteAllText(filePath, content);
             }
         }
