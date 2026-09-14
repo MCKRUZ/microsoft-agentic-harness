@@ -65,48 +65,106 @@ public partial class AgentEvaluationServiceTests
     [Fact]
     public async Task EvaluateAsync_CandidateWithSkillSnapshots_MaterializesSkillUnderACorrectlyNamedDirectory()
     {
-        // Scoped to the one run-root this test's own EvaluateAsync call creates, not the whole shared
-        // %TEMP%\harness-eval-skills tree - an unscoped SearchOption.AllDirectories scan there would
-        // both be an unbounded-cost walk of every past run's leftovers and risk a false pass if a
-        // concurrently-running test (e.g. the wiring test above, which uses the same skill name)
-        // leaves a same-named directory behind (caught in review).
+        var result = await MaterializeAndCaptureDirectoriesAsync("materialize-task");
+
+        Assert.NotNull(result.SkillDirectory);
+    }
+
+    /// <summary>
+    /// #660, following #640/#527's precedent: both the run root (materialized directly under the
+    /// SYSTEM temp root, which is typically world-listable) and the bare-rooted skill's own
+    /// subdirectory must be owner-only.
+    /// </summary>
+    /// <remarks>
+    /// The permission itself is checked INSIDE the mocked agent-factory callback, not against the
+    /// paths returned here — <c>EvaluateAsync</c>'s own <c>finally</c> block deletes both directories
+    /// before it returns, so asserting on live filesystem state afterward throws on Linux CI instead
+    /// of validating anything (caught by CI's grader gate).
+    /// </remarks>
+    [Fact]
+    public async Task EvaluateAsync_CandidateWithSkillSnapshots_MaterializedDirectoriesAreOwnerOnly()
+    {
+        var result = await MaterializeAndCaptureDirectoriesAsync("owner-only-task");
+
+        Assert.NotNull(result.RunRoot);
+        Assert.NotNull(result.SkillDirectory);
+        Assert.NotNull(result.RunRootMode);
+        Assert.NotNull(result.SkillDirectoryMode);
+        if (!OperatingSystem.IsWindows())
+        {
+            const UnixFileMode ownerOnly = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
+            Assert.Equal(ownerOnly, result.RunRootMode!.Value);
+            Assert.Equal(ownerOnly, result.SkillDirectoryMode!.Value);
+        }
+    }
+
+    /// <summary>
+    /// Runs one candidate with a single bare-rooted "research-agent" skill through
+    /// <c>AgentEvaluationService.EvaluateAsync</c> and returns the run root and the skill's own
+    /// subdirectory, PLUS each one's Unix file mode -- all captured mid-flight during the mocked
+    /// agent-factory callback, because both directories are deleted once the task completes and
+    /// cannot be read back (permissions included) afterward. Shared by the two tests above
+    /// (code-review finding on #660: the capture logic was duplicated verbatim between them).
+    /// </summary>
+    /// <remarks>
+    /// Scoped to the one run-root this call's own <c>EvaluateAsync</c> creates, not the whole shared
+    /// <c>%TEMP%\harness-eval-skills</c> tree — an unscoped <see cref="SearchOption.AllDirectories"/>
+    /// scan there would both be an unbounded-cost walk of every past run's leftovers and risk a false
+    /// pass if a concurrently-running test using the same skill name leaves a same-named directory
+    /// behind (caught in review).
+    /// </remarks>
+    private async Task<(string? RunRoot, string? SkillDirectory, UnixFileMode? RunRootMode, UnixFileMode? SkillDirectoryMode)>
+        MaterializeAndCaptureDirectoriesAsync(string taskId)
+    {
         var evalSkillsRoot = Path.Combine(Path.GetTempPath(), "harness-eval-skills");
         var preExistingRunRoots = Directory.Exists(evalSkillsRoot)
             ? Directory.EnumerateDirectories(evalSkillsRoot).ToHashSet(StringComparer.OrdinalIgnoreCase)
             : [];
 
+        string? capturedRunRoot = null;
         string? capturedSkillDirectory = null;
+        UnixFileMode? capturedRunRootMode = null;
+        UnixFileMode? capturedSkillDirectoryMode = null;
         _agentFactoryMock
             .Setup(f => f.CreateAgentAsync(It.IsAny<AgentExecutionContext>(), It.IsAny<CancellationToken>()))
-            .Callback<AgentExecutionContext, CancellationToken>((ctx, _) =>
+            .Callback<AgentExecutionContext, CancellationToken>((_, _) =>
             {
                 // Read the materialized directory back off disk rather than reflecting into the SDK's
                 // provider internals - what matters is proving a "research-agent"-named directory
-                // containing SKILL.md exists somewhere under this test's OWN run root while the agent
-                // is still being constructed (before EvaluateAsync's finally block deletes it).
-                var thisRunRoot = Directory.Exists(evalSkillsRoot)
+                // containing SKILL.md exists somewhere under this run's OWN run root while the agent
+                // is still being constructed (before EvaluateAsync's finally block deletes it). The
+                // mode is read here too, for the same reason: it must never be read after that delete.
+                capturedRunRoot = Directory.Exists(evalSkillsRoot)
                     ? Directory.EnumerateDirectories(evalSkillsRoot)
                         .FirstOrDefault(d => !preExistingRunRoots.Contains(d))
                     : null;
-                capturedSkillDirectory = thisRunRoot is null
+                capturedSkillDirectory = capturedRunRoot is null
                     ? null
-                    : Directory.EnumerateDirectories(thisRunRoot, "*", SearchOption.AllDirectories)
+                    : Directory.EnumerateDirectories(capturedRunRoot, "*", SearchOption.AllDirectories)
                         .FirstOrDefault(d => Path.GetFileName(d) == "research-agent" && File.Exists(Path.Combine(d, "SKILL.md")));
+
+                if (!OperatingSystem.IsWindows())
+                {
+                    capturedRunRootMode = capturedRunRoot is null ? null : File.GetUnixFileMode(capturedRunRoot);
+                    capturedSkillDirectoryMode = capturedSkillDirectory is null ? null : File.GetUnixFileMode(capturedSkillDirectory);
+                }
             })
             .ReturnsAsync(new TestableAIAgent("output"));
 
         var skillFiles = new Dictionary<string, string>
         {
             ["SKILL.md"] =
-                "---\nname: research-agent\ndescription: Finds and analyzes information.\n---\n# Research Agent\nDo research.\n"
+                "---\nname: research-agent\ndescription: Finds and analyzes information.\n---\nbody"
         };
         var sut = BuildSut();
         var candidate = BuildCandidate(skillFiles: skillFiles);
-        var tasks = new[] { BuildTask("materialize-task", "prompt", pattern: null) };
+        var tasks = new[] { BuildTask(taskId, "prompt", pattern: null) };
 
         await sut.EvaluateAsync(candidate, tasks);
 
-        Assert.NotNull(capturedSkillDirectory);
+        return (capturedRunRoot, capturedSkillDirectory,
+            OperatingSystem.IsWindows() ? UnixFileMode.None : capturedRunRootMode,
+            OperatingSystem.IsWindows() ? UnixFileMode.None : capturedSkillDirectoryMode);
     }
 
     /// <summary>

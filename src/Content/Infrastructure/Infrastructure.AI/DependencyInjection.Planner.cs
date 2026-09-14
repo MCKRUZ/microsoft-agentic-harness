@@ -12,6 +12,7 @@ using Domain.AI.Sandbox;
 using Domain.Common.Config;
 using Infrastructure.AI.Attestation;
 using Infrastructure.AI.Evaluation;
+using Infrastructure.AI.Helpers;
 using Infrastructure.AI.Persistence;
 using Infrastructure.AI.Planner;
 using Infrastructure.AI.Runs;
@@ -34,7 +35,8 @@ public static partial class DependencyInjection
     {
         var dbPath = appConfig.AI.Planner.DatabasePath;
         var dataDir = Path.GetDirectoryName(Path.Combine(AppContext.BaseDirectory, dbPath))!;
-        Directory.CreateDirectory(dataDir);
+        // Owner-only (#660, following #640/#527's precedent): plan/checkpoint execution state.
+        OwnerOnlyDirectoryHelper.Create(dataDir);
         var connectionString = $"DataSource={Path.Combine(AppContext.BaseDirectory, dbPath)}";
 
         services.AddDbContextFactory<PlannerDbContext>(options => options

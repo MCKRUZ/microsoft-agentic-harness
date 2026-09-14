@@ -48,6 +48,20 @@ public class FileSystemHarnessCandidateRepositoryTests : IDisposable
     }
 
     [Fact]
+    public async Task SaveAsync_CandidateDirectoryIsCreatedOwnerOnly()
+    {
+        // #660, following #640/#527's precedent: a candidate is a proposed skill edit plus its
+        // rollout results -- IP-sensitive training state, not just tamper-evident.
+        var candidate = BuildProposed(Guid.NewGuid());
+        await _sut.SaveAsync(candidate);
+
+        var expectedDir = Path.Combine(
+            _root, "optimizations", candidate.OptimizationRunId.ToString("D"),
+            "candidates", candidate.CandidateId.ToString("D"));
+        expectedDir.ShouldBeOwnerOnlyDirectory();
+    }
+
+    [Fact]
     public async Task SaveAsync_WritesAtomically_CandidateJsonHasWriteCompletedTrue()
     {
         var candidate = BuildProposed(Guid.NewGuid());

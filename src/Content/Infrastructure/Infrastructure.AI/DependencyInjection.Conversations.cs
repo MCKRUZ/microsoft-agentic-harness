@@ -166,6 +166,12 @@ public static partial class DependencyInjection
                 nameof(config));
         }
 
+        // NOT owner-only (#660 considered this, reverted after review): the remark above documents
+        // that this path is deliberately shared across hosts that continue each other's
+        // conversations, and nothing in config guarantees those hosts run under the same service
+        // account. Locking this to 0700 would silently break that arrangement for any deployment
+        // where they don't -- tightening it needs an explicit same-account deployment guarantee
+        // first, tracked separately rather than assumed here.
         Directory.CreateDirectory(directory);
 
         services.AddDbContextFactory<ConversationDbContext>(options => options

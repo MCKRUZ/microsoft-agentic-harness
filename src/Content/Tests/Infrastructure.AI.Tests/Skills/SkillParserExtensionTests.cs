@@ -126,19 +126,4 @@ public sealed class SkillParserExtensionTests
         skill.Instructions.Should().NotContain("Succeed at the thing");
         skill.Instructions.Should().NotContain("traces/{run_id}");
     }
-
-    private sealed class TempDirectory : IDisposable
-    {
-        public string Path { get; } = System.IO.Path.Combine(
-            System.IO.Path.GetTempPath(),
-            System.IO.Path.GetRandomFileName());
-
-        public TempDirectory() => Directory.CreateDirectory(Path);
-
-        public void Dispose()
-        {
-            if (Directory.Exists(Path))
-                Directory.Delete(Path, recursive: true);
-        }
-    }
 }

@@ -14,6 +14,7 @@ using Domain.Common.Config.AI.Plugins;
 using Domain.Common.Helpers;
 using Infrastructure.AI.Agents;
 using Infrastructure.AI.Egress;
+using Infrastructure.AI.Helpers;
 using Infrastructure.AI.Plugins;
 using Infrastructure.AI.Skills;
 using Microsoft.Extensions.Logging;
@@ -142,7 +143,10 @@ public sealed partial class BundleStagingService : IBundleStagingService
 
         var bundleId = $"bundle-{Guid.NewGuid():N}";
         var bundleDir = Path.Combine(stagingRoot, bundleId);
-        Directory.CreateDirectory(bundleDir);
+        // Owner-only (#660, following #640/#527's precedent): an uploaded bundle's unpacked
+        // contents (skills, plugin manifests, MCP server config) are extracted here before this
+        // host's own trusted parsers ever see them -- confidentiality-relevant on a shared host.
+        OwnerOnlyDirectoryHelper.Create(bundleDir);
 
         try
         {
@@ -312,11 +316,13 @@ public sealed partial class BundleStagingService : IBundleStagingService
             // Directory entry (name is empty when the full name ends in a separator).
             if (string.IsNullOrEmpty(entry.Name))
             {
-                Directory.CreateDirectory(destination);
+                // Owner-only: nested inside bundleDir, already locked down above -- kept
+                // consistent with it rather than relying solely on the parent's traversal block.
+                OwnerOnlyDirectoryHelper.Create(destination);
                 continue;
             }
 
-            Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+            OwnerOnlyDirectoryHelper.Create(Path.GetDirectoryName(destination)!);
 
             await using var entryStream = entry.Open();
             await using var fileStream = new FileStream(
