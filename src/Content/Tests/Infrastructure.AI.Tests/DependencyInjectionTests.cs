@@ -80,6 +80,23 @@ public sealed class DependencyInjectionTests
     }
 
     [Fact]
+    public void AddInfrastructureAIDependencies_RegistersIOwnerOnlyDirectoryCreator()
+    {
+        // #671/#672/#673: the seam Application.Core, Application.Common, and
+        // Infrastructure.AI.RAG all depend on to route directory creation through
+        // OwnerOnlyDirectoryHelper — must actually resolve, not just compile against the
+        // interface (see this repo's own history of controls that were wired but never
+        // bound into the real DI graph).
+        var services = CreateBaseServices();
+        services.AddInfrastructureAIDependencies(IsolatedAppConfig.Create());
+        using var provider = services.BuildServiceProvider();
+
+        var creator = provider.GetService<Application.Common.Interfaces.Common.IOwnerOnlyDirectoryCreator>();
+
+        creator.Should().NotBeNull();
+    }
+
+    [Fact]
     public void AddInfrastructureAIDependencies_RegistersIChatClientFactory()
     {
         var services = CreateBaseServices();
