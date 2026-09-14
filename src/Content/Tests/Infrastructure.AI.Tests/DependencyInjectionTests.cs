@@ -97,6 +97,45 @@ public sealed class DependencyInjectionTests
     }
 
     [Fact]
+    public void AddInfrastructureAIDependencies_LogsBasePathCollidesWithAnAllowedBasePath_StillEndsUpOwnerOnly()
+    {
+        // /code-review finding (#671/#672/#673): OwnerOnlyDirectoryHelper.Create is a documented no-op,
+        // permission-wise, for a segment that already exists. If a misconfiguration makes LogsBasePath
+        // resolve to the same path as an AllowedBasePaths entry and the plain sandbox loop created it
+        // FIRST, the owner-only call afterward would silently do nothing — defeating this fix for
+        // exactly the path it exists to protect. The fix creates LogsBasePath via the owner-only path
+        // BEFORE the sandbox loop, so the plain loop's own Directory.CreateDirectory later finds it
+        // already owner-only and correctly no-ops instead.
+        var config = IsolatedAppConfig.Create();
+        var sharedPath = Path.Combine(
+            Path.GetTempPath(), "infra-ai-tests-shared-logs-" + Guid.NewGuid().ToString("N"));
+        config.Logging.LogsBasePath = sharedPath;
+        config.Infrastructure.FileSystem.AllowedBasePaths = [sharedPath];
+
+        try
+        {
+            var services = CreateBaseServices();
+            services.AddInfrastructureAIDependencies(config);
+            using var provider = services.BuildServiceProvider();
+
+            Directory.Exists(sharedPath).Should().BeTrue();
+
+            if (!OperatingSystem.IsWindows())
+            {
+                File.GetUnixFileMode(sharedPath).Should().Be(
+                    UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute,
+                    "the security-sensitive path must win the collision, not silently inherit the " +
+                    "sandbox loop's loose default");
+            }
+        }
+        finally
+        {
+            if (Directory.Exists(sharedPath))
+                Directory.Delete(sharedPath, recursive: true);
+        }
+    }
+
+    [Fact]
     public void AddInfrastructureAIDependencies_RegistersIChatClientFactory()
     {
         var services = CreateBaseServices();

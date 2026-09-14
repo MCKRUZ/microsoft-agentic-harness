@@ -186,11 +186,22 @@ internal static class OwnerOnlyDirectoryHelper
                 // would silently build (and let callers write confidential content into) whatever
                 // that unverified parent actually is. Stopping here is the only way the re-assert
                 // above means anything for a multi-level path — which is every real caller.
+                //
+                // The "preceding log entry" pointer is conditional on logger being non-null
+                // (/code-review finding, #671/#672/#673): FileLoggerProvider and
+                // StructuredJsonLoggerProvider deliberately call Create with no logger, to avoid an
+                // ILoggerFactory construction cycle (see IOwnerOnlyDirectoryCreator's own remarks) — a
+                // hardcoded pointer to a log entry that can never exist for those two callers would
+                // send an investigator looking for something that was never written.
+                var detail = logger is not null
+                    ? "(see the preceding log entry for why)"
+                    : "(no logger was supplied to this call; see the reassert failure reason, if " +
+                      "available, in whatever caught this exception)";
                 throw new IOException(
                     $"Refusing to create '{fullPath}': could not confirm '{segment}' as an " +
-                    "owner-only directory this process controls after creating it (see the " +
-                    "preceding log entry for why). Continuing would silently create further " +
-                    "directories under a path that could not be verified as secure.");
+                    $"owner-only directory this process controls after creating it {detail}. " +
+                    "Continuing would silently create further directories under a path that could " +
+                    "not be verified as secure.");
             }
         }
     }

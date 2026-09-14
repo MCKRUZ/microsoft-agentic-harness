@@ -1,6 +1,7 @@
 using Domain.AI.KnowledgeGraph.Models;
 using Infrastructure.AI.RAG.GraphRag;
 using Microsoft.Extensions.Logging.Abstractions;
+using Tests.Common;
 using Xunit;
 
 namespace Infrastructure.AI.RAG.Tests.GraphRag;

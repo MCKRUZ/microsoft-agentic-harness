@@ -6,6 +6,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Moq;
 using System.Text.Json;
+using Tests.Common;
 using Xunit;
 
 namespace Application.Core.Tests.CQRS.MetaHarness;

@@ -26,6 +26,8 @@
     <!-- ZeroLlmPipelineTests (#322) scripts the real chat-client boundary via the shared
          role-aware fake instead of mocking IAgentConversationCache away. -->
     <ProjectReference Include="../Tests.AI.Fakes/Tests.AI.Fakes.csproj" />
+    <!-- Shared PlainDirectoryCreator test double (#671/#672/#673). -->
+    <ProjectReference Include="../Tests.Common/Tests.Common.csproj" />
   </ItemGroup>
 
 </Project>

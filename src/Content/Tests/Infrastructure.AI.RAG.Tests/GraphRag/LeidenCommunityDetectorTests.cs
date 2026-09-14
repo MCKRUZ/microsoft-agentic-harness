@@ -1,6 +1,7 @@
 using Infrastructure.AI.RAG.GraphRag;
 using Infrastructure.AI.RAG.Tests.Helpers;
 using Microsoft.Extensions.Logging.Abstractions;
+using Tests.Common;
 using Xunit;
 
 namespace Infrastructure.AI.RAG.Tests.GraphRag;

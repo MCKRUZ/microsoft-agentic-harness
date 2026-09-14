@@ -181,11 +181,19 @@ public static partial class DependencyInjection
         // case-sensitive filesystem) — LogsBasePath still ends up IN allowedBasePaths below (and
         // therefore in the tool's own allow-list passed to RegisterToolServices) so the agent can still
         // read its own logs through the file-system tool; only which API creates the directory changes.
-        foreach (var basePath in resolvedSandboxBasePaths)
-            Directory.CreateDirectory(basePath);
-
+        //
+        // Created BEFORE the sandbox loop, not after (/code-review finding): OwnerOnlyDirectoryHelper.Create
+        // is a documented no-op, permission-wise, for a segment that already exists. If a misconfiguration
+        // makes LogsBasePath resolve to the same path as an AllowedBasePaths entry and the plain loop ran
+        // first, it would create that shared path with loose default permissions and the owner-only call
+        // afterward would silently do nothing — defeating this fix's whole purpose for exactly the path it
+        // exists to protect. Creating the security-sensitive path first means the plain loop's own
+        // Directory.CreateDirectory finds it already owner-only and correctly no-ops instead.
         if (!string.IsNullOrEmpty(resolvedLogsBasePath))
             Helpers.OwnerOnlyDirectoryHelper.Create(resolvedLogsBasePath);
+
+        foreach (var basePath in resolvedSandboxBasePaths)
+            Directory.CreateDirectory(basePath);
 
         RegisterToolServices(services, appConfig, allowedBasePaths);
 
