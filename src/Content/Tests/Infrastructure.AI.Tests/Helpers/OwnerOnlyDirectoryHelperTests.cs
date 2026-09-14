@@ -10,6 +10,12 @@ namespace Infrastructure.AI.Tests.Helpers;
 /// <summary>
 /// Tests for <see cref="OwnerOnlyDirectoryHelper"/>.
 /// </summary>
+/// <remarks>
+/// In <see cref="OwnerOnlyDirectoryRaceHookCollection"/> (#676): several tests here set the shared
+/// static <see cref="OwnerOnlyDirectoryHelper.RaceSimulationHookForTests"/> seam, which xUnit's default
+/// cross-class parallelization could otherwise let another test class transiently observe.
+/// </remarks>
+[Collection(OwnerOnlyDirectoryRaceHookCollection.Name)]
 public sealed class OwnerOnlyDirectoryHelperTests : IDisposable
 {
     private readonly string _root = Path.Combine(Path.GetTempPath(), "owner-only-dir-tests-" + Guid.NewGuid().ToString("N"));

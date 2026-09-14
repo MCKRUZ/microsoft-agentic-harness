@@ -6,6 +6,7 @@ using FluentAssertions;
 using Infrastructure.AI.Context;
 using Microsoft.Extensions.Caching.Memory;
 using Infrastructure.AI.Telemetry.Redaction;
+using Infrastructure.AI.Tests.Helpers;
 using Infrastructure.AI.Tests.Planner.StepExecutors;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -14,6 +15,13 @@ using Xunit;
 
 namespace Infrastructure.AI.Tests.Context;
 
+/// <summary>
+/// In <see cref="OwnerOnlyDirectoryRaceHookCollection"/> (#676): this store's directory creation goes
+/// through <c>OwnerOnlyDirectoryHelper.Create</c>, which could otherwise transiently observe
+/// <see cref="Helpers.OwnerOnlyDirectoryHelperTests"/>'s test-only race-simulation hook if the two
+/// classes ran concurrently.
+/// </summary>
+[Collection(OwnerOnlyDirectoryRaceHookCollection.Name)]
 public sealed class FileSystemToolResultStoreTests : IDisposable
 {
     private const int LargePageSize = 10_000;
