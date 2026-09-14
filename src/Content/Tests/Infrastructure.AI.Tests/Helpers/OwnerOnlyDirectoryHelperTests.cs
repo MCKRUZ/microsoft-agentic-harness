@@ -59,6 +59,31 @@ public sealed class OwnerOnlyDirectoryHelperTests : IDisposable
     }
 
     [Fact]
+    public async Task Create_ConcurrentCallersRaceToCreateSameNewPath_EveryLevelEndsUpOwnerOnly()
+    {
+        if (OperatingSystem.IsWindows())
+            return;
+
+        // #648 regression: many callers race to create the exact same not-yet-existing multi-level
+        // path concurrently. Before the fix, whichever caller's CreateDirectory call for a given
+        // segment lost the race found that segment already created (by another racer, with the BCL's
+        // loose default mode) and silently skipped applying owner-only — permanently. 32 concurrent
+        // callers on a brand-new path make that race land reliably.
+        var leaf = Path.Combine(_root, "a", "b", "c");
+        var tasks = Enumerable.Range(0, 32)
+            .Select(_ => Task.Run(() => OwnerOnlyDirectoryHelper.Create(leaf)))
+            .ToArray();
+
+        await Task.WhenAll(tasks);
+
+        const UnixFileMode expected = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
+        File.GetUnixFileMode(_root).Should().Be(expected);
+        File.GetUnixFileMode(Path.Combine(_root, "a")).Should().Be(expected);
+        File.GetUnixFileMode(Path.Combine(_root, "a", "b")).Should().Be(expected);
+        File.GetUnixFileMode(leaf).Should().Be(expected);
+    }
+
+    [Fact]
     public void Create_SomeParentSegmentsAlreadyExist_OnlyAppliesModeToTheNewlyCreatedOnes()
     {
         var existingParent = Path.Combine(_root, "existing");

@@ -17,6 +17,14 @@ namespace Infrastructure.AI.Helpers;
 /// indefinitely; only the NEW leaf directories created under it after the upgrade get owner-only.
 /// Closing that gap needs a one-time startup remediation pass — tracked in #670.
 /// </para>
+/// <para>
+/// <strong>Concurrent callers racing to create the same new segment (#648)</strong> converge on
+/// owner-only regardless of ordering: every segment this call determines is missing gets its mode
+/// re-asserted via <c>File.SetUnixFileMode</c> after the create call, not just trusted from the
+/// create call's mode argument (which the BCL silently ignores if another caller already created that
+/// segment first). This does not protect against a caller that creates the segment through a path
+/// other than this method — only cooperating callers of <see cref="Create"/> are covered.
+/// </para>
 /// </remarks>
 internal static class OwnerOnlyDirectoryHelper
 {
@@ -64,6 +72,17 @@ internal static class OwnerOnlyDirectoryHelper
         }
 
         while (missingSegments.Count > 0)
-            Directory.CreateDirectory(missingSegments.Pop(), OwnerOnlyMode);
+        {
+            var segment = missingSegments.Pop();
+            Directory.CreateDirectory(segment, OwnerOnlyMode);
+
+            // #648: a concurrent caller can win the race to create this exact segment first, via the
+            // BCL's loose default mode — CreateDirectory is then a silent no-op for permissions on an
+            // already-existing directory, so the mode argument above is not a guarantee. Re-asserting
+            // the mode here, unconditionally, after every create call for a segment THIS call is
+            // responsible for closes that: whichever concurrent caller of this method finishes last for
+            // a given segment leaves it owner-only, regardless of who actually created it.
+            File.SetUnixFileMode(segment, OwnerOnlyMode);
+        }
     }
 }
