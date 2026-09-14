@@ -186,6 +186,26 @@ internal static class OwnerOnlyDirectoryHelper
     }
 
     /// <summary>
+    /// Shared wording for a segment that vanished between this call's create and its reassert —
+    /// used by both platform paths so the same failure reads identically in the logs regardless of
+    /// which one produced it (/simplify finding: the two paths had drifted to near-duplicate text).
+    /// </summary>
+    private static void LogSegmentGone(ILogger? logger, string segment, Exception? exception = null) =>
+        logger?.LogWarning(exception,
+            "Owner-only permission re-assert on {Directory} failed: the directory no longer " +
+            "existed, most likely deleted by a concurrent process.", segment);
+
+    /// <summary>
+    /// Shared wording for a segment owned by a different user than this process — see
+    /// <see cref="LogSegmentGone"/> for why this is factored out.
+    /// </summary>
+    private static void LogAccessDenied(ILogger? logger, string segment, Exception? exception = null) =>
+        logger?.LogWarning(exception,
+            "Could not re-assert owner-only permissions on {Directory}: it is owned by a " +
+            "different user than this process, so it cannot be secured here. Something other " +
+            "than this application created it — investigate if unexpected.", segment);
+
+    /// <summary>
     /// Non-Linux/x86_64 POSIX fallback (macOS, BSD, or Linux on any other architecture): the plain,
     /// symlink-following <c>File.SetUnixFileMode</c>. Returns whether <paramref name="segment"/> is
     /// confirmed owner-only and safe to build further segments under; never throws.
@@ -206,9 +226,7 @@ internal static class OwnerOnlyDirectoryHelper
             // Create() continued past this, its own next CreateDirectory call would silently
             // re-create this segment with the BCL's loose default mode — the exact bug this whole
             // fix exists to close, just via a benign race instead of an adversarial one.
-            logger?.LogWarning(ex,
-                "Owner-only permission re-assert on {Directory} failed: the directory no longer " +
-                "existed, most likely deleted by a concurrent process.", segment);
+            LogSegmentGone(logger, segment, ex);
             return false;
         }
         catch (UnauthorizedAccessException ex)
@@ -216,10 +234,7 @@ internal static class OwnerOnlyDirectoryHelper
             // The non-cooperating writer this fix defends against (see the class remarks) won the
             // race running as a DIFFERENT OS user, so this process cannot chmod a directory it does
             // not own — and must not build further segments under a directory it does not control.
-            logger?.LogWarning(ex,
-                "Could not re-assert owner-only permissions on {Directory}: it is owned by a " +
-                "different user than this process, so it cannot be secured here. Something other " +
-                "than this application created it — investigate if unexpected.", segment);
+            LogAccessDenied(logger, segment, ex);
             return false;
         }
         catch (IOException ex)
@@ -253,9 +268,7 @@ internal static class OwnerOnlyDirectoryHelper
                 // If Create() continued past this, its own next CreateDirectory call would silently
                 // re-create this segment with the BCL's loose default mode — the exact bug this whole
                 // fix exists to close, just via a benign race instead of an adversarial one.
-                logger?.LogWarning(
-                    "Owner-only permission re-assert on {Directory} failed: the directory no " +
-                    "longer existed, most likely deleted by a concurrent process.", segment);
+                LogSegmentGone(logger, segment);
                 return false;
 
             case ChmodOutcome.NotASafeDirectory:
@@ -269,10 +282,7 @@ internal static class OwnerOnlyDirectoryHelper
                 return false;
 
             case ChmodOutcome.AccessDenied:
-                logger?.LogWarning(
-                    "Could not re-assert owner-only permissions on {Directory}: access was denied " +
-                    "(likely owned by a different user than this process). Something other than " +
-                    "this application created it — investigate if unexpected.", segment);
+                LogAccessDenied(logger, segment);
                 return false;
 
             case ChmodOutcome.OperationFailed:
