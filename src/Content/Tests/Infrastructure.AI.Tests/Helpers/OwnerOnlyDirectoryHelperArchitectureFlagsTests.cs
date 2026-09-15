@@ -47,8 +47,14 @@ public sealed class OwnerOnlyDirectoryHelperArchitectureFlagsTests
         flags.Should().NotBeNull();
         flags!.Value.NoFollow.Should().Be(0x8000);
         flags.Value.Directory.Should().Be(0x4000);
-        flags.Value.NoFollow.Should().NotBe(0x20000, "these bits mean O_LARGEFILE on ARM64/PowerPC, not O_NOFOLLOW");
-        flags.Value.Directory.Should().NotBe(0x10000, "these bits mean O_DIRECT on ARM64/PowerPC, not O_DIRECTORY");
+        // /code-review finding: ARM64 and PowerPC don't even agree with EACH OTHER on what these two
+        // bits mean, let alone with x86_64 — ARM64's headers give 0x10000/0x20000 to O_DIRECT/
+        // O_LARGEFILE, PowerPC's SWAP that pair (O_LARGEFILE=0x10000, O_DIRECT=0x20000). Either way,
+        // neither bit means O_DIRECTORY/O_NOFOLLOW on either architecture, which is the only property
+        // these assertions need — the "because" text intentionally doesn't claim which specific flag
+        // each bit means, since that differs between the two architectures this theory covers.
+        flags.Value.NoFollow.Should().NotBe(0x20000, "0x20000 is O_LARGEFILE on ARM64 and O_DIRECT on PowerPC — never O_NOFOLLOW on either");
+        flags.Value.Directory.Should().NotBe(0x10000, "0x10000 is O_DIRECT on ARM64 and O_LARGEFILE on PowerPC — never O_DIRECTORY on either");
     }
 
     /// <summary>

@@ -85,9 +85,14 @@ public sealed class OwnerOnlyDirectoryHelperTests : IDisposable
     [Fact]
     public void Create_LeafAlreadyExistsAsASymlink_ThrowsAndDoesNotChmodTheTarget()
     {
-        // #670's retroactive path reuses the same symlink-safe reassert as a freshly-created segment
-        // — a pre-existing leaf that is itself a symlink must be refused, not followed and chmod'd.
-        if (!OperatingSystem.IsLinux() || OwnerOnlyDirectoryHelper.GetSafeReassertFlags(RuntimeInformation.ProcessArchitecture) is null)
+        // #670's retroactive path must refuse a pre-existing leaf that is itself a symlink on EVERY
+        // POSIX platform, not just architectures GetSafeReassertFlags recognizes (security-review
+        // finding): before that finding's fix, a symlink planted at leisure — no race required, unlike
+        // the #648 TOCTOU this helper otherwise defends against — would be silently followed by the
+        // plain File.SetUnixFileMode fallback on macOS/BSD/unrecognized Linux architectures. Gating on
+        // Windows only, not architecture, means this test exercises the fallback's own symlink check
+        // wherever this suite happens to run, not only the open(O_NOFOLLOW) safe path.
+        if (OperatingSystem.IsWindows())
             return;
 
         var attackerOwnedTarget = Path.Combine(
@@ -109,6 +114,49 @@ public sealed class OwnerOnlyDirectoryHelperTests : IDisposable
         }
         finally
         {
+            // /code-review finding: deleting attackerOwnedTarget alone leaves _root as a DANGLING
+            // symlink — Dispose()'s Directory.Exists(_root) guard follows the (now-broken) link, gets
+            // false, and skips cleanup, orphaning the symlink in the shared OS temp directory on every
+            // run. Deleting the symlink itself first (Directory.Delete on a reparse point removes only
+            // the link, never recursing into its target — the same behavior the intermediate-segment
+            // symlink test below already relies on) leaves nothing for Dispose() to miss.
+            Directory.Delete(_root);
+            Directory.Delete(attackerOwnedTarget, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void ReassertModeFollowingSymlinks_SegmentIsASymlink_RefusesAndDoesNotChmodTheTarget()
+    {
+        // Direct, architecture-independent coverage of the security-review fix: calls the fallback
+        // method itself, bypassing ReassertOrThrow's platform branching entirely, so this proves the
+        // fallback's own symlink check works regardless of what CPU architecture this test happens to
+        // run on — Create_LeafAlreadyExistsAsASymlink_ThrowsAndDoesNotChmodTheTarget above only
+        // exercises this method when the host architecture routes there in the first place.
+        if (OperatingSystem.IsWindows())
+            return;
+
+        var attackerOwnedTarget = Path.Combine(
+            Path.GetTempPath(), "owner-only-dir-tests-target-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(attackerOwnedTarget);
+        const UnixFileMode wideMode = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute
+            | UnixFileMode.GroupRead | UnixFileMode.OtherRead;
+        File.SetUnixFileMode(attackerOwnedTarget, wideMode);
+
+        try
+        {
+            Directory.CreateSymbolicLink(_root, attackerOwnedTarget);
+
+            var secured = OwnerOnlyDirectoryHelper.ReassertModeFollowingSymlinks(_root, logger: null);
+
+            secured.Should().BeFalse("a symlink must be refused, never followed and chmod'd");
+            File.GetUnixFileMode(attackerOwnedTarget).Should().Be(wideMode,
+                "the symlink target must never be chmod'd through the swapped leaf");
+        }
+        finally
+        {
+            // See the identical comment on Create_LeafAlreadyExistsAsASymlink_ThrowsAndDoesNotChmodTheTarget.
+            Directory.Delete(_root);
             Directory.Delete(attackerOwnedTarget, recursive: true);
         }
     }

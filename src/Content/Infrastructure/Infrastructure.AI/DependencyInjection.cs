@@ -182,13 +182,13 @@ public static partial class DependencyInjection
         // therefore in the tool's own allow-list passed to RegisterToolServices) so the agent can still
         // read its own logs through the file-system tool; only which API creates the directory changes.
         //
-        // Created BEFORE the sandbox loop, not after (/code-review finding): OwnerOnlyDirectoryHelper.Create
-        // is a documented no-op, permission-wise, for a segment that already exists. If a misconfiguration
-        // makes LogsBasePath resolve to the same path as an AllowedBasePaths entry and the plain loop ran
-        // first, it would create that shared path with loose default permissions and the owner-only call
-        // afterward would silently do nothing — defeating this fix's whole purpose for exactly the path it
-        // exists to protect. Creating the security-sensitive path first means the plain loop's own
-        // Directory.CreateDirectory finds it already owner-only and correctly no-ops instead.
+        // Created BEFORE the sandbox loop, not after (/code-review finding). OwnerOnlyDirectoryHelper.Create
+        // now retroactively reasserts owner-only mode even on a path that already exists (#670), so the
+        // original risk this ordering guarded against — a misconfiguration making LogsBasePath resolve to
+        // the same path as an AllowedBasePaths entry, with the plain loop creating it first at the BCL's
+        // loose default and the owner-only call afterward silently doing nothing — no longer applies
+        // either order. Kept first anyway: it means the security-sensitive path is never momentarily
+        // world-readable even between the two calls, and it's free to keep once #670's fix already exists.
         if (!string.IsNullOrEmpty(resolvedLogsBasePath))
             Helpers.OwnerOnlyDirectoryHelper.Create(resolvedLogsBasePath);
 

@@ -30,6 +30,17 @@ namespace Infrastructure.AI.Helpers;
 /// helper to own.
 /// </para>
 /// <para>
+/// <strong>Two known gaps tracked separately (#682), not fixed here.</strong> First: nothing bounds
+/// which paths this retroactive reassert may touch, so a config typo pointing a storage root at an
+/// already-existing shared/system directory now actively <c>chmod</c>s it instead of being a harmless
+/// no-op — closing this needs a bounded, non-brittle guard, not a hard-coded deny-list. Second: several
+/// of this helper's ~20 call sites invoke <see cref="Create"/> completely unguarded, and a pre-existing
+/// directory genuinely owned by a different user (a real, non-adversarial scenario: a bind-mounted
+/// volume created by root, with the app running as a non-root user) now throws where it previously
+/// could not — each such call site needs its own reviewed decision about acceptable degraded behavior,
+/// which #682 tracks as its own scoped follow-up.
+/// </para>
+/// <para>
 /// <strong>A non-cooperating writer racing to create the same new segment first (#648)</strong> no
 /// longer wins permanently: every segment this call determines is missing gets its mode re-asserted
 /// after the create call, not just trusted from the create call's mode argument. That argument is
@@ -71,12 +82,13 @@ namespace Infrastructure.AI.Helpers;
 /// multi-platform container image can end up running x86_64 code on an ARM64 host or vice versa;
 /// <c>ProcessArchitecture</c> reflects what this running process's own code, and therefore its libc
 /// calls, actually is). Any architecture <see cref="GetSafeReassertFlags"/> does not recognize (e.g.
-/// 32-bit ARM/PowerPC, RISC-V) keeps the plain, symlink-following <c>File.SetUnixFileMode</c> call —
-/// narrower coverage, but no worse than this helper's behavior before #648's fix, and never silently
-/// wrong. Shipping a guessed flag value for an architecture this template cannot verify against the
-/// kernel's own headers would risk silently doing the wrong thing, which is strictly worse than an
-/// honest, narrower fallback — the same reasoning <c>HardLinkInspector</c> documents for its own
-/// platform coverage.
+/// 32-bit ARM/PowerPC, RISC-V) keeps the plain, symlink-following <c>File.SetUnixFileMode</c> call,
+/// now preceded by its own explicit (check-then-act, not TOCTOU-proof) symlink check —
+/// see <see cref="ReassertModeFollowingSymlinks"/>'s own remarks for why #670 made that check
+/// necessary where it previously was not. Shipping a guessed flag value for an architecture this
+/// template cannot verify against the kernel's own headers would risk silently doing the wrong thing,
+/// which is strictly worse than an honest, narrower fallback — the same reasoning
+/// <c>HardLinkInspector</c> documents for its own platform coverage.
 /// </para>
 /// <para>
 /// <strong>A compromised segment must stop the whole call, not just itself (#648, round 3)</strong>:
@@ -96,10 +108,12 @@ internal static class OwnerOnlyDirectoryHelper
         UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
 
     /// <summary>
-    /// Test-only seam: when set, invoked with each segment immediately before this method's own
-    /// creation attempt for it, letting a test deterministically simulate a concurrent, non-
-    /// cooperating writer creating that exact segment first — instead of relying on real thread
-    /// scheduling to land in a narrow timing window. Always unset in production.
+    /// Test-only seam: invoked with each segment <see cref="Create"/> is about to reassert mode on —
+    /// immediately before the create attempt for a segment the walk determined was missing, or
+    /// immediately before the retroactive reassert (#670) for a segment that already existed — letting
+    /// a test deterministically simulate a concurrent writer racing (or, for the already-exists case,
+    /// having previously) reached that exact segment, instead of relying on real thread scheduling to
+    /// land in a narrow timing window. Always unset in production.
     /// </summary>
     /// <remarks>
     /// <see cref="AsyncLocal{T}"/>, not a plain shared <see langword="static"/> field (/simplify
@@ -244,11 +258,19 @@ internal static class OwnerOnlyDirectoryHelper
             ? "(see the preceding log entry for why)"
             : "(no logger was supplied to this call; see the reassert failure reason, if " +
               "available, in whatever caught this exception)";
+
+        // /code-review finding: the "would silently create further directories" wording only makes
+        // sense for the missing-segment walk. When segment == fullPath, this is the #670 already-exists
+        // case — a single pre-existing leaf, not a multi-level build in progress — and the old wording
+        // sent an investigator looking for a partially-built tree that never existed.
+        var consequence = segment == fullPath
+            ? "This directory already existed and could not be confirmed as one this process " +
+              "exclusively controls; nothing was created or modified under it."
+            : "Continuing would silently create further directories under a path that could not be " +
+              "verified as secure.";
         throw new IOException(
             $"Refusing to secure '{fullPath}': could not confirm '{segment}' as an " +
-            $"owner-only directory this process controls {detail}. " +
-            "Continuing would silently create further directories under a path that could " +
-            "not be verified as secure.");
+            $"owner-only directory this process controls {detail}. {consequence}");
     }
 
     /// <summary>
@@ -273,12 +295,43 @@ internal static class OwnerOnlyDirectoryHelper
 
     /// <summary>
     /// Non-Linux/x86_64 POSIX fallback (macOS, BSD, or Linux on any other architecture): the plain,
-    /// symlink-following <c>File.SetUnixFileMode</c>. Returns whether <paramref name="segment"/> is
-    /// confirmed owner-only and safe to build further segments under; never throws.
+    /// symlink-following <c>File.SetUnixFileMode</c>, preceded by an explicit symlink check. Returns
+    /// whether <paramref name="segment"/> is confirmed owner-only and safe to build further segments
+    /// under; never throws.
     /// </summary>
+    /// <remarks>
+    /// <strong>The symlink check is new (#670, security-review finding).</strong> Before #670, a path
+    /// this helper did not itself create was never touched — a symlink planted at leisure at a
+    /// pre-existing storage root, with no race required, would simply sit there inert. #670's
+    /// retroactive-remediation branch (see <see cref="Create"/>) now reaches that same pre-existing
+    /// path with a real <c>chmod</c>, and on this fallback platform family <c>File.SetUnixFileMode</c>
+    /// follows symlinks — so without this check, a standing (not merely race-won) symlink plant would
+    /// be silently followed, applying owner-only mode to whatever the attacker's link actually points
+    /// at and reporting success. This check is still check-then-act (a symlink could theoretically be
+    /// swapped in between this check and the <c>SetUnixFileMode</c> call below), so it closes the
+    /// deterministic, no-race-needed case #670 introduced — it does not claim the same TOCTOU-proof
+    /// guarantee <see cref="ApplyOwnerOnlyModeSafely"/>'s single <c>open(O_NOFOLLOW)</c> syscall gives
+    /// on supported architectures, which is exactly why that path is preferred whenever available.
+    /// <para>
+    /// Internal rather than private specifically so a test can exercise this exact method directly
+    /// (<c>OwnerOnlyDirectoryHelperTests</c>), independent of which platform branch
+    /// <see cref="ReassertOrThrow"/> would route to on the CI host's own architecture — the symlink
+    /// check above must be verified regardless of whether that host happens to be one
+    /// <see cref="GetSafeReassertFlags"/> recognizes.
+    /// </para>
+    /// </remarks>
     [UnsupportedOSPlatform("windows")]
-    private static bool ReassertModeFollowingSymlinks(string segment, ILogger? logger)
+    internal static bool ReassertModeFollowingSymlinks(string segment, ILogger? logger)
     {
+        if (new DirectoryInfo(segment).LinkTarget is not null)
+        {
+            logger?.LogWarning(
+                "Owner-only permission re-assert on {Directory} refused: it is a symbolic link, not a " +
+                "plain directory (possible symlink plant). Nothing was chmod'd through it. Investigate " +
+                "what it points to.", segment);
+            return false;
+        }
+
         try
         {
             File.SetUnixFileMode(segment, OwnerOnlyMode);
