@@ -52,13 +52,65 @@ public sealed class OwnerOnlyDirectoryHelperTests : IDisposable
     }
 
     [Fact]
-    public void Create_DirectoryAlreadyExists_IsANoOpAndDoesNotThrow()
+    public void Create_DirectoryAlreadyExists_DoesNotThrow()
     {
         Directory.CreateDirectory(_root);
 
         var act = () => OwnerOnlyDirectoryHelper.Create(_root);
 
         act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void Create_LeafAlreadyExistsWithLoosePermissions_RetroactivelySecuresIt()
+    {
+        // #670: a host upgraded in place may have created this exact storage root before this helper
+        // existed, with the BCL's loose default mode. Create() must correct it on the next call for
+        // that root, not just leave it at whatever mode it already had.
+        if (OperatingSystem.IsWindows())
+            return;
+
+        Directory.CreateDirectory(_root);
+        const UnixFileMode wideMode = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute
+            | UnixFileMode.GroupRead | UnixFileMode.GroupExecute | UnixFileMode.OtherRead | UnixFileMode.OtherExecute;
+        File.SetUnixFileMode(_root, wideMode);
+
+        OwnerOnlyDirectoryHelper.Create(_root);
+
+        const UnixFileMode expected = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
+        File.GetUnixFileMode(_root).Should().Be(expected,
+            "the exact directory this call was asked to secure must be corrected even if it already existed");
+    }
+
+    [Fact]
+    public void Create_LeafAlreadyExistsAsASymlink_ThrowsAndDoesNotChmodTheTarget()
+    {
+        // #670's retroactive path reuses the same symlink-safe reassert as a freshly-created segment
+        // — a pre-existing leaf that is itself a symlink must be refused, not followed and chmod'd.
+        if (!OperatingSystem.IsLinux() || OwnerOnlyDirectoryHelper.GetSafeReassertFlags(RuntimeInformation.ProcessArchitecture) is null)
+            return;
+
+        var attackerOwnedTarget = Path.Combine(
+            Path.GetTempPath(), "owner-only-dir-tests-target-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(attackerOwnedTarget);
+        const UnixFileMode wideMode = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute
+            | UnixFileMode.GroupRead | UnixFileMode.OtherRead;
+        File.SetUnixFileMode(attackerOwnedTarget, wideMode);
+
+        try
+        {
+            Directory.CreateSymbolicLink(_root, attackerOwnedTarget);
+
+            var act = () => OwnerOnlyDirectoryHelper.Create(_root);
+
+            act.Should().Throw<IOException>().WithMessage($"*{_root}*");
+            File.GetUnixFileMode(attackerOwnedTarget).Should().Be(wideMode,
+                "the symlink target must never be chmod'd through the swapped leaf");
+        }
+        finally
+        {
+            Directory.Delete(attackerOwnedTarget, recursive: true);
+        }
     }
 
     [Fact]
@@ -99,9 +151,11 @@ public sealed class OwnerOnlyDirectoryHelperTests : IDisposable
     [Fact]
     public void Create_IntermediateSegmentReplacedWithSymlink_AbortsBeforeBuildingUnderIt()
     {
-        if (!OperatingSystem.IsLinux() || RuntimeInformation.ProcessArchitecture != Architecture.X64)
-            return; // the symlink-safe reassert (open(O_NOFOLLOW) + fchmod) is gated to Linux/x86_64
-                    // only — see the class remarks on why other architectures use the plain fallback.
+        if (!OperatingSystem.IsLinux() || OwnerOnlyDirectoryHelper.GetSafeReassertFlags(RuntimeInformation.ProcessArchitecture) is null)
+            return; // the symlink-safe reassert (open(O_NOFOLLOW) + fchmod) is gated to architectures
+                    // GetSafeReassertFlags recognizes — see the class remarks on why others use the
+                    // plain fallback, and OwnerOnlyDirectoryHelperArchitectureFlagsTests for coverage
+                    // of the flag values themselves independent of the CI host's own architecture.
 
         // #648 round 3 (/code-review): the first two attempts at this fix logged a failed reassert
         // and kept building deeper segments anyway. Ordinary path resolution follows a symlink at ANY

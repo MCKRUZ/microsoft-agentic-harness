@@ -16,11 +16,18 @@ namespace Infrastructure.AI.Helpers;
 /// needs <c>Other</c> permissions) — that is a different security posture for a different reason, not
 /// the same gap.
 /// <para>
-/// <strong>Does not remediate a directory that already exists</strong> (/code-review, round 2) — this
-/// only tightens permissions on the create path. A host upgraded in place, whose storage root was
-/// already created by pre-#527 code with looser default permissions, keeps that root's old mode
-/// indefinitely; only the NEW leaf directories created under it after the upgrade get owner-only.
-/// Closing that gap needs a one-time startup remediation pass — tracked in #670.
+/// <strong>A host upgraded in place is remediated retroactively, not just from the next fresh
+/// create (#670)</strong>: <see cref="Create"/>'s originally-shipped behavior (/code-review, round 2)
+/// only tightened permissions on the create path — a storage root already created by pre-#527 code
+/// with the BCL's loose default mode kept that mode indefinitely, since nothing ever revisited a
+/// segment the call did not itself create. <see cref="Create"/> now checks whether the exact directory
+/// it was asked to secure already exists and, if so, reasserts its mode the same way a freshly-created
+/// segment gets reasserted — no separate startup pass or hand-maintained list of storage roots to keep
+/// in sync required, since it runs inside the same call every one of this helper's ~20 existing call
+/// sites already makes. An already-existing ANCESTOR encountered while walking up to find a DIFFERENT
+/// (missing) leaf is deliberately left untouched, exactly as before — an ancestor may be shared by
+/// something outside this call's control, which is not true of the leaf a caller explicitly asked this
+/// helper to own.
 /// </para>
 /// <para>
 /// <strong>A non-cooperating writer racing to create the same new segment first (#648)</strong> no
@@ -42,28 +49,34 @@ namespace Infrastructure.AI.Helpers;
 /// Linux), so a writer with access to the same parent directory could, in the gap between this call's
 /// create and its permission re-assert, delete the just-created segment and replace it with a symlink
 /// to an attacker-owned directory — turning the re-assert into an attacker-controlled <c>chmod</c>.
-/// On Linux/x86_64 this is closed with a direct <c>open(O_NOFOLLOW | O_DIRECTORY)</c> + <c>fchmod</c>
-/// pair (<see cref="ApplyOwnerOnlyModeSafely"/>): opening refuses outright (<c>ELOOP</c>) if the path
-/// is now a symlink, and the subsequent <c>fchmod</c> targets the already-open descriptor, not the
-/// path, so nothing resolved after the open can change what gets chmod'd. <c>O_NOFOLLOW</c>/
-/// <c>O_DIRECTORY</c>'s numeric values are NOT the same on every architecture — ARM64/PowerPC define
-/// them differently than x86_64/s390x (a real defect caught by <c>correctness</c> review on the first
-/// attempt at this fix, which hard-coded the x86_64 values unconditionally: on ARM64 those same bits
-/// mean <c>O_LARGEFILE</c>/<c>O_DIRECT</c>, silently disarming the whole protection instead of failing
-/// loudly). Rather than hand-type a second set of guessed values for ARM64/PowerPC with no way to
-/// verify them on this template's own hosts, the safe path is gated to Linux **x86_64 only** — the
-/// architecture of the RUNNING PROCESS, via <c>RuntimeInformation.ProcessArchitecture</c>, not
-/// <c>OSArchitecture</c> (a second real defect, caught by <c>/code-review</c> round 3:
-/// <c>OSArchitecture</c> reflects the host, and Microsoft's own docs say it does not account for
-/// QEMU-based cross-architecture emulation on Linux — exactly how a multi-platform container image
-/// can end up running x86_64 code on an ARM64 host or vice versa; <c>ProcessArchitecture</c> reflects
-/// what this running process's own code, and therefore its libc calls, actually is). Every other
-/// POSIX combination (macOS/BSD, or Linux with a mismatched process architecture) keeps the plain,
-/// symlink-following <c>File.SetUnixFileMode</c> call — narrower coverage, but no worse than this
-/// helper's behavior before this paragraph's fix, and never silently wrong. Shipping an unverified
-/// flag-value guess for a platform this template cannot test would risk silently doing the wrong
-/// thing, which is strictly worse than an honest, narrower fallback — the same reasoning
-/// <c>HardLinkInspector</c> documents for its own platform coverage.
+/// On supported Linux architectures this is closed with a direct
+/// <c>open(O_NOFOLLOW | O_DIRECTORY)</c> + <c>fchmod</c> pair
+/// (<see cref="ApplyOwnerOnlyModeSafely"/>): opening refuses outright (<c>ELOOP</c>) if the path is
+/// now a symlink, and the subsequent <c>fchmod</c> targets the already-open descriptor, not the path,
+/// so nothing resolved after the open can change what gets chmod'd. <c>O_NOFOLLOW</c>/
+/// <c>O_DIRECTORY</c>'s numeric values are NOT the same on every architecture (a real defect caught
+/// by <c>correctness</c> review on the first attempt at this fix, which hard-coded the x86_64 values
+/// unconditionally: on ARM64 those same bits mean <c>O_LARGEFILE</c>/<c>O_DIRECT</c>, silently
+/// disarming the whole protection instead of failing loudly) — <see cref="GetSafeReassertFlags"/>
+/// maps <see cref="Architecture"/> to the correct pair, verified directly against the Linux kernel's
+/// own <c>arch/*/include/uapi/asm/fcntl.h</c> / <c>include/uapi/asm-generic/fcntl.h</c> sources (#677),
+/// not glibc docs or memory: x86_64 and s390 define no architecture-specific override and fall
+/// through to the generic header's <c>O_DIRECTORY=(1&lt;&lt;16)</c>/<c>O_NOFOLLOW=(1&lt;&lt;17)</c>,
+/// while ARM64 and PowerPC (ppc64le) each define their OWN override —
+/// <c>O_DIRECTORY=(1&lt;&lt;14)</c>/<c>O_NOFOLLOW=(1&lt;&lt;15)</c> — before including the generic
+/// header, whose include guards then skip redefining them. Architecture is read via
+/// <c>RuntimeInformation.ProcessArchitecture</c>, not <c>OSArchitecture</c> (a second real defect,
+/// caught by <c>/code-review</c> round 3: <c>OSArchitecture</c> reflects the host, and Microsoft's own
+/// docs say it does not account for QEMU-based cross-architecture emulation on Linux — exactly how a
+/// multi-platform container image can end up running x86_64 code on an ARM64 host or vice versa;
+/// <c>ProcessArchitecture</c> reflects what this running process's own code, and therefore its libc
+/// calls, actually is). Any architecture <see cref="GetSafeReassertFlags"/> does not recognize (e.g.
+/// 32-bit ARM/PowerPC, RISC-V) keeps the plain, symlink-following <c>File.SetUnixFileMode</c> call —
+/// narrower coverage, but no worse than this helper's behavior before #648's fix, and never silently
+/// wrong. Shipping a guessed flag value for an architecture this template cannot verify against the
+/// kernel's own headers would risk silently doing the wrong thing, which is strictly worse than an
+/// honest, narrower fallback — the same reasoning <c>HardLinkInspector</c> documents for its own
+/// platform coverage.
 /// </para>
 /// <para>
 /// <strong>A compromised segment must stop the whole call, not just itself (#648, round 3)</strong>:
@@ -103,7 +116,9 @@ internal static class OwnerOnlyDirectoryHelper
     /// <summary>
     /// Creates <paramref name="directory"/> (and any missing parents) with owner-only read/write/execute
     /// access on POSIX, applied to <em>every</em> directory this call actually creates — not just the
-    /// leaf. A no-op permission-wise for any segment that already exists.
+    /// leaf. If <paramref name="directory"/> itself already exists, its mode is retroactively reasserted
+    /// too (#670) — an already-existing ANCESTOR encountered while walking up to find the first missing
+    /// segment is left untouched, the same as always.
     /// </summary>
     /// <param name="directory">The directory to create.</param>
     /// <param name="logger">
@@ -114,12 +129,12 @@ internal static class OwnerOnlyDirectoryHelper
     /// </param>
     /// <exception cref="IOException">
     /// A segment this call is responsible for could not be confirmed as an owner-only directory this
-    /// process controls after creating it (/code-review finding, round 3): a concurrent writer deleted
-    /// it, symlink-swapped it, or owns it under a different user. Continuing to build further segments
-    /// under an unverified parent would silently create them inside whatever that parent actually is —
-    /// the exact confidentiality break this whole method exists to prevent — so this call stops
-    /// immediately instead of logging and continuing. Any segment already confirmed secure before the
-    /// failing one stays on disk, correctly owner-only; nothing below the failure point is created.
+    /// process controls (/code-review finding, round 3): a concurrent writer deleted it, symlink-swapped
+    /// it, or owns it under a different user. Continuing to build further segments under an unverified
+    /// parent would silently create them inside whatever that parent actually is — the exact
+    /// confidentiality break this whole method exists to prevent — so this call stops immediately
+    /// instead of logging and continuing. Any segment already confirmed secure before the failing one
+    /// stays on disk, correctly owner-only; nothing below the failure point is created.
     /// </exception>
     /// <remarks>
     /// <c>Directory.CreateDirectory(path, mode)</c>'s single-call overload does NOT do this
@@ -145,6 +160,21 @@ internal static class OwnerOnlyDirectoryHelper
         }
 
         var fullPath = Path.GetFullPath(directory);
+
+        // #670: a host upgraded in place may have created this exact directory before this helper
+        // existed, with the BCL's loose default mode — the walk-and-create loop below only ever
+        // touches a segment it is CREATING, so it would silently never revisit a leaf that already
+        // exists. Handled as its own case, before the walk even starts, so the retroactive fix
+        // applies to precisely the directory the caller asked to secure — never an ancestor found
+        // already existing while walking up for a DIFFERENT (missing) leaf, which stays untouched
+        // exactly as before (an ancestor may be shared by something outside this call's control).
+        if (Directory.Exists(fullPath))
+        {
+            RaceSimulationHookForTests.Value?.Invoke(fullPath);
+            ReassertOrThrow(fullPath, fullPath, logger);
+            return;
+        }
+
         var missingSegments = new Stack<string>();
         var current = fullPath;
         while (!Directory.Exists(current))
@@ -166,44 +196,59 @@ internal static class OwnerOnlyDirectoryHelper
             // with the BCL's loose default mode — CreateDirectory is then a silent no-op for
             // permissions on an already-existing directory, so the mode argument above is not a
             // guarantee. Re-asserting the mode here, unconditionally, closes that.
-            //
-            // ProcessArchitecture, not OSArchitecture (/code-review finding, round 3): OSArchitecture
-            // reflects the HOST, and Microsoft's own docs say it does not account for QEMU-based
-            // cross-architecture emulation on Linux — exactly how a Docker buildx multi-platform image
-            // runs on a mismatched host. ProcessArchitecture reflects what THIS running process's own
-            // code (and therefore its libc calls) actually is, which is the only thing that determines
-            // whether the flag values below are correct.
-            var secured = OperatingSystem.IsLinux() && RuntimeInformation.ProcessArchitecture == Architecture.X64
-                ? ReassertModeOnLinux(segment, logger)
-                : ReassertModeFollowingSymlinks(segment, logger);
-
-            if (!secured)
-            {
-                // /code-review finding, round 3: logging and continuing here — as every earlier
-                // version of this fix did — creates every remaining segment through a parent this
-                // call just determined it could NOT confirm as owner-only. Normal path resolution
-                // follows a symlink at ANY component, not just the leaf being opened, so continuing
-                // would silently build (and let callers write confidential content into) whatever
-                // that unverified parent actually is. Stopping here is the only way the re-assert
-                // above means anything for a multi-level path — which is every real caller.
-                //
-                // The "preceding log entry" pointer is conditional on logger being non-null
-                // (/code-review finding, #671/#672/#673): FileLoggerProvider and
-                // StructuredJsonLoggerProvider deliberately call Create with no logger, to avoid an
-                // ILoggerFactory construction cycle (see IOwnerOnlyDirectoryCreator's own remarks) — a
-                // hardcoded pointer to a log entry that can never exist for those two callers would
-                // send an investigator looking for something that was never written.
-                var detail = logger is not null
-                    ? "(see the preceding log entry for why)"
-                    : "(no logger was supplied to this call; see the reassert failure reason, if " +
-                      "available, in whatever caught this exception)";
-                throw new IOException(
-                    $"Refusing to create '{fullPath}': could not confirm '{segment}' as an " +
-                    $"owner-only directory this process controls after creating it {detail}. " +
-                    "Continuing would silently create further directories under a path that could " +
-                    "not be verified as secure.");
-            }
+            ReassertOrThrow(fullPath, segment, logger);
         }
+    }
+
+    /// <summary>
+    /// Re-asserts owner-only mode on <paramref name="segment"/> and throws if it cannot be confirmed
+    /// secure — shared by <see cref="Create"/>'s missing-segment walk and its #670 already-exists case,
+    /// so both report the identical failure shape.
+    /// </summary>
+    /// <remarks>
+    /// Only ever called from <see cref="Create"/>, after its own <c>OperatingSystem.IsWindows()</c>
+    /// early return — the <see cref="UnsupportedOSPlatformAttribute"/> below documents that for
+    /// callers/analyzers, since the guard lives in the caller, not in this method itself.
+    /// </remarks>
+    [UnsupportedOSPlatform("windows")]
+    private static void ReassertOrThrow(string fullPath, string segment, ILogger? logger)
+    {
+        // ProcessArchitecture, not OSArchitecture (/code-review finding, round 3): OSArchitecture
+        // reflects the HOST, and Microsoft's own docs say it does not account for QEMU-based
+        // cross-architecture emulation on Linux — exactly how a Docker buildx multi-platform image
+        // runs on a mismatched host. ProcessArchitecture reflects what THIS running process's own
+        // code (and therefore its libc calls) actually is, which is the only thing that determines
+        // whether the open() flag values are correct (#677).
+        var secured = OperatingSystem.IsLinux() && GetSafeReassertFlags(RuntimeInformation.ProcessArchitecture) is { } flags
+            ? ReassertModeOnLinux(segment, flags.NoFollow, flags.Directory, logger)
+            : ReassertModeFollowingSymlinks(segment, logger);
+
+        if (secured)
+            return;
+
+        // /code-review finding, round 3: logging and continuing here — as every earlier version of
+        // this fix did — creates every remaining segment through a parent this call just determined
+        // it could NOT confirm as owner-only. Normal path resolution follows a symlink at ANY
+        // component, not just the leaf being opened, so continuing would silently build (and let
+        // callers write confidential content into) whatever that unverified parent actually is.
+        // Stopping here is the only way the re-assert above means anything for a multi-level path —
+        // which is every real caller.
+        //
+        // The "preceding log entry" pointer is conditional on logger being non-null (/code-review
+        // finding, #671/#672/#673): FileLoggerProvider and StructuredJsonLoggerProvider deliberately
+        // call Create with no logger, to avoid an ILoggerFactory construction cycle (see
+        // IOwnerOnlyDirectoryCreator's own remarks) — a hardcoded pointer to a log entry that can
+        // never exist for those two callers would send an investigator looking for something that
+        // was never written.
+        var detail = logger is not null
+            ? "(see the preceding log entry for why)"
+            : "(no logger was supplied to this call; see the reassert failure reason, if " +
+              "available, in whatever caught this exception)";
+        throw new IOException(
+            $"Refusing to secure '{fullPath}': could not confirm '{segment}' as an " +
+            $"owner-only directory this process controls {detail}. " +
+            "Continuing would silently create further directories under a path that could " +
+            "not be verified as secure.");
     }
 
     /// <summary>
@@ -271,15 +316,59 @@ internal static class OwnerOnlyDirectoryHelper
     }
 
     /// <summary>
-    /// Linux/x86_64 path: re-asserts owner-only mode via <see cref="ApplyOwnerOnlyModeSafely"/>, which
-    /// never follows a symlink planted at <paramref name="segment"/> between the create call and this
-    /// one. Returns whether <paramref name="segment"/> is confirmed owner-only and safe to build
-    /// further segments under; never throws.
+    /// The <c>O_NOFOLLOW</c>/<c>O_DIRECTORY</c> numeric values for one architecture family, as read
+    /// from that family's own Linux kernel uapi header (see <see cref="GetSafeReassertFlags"/>).
+    /// </summary>
+    internal readonly record struct SafeReassertFlags(int NoFollow, int Directory);
+
+    /// <summary>
+    /// Maps a process architecture to the <c>O_NOFOLLOW</c>/<c>O_DIRECTORY</c> numeric values that
+    /// architecture's own Linux kernel headers define, or <see langword="null"/> if this helper has
+    /// not verified them for that architecture (#677). A separate, pure, architecture-independent
+    /// method rather than an inline switch in <see cref="Create"/> specifically so it can be unit
+    /// tested for every architecture directly, without needing a matching physical host.
+    /// </summary>
+    /// <remarks>
+    /// Every value below was read directly from <c>torvalds/linux</c>'s own uapi headers, not glibc
+    /// docs or memory — the exact category of mistake #677 was filed to prevent a repeat of:
+    /// <list type="bullet">
+    /// <item><description>
+    /// <see cref="Architecture.X64"/> and <see cref="Architecture.S390x"/>: neither
+    /// <c>arch/x86/include/uapi/asm/fcntl.h</c> nor <c>arch/s390/include/uapi/asm/fcntl.h</c> exists
+    /// in the kernel source tree, so both fall through to
+    /// <c>include/uapi/asm-generic/fcntl.h</c>'s <c>O_DIRECTORY=(1&lt;&lt;16)=0x10000</c> and
+    /// <c>O_NOFOLLOW=(1&lt;&lt;17)=0x20000</c>.
+    /// </description></item>
+    /// <item><description>
+    /// <see cref="Architecture.Arm64"/> and <see cref="Architecture.Ppc64le"/>:
+    /// <c>arch/arm64/include/uapi/asm/fcntl.h</c> and <c>arch/powerpc/include/uapi/asm/fcntl.h</c>
+    /// each <c>#define</c> their own <c>O_DIRECTORY=(1&lt;&lt;14)=0x4000</c> and
+    /// <c>O_NOFOLLOW=(1&lt;&lt;15)=0x8000</c> — the exact bits x86_64/s390x use for
+    /// <c>O_DIRECT</c>/<c>O_LARGEFILE</c> — before including the generic header, whose include
+    /// guards then skip redefining them.
+    /// </description></item>
+    /// </list>
+    /// Any other architecture (32-bit ARM/PowerPC, RISC-V, LoongArch64, WASM, ...) is not covered:
+    /// this template has no kernel-source citation for it, so it is left on the plain,
+    /// symlink-following fallback rather than guessed at.
+    /// </remarks>
+    internal static SafeReassertFlags? GetSafeReassertFlags(Architecture architecture) => architecture switch
+    {
+        Architecture.X64 or Architecture.S390x => new SafeReassertFlags(NoFollow: 0x20000, Directory: 0x10000),
+        Architecture.Arm64 or Architecture.Ppc64le => new SafeReassertFlags(NoFollow: 0x8000, Directory: 0x4000),
+        _ => null,
+    };
+
+    /// <summary>
+    /// Re-asserts owner-only mode via <see cref="ApplyOwnerOnlyModeSafely"/>, which never follows a
+    /// symlink planted at <paramref name="segment"/> between the create call and this one. Returns
+    /// whether <paramref name="segment"/> is confirmed owner-only and safe to build further segments
+    /// under; never throws.
     /// </summary>
     [SupportedOSPlatform("linux")]
-    private static bool ReassertModeOnLinux(string segment, ILogger? logger)
+    private static bool ReassertModeOnLinux(string segment, int oNoFollow, int oDirectory, ILogger? logger)
     {
-        var (outcome, errno) = ApplyOwnerOnlyModeSafely(segment);
+        var (outcome, errno) = ApplyOwnerOnlyModeSafely(segment, oNoFollow, oDirectory);
         switch (outcome)
         {
             case ChmodOutcome.Applied:
@@ -351,16 +440,15 @@ internal static class OwnerOnlyDirectoryHelper
     /// followed — see the class remarks for the race this closes. Never throws.
     /// </summary>
     /// <remarks>
-    /// Only ever called for Linux/x86_64 (gated in <see cref="Create"/>) — the flag values below are
-    /// specific to that architecture family. See the class remarks for why no other architecture is
-    /// guessed at.
+    /// Only ever called for an architecture <see cref="GetSafeReassertFlags"/> recognizes (gated in
+    /// <see cref="Create"/>) — <paramref name="oNoFollow"/>/<paramref name="oDirectory"/> must be that
+    /// architecture's own verified values. See the class remarks for why an unrecognized architecture
+    /// is never guessed at instead of routed here.
     /// </remarks>
     [SupportedOSPlatform("linux")]
-    private static (ChmodOutcome Outcome, int Errno) ApplyOwnerOnlyModeSafely(string segment)
+    private static (ChmodOutcome Outcome, int Errno) ApplyOwnerOnlyModeSafely(string segment, int oNoFollow, int oDirectory)
     {
         const int oRdOnly = 0;
-        const int oNoFollow = 0x20000;   // O_NOFOLLOW (Linux/x86_64 and s390x; NOT ARM64/PowerPC)
-        const int oDirectory = 0x10000;  // O_DIRECTORY (Linux/x86_64 and s390x; NOT ARM64/PowerPC)
         const int enoent = 2;
         const int eacces = 13;
         const int eperm = 1;
