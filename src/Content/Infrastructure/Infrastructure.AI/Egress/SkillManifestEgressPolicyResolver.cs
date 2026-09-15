@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Egress;
 using Application.AI.Common.Interfaces.Skills;
+using Application.AI.Common.Services.Governance;
 using Domain.AI.Egress;
 using Domain.AI.Identity;
 using Domain.Common.Config;
@@ -99,13 +100,26 @@ public sealed class SkillManifestEgressPolicyResolver : IEgressPolicyResolver
     }
 
     /// <inheritdoc />
+    /// <remarks>
+    /// <b>#618: ephemeral (eval-candidate) skills bypass <see cref="_skillCache"/> entirely.</b> The
+    /// cache is keyed by skill id, but a candidate under meta-harness evaluation is commonly named
+    /// after the real skill it proposes to change — two candidates evaluated concurrently can
+    /// legitimately share an id while each publishes a DIFFERENT <c>EphemeralSkillMetadataAccessor</c>
+    /// value on its own async flow. Caching either one's built policy under that shared id would leak
+    /// it to the other candidate's resolution on a later call. Computing fresh every time for the
+    /// ephemeral case is the only way to keep the two candidates' resolutions isolated; it never
+    /// affects any real, registry-backed skill's caching, which is unaffected by this check.
+    /// </remarks>
     public IEgressPolicy ResolveFor(AgentIdentity identity)
     {
         ArgumentNullException.ThrowIfNull(identity);
 
         var skillIds = _currentSkill.CurrentSkillIds;
-        return skillIds.Count == 0
-            ? _noSkillPolicy.Value
+        if (skillIds.Count == 0)
+            return _noSkillPolicy.Value;
+
+        return skillIds.Any(EphemeralSkillMetadataAccessor.HasOverride)
+            ? BuildPolicyForSkills(skillIds)
             : _skillCache.GetOrAdd(skillIds, static (ids, self) => self.BuildPolicyForSkills(ids), this);
     }
 
@@ -187,9 +201,14 @@ public sealed class SkillManifestEgressPolicyResolver : IEgressPolicyResolver
     /// declares none. Shared by the single- and multi-skill resolve paths so the lookup and the
     /// unknown-skill warning are written once.
     /// </summary>
+    /// <remarks>
+    /// #618: an ephemeral (eval-candidate) skill published via <see cref="EphemeralSkillMetadataAccessor"/>
+    /// is checked before the permanent <see cref="_skillRegistry"/>, since a candidate under
+    /// evaluation is never a registered entry there by design — see that accessor's remarks.
+    /// </remarks>
     private IReadOnlyList<EgressAllowlistEntry> SkillAllowlistEntries(string skillId)
     {
-        var skill = _skillRegistry.TryGet(skillId);
+        var skill = EphemeralSkillMetadataAccessor.TryGet(skillId) ?? _skillRegistry.TryGet(skillId);
         if (skill is null)
         {
             _logger.LogWarning(

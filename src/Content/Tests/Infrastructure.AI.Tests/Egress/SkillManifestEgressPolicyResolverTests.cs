@@ -1,6 +1,7 @@
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Egress;
 using Application.AI.Common.Interfaces.Skills;
+using Application.AI.Common.Services.Governance;
 using Domain.AI.Egress;
 using Domain.AI.Skills;
 using Domain.Common.Config.AI;
@@ -382,5 +383,87 @@ public sealed class SkillManifestEgressPolicyResolverTests
         }
 
         accessor.CurrentSkillIds.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// #618: an ephemeral skill published via <see cref="EphemeralSkillMetadataAccessor"/> — the
+    /// shape a meta-harness eval candidate uses, since a candidate is never a registered
+    /// <see cref="ISkillMetadataRegistry"/> entry — is resolved WITHOUT ever consulting the registry.
+    /// A strict mock with zero setups proves the registry is not touched at all: before this fix, the
+    /// resolver had no ephemeral concept and would have gone straight to the registry, hit the
+    /// unconfigured strict mock, and thrown — the failure mode this bug actually produced in
+    /// production being silence (an "unknown skill" warning and the harness-wide default), not a
+    /// throw, only because the real registry returns null instead of throwing.
+    /// </summary>
+    [Fact]
+    public async Task ResolveFor_EphemeralSkillActive_UsesItsOwnAllowlist_NeverConsultsRegistry()
+    {
+        var accessor = new CurrentSkillAccessor();
+        using var _ = accessor.BeginScope(["candidate-42"]);
+
+        var candidateSkill = SkillWithAllowlist("candidate-42", new EgressAllowlistEntry
+        {
+            Host = "candidate.example.com", Schemes = ["https"], Ports = [443]
+        });
+
+        var registry = new Mock<ISkillMetadataRegistry>(MockBehavior.Strict);
+        var resolver = NewResolver(accessor, registry.Object);
+
+        using var __ = EphemeralSkillMetadataAccessor.Begin(candidateSkill);
+        var policy = resolver.ResolveFor(TestIdentity.Default);
+
+        var verdict = await policy.AllowAsync(
+            new Uri("https://candidate.example.com/anything"), TestIdentity.Default, CancellationToken.None);
+        verdict.Allowed.Should().BeTrue();
+        registry.VerifyNoOtherCalls();
+    }
+
+    /// <summary>
+    /// #618's concurrency fix: two ephemeral skills sharing an id — the normal case for meta-harness
+    /// eval, where a candidate is usually named after the real skill it proposes to change — must
+    /// each resolve their OWN allowlist, never a stale one cached from the other. This reproduces the
+    /// exact failure mode a naive "just check the ephemeral accessor" fix (with no cache bypass)
+    /// would have: the first call's policy would populate <c>_skillCache["shared-name"]</c>, and the
+    /// second call — a DIFFERENT candidate, same declared name — would silently get served the
+    /// first's allowlist instead of its own.
+    /// </summary>
+    [Fact]
+    public async Task ResolveFor_TwoEphemeralSkillsSharingAnId_EachResolvesItsOwnAllowlist()
+    {
+        var accessor = new CurrentSkillAccessor();
+        var registry = new Mock<ISkillMetadataRegistry>(MockBehavior.Strict);
+        var resolver = NewResolver(accessor, registry.Object);
+
+        using (accessor.BeginScope(["shared-name"]))
+        using (EphemeralSkillMetadataAccessor.Begin(SkillWithAllowlist("shared-name", new EgressAllowlistEntry
+        {
+            Host = "first-candidate.example.com", Schemes = ["https"], Ports = [443]
+        })))
+        {
+            var firstVerdict = await resolver.ResolveFor(TestIdentity.Default).AllowAsync(
+                new Uri("https://first-candidate.example.com/"), TestIdentity.Default, CancellationToken.None);
+            firstVerdict.Allowed.Should().BeTrue();
+        }
+
+        using (accessor.BeginScope(["shared-name"]))
+        using (EphemeralSkillMetadataAccessor.Begin(SkillWithAllowlist("shared-name", new EgressAllowlistEntry
+        {
+            Host = "second-candidate.example.com", Schemes = ["https"], Ports = [443]
+        })))
+        {
+            var secondPolicy = resolver.ResolveFor(TestIdentity.Default);
+
+            var secondVerdict = await secondPolicy.AllowAsync(
+                new Uri("https://second-candidate.example.com/"), TestIdentity.Default, CancellationToken.None);
+            secondVerdict.Allowed.Should().BeTrue("the second candidate's own allowlist must apply");
+
+            var leakedFirstVerdict = await secondPolicy.AllowAsync(
+                new Uri("https://first-candidate.example.com/"), TestIdentity.Default, CancellationToken.None);
+            leakedFirstVerdict.Allowed.Should().BeFalse(
+                "the first candidate's allowlist must not leak into the second candidate's resolution " +
+                "via the shared skill-id cache");
+        }
+
+        registry.VerifyNoOtherCalls();
     }
 }

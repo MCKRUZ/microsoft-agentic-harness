@@ -4,12 +4,16 @@ using Application.AI.Common.Helpers;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.MetaHarness;
+using Application.AI.Common.Interfaces.Skills;
 using Application.AI.Common.Interfaces.Traces;
 using Application.AI.Common.Services.Governance;
 using Application.Common.Helpers;
 using Domain.AI.Agents;
+using Domain.AI.Skills;
+using Domain.Common.Config.AI;
 using Domain.Common.Config.MetaHarness;
 using Domain.Common.MetaHarness;
+using FluentValidation;
 using Infrastructure.AI.Helpers;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
@@ -26,13 +30,17 @@ namespace Infrastructure.AI.MetaHarness;
 /// Registered as <c>Scoped</c> — each evaluation creates its own <see cref="SemaphoreSlim"/>
 /// scoped to the current optimization loop iteration.
 /// </remarks>
-public sealed class AgentEvaluationService : IEvaluationService
+public sealed partial class AgentEvaluationService : IEvaluationService
 {
     private readonly IOptionsMonitor<MetaHarnessConfig> _config;
     private readonly IExecutionTraceStore _traceStore;
     private readonly IAgentFactory _agentFactory;
     private readonly IToolCallAdmissionPipeline _admissionPipeline;
     private readonly ICompositeResponseSanitizer _sanitizer;
+    private readonly ICurrentSkillAccessor _currentSkillAccessor;
+    private readonly IMcpSecurityScanner _scanner;
+    private readonly IOptionsMonitor<AIConfig> _aiConfig;
+    private readonly IValidator<EgressManifest> _egressValidator;
     private readonly ILoggerFactory _loggerFactory;
     private readonly ILogger<AgentEvaluationService> _logger;
 
@@ -54,12 +62,34 @@ public sealed class AgentEvaluationService : IEvaluationService
     /// agent — otherwise eval's skill-disclosure tools (<c>load_skill</c>/<c>read_skill_resource</c>)
     /// carry no sanitize coverage at all.
     /// </param>
+    /// <param name="currentSkillAccessor">
+    /// Passed to <see cref="Application.AI.Common.Services.Agent.GoverningToolContextProvider"/> so
+    /// <c>run_skill_script</c> calls during an eval run resolve the same way production's do (#618,
+    /// closing the gap #589 left open for this path). The real, DI-registered singleton is used —
+    /// not a fresh instance — since this accessor is what <c>GovernedAIFunction</c> begins scope on
+    /// during tool invocation.
+    /// </param>
+    /// <param name="scanner">
+    /// Screens a candidate's proposed skill name/description/instructions for prompt-injection
+    /// payloads before its <see cref="SkillDefinition"/> is built — a candidate is LLM-proposed
+    /// content by definition, same threat model as a plugin-sourced skill (#331); reused rather than
+    /// exempted for #618's egress-scoping parse.
+    /// </param>
+    /// <param name="aiConfig">Supplies the scanning policy consulted by <paramref name="scanner"/>'s caller.</param>
+    /// <param name="egressValidator">
+    /// Validates a candidate's parsed <see cref="EgressManifest"/> against the same SSRF-narrow rules
+    /// production skills are held to (#531) before #618's egress scoping is allowed to see it.
+    /// </param>
     public AgentEvaluationService(
         IOptionsMonitor<MetaHarnessConfig> config,
         IExecutionTraceStore traceStore,
         IAgentFactory agentFactory,
         IToolCallAdmissionPipeline admissionPipeline,
         ICompositeResponseSanitizer sanitizer,
+        ICurrentSkillAccessor currentSkillAccessor,
+        IMcpSecurityScanner scanner,
+        IOptionsMonitor<AIConfig> aiConfig,
+        IValidator<EgressManifest> egressValidator,
         ILoggerFactory loggerFactory,
         ILogger<AgentEvaluationService> logger)
     {
@@ -68,6 +98,10 @@ public sealed class AgentEvaluationService : IEvaluationService
         _agentFactory = agentFactory;
         _admissionPipeline = admissionPipeline;
         _sanitizer = sanitizer;
+        _currentSkillAccessor = currentSkillAccessor;
+        _scanner = scanner;
+        _aiConfig = aiConfig;
+        _egressValidator = egressValidator;
         _loggerFactory = loggerFactory;
         _logger = logger;
     }
@@ -146,7 +180,15 @@ public sealed class AgentEvaluationService : IEvaluationService
             // Materialize the candidate's proposed skills so the eval agent loads them through the
             // same MAF progressive-disclosure path used in production. Without this, a candidate that
             // changes only skill files would evaluate identically to its parent.
-            skillDirectory = MaterializeCandidateSkills(candidate.Snapshot, scope.ExecutionRunId);
+            string? bareSkillName;
+            (skillDirectory, bareSkillName) = MaterializeCandidateSkills(candidate.Snapshot, scope.ExecutionRunId);
+
+            // #618: parsed from the SAME materialized directory and bare-skill subdirectory name
+            // MaterializeCandidateSkills just resolved and wrote to, through a reader confined to
+            // that one directory tree — never the shared, permanent skill roots. Null for a
+            // multi-skill/sibling-only materialization (#618 scoped this to the common single-skill
+            // case) or when there is no skill directory at all.
+            var candidateSkill = TryBuildCandidateSkillDefinition(skillDirectory, bareSkillName, scope.ExecutionRunId);
 
             var context = new AgentExecutionContext
             {
@@ -154,7 +196,7 @@ public sealed class AgentEvaluationService : IEvaluationService
                 Instruction = candidate.Snapshot.SystemPromptSnapshot,
                 DeploymentName = string.IsNullOrEmpty(cfg.EvaluationModelVersion) ? null : cfg.EvaluationModelVersion,
                 TraceScope = scope,
-                AIContextProviders = BuildContextProviders(skillDirectory),
+                AIContextProviders = BuildContextProviders(skillDirectory, candidateSkill),
                 AdditionalProperties = new Dictionary<string, object>
                 {
                     [ITraceWriter.AdditionalPropertiesKey] = traceWriter
@@ -173,6 +215,15 @@ public sealed class AgentEvaluationService : IEvaluationService
             // tasks — one task's tool-call pattern could trip (or silently satisfy) the loop guard for an
             // unrelated later task in the same scope.
             _admissionPipeline.Reset();
+
+            // #618: scoped to exactly the same span as ToolAdmissionAccessor above, for the same
+            // reason — GovernedAIFunction (via GoverningToolContextProvider) consults this accessor
+            // when a governed tool call actually executes, which only happens inside RunAsync.
+            // using with a null IDisposable is a documented no-op, so this composes cleanly with the
+            // "no candidate skill" case (multi-skill snapshot, or no skills at all).
+            using var candidateSkillScope = candidateSkill is not null
+                ? EphemeralSkillMetadataAccessor.Begin(candidateSkill)
+                : null;
 
             AgentResponse response;
             using (ToolAdmissionAccessor.Begin(_admissionPipeline))
@@ -310,10 +361,18 @@ public sealed class AgentEvaluationService : IEvaluationService
     /// re-nested, preserving its own relative path underneath.
     /// </para>
     /// </remarks>
-    private string? MaterializeCandidateSkills(HarnessSnapshot snapshot, Guid executionRunId)
+    /// <returns>
+    /// The materialized root directory to hand to <c>UseFileSkill</c>, and — when the snapshot has a
+    /// bare top-level <c>SKILL.md</c> — the declared name of the subdirectory it was nested under
+    /// (#618: callers building a candidate <see cref="SkillDefinition"/> for egress scoping need this
+    /// exact name, since the bare skill's <c>SKILL.md</c> is NOT at the returned directory's root; a
+    /// re-derivation would risk disagreeing with what was actually written to disk).
+    /// </returns>
+    private (string? SkillDirectory, string? BareSkillName) MaterializeCandidateSkills(
+        HarnessSnapshot snapshot, Guid executionRunId)
     {
         if (snapshot.SkillFileSnapshots.Count == 0)
-            return null;
+            return (null, null);
 
         // Computed BEFORE the loud-fail check below, not after: the check needs to know whether
         // anything is actually loadable, and "a file named SKILL.md exists somewhere" is not the
@@ -384,7 +443,7 @@ public sealed class AgentEvaluationService : IEvaluationService
             throw;
         }
 
-        return runRoot;
+        return (runRoot, bareSkillName);
     }
 
     /// <summary>
@@ -505,24 +564,22 @@ public sealed class AgentEvaluationService : IEvaluationService
     /// consulted for an eval context built directly from a materialized skill snapshot.
     /// </para>
     /// <para>
-    /// This does NOT fully mirror <c>AgentExecutionContextFactory.BuildMergedAIContextProviders</c>'s
-    /// wiring (#589): production passes <c>disclosableSkills</c> and an <see
-    /// cref="Application.AI.Common.Interfaces.Skills.ICurrentSkillAccessor"/> so <c>run_skill_script</c>
-    /// can resolve which skill's egress scope a call belongs to. Neither is available here — this method
-    /// loads the candidate's skill straight from a materialized directory via <c>UseFileSkill</c> rather
-    /// than through <c>DisclosableSkillFactory</c>, so there is no harness <c>SkillId</c> for a candidate
-    /// under evaluation to hand the resolver in the first place; a candidate is a proposed skill mutation,
-    /// never a registered entry in <see cref="Application.AI.Common.Interfaces.ISkillMetadataRegistry"/>.
-    /// Closing this gap for real needs eval to parse the materialized directory into a
-    /// <see cref="Domain.AI.Skills.SkillDefinition"/> and read it through a sandboxed
-    /// <see cref="Application.AI.Common.Interfaces.Skills.ISkillFileReader"/>, the same as the production
-    /// path — tracked as a follow-up rather than folded into #589, since #589 is scoped to the production
-    /// wiring. In practice this path is no worse than production today: both wire
-    /// <c>UseFileScriptRunner(NoOpScriptRunner)</c>, so <c>run_skill_script</c> has nothing to run either
-    /// way.
+    /// #618: when <paramref name="candidateSkill"/> is non-null, it is wrapped as a single-entry
+    /// <c>DisclosableSkill</c> and passed to <c>GoverningToolContextProvider</c> along with the real,
+    /// DI-registered <see cref="ICurrentSkillAccessor"/> — mirroring <c>AgentExecutionContextFactory.
+    /// BuildMergedAIContextProviders</c>'s production wiring (#589) closely enough that
+    /// <c>run_skill_script</c> resolves the candidate's own <see cref="EgressManifest"/>
+    /// allowlist during this eval run, via <see cref="Application.AI.Common.Services.Governance.EphemeralSkillMetadataAccessor"/>
+    /// rather than the permanent <see cref="Application.AI.Common.Interfaces.ISkillMetadataRegistry"/> (see that
+    /// accessor's remarks for why a candidate can never be a registry entry). <paramref
+    /// name="candidateSkill"/> is null — and this falls back to the pre-#618 two-argument constructor,
+    /// with no egress scoping — for a multi-skill/sibling-bundling snapshot; #618 scoped the fix to the
+    /// common single-skill case and left that shape as a tracked follow-up. Both cases are still no
+    /// worse than doing nothing: production and eval both wire <c>UseFileScriptRunner(NoOpScriptRunner)</c>,
+    /// so <c>run_skill_script</c> has nothing to execute either way today.
     /// </para>
     /// </remarks>
-    private IList<AIContextProvider> BuildContextProviders(string? skillDirectory)
+    private IList<AIContextProvider> BuildContextProviders(string? skillDirectory, SkillDefinition? candidateSkill)
     {
         var providers = new List<AIContextProvider>();
 
@@ -535,8 +592,19 @@ public sealed class AgentEvaluationService : IEvaluationService
                 .Build());
         }
 
-        providers.Add(new Application.AI.Common.Services.Agent.GoverningToolContextProvider(
-            _loggerFactory.CreateLogger<Application.AI.Common.Services.Agent.GoverningToolContextProvider>(), _sanitizer));
+        var governingLogger = _loggerFactory
+            .CreateLogger<Application.AI.Common.Services.Agent.GoverningToolContextProvider>();
+
+        providers.Add(candidateSkill is not null
+            ? new Application.AI.Common.Services.Agent.GoverningToolContextProvider(
+                governingLogger,
+                _sanitizer,
+                DisclosableSkillFactory.Create(
+                    [candidateSkill],
+                    new MaterializedSkillDirectoryFileReader(skillDirectory!, _loggerFactory.CreateLogger<MaterializedSkillDirectoryFileReader>()),
+                    governingLogger),
+                _currentSkillAccessor)
+            : new Application.AI.Common.Services.Agent.GoverningToolContextProvider(governingLogger, _sanitizer));
 
         return providers;
     }

@@ -3,12 +3,15 @@ using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.MetaHarness;
 using Application.AI.Common.Interfaces.Traces;
+using Application.AI.Common.Skills;
 using Domain.AI.Agents;
 using Domain.Common.Config;
+using Domain.Common.Config.AI;
 using Domain.Common.Config.MetaHarness;
 using Domain.Common.MetaHarness;
 using Infrastructure.AI.MetaHarness;
 using Infrastructure.AI.Security;
+using Infrastructure.AI.Skills;
 using Infrastructure.AI.Tests.Helpers;
 using Infrastructure.AI.Tests.Planner.StepExecutors;
 using Infrastructure.AI.Traces;
@@ -30,6 +33,16 @@ public partial class AgentEvaluationServiceTests : IAsyncDisposable
     private readonly Mock<IAgentFactory> _agentFactoryMock = new();
     private readonly string _traceRoot = Path.Combine(Path.GetTempPath(), $"eval-tests-{Guid.NewGuid():N}");
 
+    // #618's constructor additions: scanning disabled means IMcpSecurityScanner is never invoked
+    // (ManifestSecurityGate.ScanOrRefuse short-circuits on policy.EnableMcpSecurity == false), so a
+    // strict never-setup mock proves that in every test using this fixture, not just the ones that
+    // exercise #618 directly. A real CurrentSkillAccessor and EgressManifestValidator are used
+    // rather than mocked — both are simple, dependency-free, and exercising the genuine ambient/
+    // validation behavior costs nothing here.
+    private static IOptionsMonitor<AIConfig> DisabledScanningConfig() =>
+        Mock.Of<IOptionsMonitor<AIConfig>>(m =>
+            m.CurrentValue == new AIConfig { Governance = new GovernanceConfig { EnableMcpSecurity = false } });
+
     private AgentEvaluationService BuildSut(MetaHarnessConfig? config = null)
     {
         var cfg = config ?? new MetaHarnessConfig { TraceDirectoryRoot = _traceRoot };
@@ -37,6 +50,8 @@ public partial class AgentEvaluationServiceTests : IAsyncDisposable
         var traceStore = BuildTraceStore(cfg.TraceDirectoryRoot);
         return new AgentEvaluationService(opts, traceStore, _agentFactoryMock.Object,
             PermissiveAdmission.Pipeline(), PermissiveAdmission.PermissiveSanitizer(),
+            new CurrentSkillAccessor(), Mock.Of<IMcpSecurityScanner>(MockBehavior.Strict),
+            DisabledScanningConfig(), new EgressManifestValidator(),
             NullLoggerFactory.Instance, NullLogger<AgentEvaluationService>.Instance);
     }
 
@@ -125,6 +140,8 @@ public partial class AgentEvaluationServiceTests : IAsyncDisposable
         var sut = new AgentEvaluationService(
             opts, BuildTraceStore(cfg.TraceDirectoryRoot), _agentFactoryMock.Object,
             admissionPipeline.Object, PermissiveAdmission.PermissiveSanitizer(),
+            new CurrentSkillAccessor(), Mock.Of<IMcpSecurityScanner>(MockBehavior.Strict),
+            DisabledScanningConfig(), new EgressManifestValidator(),
             NullLoggerFactory.Instance, NullLogger<AgentEvaluationService>.Instance);
 
         var candidate = BuildCandidate();
