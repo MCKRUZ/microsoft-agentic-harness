@@ -115,13 +115,10 @@ public static class IServiceCollectionExtensions
         services.Configure<EmbeddingConfig>(configuration.GetSection("AppConfig:AI:Embedding"));
         services.Configure<AzureConfig>(configuration.GetSection("AppConfig:Azure"));
         services.Configure<CacheConfig>(configuration.GetSection("AppConfig:Cache"));
-        // Sandbox capability-enforcement knobs (SandboxConfig). Bound under a distinct
-        // path from AppConfig:AI:Sandbox (which binds the unrelated SandboxOptions class).
-        // Composes over the AddOptions<SandboxConfig>() defaults registered in
-        // Application.AI.Common so operator-set DefaultGrantedCapabilities / ToolOverrides /
-        // WorkspaceRoot / Enabled actually reach IOptionsMonitor<SandboxConfig> consumers.
-        services.Configure<Domain.Common.Config.AI.Sandbox.SandboxConfig>(
-            configuration.GetSection("AppConfig:AI:SandboxCapabilities"));
+        // SandboxConfig (capability-enforcement knobs, under AppConfig:AI:SandboxCapabilities — a
+        // distinct path from AppConfig:AI:Sandbox, which binds the unrelated SandboxOptions class) is
+        // now bound-with-validation in RegisterValidatedConfigSections (#647), the same migration
+        // GovernanceConfig went through above when it gained a validator.
 
         return services.RegisterValidatedConfigSections(configuration);
     }
@@ -151,6 +148,17 @@ public static class IServiceCollectionExtensions
         services.AddOptions<Domain.Common.Config.AI.GovernanceConfig>()
             .Bind(configuration.GetSection("AppConfig:AI:Governance"))
             .ValidateFluentValidation<Domain.Common.Config.AI.GovernanceConfig, GovernanceConfigValidator>()
+            .ValidateOnStart();
+
+        // Distinct path from AppConfig:AI:Sandbox (which binds the unrelated SandboxOptions class —
+        // resource limits, not capability enforcement). Composes over the AddOptions<SandboxConfig>()
+        // defaults registered in Application.AI.Common. Catches a DeniedHosts/AllowedHosts entry that
+        // can never match any requested host (#647) once at boot, naming the exact tool and pattern,
+        // instead of a per-call runtime warning that only fires once a tool with the typo is actually
+        // invoked with a resolvable host.
+        services.AddOptions<Domain.Common.Config.AI.Sandbox.SandboxConfig>()
+            .Bind(configuration.GetSection("AppConfig:AI:SandboxCapabilities"))
+            .ValidateFluentValidation<Domain.Common.Config.AI.Sandbox.SandboxConfig, SandboxConfigValidator>()
             .ValidateOnStart();
 
         services.AddOptions<EscalationConfig>()

@@ -47,4 +47,49 @@ public sealed class FirstPartyToolLookupTests
 
         lookup.TryResolve("unregistered_tool", out _).Should().BeNull();
     }
+
+    [Fact]
+    public void Resolve_CallerSuppliesDifferentCasingThanRegistrationKey_StillResolvesTheTool()
+    {
+        // #655: an operator-authored grant/deny entry can differ from the actual DI registration key
+        // only in casing. GetKeyedService resolves by exact key, so this only works if Resolve probes
+        // DI with the CANONICAL ("bash") casing recovered from the bounded set, never the caller's
+        // raw ("BASH") casing.
+        var tool = Mock.Of<ITool>();
+        var services = new ServiceCollection();
+        services.AddKeyedSingleton<ITool>("bash", (_, _) => tool);
+        var lookup = new FirstPartyToolLookup(
+            services.BuildServiceProvider(), new HashSet<string> { "bash" });
+
+        lookup.TryResolve("BASH", out _).Should().BeSameAs(tool);
+        lookup.TryResolve("Bash", out _).Should().BeSameAs(tool);
+    }
+
+    [Fact]
+    public void TryResolvePublishedName_CallerSuppliesDifferentCasingThanRegistrationKey_ResolvesPublishedName()
+    {
+        var tool = Mock.Of<ITool>(t => t.Name == "bash");
+        var services = new ServiceCollection();
+        services.AddKeyedSingleton<ITool>("bash", (_, _) => tool);
+        var lookup = new FirstPartyToolLookup(
+            services.BuildServiceProvider(), new HashSet<string> { "bash" });
+
+        var resolved = lookup.TryResolvePublishedName("BASH", out var publishedName, out var constructionError);
+
+        resolved.Should().BeTrue();
+        publishedName.Should().Be("bash");
+        constructionError.Should().BeNull();
+    }
+
+    [Fact]
+    public void Constructor_TwoRegistrationKeysDifferOnlyByCase_Throws()
+    {
+        var services = new ServiceCollection();
+
+        var act = () => new FirstPartyToolLookup(
+            services.BuildServiceProvider(), new HashSet<string> { "bash", "BASH" });
+
+        act.Should().Throw<InvalidOperationException>()
+            .WithMessage("*differ only by case*");
+    }
 }
