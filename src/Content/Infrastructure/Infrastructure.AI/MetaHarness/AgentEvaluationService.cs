@@ -621,6 +621,16 @@ public sealed partial class AgentEvaluationService : IEvaluationService
     /// worse than doing nothing: production and eval both wire <c>UseFileScriptRunner(NoOpScriptRunner)</c>,
     /// so <c>run_skill_script</c> has nothing to execute either way today.
     /// </para>
+    /// <para>
+    /// A THIRD case falls back the same way, loudly: when <paramref name="candidateSkill"/> is
+    /// non-null but the framework's own disclosure factory rejects it (an empty instructions body, or
+    /// a declared name/description its stricter validation refuses — neither checked by the
+    /// harness-level parser that already accepted this candidate), a <see
+    /// cref="Microsoft.Extensions.Logging.LogLevel.Warning"/> is logged naming the dropped skill
+    /// before falling back to the two-argument constructor — a candidate that parses successfully but
+    /// can never actually be disclosed must not look identical to "no candidate skill at all"
+    /// (/code-review finding on #618's PR).
+    /// </para>
     /// </remarks>
     private IList<AIContextProvider> BuildContextProviders(
         string? skillDirectory, SkillDefinition? candidateSkill, MaterializedSkillDirectoryFileReader? skillReader)
@@ -637,9 +647,18 @@ public sealed partial class AgentEvaluationService : IEvaluationService
         }
 
         var governingLogger = _loggerFactory.CreateLogger<GoverningToolContextProvider>();
-        var disclosableSkills = candidateSkill is not null
-            ? DisclosableSkillFactory.Create([candidateSkill], skillReader!, governingLogger)
-            : [];
+
+        IReadOnlyList<DisclosableSkill> disclosableSkills = [];
+        if (candidateSkill is not null)
+        {
+            // /simplify finding: candidateSkill is only ever non-null when skillDirectory (and so
+            // skillReader) is also non-null — see TryBuildCandidateSkillDefinition's own early
+            // return — but that was a doc-comment-only invariant here, the same shape this commit
+            // already hardened at its other call site. Guarded for real rather than left as a
+            // second `skillReader!` this commit was supposed to eliminate.
+            ArgumentNullException.ThrowIfNull(skillReader);
+            disclosableSkills = DisclosableSkillFactory.Create([candidateSkill], skillReader, governingLogger);
+        }
 
         // #618 /code-review finding: DisclosableSkillFactory.Create silently drops a skill with no
         // Instructions body (a frontmatter-only SKILL.md — legal, produces a valid SkillDefinition)
