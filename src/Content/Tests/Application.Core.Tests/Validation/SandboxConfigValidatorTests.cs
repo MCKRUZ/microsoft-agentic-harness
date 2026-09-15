@@ -53,7 +53,7 @@ public class SandboxConfigValidatorTests
 
         result.IsValid.Should().BeFalse();
         result.Errors.Should().ContainSingle(e =>
-            e.ErrorMessage.Contains("ToolOverrides['curl'].DeniedHosts", StringComparison.Ordinal)
+            e.ErrorMessage.Contains("AppConfig:AI:SandboxCapabilities:ToolOverrides:curl:DeniedHosts", StringComparison.Ordinal)
             && e.ErrorMessage.Contains("permanent, silent no-op", StringComparison.Ordinal));
     }
 
@@ -70,7 +70,7 @@ public class SandboxConfigValidatorTests
 
         result.IsValid.Should().BeFalse();
         result.Errors.Should().ContainSingle(e =>
-            e.ErrorMessage.Contains("ToolOverrides['curl'].AllowedHosts", StringComparison.Ordinal));
+            e.ErrorMessage.Contains("AppConfig:AI:SandboxCapabilities:ToolOverrides:curl:AllowedHosts", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -117,7 +117,7 @@ public class SandboxConfigValidatorTests
         var result = await _validator.ValidateAsync(config);
 
         result.IsValid.Should().BeFalse();
-        result.Errors.Should().ContainSingle(e => e.ErrorMessage.Contains("['kubectl']", StringComparison.Ordinal));
-        result.Errors.Should().NotContain(e => e.ErrorMessage.Contains("['curl']", StringComparison.Ordinal));
+        result.Errors.Should().ContainSingle(e => e.ErrorMessage.Contains(":kubectl:", StringComparison.Ordinal));
+        result.Errors.Should().NotContain(e => e.ErrorMessage.Contains(":curl:", StringComparison.Ordinal));
     }
 }

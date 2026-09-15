@@ -43,7 +43,6 @@ public sealed class PluginPermissionRuleProviderRealRegistryTests
         return new PluginPermissionRuleProvider(
             registry,
             skillRegistry.Object,
-            serviceProvider,
             firstPartyToolLookup,
             NullLogger<PluginPermissionRuleProvider>.Instance);
     }

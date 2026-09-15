@@ -126,8 +126,7 @@ public sealed partial class CapabilityEnforcer
     {
         foreach (var pattern in patterns)
         {
-            var checkValue = HostPatternNormalizer.HasWildcardPrefix(pattern) ? pattern[2..] : pattern;
-            if (!SecureInputValidatorHelper.ValidateHost(checkValue))
+            if (!HostPatternNormalizer.IsMatchableWhenNormalized(pattern))
             {
                 _logger.LogWarning(
                     "Tool {ToolName} has a {ConfigKey} entry that normalizes to an invalid host and can never match any requested host: {Pattern}",

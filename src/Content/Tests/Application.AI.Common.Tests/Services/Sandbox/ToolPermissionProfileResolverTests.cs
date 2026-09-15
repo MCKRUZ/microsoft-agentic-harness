@@ -169,6 +169,23 @@ public sealed class ToolPermissionProfileResolverTests
     }
 
     [Fact]
+    public void Resolve_ToolOverridesKeyDiffersFromRegistrationKeyOnlyByCase_StillAppliesTheOverride()
+    {
+        // #655 correctness-review follow-up: FirstPartyToolLookup resolves a tool's DI registration
+        // key case-insensitively, so an operator-authored ToolOverrides entry whose casing differs
+        // from that key ("BASH" vs. the tool actually registered as "bash") must still apply — not
+        // silently never match, reopening #655's exact defect one dictionary over.
+        var config = new SandboxConfig();
+        config.ToolOverrides["BASH"] = new ToolOverrideConfig { DeniedCapabilities = ["NetworkAccess"] };
+        var resolver = BuildResolver(config, ("bash", FullTool()));
+
+        var profile = resolver.Resolve("bash");
+
+        profile.DeniedCapabilities.Should().Be(ToolCapability.NetworkAccess,
+            "the override must be found regardless of casing drift between config and the registration key");
+    }
+
+    [Fact]
     public void Resolve_OverrideDeniedCapabilities_KeptSeparateFromRequired_NarrowsOnlyEffective()
     {
         // The core #405 fix: DeniedCapabilities must not be folded into RequiredCapabilities — the

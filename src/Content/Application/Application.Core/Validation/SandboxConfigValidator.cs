@@ -66,24 +66,20 @@ public sealed class SandboxConfigValidator : AbstractValidator<SandboxConfig>
     }
 
     /// <summary>
-    /// Mirrors <c>CapabilityEnforcer.WarnIfPatternIsInert</c>'s own check exactly: normalize, strip any
-    /// wildcard prefix, then validate the bare host. A <see langword="null"/> entry (a literal JSON
-    /// <c>null</c> in a config-bound <c>List&lt;string&gt;</c>, which bypasses the element type's
-    /// non-nullability) is treated as valid here — the runtime path skips it the same way before it
-    /// ever reaches normalization, rather than treating a binding artifact as an operator typo.
+    /// Normalizes, then defers the wildcard-strip-then-validate check itself to
+    /// <see cref="HostPatternNormalizer.IsMatchableWhenNormalized"/> — the exact predicate
+    /// <c>CapabilityEnforcer.WarnIfPatternIsInert</c> uses, not a second copy of it (correctness-review
+    /// finding: an earlier version of this method duplicated that logic inline). A
+    /// <see langword="null"/> entry (a literal JSON <c>null</c> in a config-bound
+    /// <c>List&lt;string&gt;</c>, which bypasses the element type's non-nullability) is treated as
+    /// valid here — the runtime path skips it the same way before it ever reaches normalization,
+    /// rather than treating a binding artifact as an operator typo.
     /// </summary>
-    private static bool IsMatchableHostPatternOrNull(string? pattern)
-    {
-        if (pattern is null)
-            return true;
-
-        var normalized = HostPatternNormalizer.NormalizeHostForMatch(pattern);
-        var checkValue = HostPatternNormalizer.HasWildcardPrefix(normalized) ? normalized[2..] : normalized;
-        return SecureInputValidatorHelper.ValidateHost(checkValue);
-    }
+    private static bool IsMatchableHostPatternOrNull(string? pattern) =>
+        pattern is null || HostPatternNormalizer.IsMatchableWhenNormalized(HostPatternNormalizer.NormalizeHostForMatch(pattern));
 
     private static string BuildInertPatternMessage(string toolName, string configKey, string? pattern) =>
-        $"Sandbox.ToolOverrides['{toolName}'].{configKey} contains an entry that normalizes to an " +
-        $"invalid host and can never match any requested host: '{pattern}'. Fix or remove it — as " +
-        "configured, this entry is a permanent, silent no-op.";
+        $"AppConfig:AI:SandboxCapabilities:ToolOverrides:{toolName}:{configKey} contains an entry that " +
+        $"normalizes to an invalid host and can never match any requested host: '{pattern}'. Fix or " +
+        "remove it — as configured, this entry is a permanent, silent no-op.";
 }

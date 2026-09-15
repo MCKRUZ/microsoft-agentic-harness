@@ -1,4 +1,5 @@
 using System.Net;
+using Domain.Common.Helpers;
 
 namespace Application.AI.Common.Services.Sandbox;
 
@@ -21,6 +22,27 @@ public static class HostPatternNormalizer
     /// the kind #635 was filed to close.
     /// </summary>
     public static bool HasWildcardPrefix(string value) => value.StartsWith(WildcardPrefix, StringComparison.Ordinal);
+
+    /// <summary>
+    /// Whether an already-<see cref="NormalizeHostForMatch"/>d <paramref name="normalizedPattern"/>
+    /// can ever match any requested host — i.e. is not the class of malformed/unnormalizable pattern
+    /// <see cref="Domain.Common.Helpers.SecureInputValidatorHelper.ValidateHost"/> rejects, once its
+    /// wildcard prefix (if any) is stripped. The single shared "is this pattern inert" predicate for
+    /// both <c>CapabilityEnforcer.WarnIfPatternIsInert</c> (the runtime check, over a list already
+    /// normalized by its own caller) and <c>SandboxConfigValidator</c> (the startup check, which
+    /// normalizes the raw configured value itself before calling this) — correctness-review found
+    /// these two had each grown their own copy of the identical wildcard-strip-then-validate logic
+    /// despite this type's own doc comment claiming otherwise.
+    /// </summary>
+    /// <param name="normalizedPattern">
+    /// A pattern already reduced by <see cref="NormalizeHostForMatch"/> — passing a raw, un-normalized
+    /// value here answers a different question than intended.
+    /// </param>
+    public static bool IsMatchableWhenNormalized(string normalizedPattern)
+    {
+        var checkValue = HasWildcardPrefix(normalizedPattern) ? normalizedPattern[2..] : normalizedPattern;
+        return SecureInputValidatorHelper.ValidateHost(checkValue);
+    }
 
     /// <summary>
     /// Reduces a host value — whether a requested host or a configured deny/allow entry — to a bare,

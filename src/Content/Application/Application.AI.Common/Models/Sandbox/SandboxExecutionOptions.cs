@@ -15,9 +15,27 @@ public sealed class SandboxExecutionOptions
     /// <summary>Container (Docker) sandbox configuration.</summary>
     public ContainerSandboxOptions Container { get; init; } = new();
 
-    /// <summary>Per-tool sandbox configuration overrides, keyed by tool name.</summary>
-    public IReadOnlyDictionary<string, ToolSandboxOverride> ToolOverrides { get; init; }
-        = new Dictionary<string, ToolSandboxOverride>();
+    /// <summary>
+    /// Per-tool sandbox configuration overrides, keyed by tool name (case-insensitively — see remarks).
+    /// </summary>
+    /// <remarks>
+    /// The identical sibling gap to <c>Domain.Common.Config.AI.Sandbox.SandboxConfig.ToolOverrides</c>
+    /// (#655 altitude follow-up): <c>DockerContainerLaunchPreparer.ResolveImage</c> looks a tool name up
+    /// in this dictionary to pick its container image, and that name is resolved elsewhere
+    /// case-insensitively (<c>FirstPartyToolLookup</c>) — an operator-authored entry whose casing
+    /// differs from the actual registration key must still be found. Enforced the same way: a custom
+    /// <see langword="init"/> accessor rebuilds whatever is assigned with an
+    /// <see cref="StringComparer.OrdinalIgnoreCase"/> comparer, so the guarantee survives an
+    /// object-initializer replacing this property wholesale, not just this property's own default value.
+    /// </remarks>
+    public IReadOnlyDictionary<string, ToolSandboxOverride> ToolOverrides
+    {
+        get => _toolOverrides;
+        init => _toolOverrides = new Dictionary<string, ToolSandboxOverride>(value, StringComparer.OrdinalIgnoreCase);
+    }
+
+    private IReadOnlyDictionary<string, ToolSandboxOverride> _toolOverrides =
+        new Dictionary<string, ToolSandboxOverride>(StringComparer.OrdinalIgnoreCase);
 }
 
 /// <summary>
