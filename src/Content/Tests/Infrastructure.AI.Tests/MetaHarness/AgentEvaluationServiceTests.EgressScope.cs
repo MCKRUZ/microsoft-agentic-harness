@@ -1,12 +1,45 @@
+using System.Collections.Concurrent;
+using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Services.Governance;
+using Application.AI.Common.Skills;
 using Domain.AI.Agents;
+using Domain.Common.Config.MetaHarness;
+using Infrastructure.AI.MetaHarness;
+using Infrastructure.AI.Skills;
 using Infrastructure.AI.Tests.Helpers;
+using Infrastructure.AI.Tests.Planner.StepExecutors;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using Moq;
 using Xunit;
 
 namespace Infrastructure.AI.Tests.MetaHarness;
+
+/// <summary>
+/// An <see cref="ILogger{TCategoryName}"/> that keeps what was written — used sparingly, only where
+/// a decision has no other observable effect. #618 /code-review finding: when
+/// <c>DisclosableSkillFactory.Create</c> silently drops a candidate skill, the resulting fallback to
+/// the harness-wide default egress policy is otherwise indistinguishable from "no candidate skill at
+/// all" from outside this class, so the warning log IS the behavior under test.
+/// </summary>
+internal sealed class CapturingLogger<T> : ILogger<T>
+{
+    private readonly ConcurrentQueue<(LogLevel Level, string Message)> _entries = new();
+
+    public bool Logged(LogLevel level, string fragment) =>
+        _entries.Any(e => e.Level == level && e.Message.Contains(fragment, StringComparison.Ordinal));
+
+    public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+    public bool IsEnabled(LogLevel logLevel) => true;
+
+    public void Log<TState>(
+        LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+        => _entries.Enqueue((logLevel, formatter(state, exception)));
+}
 
 /// <summary>
 /// Tests for #618's remaining gap: an eval candidate's own <c>egress:</c> allowlist must actually
@@ -96,6 +129,53 @@ public partial class AgentEvaluationServiceTests
 
         Assert.True(sawEphemeralLookup);
         Assert.Null(observedDuringRun);
+        Assert.Equal(1.0, result.PassRate);
+    }
+
+    /// <summary>
+    /// #618 /code-review finding: a candidate whose SKILL.md is frontmatter-only (no body text) parses
+    /// into a perfectly valid <c>SkillDefinition</c> — the harness-level parser has no non-empty-body
+    /// check — but <c>DisclosableSkillFactory.Create</c> silently drops any skill with no
+    /// <c>Instructions</c>, since there is nothing for <c>load_skill</c> to serve. Before this fix,
+    /// <c>GoverningToolContextProvider</c> still got built with an empty <c>disclosableSkills</c> list
+    /// and no signal that anything was wrong — recreating the exact silent-under-scoping failure #618
+    /// was filed to close, for a different, entirely realistic input shape. This proves the fix: a
+    /// clear warning is logged, and the eval still completes (fails closed to the default policy, not
+    /// closed to a crash).
+    /// </summary>
+    [Fact]
+    public async Task EvaluateAsync_CandidateWithFrontmatterOnlySkill_LogsWarningInsteadOfSilentlyDroppingScope()
+    {
+        var skillFiles = new Dictionary<string, string>
+        {
+            // No body after the closing "---": SkillMetadataParser.Build happily produces a
+            // SkillDefinition with Instructions == "", but AgentInlineSkill's own constructor
+            // (via DisclosableSkillFactory.Create) refuses to register a skill with nothing for
+            // load_skill to serve.
+            ["SKILL.md"] = "---\nname: research-agent\ndescription: Finds and analyzes information.\n---\n"
+        };
+        _agentFactoryMock
+            .Setup(f => f.CreateAgentAsync(It.IsAny<AgentExecutionContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new TestableAIAgent("output"));
+
+        var capturingLogger = new CapturingLogger<AgentEvaluationService>();
+        var cfg = new MetaHarnessConfig { TraceDirectoryRoot = _traceRoot };
+        var opts = Mock.Of<IOptionsMonitor<MetaHarnessConfig>>(m => m.CurrentValue == cfg);
+        var sut = new AgentEvaluationService(
+            opts, BuildTraceStore(cfg.TraceDirectoryRoot), _agentFactoryMock.Object,
+            PermissiveAdmission.Pipeline(), PermissiveAdmission.PermissiveSanitizer(),
+            new CurrentSkillAccessor(), Mock.Of<IMcpSecurityScanner>(MockBehavior.Strict),
+            DisabledScanningConfig(), new EgressManifestValidator(),
+            NullLoggerFactory.Instance, capturingLogger);
+
+        var candidate = BuildCandidate(skillFiles: skillFiles);
+        var tasks = new[] { BuildTask("frontmatter-only-task", "prompt", pattern: null) };
+
+        var result = await sut.EvaluateAsync(candidate, tasks);
+
+        Assert.True(
+            capturingLogger.Logged(LogLevel.Warning, "research-agent"),
+            "expected a warning naming the dropped candidate skill, not a silent fallback");
         Assert.Equal(1.0, result.PassRate);
     }
 }

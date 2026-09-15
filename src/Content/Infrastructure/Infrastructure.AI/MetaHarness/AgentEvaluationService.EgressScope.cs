@@ -75,11 +75,17 @@ public sealed partial class AgentEvaluationService
             return null;
         }
 
+        // #618 /code-review finding: a doc-comment-only invariant ("never null when skillDirectory
+        // is non-null") is not a guard — a future caller or reordering could violate it silently.
+        // This turns that into an immediate, clearly-attributed exception instead of a bare `reader!`
+        // that would NullReferenceException inside SkillMetadataParser's constructor with no context.
+        ArgumentNullException.ThrowIfNull(reader);
+
         var bareSkillDirectory = Path.Combine(skillDirectory, bareSkillName);
         var skillFilePath = Path.Combine(bareSkillDirectory, "SKILL.md");
 
         var parser = new SkillMetadataParser(
-            _loggerFactory.CreateLogger<SkillMetadataParser>(), reader!, _scanner, _aiConfig, _egressValidator);
+            _loggerFactory.CreateLogger<SkillMetadataParser>(), reader, _scanner, _aiConfig, _egressValidator);
 
         return parser.ParseFromFile(skillFilePath, bareSkillDirectory);
     }

@@ -637,13 +637,32 @@ public sealed partial class AgentEvaluationService : IEvaluationService
         }
 
         var governingLogger = _loggerFactory.CreateLogger<GoverningToolContextProvider>();
+        var disclosableSkills = candidateSkill is not null
+            ? DisclosableSkillFactory.Create([candidateSkill], skillReader!, governingLogger)
+            : [];
 
-        providers.Add(candidateSkill is not null
-            ? new GoverningToolContextProvider(
-                governingLogger,
-                _sanitizer,
-                DisclosableSkillFactory.Create([candidateSkill], skillReader!, governingLogger),
-                _currentSkillAccessor)
+        // #618 /code-review finding: DisclosableSkillFactory.Create silently drops a skill with no
+        // Instructions body (a frontmatter-only SKILL.md — legal, produces a valid SkillDefinition)
+        // or a declared name the framework's stricter AgentInlineSkill validation rejects (not
+        // kebab-case, too long) — neither is checked by the harness-level parser that already
+        // accepted this candidate. Without this check, EphemeralSkillMetadataAccessor.Begin still
+        // fires in RunCandidateTurnAsync, but ICurrentSkillAccessor.CurrentSkillIds can never be
+        // non-empty for a skill that was never disclosed, so the egress resolver silently falls back
+        // to the default policy — the exact silent-under-scoping failure #618 exists to close,
+        // recurring for a different, realistic input shape. Logged loud (Warning, not Debug) since
+        // this is the one case where the wiring below is provably inert, not merely out of scope.
+        if (candidateSkill is not null && disclosableSkills.Count == 0)
+        {
+            _logger.LogWarning(
+                "Candidate skill {SkillId} parsed successfully but the framework's disclosure " +
+                "factory rejected it (empty instructions body, or a declared name/description the " +
+                "framework's stricter validation refuses) — #618 egress scoping will NOT apply to " +
+                "this eval run; run_skill_script resolves the harness-wide default policy instead.",
+                candidateSkill.Id);
+        }
+
+        providers.Add(disclosableSkills.Count > 0
+            ? new GoverningToolContextProvider(governingLogger, _sanitizer, disclosableSkills, _currentSkillAccessor)
             : new GoverningToolContextProvider(governingLogger, _sanitizer));
 
         return providers;
