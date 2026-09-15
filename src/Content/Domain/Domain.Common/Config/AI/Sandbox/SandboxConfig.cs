@@ -46,10 +46,38 @@ public sealed class SandboxConfig
     public string? WorkspaceRoot { get; init; }
 
     /// <summary>
-    /// Per-tool permission overrides keyed by tool name.
+    /// Per-tool permission overrides keyed by tool name (case-insensitively — see remarks).
     /// Overrides can restrict (never expand) a tool's own <c>ITool.RequiredCapabilities</c> declaration.
     /// </summary>
-    public Dictionary<string, ToolOverrideConfig> ToolOverrides { get; init; } = new();
+    /// <remarks>
+    /// <para>
+    /// Case-insensitive lookup matters because <c>FirstPartyToolLookup</c> resolves the tool name this
+    /// dictionary is keyed by case-insensitively (#655) — an operator-authored entry whose casing
+    /// differs from the actual registration key must still be found, or the exact defect #655 closed
+    /// reopens one dictionary over.
+    /// </para>
+    /// <para>
+    /// <strong>Enforced by a custom <see langword="init"/> accessor, not merely the default value's own
+    /// comparer</strong> (altitude finding, #655 follow-up): a plain
+    /// <c>= new(StringComparer.OrdinalIgnoreCase)</c> default is silently discarded the moment any code
+    /// assigns this property via an object-initializer — <c>new SandboxConfig { ToolOverrides = new()
+    /// {...} }</c> constructs a brand-new, DEFAULT-comparer <see cref="Dictionary{TKey,TValue}"/> and
+    /// replaces the property's default value wholesale, never inheriting its comparer (verified
+    /// directly; this exact idiom is already used throughout this codebase's own tests). Because
+    /// <see langword="init"/> accessors can carry a body exactly like <see langword="set"/>, this
+    /// accessor rebuilds whatever is assigned into a fresh <see cref="StringComparer.OrdinalIgnoreCase"/>
+    /// dictionary — closing the gap at the one choke point every writer (config binding, an
+    /// object-initializer, hand construction) passes through, for every reader, not just the ones that
+    /// remember to look up case-insensitively themselves.
+    /// </para>
+    /// </remarks>
+    public Dictionary<string, ToolOverrideConfig> ToolOverrides
+    {
+        get => _toolOverrides;
+        init => _toolOverrides = new Dictionary<string, ToolOverrideConfig>(value, StringComparer.OrdinalIgnoreCase);
+    }
+
+    private Dictionary<string, ToolOverrideConfig> _toolOverrides = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
     /// Names of host environment variables copied into sandboxed child processes.

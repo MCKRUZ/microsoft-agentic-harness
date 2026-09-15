@@ -101,7 +101,7 @@ public sealed class ToolPermissionProfileResolver
     public ToolPermissionProfile Resolve(string toolName)
     {
         var (baseCapabilities, baseIsolation) = ResolveBase(toolName);
-        _config.CurrentValue.ToolOverrides.TryGetValue(toolName, out var overrideConfig);
+        var overrideConfig = FindToolOverride(toolName);
         var (deniedCaps, effectiveIsolation) = ResolveOverride(overrideConfig, baseIsolation);
 
         return new ToolPermissionProfile
@@ -120,6 +120,23 @@ public sealed class ToolPermissionProfileResolver
             AllowedHosts = overrideConfig?.AllowedHosts ?? []
         };
     }
+
+    /// <summary>
+    /// Looks up <paramref name="toolName"/>'s configured override — shared by <see cref="Resolve"/>
+    /// and <see cref="ResolveForUngovernedDispatch"/>.
+    /// </summary>
+    /// <remarks>
+    /// Correctness-review finding on #655: <see cref="FirstPartyToolLookup"/> resolves a tool's DI
+    /// registration key case-insensitively, so an operator-authored <c>ToolOverrides</c> entry whose
+    /// casing differs from that key must still be found, or the exact defect #655 closed reopens one
+    /// dictionary over. Enforced at the type itself, not here (altitude follow-up):
+    /// <see cref="SandboxConfig.ToolOverrides"/>'s own <see langword="init"/> accessor rebuilds any
+    /// assigned dictionary with an <see cref="StringComparer.OrdinalIgnoreCase"/> comparer, so a plain
+    /// <see cref="Dictionary{TKey,TValue}.TryGetValue"/> here is already case-insensitive regardless of
+    /// how the config was constructed — no per-consumer fallback scan needed.
+    /// </remarks>
+    private ToolOverrideConfig? FindToolOverride(string toolName) =>
+        _config.CurrentValue.ToolOverrides.TryGetValue(toolName, out var overrideConfig) ? overrideConfig : null;
 
     /// <summary>
     /// Parses <paramref name="overrideConfig"/>, if any, into a
@@ -250,7 +267,7 @@ public sealed class ToolPermissionProfileResolver
         }
 
         var baseIsolation = firstPartyTool?.MinimumIsolation ?? SandboxIsolationLevel.None;
-        _config.CurrentValue.ToolOverrides.TryGetValue(toolName, out var overrideConfig);
+        var overrideConfig = FindToolOverride(toolName);
         var (deniedCaps, overrideIsolation) = ResolveOverride(overrideConfig, baseIsolation);
 
         var denied = requiredCapabilities & deniedCaps;

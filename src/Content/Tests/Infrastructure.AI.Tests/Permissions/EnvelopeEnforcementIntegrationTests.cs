@@ -141,7 +141,7 @@ public sealed class EnvelopeEnforcementIntegrationTests
             new AutonomyTierRuleProvider(
                 tierResolver.Object, options, NullLogger<AutonomyTierRuleProvider>.Instance),
             new PluginPermissionRuleProvider(
-                pluginRegistry.Object, skillRegistry.Object, new ServiceCollection().BuildServiceProvider(),
+                pluginRegistry.Object, skillRegistry.Object,
                 firstPartyToolLookup,
                 NullLogger<PluginPermissionRuleProvider>.Instance),
             new EnvelopePermissionRuleProvider(

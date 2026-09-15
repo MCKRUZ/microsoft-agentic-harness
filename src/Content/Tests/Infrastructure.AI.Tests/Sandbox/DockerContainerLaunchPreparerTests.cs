@@ -69,4 +69,25 @@ public class DockerContainerLaunchPreparerTests
 
         image.Should().Be("mcr.microsoft.com/dotnet/runtime:10.0", "unchanged pre-#371 fallback behavior");
     }
+
+    [Fact]
+    public void ResolveImage_ToolOverrideKeyDiffersFromTheResolvedToolNameOnlyByCase_StillApplies()
+    {
+        // #655 altitude follow-up: SandboxExecutionOptions.ToolOverrides is the identical sibling gap
+        // to SandboxConfig.ToolOverrides — the tool name it's keyed by resolves case-insensitively
+        // elsewhere (FirstPartyToolLookup), so an operator-authored override whose casing differs from
+        // that resolved name must still apply, not silently never match.
+        _options.Setup(x => x.CurrentValue).Returns(new SandboxExecutionOptions
+        {
+            ToolOverrides = new Dictionary<string, ToolSandboxOverride>
+            {
+                ["BASH"] = new() { ContainerImage = "mcr.microsoft.com/dotnet/aspnet:10.0" },
+            },
+        });
+
+        var image = _sut.ResolveImage("bash");
+
+        image.Should().Be("mcr.microsoft.com/dotnet/aspnet:10.0",
+            "the override must be found regardless of casing drift between config and the resolved tool name");
+    }
 }

@@ -30,7 +30,17 @@ public sealed class PluginPermissionRuleProviderTests : IDisposable
 
     public void Dispose() => _serviceProvider?.Dispose();
 
-    /// <summary>Registers <paramref name="toolName"/> as a global keyed-DI tool (i.e. NOT plugin-owned).</summary>
+    /// <summary>
+    /// Registers <paramref name="toolName"/> as a global keyed-DI tool (i.e. NOT plugin-owned).
+    /// </summary>
+    /// <remarks>
+    /// A test using this to exercise <c>AddIfOwned</c>'s exclusion behavior must ALSO pass
+    /// <paramref name="toolName"/> to <see cref="CreateProvider"/>'s bounded first-party name set
+    /// (#655 correctness-review): unlike production, where one scan builds both the DI registration
+    /// and the bounded set together, this fixture's two are independent, so a name registered here but
+    /// absent from that set resolves as "not a known first-party tool" — the plugin then wrongly
+    /// appears to own it.
+    /// </remarks>
     private void GivenGlobalKeyedTool(string toolName) =>
         _services.AddKeyedSingleton<ITool>(toolName, (_, _) => Mock.Of<ITool>());
 
@@ -62,7 +72,6 @@ public sealed class PluginPermissionRuleProviderTests : IDisposable
         return new PluginPermissionRuleProvider(
             _registryMock.Object,
             _skillRegistryMock.Object,
-            _serviceProvider,
             firstPartyToolLookup,
             NullLogger<PluginPermissionRuleProvider>.Instance);
     }
@@ -213,12 +222,62 @@ public sealed class PluginPermissionRuleProviderTests : IDisposable
         GivenPluginSkillDeclaresTools("trusted", "run_x", "bash");
         GivenGlobalKeyedTool("bash"); // bash is a shared harness tool, not owned by the plugin
 
-        var rules = await CreateProvider().GetRulesAsync("any-agent");
+        // "bash" must be in CreateProvider's own bounded first-party set too (#655 correctness-review):
+        // AddIfOwned now resolves through FirstPartyToolLookup, which — exactly like production's own
+        // KeyedToolRegistrationScan — only ever recognizes a DI-registered tool as first-party when its
+        // name is also in that bounded set. Production always keeps the two in sync by construction
+        // (the same scan builds both); this test fixture does not, so it must be told explicitly.
+        var rules = await CreateProvider("bash").GetRulesAsync("any-agent");
 
         rules.Should().Contain(r => r.ToolPattern == "run_x"
             && r.Behavior == PermissionBehaviorType.Allow && r.IsAuthoritativeBaseline);
         rules.Should().NotContain(r => r.ToolPattern == "bash",
             "a global keyed-DI tool the plugin does not own must be excluded from its autonomy baseline");
+    }
+
+    [Fact]
+    public async Task GetRulesAsync_AutonomousPlugin_CannotLoosenGlobalToolNamedWithDifferentCase()
+    {
+        // #655 correctness-review follow-up: AddIfOwned now routes through FirstPartyToolLookup,
+        // which resolves any casing of a registered key. A plugin declaring "BASH" against a tool
+        // actually registered as "bash" must be excluded from the autonomy baseline exactly like an
+        // exact-case match — not wrongly treated as a tool the plugin owns just because the casing
+        // in its own skill declaration happens to differ from the registration key.
+        var declaration = new PluginDeclaration { Name = "trusted", AutonomyLevel = "Autonomous" };
+        _registryMock.Setup(r => r.GetLoadedPlugins()).Returns(new List<LoadedPlugin> { Loaded(declaration) });
+        GivenPluginSkillDeclaresTools("trusted", "run_x", "BASH");
+        GivenGlobalKeyedTool("bash");
+
+        var rules = await CreateProvider("bash").GetRulesAsync("any-agent");
+
+        rules.Should().Contain(r => r.ToolPattern == "run_x"
+            && r.Behavior == PermissionBehaviorType.Allow && r.IsAuthoritativeBaseline);
+        rules.Should().NotContain(r => r.ToolPattern == "BASH",
+            "a global keyed-DI tool named with different casing than the plugin's declaration is still " +
+            "not owned by the plugin and must be excluded from its autonomy baseline");
+    }
+
+    [Fact]
+    public async Task GetRulesAsync_AutonomousPlugin_CannotLoosenGlobalToolWhoseConstructorThrows()
+    {
+        // CI correctness-review finding on PR #681: AddIfOwned routed through TryResolveLogged, which
+        // returns null both when a name is genuinely outside the bounded first-party set (plugin-owned)
+        // AND when it IS a first-party tool but its constructor threw (broken, but still a shared
+        // global tool). AddIfOwned's "is not null" check could only see the first case, so a global
+        // tool that fails to construct fell through to names.Add — silently treated as plugin-owned and
+        // granted an authoritative Allow in the plugin's autonomy baseline (fail-open).
+        var declaration = new PluginDeclaration { Name = "trusted", AutonomyLevel = "Autonomous" };
+        _registryMock.Setup(r => r.GetLoadedPlugins()).Returns(new List<LoadedPlugin> { Loaded(declaration) });
+        GivenPluginSkillDeclaresTools("trusted", "run_x", "broken_global");
+        GivenUnbuildableKeyedTool("broken_global"); // registered first-party tool, but throws on construction
+
+        var rules = await CreateProvider("broken_global").GetRulesAsync("any-agent");
+
+        rules.Should().Contain(r => r.ToolPattern == "run_x"
+            && r.Behavior == PermissionBehaviorType.Allow && r.IsAuthoritativeBaseline);
+        rules.Should().NotContain(r => r.ToolPattern == "broken_global",
+            "a first-party tool whose constructor throws is still a shared global tool, not owned by " +
+            "the plugin, and must be excluded from its autonomy baseline (fail-closed, not fail-open)");
     }
 
     [Fact]
