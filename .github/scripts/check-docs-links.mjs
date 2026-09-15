@@ -51,6 +51,7 @@ const SITE_LAYOUT = {
     security: 'security',
     'agentic-harness-course': 'agentic-harness-course',
     reference: 'reference',
+    showcase: 'showcase',
 };
 
 const problems = [];
