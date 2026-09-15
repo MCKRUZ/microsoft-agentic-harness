@@ -17,6 +17,7 @@ using Infrastructure.AI.Tests.Planner.StepExecutors;
 using Infrastructure.AI.Traces;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Moq;
@@ -43,7 +44,8 @@ public partial class AgentEvaluationServiceTests : IAsyncDisposable
         Mock.Of<IOptionsMonitor<AIConfig>>(m =>
             m.CurrentValue == new AIConfig { Governance = new GovernanceConfig { EnableMcpSecurity = false } });
 
-    private AgentEvaluationService BuildSut(MetaHarnessConfig? config = null)
+    private AgentEvaluationService BuildSut(
+        MetaHarnessConfig? config = null, ILogger<AgentEvaluationService>? logger = null)
     {
         var cfg = config ?? new MetaHarnessConfig { TraceDirectoryRoot = _traceRoot };
         var opts = Mock.Of<IOptionsMonitor<MetaHarnessConfig>>(m => m.CurrentValue == cfg);
@@ -52,7 +54,7 @@ public partial class AgentEvaluationServiceTests : IAsyncDisposable
             PermissiveAdmission.Pipeline(), PermissiveAdmission.PermissiveSanitizer(),
             new CurrentSkillAccessor(), Mock.Of<IMcpSecurityScanner>(MockBehavior.Strict),
             DisabledScanningConfig(), new EgressManifestValidator(),
-            NullLoggerFactory.Instance, NullLogger<AgentEvaluationService>.Instance);
+            NullLoggerFactory.Instance, logger ?? NullLogger<AgentEvaluationService>.Instance);
     }
 
     private IExecutionTraceStore BuildTraceStore(string traceRoot)
