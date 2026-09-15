@@ -58,7 +58,8 @@ public class JsonCheckpointStateManager : IStateManager
             DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull
         };
 
-        // Ensure base path exists, owner-only (#640) -- Create is already a no-op for an existing path.
+        // Ensure base path exists, owner-only (#640) -- also retroactively reasserted if it already
+        // existed with looser permissions (#670).
         OwnerOnlyDirectoryHelper.Create(_settings.BasePath, _logger);
     }
 

@@ -35,9 +35,11 @@ public interface IOwnerOnlyDirectoryCreator
 {
     /// <summary>
     /// Creates <paramref name="directory"/> (and any missing parents) with owner-only read/write/execute
-    /// access on POSIX, applied to every directory this call actually creates — not just the leaf. A
-    /// no-op permission-wise for any segment that already exists. A no-op entirely on Windows, which is
-    /// left to its inherited ACL.
+    /// access on POSIX, applied to every directory this call actually creates — not just the leaf. If
+    /// <paramref name="directory"/> itself already exists (e.g. a host upgraded in place, whose storage
+    /// root predates this seam), its mode is retroactively reasserted too (#670) — an already-existing
+    /// ANCESTOR encountered along the way is left untouched. A no-op entirely on Windows, which is left
+    /// to its inherited ACL.
     /// </summary>
     /// <param name="directory">The directory to create.</param>
     /// <param name="logger">
@@ -46,8 +48,8 @@ public interface IOwnerOnlyDirectoryCreator
     /// </param>
     /// <exception cref="IOException">
     /// A segment this call is responsible for could not be confirmed as an owner-only directory this
-    /// process controls after creating it — see the implementation's own remarks for why this call
-    /// stops immediately rather than continuing under an unverified parent.
+    /// process controls — see the implementation's own remarks for why this call stops immediately
+    /// rather than continuing under an unverified parent.
     /// </exception>
     void Create(string directory, ILogger? logger = null);
 }

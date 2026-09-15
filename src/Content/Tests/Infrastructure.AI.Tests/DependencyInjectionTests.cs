@@ -100,13 +100,13 @@ public sealed class DependencyInjectionTests
     [Fact]
     public void AddInfrastructureAIDependencies_LogsBasePathCollidesWithAnAllowedBasePath_StillEndsUpOwnerOnly()
     {
-        // /code-review finding (#671/#672/#673): OwnerOnlyDirectoryHelper.Create is a documented no-op,
-        // permission-wise, for a segment that already exists. If a misconfiguration makes LogsBasePath
-        // resolve to the same path as an AllowedBasePaths entry and the plain sandbox loop created it
-        // FIRST, the owner-only call afterward would silently do nothing — defeating this fix for
-        // exactly the path it exists to protect. The fix creates LogsBasePath via the owner-only path
-        // BEFORE the sandbox loop, so the plain loop's own Directory.CreateDirectory later finds it
-        // already owner-only and correctly no-ops instead.
+        // /code-review finding (#671/#672/#673): if a misconfiguration makes LogsBasePath resolve to
+        // the same path as an AllowedBasePaths entry, this asserts the shared path still ends up
+        // owner-only regardless of which loop reaches it first. LogsBasePath is created via the
+        // owner-only path BEFORE the plain sandbox loop specifically so the security-sensitive path is
+        // never even momentarily world-readable — OwnerOnlyDirectoryHelper.Create now retroactively
+        // reasserts owner-only mode on an already-existing path too (#670), so the opposite order would
+        // also end up correct, just with that brief window.
         var config = IsolatedAppConfig.Create();
         var sharedPath = Path.Combine(
             Path.GetTempPath(), "infra-ai-tests-shared-logs-" + Guid.NewGuid().ToString("N"));

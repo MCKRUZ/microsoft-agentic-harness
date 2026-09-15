@@ -47,9 +47,10 @@ public sealed class FileSystemConversationStoreTests : ConversationStoreContract
     public void Constructor_CreatesConversationsDirectoryOwnerOnly()
     {
         // #640: this store holds full conversation transcripts -- must never inherit whatever the
-        // process umask/ACL happens to grant. Uses its own fresh, not-yet-existing directory (unlike
-        // this fixture's own _tempDir, pre-created above for every other test here) since
-        // OwnerOnlyDirectoryHelper.Create is a documented no-op for a directory that already exists.
+        // process umask/ACL happens to grant. Uses its own fresh directory (unlike this fixture's own
+        // _tempDir, pre-created above for every other test here) so this test exercises the
+        // freshly-created-directory path specifically, rather than #670's separate already-exists
+        // retroactive-reassert path (covered by OwnerOnlyDirectoryHelperTests instead).
         var freshDir = Path.Combine(Path.GetTempPath(), $"convstore-permcheck-{Guid.NewGuid():N}");
         try
         {
