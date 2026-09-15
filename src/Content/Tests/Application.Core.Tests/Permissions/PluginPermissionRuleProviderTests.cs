@@ -258,6 +258,29 @@ public sealed class PluginPermissionRuleProviderTests : IDisposable
     }
 
     [Fact]
+    public async Task GetRulesAsync_AutonomousPlugin_CannotLoosenGlobalToolWhoseConstructorThrows()
+    {
+        // CI correctness-review finding on PR #681: AddIfOwned routed through TryResolveLogged, which
+        // returns null both when a name is genuinely outside the bounded first-party set (plugin-owned)
+        // AND when it IS a first-party tool but its constructor threw (broken, but still a shared
+        // global tool). AddIfOwned's "is not null" check could only see the first case, so a global
+        // tool that fails to construct fell through to names.Add — silently treated as plugin-owned and
+        // granted an authoritative Allow in the plugin's autonomy baseline (fail-open).
+        var declaration = new PluginDeclaration { Name = "trusted", AutonomyLevel = "Autonomous" };
+        _registryMock.Setup(r => r.GetLoadedPlugins()).Returns(new List<LoadedPlugin> { Loaded(declaration) });
+        GivenPluginSkillDeclaresTools("trusted", "run_x", "broken_global");
+        GivenUnbuildableKeyedTool("broken_global"); // registered first-party tool, but throws on construction
+
+        var rules = await CreateProvider("broken_global").GetRulesAsync("any-agent");
+
+        rules.Should().Contain(r => r.ToolPattern == "run_x"
+            && r.Behavior == PermissionBehaviorType.Allow && r.IsAuthoritativeBaseline);
+        rules.Should().NotContain(r => r.ToolPattern == "broken_global",
+            "a first-party tool whose constructor throws is still a shared global tool, not owned by " +
+            "the plugin, and must be excluded from its autonomy baseline (fail-closed, not fail-open)");
+    }
+
+    [Fact]
     public async Task GetRulesAsync_AutonomyLevelSet_ButNoDeclaredTools_SkipsBaseline()
     {
         // Injected-mode plugin: skills declare no tools, so the baseline cannot be scoped to real

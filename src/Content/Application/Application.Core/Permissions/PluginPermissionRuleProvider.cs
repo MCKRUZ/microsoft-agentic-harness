@@ -444,6 +444,7 @@ public sealed class PluginPermissionRuleProvider : IPermissionRuleProvider
     /// baseline can never auto-approve it agent-wide.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Routes through <see cref="FirstPartyToolLookup"/> rather than probing
     /// <c>GetKeyedService&lt;ITool&gt;</c> directly (correctness-review finding on #655): a plugin's
     /// declared tool name is caller-authored, unbounded input, and a raw probe here both reopened the
@@ -452,14 +453,44 @@ public sealed class PluginPermissionRuleProvider : IPermissionRuleProvider
     /// treated as plugin-owned, letting the plugin auto-approve a shared global tool) and resurfaced
     /// the unbounded-probe memory-growth risk <see cref="FirstPartyToolLookup"/>'s own class remarks
     /// exist to prevent.
+    /// </para>
+    /// <para>
+    /// Calls <see cref="FirstPartyToolLookup.TryResolve"/> directly rather than
+    /// <c>TryResolveLogged</c> (correctness-review finding on PR #681): <c>TryResolveLogged</c> returns
+    /// <see langword="null"/> both when <paramref name="name"/> is genuinely outside the bounded
+    /// first-party key set (plugin-owned) AND when it IS a first-party/global tool but its constructor
+    /// threw (broken, but still not owned by this plugin) — collapsing those into one <c>null</c> made
+    /// the caller's own <c>is not null</c> check blind to the second case, so a broken global tool fell
+    /// through to <c>names.Add</c> and could receive an authoritative Allow in the plugin's autonomy
+    /// baseline (fail-open). Branching on the <c>constructionError</c> this method reads from
+    /// <see cref="FirstPartyToolLookup.TryResolve"/> distinguishes them: a construction failure still
+    /// means the name is within the bounded set, so it is excluded (fail-closed) exactly like a tool
+    /// that resolved cleanly.
+    /// </para>
     /// </remarks>
     private void AddIfOwned(HashSet<string> names, string? name, string pluginName)
     {
         if (string.IsNullOrWhiteSpace(name))
             return;
 
-        if (_firstPartyToolLookup.TryResolveLogged(
-                name, _logger, "to decide whether the plugin owns it or it is a shared global tool") is not null)
+        var tool = _firstPartyToolLookup.TryResolve(name, out var constructionError);
+
+        if (constructionError is not null)
+        {
+            // Error, not Warning: a construction failure here means the name IS within the bounded
+            // first-party set, so this tool is definitely not plugin-owned and must be excluded — the
+            // same security-relevant outcome as the clean-resolve branch below, just discovered via a
+            // failure instead of a successful lookup.
+            _logger.LogError(constructionError,
+                "Plugin {Name}: could not construct first-party tool '{Tool}' to decide whether the " +
+                "plugin owns it or it is a shared global tool — treating it as a shared global tool " +
+                "(excluded from the plugin's autonomy baseline), since its name is within the " +
+                "first-party bounded set regardless of whether it can currently be constructed.",
+                pluginName, name);
+            return;
+        }
+
+        if (tool is not null)
         {
             _logger.LogWarning(
                 "Plugin {Name}: tool '{Tool}' named in the plugin's skills is a global keyed-DI tool the plugin " +
