@@ -1,7 +1,6 @@
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using Microsoft.Extensions.Logging;
-using Microsoft.Win32.SafeHandles;
 
 namespace Infrastructure.AI.Helpers;
 
@@ -39,6 +38,19 @@ namespace Infrastructure.AI.Helpers;
 /// volume created by root, with the app running as a non-root user) now throws where it previously
 /// could not — each such call site needs its own reviewed decision about acceptable degraded behavior,
 /// which #682 tracks as its own scoped follow-up.
+/// </para>
+/// <para>
+/// <strong>Retroactively reasserting on every call, not just once per process, is deliberate — do NOT
+/// "optimize" it into a per-path cache of already-verified directories</strong> (efficiency review,
+/// #670 follow-up). The real cost is real: several call sites reach this on a hot path (e.g.
+/// <c>HashChainedJsonlWriter.AppendAsync</c>, under its own serializing semaphore, on every audit
+/// record). But repeated verification on every access is exactly what makes the TOCTOU protection in
+/// the next two paragraphs mean anything for a long-running process: an attacker with access to the
+/// same parent directory could wait until AFTER this call's first successful verification, then swap
+/// the directory for a symlink — a cache that skips re-verification for a path already seen this
+/// process lifetime would silently stop catching that for every call after the first. If the syscall
+/// cost on a specific hot path ever needs addressing, the fix belongs at that call site (e.g. caching
+/// whether creation is even needed before calling <see cref="Create"/> at all), not inside this method.
 /// </para>
 /// <para>
 /// <strong>A non-cooperating writer racing to create the same new segment first (#648)</strong> no
@@ -102,18 +114,19 @@ namespace Infrastructure.AI.Helpers;
 /// owner-only, before creating anything further under it — see its own <c>&lt;exception&gt;</c> doc.
 /// </para>
 /// </remarks>
-internal static class OwnerOnlyDirectoryHelper
+internal static partial class OwnerOnlyDirectoryHelper
 {
     private const UnixFileMode OwnerOnlyMode =
         UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
 
     /// <summary>
-    /// Test-only seam: invoked with each segment <see cref="Create"/> is about to reassert mode on —
-    /// immediately before the create attempt for a segment the walk determined was missing, or
-    /// immediately before the retroactive reassert (#670) for a segment that already existed — letting
-    /// a test deterministically simulate a concurrent writer racing (or, for the already-exists case,
-    /// having previously) reached that exact segment, instead of relying on real thread scheduling to
-    /// land in a narrow timing window. Always unset in production.
+    /// Test-only seam: invoked with each segment immediately before <see cref="Create"/>'s own
+    /// create-then-reassert step for it — a genuinely missing segment's create call is real; a segment
+    /// that already existed before this call ran (#670) hits the identical call, but
+    /// <c>Directory.CreateDirectory</c> no-ops on it, so only the reassert that follows does real work.
+    /// Either way, this lets a test deterministically simulate a concurrent writer having reached that
+    /// exact segment, instead of relying on real thread scheduling to land in a narrow timing window.
+    /// Always unset in production.
     /// </summary>
     /// <remarks>
     /// <see cref="AsyncLocal{T}"/>, not a plain shared <see langword="static"/> field (/simplify
@@ -175,20 +188,6 @@ internal static class OwnerOnlyDirectoryHelper
 
         var fullPath = Path.GetFullPath(directory);
 
-        // #670: a host upgraded in place may have created this exact directory before this helper
-        // existed, with the BCL's loose default mode — the walk-and-create loop below only ever
-        // touches a segment it is CREATING, so it would silently never revisit a leaf that already
-        // exists. Handled as its own case, before the walk even starts, so the retroactive fix
-        // applies to precisely the directory the caller asked to secure — never an ancestor found
-        // already existing while walking up for a DIFFERENT (missing) leaf, which stays untouched
-        // exactly as before (an ancestor may be shared by something outside this call's control).
-        if (Directory.Exists(fullPath))
-        {
-            RaceSimulationHookForTests.Value?.Invoke(fullPath);
-            ReassertOrThrow(fullPath, fullPath, logger);
-            return;
-        }
-
         var missingSegments = new Stack<string>();
         var current = fullPath;
         while (!Directory.Exists(current))
@@ -200,6 +199,20 @@ internal static class OwnerOnlyDirectoryHelper
             current = parent;
         }
 
+        // #670: fullPath itself already existed — a host upgraded in place may have created this
+        // exact directory before this helper existed, with the BCL's loose default mode. Pushing it
+        // explicitly here (rather than special-casing "nothing missing" as "nothing to do") reuses
+        // the exact same create-then-reassert step every genuinely missing segment already gets below:
+        // Directory.CreateDirectory is a documented no-op on an already-existing path (see this
+        // method's own <remarks>), so the only real work this adds for fullPath is the retroactive
+        // reassert itself (/simplify finding: this also removes a second, redundant Directory.Exists
+        // stat the previous separate already-exists branch paid on top of this same walk's own first
+        // check). An already-existing ANCESTOR found while walking up for a genuinely missing leaf is
+        // different and stays untouched below, exactly as before — it is never pushed here, only
+        // fullPath is, and only when nothing else was missing.
+        if (missingSegments.Count == 0)
+            missingSegments.Push(fullPath);
+
         while (missingSegments.Count > 0)
         {
             var segment = missingSegments.Pop();
@@ -209,7 +222,8 @@ internal static class OwnerOnlyDirectoryHelper
             // #648: a non-cooperating writer can win the race to create this exact segment first,
             // with the BCL's loose default mode — CreateDirectory is then a silent no-op for
             // permissions on an already-existing directory, so the mode argument above is not a
-            // guarantee. Re-asserting the mode here, unconditionally, closes that.
+            // guarantee. Re-asserting the mode here, unconditionally, closes that — and, since #670,
+            // is also what retroactively secures a segment that already existed before this call ran.
             ReassertOrThrow(fullPath, segment, logger);
         }
     }
@@ -294,6 +308,20 @@ internal static class OwnerOnlyDirectoryHelper
             "than this application created it — investigate if unexpected.", segment);
 
     /// <summary>
+    /// Shared wording for a segment that turned out not to be a plain directory this call can safely
+    /// chmod (a symlink swap or non-directory) — used by both platform paths, same reason as
+    /// <see cref="LogSegmentGone"/> (/simplify finding: the symlink check added to
+    /// <see cref="ReassertModeFollowingSymlinks"/> for #670 had grown its own near-duplicate of the
+    /// wording <see cref="ReassertModeOnLinux"/>'s <c>NotASafeDirectory</c> case already used —
+    /// reproducing the exact drift this factoring already exists to prevent).
+    /// </summary>
+    private static void LogNotASafeDirectory(ILogger? logger, string segment) =>
+        logger?.LogWarning(
+            "Owner-only permission re-assert on {Directory} refused: it is no longer a plain " +
+            "directory (possible symlink swap). Nothing was chmod'd through it. Investigate what " +
+            "replaced it.", segment);
+
+    /// <summary>
     /// Non-Linux/x86_64 POSIX fallback (macOS, BSD, or Linux on any other architecture): the plain,
     /// symlink-following <c>File.SetUnixFileMode</c>, preceded by an explicit symlink check. Returns
     /// whether <paramref name="segment"/> is confirmed owner-only and safe to build further segments
@@ -325,10 +353,7 @@ internal static class OwnerOnlyDirectoryHelper
     {
         if (new DirectoryInfo(segment).LinkTarget is not null)
         {
-            logger?.LogWarning(
-                "Owner-only permission re-assert on {Directory} refused: it is a symbolic link, not a " +
-                "plain directory (possible symlink plant). Nothing was chmod'd through it. Investigate " +
-                "what it points to.", segment);
+            LogNotASafeDirectory(logger, segment);
             return false;
         }
 
@@ -368,176 +393,4 @@ internal static class OwnerOnlyDirectoryHelper
         }
     }
 
-    /// <summary>
-    /// The <c>O_NOFOLLOW</c>/<c>O_DIRECTORY</c> numeric values for one architecture family, as read
-    /// from that family's own Linux kernel uapi header (see <see cref="GetSafeReassertFlags"/>).
-    /// </summary>
-    internal readonly record struct SafeReassertFlags(int NoFollow, int Directory);
-
-    /// <summary>
-    /// Maps a process architecture to the <c>O_NOFOLLOW</c>/<c>O_DIRECTORY</c> numeric values that
-    /// architecture's own Linux kernel headers define, or <see langword="null"/> if this helper has
-    /// not verified them for that architecture (#677). A separate, pure, architecture-independent
-    /// method rather than an inline switch in <see cref="Create"/> specifically so it can be unit
-    /// tested for every architecture directly, without needing a matching physical host.
-    /// </summary>
-    /// <remarks>
-    /// Every value below was read directly from <c>torvalds/linux</c>'s own uapi headers, not glibc
-    /// docs or memory — the exact category of mistake #677 was filed to prevent a repeat of:
-    /// <list type="bullet">
-    /// <item><description>
-    /// <see cref="Architecture.X64"/> and <see cref="Architecture.S390x"/>: neither
-    /// <c>arch/x86/include/uapi/asm/fcntl.h</c> nor <c>arch/s390/include/uapi/asm/fcntl.h</c> exists
-    /// in the kernel source tree, so both fall through to
-    /// <c>include/uapi/asm-generic/fcntl.h</c>'s <c>O_DIRECTORY=(1&lt;&lt;16)=0x10000</c> and
-    /// <c>O_NOFOLLOW=(1&lt;&lt;17)=0x20000</c>.
-    /// </description></item>
-    /// <item><description>
-    /// <see cref="Architecture.Arm64"/> and <see cref="Architecture.Ppc64le"/>:
-    /// <c>arch/arm64/include/uapi/asm/fcntl.h</c> and <c>arch/powerpc/include/uapi/asm/fcntl.h</c>
-    /// each <c>#define</c> their own <c>O_DIRECTORY=(1&lt;&lt;14)=0x4000</c> and
-    /// <c>O_NOFOLLOW=(1&lt;&lt;15)=0x8000</c> — the exact bits x86_64/s390x use for
-    /// <c>O_DIRECT</c>/<c>O_LARGEFILE</c> — before including the generic header, whose include
-    /// guards then skip redefining them.
-    /// </description></item>
-    /// </list>
-    /// Any other architecture (32-bit ARM/PowerPC, RISC-V, LoongArch64, WASM, ...) is not covered:
-    /// this template has no kernel-source citation for it, so it is left on the plain,
-    /// symlink-following fallback rather than guessed at.
-    /// </remarks>
-    internal static SafeReassertFlags? GetSafeReassertFlags(Architecture architecture) => architecture switch
-    {
-        Architecture.X64 or Architecture.S390x => new SafeReassertFlags(NoFollow: 0x20000, Directory: 0x10000),
-        Architecture.Arm64 or Architecture.Ppc64le => new SafeReassertFlags(NoFollow: 0x8000, Directory: 0x4000),
-        _ => null,
-    };
-
-    /// <summary>
-    /// Re-asserts owner-only mode via <see cref="ApplyOwnerOnlyModeSafely"/>, which never follows a
-    /// symlink planted at <paramref name="segment"/> between the create call and this one. Returns
-    /// whether <paramref name="segment"/> is confirmed owner-only and safe to build further segments
-    /// under; never throws.
-    /// </summary>
-    [SupportedOSPlatform("linux")]
-    private static bool ReassertModeOnLinux(string segment, int oNoFollow, int oDirectory, ILogger? logger)
-    {
-        var (outcome, errno) = ApplyOwnerOnlyModeSafely(segment, oNoFollow, oDirectory);
-        switch (outcome)
-        {
-            case ChmodOutcome.Applied:
-                return true;
-
-            case ChmodOutcome.SegmentGone:
-                // If Create() continued past this, its own next CreateDirectory call would silently
-                // re-create this segment with the BCL's loose default mode — the exact bug this whole
-                // fix exists to close, just via a benign race instead of an adversarial one.
-                LogSegmentGone(logger, segment);
-                return false;
-
-            case ChmodOutcome.NotASafeDirectory:
-                // ELOOP or ENOTDIR: the segment stopped being a plain directory between the create
-                // call and this one — most plausibly a symlink swap. Refusing to follow it, and
-                // refusing to build further segments under it, is the entire point.
-                logger?.LogWarning(
-                    "Owner-only permission re-assert on {Directory} refused: it is no longer a " +
-                    "plain directory (possible symlink swap). Nothing was chmod'd through it. " +
-                    "Investigate what replaced it.", segment);
-                return false;
-
-            case ChmodOutcome.AccessDenied:
-                LogAccessDenied(logger, segment);
-                return false;
-
-            case ChmodOutcome.OperationFailed:
-                logger?.LogWarning(
-                    "Could not re-assert owner-only permissions on {Directory}: the operation " +
-                    "failed with errno {Errno}, not an ownership problem — investigate separately.",
-                    segment, errno);
-                return false;
-
-            default:
-                return false;
-        }
-    }
-
-    /// <summary>Outcome of <see cref="ApplyOwnerOnlyModeSafely"/>.</summary>
-    private enum ChmodOutcome
-    {
-        /// <summary>The mode was applied to the directory this call created (or found already there).</summary>
-        Applied,
-
-        /// <summary>The segment no longer existed (<c>ENOENT</c>) — a benign concurrent delete.</summary>
-        SegmentGone,
-
-        /// <summary>
-        /// The segment is no longer a plain directory (<c>ELOOP</c> — a symlink — or <c>ENOTDIR</c>) —
-        /// refused rather than followed.
-        /// </summary>
-        NotASafeDirectory,
-
-        /// <summary>The mode could not be changed because it is owned by a different user (<c>EACCES</c>/<c>EPERM</c>).</summary>
-        AccessDenied,
-
-        /// <summary>
-        /// <c>open</c>/<c>fchmod</c> failed for a reason other than the above (e.g. <c>EMFILE</c>,
-        /// <c>ENOMEM</c>) — not an ownership problem, so logged distinctly rather than folded into
-        /// <see cref="AccessDenied"/>'s "owned by a different user" framing (/code-review finding).
-        /// </summary>
-        OperationFailed,
-    }
-
-    /// <summary>
-    /// Applies <see cref="OwnerOnlyMode"/> to <paramref name="segment"/> via <c>fchmod</c> on a
-    /// descriptor opened with <c>O_NOFOLLOW | O_DIRECTORY</c>, so a symlink or non-directory planted
-    /// at that exact path between this call's own create and this call is refused rather than
-    /// followed — see the class remarks for the race this closes. Never throws.
-    /// </summary>
-    /// <remarks>
-    /// Only ever called for an architecture <see cref="GetSafeReassertFlags"/> recognizes (gated in
-    /// <see cref="Create"/>) — <paramref name="oNoFollow"/>/<paramref name="oDirectory"/> must be that
-    /// architecture's own verified values. See the class remarks for why an unrecognized architecture
-    /// is never guessed at instead of routed here.
-    /// </remarks>
-    [SupportedOSPlatform("linux")]
-    private static (ChmodOutcome Outcome, int Errno) ApplyOwnerOnlyModeSafely(string segment, int oNoFollow, int oDirectory)
-    {
-        const int oRdOnly = 0;
-        const int enoent = 2;
-        const int eacces = 13;
-        const int eperm = 1;
-        const int eloop = 40;
-        const int enotdir = 20;
-
-        var fd = Open(segment, oRdOnly | oNoFollow | oDirectory);
-        if (fd < 0)
-        {
-            var errno = Marshal.GetLastPInvokeError();
-            var outcome = errno switch
-            {
-                enoent => ChmodOutcome.SegmentGone,
-                eloop or enotdir => ChmodOutcome.NotASafeDirectory,
-                eacces or eperm => ChmodOutcome.AccessDenied,
-                // Anything unrecognized (EMFILE, ENOMEM, ...): never guess a success, but never
-                // mislabel it as an ownership problem either — that sends an investigator the wrong
-                // direction (/code-review finding).
-                _ => ChmodOutcome.OperationFailed,
-            };
-            return (outcome, errno);
-        }
-
-        // Wrapping the already-known fd guarantees close() runs even if FChmod throws (it doesn't,
-        // but this keeps the descriptor lifetime unconditional rather than relying on that).
-        using var handle = new SafeFileHandle((IntPtr)fd, ownsHandle: true);
-        if (FChmod(fd, (int)OwnerOnlyMode) == 0)
-            return (ChmodOutcome.Applied, 0);
-
-        var chmodErrno = Marshal.GetLastPInvokeError();
-        return (chmodErrno is eacces or eperm ? ChmodOutcome.AccessDenied : ChmodOutcome.OperationFailed, chmodErrno);
-    }
-
-    [DllImport("libc", EntryPoint = "open", SetLastError = true)]
-    private static extern int Open([MarshalAs(UnmanagedType.LPUTF8Str)] string pathname, int flags);
-
-    [DllImport("libc", EntryPoint = "fchmod", SetLastError = true)]
-    private static extern int FChmod(int fd, int mode);
 }

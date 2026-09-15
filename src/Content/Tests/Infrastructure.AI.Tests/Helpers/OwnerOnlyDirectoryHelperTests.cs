@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Runtime.Versioning;
 using FluentAssertions;
 using Infrastructure.AI.Helpers;
 using Infrastructure.AI.Tests.Resilience;
@@ -25,6 +26,28 @@ public sealed class OwnerOnlyDirectoryHelperTests : IDisposable
         {
             // Best-effort test cleanup
         }
+    }
+
+    /// <summary>
+    /// The mode <see cref="CreateAttackerOwnedTarget"/> sets — deliberately distinguishable from
+    /// owner-only, so a test can assert the target was left untouched rather than coincidentally
+    /// ending up owner-only some other way.
+    /// </summary>
+    private const UnixFileMode AttackerOwnedTargetMode = UnixFileMode.UserRead | UnixFileMode.UserWrite
+        | UnixFileMode.UserExecute | UnixFileMode.GroupRead | UnixFileMode.OtherRead;
+
+    /// <summary>
+    /// Creates a fresh directory an "attacker" fully controls, for the three tests below that plant a
+    /// symlink at <see cref="_root"/> pointing at it (/simplify finding: this setup, and its matching
+    /// teardown, was duplicated near-verbatim across all three before being factored out here).
+    /// </summary>
+    [UnsupportedOSPlatform("windows")]
+    private static string CreateAttackerOwnedTarget()
+    {
+        var target = Path.Combine(Path.GetTempPath(), "owner-only-dir-tests-target-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(target);
+        File.SetUnixFileMode(target, AttackerOwnedTargetMode);
+        return target;
     }
 
     [Fact]
@@ -95,12 +118,7 @@ public sealed class OwnerOnlyDirectoryHelperTests : IDisposable
         if (OperatingSystem.IsWindows())
             return;
 
-        var attackerOwnedTarget = Path.Combine(
-            Path.GetTempPath(), "owner-only-dir-tests-target-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(attackerOwnedTarget);
-        const UnixFileMode wideMode = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute
-            | UnixFileMode.GroupRead | UnixFileMode.OtherRead;
-        File.SetUnixFileMode(attackerOwnedTarget, wideMode);
+        var attackerOwnedTarget = CreateAttackerOwnedTarget();
 
         try
         {
@@ -109,7 +127,7 @@ public sealed class OwnerOnlyDirectoryHelperTests : IDisposable
             var act = () => OwnerOnlyDirectoryHelper.Create(_root);
 
             act.Should().Throw<IOException>().WithMessage($"*{_root}*");
-            File.GetUnixFileMode(attackerOwnedTarget).Should().Be(wideMode,
+            File.GetUnixFileMode(attackerOwnedTarget).Should().Be(AttackerOwnedTargetMode,
                 "the symlink target must never be chmod'd through the swapped leaf");
         }
         finally
@@ -136,12 +154,7 @@ public sealed class OwnerOnlyDirectoryHelperTests : IDisposable
         if (OperatingSystem.IsWindows())
             return;
 
-        var attackerOwnedTarget = Path.Combine(
-            Path.GetTempPath(), "owner-only-dir-tests-target-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(attackerOwnedTarget);
-        const UnixFileMode wideMode = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute
-            | UnixFileMode.GroupRead | UnixFileMode.OtherRead;
-        File.SetUnixFileMode(attackerOwnedTarget, wideMode);
+        var attackerOwnedTarget = CreateAttackerOwnedTarget();
 
         try
         {
@@ -150,7 +163,7 @@ public sealed class OwnerOnlyDirectoryHelperTests : IDisposable
             var secured = OwnerOnlyDirectoryHelper.ReassertModeFollowingSymlinks(_root, logger: null);
 
             secured.Should().BeFalse("a symlink must be refused, never followed and chmod'd");
-            File.GetUnixFileMode(attackerOwnedTarget).Should().Be(wideMode,
+            File.GetUnixFileMode(attackerOwnedTarget).Should().Be(AttackerOwnedTargetMode,
                 "the symlink target must never be chmod'd through the swapped leaf");
         }
         finally
@@ -210,12 +223,7 @@ public sealed class OwnerOnlyDirectoryHelperTests : IDisposable
         // component of a multi-segment path, not just the one open(O_NOFOLLOW) refuses to follow — so
         // swapping an INTERMEDIATE segment (not the leaf) proves the property this fix actually needs:
         // nothing gets created under a parent this call could not confirm as owner-only.
-        var attackerOwnedTarget = Path.Combine(
-            Path.GetTempPath(), "owner-only-dir-tests-target-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(attackerOwnedTarget);
-        const UnixFileMode wideMode = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute
-            | UnixFileMode.GroupRead | UnixFileMode.OtherRead;
-        File.SetUnixFileMode(attackerOwnedTarget, wideMode);
+        var attackerOwnedTarget = CreateAttackerOwnedTarget();
 
         try
         {
@@ -238,7 +246,7 @@ public sealed class OwnerOnlyDirectoryHelperTests : IDisposable
                 OwnerOnlyDirectoryHelper.RaceSimulationHookForTests.Value = null;
             }
 
-            File.GetUnixFileMode(attackerOwnedTarget).Should().Be(wideMode,
+            File.GetUnixFileMode(attackerOwnedTarget).Should().Be(AttackerOwnedTargetMode,
                 "the symlink target must never be chmod'd through the swapped segment");
             Directory.Exists(Path.Combine(attackerOwnedTarget, "b")).Should().BeFalse(
                 "nothing may be created under a segment this call could not confirm as owner-only");
