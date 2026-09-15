@@ -37,6 +37,25 @@ public sealed class SandboxOptions
     /// <summary>Docker container defaults for container-isolated execution.</summary>
     public ContainerDefaultsConfig ContainerDefaults { get; set; } = new();
 
-    /// <summary>Per-tool resource and isolation overrides, keyed by tool name.</summary>
-    public Dictionary<string, ToolOverrideConfig> ToolOverrides { get; set; } = new();
+    /// <summary>
+    /// Per-tool resource and isolation overrides, keyed by tool name (case-insensitively — see remarks).
+    /// </summary>
+    /// <remarks>
+    /// Currently unread by any production consumer (verified: no call site resolves
+    /// <c>AIConfig.Sandbox.ToolOverrides</c> outside this class's own tests), unlike its two siblings
+    /// this shares its exact shape with — <c>SandboxConfig.ToolOverrides</c> and
+    /// <c>Application.AI.Common.Models.Sandbox.SandboxExecutionOptions.ToolOverrides</c>. Given the
+    /// identical <see langword="set"/>-accessor fix anyway (#655 round-2 correctness-review): a tool
+    /// name resolved elsewhere case-insensitively (<c>FirstPartyToolLookup</c>) would otherwise silently
+    /// never match an operator-authored entry here whose casing differs, the moment this property gains
+    /// a real reader — closing the gap now means that reader inherits a correct dictionary for free
+    /// instead of reintroducing #647/#655 a third time.
+    /// </remarks>
+    public Dictionary<string, ToolOverrideConfig> ToolOverrides
+    {
+        get => _toolOverrides;
+        set => _toolOverrides = new Dictionary<string, ToolOverrideConfig>(value, StringComparer.OrdinalIgnoreCase);
+    }
+
+    private Dictionary<string, ToolOverrideConfig> _toolOverrides = new(StringComparer.OrdinalIgnoreCase);
 }

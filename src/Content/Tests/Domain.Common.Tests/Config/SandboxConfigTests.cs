@@ -49,3 +49,37 @@ public class SandboxConfigToolOverridesTests
         act.Should().Throw<ArgumentException>();
     }
 }
+
+/// <summary>
+/// Tests for <see cref="SandboxOptions.ToolOverrides"/>'s case-insensitive <see langword="set"/>
+/// accessor — the same fix as <see cref="SandboxConfigToolOverridesTests"/>, applied to a sibling
+/// dictionary of the identical shape found unfixed during #655's round-2 correctness-review.
+/// </summary>
+public class SandboxOptionsToolOverridesTests
+{
+    [Fact]
+    public void ObjectInitializerReplacesTheDictionary_StillRebuildsWithCaseInsensitiveComparer()
+    {
+        var options = new SandboxOptions
+        {
+            ToolOverrides = new() { ["BASH"] = new ToolOverrideConfig() },
+        };
+
+        options.ToolOverrides.TryGetValue("bash", out _).Should().BeTrue();
+    }
+
+    [Fact]
+    public void ObjectInitializer_TwoSourceKeysCollideUnderTheNewComparer_ThrowsRatherThanSilentlyPickingOne()
+    {
+        var act = () => new SandboxOptions
+        {
+            ToolOverrides = new(StringComparer.Ordinal)
+            {
+                ["bash"] = new ToolOverrideConfig(),
+                ["BASH"] = new ToolOverrideConfig(),
+            },
+        };
+
+        act.Should().Throw<ArgumentException>();
+    }
+}
