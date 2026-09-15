@@ -28,6 +28,7 @@ public sealed class MaterializedSkillDirectoryFileReader : ISkillFileReader
     private const long MaxFileSizeBytes = 10 * 1024 * 1024; // 10 MB
 
     private readonly SandboxedPathGuard _guard;
+    private readonly ILogger _logger;
 
     /// <param name="root">The single materialized directory this reader may read from.</param>
     /// <param name="logger">Receives a warning for every sandbox refusal.</param>
@@ -37,6 +38,7 @@ public sealed class MaterializedSkillDirectoryFileReader : ISkillFileReader
         ArgumentNullException.ThrowIfNull(logger);
 
         _guard = new SandboxedPathGuard(logger, [root]);
+        _logger = logger;
     }
 
     /// <inheritdoc />
@@ -62,8 +64,14 @@ public sealed class MaterializedSkillDirectoryFileReader : ISkillFileReader
         var results = new List<string>();
         foreach (var subdirectory in Directory.EnumerateDirectories(fullPath))
         {
+            // Logged, matching SkillFileReader.EnumerateDirectories' own rejection path — silently
+            // dropping this would make "why didn't the candidate's sibling skill load" unnecessarily
+            // hard to diagnose (code-review finding).
             if (_guard.IsPathAllowed(subdirectory))
                 results.Add(subdirectory);
+            else
+                _logger.LogWarning(
+                    "Skipped materialized skill subdirectory outside the eval sandbox: {Path}", subdirectory);
         }
 
         return results;

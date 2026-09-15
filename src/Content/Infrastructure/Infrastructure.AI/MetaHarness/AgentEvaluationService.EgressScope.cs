@@ -32,6 +32,14 @@ public sealed partial class AgentEvaluationService
     /// <c>MaterializeCandidateSkills</c> actually wrote (the exact class of bug #618's sibling-naming
     /// fix, PR #668, was written to prevent).
     /// </param>
+    /// <param name="reader">
+    /// The single reader confined to <paramref name="skillDirectory"/>, shared with
+    /// <c>BuildContextProviders</c>'s progressive-disclosure provider rather than each building its
+    /// own (/simplify efficiency finding on #618's PR: two independent readers over the identical
+    /// root did the same sandbox-guard setup twice for no reason). Never null when
+    /// <paramref name="skillDirectory"/> is non-null — see <c>RunCandidateTurnAsync</c>, the only
+    /// caller.
+    /// </param>
     /// <param name="executionRunId">Used only for diagnostic logging.</param>
     /// <returns>
     /// The parsed candidate skill, or <see langword="null"/> when there is no skill directory or no
@@ -47,7 +55,7 @@ public sealed partial class AgentEvaluationService
     /// caller's existing task-level catch turns this into a failed (not crashed) eval task.
     /// </exception>
     private SkillDefinition? TryBuildCandidateSkillDefinition(
-        string? skillDirectory, string? bareSkillName, Guid executionRunId)
+        string? skillDirectory, string? bareSkillName, MaterializedSkillDirectoryFileReader? reader, Guid executionRunId)
     {
         if (skillDirectory is null || bareSkillName is null)
         {
@@ -70,11 +78,8 @@ public sealed partial class AgentEvaluationService
         var bareSkillDirectory = Path.Combine(skillDirectory, bareSkillName);
         var skillFilePath = Path.Combine(bareSkillDirectory, "SKILL.md");
 
-        var reader = new MaterializedSkillDirectoryFileReader(
-            skillDirectory, _loggerFactory.CreateLogger<MaterializedSkillDirectoryFileReader>());
-
         var parser = new SkillMetadataParser(
-            _loggerFactory.CreateLogger<SkillMetadataParser>(), reader, _scanner, _aiConfig, _egressValidator);
+            _loggerFactory.CreateLogger<SkillMetadataParser>(), reader!, _scanner, _aiConfig, _egressValidator);
 
         return parser.ParseFromFile(skillFilePath, bareSkillDirectory);
     }

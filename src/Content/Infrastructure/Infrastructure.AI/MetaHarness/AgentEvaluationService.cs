@@ -19,6 +19,11 @@ using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+// Aliased, not a plain `using Application.AI.Common.Services.Agent;` — that namespace also
+// declares its own AgentExecutionContext, which collides with Domain.AI.Agents.AgentExecutionContext
+// (used unqualified throughout this file). Confirmed by trying the plain using first (/simplify
+// finding) and hitting CS0104.
+using GoverningToolContextProvider = Application.AI.Common.Services.Agent.GoverningToolContextProvider;
 
 namespace Infrastructure.AI.MetaHarness;
 
@@ -179,64 +184,16 @@ public sealed partial class AgentEvaluationService : IEvaluationService
 
             // Materialize the candidate's proposed skills so the eval agent loads them through the
             // same MAF progressive-disclosure path used in production. Without this, a candidate that
-            // changes only skill files would evaluate identically to its parent.
+            // changes only skill files would evaluate identically to its parent. Kept in THIS method
+            // (not the extracted RunCandidateTurnAsync below) because skillDirectory must be assigned
+            // to the outer local before anything that can throw, so the finally block's cleanup below
+            // always has it — async methods can't use out/ref parameters to hand that back from an
+            // extracted method.
             string? bareSkillName;
             (skillDirectory, bareSkillName) = MaterializeCandidateSkills(candidate.Snapshot, scope.ExecutionRunId);
 
-            // #618: parsed from the SAME materialized directory and bare-skill subdirectory name
-            // MaterializeCandidateSkills just resolved and wrote to, through a reader confined to
-            // that one directory tree — never the shared, permanent skill roots. Null for a
-            // multi-skill/sibling-only materialization (#618 scoped this to the common single-skill
-            // case) or when there is no skill directory at all.
-            var candidateSkill = TryBuildCandidateSkillDefinition(skillDirectory, bareSkillName, scope.ExecutionRunId);
-
-            var context = new AgentExecutionContext
-            {
-                Name = "EvaluationAgent",
-                Instruction = candidate.Snapshot.SystemPromptSnapshot,
-                DeploymentName = string.IsNullOrEmpty(cfg.EvaluationModelVersion) ? null : cfg.EvaluationModelVersion,
-                TraceScope = scope,
-                AIContextProviders = BuildContextProviders(skillDirectory, candidateSkill),
-                AdditionalProperties = new Dictionary<string, object>
-                {
-                    [ITraceWriter.AdditionalPropertiesKey] = traceWriter
-                }
-            };
-
-            var agent = await _agentFactory.CreateAgentAsync(context, cancellationToken);
-
-            // #482: arm the same ambient admission chain ExecuteAgentTurnCommandHandler arms for every
-            // production turn. Begin (not assign-and-null) so a nested/enclosing governed flow is
-            // restored rather than disarmed on the way out — see ToolAdmissionAccessor's remarks.
-            //
-            // Reset before arming, mirroring DirectToolInvoker.ArmGovernance: this pipeline is a single
-            // scoped instance shared across every eval task and candidate run in this scope (found in
-            // review), so without a reset here its loop-detection and call-once state accumulates across
-            // tasks — one task's tool-call pattern could trip (or silently satisfy) the loop guard for an
-            // unrelated later task in the same scope.
-            _admissionPipeline.Reset();
-
-            // #618: scoped to exactly the same span as ToolAdmissionAccessor above, for the same
-            // reason — GovernedAIFunction (via GoverningToolContextProvider) consults this accessor
-            // when a governed tool call actually executes, which only happens inside RunAsync.
-            // using with a null IDisposable is a documented no-op, so this composes cleanly with the
-            // "no candidate skill" case (multi-skill snapshot, or no skills at all).
-            using var candidateSkillScope = candidateSkill is not null
-                ? EphemeralSkillMetadataAccessor.Begin(candidateSkill)
-                : null;
-
-            AgentResponse response;
-            using (ToolAdmissionAccessor.Begin(_admissionPipeline))
-            {
-                response = await agent.RunAsync(
-                    [new ChatMessage(ChatRole.User, task.InputPrompt)],
-                    cancellationToken: cancellationToken);
-            }
-
-            var output = ExtractContent(response);
-            var (passed, failureReason) = Grade(output, task.ExpectedOutputPattern);
-            taskResult = new TaskEvaluationResult(
-                task.TaskId, passed, ResolveTokenCost(response, task.InputPrompt, output), failureReason);
+            taskResult = await RunCandidateTurnAsync(
+                candidate, task, cfg, scope, traceWriter, skillDirectory, bareSkillName, cancellationToken);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -272,6 +229,92 @@ public sealed partial class AgentEvaluationService : IEvaluationService
         }
 
         return taskResult!;
+    }
+
+    /// <summary>
+    /// Builds the candidate's egress-scoped context, creates the agent, runs one eval turn under
+    /// governance, and grades the response. Extracted from <see cref="ExecuteTaskAsync"/> (#618
+    /// /code-review + /simplify altitude finding: the new candidate-skill/ephemeral-scope logic had
+    /// been spliced directly into an already-oversized method rather than factored out) — that method
+    /// keeps only the trace-lifecycle envelope (start/catch/finally/cleanup), a genuinely separate
+    /// concern from running one candidate's turn.
+    /// </summary>
+    private async Task<TaskEvaluationResult> RunCandidateTurnAsync(
+        HarnessCandidate candidate,
+        EvalTask task,
+        MetaHarnessConfig cfg,
+        TraceScope scope,
+        ITraceWriter traceWriter,
+        string? skillDirectory,
+        string? bareSkillName,
+        CancellationToken cancellationToken)
+    {
+        // #618: one reader confined to skillDirectory, shared below between the candidate-skill parse
+        // and the progressive-disclosure provider (/simplify efficiency finding: two independent
+        // readers over the identical root did the same sandbox-guard setup twice for no reason).
+        var skillReader = skillDirectory is not null
+            ? new MaterializedSkillDirectoryFileReader(
+                skillDirectory, _loggerFactory.CreateLogger<MaterializedSkillDirectoryFileReader>())
+            : null;
+
+        // #618: parsed from the SAME materialized directory and bare-skill subdirectory name
+        // MaterializeCandidateSkills just resolved and wrote to. Null for a multi-skill/sibling-only
+        // materialization (#618 scoped this to the common single-skill case) or when there is no
+        // skill directory at all.
+        var candidateSkill = TryBuildCandidateSkillDefinition(
+            skillDirectory, bareSkillName, skillReader, scope.ExecutionRunId);
+
+        var context = new AgentExecutionContext
+        {
+            Name = "EvaluationAgent",
+            Instruction = candidate.Snapshot.SystemPromptSnapshot,
+            DeploymentName = string.IsNullOrEmpty(cfg.EvaluationModelVersion) ? null : cfg.EvaluationModelVersion,
+            TraceScope = scope,
+            AIContextProviders = BuildContextProviders(skillDirectory, candidateSkill, skillReader),
+            AdditionalProperties = new Dictionary<string, object>
+            {
+                [ITraceWriter.AdditionalPropertiesKey] = traceWriter
+            }
+        };
+
+        var agent = await _agentFactory.CreateAgentAsync(context, cancellationToken);
+
+        // #482: arm the same ambient admission chain ExecuteAgentTurnCommandHandler arms for every
+        // production turn. Begin (not assign-and-null) so a nested/enclosing governed flow is
+        // restored rather than disarmed on the way out — see ToolAdmissionAccessor's remarks.
+        //
+        // Reset before arming, mirroring DirectToolInvoker.ArmGovernance: this pipeline is a single
+        // scoped instance shared across every eval task and candidate run in this scope (found in
+        // review), so without a reset here its loop-detection and call-once state accumulates across
+        // tasks — one task's tool-call pattern could trip (or silently satisfy) the loop guard for an
+        // unrelated later task in the same scope.
+        _admissionPipeline.Reset();
+
+        // #618: opened for the same reason as ToolAdmissionAccessor below — GovernedAIFunction
+        // (via GoverningToolContextProvider) consults this accessor only when a governed tool
+        // call actually executes, which only happens inside RunAsync. Scoped to this whole method
+        // rather than block-scoped tightly around RunAsync like ToolAdmissionAccessor is: nothing
+        // else here reads the accessor in the extra window before/after RunAsync, so the wider scope
+        // is harmless, but the two are NOT the same span — don't assume this composes the same way
+        // ToolAdmissionAccessor's tighter scope does if this method later grows a reason to care.
+        // using with a null IDisposable is a documented no-op, so this composes cleanly with the
+        // "no candidate skill" case (multi-skill snapshot, or no skills at all).
+        using var candidateSkillScope = candidateSkill is not null
+            ? EphemeralSkillMetadataAccessor.Begin(candidateSkill)
+            : null;
+
+        AgentResponse response;
+        using (ToolAdmissionAccessor.Begin(_admissionPipeline))
+        {
+            response = await agent.RunAsync(
+                [new ChatMessage(ChatRole.User, task.InputPrompt)],
+                cancellationToken: cancellationToken);
+        }
+
+        var output = ExtractContent(response);
+        var (passed, failureReason) = Grade(output, task.ExpectedOutputPattern);
+        return new TaskEvaluationResult(
+            task.TaskId, passed, ResolveTokenCost(response, task.InputPrompt, output), failureReason);
     }
 
     /// <summary>
@@ -579,7 +622,8 @@ public sealed partial class AgentEvaluationService : IEvaluationService
     /// so <c>run_skill_script</c> has nothing to execute either way today.
     /// </para>
     /// </remarks>
-    private IList<AIContextProvider> BuildContextProviders(string? skillDirectory, SkillDefinition? candidateSkill)
+    private IList<AIContextProvider> BuildContextProviders(
+        string? skillDirectory, SkillDefinition? candidateSkill, MaterializedSkillDirectoryFileReader? skillReader)
     {
         var providers = new List<AIContextProvider>();
 
@@ -592,19 +636,15 @@ public sealed partial class AgentEvaluationService : IEvaluationService
                 .Build());
         }
 
-        var governingLogger = _loggerFactory
-            .CreateLogger<Application.AI.Common.Services.Agent.GoverningToolContextProvider>();
+        var governingLogger = _loggerFactory.CreateLogger<GoverningToolContextProvider>();
 
         providers.Add(candidateSkill is not null
-            ? new Application.AI.Common.Services.Agent.GoverningToolContextProvider(
+            ? new GoverningToolContextProvider(
                 governingLogger,
                 _sanitizer,
-                DisclosableSkillFactory.Create(
-                    [candidateSkill],
-                    new MaterializedSkillDirectoryFileReader(skillDirectory!, _loggerFactory.CreateLogger<MaterializedSkillDirectoryFileReader>()),
-                    governingLogger),
+                DisclosableSkillFactory.Create([candidateSkill], skillReader!, governingLogger),
                 _currentSkillAccessor)
-            : new Application.AI.Common.Services.Agent.GoverningToolContextProvider(governingLogger, _sanitizer));
+            : new GoverningToolContextProvider(governingLogger, _sanitizer));
 
         return providers;
     }

@@ -14,11 +14,14 @@ namespace Infrastructure.AI.Egress;
 /// <summary>
 /// Per-skill <see cref="IEgressPolicyResolver"/> backed by the skill manifest.
 /// Reads the current skill via <see cref="ICurrentSkillAccessor"/>, looks up
-/// the skill's <c>egress.allowlist</c> via <see cref="ISkillMetadataRegistry"/>,
+/// the skill's <c>egress.allowlist</c> via <see cref="ISkillMetadataRegistry"/>
+/// — or, when set, <see cref="EphemeralSkillMetadataAccessor"/> first (#618) —
 /// and returns an <see cref="IEgressPolicy"/> whose allowlist is the UNION of
 /// the harness-wide <c>EgressConfig.DefaultAllowlist</c> and the per-skill
 /// additions. Policies are cached by skill identifier so the merge runs at
-/// most once per skill regardless of request volume.
+/// most once per skill regardless of request volume — except an ephemeral
+/// (meta-harness eval candidate) skill, which is never cached; see
+/// <see cref="ResolveFor"/>'s remarks.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -28,6 +31,13 @@ namespace Infrastructure.AI.Egress;
 /// resolves to the same policy as the no-skill default, so this resolver is
 /// safe to install as the harness-wide replacement for
 /// <see cref="DefaultEgressPolicyResolver"/>.
+/// </para>
+/// <para>
+/// #618: <see cref="EphemeralSkillMetadataAccessor"/> lets the meta-harness eval
+/// service make a candidate skill's own proposed allowlist visible here for the
+/// span of one eval run, without ever registering that candidate in the
+/// permanent, shared <see cref="ISkillMetadataRegistry"/> — see that accessor's
+/// remarks for why a candidate must never become a registry entry.
 /// </para>
 /// <para>
 /// Cache safety: the cache key is the skill id; on cache miss the resolver
