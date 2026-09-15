@@ -59,8 +59,13 @@ public partial class AgentEvaluationServiceTests
         Assert.Equal("research-agent", observedDuringRun!.Id);
         Assert.Equal("api.example.com", observedDuringRun.Egress?.Allowlist.Single().Host);
 
-        // Torn down once the run completes — a later, unrelated resolution must not still see it.
-        Assert.Null(EphemeralSkillMetadataAccessor.TryGet("research-agent"));
+        // Teardown is NOT re-checked here (correctness-review finding): AsyncLocal writes made
+        // inside RunCandidateTurnAsync's nested async call never flow back to this test method's
+        // own context once EvaluateAsync returns, so a post-await TryGet here would pass whether
+        // or not the `using` actually disposed — it proves nothing. Teardown/isolation between two
+        // scopes is meaningfully proven at the resolver level instead, where the assertion runs on
+        // the SAME async flow as the `using` blocks: see
+        // SkillManifestEgressPolicyResolverTests.ResolveFor_TwoEphemeralSkillsSharingAnId_EachResolvesItsOwnAllowlist.
     }
 
     /// <summary>
