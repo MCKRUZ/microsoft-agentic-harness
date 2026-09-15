@@ -1,18 +1,11 @@
 using System.Collections.Concurrent;
-using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Services.Governance;
-using Application.AI.Common.Skills;
 using Domain.AI.Agents;
-using Domain.Common.Config.MetaHarness;
 using Infrastructure.AI.MetaHarness;
-using Infrastructure.AI.Skills;
 using Infrastructure.AI.Tests.Helpers;
-using Infrastructure.AI.Tests.Planner.StepExecutors;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Logging.Abstractions;
-using Microsoft.Extensions.Options;
 using Moq;
 using Xunit;
 
@@ -159,14 +152,7 @@ public partial class AgentEvaluationServiceTests
             .ReturnsAsync(new TestableAIAgent("output"));
 
         var capturingLogger = new CapturingLogger<AgentEvaluationService>();
-        var cfg = new MetaHarnessConfig { TraceDirectoryRoot = _traceRoot };
-        var opts = Mock.Of<IOptionsMonitor<MetaHarnessConfig>>(m => m.CurrentValue == cfg);
-        var sut = new AgentEvaluationService(
-            opts, BuildTraceStore(cfg.TraceDirectoryRoot), _agentFactoryMock.Object,
-            PermissiveAdmission.Pipeline(), PermissiveAdmission.PermissiveSanitizer(),
-            new CurrentSkillAccessor(), Mock.Of<IMcpSecurityScanner>(MockBehavior.Strict),
-            DisabledScanningConfig(), new EgressManifestValidator(),
-            NullLoggerFactory.Instance, capturingLogger);
+        var sut = BuildSut(logger: capturingLogger);
 
         var candidate = BuildCandidate(skillFiles: skillFiles);
         var tasks = new[] { BuildTask("frontmatter-only-task", "prompt", pattern: null) };
