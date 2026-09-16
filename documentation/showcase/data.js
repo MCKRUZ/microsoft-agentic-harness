@@ -355,7 +355,74 @@ window.SHOWCASE_CATEGORIES = [
                 id: 'semantic-memory',
                 name: 'Semantic Memory',
                 status: 'partial',
-                exec: 'Covered by the knowledge graph and vector store below rather than as its own separate memory type.',
+                exec: 'A background process pulls durable facts out of what you say and remembers them — just not as a separate memory type from episodic events.',
+                eng: 'ConversationFactExtractor runs an LLM-based extraction after each turn; facts above a confidence bar are written through the same KnowledgeMemoryService.RememberAsync pipeline Episodic Memory uses, tagged as a fact instead of an event.',
+                deepDive: {
+                    scenario: [
+                        {
+                            time: 'Turn 1',
+                            text: 'A user mentions, in passing, "I\'m the CTO here, and I really don\'t need the long version — just tell me what changed."',
+                        },
+                        {
+                            time: '+0s',
+                            text: 'The turn finishes and the response goes back to the user immediately. Separately, and without holding anything up, a second, cheaper model reads that same exchange looking for facts worth keeping.',
+                        },
+                        {
+                            time: '+0s',
+                            text: 'It pulls out two candidates: "user\'s role is CTO" and "user prefers terse updates." A third guess — "may also manage the infrastructure budget" — comes back too uncertain and is thrown away before it\'s ever stored.',
+                        },
+                        {
+                            time: 'Weeks later',
+                            text: 'In a completely different conversation, the user asks for a project update. The answer comes back short and to the point — that preference resurfaced automatically, blended in with whatever else the agent remembers.',
+                        },
+                    ],
+                    flow: [
+                        { title: 'Extract', tone: 'info', body: 'After every successful turn, a background call to a cheaper model reads the exchange and pulls out discrete, structured facts — not just the raw transcript.' },
+                        {
+                            title: 'Confidence Filter',
+                            tone: 'warn',
+                            body: 'Each candidate fact comes back with a confidence score. Anything underneath the line is silently dropped before it\'s ever written down.',
+                        },
+                        { title: 'Remember', tone: 'jargon', body: 'What survives is filed through the exact same pipeline Episodic Memory uses — the same safety scan, the same decay — just tagged "Fact" instead of an event.' },
+                        { title: 'Recall', tone: 'tip', body: 'Later, recall doesn\'t distinguish "a fact about you" from "something that happened" — it returns whichever is relevant, from the same undifferentiated bucket.' },
+                    ],
+                    narrative: [
+                        'Semantic memory usually means <mark class="hl">a durable fact about the world, detached from the moment you learned it</mark> — "the user is a CTO," not "the user told me on Tuesday they\'re a CTO." That second, timestamped version is episodic memory; the two are supposed to be different systems.',
+                        'What\'s real: after every successful turn, a <mark class="hl">background call to a cheaper model reads the conversation and pulls out discrete facts</mark> — not the raw text, but short, structured claims, each with a confidence score attached. Anything below the confidence bar is <mark class="hl">thrown away before it\'s ever stored</mark>, and the whole extraction step runs fire-and-forget on its own timer, so it never adds latency to the response the user is waiting for.',
+                        'Why it\'s <mark class="hl">"partial," not "built"</mark>: once a fact survives, it isn\'t stored anywhere distinct from an event — it\'s written into <mark class="hl">the exact same bucket as Episodic Memory</mark>, just with a different label. And the dial that\'s supposed to tune how strict the confidence bar is exists in configuration, but <mark class="hl">isn\'t actually wired to the code that filters facts</mark> — turning it up or down currently does nothing.',
+                    ],
+                    techTable: {
+                        columns: ['Source', 'How It Gets In', 'Scope'],
+                        rows: [
+                            ['Conversation facts', 'Pulled out of your own turns by a background model call, tagged with a type and a confidence score.', 'Yours alone — decays and can be forgotten like any other memory.'],
+                            ['Corpus entities', 'Extracted while ingesting documents into the knowledge graph — people, organizations, technologies.', 'Shared across your tenant, deduplicated by name and type.'],
+                        ],
+                    },
+                    engineeringFacts: [
+                        {
+                            title: 'One extra model call per turn',
+                            body: '<code>ConversationFactExtractor</code> runs a dedicated prompt through the cheapest available model tier after each successful turn — fire-and-forget, never blocking the response.',
+                        },
+                        {
+                            title: 'The confidence knob is disconnected',
+                            body: 'A configurable minimum-confidence setting exists (<code>KnowledgeBridgeConfig.MinConfidence</code>), but the extractor filters against its own fixed 0.7 constant instead — changing the setting has no effect today.',
+                        },
+                        {
+                            title: 'Facts and events share one bucket',
+                            body: 'A kept fact is written through the identical Remember call Episodic Memory uses, just tagged "Fact" — same decay curve, same safety gate, same graph.',
+                        },
+                        {
+                            title: 'Off by default',
+                            body: 'The whole pipeline sits behind one switch, disabled out of the box, so a freshly cloned template never starts remembering things about its users silently.',
+                        },
+                        {
+                            title: 'Entities are a separate, already-distinct system',
+                            body: 'Facts from conversation and entities from ingested documents both land in the graph, but through two different paths with different sharing rules — one private and per-user, one shared and deduplicated tenant-wide.',
+                        },
+                    ],
+                    whyItMatters:
+                        'This is the difference between an agent that remembers you said something and one that actually knows something about you. The gap isn\'t the idea — the extraction, the confidence gate, the decay are all real and running on every turn. It\'s finishing the separation: giving facts their own store instead of folding them into the same bucket as raw events, and actually wiring the confidence knob that\'s already been built.',
+                },
             },
             {
                 id: 'procedural-memory',
