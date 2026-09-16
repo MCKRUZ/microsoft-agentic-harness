@@ -301,17 +301,13 @@ window.SHOWCASE_CATEGORIES = [
                         },
                     ],
                     flow: [
-                        { kind: 'step', label: 'Remember', caption: 'A fact worth keeping shows up' },
-                        { kind: 'gate', label: 'Safety Check', caption: 'Screened before anything is trusted' },
+                        { title: 'Remember', body: 'A fact worth keeping shows up in conversation.' },
                         {
-                            kind: 'branch',
-                            branches: [
-                                { label: 'Trusted', tone: 'ok', note: 'stored & recallable' },
-                                { label: 'Quarantined', tone: 'warn', note: 'kept for audit only — never served back' },
-                            ],
+                            title: 'Safety Check',
+                            body: 'Screened before anything is trusted. If it passes, it’s stored and recallable. If it looks suspicious, it’s quarantined — kept for audit, but never served back to the agent.',
                         },
-                        { kind: 'step', label: 'Fades Over Time', caption: '~5%/day, until pruned entirely' },
-                        { kind: 'step', label: 'Recall', caption: 'Fast cache first, full search second — resets the fade' },
+                        { title: 'Fades Over Time', body: 'Loses roughly 5% of its importance per day it goes untouched, until it’s pruned entirely.' },
+                        { title: 'Recall', body: 'A fast cache is checked first; a fuller search runs only if that’s not enough. Being recalled resets the fade.' },
                     ],
                     narrative:
                         'Episodic memory usually means: memory of a specific thing that happened at a specific time — "the user told me X on Tuesday" — as opposed to semantic memory (general facts) or procedural memory (how to do something).\n\n' +
@@ -325,11 +321,26 @@ window.SHOWCASE_CATEGORIES = [
                         ],
                     },
                     engineeringFacts: [
-                        '<code>KnowledgeMemoryService</code> implements <code>IKnowledgeMemory</code>: <code>RememberAsync</code> / <code>RecallAsync</code> / <code>ForgetAsync</code> / <code>ImproveAsync</code>.',
-                        'Writes pass through <code>IMemoryWriteGate</code> first — it scans, classifies trust, and stamps provenance. A node stamped untrusted is written for audit but <code>IsRecallable</code> filters it out of every future recall, permanently.',
-                        'Recall is two-source: the in-session cache is checked first (sub-millisecond), falling through to a full graph traversal only if the cache doesn’t have enough results.',
-                        'Decay: <code>MemoryDecayService</code> stores a numeric <code>weight</code> and <code>last_accessed_at</code> per node; weight decays as <code>weight × (1 − decayRate)^daysSinceLastAccess</code> (default rate 0.05/day), with a separate pass pruning nodes below a threshold.',
-                        'Memory keys are namespaced by tenant and user (<code>memory:{tenant}:{user}:{key}</code>), so recall can never cross a scope boundary even by accident.',
+                        {
+                            title: 'Four real operations',
+                            body: '<code>KnowledgeMemoryService</code> implements Remember, Recall, Forget, and Improve — not just store-and-fetch.',
+                        },
+                        {
+                            title: 'The safety gate',
+                            body: 'Every write passes through <code>IMemoryWriteGate</code> first. An untrusted fact is still saved for audit, but is filtered out of every future recall, permanently.',
+                        },
+                        {
+                            title: 'Two-speed recall',
+                            body: 'The in-session cache is checked first (sub-millisecond); a full graph search only runs if that’s not enough.',
+                        },
+                        {
+                            title: 'The decay formula',
+                            body: 'Weight decays as <code>weight × (1 − rate)^days</code> since last access (default rate: 5%/day), with a separate pass pruning nodes below a threshold.',
+                        },
+                        {
+                            title: 'Scoped by user',
+                            body: 'Keys are namespaced by tenant and user, so recall can never cross a scope boundary even by accident.',
+                        },
                     ],
                     whyItMatters:
                         'This is what lets an agent feel like it "remembers you" across sessions — without either forgetting everything the moment a conversation ends, or turning into a liability that will happily remember whatever a bad actor tries to plant. Getting both right at once is the actual hard part; most systems pick one.',

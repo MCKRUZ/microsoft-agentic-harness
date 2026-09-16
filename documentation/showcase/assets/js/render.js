@@ -208,20 +208,6 @@
         );
     }
 
-    function renderTechEntryProsCons(entry) {
-        var pros = (entry.pros || []).map(function (p) { return '<li>' + escapeHtml(p) + '</li>'; }).join('');
-        var cons = (entry.cons || []).map(function (c) { return '<li>' + escapeHtml(c) + '</li>'; }).join('');
-        return (
-            '<p>' + escapeHtml(entry.blurb) + '</p>' +
-            '<div class="proscons-grid">' +
-            '<div><div class="proscons-col-label pros">Pros</div><ul class="chip-list pros">' + pros + '</ul></div>' +
-            '<div><div class="proscons-col-label cons">Cons</div><ul class="chip-list cons">' + cons + '</ul></div>' +
-            '</div>' +
-            '<p style="margin-top:10px;font-size:12px;color:var(--bp-text-dim)"><strong style="color:var(--bp-text)">Best for:</strong> ' +
-            escapeHtml(entry.best) + ' · ' + escapeHtml(entry.maturity) + '</p>'
-        );
-    }
-
     /* ---------------- Quick-look content (no deepDive) ---------------- */
 
     function renderQuickLook(category, box) {
@@ -237,7 +223,7 @@
         if (box.techs && box.techs.length) {
             techsHtml =
                 '<div class="overlay-section-title">Technologies that solve this</div>' +
-                '<div class="table-wrap"><div class="table-scroll"><table class="data-table">' +
+                '<table>' +
                 '<thead><tr><th>Technology</th><th>Best For</th><th>Maturity</th></tr></thead><tbody>' +
                 box.techs
                     .map(function (t) {
@@ -251,18 +237,7 @@
                         );
                     })
                     .join('') +
-                '</tbody></table></div></div>' +
-                box.techs
-                    .filter(function (t) { return techCatalog[t]; })
-                    .map(function (t) {
-                        return (
-                            '<details class="collapsible" style="margin-top:10px">' +
-                            '<summary>' + escapeHtml(t) + ' — pros / cons</summary>' +
-                            '<div class="collapsible-body">' + renderTechEntryProsCons(techCatalog[t]) + '</div>' +
-                            '</details>'
-                        );
-                    })
-                    .join('');
+                '</tbody></table>';
         }
 
         var glossaryHtml = renderGlossaryChips(findGlossaryHits(box.name + ' ' + box.exec + ' ' + (box.eng || '')));
@@ -279,54 +254,36 @@
 
     /* ---------------- Deep-dive content ---------------- */
 
-    function renderScenario(steps) {
+    /* Scenario and flow both reuse the site's existing numbered .steps/.step timeline
+       component (see the onboarding chapters) instead of a bespoke diagram. */
+    function renderStepList(title, items, mapStep) {
         return (
             '<section class="overlay-section">' +
-            '<h2 class="overlay-section-title">The Scenario</h2>' +
-            '<ol class="scenario-timeline">' +
-            steps
-                .map(function (step) {
-                    return (
-                        '<li><span class="scenario-time">' + escapeHtml(step.time) + '</span>' +
-                        '<p>' + escapeHtml(step.text) + '</p></li>'
-                    );
-                })
-                .join('') +
+            '<h2 class="overlay-section-title">' + escapeHtml(title) + '</h2>' +
+            '<ol class="steps">' +
+            items.map(mapStep).join('') +
             '</ol></section>'
         );
     }
 
-    function renderFlowNode(node) {
-        if (node.kind === 'branch') {
+    function renderScenario(steps) {
+        return renderStepList('The Scenario', steps, function (step, i) {
             return (
-                '<div class="flow-branch">' +
-                node.branches
-                    .map(function (b) {
-                        var cls = b.tone === 'ok' ? 'flow-ok' : b.tone === 'warn' ? 'flow-warn' : '';
-                        return (
-                            '<div class="flow-branch-row"><div class="flow-box ' + cls + '">' + escapeHtml(b.label) + '</div>' +
-                            '<span class="flow-branch-note">' + escapeHtml(b.note) + '</span></div>'
-                        );
-                    })
-                    .join('') +
-                '</div>'
+                '<li class="step">' +
+                '<div class="step-meta">' + escapeHtml(step.time) + '</div>' +
+                '<p>' + escapeHtml(step.text) + '</p></li>'
             );
-        }
-        var cls = node.kind === 'gate' ? 'flow-gate' : '';
-        return (
-            '<div class="flow-node"><div class="flow-box ' + cls + '">' + escapeHtml(node.label) + '</div>' +
-            (node.caption ? '<p class="flow-caption">' + escapeHtml(node.caption) + '</p>' : '') + '</div>'
-        );
+        });
     }
 
     function renderFlow(flow) {
-        var html = flow.map(renderFlowNode).join('<span class="flow-arrow">→</span>');
-        return (
-            '<section class="overlay-section">' +
-            '<h2 class="overlay-section-title">How It Actually Works</h2>' +
-            '<div class="flow-diagram">' + html + '</div>' +
-            '</section>'
-        );
+        return renderStepList('How It Actually Works', flow, function (node) {
+            return (
+                '<li class="step">' +
+                '<div class="step-title">' + escapeHtml(node.title) + '</div>' +
+                '<p>' + escapeHtml(node.body) + '</p></li>'
+            );
+        });
     }
 
     function renderNarrative(text) {
@@ -343,7 +300,7 @@
         return (
             '<section class="overlay-section">' +
             '<h2 class="overlay-section-title">Technology Notes</h2>' +
-            '<div class="table-wrap"><div class="table-scroll"><table class="data-table">' +
+            '<table>' +
             '<thead><tr>' + techTable.columns.map(function (c) { return '<th>' + escapeHtml(c) + '</th>'; }).join('') + '</tr></thead>' +
             '<tbody>' +
             techTable.rows
@@ -351,19 +308,29 @@
                     return '<tr>' + row.map(function (cell) { return '<td>' + escapeHtml(cell) + '</td>'; }).join('') + '</tr>';
                 })
                 .join('') +
-            '</tbody></table></div></div>' +
+            '</tbody></table>' +
             '</section>'
         );
     }
 
+    /* Short concept cards (title + one-line explanation) instead of a wall of bulleted
+       prose — reuses the site's existing .card-grid/.card component. */
     function renderEngineeringFacts(facts) {
         return (
             '<section class="overlay-section">' +
-            '<details class="collapsible">' +
-            '<summary>Under the Hood (engineering detail)</summary>' +
-            '<div class="collapsible-body"><ul class="eng-facts">' +
-            facts.map(function (f) { return '<li>' + f + '</li>'; }).join('') +
-            '</ul></div></details></section>'
+            '<h2 class="overlay-section-title">Under the Hood</h2>' +
+            '<div class="card-grid">' +
+            facts
+                .map(function (f) {
+                    return (
+                        '<div class="card">' +
+                        '<div class="card-title">' + escapeHtml(f.title) + '</div>' +
+                        '<p class="card-desc">' + f.body + '</p>' +
+                        '</div>'
+                    );
+                })
+                .join('') +
+            '</div></section>'
         );
     }
 
@@ -371,7 +338,7 @@
         return (
             '<section class="overlay-section overlay-closing">' +
             '<h2 class="overlay-section-title">Why It Matters</h2>' +
-            '<p style="font-size:var(--text-base);line-height:1.7;color:var(--bp-text)">' + escapeHtml(text) + '</p>' +
+            '<p style="font-size:var(--text-base);line-height:1.7;color:var(--color-text)">' + escapeHtml(text) + '</p>' +
             '</section>'
         );
     }
