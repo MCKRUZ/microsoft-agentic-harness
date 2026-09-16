@@ -277,7 +277,63 @@ window.SHOWCASE_CATEGORIES = [
                 status: 'partial',
                 exec: 'Real memory of past interactions exists and fades over time, just not organized under this exact name.',
                 eng: 'KnowledgeMemoryService’s Remember/Recall/Forget/Improve, with MemoryDecayService applying exponential weight decay (5% per day untouched, by default) and pruning below a threshold.',
-                deepDiveLink: 'capability/episodic-memory.html',
+                deepDive: {
+                    scenario: [
+                        {
+                            time: 'Mon',
+                            text: 'A user mentions, mid-conversation, that their team is migrating off a legacy system. Nothing about the current task depends on it — but it’s worth keeping.',
+                        },
+                        {
+                            time: '+0s',
+                            text: 'Before it’s kept anywhere, the fact is screened — the same way an email attachment gets scanned before you trust it. Nothing looks like an attempt to plant a hidden instruction, so it’s marked trustworthy and filed away.',
+                        },
+                        {
+                            time: 'Day 1–20',
+                            text: 'Nobody asks about it again. Like an unused muscle, its importance quietly fades a little each day it goes untouched.',
+                        },
+                        {
+                            time: 'Day 21',
+                            text: 'In a completely different conversation, the user asks something related. The fact resurfaces automatically — no one had to remind the agent it existed.',
+                        },
+                        {
+                            time: 'Day 21',
+                            text: 'Being recalled resets its clock — it’s relevant again, so it stops fading for now.',
+                        },
+                    ],
+                    flow: [
+                        { kind: 'step', label: 'Remember', caption: 'A fact worth keeping shows up' },
+                        { kind: 'gate', label: 'Safety Check', caption: 'Screened before anything is trusted' },
+                        {
+                            kind: 'branch',
+                            branches: [
+                                { label: 'Trusted', tone: 'ok', note: 'stored & recallable' },
+                                { label: 'Quarantined', tone: 'warn', note: 'kept for audit only — never served back' },
+                            ],
+                        },
+                        { kind: 'step', label: 'Fades Over Time', caption: '~5%/day, until pruned entirely' },
+                        { kind: 'step', label: 'Recall', caption: 'Fast cache first, full search second — resets the fade' },
+                    ],
+                    narrative:
+                        'Episodic memory usually means: memory of a specific thing that happened at a specific time — "the user told me X on Tuesday" — as opposed to semantic memory (general facts) or procedural memory (how to do something).\n\n' +
+                        'What’s real: a genuine memory system — remember a fact, recall it later, forget it, and improve it based on feedback. Two things make it more than a toy. Every memory is safety-scanned before it’s trusted: before anything gets remembered, it passes through a gate that scans for injected instructions and stamps where the fact came from. If something looks untrustworthy, it still gets written for audit purposes, but it’s quarantined and can never be served back to the agent — a real security property most memory systems skip entirely. And memories fade on purpose: each fact carries a weight that decays smoothly over time and is deleted outright once it drops below a threshold — like human memory, not everything is kept with equal weight.\n\n' +
+                        'Why it’s "partial," not "built": the system doesn’t actually distinguish "this happened at a specific moment" from "this is just a general fact worth knowing." It’s one undifferentiated bucket of remembered facts, tagged with a free-text label, not a real timeline of events.',
+                    techTable: {
+                        columns: ['Mode', 'What It Does', 'Default?'],
+                        rows: [
+                            ['Legacy recall', 'Substring match against the session cache, then a graph traversal.', 'Yes'],
+                            ['Harmonic recall', 'Matches by meaning (an abstraction + cue anchors), and can merge near-duplicate memories instead of creating new ones.', 'No — off by default'],
+                        ],
+                    },
+                    engineeringFacts: [
+                        '<code>KnowledgeMemoryService</code> implements <code>IKnowledgeMemory</code>: <code>RememberAsync</code> / <code>RecallAsync</code> / <code>ForgetAsync</code> / <code>ImproveAsync</code>.',
+                        'Writes pass through <code>IMemoryWriteGate</code> first — it scans, classifies trust, and stamps provenance. A node stamped untrusted is written for audit but <code>IsRecallable</code> filters it out of every future recall, permanently.',
+                        'Recall is two-source: the in-session cache is checked first (sub-millisecond), falling through to a full graph traversal only if the cache doesn’t have enough results.',
+                        'Decay: <code>MemoryDecayService</code> stores a numeric <code>weight</code> and <code>last_accessed_at</code> per node; weight decays as <code>weight × (1 − decayRate)^daysSinceLastAccess</code> (default rate 0.05/day), with a separate pass pruning nodes below a threshold.',
+                        'Memory keys are namespaced by tenant and user (<code>memory:{tenant}:{user}:{key}</code>), so recall can never cross a scope boundary even by accident.',
+                    ],
+                    whyItMatters:
+                        'This is what lets an agent feel like it "remembers you" across sessions — without either forgetting everything the moment a conversation ends, or turning into a liability that will happily remember whatever a bad actor tries to plant. Getting both right at once is the actual hard part; most systems pick one.',
+                },
             },
             {
                 id: 'semantic-memory',
