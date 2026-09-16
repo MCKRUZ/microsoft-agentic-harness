@@ -145,21 +145,35 @@
         return !!(target.closest('#dossier') || target.closest('.atlas-controls') || target.closest('.atlas-theme-toggle'));
     }
 
+    var DRAG_THRESHOLD = 4;
+
     viewport.addEventListener('pointerdown', function (e) {
         if (e.button !== 0 || isOverlayTarget(e.target)) return;
-        drag = { startX: e.clientX, startY: e.clientY, tx: transform.x, ty: transform.y };
-        svg.classList.add('is-dragging');
-        try {
-            viewport.setPointerCapture(e.pointerId);
-        } catch (err) {
-            /* pointer already released between event dispatch and capture — safe to ignore */
-        }
+        drag = { startX: e.clientX, startY: e.clientY, tx: transform.x, ty: transform.y, pointerId: e.pointerId, active: false };
     });
 
     viewport.addEventListener('pointermove', function (e) {
-        if (!drag) return;
-        transform.x = drag.tx + (e.clientX - drag.startX);
-        transform.y = drag.ty + (e.clientY - drag.startY);
+        if (!drag || e.pointerId !== drag.pointerId) return;
+        var dx = e.clientX - drag.startX;
+        var dy = e.clientY - drag.startY;
+
+        if (!drag.active) {
+            if (Math.abs(dx) < DRAG_THRESHOLD && Math.abs(dy) < DRAG_THRESHOLD) return;
+            /* Real movement past the threshold — this is a drag, not a click. Only NOW
+               capture the pointer: capturing on pointerdown retargets the resulting click
+               event to viewport itself, so a plain click on a component box never reached
+               its own click listener. */
+            drag.active = true;
+            svg.classList.add('is-dragging');
+            try {
+                viewport.setPointerCapture(e.pointerId);
+            } catch (err) {
+                /* pointer already released between event dispatch and capture — safe to ignore */
+            }
+        }
+
+        transform.x = drag.tx + dx;
+        transform.y = drag.ty + dy;
         scheduleTransformUpdate();
     });
 

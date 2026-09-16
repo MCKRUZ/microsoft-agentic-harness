@@ -12,12 +12,62 @@
     border-radius: var(--radius-sm);
 }
 
+/* The onboarding shell's .content-wrap/.content are sized for a narrow prose column
+   (max-width: 760px, plus a right-rail TOC gutter) — right for reading, wrong for a map
+   that's supposed to dominate the screen. Undo both, for this page only, so the atlas gets
+   the full width next to the sidebar instead of sitting in a narrow reading column. */
+.showcase-body .content-wrap {
+    max-width: none;
+    grid-template-columns: 1fr;
+    padding: var(--space-6) var(--space-6) var(--space-8);
+    display: block;
+}
+
+/* This — not content-wrap — owns the full first screen, so the footer block below (its
+   sibling, outside this element) never competes with the map for the same vh budget. */
+.showcase-body .content {
+    max-width: none;
+    display: flex;
+    flex-direction: column;
+    min-height: calc(100vh - 56px); /* content-wrap's own top (24px) + bottom (32px) padding */
+}
+
+/* styles.css's .hero has generous padding/margin (~120px combined) meant to give a
+   scrolling prose page breathing room before the first paragraph — wrong here, where the
+   map needs to dominate the screen immediately. */
+.showcase-body .hero {
+    max-width: 75ch;
+    flex: none;
+    padding: 0 0 var(--space-3);
+    margin-bottom: 0;
+    border-bottom: none;
+}
+
+/* The map is the point of this page, not the intro copy — keep the hero to a couple of
+   lines so the atlas gets the space, instead of the editorial-sized text other pages use. */
+.showcase-body .hero-title {
+    font-size: var(--text-3xl);
+    margin: 0 0 var(--space-2);
+}
+
+.showcase-body .hero-lead {
+    font-size: var(--text-sm);
+    line-height: 1.5;
+    margin: 0;
+}
+
+.showcase-footer {
+    max-width: 75ch;
+    margin-top: var(--space-6);
+}
+
 /* ---------- Atlas viewport ---------- */
+/* flex: 1 fills whatever space is left after the hero, instead of guessing its height */
 .atlas-viewport {
     position: relative;
-    height: min(78vh, 900px);
+    flex: 1 1 auto;
     min-height: 420px;
-    margin: var(--space-8) 0 var(--space-3);
+    margin: var(--space-6) 0 var(--space-3);
     border: 1px solid var(--color-border);
     border-radius: var(--radius-xl);
     background: var(--color-bg-subtle);
