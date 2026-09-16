@@ -326,8 +326,9 @@
 
     function findGlossaryHits(text) {
         var hits = [];
+        var haystack = text.toLowerCase();
         Object.keys(glossary).forEach(function (term) {
-            if (text.indexOf(term) !== -1) hits.push(term);
+            if (haystack.indexOf(term.toLowerCase()) !== -1) hits.push(term);
         });
         return hits;
     }
@@ -433,7 +434,7 @@
             '<div class="dossier-components">' +
             componentsHtml +
             '</div>' +
-            renderGlossaryChips(findGlossaryHits(layer.exec + ' ' + layer.eng))
+            renderGlossaryChips(findGlossaryHits(layer.name + ' ' + layer.exec + ' ' + layer.eng))
         );
     }
 
@@ -478,7 +479,7 @@
             escapeHtml(summary) +
             '</p>' +
             techsHtml +
-            renderGlossaryChips(findGlossaryHits(comp.exec + ' ' + comp.eng)) +
+            renderGlossaryChips(findGlossaryHits(comp.name + ' ' + comp.exec + ' ' + comp.eng)) +
             (layer.docLink
                 ? '<p style="margin-top:24px"><a class="dossier-doclink" href="' + escapeHtml(layer.docLink) + '">Full documentation →</a></p>'
                 : '')

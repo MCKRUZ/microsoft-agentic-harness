@@ -492,6 +492,4 @@ window.SHOWCASE_GLOSSARY = {
     'Multi-Tenant Isolation': "Keeping different users' or customers' data provably separate on shared infrastructure.",
     'Autonomy Tier': "A graded level of independence an agent is allowed to operate at before requiring a human's sign-off.",
     Sandbox: 'An isolated execution environment that limits what a process can access or affect.',
-    DAG: 'Directed Acyclic Graph — a dependency structure with no circular references.',
-    CQRS: 'Command/Query Responsibility Segregation — separating operations that change state from operations that read it.',
 };

@@ -526,6 +526,14 @@ html[data-theme='dark'] {
     --sidebar-bg: #0d1118;
 }
 
+/* styles.css's .hero-title hardcodes a light-mode gradient via background-clip: text,
+   which ignores --color-text entirely and renders near-invisible on a dark background. */
+html[data-theme='dark'] .hero-title {
+    background: linear-gradient(135deg, #e6e9ef 0%, #7fb0ff 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+}
+
 @media (max-width: 640px) {
     .atlas-viewport {
         height: min(70vh, 640px);
