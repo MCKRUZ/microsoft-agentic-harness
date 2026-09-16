@@ -276,7 +276,8 @@ window.SHOWCASE_CATEGORIES = [
                 name: 'Episodic Memory',
                 status: 'partial',
                 exec: 'Real memory of past interactions exists and fades over time, just not organized under this exact name.',
-                eng: 'KnowledgeMemoryService’s Remember/Recall/Forget/Improve with CRITICAL/STANDARD/EPHEMERAL decay tiers covers this conceptually.',
+                eng: 'KnowledgeMemoryService’s Remember/Recall/Forget/Improve, with MemoryDecayService applying exponential weight decay (5% per day untouched, by default) and pruning below a threshold.',
+                deepDiveLink: 'capability/episodic-memory.html',
             },
             {
                 id: 'semantic-memory',

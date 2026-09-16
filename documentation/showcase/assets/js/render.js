@@ -126,6 +126,7 @@
                             '">' +
                             '<span class="capability-box-name">' +
                             escapeHtml(box.name) +
+                            (box.deepDiveLink ? ' ↗' : '') +
                             '</span>' +
                             (box.status !== 'built' ? '<span class="capability-box-badge">' + escapeHtml(STATUS_LABELS[box.status]) + '</span>' : '') +
                             '</button>'
@@ -158,6 +159,11 @@
 
         grid.querySelectorAll('.capability-box').forEach(function (btn) {
             btn.addEventListener('click', function () {
+                var found = findBox(btn.getAttribute('data-category-id'), btn.getAttribute('data-box-id'));
+                if (found && found.box.deepDiveLink) {
+                    window.location.href = found.box.deepDiveLink;
+                    return;
+                }
                 openBox(btn.getAttribute('data-category-id'), btn.getAttribute('data-box-id'));
             });
         });
