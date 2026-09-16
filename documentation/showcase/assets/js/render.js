@@ -1,9 +1,11 @@
 /**
- * Renders the flat categorized capability grid from window.SHOWCASE_CATEGORIES (data.js).
+ * Renders the flat categorized capability grid from window.SHOWCASE_CATEGORIES (data.js), and a
+ * full-viewport overlay (same URL, no navigation) for a box's detail — a rich "deep dive" when
+ * box.deepDive exists, otherwise a shorter quick-look built from the box's plain exec/eng fields.
  * Vanilla JS, no build step — matches this repo's other static Pages sites.
  *
- * View state (which box is open, exec vs. eng) is synced to the URL hash, e.g.
- * #agent-runtime:skills-system or #agent-runtime:skills-system:eng.
+ * View state is synced to the URL hash, e.g. #agent-runtime:skills-system or
+ * #agent-runtime:skills-system:eng.
  */
 (function () {
     'use strict';
@@ -41,10 +43,10 @@
     var THEME_KEY = 'showcase-grid-theme';
 
     var grid = document.getElementById('capability-grid');
-    var dossier = document.getElementById('dossier');
-    var dossierBackdrop = document.getElementById('dossier-backdrop');
+    var overlay = document.getElementById('overlay');
+    var overlayBackdrop = document.getElementById('overlay-backdrop');
     var themeToggleBtn = document.getElementById('theme-toggle');
-    if (!grid || !dossier) return;
+    if (!grid || !overlay) return;
 
     var state = { categoryId: null, boxId: null, view: 'exec' };
 
@@ -108,15 +110,18 @@
     /* ---------------- Grid rendering ---------------- */
 
     function renderGrid() {
+        var boxIndex = 0;
         grid.innerHTML = categories
-            .map(function (category) {
+            .map(function (category, categoryIndex) {
                 var color = CATEGORY_COLORS[category.id] || '#2563eb';
                 var boxesHtml = category.boxes
                     .map(function (box) {
                         var isActive = state.categoryId === category.id && state.boxId === box.id;
-                        return (
+                        var html =
                             '<button type="button" class="capability-box' +
                             (isActive ? ' is-active' : '') +
+                            '" style="--i: ' +
+                            boxIndex +
                             '" data-category-id="' +
                             escapeHtml(category.id) +
                             '" data-box-id="' +
@@ -126,17 +131,20 @@
                             '">' +
                             '<span class="capability-box-name">' +
                             escapeHtml(box.name) +
-                            (box.deepDiveLink ? ' ↗' : '') +
+                            (box.deepDive ? ' ✦' : '') +
                             '</span>' +
                             (box.status !== 'built' ? '<span class="capability-box-badge">' + escapeHtml(STATUS_LABELS[box.status]) + '</span>' : '') +
-                            '</button>'
-                        );
+                            '</button>';
+                        boxIndex += 1;
+                        return html;
                     })
                     .join('');
 
                 return (
                     '<section class="capability-category" style="--category-color: ' +
                     color +
+                    '; --i: ' +
+                    categoryIndex +
                     '">' +
                     '<div class="capability-category-header">' +
                     '<span class="capability-category-number">' +
@@ -159,17 +167,12 @@
 
         grid.querySelectorAll('.capability-box').forEach(function (btn) {
             btn.addEventListener('click', function () {
-                var found = findBox(btn.getAttribute('data-category-id'), btn.getAttribute('data-box-id'));
-                if (found && found.box.deepDiveLink) {
-                    window.location.href = found.box.deepDiveLink;
-                    return;
-                }
                 openBox(btn.getAttribute('data-category-id'), btn.getAttribute('data-box-id'));
             });
         });
     }
 
-    /* ---------------- Dossier ---------------- */
+    /* ---------------- Shared helpers ---------------- */
 
     function findGlossaryHits(text) {
         var hits = [];
@@ -180,28 +183,11 @@
         return hits;
     }
 
-    function renderSectionLabel(text, count) {
-        return '<div class="dossier-section-label">' + escapeHtml(text) + '<span class="count">' + count + '</span></div>';
-    }
-
-    function renderViewToggle() {
-        return (
-            '<div class="dossier-view-toggle" role="group" aria-label="Reading level">' +
-            '<button type="button" data-view="exec" aria-pressed="' +
-            (state.view === 'exec') +
-            '">Plain English</button>' +
-            '<button type="button" data-view="eng" aria-pressed="' +
-            (state.view === 'eng') +
-            '">Engineering detail</button>' +
-            '</div>'
-        );
-    }
-
     function renderGlossaryChips(terms) {
         if (!terms.length) return '';
         return (
-            renderSectionLabel('Glossary', terms.length) +
-            '<div class="dossier-glossary">' +
+            '<div class="overlay-section-title">Glossary</div>' +
+            '<div class="overlay-glossary">' +
             terms
                 .map(function (term) {
                     return (
@@ -222,67 +208,58 @@
         );
     }
 
-    function renderTechEntry(entry) {
-        var pros = (entry.pros || []).map(function (p) { return '<li>+ ' + escapeHtml(p) + '</li>'; }).join('');
-        var cons = (entry.cons || []).map(function (c) { return '<li>− ' + escapeHtml(c) + '</li>'; }).join('');
+    function renderTechEntryProsCons(entry) {
+        var pros = (entry.pros || []).map(function (p) { return '<li>' + escapeHtml(p) + '</li>'; }).join('');
+        var cons = (entry.cons || []).map(function (c) { return '<li>' + escapeHtml(c) + '</li>'; }).join('');
         return (
-            '<p class="dossier-tech-blurb">' +
-            escapeHtml(entry.blurb) +
-            '</p>' +
-            '<div class="dossier-tech-proscons">' +
-            '<div><div class="dossier-tech-proscons-label pros">PROS</div><ul>' +
-            pros +
-            '</ul></div>' +
-            '<div><div class="dossier-tech-proscons-label cons">CONS</div><ul>' +
-            cons +
-            '</ul></div>' +
+            '<p>' + escapeHtml(entry.blurb) + '</p>' +
+            '<div class="proscons-grid">' +
+            '<div><div class="proscons-col-label pros">Pros</div><ul class="chip-list pros">' + pros + '</ul></div>' +
+            '<div><div class="proscons-col-label cons">Cons</div><ul class="chip-list cons">' + cons + '</ul></div>' +
             '</div>' +
-            '<div class="dossier-tech-best"><strong>BEST FOR</strong> ' +
-            escapeHtml(entry.best) +
-            ' · ' +
-            escapeHtml(entry.maturity) +
-            '</div>'
+            '<p style="margin-top:10px;font-size:12px;color:var(--bp-text-dim)"><strong style="color:var(--bp-text)">Best for:</strong> ' +
+            escapeHtml(entry.best) + ' · ' + escapeHtml(entry.maturity) + '</p>'
         );
     }
 
-    function renderDossier() {
-        var found = state.categoryId && state.boxId ? findBox(state.categoryId, state.boxId) : null;
+    /* ---------------- Quick-look content (no deepDive) ---------------- */
 
-        if (!found) {
-            dossier.hidden = true;
-            dossier.innerHTML = '';
-            if (dossierBackdrop) dossierBackdrop.hidden = true;
-            return;
-        }
-
-        dossier.hidden = false;
-        if (dossierBackdrop) dossierBackdrop.hidden = false;
-        var category = found.category;
-        var box = found.box;
+    function renderQuickLook(category, box) {
         var summary = state.view === 'eng' && box.eng ? box.eng : box.exec;
+        var viewToggle = box.eng
+            ? '<div class="overlay-view-toggle" role="group" aria-label="Reading level">' +
+              '<button type="button" data-view="exec" aria-pressed="' + (state.view === 'exec') + '">Plain English</button>' +
+              '<button type="button" data-view="eng" aria-pressed="' + (state.view === 'eng') + '">Engineering detail</button>' +
+              '</div>'
+            : '';
 
         var techsHtml = '';
         if (box.techs && box.techs.length) {
             techsHtml =
-                renderSectionLabel('Technologies that solve this', box.techs.length) +
+                '<div class="overlay-section-title">Technologies that solve this</div>' +
+                '<div class="table-wrap"><div class="table-scroll"><table class="data-table">' +
+                '<thead><tr><th>Technology</th><th>Best For</th><th>Maturity</th></tr></thead><tbody>' +
                 box.techs
-                    .map(function (t, i) {
+                    .map(function (t) {
                         var entry = techCatalog[t];
                         return (
-                            '<button type="button" class="dossier-tech-row" data-tech-toggle>' +
-                            '<span class="dossier-component-idx">' +
-                            String(i + 1).padStart(2, '0') +
-                            '</span>' +
-                            '<span class="dossier-tech-name">' +
-                            escapeHtml(t) +
-                            '</span>' +
-                            '<span class="dossier-tech-marker">' +
-                            (entry ? 'ANALYSIS' : 'BRIEF') +
-                            ' →</span>' +
-                            '</button>' +
-                            '<div class="dossier-tech-detail" hidden>' +
-                            (entry ? renderTechEntry(entry) : '') +
-                            '</div>'
+                            '<tr>' +
+                            '<td>' + escapeHtml(t) + '</td>' +
+                            '<td>' + (entry ? escapeHtml(entry.best) : '—') + '</td>' +
+                            '<td>' + (entry ? escapeHtml(entry.maturity) : '—') + '</td>' +
+                            '</tr>'
+                        );
+                    })
+                    .join('') +
+                '</tbody></table></div></div>' +
+                box.techs
+                    .filter(function (t) { return techCatalog[t]; })
+                    .map(function (t) {
+                        return (
+                            '<details class="collapsible" style="margin-top:10px">' +
+                            '<summary>' + escapeHtml(t) + ' — pros / cons</summary>' +
+                            '<div class="collapsible-body">' + renderTechEntryProsCons(techCatalog[t]) + '</div>' +
+                            '</details>'
                         );
                     })
                     .join('');
@@ -290,59 +267,181 @@
 
         var glossaryHtml = renderGlossaryChips(findGlossaryHits(box.name + ' ' + box.exec + ' ' + (box.eng || '')));
 
-        dossier.innerHTML =
-            '<div class="dossier-breadcrumb">' +
-            '<span>' +
-            category.number +
-            ' ' +
-            escapeHtml(category.name) +
-            ' / ' +
-            escapeHtml(box.name) +
-            '</span>' +
-            '<button type="button" class="dossier-close" data-action="close" aria-label="Close">&times;</button>' +
-            '</div>' +
-            '<span class="dossier-status" data-status="' +
-            escapeHtml(box.status) +
-            '">' +
-            escapeHtml(STATUS_LABELS[box.status]) +
-            '</span>' +
-            (box.tech ? '<span class="dossier-tech-badge">' + escapeHtml(box.tech) + '</span>' : '') +
-            '<h2 class="dossier-name">' +
-            escapeHtml(box.name) +
-            '</h2>' +
-            (box.eng ? renderViewToggle() : '') +
-            '<p class="dossier-summary">' +
-            escapeHtml(summary) +
-            '</p>' +
+        return (
+            (box.tech ? '<span class="overlay-tech-badge">' + escapeHtml(box.tech) + '</span>' : '') +
+            viewToggle +
+            '<p class="overlay-hook">' + escapeHtml(summary) + '</p>' +
             techsHtml +
             glossaryHtml +
-            (box.docLink ? '<p style="margin-top:24px"><a class="dossier-doclink" href="' + escapeHtml(box.docLink) + '">Full documentation →</a></p>' : '');
+            (box.docLink ? '<p style="margin-top:24px"><a class="overlay-doclink" href="' + escapeHtml(box.docLink) + '">Full documentation →</a></p>' : '')
+        );
+    }
 
-        var closeBtn = dossier.querySelector('[data-action="close"]');
-        if (closeBtn) closeBtn.addEventListener('click', closeDossier);
+    /* ---------------- Deep-dive content ---------------- */
 
-        dossier.querySelectorAll('[data-view]').forEach(function (btn) {
+    function renderScenario(steps) {
+        return (
+            '<section class="overlay-section">' +
+            '<h2 class="overlay-section-title">The Scenario</h2>' +
+            '<ol class="scenario-timeline">' +
+            steps
+                .map(function (step) {
+                    return (
+                        '<li><span class="scenario-time">' + escapeHtml(step.time) + '</span>' +
+                        '<p>' + escapeHtml(step.text) + '</p></li>'
+                    );
+                })
+                .join('') +
+            '</ol></section>'
+        );
+    }
+
+    function renderFlowNode(node) {
+        if (node.kind === 'branch') {
+            return (
+                '<div class="flow-branch">' +
+                node.branches
+                    .map(function (b) {
+                        var cls = b.tone === 'ok' ? 'flow-ok' : b.tone === 'warn' ? 'flow-warn' : '';
+                        return (
+                            '<div class="flow-branch-row"><div class="flow-box ' + cls + '">' + escapeHtml(b.label) + '</div>' +
+                            '<span class="flow-branch-note">' + escapeHtml(b.note) + '</span></div>'
+                        );
+                    })
+                    .join('') +
+                '</div>'
+            );
+        }
+        var cls = node.kind === 'gate' ? 'flow-gate' : '';
+        return (
+            '<div class="flow-node"><div class="flow-box ' + cls + '">' + escapeHtml(node.label) + '</div>' +
+            (node.caption ? '<p class="flow-caption">' + escapeHtml(node.caption) + '</p>' : '') + '</div>'
+        );
+    }
+
+    function renderFlow(flow) {
+        var html = flow.map(renderFlowNode).join('<span class="flow-arrow">→</span>');
+        return (
+            '<section class="overlay-section">' +
+            '<h2 class="overlay-section-title">How It Actually Works</h2>' +
+            '<div class="flow-diagram">' + html + '</div>' +
+            '</section>'
+        );
+    }
+
+    function renderNarrative(text) {
+        var paragraphs = text.split('\n\n').map(function (p) { return '<p>' + escapeHtml(p) + '</p>'; }).join('');
+        return (
+            '<section class="overlay-section">' +
+            '<h2 class="overlay-section-title">What’s Real, and Why</h2>' +
+            '<div class="overlay-narrative">' + paragraphs + '</div>' +
+            '</section>'
+        );
+    }
+
+    function renderTechTable(techTable) {
+        return (
+            '<section class="overlay-section">' +
+            '<h2 class="overlay-section-title">Technology Notes</h2>' +
+            '<div class="table-wrap"><div class="table-scroll"><table class="data-table">' +
+            '<thead><tr>' + techTable.columns.map(function (c) { return '<th>' + escapeHtml(c) + '</th>'; }).join('') + '</tr></thead>' +
+            '<tbody>' +
+            techTable.rows
+                .map(function (row) {
+                    return '<tr>' + row.map(function (cell) { return '<td>' + escapeHtml(cell) + '</td>'; }).join('') + '</tr>';
+                })
+                .join('') +
+            '</tbody></table></div></div>' +
+            '</section>'
+        );
+    }
+
+    function renderEngineeringFacts(facts) {
+        return (
+            '<section class="overlay-section">' +
+            '<details class="collapsible">' +
+            '<summary>Under the Hood (engineering detail)</summary>' +
+            '<div class="collapsible-body"><ul class="eng-facts">' +
+            facts.map(function (f) { return '<li>' + f + '</li>'; }).join('') +
+            '</ul></div></details></section>'
+        );
+    }
+
+    function renderWhyItMatters(text) {
+        return (
+            '<section class="overlay-section overlay-closing">' +
+            '<h2 class="overlay-section-title">Why It Matters</h2>' +
+            '<p style="font-size:var(--text-base);line-height:1.7;color:var(--bp-text)">' + escapeHtml(text) + '</p>' +
+            '</section>'
+        );
+    }
+
+    function renderDeepDive(box) {
+        var dd = box.deepDive;
+        return (
+            (dd.scenario ? renderScenario(dd.scenario) : '') +
+            (dd.flow ? renderFlow(dd.flow) : '') +
+            (dd.narrative ? renderNarrative(dd.narrative) : '') +
+            (dd.techTable ? renderTechTable(dd.techTable) : '') +
+            (dd.engineeringFacts ? renderEngineeringFacts(dd.engineeringFacts) : '') +
+            renderGlossaryChips(findGlossaryHits(box.name + ' ' + box.exec + ' ' + (box.eng || '') + ' ' + (dd.narrative || ''))) +
+            (dd.whyItMatters ? renderWhyItMatters(dd.whyItMatters) : '') +
+            (box.docLink ? '<p style="margin-top:8px"><a class="overlay-doclink" href="' + escapeHtml(box.docLink) + '">Full documentation →</a></p>' : '')
+        );
+    }
+
+    /* ---------------- Overlay ---------------- */
+
+    function renderOverlay() {
+        var found = state.categoryId && state.boxId ? findBox(state.categoryId, state.boxId) : null;
+
+        if (!found) {
+            overlay.hidden = true;
+            overlay.innerHTML = '';
+            if (overlayBackdrop) overlayBackdrop.hidden = true;
+            return;
+        }
+
+        overlay.hidden = false;
+        if (overlayBackdrop) overlayBackdrop.hidden = false;
+        var category = found.category;
+        var box = found.box;
+
+        var body = box.deepDive
+            ? '<p class="overlay-hook">' + escapeHtml(box.exec) + '</p>' + renderDeepDive(box)
+            : renderQuickLook(category, box);
+
+        overlay.innerHTML =
+            '<div class="overlay-inner">' +
+            '<div class="overlay-topbar">' +
+            '<span>' + escapeHtml(category.number) + ' ' + escapeHtml(category.name) + ' / ' + escapeHtml(box.name) + '</span>' +
+            '<button type="button" class="overlay-close" data-action="close" aria-label="Close">&times;</button>' +
+            '</div>' +
+            '<span class="status" data-status="' + escapeHtml(box.status) + '">' + escapeHtml(STATUS_LABELS[box.status]) + '</span>' +
+            '<h1 class="overlay-name">' + escapeHtml(box.name) + '</h1>' +
+            body +
+            '</div>';
+
+        var closeBtn = overlay.querySelector('[data-action="close"]');
+        if (closeBtn) closeBtn.addEventListener('click', closeOverlay);
+
+        overlay.querySelectorAll('[data-view]').forEach(function (btn) {
             btn.addEventListener('click', function () {
                 state.view = btn.getAttribute('data-view');
                 writeHash();
-                renderDossier();
+                renderOverlay();
             });
         });
 
-        dossier.querySelectorAll('[data-tech-toggle]').forEach(function (btn) {
-            btn.addEventListener('click', function () {
-                var detail = btn.nextElementSibling;
-                if (detail) detail.hidden = !detail.hidden;
-            });
-        });
-
-        dossier.querySelectorAll('.glossary-chip').forEach(function (chip) {
+        overlay.querySelectorAll('.glossary-chip').forEach(function (chip) {
             var btn = chip.querySelector('button');
             var tip = chip.querySelector('.glossary-chip-tooltip');
             if (!btn || !tip) return;
             btn.addEventListener('mouseenter', function () { tip.hidden = false; });
             btn.addEventListener('mouseleave', function () { tip.hidden = true; });
         });
+
+        overlay.scrollTop = 0;
     }
 
     /* ---------------- State transitions ---------------- */
@@ -353,22 +452,22 @@
         state.view = 'exec';
         writeHash();
         renderGrid();
-        renderDossier();
+        renderOverlay();
     }
 
-    function closeDossier() {
+    function closeOverlay() {
         state.categoryId = null;
         state.boxId = null;
         writeHash();
         renderGrid();
-        renderDossier();
+        renderOverlay();
     }
 
     document.addEventListener('keydown', function (e) {
-        if (e.key === 'Escape' && !dossier.hidden) closeDossier();
+        if (e.key === 'Escape' && !overlay.hidden) closeOverlay();
     });
 
-    if (dossierBackdrop) dossierBackdrop.addEventListener('click', closeDossier);
+    if (overlayBackdrop) overlayBackdrop.addEventListener('click', closeOverlay);
 
     /* ---------------- URL hash sync ---------------- */
 
@@ -397,7 +496,7 @@
         state.boxId = parsed.boxId;
         state.view = parsed.view;
         renderGrid();
-        renderDossier();
+        renderOverlay();
     });
 
     /* ---------------- Init ---------------- */
@@ -408,5 +507,5 @@
     state.boxId = initial.boxId;
     state.view = initial.view;
     renderGrid();
-    renderDossier();
+    renderOverlay();
 })();
