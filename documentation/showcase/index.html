@@ -17,7 +17,7 @@
         <link rel="stylesheet" href="../assets/css/styles.css" />
         <link rel="stylesheet" href="assets/css/showcase.css" />
     </head>
-    <body>
+    <body class="showcase-body">
         <a href="#main" class="skip-link">Skip to content</a>
         <div class="app">
             <!-- ============ SIDEBAR ============ -->
@@ -56,23 +56,39 @@
                         <span class="eyebrow">Capability Showcase</span>
                         <h1 class="hero-title">What this harness can actually do.</h1>
                         <p class="hero-lead">
-                            Eight systems make up the Agentic Harness. Click any one below to see what it does in
-                            plain English, then flip to engineering detail for the real mechanism — and jump
-                            straight into the full documentation from there. This page is a map, not a
-                            replacement for
+                            Eight systems make up the Agentic Harness, laid out below as an architecture map —
+                            drag to pan, scroll or pinch to zoom, and click any box to see what it does in plain
+                            English, then flip to engineering detail for the real mechanism. This page is a map,
+                            not a replacement for
                             <a href="../index.html">the developer guide</a> or the
                             <a href="../reference/patterns-and-technologies.html">reference catalogue</a> — it's the
                             fastest way to see the shape of the whole system before diving into any one part.
                         </p>
                     </section>
 
-                    <div id="showcase-grid" class="showcase-grid" role="group" aria-label="Harness capabilities">
-                        <!-- Rendered by assets/js/render.js from data.js -->
+                    <div id="atlas-viewport" class="atlas-viewport" role="application" aria-label="Harness architecture map">
+                        <svg id="atlas-svg" class="atlas-svg"></svg>
+                        <svg id="atlas-arrow" class="atlas-arrow" aria-hidden="true"></svg>
+
+                        <div class="atlas-controls glass">
+                            <button type="button" id="atlas-zoom-in" aria-label="Zoom in">+</button>
+                            <button type="button" id="atlas-zoom-out" aria-label="Zoom out">&minus;</button>
+                            <button type="button" id="atlas-recenter" aria-label="Recenter">&#x27F2;</button>
+                        </div>
+
+                        <button type="button" id="atlas-theme-toggle" class="atlas-theme-toggle glass" aria-label="Toggle dark mode">
+                            <span class="atlas-theme-icon">&#9789;</span>
+                        </button>
+
+                        <aside id="dossier" class="dossier" aria-live="polite" hidden>
+                            <!-- Rendered by assets/js/render.js from data.js -->
+                        </aside>
                     </div>
 
-                    <div id="dossier" class="dossier" aria-live="polite">
-                        <p class="dossier-empty">Pick a capability above to see what it does and how it&rsquo;s built.</p>
-                    </div>
+                    <p class="muted atlas-hint">
+                        Tip: the URL updates as you explore (e.g. <code>#skills</code> or
+                        <code>#skills:progressive-disclosure:eng</code>), so a dossier view is shareable.
+                    </p>
 
                     <hr />
                     <p class="muted">
@@ -84,6 +100,7 @@
             </main>
         </div>
         <script src="data.js"></script>
+        <script src="assets/js/atlas-layout.js"></script>
         <script src="assets/js/render.js"></script>
     </body>
 </html>
