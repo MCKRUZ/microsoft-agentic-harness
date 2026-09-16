@@ -27,10 +27,11 @@
 
 .atlas-svg {
     position: absolute;
-    inset: 0;
-    width: 100%;
-    height: 100%;
+    left: 0;
+    top: 0;
+    transform-origin: 0 0;
     cursor: grab;
+    overflow: visible;
 }
 
 .atlas-svg.is-dragging {
@@ -56,6 +57,7 @@
     font-weight: 600;
     letter-spacing: 0.12em;
     text-transform: uppercase;
+    fill: currentColor;
     pointer-events: none;
     user-select: none;
 }
@@ -87,6 +89,7 @@
 .atlas-comp-box text {
     font-family: var(--font-mono);
     font-weight: 500;
+    fill: currentColor;
     pointer-events: none;
     user-select: none;
 }
