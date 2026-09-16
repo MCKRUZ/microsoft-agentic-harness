@@ -1,8 +1,41 @@
-/* Showcase-specific styles: the Atlas pan/zoom map, its dossier panel, and a dark-theme
-   override. Layered on top of ../../onboarding/assets/css/styles.css's design tokens
+/* Showcase-specific styles: the flat categorized capability grid, its dossier panel, and a
+   dark-theme override. Layered on top of ../../onboarding/assets/css/styles.css's design tokens
    (--color-*, --space-*, --radius-*, --text-*, --sidebar-bg) — this file only redefines those
    tokens under [data-theme="dark"]; it never edits the shared stylesheet, so the other 4 sites
    stay light-only regardless of what a visitor picks here. */
+
+/* The onboarding shell's .content-wrap/.content are sized for a narrow prose column
+   (max-width: 760px, plus a right-rail TOC gutter) — wrong for a grid that should use the
+   available width. Undo both, for this page only. */
+.showcase-body .content-wrap {
+    max-width: none;
+    grid-template-columns: 1fr;
+    padding: var(--space-6) var(--space-6) var(--space-8);
+}
+
+.showcase-body .content {
+    max-width: none;
+}
+
+.showcase-body .hero {
+    max-width: 90ch;
+    position: relative;
+    padding: 0 0 var(--space-5);
+    margin-bottom: var(--space-6);
+    border-bottom: 1px solid var(--color-border);
+}
+
+.showcase-body .hero-title {
+    font-size: var(--text-3xl);
+    margin: 0 0 var(--space-2);
+}
+
+.showcase-body .hero-lead {
+    font-size: var(--text-sm);
+    line-height: 1.55;
+    margin: 0 0 var(--space-3);
+    max-width: 75ch;
+}
 
 .atlas-hint code {
     font-family: var(--font-mono);
@@ -12,229 +45,186 @@
     border-radius: var(--radius-sm);
 }
 
-/* The onboarding shell's .content-wrap/.content are sized for a narrow prose column
-   (max-width: 760px, plus a right-rail TOC gutter) — right for reading, wrong for a map
-   that's supposed to dominate the screen. Undo both, for this page only, so the atlas gets
-   the full width next to the sidebar instead of sitting in a narrow reading column. */
-.showcase-body .content-wrap {
-    max-width: none;
-    grid-template-columns: 1fr;
-    padding: var(--space-6) var(--space-6) var(--space-8);
-    display: block;
-}
-
-/* This — not content-wrap — owns the full first screen, so the footer block below (its
-   sibling, outside this element) never competes with the map for the same vh budget. */
-.showcase-body .content {
-    max-width: none;
+/* ---------- Status legend + theme toggle ---------- */
+.status-legend {
     display: flex;
-    flex-direction: column;
-    min-height: calc(100vh - 56px); /* content-wrap's own top (24px) + bottom (32px) padding */
+    flex-wrap: wrap;
+    gap: var(--space-4);
+    font-size: var(--text-xs);
+    color: var(--color-text-subtle);
 }
 
-/* styles.css's .hero has generous padding/margin (~120px combined) meant to give a
-   scrolling prose page breathing room before the first paragraph — wrong here, where the
-   map needs to dominate the screen immediately. */
-.showcase-body .hero {
-    max-width: 75ch;
-    flex: none;
-    padding: 0 0 var(--space-3);
-    margin-bottom: 0;
-    border-bottom: none;
+.status-legend-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
 }
 
-/* The map is the point of this page, not the intro copy — keep the hero to a couple of
-   lines so the atlas gets the space, instead of the editorial-sized text other pages use. */
-.showcase-body .hero-title {
-    font-size: var(--text-3xl);
-    margin: 0 0 var(--space-2);
+.status-swatch {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    border-radius: 3px;
 }
 
-.showcase-body .hero-lead {
-    font-size: var(--text-sm);
-    line-height: 1.5;
-    margin: 0;
+.status-swatch.status-built {
+    background: var(--color-accent);
 }
 
-.showcase-footer {
-    max-width: 75ch;
-    margin-top: var(--space-6);
-}
-
-/* ---------- Atlas viewport ---------- */
-/* flex: 1 fills whatever space is left after the hero, instead of guessing its height */
-.atlas-viewport {
-    position: relative;
-    flex: 1 1 auto;
-    min-height: 420px;
-    margin: var(--space-6) 0 var(--space-3);
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-xl);
-    background: var(--color-bg-subtle);
-    overflow: hidden;
-    touch-action: none;
-}
-
-.atlas-svg {
-    position: absolute;
-    left: 0;
-    top: 0;
-    transform-origin: 0 0;
-    cursor: grab;
-    overflow: visible;
-}
-
-.atlas-svg.is-dragging {
-    cursor: grabbing;
-}
-
-.atlas-arrow {
-    position: absolute;
-    inset: 0;
-    width: 100%;
-    height: 100%;
-    pointer-events: none;
-    z-index: 60;
-}
-
-.atlas-region-rect {
-    transition: fill-opacity 0.2s, stroke-opacity 0.2s;
-}
-
-.atlas-region-label {
-    font-family: var(--font-mono);
-    font-size: 12px;
-    font-weight: 600;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    fill: currentColor;
-    pointer-events: none;
-    user-select: none;
-}
-
-.atlas-region-tagline {
-    font-size: 11px;
-    font-style: italic;
-    fill: var(--color-text-subtle);
-    opacity: 0.8;
-    pointer-events: none;
-    user-select: none;
-}
-
-.atlas-comp-box {
-    cursor: pointer;
-}
-
-.atlas-comp-box rect {
-    transition: fill-opacity 0.2s, stroke-opacity 0.2s, transform 0.2s;
-    transform-box: fill-box;
-    transform-origin: center;
-}
-
-.atlas-comp-box:hover rect,
-.atlas-comp-box.is-active rect {
-    transform: scale(1.03);
-}
-
-.atlas-comp-box text {
-    font-family: var(--font-mono);
-    font-weight: 500;
-    fill: currentColor;
-    pointer-events: none;
-    user-select: none;
-}
-
-.atlas-route-path {
-    fill: none;
-    stroke: var(--color-border-strong);
-    stroke-width: 1;
-    stroke-opacity: 0.5;
-    stroke-dasharray: 4 4;
-    animation: showcase-flowdash 16s linear infinite;
-}
-
-.atlas-route-path.is-active {
-    stroke-width: 1.5;
-    stroke-opacity: 0.85;
-    stroke: var(--color-accent);
-}
-
-@keyframes showcase-flowdash {
-    to {
-        stroke-dashoffset: -200;
-    }
-}
-
-/* ---------- Zoom controls + theme toggle ---------- */
-.glass {
-    background: color-mix(in srgb, var(--color-bg) 82%, transparent);
-    backdrop-filter: blur(8px);
-    -webkit-backdrop-filter: blur(8px);
-    border: 1px solid var(--color-border);
-}
-
-.atlas-controls {
-    position: absolute;
-    right: var(--space-4);
-    bottom: var(--space-4);
-    z-index: 50;
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    padding: 4px;
-    border-radius: var(--radius-md);
-    box-shadow: var(--shadow-md);
-}
-
-.atlas-controls button {
-    width: 32px;
-    height: 32px;
-    border: none;
+.status-swatch.status-partial {
     background: transparent;
-    color: var(--color-text-muted);
-    font-size: 16px;
-    line-height: 1;
-    border-radius: var(--radius-sm);
-    cursor: pointer;
+    border: 1.5px solid var(--color-accent);
 }
 
-.atlas-controls button:hover {
-    background: var(--color-bg-muted);
-    color: var(--color-text);
+.status-swatch.status-not-built {
+    background: transparent;
+    border: 1.5px dashed var(--color-border-strong);
 }
 
-.atlas-theme-toggle {
+.status-swatch.status-external {
+    background: var(--color-text-subtle);
+    opacity: 0.5;
+}
+
+.theme-toggle {
     position: absolute;
-    top: var(--space-4);
-    right: var(--space-4);
-    z-index: 50;
+    top: 0;
+    right: 0;
     width: 36px;
     height: 36px;
     border-radius: var(--radius-md);
-    box-shadow: var(--shadow-md);
+    border: 1px solid var(--color-border);
+    background: var(--color-bg);
+    box-shadow: var(--shadow-sm);
     cursor: pointer;
     font-size: 16px;
     color: var(--color-text-muted);
 }
 
-.atlas-theme-toggle:hover {
+.theme-toggle:hover {
     color: var(--color-text);
 }
 
-/* ---------- Dossier (slide-in panel within the viewport) ---------- */
-.dossier {
+/* ---------- Capability grid ---------- */
+.capability-category {
+    margin-bottom: var(--space-8);
+}
+
+.capability-category-header {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-3);
+    margin-bottom: var(--space-3);
+}
+
+.capability-category-number {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    font-weight: 700;
+    color: var(--category-color, var(--color-accent));
+}
+
+.capability-category-name {
+    font-size: var(--text-lg);
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    color: var(--category-color, var(--color-accent));
+    margin: 0;
+}
+
+.capability-category-subtitle {
+    font-size: var(--text-xs);
+    color: var(--color-text-subtle);
+    font-style: italic;
+}
+
+.capability-boxes {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    gap: var(--space-3);
+}
+
+.capability-box {
+    position: relative;
+    text-align: left;
+    padding: var(--space-4);
+    border-radius: var(--radius-md);
+    cursor: pointer;
+    font: inherit;
+    color: var(--color-text);
+    background: color-mix(in srgb, var(--category-color, var(--color-accent)) 10%, var(--color-bg));
+    border: 1.5px solid color-mix(in srgb, var(--category-color, var(--color-accent)) 45%, var(--color-border));
+    transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+
+.capability-box:hover {
+    transform: translateY(-1px);
+    box-shadow: var(--shadow-md);
+}
+
+.capability-box:focus-visible {
+    outline: 2px solid var(--category-color, var(--color-accent));
+    outline-offset: 2px;
+}
+
+.capability-box-name {
+    font-size: var(--text-sm);
+    font-weight: 600;
+}
+
+.capability-box.is-active {
+    box-shadow: 0 0 0 2px var(--category-color, var(--color-accent));
+}
+
+.capability-box[data-status='partial'] {
+    background: transparent;
+    border-style: solid;
+}
+
+.capability-box[data-status='not-built'] {
+    background: var(--color-bg-muted);
+    border-style: dashed;
+    border-color: var(--color-border-strong);
+    color: var(--color-text-subtle);
+    box-shadow: none;
+}
+
+.capability-box[data-status='not-built']:hover {
+    transform: none;
+    box-shadow: none;
+}
+
+.capability-box[data-status='external'] {
+    background: var(--color-bg-muted);
+    border-color: var(--color-border);
+    color: var(--color-text-muted);
+}
+
+.capability-box-badge {
     position: absolute;
+    top: 6px;
+    right: 8px;
+    font-family: var(--font-mono);
+    font-size: 9px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--color-text-subtle);
+}
+
+/* ---------- Dossier (fixed slide-in panel) ---------- */
+.dossier {
+    position: fixed;
     top: 0;
     right: 0;
     bottom: 0;
     width: min(440px, 100%);
-    z-index: 70;
+    z-index: 200;
     overflow-y: auto;
     padding: var(--space-6) var(--space-6) var(--space-8);
     border-left: 1px solid var(--color-border);
     background: var(--color-bg);
     box-shadow: var(--shadow-lg);
-    animation: showcase-dossier-in 0.25s ease-out;
+    animation: showcase-dossier-in 0.2s ease-out;
 }
 
 .dossier[hidden] {
@@ -250,6 +240,17 @@
         transform: translateX(0);
         opacity: 1;
     }
+}
+
+.dossier-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 190;
+    background: rgba(0, 0, 0, 0.25);
+}
+
+.dossier-backdrop[hidden] {
+    display: none;
 }
 
 .dossier-breadcrumb {
@@ -285,6 +286,40 @@
 .dossier-doclink {
     font-size: var(--text-sm);
     white-space: nowrap;
+}
+
+.dossier-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    padding: 3px 10px;
+    border-radius: 999px;
+    margin-bottom: var(--space-4);
+}
+
+.dossier-status[data-status='built'] {
+    background: var(--color-accent-subtle);
+    color: var(--color-accent);
+}
+
+.dossier-status[data-status='partial'] {
+    background: var(--color-warning-subtle);
+    color: var(--color-warning);
+}
+
+.dossier-status[data-status='not-built'] {
+    background: var(--color-bg-muted);
+    color: var(--color-text-subtle);
+}
+
+.dossier-status[data-status='external'] {
+    background: var(--color-bg-muted);
+    color: var(--color-text-muted);
 }
 
 .dossier-name {
@@ -356,51 +391,6 @@
     letter-spacing: normal;
 }
 
-.dossier-components {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-2);
-}
-
-.dossier-component {
-    display: flex;
-    align-items: center;
-    gap: var(--space-3);
-    text-align: left;
-    width: 100%;
-    padding: var(--space-3);
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-md);
-    background: var(--color-bg);
-    cursor: pointer;
-    font: inherit;
-    color: var(--color-text);
-}
-
-.dossier-component:hover {
-    border-color: var(--color-accent);
-}
-
-.dossier-component-idx {
-    font-family: var(--font-mono);
-    font-size: var(--text-xs);
-    color: var(--color-text-subtle);
-    min-width: 20px;
-}
-
-.dossier-component-name {
-    flex: 1;
-    font-size: var(--text-sm);
-    font-weight: 600;
-}
-
-.dossier-component-open {
-    font-family: var(--font-mono);
-    font-size: 11px;
-    letter-spacing: 0.08em;
-    color: var(--color-text-subtle);
-}
-
 .dossier-tech-badge {
     display: inline-block;
     font-family: var(--font-mono);
@@ -438,6 +428,13 @@
     font-size: 11px;
     letter-spacing: 0.06em;
     color: var(--color-text-subtle);
+}
+
+.dossier-component-idx {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--color-text-subtle);
+    min-width: 20px;
 }
 
 .dossier-tech-detail {
@@ -542,13 +539,6 @@
     margin-bottom: 3px;
 }
 
-.dossier-empty {
-    color: var(--color-text-subtle);
-    font-size: var(--text-base);
-    text-align: center;
-    padding: var(--space-8) 0;
-}
-
 /* ---------- Dark theme override (this page only) ---------- */
 html[data-theme='dark'] {
     --color-bg: #0b0e14;
@@ -585,12 +575,17 @@ html[data-theme='dark'] .hero-title {
 }
 
 @media (max-width: 640px) {
-    .atlas-viewport {
-        height: min(70vh, 640px);
+    .capability-boxes {
+        grid-template-columns: 1fr 1fr;
     }
 
     .dossier {
         width: 100%;
         border-left: none;
+    }
+
+    .theme-toggle {
+        position: static;
+        margin-top: var(--space-3);
     }
 }
