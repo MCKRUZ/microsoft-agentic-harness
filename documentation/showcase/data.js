@@ -116,6 +116,7 @@ window.SHOWCASE_LAYERS = [
                 exec: 'Connects out to tools hosted anywhere else and makes them available to the agent exactly like a built-in tool — the agent cannot tell the difference.',
                 eng: 'Discovers tools via tools/list at startup; supports HTTP or stdio transport and Bearer/Entra/ApiKey outbound authentication.',
                 tech: 'Infrastructure.AI.MCP',
+                techs: ['HTTP Transport', 'stdio Transport'],
             },
             {
                 id: 'mcp-security-scanning',
@@ -171,6 +172,7 @@ window.SHOWCASE_LAYERS = [
                 exec: 'Lets you replay exactly what an agent did, step by step, down to which specific AI call or tool use caused a failure.',
                 eng: 'Nested OpenTelemetry spans (command → turn → tool → LLM call) with GenAI semantic-convention attributes, exported to Jaeger.',
                 tech: 'OpenTelemetry',
+                techs: ['Jaeger', 'Prometheus', 'Azure Monitor'],
             },
             {
                 id: 'graded-autonomy',
@@ -217,6 +219,13 @@ window.SHOWCASE_LAYERS = [
                 eng: 'An LLM classifier scores query complexity and routes to a tiered pipeline, saving an estimated 30–50% of retrieval cost on mixed workloads.',
                 tech: 'Complexity routing (Phase A)',
             },
+            {
+                id: 'retrieval-backend',
+                name: 'Retrieval Backend',
+                exec: 'The actual search engine behind the retrieval step is swappable — a team can start with the built-in option and move to a managed or specialized one later without rewriting the pipeline around it.',
+                eng: 'Every backend sits behind the same IHybridRetriever interface, so swapping one in is a configuration change, not a rewrite.',
+                techs: ['Dense + BM25 Hybrid (default)', 'Azure AI Search (agentic retrieval)', 'FAISS', 'SQLite FTS5'],
+            },
         ],
     },
     {
@@ -248,6 +257,241 @@ window.SHOWCASE_LAYERS = [
                 eng: 'GraphFeedbackStore + LlmFeedbackDetector blend historical usefulness weights into graph-RAG ranking.',
                 tech: 'GraphFeedbackStore',
             },
+            {
+                id: 'graph-store-backend',
+                name: 'Graph Store Backend',
+                exec: 'The underlying database that stores the knowledge graph is swappable — a small deployment can start lightweight and a large one can move to a dedicated graph engine, all behind the same interface.',
+                eng: 'One interface backs multiple stores in production (Neo4j or PostgreSQL), with an in-memory implementation for dev/tests.',
+                techs: ['Neo4j', 'Kuzu', 'PostgreSQL', 'In-memory (dev/test)'],
+            },
         ],
     },
 ];
+
+/**
+ * Technology comparison entries referenced by any component's `techs` array above.
+ * Written for what's actually true of each option in an agent-harness context, not
+ * generic industry pros/cons. Shape: { blurb, pros: string[], cons: string[], best, maturity }.
+ */
+window.SHOWCASE_TECH_CATALOG = {
+    'Dense + BM25 Hybrid (default)': {
+        blurb: "The harness's own default: combines vector similarity search with classic BM25 keyword search, merged via Reciprocal Rank Fusion.",
+        pros: [
+            'Works out of the box, no extra service to deploy',
+            'Catches both paraphrased questions and exact keyword/product-code matches',
+            "Runs entirely inside the harness's own process",
+        ],
+        cons: [
+            'Retrieval quality scales with how much tuning goes into chunking and embeddings',
+            'No managed relevance-tuning UI — every knob is code',
+        ],
+        best: 'Teams who want strong retrieval without standing up or paying for a separate search service.',
+        maturity: 'Production (default path)',
+    },
+    'Azure AI Search (agentic retrieval)': {
+        blurb: "Microsoft's managed hybrid search service, with an agentic retrieval mode that plans multi-step queries itself.",
+        pros: [
+            'Fully managed — no infrastructure to run',
+            'Built-in agentic query planning reduces manual query engineering',
+            'Deep Azure ecosystem integration (identity, networking, monitoring)',
+        ],
+        cons: [
+            'Recurring Azure cost that scales with index size and query volume',
+            'Ties the harness to Azure specifically',
+            'Less control over the exact ranking algorithm than the in-process default',
+        ],
+        best: 'Azure-committed teams who want a managed search backend and are fine trading control for less operational burden.',
+        maturity: 'GA',
+    },
+    FAISS: {
+        blurb: "Meta's open-source library for fast approximate nearest-neighbor vector search, run in-process.",
+        pros: [
+            'Extremely fast at large vector counts',
+            'No external service, no network hop',
+            'Free and widely used in production ML systems',
+        ],
+        cons: [
+            'Vector-only — hybrid search needs a keyword component hand-assembled alongside it',
+            'No built-in persistence layer — the indexing lifecycle is your own responsibility',
+            'No access control or multi-tenancy built in',
+        ],
+        best: "High-volume, latency-sensitive retrieval where you're comfortable owning the index lifecycle yourself.",
+        maturity: 'Mature / widely adopted',
+    },
+    'SQLite FTS5': {
+        blurb: "SQLite's built-in full-text search extension — keyword search with zero extra infrastructure.",
+        pros: [
+            'Ships inside a single file, nothing else to deploy or operate',
+            'Great fit for local dev, small deployments, or embedded scenarios',
+            'Simple, well-understood query syntax',
+        ],
+        cons: [
+            "Keyword-only — no semantic/vector matching on its own",
+            "Doesn't scale to the concurrency or index sizes a dedicated search service handles",
+            'No ranking sophistication beyond BM25',
+        ],
+        best: "Local development, small single-tenant deployments, or anywhere a separate search service isn't worth the operational cost.",
+        maturity: 'Mature (part of SQLite core)',
+    },
+    Neo4j: {
+        blurb: 'The most widely-used dedicated graph database, with its own query language (Cypher) and a large ecosystem of graph algorithms.',
+        pros: [
+            'Mature tooling, visualization, and a large community',
+            'Rich built-in graph algorithm library, including community detection',
+            'Battle-tested at production scale',
+        ],
+        cons: [
+            'Commercial licensing for clustering/enterprise features',
+            'Another stateful service to operate and back up',
+            'Steeper learning curve (Cypher) for a team new to graph databases',
+        ],
+        best: 'Teams that expect the knowledge graph to grow large and want a dedicated, well-supported graph engine.',
+        maturity: 'Production',
+    },
+    Kuzu: {
+        blurb: 'An embedded, open-source graph database — runs in-process like SQLite, but for graphs.',
+        pros: [
+            'No separate service to deploy or operate',
+            'Free and fully open-source',
+            'Fast for single-node workloads',
+        ],
+        cons: [
+            'Younger project — smaller ecosystem and community than Neo4j',
+            'Not designed for multi-node horizontal scale',
+            'Fewer built-in graph algorithms out of the box',
+        ],
+        best: 'Teams that want real graph-query capability without taking on a new operated service.',
+        maturity: 'Active / early production',
+    },
+    PostgreSQL: {
+        blurb: 'Using Postgres itself as the graph store, reusing infrastructure the team already runs.',
+        pros: [
+            'No new database technology to introduce — most teams already run Postgres',
+            'One less service to secure, back up, and monitor',
+            "Transactional guarantees the harness's other relational data already relies on",
+        ],
+        cons: [
+            'Graph traversal queries are less natural and often slower than a purpose-built graph engine at scale',
+            'No dedicated graph algorithm library — community detection etc. has to be implemented or bolted on',
+        ],
+        best: 'Teams that already run Postgres and want to avoid adding a new database technology purely for the knowledge graph.',
+        maturity: 'Production (via existing Postgres infrastructure)',
+    },
+    'In-memory (dev/test)': {
+        blurb: 'A non-persistent, in-process graph store used for local development and automated tests.',
+        pros: [
+            'Zero setup — nothing to install or configure',
+            'Fast test runs with no external dependency',
+            'Identical interface to the production backends, so tests exercise real code paths',
+        ],
+        cons: [
+            "Data doesn't survive a process restart",
+            'Not viable for any real deployment',
+            'Not representative of production performance characteristics',
+        ],
+        best: 'Local development and CI test runs only.',
+        maturity: 'Dev/test only — not for production',
+    },
+    Jaeger: {
+        blurb: 'Open-source distributed tracing backend — stores and visualizes the spans OpenTelemetry emits.',
+        pros: [
+            'Free, open-source, self-hostable',
+            'Purpose-built trace visualization (waterfall views, span search)',
+            'No vendor lock-in',
+        ],
+        cons: [
+            'You own its operation, storage, and retention policy',
+            'No built-in alerting — typically paired with Prometheus/Grafana for that',
+        ],
+        best: 'Teams that want full control over their tracing backend and are comfortable self-hosting.',
+        maturity: 'Production / CNCF graduated project',
+    },
+    Prometheus: {
+        blurb: 'The standard open-source metrics store and query engine (PromQL), typically paired with Grafana for dashboards.',
+        pros: [
+            'Industry-standard, huge ecosystem of exporters and dashboards',
+            'Powerful query language for aggregating metrics over time',
+            'Free and self-hostable',
+        ],
+        cons: [
+            'Metrics only — not a substitute for trace or log storage',
+            'Long-term retention at scale needs an additional remote-storage backend',
+        ],
+        best: 'Teams that want standard, dashboard-ready operational metrics alongside tracing.',
+        maturity: 'Production / CNCF graduated project',
+    },
+    'Azure Monitor': {
+        blurb: "Microsoft's managed observability platform — collects traces, metrics, and logs into one Azure-native service.",
+        pros: [
+            'Fully managed — no tracing/metrics infrastructure to run',
+            'Single pane of glass alongside other Azure resource monitoring',
+            'Built-in alerting and retention without extra setup',
+        ],
+        cons: [
+            'Recurring Azure cost that scales with telemetry volume',
+            'Ties observability tooling to Azure specifically',
+        ],
+        best: 'Azure-hosted deployments that want managed observability without operating Jaeger/Prometheus themselves.',
+        maturity: 'GA',
+    },
+    'HTTP Transport': {
+        blurb: "MCP over standard HTTP — the harness's tools are reachable as a normal web endpoint.",
+        pros: [
+            'Works across process and network boundaries, including to/from other machines',
+            'Standard auth patterns apply (JWT bearer, API gateways, load balancers)',
+            'Easiest to expose to external MCP clients',
+        ],
+        cons: [
+            "Network latency and failure modes a local transport doesn't have",
+            "Needs real authentication/authorization since it's reachable off-box",
+        ],
+        best: "Exposing this harness's tools to other systems, or consuming tools hosted elsewhere.",
+        maturity: 'Production',
+    },
+    'stdio Transport': {
+        blurb: 'MCP over standard input/output — the tool server runs as a local child process with no network involved.',
+        pros: [
+            'No network stack, no ports to secure — the tightest possible trust boundary',
+            'Simplest possible setup for a tool that only ever runs alongside the agent',
+            'Lower latency than a network hop',
+        ],
+        cons: [
+            'Only works for same-machine, same-process-tree scenarios',
+            'No support for multiple concurrent remote clients',
+        ],
+        best: 'Tools that only ever need to run alongside the agent process itself, with no remote-access requirement.',
+        maturity: 'Production',
+    },
+};
+
+/**
+ * Glossary of jargon that already appears in the exec/eng copy above — defines terms the
+ * page uses, introduces nothing new. Shape: term -> plain-English definition.
+ */
+window.SHOWCASE_GLOSSARY = {
+    MCP: 'Model Context Protocol — the open standard this harness uses to expose and consume AI tools.',
+    JWT: 'JSON Web Token — a signed, compact envelope for identity claims.',
+    'Entra ID': "Microsoft's cloud identity platform (formerly Azure AD).",
+    'Keyed DI': 'Dependency Injection where implementations are resolved by a string or enum key, not just by type.',
+    MediatR: 'A .NET library implementing the mediator pattern for in-process request/response and pipeline behaviors.',
+    BM25: 'A classic keyword-ranking algorithm used by search engines.',
+    'Reciprocal Rank Fusion': 'A method for merging several ranked result lists into one combined ranking.',
+    CRAG: 'Corrective Retrieval-Augmented Generation — scores retrieved results for trustworthiness before answering with them.',
+    HyDE: 'Hypothetical Document Embeddings — generates a hypothetical answer first, then searches using that as the query.',
+    OpenTelemetry: 'An open standard for collecting distributed traces, metrics, and logs.',
+    JSONL: 'JSON Lines — a text format with one JSON object per line, easy to append to.',
+    'Hash-Chained Log': "A tamper-evident log where each entry's hash includes the previous entry's hash.",
+    'Prompt Injection': "An attack where malicious text tries to override an AI system's instructions.",
+    Typosquatting: 'Registering a name that looks nearly identical to a trusted one, to trick users or systems into using it.',
+    'Blast Radius': 'How much damage a single action could cause if it goes wrong.',
+    'Spin Detection': 'Noticing when an agent is stuck repeating the same action without making progress.',
+    'Leiden Community Detection': 'A graph algorithm for finding clusters of closely-related nodes.',
+    'Progressive Disclosure': "Revealing information only as it's needed, instead of all at once.",
+    Provenance: 'A record of where a piece of data came from and how it was derived.',
+    'Decay Tier': 'A policy for how quickly a stored memory fades or expires.',
+    'Multi-Tenant Isolation': "Keeping different users' or customers' data provably separate on shared infrastructure.",
+    'Autonomy Tier': "A graded level of independence an agent is allowed to operate at before requiring a human's sign-off.",
+    Sandbox: 'An isolated execution environment that limits what a process can access or affect.',
+    DAG: 'Directed Acyclic Graph — a dependency structure with no circular references.',
+    CQRS: 'Command/Query Responsibility Segregation — separating operations that change state from operations that read it.',
+};
