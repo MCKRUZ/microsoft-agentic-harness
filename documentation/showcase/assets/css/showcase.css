@@ -1,91 +1,237 @@
-/* Showcase-specific styles. Layered on top of ../../onboarding/assets/css/styles.css's
-   design tokens (--color-*, --space-*, --radius-*, --text-*) — no new palette introduced. */
+/* Showcase-specific styles: the Atlas pan/zoom map, its dossier panel, and a dark-theme
+   override. Layered on top of ../../onboarding/assets/css/styles.css's design tokens
+   (--color-*, --space-*, --radius-*, --text-*, --sidebar-bg) — this file only redefines those
+   tokens under [data-theme="dark"]; it never edits the shared stylesheet, so the other 4 sites
+   stay light-only regardless of what a visitor picks here. */
 
-.showcase-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-    gap: var(--space-4);
-    margin: var(--space-8) 0;
+.atlas-hint code {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    background: var(--color-bg-code-inline);
+    padding: 1px 5px;
+    border-radius: var(--radius-sm);
 }
 
-.showcase-card {
+/* ---------- Atlas viewport ---------- */
+.atlas-viewport {
+    position: relative;
+    height: min(78vh, 900px);
+    min-height: 420px;
+    margin: var(--space-8) 0 var(--space-3);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-xl);
+    background: var(--color-bg-subtle);
+    overflow: hidden;
+    touch-action: none;
+}
+
+.atlas-svg {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    cursor: grab;
+}
+
+.atlas-svg.is-dragging {
+    cursor: grabbing;
+}
+
+.atlas-arrow {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    z-index: 60;
+}
+
+.atlas-region-rect {
+    transition: fill-opacity 0.2s, stroke-opacity 0.2s;
+}
+
+.atlas-region-label {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    pointer-events: none;
+    user-select: none;
+}
+
+.atlas-region-tagline {
+    font-size: 11px;
+    font-style: italic;
+    fill: var(--color-text-subtle);
+    opacity: 0.8;
+    pointer-events: none;
+    user-select: none;
+}
+
+.atlas-comp-box {
+    cursor: pointer;
+}
+
+.atlas-comp-box rect {
+    transition: fill-opacity 0.2s, stroke-opacity 0.2s, transform 0.2s;
+    transform-box: fill-box;
+    transform-origin: center;
+}
+
+.atlas-comp-box:hover rect,
+.atlas-comp-box.is-active rect {
+    transform: scale(1.03);
+}
+
+.atlas-comp-box text {
+    font-family: var(--font-mono);
+    font-weight: 500;
+    pointer-events: none;
+    user-select: none;
+}
+
+.atlas-route-path {
+    fill: none;
+    stroke: var(--color-border-strong);
+    stroke-width: 1;
+    stroke-opacity: 0.5;
+    stroke-dasharray: 4 4;
+    animation: showcase-flowdash 16s linear infinite;
+}
+
+.atlas-route-path.is-active {
+    stroke-width: 1.5;
+    stroke-opacity: 0.85;
+    stroke: var(--color-accent);
+}
+
+@keyframes showcase-flowdash {
+    to {
+        stroke-dashoffset: -200;
+    }
+}
+
+/* ---------- Zoom controls + theme toggle ---------- */
+.glass {
+    background: color-mix(in srgb, var(--color-bg) 82%, transparent);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    border: 1px solid var(--color-border);
+}
+
+.atlas-controls {
+    position: absolute;
+    right: var(--space-4);
+    bottom: var(--space-4);
+    z-index: 50;
     display: flex;
     flex-direction: column;
-    gap: var(--space-2);
-    padding: var(--space-5);
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-lg);
-    background: var(--color-bg);
+    gap: 2px;
+    padding: 4px;
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow-md);
+}
+
+.atlas-controls button {
+    width: 32px;
+    height: 32px;
+    border: none;
+    background: transparent;
+    color: var(--color-text-muted);
+    font-size: 16px;
+    line-height: 1;
+    border-radius: var(--radius-sm);
     cursor: pointer;
-    text-align: left;
-    font: inherit;
-    color: inherit;
-    transition:
-        border-color 0.15s ease,
-        box-shadow 0.15s ease,
-        transform 0.15s ease;
 }
 
-.showcase-card:hover {
-    border-color: var(--color-accent);
+.atlas-controls button:hover {
+    background: var(--color-bg-muted);
+    color: var(--color-text);
+}
+
+.atlas-theme-toggle {
+    position: absolute;
+    top: var(--space-4);
+    right: var(--space-4);
+    z-index: 50;
+    width: 36px;
+    height: 36px;
+    border-radius: var(--radius-md);
     box-shadow: var(--shadow-md);
-    transform: translateY(-2px);
+    cursor: pointer;
+    font-size: 16px;
+    color: var(--color-text-muted);
 }
 
-.showcase-card:focus-visible {
-    outline: 2px solid var(--color-accent);
-    outline-offset: 2px;
+.atlas-theme-toggle:hover {
+    color: var(--color-text);
 }
 
-.showcase-card[aria-pressed='true'] {
-    border-color: var(--color-accent);
-    background: var(--color-accent-subtle);
-    box-shadow: var(--shadow-md);
+/* ---------- Dossier (slide-in panel within the viewport) ---------- */
+.dossier {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: min(440px, 100%);
+    z-index: 70;
+    overflow-y: auto;
+    padding: var(--space-6) var(--space-6) var(--space-8);
+    border-left: 1px solid var(--color-border);
+    background: var(--color-bg);
+    box-shadow: var(--shadow-lg);
+    animation: showcase-dossier-in 0.25s ease-out;
 }
 
-.showcase-card-num {
+.dossier[hidden] {
+    display: none;
+}
+
+@keyframes showcase-dossier-in {
+    from {
+        transform: translateX(16px);
+        opacity: 0;
+    }
+    to {
+        transform: translateX(0);
+        opacity: 1;
+    }
+}
+
+.dossier-breadcrumb {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3);
+    margin-bottom: var(--space-4);
     font-family: var(--font-mono);
     font-size: var(--text-xs);
     color: var(--color-text-subtle);
 }
 
-.showcase-card-name {
-    font-size: var(--text-lg);
-    font-weight: 700;
-    letter-spacing: -0.01em;
-    color: var(--color-text);
+.dossier-breadcrumb button {
+    font: inherit;
+    color: inherit;
+    background: none;
+    border: none;
+    padding: 0;
+    cursor: pointer;
 }
 
-.showcase-card-tagline {
-    font-size: var(--text-sm);
-    color: var(--color-text-muted);
-    line-height: 1.45;
+.dossier-breadcrumb button:hover {
+    color: var(--color-accent);
 }
 
-/* ---------- Dossier (the expand-in-place detail panel) ---------- */
-.dossier {
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-xl);
-    background: var(--color-bg-subtle);
-    padding: var(--space-8);
-    margin-bottom: var(--space-10);
-    scroll-margin-top: var(--space-6);
-}
-
-.dossier-empty {
+.dossier-close {
+    font-size: 20px !important;
+    line-height: 1;
     color: var(--color-text-subtle);
-    font-size: var(--text-base);
-    text-align: center;
-    padding: var(--space-8) 0;
 }
 
-.dossier-header {
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: var(--space-4);
-    flex-wrap: wrap;
-    margin-bottom: var(--space-5);
+.dossier-doclink {
+    font-size: var(--text-sm);
+    white-space: nowrap;
 }
 
 .dossier-name {
@@ -93,12 +239,14 @@
     font-weight: 700;
     letter-spacing: -0.015em;
     color: var(--color-text);
-    margin: 0;
+    margin: 0 0 var(--space-1);
 }
 
-.dossier-doclink {
+.dossier-tagline {
     font-size: var(--text-sm);
-    white-space: nowrap;
+    font-style: italic;
+    color: var(--color-text-subtle);
+    margin: 0 0 var(--space-5);
 }
 
 .dossier-view-toggle {
@@ -129,52 +277,259 @@
     font-size: var(--text-base);
     line-height: 1.6;
     color: var(--color-text);
-    max-width: 70ch;
     margin: 0 0 var(--space-6);
 }
 
+.dossier-section-label {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--color-text-subtle);
+    margin: var(--space-6) 0 var(--space-2);
+}
+
+.dossier-section-label .count {
+    margin-left: auto;
+    font-weight: 500;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    padding: 0 6px;
+    text-transform: none;
+    letter-spacing: normal;
+}
+
 .dossier-components {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-    gap: var(--space-3);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
 }
 
 .dossier-component {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    text-align: left;
+    width: 100%;
+    padding: var(--space-3);
     border: 1px solid var(--color-border);
     border-radius: var(--radius-md);
     background: var(--color-bg);
-    padding: var(--space-4);
+    cursor: pointer;
+    font: inherit;
+    color: var(--color-text);
+}
+
+.dossier-component:hover {
+    border-color: var(--color-accent);
+}
+
+.dossier-component-idx {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--color-text-subtle);
+    min-width: 20px;
 }
 
 .dossier-component-name {
+    flex: 1;
+    font-size: var(--text-sm);
     font-weight: 600;
-    color: var(--color-text);
-    margin-bottom: var(--space-1);
 }
 
-.dossier-component-tech {
+.dossier-component-open {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    color: var(--color-text-subtle);
+}
+
+.dossier-tech-badge {
+    display: inline-block;
     font-family: var(--font-mono);
     font-size: var(--text-xs);
     color: var(--color-accent);
-    display: block;
+    margin-bottom: var(--space-3);
+}
+
+.dossier-tech-row {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    text-align: left;
+    padding: var(--space-3);
+    border: 0;
+    border-bottom: 1px solid var(--color-border);
+    background: transparent;
+    cursor: pointer;
+    font: inherit;
+    color: var(--color-text);
+}
+
+.dossier-tech-row:first-child {
+    border-top: 1px solid var(--color-border);
+}
+
+.dossier-tech-name {
+    flex: 1;
+    font-size: var(--text-sm);
+}
+
+.dossier-tech-marker {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    color: var(--color-text-subtle);
+}
+
+.dossier-tech-detail {
+    padding: var(--space-3) var(--space-3) var(--space-4) 44px;
+    border-bottom: 1px solid var(--color-border);
+    background: var(--color-bg-subtle);
+    font-size: var(--text-sm);
+}
+
+.dossier-tech-blurb {
+    color: var(--color-text-muted);
+    line-height: 1.55;
+    margin: 0 0 var(--space-3);
+}
+
+.dossier-tech-proscons {
+    display: flex;
+    gap: var(--space-4);
     margin-bottom: var(--space-2);
 }
 
-.dossier-component-desc {
-    font-size: var(--text-sm);
-    color: var(--color-text-muted);
-    line-height: 1.5;
-    margin: 0 0 var(--space-2);
+.dossier-tech-proscons > div {
+    flex: 1;
 }
 
-.dossier-component-link {
+.dossier-tech-proscons-label {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    margin-bottom: 4px;
+}
+
+.dossier-tech-proscons-label.pros {
+    color: var(--color-success);
+}
+
+.dossier-tech-proscons-label.cons {
+    color: var(--color-danger);
+}
+
+.dossier-tech-proscons li {
+    color: var(--color-text-muted);
+    line-height: 1.5;
+    list-style: none;
+}
+
+.dossier-tech-best {
     font-size: var(--text-xs);
+    color: var(--color-text-subtle);
+}
+
+.dossier-tech-best strong {
+    color: var(--color-text-muted);
+    font-family: var(--font-mono);
     font-weight: 600;
+    letter-spacing: 0.06em;
+}
+
+.dossier-glossary {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.glossary-chip {
+    position: relative;
+    display: inline-block;
+}
+
+.glossary-chip button {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--color-border);
+    background: transparent;
+    color: var(--color-text-muted);
+    cursor: default;
+}
+
+.glossary-chip-tooltip {
+    position: absolute;
+    bottom: calc(100% + 6px);
+    left: 0;
+    width: 220px;
+    z-index: 100;
+    padding: var(--space-2) var(--space-3);
+    border-radius: var(--radius-md);
+    background: var(--color-bg);
+    border: 1px solid var(--color-border);
+    box-shadow: var(--shadow-md);
+    font-size: var(--text-xs);
+    color: var(--color-text-muted);
+    line-height: 1.4;
+}
+
+.glossary-chip-tooltip strong {
+    display: block;
+    color: var(--color-accent);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    margin-bottom: 3px;
+}
+
+.dossier-empty {
+    color: var(--color-text-subtle);
+    font-size: var(--text-base);
+    text-align: center;
+    padding: var(--space-8) 0;
+}
+
+/* ---------- Dark theme override (this page only) ---------- */
+html[data-theme='dark'] {
+    --color-bg: #0b0e14;
+    --color-bg-subtle: #10141d;
+    --color-bg-muted: #171c27;
+    --color-bg-code: #10141d;
+    --color-bg-code-inline: #171c27;
+    --color-text: #e6e9ef;
+    --color-text-muted: #a8b0bf;
+    --color-text-subtle: #7c8493;
+    --color-text-inverse: #0b0e14;
+    --color-border: #232a38;
+    --color-border-strong: #323b4d;
+    --color-accent: #5b9bff;
+    --color-accent-hover: #7fb0ff;
+    --color-accent-subtle: #16233d;
+    --color-success: #34d399;
+    --color-success-subtle: #10241d;
+    --color-warning: #fbbf24;
+    --color-warning-subtle: #2a2210;
+    --color-danger: #f87171;
+    --color-danger-subtle: #2a1414;
+    --color-info: #38bdf8;
+    --color-info-subtle: #10222c;
+    --sidebar-bg: #0d1118;
 }
 
 @media (max-width: 640px) {
-    .showcase-grid,
-    .dossier-components {
-        grid-template-columns: 1fr;
+    .atlas-viewport {
+        height: min(70vh, 640px);
+    }
+
+    .dossier {
+        width: 100%;
+        border-left: none;
     }
 }
