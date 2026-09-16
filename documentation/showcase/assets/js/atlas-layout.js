@@ -67,6 +67,19 @@
     }
 
     /** Builds an SVG path `d` attribute connecting two named regions, routed by `route.kind`. */
+    function elbowPath(sx, sy, ex, ey, axis) {
+        if (axis === 'v') {
+            var my = (sy + ey) / 2;
+            return 'M ' + sx + ' ' + sy + ' L ' + sx + ' ' + my + ' L ' + ex + ' ' + my + ' L ' + ex + ' ' + ey;
+        }
+        var mx = (sx + ex) / 2;
+        return 'M ' + sx + ' ' + sy + ' L ' + mx + ' ' + sy + ' L ' + mx + ' ' + ey + ' L ' + ex + ' ' + ey;
+    }
+
+    function straightPath(sx, sy, ex, ey) {
+        return 'M ' + sx + ' ' + sy + ' L ' + ex + ' ' + ey;
+    }
+
     function buildRoutePath(route) {
         var a = REGIONS[route.from];
         var b = REGIONS[route.to];
@@ -84,32 +97,22 @@
         var bRight = b.x + b.w;
 
         switch (route.kind) {
-            case 'down': {
-                var sx = aCx, sy = aBottom, ex = bCx, ey = bTop, my = (sy + ey) / 2;
-                return 'M ' + sx + ' ' + sy + ' L ' + sx + ' ' + my + ' L ' + ex + ' ' + my + ' L ' + ex + ' ' + ey;
-            }
-            case 'side-l': {
-                var sx2 = aLeft, sy2 = aCy, ex2 = bRight, ey2 = bCy, mx2 = (sx2 + ex2) / 2;
-                return 'M ' + sx2 + ' ' + sy2 + ' L ' + mx2 + ' ' + sy2 + ' L ' + mx2 + ' ' + ey2 + ' L ' + ex2 + ' ' + ey2;
-            }
-            case 'side-r': {
-                var sx3 = aRight, sy3 = aCy, ex3 = bLeft, ey3 = bCy, mx3 = (sx3 + ex3) / 2;
-                return 'M ' + sx3 + ' ' + sy3 + ' L ' + mx3 + ' ' + sy3 + ' L ' + mx3 + ' ' + ey3 + ' L ' + ex3 + ' ' + ey3;
-            }
+            case 'down':
+                return elbowPath(aCx, aBottom, bCx, bTop, 'v');
+            case 'side-l':
+                return elbowPath(aLeft, aCy, bRight, bCy, 'h');
+            case 'side-r':
+                return elbowPath(aRight, aCy, bLeft, bCy, 'h');
             case 'diag-bl': {
-                var sx4 = aLeft + 40, sy4 = aBottom, ex4 = bRight, ey4 = bTop + 30;
-                return 'M ' + sx4 + ' ' + sy4 + ' L ' + sx4 + ' ' + ey4 + ' L ' + ex4 + ' ' + ey4;
+                var sx = aLeft + 40, ey = bTop + 30;
+                return 'M ' + sx + ' ' + aBottom + ' L ' + sx + ' ' + ey + ' L ' + bRight + ' ' + ey;
             }
-            case 'down-l': {
-                var sx5 = aCx, sy5 = aBottom, ex5 = bCx, ey5 = bTop;
-                return 'M ' + sx5 + ' ' + sy5 + ' L ' + ex5 + ' ' + ey5;
-            }
-            case 'side-cross': {
-                var sx6 = aLeft, sy6 = aCy, ex6 = bRight, ey6 = bCy;
-                return 'M ' + sx6 + ' ' + sy6 + ' L ' + ex6 + ' ' + ey6;
-            }
+            case 'down-l':
+                return straightPath(aCx, aBottom, bCx, bTop);
+            case 'side-cross':
+                return straightPath(aLeft, aCy, bRight, bCy);
             default:
-                return 'M ' + aCx + ' ' + aCy + ' L ' + bCx + ' ' + bCy;
+                return straightPath(aCx, aCy, bCx, bCy);
         }
     }
 

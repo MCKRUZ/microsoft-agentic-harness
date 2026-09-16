@@ -11,6 +11,7 @@
 window.SHOWCASE_LAYERS = [
     {
         id: 'skills',
+        color: '#2563eb',
         name: 'Skills System',
         tagline: 'Markdown files that teach an agent what it knows and when to use it',
         exec: 'Skills are short instruction documents — written in plain text, not code — that tell an AI agent what role to play and what it is allowed to do. The system only loads the parts it needs for the current task, so adding more skills never slows things down or blows up costs.',
@@ -42,6 +43,7 @@ window.SHOWCASE_LAYERS = [
     },
     {
         id: 'plugins',
+        color: '#7c3aed',
         name: 'Plugin System',
         tagline: 'Package a skill and its tools into a portable, permission-fenced bundle',
         exec: 'A plugin bundles one or more skills and the specific tools they need into a single, self-contained folder your team can install or share — with an operator-level dial that can allow certain tools and deny others outright, with no exceptions, so a third-party plugin can never quietly do more than it was given permission to.',
@@ -66,6 +68,7 @@ window.SHOWCASE_LAYERS = [
     },
     {
         id: 'tools',
+        color: '#059669',
         name: 'Tools & Keyed DI',
         tagline: 'How the agent gets hands — and how every action stays sandboxed and governed',
         exec: 'Tools are the concrete actions an agent can take — read a file, search a document, run a calculation. Every single tool call passes through the same safety checkpoint before it runs, and file access is fenced to an explicit allow-list, so even a confused or manipulated agent cannot reach outside its sandbox.',
@@ -97,6 +100,7 @@ window.SHOWCASE_LAYERS = [
     },
     {
         id: 'mcp',
+        color: '#d97706',
         name: 'MCP — Model Context Protocol',
         tagline: 'The open standard for plugging in tools built by anyone, anywhere',
         exec: 'MCP is a shared language for AI tools, so the harness can call tools built by other teams — and let other AI systems call tools built here — without custom integration work for each one. Every tool coming from outside is automatically screened for hidden or malicious instructions before the agent ever sees it.',
@@ -129,6 +133,7 @@ window.SHOWCASE_LAYERS = [
     },
     {
         id: 'orchestration',
+        color: '#0891b2',
         name: 'Agent Harness & Orchestration',
         tagline: 'The engine that turns one user message into a governed, observable agent turn',
         exec: 'This is the assembly line every request runs through: check it is safe, figure out which skill applies, build or reuse the right agent, run it, and record exactly what happened. You almost never need to touch this directly — new capabilities get added by writing a skill or a tool, not by changing this pipeline.',
@@ -160,6 +165,7 @@ window.SHOWCASE_LAYERS = [
     },
     {
         id: 'observability',
+        color: '#db2777',
         name: 'Observability & Safety',
         tagline: 'See inside every agent turn, and stop it when it goes wrong',
         exec: 'Every step an agent takes — every AI call, every tool use — is recorded in a searchable timeline, so when something goes wrong you can see exactly where and why. On top of that sits a stack of independent safety checks: filtering harmful content, requiring human sign-off on risky actions, and a tamper-evident audit log nobody can quietly edit after the fact.',
@@ -192,6 +198,7 @@ window.SHOWCASE_LAYERS = [
     },
     {
         id: 'rag',
+        color: '#16a34a',
         name: 'RAG Pipeline',
         tagline: 'Grounding agent answers in your real documents, not just training data',
         exec: 'Retrieval-Augmented Generation is how the agent answers questions about your own documents accurately — it finds the genuinely relevant passages first, then has the AI write an answer based on what it found, with citations back to the source.',
@@ -230,6 +237,7 @@ window.SHOWCASE_LAYERS = [
     },
     {
         id: 'knowledge-graph',
+        color: '#4f46e5',
         name: 'Knowledge Graph',
         tagline: 'Structured, persistent memory of entities and relationships, not just text chunks',
         exec: 'Beyond searching documents, the harness can build and remember a map of entities and how they relate — who worked on what, what depends on what — so an agent’s understanding compounds across sessions instead of starting fresh every time, with old or irrelevant facts fading out automatically.',

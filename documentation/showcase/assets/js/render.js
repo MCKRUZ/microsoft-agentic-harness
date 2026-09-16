@@ -25,17 +25,6 @@
     var MIN_READABLE_SCALE = 0.6;
     var THEME_KEY = 'showcase-atlas-theme';
 
-    var LAYER_COLORS = {
-        skills: '#2563eb',
-        plugins: '#7c3aed',
-        orchestration: '#0891b2',
-        tools: '#059669',
-        mcp: '#d97706',
-        observability: '#db2777',
-        rag: '#16a34a',
-        'knowledge-graph': '#4f46e5',
-    };
-
     var viewport = document.getElementById('atlas-viewport');
     var svg = document.getElementById('atlas-svg');
     var arrowSvg = document.getElementById('atlas-arrow');
@@ -49,7 +38,19 @@
     var transform = { x: 0, y: 0, k: 1 };
     var drag = null;
     var pinch = null;
+    var transformFrame = null;
     var state = { layerId: null, compId: null, view: 'exec' };
+
+    /* Region/route geometry is a pure function of static data (never changes at runtime) —
+       compute it once instead of on every renderAtlas() call. */
+    var cachedRoutePaths = layout.ROUTES.map(function (route) {
+        return { route: route, d: layout.buildRoutePath(route) };
+    });
+    var cachedLayerBoxes = {};
+    layers.forEach(function (layer) {
+        var region = layout.REGIONS[layer.id];
+        if (region) cachedLayerBoxes[layer.id] = layout.computeCompBoxes(region, layer.components);
+    });
 
     function escapeHtml(value) {
         var div = document.createElement('div');
@@ -67,8 +68,8 @@
         return el;
     }
 
-    function layerColor(id) {
-        return LAYER_COLORS[id] || '#2563eb';
+    function clamp(value, min, max) {
+        return Math.max(min, Math.min(max, value));
     }
 
     /* ---------------- Theme ---------------- */
@@ -121,6 +122,16 @@
         svg.style.transform = 'translate(' + svgLeft + 'px, ' + svgTop + 'px) scale(' + transform.k + ')';
     }
 
+    /* Coalesces rapid-fire pointermove/wheel/touchmove updates to one style write per
+       animation frame, instead of one per event (pointermove/wheel can fire well above 60Hz). */
+    function scheduleTransformUpdate() {
+        if (transformFrame) return;
+        transformFrame = requestAnimationFrame(function () {
+            transformFrame = null;
+            applyTransformStyle();
+        });
+    }
+
     function recenter() {
         var r = viewport.getBoundingClientRect();
         if (r.width < 50 || r.height < 50) return;
@@ -138,14 +149,18 @@
         if (e.button !== 0 || isOverlayTarget(e.target)) return;
         drag = { startX: e.clientX, startY: e.clientY, tx: transform.x, ty: transform.y };
         svg.classList.add('is-dragging');
-        viewport.setPointerCapture(e.pointerId);
+        try {
+            viewport.setPointerCapture(e.pointerId);
+        } catch (err) {
+            /* pointer already released between event dispatch and capture — safe to ignore */
+        }
     });
 
     viewport.addEventListener('pointermove', function (e) {
         if (!drag) return;
         transform.x = drag.tx + (e.clientX - drag.startX);
         transform.y = drag.ty + (e.clientY - drag.startY);
-        applyTransformStyle();
+        scheduleTransformUpdate();
     });
 
     function endDrag() {
@@ -160,8 +175,8 @@
         function (e) {
             e.preventDefault();
             var dk = -e.deltaY * 0.001;
-            transform.k = Math.max(MIN_SCALE, Math.min(MAX_SCALE, transform.k * (1 + dk)));
-            applyTransformStyle();
+            transform.k = clamp(transform.k * (1 + dk), MIN_SCALE, MAX_SCALE);
+            scheduleTransformUpdate();
         },
         { passive: false },
     );
@@ -190,8 +205,8 @@
                 e.preventDefault();
                 var dist = touchDistance(e.touches[0], e.touches[1]);
                 var ratio = dist / pinch.dist;
-                transform.k = Math.max(MIN_SCALE, Math.min(MAX_SCALE, pinch.k * ratio));
-                applyTransformStyle();
+                transform.k = clamp(pinch.k * ratio, MIN_SCALE, MAX_SCALE);
+                scheduleTransformUpdate();
             }
         },
         { passive: false },
@@ -203,13 +218,13 @@
 
     if (zoomInBtn) {
         zoomInBtn.addEventListener('click', function () {
-            transform.k = Math.min(MAX_SCALE, transform.k * 1.25);
+            transform.k = clamp(transform.k * 1.25, MIN_SCALE, MAX_SCALE);
             applyTransformStyle();
         });
     }
     if (zoomOutBtn) {
         zoomOutBtn.addEventListener('click', function () {
-            transform.k = Math.max(MIN_SCALE, transform.k * 0.8);
+            transform.k = clamp(transform.k * 0.8, MIN_SCALE, MAX_SCALE);
             applyTransformStyle();
         });
     }
@@ -228,13 +243,12 @@
         svg.setAttribute('width', layout.WORLD_W);
         svg.setAttribute('height', layout.WORLD_H);
 
-        layout.ROUTES.forEach(function (route) {
-            var d = layout.buildRoutePath(route);
-            if (!d) return;
-            var isActive = state.layerId === route.from || state.layerId === route.to;
+        cachedRoutePaths.forEach(function (entry) {
+            if (!entry.d) return;
+            var isActive = state.layerId === entry.route.from || state.layerId === entry.route.to;
             svg.appendChild(
                 svgEl('path', {
-                    d: d,
+                    d: entry.d,
                     class: 'atlas-route-path' + (isActive ? ' is-active' : ''),
                 }),
             );
@@ -245,7 +259,7 @@
             if (!region) return;
 
             var g = svgEl('g');
-            g.style.color = layerColor(layer.id);
+            g.style.color = layer.color || '#2563eb';
 
             g.appendChild(
                 svgEl('rect', {
@@ -273,7 +287,7 @@
             tagline.textContent = layer.tagline;
             g.appendChild(tagline);
 
-            var boxes = layout.computeCompBoxes(region, layer.components);
+            var boxes = cachedLayerBoxes[layer.id] || [];
             boxes.forEach(function (box) {
                 var isActive = state.layerId === layer.id && state.compId === box.comp.id;
                 var boxG = svgEl('g', {
@@ -295,7 +309,7 @@
                         'stroke-width': 1.5,
                     }),
                 );
-                var fontSize = Math.max(7, Math.min(12, box.w / (box.comp.name.length * 0.55)));
+                var fontSize = clamp(box.w / (box.comp.name.length * 0.55), 7, 12);
                 var text = svgEl('text', {
                     x: box.x + box.w / 2,
                     y: box.y + box.h / 2,
@@ -333,6 +347,10 @@
         return hits;
     }
 
+    function renderSectionLabel(text, count) {
+        return '<div class="dossier-section-label">' + escapeHtml(text) + '<span class="count">' + count + '</span></div>';
+    }
+
     function renderViewToggle() {
         return (
             '<div class="dossier-view-toggle" role="group" aria-label="Reading level">' +
@@ -349,9 +367,7 @@
     function renderGlossaryChips(terms) {
         if (!terms.length) return '';
         return (
-            '<div class="dossier-section-label">Glossary<span class="count">' +
-            terms.length +
-            '</span></div>' +
+            renderSectionLabel('Glossary', terms.length) +
             '<div class="dossier-glossary">' +
             terms
                 .map(function (term) {
@@ -428,9 +444,7 @@
             '<p class="dossier-summary">' +
             escapeHtml(summary) +
             '</p>' +
-            '<div class="dossier-section-label">Components<span class="count">' +
-            layer.components.length +
-            '</span></div>' +
+            renderSectionLabel('Components', layer.components.length) +
             '<div class="dossier-components">' +
             componentsHtml +
             '</div>' +
@@ -443,9 +457,7 @@
         var techsHtml = '';
         if (comp.techs && comp.techs.length) {
             techsHtml =
-                '<div class="dossier-section-label">Technologies that solve this<span class="count">' +
-                comp.techs.length +
-                '</span></div>' +
+                renderSectionLabel('Technologies that solve this', comp.techs.length) +
                 comp.techs
                     .map(function (t, i) {
                         var entry = techCatalog[t];
@@ -511,35 +523,6 @@
 
         dossier.innerHTML = breadcrumbHtml + (comp ? renderComponentDossier(layer, comp) : renderLayerDossier(layer));
 
-        dossier.querySelectorAll('[data-action="close"]').forEach(function (btn) {
-            btn.addEventListener('click', closeDossier);
-        });
-        var openLayerBtn = dossier.querySelector('[data-action="open-layer"]');
-        if (openLayerBtn) openLayerBtn.addEventListener('click', function () { openLayer(layer.id); });
-
-        dossier.querySelectorAll('[data-view]').forEach(function (btn) {
-            btn.addEventListener('click', function () {
-                state.view = btn.getAttribute('data-view');
-                writeHash();
-                renderDossier();
-            });
-        });
-
-        dossier.querySelectorAll('[data-open-comp]').forEach(function (btn) {
-            btn.addEventListener('click', function () {
-                var compId = btn.getAttribute('data-open-comp');
-                var boxG = svg.querySelector('[data-layer-id="' + layer.id + '"][data-comp-id="' + compId + '"]');
-                openComponent(layer.id, compId, boxG);
-            });
-        });
-
-        dossier.querySelectorAll('[data-tech-toggle]').forEach(function (btn) {
-            btn.addEventListener('click', function () {
-                var detail = btn.nextElementSibling;
-                if (detail) detail.hidden = !detail.hidden;
-            });
-        });
-
         dossier.querySelectorAll('.glossary-chip').forEach(function (chip) {
             var btn = chip.querySelector('button');
             var tip = chip.querySelector('.glossary-chip-tooltip');
@@ -548,6 +531,39 @@
             btn.addEventListener('mouseleave', function () { tip.hidden = true; });
         });
     }
+
+    /* One delegated listener on the stable dossier container, wired once, handles every
+       button the innerHTML above can produce — replaces re-wiring five separate
+       querySelectorAll blocks by hand on every render. */
+    dossier.addEventListener('click', function (e) {
+        if (e.target.closest('[data-action="close"]')) {
+            closeDossier();
+            return;
+        }
+        if (e.target.closest('[data-action="open-layer"]')) {
+            if (state.layerId) openLayer(state.layerId);
+            return;
+        }
+        var viewBtn = e.target.closest('[data-view]');
+        if (viewBtn) {
+            state.view = viewBtn.getAttribute('data-view');
+            writeHash();
+            renderDossier();
+            return;
+        }
+        var openCompBtn = e.target.closest('[data-open-comp]');
+        if (openCompBtn) {
+            var compId = openCompBtn.getAttribute('data-open-comp');
+            var boxG = svg.querySelector('[data-layer-id="' + state.layerId + '"][data-comp-id="' + compId + '"]');
+            openComponent(state.layerId, compId, boxG);
+            return;
+        }
+        var techBtn = e.target.closest('[data-tech-toggle]');
+        if (techBtn) {
+            var detail = techBtn.nextElementSibling;
+            if (detail) detail.hidden = !detail.hidden;
+        }
+    });
 
     /* ---------------- Animated connector arrow ---------------- */
 
@@ -563,7 +579,7 @@
         var sx = sourceRect.x + sourceRect.w;
         var sy = sourceRect.y + sourceRect.h / 2;
         var ex = dossierRect.x - 8;
-        var ey = Math.max(24, Math.min(viewport.clientHeight - 24, sy));
+        var ey = clamp(sy, 24, viewport.clientHeight - 24);
 
         var reach = Math.max(60, (ex - sx) * 0.4);
         var cx1 = sx + reach;
