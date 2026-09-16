@@ -40,12 +40,9 @@
         external: 'External System',
     };
 
-    var THEME_KEY = 'showcase-grid-theme';
-
     var grid = document.getElementById('capability-grid');
     var overlay = document.getElementById('overlay');
     var overlayBackdrop = document.getElementById('overlay-backdrop');
-    var themeToggleBtn = document.getElementById('theme-toggle');
     if (!grid || !overlay) return;
 
     var state = { categoryId: null, boxId: null, view: 'exec' };
@@ -63,48 +60,6 @@
             return b.id === boxId;
         })[0];
         return box ? { category: category, box: box } : null;
-    }
-
-    /* ---------------- Theme ---------------- */
-
-    function readStoredTheme() {
-        try {
-            return window.localStorage.getItem(THEME_KEY);
-        } catch (e) {
-            return null;
-        }
-    }
-
-    function storeTheme(theme) {
-        try {
-            window.localStorage.setItem(THEME_KEY, theme);
-        } catch (e) {
-            /* private browsing / blocked storage — theme just won't persist */
-        }
-    }
-
-    function applyTheme(theme) {
-        document.documentElement.setAttribute('data-theme', theme);
-        var icon = themeToggleBtn ? themeToggleBtn.querySelector('.theme-toggle-icon') : null;
-        if (icon) icon.textContent = theme === 'dark' ? '☀' : '☽';
-        storeTheme(theme);
-    }
-
-    function initTheme() {
-        var stored = readStoredTheme();
-        if (stored === 'dark' || stored === 'light') {
-            applyTheme(stored);
-            return;
-        }
-        var prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
-        applyTheme(prefersDark ? 'dark' : 'light');
-    }
-
-    if (themeToggleBtn) {
-        themeToggleBtn.addEventListener('click', function () {
-            var current = document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light';
-            applyTheme(current === 'dark' ? 'light' : 'dark');
-        });
     }
 
     /* ---------------- Grid rendering ---------------- */
@@ -276,22 +231,39 @@
         });
     }
 
+    /* Deliberately NOT the .steps timeline used for the scenario above — Matt asked for these
+       two sections not to look like the same mechanism. Uses the site's existing .callout
+       component instead, one per stage, colored by tone. */
+    var CALLOUT_ICONS = { info: 'i', tip: '✓', warn: '!', jargon: '¶' };
+
     function renderFlow(flow) {
-        return renderStepList('How It Actually Works', flow, function (node) {
-            return (
-                '<li class="step">' +
-                '<div class="step-title">' + escapeHtml(node.title) + '</div>' +
-                '<p>' + escapeHtml(node.body) + '</p></li>'
-            );
-        });
+        return (
+            '<section class="overlay-section">' +
+            '<h2 class="overlay-section-title">How It Actually Works</h2>' +
+            flow
+                .map(function (node) {
+                    var tone = node.tone || 'info';
+                    return (
+                        '<div class="callout callout-' + tone + '">' +
+                        '<span class="callout-icon">' + (CALLOUT_ICONS[tone] || 'i') + '</span>' +
+                        '<div class="callout-body">' +
+                        '<div class="callout-title">' + escapeHtml(node.title) + '</div>' +
+                        '<p style="margin:0">' + escapeHtml(node.body) + '</p>' +
+                        '</div></div>'
+                    );
+                })
+                .join('') +
+            '</section>'
+        );
     }
 
-    function renderNarrative(text) {
-        var paragraphs = text.split('\n\n').map(function (p) { return '<p>' + escapeHtml(p) + '</p>'; }).join('');
+    /* Narrative paragraphs are trusted, hand-authored HTML from data.js (not escaped) so key
+       phrases can be wrapped in <mark class="hl"> to guide a skimming reader's eye. */
+    function renderNarrative(paragraphs) {
         return (
             '<section class="overlay-section">' +
             '<h2 class="overlay-section-title">What’s Real, and Why</h2>' +
-            '<div class="overlay-narrative">' + paragraphs + '</div>' +
+            '<div class="overlay-narrative">' + paragraphs.map(function (p) { return '<p>' + p + '</p>'; }).join('') + '</div>' +
             '</section>'
         );
     }
@@ -468,7 +440,6 @@
 
     /* ---------------- Init ---------------- */
 
-    initTheme();
     var initial = parseHash();
     state.categoryId = initial.categoryId;
     state.boxId = initial.boxId;

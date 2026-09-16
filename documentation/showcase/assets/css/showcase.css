@@ -71,22 +71,6 @@
 .status-swatch.status-not-built { background: transparent; border: 1.5px dashed var(--color-border-strong); }
 .status-swatch.status-external { background: var(--color-text-subtle); }
 
-.theme-toggle {
-    position: absolute;
-    top: 0;
-    right: 0;
-    width: 36px;
-    height: 36px;
-    border-radius: var(--radius-md);
-    border: 1px solid var(--color-border);
-    background: var(--color-bg);
-    cursor: pointer;
-    font-size: 16px;
-    color: var(--color-text-muted);
-}
-
-.theme-toggle:hover { color: var(--color-accent); border-color: var(--color-accent); }
-
 /* ---------- Status badge/pill (grid badges + overlay) ---------- */
 .status {
     display: inline-flex;
@@ -322,6 +306,16 @@
     margin: 0 0 var(--space-4);
 }
 
+/* Guides a skimming reader's eye straight to the load-bearing phrase in each paragraph,
+   instead of making them read every word to find it. */
+.overlay-narrative mark.hl {
+    background: var(--color-accent-subtle);
+    color: var(--color-accent-hover, var(--color-accent));
+    font-weight: 700;
+    padding: 0 3px;
+    border-radius: 3px;
+}
+
 /* Engineering facts render as a .card-grid of short concept cards (title + one-line
    explanation) instead of a wall of bulleted prose — reuses the site's existing card pattern. */
 .overlay-closing {
@@ -398,38 +392,8 @@
     margin-bottom: 3px;
 }
 
-/* ---------- Dark mode (this page only, simple inversion of the same palette) ---------- */
-html[data-theme='dark'] {
-    --color-bg: #0b0e14;
-    --color-bg-subtle: #10141d;
-    --color-bg-muted: #171c27;
-    --color-bg-code: #10141d;
-    --color-bg-code-inline: #171c27;
-    --color-text: #e6e9ef;
-    --color-text-muted: #a8b0bf;
-    --color-text-subtle: #7c8493;
-    --color-text-inverse: #0b0e14;
-    --color-border: #232a38;
-    --color-border-strong: #323b4d;
-    --color-accent: #5b9bff;
-    --color-accent-hover: #7fb0ff;
-    --color-accent-subtle: #16233d;
-    --color-success: #34d399;
-    --color-success-subtle: #10241d;
-    --color-warning: #fbbf24;
-    --color-warning-subtle: #2a2210;
-    --color-danger: #f87171;
-    --color-danger-subtle: #2a1414;
-    --color-info: #38bdf8;
-    --color-info-subtle: #10222c;
-    --sidebar-bg: #0d1118;
-}
-
-html[data-theme='dark'] .hero-title {
-    background: linear-gradient(135deg, #e6e9ef 0%, #7fb0ff 100%);
-    -webkit-background-clip: text;
-    background-clip: text;
-}
+/* No dark mode — this page stays light, matching every other docs site (none of them have a
+   dark theme either). */
 
 @media (max-width: 768px) {
     .overlay { inset: 0; border-radius: 0; }
@@ -439,5 +403,4 @@ html[data-theme='dark'] .hero-title {
 
 @media (max-width: 640px) {
     .capability-boxes { grid-template-columns: 1fr 1fr; }
-    .theme-toggle { position: static; margin-top: var(--space-3); }
 }

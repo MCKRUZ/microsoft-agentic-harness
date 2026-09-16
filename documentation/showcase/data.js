@@ -301,18 +301,23 @@ window.SHOWCASE_CATEGORIES = [
                         },
                     ],
                     flow: [
-                        { title: 'Remember', body: 'A fact worth keeping shows up in conversation.' },
+                        { title: 'Remember', tone: 'info', body: 'A fact worth keeping shows up in conversation.' },
                         {
                             title: 'Safety Check',
+                            tone: 'warn',
                             body: 'Screened before anything is trusted. If it passes, it’s stored and recallable. If it looks suspicious, it’s quarantined — kept for audit, but never served back to the agent.',
                         },
-                        { title: 'Fades Over Time', body: 'Loses roughly 5% of its importance per day it goes untouched, until it’s pruned entirely.' },
-                        { title: 'Recall', body: 'A fast cache is checked first; a fuller search runs only if that’s not enough. Being recalled resets the fade.' },
+                        { title: 'Fades Over Time', tone: 'jargon', body: 'Loses roughly 5% of its importance per day it goes untouched, until it’s pruned entirely.' },
+                        { title: 'Recall', tone: 'tip', body: 'A fast cache is checked first; a fuller search runs only if that’s not enough. Being recalled resets the fade.' },
                     ],
-                    narrative:
-                        'Episodic memory usually means: memory of a specific thing that happened at a specific time — "the user told me X on Tuesday" — as opposed to semantic memory (general facts) or procedural memory (how to do something).\n\n' +
-                        'What’s real: a genuine memory system — remember a fact, recall it later, forget it, and improve it based on feedback. Two things make it more than a toy. Every memory is safety-scanned before it’s trusted: before anything gets remembered, it passes through a gate that scans for injected instructions and stamps where the fact came from. If something looks untrustworthy, it still gets written for audit purposes, but it’s quarantined and can never be served back to the agent — a real security property most memory systems skip entirely. And memories fade on purpose: each fact carries a weight that decays smoothly over time and is deleted outright once it drops below a threshold — like human memory, not everything is kept with equal weight.\n\n' +
-                        'Why it’s "partial," not "built": the system doesn’t actually distinguish "this happened at a specific moment" from "this is just a general fact worth knowing." It’s one undifferentiated bucket of remembered facts, tagged with a free-text label, not a real timeline of events.',
+                    /* Each paragraph is trusted, hand-authored HTML (not escaped at render time) so
+                       key phrases can be wrapped in <mark class="hl"> to guide a skimming reader's
+                       eye straight to what matters, instead of a flat wall of text. */
+                    narrative: [
+                        'Episodic memory usually means: <mark class="hl">memory of a specific thing that happened at a specific time</mark> — "the user told me X on Tuesday" — as opposed to semantic memory (general facts) or procedural memory (how to do something).',
+                        'What’s real: a genuine memory system — remember a fact, recall it later, forget it, and improve it based on feedback. Two things make it more than a toy. Every memory is <mark class="hl">safety-scanned before it’s trusted</mark>: before anything gets remembered, it passes through a gate that scans for injected instructions and stamps where the fact came from. If something looks untrustworthy, it still gets written for audit purposes, but it’s <mark class="hl">quarantined and can never be served back to the agent</mark> — a real security property most memory systems skip entirely. And <mark class="hl">memories fade on purpose</mark>: each fact carries a weight that decays smoothly over time and is deleted outright once it drops below a threshold — like human memory, not everything is kept with equal weight.',
+                        'Why it’s <mark class="hl">"partial," not "built"</mark>: the system doesn’t actually distinguish "this happened at a specific moment" from "this is just a general fact worth knowing." It’s <mark class="hl">one undifferentiated bucket</mark> of remembered facts, tagged with a free-text label, not a real timeline of events.',
+                    ],
                     techTable: {
                         columns: ['Mode', 'What It Does', 'Default?'],
                         rows: [
