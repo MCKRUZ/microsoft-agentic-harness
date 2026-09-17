@@ -257,6 +257,64 @@ window.SHOWCASE_CATEGORIES = [
                 status: 'built',
                 exec: 'Real login, not a stub — requests are authenticated before anything else happens.',
                 eng: 'JWT Bearer authentication via Microsoft Entra ID, wired through Presentation.Common, Presentation.ExecutionApi, and Presentation.AgentHub.',
+                deepDive: {
+                    scenario: [
+                        {
+                            time: 'No token, or an old one',
+                            text: 'A request arrives with no credentials, or an expired one. It\'s rejected before it ever reaches any real business logic — authentication is the very first gate, not something bolted onto individual endpoints later.',
+                        },
+                        {
+                            time: 'A developer working locally',
+                            text: 'Doesn\'t want to stand up a real Entra tenant just to test a feature. A dev-only bypass exists that auto-authenticates every request as a synthetic user — but it\'s guarded twice over so it can\'t quietly end up active somewhere real.',
+                        },
+                        {
+                            time: 'A token expires',
+                            text: 'Most auth libraries build in a five-minute grace window by default, so a slightly-off clock doesn\'t cause spurious failures. This system deliberately turns that off — an expired token is rejected exactly when it says it should be, not five minutes later.',
+                        },
+                        {
+                            time: 'A live connection opens',
+                            text: 'A browser opens a persistent, real-time connection for streamed agent updates. That kind of connection can\'t carry a normal authorization header, so its token has to travel a different way — but only for that one specific kind of connection.',
+                        },
+                    ],
+                    flow: [
+                        { title: 'Reject Before Anything Else Runs', tone: 'info', body: 'A request without valid credentials never reaches business logic at all.' },
+                        { title: 'Double-Guard The Escape Hatch', tone: 'warn', body: 'A local-dev bypass exists, but only activates when two separate conditions are both explicitly true.' },
+                        { title: 'Tighten What The Library Leaves Loose', tone: 'jargon', body: 'The underlying auth library\'s own default grace window on token expiry is deliberately overridden to be stricter.' },
+                        { title: 'One Narrow, Precisely-Scoped Exception', tone: 'tip', body: 'A real-time connection gets its token a different way — but only for that connection type, nothing else.' },
+                    ],
+                    narrative: [
+                        '"Real login" here means requests are authenticated as the very first thing that happens, against an actual identity provider — not a stub, and not a header anyone could forge.',
+                        'What\'s real, and one interesting nuance: there genuinely is a local-development bypass that skips real login entirely — but it\'s <mark class="hl">deliberately double-guarded</mark> so it can\'t quietly end up active anywhere real. It only turns on when the environment is genuinely Development <mark class="hl">and</mark> a separate config flag is explicitly turned on — neither alone is enough. There\'s also a deliberate hardening past the library\'s own defaults: the underlying auth library leaves a five-minute grace window on token expiry by default, and this system <mark class="hl">turns that off entirely</mark>, per its own documented security standard — an expired token is rejected exactly when it expires, not five minutes later.',
+                        'One precisely-scoped exception exists for real-time connections, which can\'t carry a normal authorization header: their token travels a different way, but that alternate path is <mark class="hl">checked against the specific connection type</mark>, not loosened for every request across the board.',
+                    ],
+                    techTable: {
+                        columns: ['Setting', 'Library Default', 'This System'],
+                        rows: [
+                            ['Token clock skew', 'A five-minute grace window', 'Zero — rejected exactly at expiry, per project security standard.'],
+                            ['Dev auth bypass', 'Not applicable', 'Off by default; requires two separate conditions both true to enable.'],
+                        ],
+                    },
+                    engineeringFacts: [
+                        {
+                            title: 'The dev bypass needs two conditions, not one',
+                            body: 'Genuinely being in a Development environment isn\'t enough on its own — a separate config flag must also be explicitly turned on.',
+                        },
+                        {
+                            title: 'Clock skew is deliberately zeroed against the library default',
+                            body: 'A five-minute grace window most auth setups leave in place is turned off on purpose, so an expired token is rejected exactly on schedule.',
+                        },
+                        {
+                            title: 'The streaming-connection token exception is narrowly scoped',
+                            body: 'The alternate way of reading a token only applies to that specific connection path, and existing authentication event handlers are chained onto — not replaced — so nothing else quietly stops firing.',
+                        },
+                        {
+                            title: 'A second, unused authentication path exists in this codebase',
+                            body: 'A more generic setup lives in the shared Presentation layer with no real caller outside its own tests — the auth that\'s actually live in the running hosts is wired directly, per host, using a different, more current library.',
+                        },
+                    ],
+                    whyItMatters:
+                        'Authentication is supposed to fail loudly and predictably, every time — a local convenience that could accidentally activate somewhere real, or a grace window that quietly lets an expired credential through, are exactly the kind of small gaps that become real incidents. Guarding the escape hatch twice over and tightening a library\'s own default leniency are the unglamorous details that separate "we have login" from "our login is actually trustworthy."',
+                },
             },
             {
                 id: 'agent-identity',
