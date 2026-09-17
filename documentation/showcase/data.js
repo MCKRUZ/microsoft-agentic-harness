@@ -832,13 +832,136 @@ window.SHOWCASE_CATEGORIES = [
                 id: 'supervisor-agent',
                 name: 'Supervisor Agent',
                 status: 'partial',
-                exec: 'One agent can compose several skills in a single conversation, but that’s different from a dedicated "supervisor" that delegates to separate specialist agents — this harness doesn’t have that multi-agent pattern yet.',
+                exec: 'A real manager-plus-specialists multi-agent pattern exists — with human plan review and full telemetry — but it\'s not yet reachable from an ordinary conversation. Today it\'s a demonstrated, tested building block, not something a live chat turn can invoke.',
+                eng: 'MagenticOrchestrator wraps the Microsoft Agent Framework\'s own (experimental) Magentic multi-agent workflow (MagenticWorkflowBuilder(manager).AddParticipants(...)), adding OTel spans, a human-in-the-loop plan-review bridge, and content-safety sanitization. Demonstrated in Presentation.ConsoleUI\'s MagenticOrchestrationExample; no CQRS command yet exposes it on a live conversation turn.',
+                deepDive: {
+                    scenario: [
+                        {
+                            time: 'A task too big for one agent',
+                            text: 'Something genuinely needs a manager that breaks the work down and delegates pieces to a team of specialist agents, rather than one agent trying to do everything itself.',
+                        },
+                        {
+                            time: 'That pattern is invoked',
+                            text: 'A manager agent is created alongside a set of specialist participants, and the whole workflow runs as a real multi-agent collaboration — not a single agent juggling several roles internally.',
+                        },
+                        {
+                            time: 'The manager gets stuck',
+                            text: 'Partway through, the manager\'s plan stalls or needs a second opinion. Instead of guessing, the whole workflow pauses and a real person is asked to review the plan — the exact same escalation mechanism used everywhere else in this harness.',
+                        },
+                        {
+                            time: 'Today, though',
+                            text: 'None of this is reachable from an ordinary chat conversation. It exists, works, and is demonstrated end-to-end — but only as a capability someone would have to deliberately invoke themselves, not something the everyday product surface offers yet.',
+                        },
+                    ],
+                    flow: [
+                        { title: 'Build The Team', tone: 'info', body: 'A manager agent is paired with a set of specialist participant agents for one workflow.' },
+                        { title: 'Run, Emit Real Telemetry', tone: 'jargon', body: 'The whole multi-agent run is traced with the same OpenTelemetry span tree as any other operation in this harness.' },
+                        { title: 'Pause For A Person When Needed', tone: 'warn', body: 'A stalled or uncertain plan pauses the workflow and routes to the same human-escalation mechanism used everywhere else.' },
+                        { title: 'Not Yet On The Live Path', tone: 'tip', body: 'A real command or endpoint that lets an ordinary conversation trigger this doesn\'t exist yet — it\'s demonstrated, not exposed.' },
+                    ],
+                    narrative: [
+                        'This is a genuine correction to what this box used to say: a real manager-and-specialists multi-agent pattern <mark class="hl">already exists in this codebase</mark> — it does not need to be built from scratch.',
+                        'What\'s real: this harness wraps a genuine multi-agent workflow — a manager agent plus a team of specialist participants — with production-grade care around it: <mark class="hl">every run gets the same OpenTelemetry span tree</mark> as any other operation, and a plan that stalls or needs review <mark class="hl">pauses for a real human decision</mark> through the exact same escalation mechanism the rest of this harness uses, including the same unforgeable-feedback wrapping seen in Human Review.',
+                        'Why it stays <mark class="hl">"partial"</mark>: the underlying multi-agent engine itself is an experimental feature of the Microsoft Agent Framework this harness builds on, and — more importantly — nothing in the live conversation path invokes it yet. It\'s demonstrated in a runnable example and fully tested, but there\'s no command or endpoint today that lets an ordinary chat turn actually kick off a multi-agent run.',
+                    ],
+                    techTable: {
+                        columns: ['What This Harness Adds', 'Why It Matters'],
+                        rows: [
+                            ['OpenTelemetry span emission', 'A multi-agent run is traceable the same way any other operation in this harness is — not a black box.'],
+                            ['Human-in-the-loop plan review', 'A stalled or uncertain plan pauses for a real person instead of the manager guessing its way forward.'],
+                            ['Content-safety sanitization', 'Human revision feedback relayed back to the manager model is sanitized and wrapped, the same as any other human-to-model relay.'],
+                        ],
+                    },
+                    engineeringFacts: [
+                        {
+                            title: 'A real manager-plus-participants API, not a placeholder',
+                            body: 'The workflow is built with an explicit manager agent and a set of participant agents — a literal multi-agent composition, not one agent role-playing several personas.',
+                        },
+                        {
+                            title: 'Reuses the harness\'s own escalation mechanism',
+                            body: 'A plan-review pause is translated into the same escalation request type used elsewhere, rather than inventing a second, parallel approval system.',
+                        },
+                        {
+                            title: 'Human feedback to the manager is wrapped the same way as everywhere else',
+                            body: 'Revision feedback relayed back to the manager model goes through the identical sanitize-then-wrap mechanism verified under Human Review — one of only two places in this harness where a human\'s own words are deliberately handed to an LLM.',
+                        },
+                        {
+                            title: 'The underlying engine is explicitly marked experimental',
+                            body: 'This harness pins to the framework\'s public-only surface and suppresses one specific experimental-API warning rather than reaching into internal types — a deliberate, narrow dependency, not an accidental one.',
+                        },
+                        {
+                            title: 'Demonstrated, not yet wired to a live entry point',
+                            body: 'A runnable console example exercises the full pattern end-to-end; no controller or CQRS command in the running hosts invokes it today.',
+                        },
+                    ],
+                    whyItMatters:
+                        'Some problems genuinely need more than one agent working together — a manager that plans and a team that executes, with a person able to step in when the plan gets stuck. Building that safely, with real observability and real human oversight, is most of the hard work. What\'s left is the more mundane task of actually connecting it to something a user can trigger — which is exactly why this is marked "partial" rather than either "built" or "not built."',
+                },
             },
             {
                 id: 'specialist-agents',
                 name: 'Specialist Agents',
                 status: 'partial',
-                exec: 'Skills act somewhat like specialists — each brings its own instructions and tools — but they run inside one agent’s context, not as independent sub-agents.',
+                exec: 'The same real manager-plus-specialists pattern as Supervisor Agent — specialist participant agents are a genuine part of the Magentic workflow this harness wraps, not a placeholder — but, same caveat, nothing in the live conversation path spins one up today.',
+                eng: 'Specialist agents are the MagenticWorkflowBuilder\'s AddParticipants(...) — independent agents with their own instructions/tools, coordinated by the manager, not skills merged into one agent\'s context. Demonstrated, not yet exposed on a live path.',
+                deepDive: {
+                    scenario: [
+                        {
+                            time: 'A job needs different expertise',
+                            text: 'Part of a task needs one kind of specialized handling, another part needs something completely different. Rather than one agent trying to be good at both, two genuinely separate specialist agents each own their own piece.',
+                        },
+                        {
+                            time: 'The manager delegates',
+                            text: 'The manager agent doesn\'t do the specialized work itself — it hands pieces of the task to whichever specialist participant is suited for that piece, and coordinates the results.',
+                        },
+                        {
+                            time: 'Compare that to skills',
+                            text: 'This is a genuinely different shape from a single agent loading multiple skills into one shared context — here, each specialist is its own independent agent instance, not an instruction document merged into someone else\'s.',
+                        },
+                        {
+                            time: 'Today',
+                            text: 'That distinction is real in the code, tested, and demonstrated — but nothing in this harness\'s live conversation flow actually assembles a team of specialists for an ordinary user request yet.',
+                        },
+                    ],
+                    flow: [
+                        { title: 'Each Specialist Is Its Own Agent', tone: 'info', body: 'Not a skill merged into a shared context — an independent agent instance with its own instructions and tools.' },
+                        { title: 'The Manager Coordinates, Doesn\'t Do The Work', tone: 'jargon', body: 'Delegation and coordination are the manager\'s job; the specialists do the actual specialized work.' },
+                        { title: 'Traced And Escalatable Like Any Other Run', tone: 'tip', body: 'The same telemetry and human-review mechanisms apply to a team of specialists as to any other harness operation.' },
+                        { title: 'Not Yet Assembled On A Live Path', tone: 'warn', body: 'Nothing in the running hosts today builds a specialist team for an ordinary conversation.' },
+                    ],
+                    narrative: [
+                        'The distinction this box draws matters: a skill merged into one agent\'s context is <mark class="hl">still one agent</mark> wearing different instructions. A specialist participant in this harness\'s multi-agent workflow is <mark class="hl">a genuinely separate agent instance</mark> that the manager delegates to and coordinates — a real architectural difference, not a semantic one.',
+                        'What\'s real: that separation exists in the code today, wired into the same production-grade wrapper as Supervisor Agent — full tracing, human plan review, safety sanitization on any human feedback relayed to the manager. It\'s not a sketch of the idea; it\'s a working, tested implementation.',
+                        'Why it\'s still <mark class="hl">"partial"</mark>, identically to Supervisor Agent: nothing in the harness\'s actual conversation path assembles a team of specialists for a real user request today. The capability is genuine; the everyday product surface for triggering it doesn\'t exist yet.',
+                    ],
+                    techTable: {
+                        columns: ['Skill (in one agent)', 'Specialist Agent (Magentic)'],
+                        rows: [
+                            ['Instructions merged into a shared execution context', 'A fully independent agent instance with its own context'],
+                            ['Coordinated implicitly by one agent\'s own reasoning', 'Explicitly delegated to and coordinated by a separate manager agent'],
+                        ],
+                    },
+                    engineeringFacts: [
+                        {
+                            title: 'A genuinely separate agent instance, not a merged context',
+                            body: 'Each specialist participant is its own agent, distinct from the multi-skill-in-one-agent pattern the harness also supports elsewhere.',
+                        },
+                        {
+                            title: 'Delegation is explicit, not implicit',
+                            body: 'The manager agent decides what work goes to which specialist — it\'s a real coordination structure, not one agent internally switching personas.',
+                        },
+                        {
+                            title: 'Inherits the same observability and safety wrapper',
+                            body: 'Nothing about specialist agents skips the tracing, human-review, or content-safety layers this harness applies to the manager and the workflow as a whole.',
+                        },
+                        {
+                            title: 'No live assembly point exists yet',
+                            body: 'Building a specific team of specialists for a real task is something a caller has to do explicitly today — there\'s no product surface that does it automatically for an ordinary request.',
+                        },
+                    ],
+                    whyItMatters:
+                        'Some tasks are genuinely better solved by a team of specialists than by one generalist agent trying to do everything — the same reason organizations have specialized roles instead of one person doing every job. This harness has already built the hard, safety-conscious part of that pattern; what\'s missing is simply a front door that lets an ordinary request reach it.',
+                },
             },
             {
                 id: 'skills-system',
