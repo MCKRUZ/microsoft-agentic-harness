@@ -659,6 +659,68 @@ window.SHOWCASE_CATEGORIES = [
                 status: 'built',
                 exec: 'Conversations survive a restart — they’re not held only in memory.',
                 eng: 'ConversationOrchestrator + durable conversation transcript, backed by EF Core.',
+                deepDive: {
+                    scenario: [
+                        {
+                            time: 'Mid-conversation',
+                            text: 'A user is a few turns into a conversation with the agent. The host process restarts — a deploy, a crash, anything. When they send their next message, the conversation continues exactly where it left off, not from scratch.',
+                        },
+                        {
+                            time: 'At the same time',
+                            text: 'Two different requests for that same conversation land on two different servers at almost the same moment. Without something to stop it, both would try to continue the conversation at once — each one blind to what the other just did.',
+                        },
+                        {
+                            time: 'Instead',
+                            text: 'One of the two requests waits its turn. The first finishes, writes its messages, and only then does the second one proceed — reading everything the first one just wrote, in order.',
+                        },
+                        {
+                            time: 'If a host dies mid-turn',
+                            text: 'Its claim on the conversation automatically expires rather than blocking it forever, so a crashed server can\'t permanently freeze someone else\'s conversation.',
+                        },
+                    ],
+                    flow: [
+                        { title: 'Claim The Turn', tone: 'info', body: 'Before touching a conversation, a request has to hold an exclusive claim on it — waiting in line if someone else already holds it.' },
+                        { title: 'Read, Then Write', tone: 'jargon', body: 'The prior messages are loaded, the model responds, and the new turn is appended — durably, not just in the running process\'s memory.' },
+                        { title: 'Release, Or Expire', tone: 'tip', body: 'The claim is released when the turn finishes. If the host holding it dies instead, the claim times out on its own rather than freezing the conversation.' },
+                        { title: 'Ownership Checked Once, Centrally', tone: 'warn', body: 'Every read or write is checked against who actually owns the conversation — enforced in one place, not re-implemented at each call site.' },
+                    ],
+                    narrative: [
+                        'The bar for "conversation history" isn\'t just saving messages — it\'s making sure two things happening on the same conversation at once <mark class="hl">can never silently corrupt it</mark>, whether they land on one server or two.',
+                        'What\'s real: conversations are stored durably rather than only in a running process\'s memory, so a restart doesn\'t lose them. On top of that, a real coordination mechanism means <mark class="hl">only one turn can ever run against a conversation at a time</mark> — a second request arriving mid-turn waits, rather than the two interleaving and producing a transcript where messages land out of causal order. And if the host running a turn crashes mid-way, that claim <mark class="hl">expires on its own instead of freezing the conversation</mark> for everyone else. Ownership is enforced the same way everywhere: <mark class="hl">one check, in the storage layer itself</mark>, not something each new piece of code has to remember to re-verify.',
+                        'This is marked <mark class="hl">"Built," not "Partial"</mark> — durability, the turn-claiming mechanism, and the ownership check are all real and all exercised on every conversation, on the default local storage.',
+                    ],
+                    techTable: {
+                        columns: ['Storage Backend', 'Safe For', 'Caveat'],
+                        rows: [
+                            ['SQLite via EF Core (default)', 'Multiple server processes on one machine', 'Its safety comes from the database file\'s own locking — it doesn\'t extend across a network share to multiple machines.'],
+                            ['One JSON file per conversation', 'Single-process local development only', 'Its write protection is an in-process lock; two hosts sharing the same file can produce a corrupted record.'],
+                        ],
+                    },
+                    engineeringFacts: [
+                        {
+                            title: 'The turn-claiming mechanism works across separate processes',
+                            body: 'It\'s not just an in-memory lock — a claim taken by one server is visible to a completely different server process talking to the same storage.',
+                        },
+                        {
+                            title: 'A lost claim is made visible, not silent',
+                            body: 'If a host\'s claim on a conversation expires while it still believes it holds it (a stall, a crash, a paused process), that\'s surfaced explicitly rather than letting the host keep writing as if nothing changed.',
+                        },
+                        {
+                            title: 'No guaranteed order between two waiting requests',
+                            body: 'If two requests are queued for the same conversation at once, the system doesn\'t promise which one goes first across different servers — only that they can never run at the same time.',
+                        },
+                        {
+                            title: 'One ownership check, not several',
+                            body: 'The check for "does this caller actually own this conversation" lives in exactly one place in the storage layer. Earlier versions of this codebase had it hand-copied into as many as six separate call sites — now every one of them just relies on the store to refuse an unauthorized read or write.',
+                        },
+                        {
+                            title: 'The storage layer and the turn-claiming mechanism are deliberately paired',
+                            body: 'Swapping one without the other breaks: a durable claim expects to find the same record the durable store manages, and pairing a durable store with an in-memory claim only protects one server against itself.',
+                        },
+                    ],
+                    whyItMatters:
+                        'A chatbot that just appends messages to a list looks fine until two requests hit it at once, or the server restarts mid-conversation — and then it silently produces a transcript that doesn\'t reflect what actually happened. Making concurrency and durability correct together, instead of bolting durability onto something that already assumed a single process, is exactly the unglamorous work that determines whether a multi-server deployment behaves like one system or like several ones quietly stepping on each other.',
+                },
             },
             {
                 id: 'agent-state',
