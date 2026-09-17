@@ -537,8 +537,72 @@ window.SHOWCASE_CATEGORIES = [
                 id: 'classifier',
                 name: 'Classifier',
                 status: 'partial',
-                exec: 'A real classifier exists, but today it’s scoped to one job — scoring how complex a retrieval question is — not general-purpose request classification.',
-                eng: 'The RAG complexity-routing classifier (Phase A) scores query complexity and routes to a tiered pipeline; not reused elsewhere yet.',
+                exec: 'A real classifier exists and is genuinely shared — it scores task complexity for both model-tier routing and retrieval routing — but it only classifies one dimension (how hard is this), not general request-type or intent classification.',
+                eng: 'TaskComplexityClassifier (LLM-based, four tiers: trivial/simple/moderate/complex) is consumed by both ModelRouter and RagOrchestrator — one shared classifier, not duplicated per caller.',
+                deepDive: {
+                    scenario: [
+                        {
+                            time: 'A one-word greeting',
+                            text: 'Before anything expensive happens, the system recognizes this needs almost nothing and routes it to the cheapest available model — no wasted spend on a trivial request.',
+                        },
+                        {
+                            time: 'A genuinely hard question',
+                            text: 'Something needing deep, multi-step reasoning across several sources gets recognized as complex and routed to a more capable — and more expensive — model instead.',
+                        },
+                        {
+                            time: 'The same signal, a different decision',
+                            text: 'Separately, using the exact same classification, a retrieval question judged complex enough gets a more thorough, multi-round search instead of a single quick lookup.',
+                        },
+                        {
+                            time: 'Most of the time',
+                            text: 'None of this costs an extra model call at all — a cheaper heuristic is tried first, and the real classifier here only gets invoked when that heuristic isn\'t confident enough to decide on its own.',
+                        },
+                    ],
+                    flow: [
+                        { title: 'Try The Cheap Path First', tone: 'info', body: 'A lightweight heuristic attempts to judge complexity without an extra model call.' },
+                        { title: 'Fall Back Only When Unsure', tone: 'jargon', body: 'An actual model call happens only when that heuristic isn\'t confident, using the cheapest available tier.' },
+                        { title: 'Classify Into Four Tiers', tone: 'tip', body: 'Trivial, simple, moderate, or complex — each defined with concrete examples of what belongs where.' },
+                        { title: 'Feed Two Different Decisions', tone: 'warn', body: 'The same result drives which model tier handles a request and how thorough a retrieval pass needs to be.' },
+                    ],
+                    narrative: [
+                        'What\'s real, and a genuine correction from what this box used to say: the classifier isn\'t a one-off tucked inside retrieval routing — <mark class="hl">the same shared classifier also decides which cost tier of model handles an ordinary request</mark>, so a trivial greeting and a genuinely hard reasoning task don\'t cost the same amount to answer.',
+                        'What keeps it "partial": it only classifies <mark class="hl">one specific dimension — how complex is this</mark> — not general-purpose intent or request-type classification (what kind of task is this, which skill should own it). A classifier in the fuller sense this taxonomy implies would cover more ground than complexity alone.',
+                        'A real cost-conscious detail: it doesn\'t run a model call on every single request. A <mark class="hl">cheaper heuristic is tried first</mark>, and the actual classification here fires only when that heuristic isn\'t confident — spending the extra latency and token cost only on the requests that actually need it.',
+                    ],
+                    techTable: {
+                        columns: ['Tier', 'What It Looks Like'],
+                        rows: [
+                            ['Trivial', 'Greetings, acknowledgments, simple lookups.'],
+                            ['Simple', 'One tool, straightforward Q&A.'],
+                            ['Moderate', 'Multiple tools, synthesis across sources.'],
+                            ['Complex', 'Deep multi-step reasoning, planning, architecture-level work.'],
+                        ],
+                    },
+                    engineeringFacts: [
+                        {
+                            title: 'Genuinely shared across two real systems',
+                            body: 'Both general model-tier routing and RAG retrieval routing consume the exact same classifier — not two separate copies.',
+                        },
+                        {
+                            title: 'A cheap heuristic runs first',
+                            body: 'The model-based classification is explicitly a fallback for when that heuristic isn\'t confident, not the default path for every request.',
+                        },
+                        {
+                            title: 'Fails to a safe middle tier, not an extreme',
+                            body: 'A classification failure defaults to "Moderate" — not the cheapest tier, which could starve a hard request of the right model, and not the most expensive one, which could waste money on a trivial one.',
+                        },
+                        {
+                            title: 'It replaced an earlier, narrower interface',
+                            body: 'Its own documentation notes it explicitly supersedes a prior query-only complexity classifier — a sign of real iteration, not a first draft left in place.',
+                        },
+                        {
+                            title: 'Only classifies complexity, not intent',
+                            body: 'A genuinely different, harder problem — what is this request, not just how hard is it — that this component doesn\'t attempt.',
+                        },
+                    ],
+                    whyItMatters:
+                        'Routing every request through the same expensive model regardless of how hard it actually is wastes money on easy questions and can under-serve hard ones. A shared, reused complexity signal that only spends the cost of a model call when a cheap heuristic can\'t decide on its own is a genuinely good design — the honest gap is that "how complex" is a narrower question than "what kind of request is this," and this component only answers the first one.',
+                },
             },
             {
                 id: 'router',
