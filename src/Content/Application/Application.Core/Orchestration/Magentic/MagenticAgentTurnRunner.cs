@@ -66,8 +66,10 @@ public sealed class MagenticAgentTurnRunner : IMagenticAgentTurnRunner
 		AgentDefinition supervisor,
 		string userMessage,
 		IReadOnlyList<ChatMessage> conversationHistory,
+		MagenticTurnOverrides overrides,
 		CancellationToken cancellationToken)
 	{
+		ArgumentNullException.ThrowIfNull(overrides);
 		ArgumentNullException.ThrowIfNull(supervisor);
 		ArgumentException.ThrowIfNullOrWhiteSpace(userMessage);
 		ArgumentNullException.ThrowIfNull(conversationHistory);
@@ -86,7 +88,10 @@ public sealed class MagenticAgentTurnRunner : IMagenticAgentTurnRunner
 			"Running Magentic turn for supervisor {AgentId} with {ParticipantCount} participant(s)",
 			supervisor.Id, supervisor.Participants.Count);
 
-		var manager = await BuildAgentAsync(supervisor, cancellationToken);
+		// Overrides apply to the manager only — the agent the caller actually addressed — the same way
+		// a single-agent turn's SystemPromptOverride/DeploymentOverride/Temperature apply only to the
+		// one agent named on the request, never to whatever it delegates to internally.
+		var manager = await BuildAgentAsync(supervisor, cancellationToken, overrides);
 		var participants = new List<AIAgent>(supervisor.Participants.Count);
 		foreach (var participantId in supervisor.Participants)
 		{
@@ -123,9 +128,33 @@ public sealed class MagenticAgentTurnRunner : IMagenticAgentTurnRunner
 			RequirePlanSignoff = options?.RequirePlanSignoff ?? false,
 		};
 
+		// ExecuteAgentTurnCommand.Timeout caps a live turn at 5 minutes. A HITL plan-review pause
+		// (RequirePlanSignoff) can legitimately exceed that waiting on a human, and an unbounded
+		// MaxRounds has no ceiling of its own to fall back on — both are unsupported combinations on
+		// the live-turn path today (fine for the console/batch callers this orchestrator also serves,
+		// where nothing enforces that ceiling). Warn rather than refuse: a supervisor configured this
+		// way still fails safely via the surrounding command timeout, just not usefully.
+		if (request.RequirePlanSignoff || request.MaxRounds is null)
+		{
+			_logger.LogWarning(
+				"Supervisor {AgentId} sets RequirePlanSignoff={RequirePlanSignoff}, MaxRounds={MaxRounds} — " +
+				"a live conversation turn is capped at 5 minutes and this configuration has no ceiling of " +
+				"its own, so the turn may time out rather than complete",
+				supervisor.Id, request.RequirePlanSignoff, request.MaxRounds);
+		}
+
+		// Reset() first, ambient assignment second — load-bearing ordering, not incidental. It is the
+		// only statement in this window that can throw; hoisting it above the ambient assignment (and
+		// the try/finally that clears it) is what closes the window instead of narrowing it, mirroring
+		// ExecuteAgentTurnCommandHandler.Handle's identical ordering for the identical reason.
 		_usageCapture.TakeSnapshot();
-		LlmUsageCapture.Current = _usageCapture;
 		_admissionPipeline.Reset();
+		LlmUsageCapture.Current = _usageCapture;
+
+		// Ambient, not part of the manager's own construction, because it must reach every model call
+		// the workflow makes — manager and participants alike — the same as CallerTurnContextProvider
+		// already does for a single-agent turn.
+		CallerTurnContextScope.Current = overrides.TurnContext;
 
 		Domain.Common.Result<MagenticWorkflowResult> result;
 		try
@@ -138,17 +167,27 @@ public sealed class MagenticAgentTurnRunner : IMagenticAgentTurnRunner
 		finally
 		{
 			LlmUsageCapture.Current = null;
+			CallerTurnContextScope.Current = null;
 		}
 
 		var usage = _usageCapture.TakeSnapshot();
 
 		if (!result.IsSuccess)
 		{
+			// The workflow's own Errors can carry a raw Exception.Message rather than a stable code —
+			// MagenticEventSubscriber captures error.Exception?.Message verbatim, and MagenticOrchestrator
+			// wraps it as-is when no ErrorMessage was set. That text can contain internal detail (paths,
+			// hostnames, a tool's exception message — AgentFactory sets IncludeDetailedErrors
+			// unconditionally). The console example surfaces it because a developer reads their own
+			// console; this runner is a live, callable turn whose failure reaches transports the
+			// single-agent path deliberately keeps generic (ExecuteAgentTurnCommandHandler's own
+			// catch-all returns a fixed string for the same reason). Log the raw detail; never return it.
+			var rawError = string.Join("; ", result.Errors);
 			_logger.LogError(
-				"Magentic turn for supervisor {AgentId} failed: {Errors}",
-				supervisor.Id, string.Join("; ", result.Errors));
+				"Magentic turn for supervisor {AgentId} failed: {Errors}", supervisor.Id, rawError);
 
-			return Failure(userMessage, conversationHistory, string.Join("; ", result.Errors));
+			return Failure(userMessage, conversationHistory,
+				"The multi-agent workflow failed to complete.");
 		}
 
 		var workflow = result.Value!;
@@ -180,7 +219,12 @@ public sealed class MagenticAgentTurnRunner : IMagenticAgentTurnRunner
 	/// the same way <c>ExecuteAgentTurnCommandHandler</c> resolves any agent: through its own
 	/// declared skills, falling back to its id as a bare skill id when it declares none.
 	/// </summary>
-	private Task<AIAgent> BuildAgentAsync(AgentDefinition agentDef, CancellationToken cancellationToken)
+	/// <param name="overrides">
+	/// Per-turn overrides to apply — pass a non-null instance only for the manager (see the call site
+	/// in <see cref="RunTurnAsync"/>); a participant never receives caller-supplied overrides.
+	/// </param>
+	private Task<AIAgent> BuildAgentAsync(
+		AgentDefinition agentDef, CancellationToken cancellationToken, MagenticTurnOverrides? overrides = null)
 	{
 		IReadOnlyList<string> skillIds = agentDef.Skills is { Count: > 0 } ? agentDef.Skills : [agentDef.Id];
 
@@ -191,6 +235,9 @@ public sealed class MagenticAgentTurnRunner : IMagenticAgentTurnRunner
 				AgentInstructions = agentDef.Instructions,
 				AllowedTools = agentDef.AllowedTools,
 				OwningAgentId = agentDef.Id,
+				AdditionalContext = overrides?.SystemPromptOverride,
+				DeploymentName = overrides?.DeploymentOverride,
+				Temperature = overrides?.Temperature,
 			},
 			cancellationToken);
 	}

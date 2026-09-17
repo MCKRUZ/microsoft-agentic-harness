@@ -1,6 +1,7 @@
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Orchestration.Magentic;
+using Application.AI.Common.Services;
 using Application.Core.Orchestration.Magentic;
 using Application.Core.Tests.Helpers;
 using Domain.AI.Agents;
@@ -45,6 +46,17 @@ public sealed class MagenticAgentTurnRunnerTests
 
     private static AgentDefinition Participant(string id) => new() { Id = id, Name = id };
 
+    private static MagenticWorkflowResult SuccessResult(string finalOutput = "done") => new()
+    {
+        WorkflowId = Guid.NewGuid(),
+        WorkflowName = "supervisor-agent",
+        RoundsExecuted = 1,
+        ResetsExecuted = 0,
+        PlanReviewsExecuted = 0,
+        CompletionReason = "satisfied",
+        FinalOutput = finalOutput,
+    };
+
     public MagenticAgentTurnRunnerTests()
     {
         _agentFactory
@@ -66,7 +78,8 @@ public sealed class MagenticAgentTurnRunnerTests
     {
         var supervisor = Supervisor(); // no participants
 
-        var result = await CreateRunner().RunTurnAsync(supervisor, "hello", [], CancellationToken.None);
+        var result = await CreateRunner().RunTurnAsync(
+            supervisor, "hello", [], MagenticTurnOverrides.None, CancellationToken.None);
 
         result.Success.Should().BeFalse();
         result.ErrorKind.Should().Be(Application.Core.CQRS.Agents.ExecuteAgentTurn.AgentTurnErrorKind.Internal);
@@ -80,7 +93,8 @@ public sealed class MagenticAgentTurnRunnerTests
         var supervisor = Supervisor("ghost-participant");
         _agentRegistry.Setup(r => r.TryGet("ghost-participant")).Returns((AgentDefinition?)null);
 
-        var result = await CreateRunner().RunTurnAsync(supervisor, "hello", [], CancellationToken.None);
+        var result = await CreateRunner().RunTurnAsync(
+            supervisor, "hello", [], MagenticTurnOverrides.None, CancellationToken.None);
 
         result.Success.Should().BeFalse();
         _orchestrator.Verify(
@@ -95,19 +109,11 @@ public sealed class MagenticAgentTurnRunnerTests
 
         _orchestrator
             .Setup(o => o.RunAsync(It.IsAny<MagenticWorkflowRequest>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(Result<MagenticWorkflowResult>.Success(new MagenticWorkflowResult
-            {
-                WorkflowId = Guid.NewGuid(),
-                WorkflowName = "supervisor-agent",
-                RoundsExecuted = 3,
-                ResetsExecuted = 0,
-                PlanReviewsExecuted = 0,
-                CompletionReason = "satisfied",
-                FinalOutput = "Here is the synthesized answer.",
-            }));
+            .ReturnsAsync(Result<MagenticWorkflowResult>.Success(
+                SuccessResult("Here is the synthesized answer.")));
 
         var result = await CreateRunner().RunTurnAsync(
-            supervisor, "Summarize the report", [], CancellationToken.None);
+            supervisor, "Summarize the report", [], MagenticTurnOverrides.None, CancellationToken.None);
 
         result.Success.Should().BeTrue();
         result.Response.Should().Be("Here is the synthesized answer.");
@@ -132,18 +138,10 @@ public sealed class MagenticAgentTurnRunnerTests
         _orchestrator
             .Setup(o => o.RunAsync(It.IsAny<MagenticWorkflowRequest>(), It.IsAny<CancellationToken>()))
             .Callback<MagenticWorkflowRequest, CancellationToken>((req, _) => captured = req)
-            .ReturnsAsync(Result<MagenticWorkflowResult>.Success(new MagenticWorkflowResult
-            {
-                WorkflowId = Guid.NewGuid(),
-                WorkflowName = "supervisor-agent",
-                RoundsExecuted = 1,
-                ResetsExecuted = 0,
-                PlanReviewsExecuted = 0,
-                CompletionReason = "satisfied",
-                FinalOutput = "done",
-            }));
+            .ReturnsAsync(Result<MagenticWorkflowResult>.Success(SuccessResult()));
 
-        await CreateRunner().RunTurnAsync(supervisor, "Do the task", [], CancellationToken.None);
+        await CreateRunner().RunTurnAsync(
+            supervisor, "Do the task", [], MagenticTurnOverrides.None, CancellationToken.None);
 
         captured.Should().NotBeNull();
         captured!.Participants.Should().HaveCount(2);
@@ -161,16 +159,7 @@ public sealed class MagenticAgentTurnRunnerTests
         _orchestrator
             .Setup(o => o.RunAsync(It.IsAny<MagenticWorkflowRequest>(), It.IsAny<CancellationToken>()))
             .Callback<MagenticWorkflowRequest, CancellationToken>((req, _) => captured = req)
-            .ReturnsAsync(Result<MagenticWorkflowResult>.Success(new MagenticWorkflowResult
-            {
-                WorkflowId = Guid.NewGuid(),
-                WorkflowName = "supervisor-agent",
-                RoundsExecuted = 1,
-                ResetsExecuted = 0,
-                PlanReviewsExecuted = 0,
-                CompletionReason = "satisfied",
-                FinalOutput = "done",
-            }));
+            .ReturnsAsync(Result<MagenticWorkflowResult>.Success(SuccessResult()));
 
         var history = new List<ChatMessage>
         {
@@ -178,7 +167,8 @@ public sealed class MagenticAgentTurnRunnerTests
             new(ChatRole.Assistant, "It's sunny."),
         };
 
-        await CreateRunner().RunTurnAsync(supervisor, "And tomorrow?", history, CancellationToken.None);
+        await CreateRunner().RunTurnAsync(
+            supervisor, "And tomorrow?", history, MagenticTurnOverrides.None, CancellationToken.None);
 
         captured!.Task.Should().Contain("What's the weather?");
         captured.Task.Should().Contain("It's sunny.");
@@ -186,20 +176,31 @@ public sealed class MagenticAgentTurnRunnerTests
     }
 
     [Fact]
-    public async Task RunTurnAsync_WorkflowFails_ReturnsFailureWithErrorMessage()
+    public async Task RunTurnAsync_WorkflowFails_ReturnsGenericFailure_NeverTheRawWorkflowErrorText()
     {
+        // Security regression guard: MagenticEventSubscriber/MagenticOrchestrator can put a raw
+        // Exception.Message into Result.Errors (paths, hostnames, a tool's own exception text —
+        // AgentFactory sets IncludeDetailedErrors unconditionally). This runner is a live, callable
+        // turn, so that text must never reach AgentTurnResult.Error verbatim — only a generic message,
+        // with the raw detail going to the logger instead.
         var supervisor = Supervisor("researcher");
         _agentRegistry.Setup(r => r.TryGet("researcher")).Returns(Participant("researcher"));
 
+        const string sensitiveRawError =
+            "System.Net.Http.HttpRequestException: could not connect to https://internal-tool-host.corp.local:8443/secret-path (SAS=AKIA...)";
         _orchestrator
             .Setup(o => o.RunAsync(It.IsAny<MagenticWorkflowRequest>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(Result<MagenticWorkflowResult>.Fail("magentic.round_limit_exceeded"));
+            .ReturnsAsync(Result<MagenticWorkflowResult>.Fail(sensitiveRawError));
 
-        var result = await CreateRunner().RunTurnAsync(supervisor, "hello", [], CancellationToken.None);
+        var result = await CreateRunner().RunTurnAsync(
+            supervisor, "hello", [], MagenticTurnOverrides.None, CancellationToken.None);
 
         result.Success.Should().BeFalse();
-        result.Error.Should().Contain("magentic.round_limit_exceeded");
         result.ErrorKind.Should().Be(Application.Core.CQRS.Agents.ExecuteAgentTurn.AgentTurnErrorKind.Internal);
+        result.Error.Should().NotBeNullOrEmpty();
+        result.Error.Should().NotContain("internal-tool-host");
+        result.Error.Should().NotContain("SAS=");
+        result.Error.Should().NotContain(sensitiveRawError);
     }
 
     [Fact]
@@ -221,22 +222,95 @@ public sealed class MagenticAgentTurnRunnerTests
         _orchestrator
             .Setup(o => o.RunAsync(It.IsAny<MagenticWorkflowRequest>(), It.IsAny<CancellationToken>()))
             .Callback<MagenticWorkflowRequest, CancellationToken>((req, _) => captured = req)
-            .ReturnsAsync(Result<MagenticWorkflowResult>.Success(new MagenticWorkflowResult
-            {
-                WorkflowId = Guid.NewGuid(),
-                WorkflowName = "supervisor-agent",
-                RoundsExecuted = 1,
-                ResetsExecuted = 0,
-                PlanReviewsExecuted = 0,
-                CompletionReason = "satisfied",
-                FinalOutput = "done",
-            }));
+            .ReturnsAsync(Result<MagenticWorkflowResult>.Success(SuccessResult()));
 
-        await CreateRunner().RunTurnAsync(supervisor, "hello", [], CancellationToken.None);
+        await CreateRunner().RunTurnAsync(
+            supervisor, "hello", [], MagenticTurnOverrides.None, CancellationToken.None);
 
         captured!.MaxRounds.Should().Be(7);
         captured.MaxStalls.Should().Be(1);
         captured.MaxResets.Should().Be(2);
         captured.RequirePlanSignoff.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task RunTurnAsync_Overrides_ApplyToManagerSkillOptions_NotToParticipants()
+    {
+        var supervisor = Supervisor("researcher");
+        _agentRegistry.Setup(r => r.TryGet("researcher")).Returns(Participant("researcher"));
+
+        var seenOptions = new List<SkillAgentOptions>();
+        _agentFactory
+            .Setup(f => f.CreateAgentFromSkillsAsync(
+                It.IsAny<IReadOnlyList<string>>(), It.IsAny<SkillAgentOptions>(), It.IsAny<CancellationToken>()))
+            .Callback<IReadOnlyList<string>, SkillAgentOptions, CancellationToken>(
+                (_, opts, _) => seenOptions.Add(opts))
+            .ReturnsAsync(new TestableAIAgent("agent response"));
+
+        _orchestrator
+            .Setup(o => o.RunAsync(It.IsAny<MagenticWorkflowRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result<MagenticWorkflowResult>.Success(SuccessResult()));
+
+        var overrides = new MagenticTurnOverrides
+        {
+            SystemPromptOverride = "Extra context for this turn",
+            DeploymentOverride = "gpt-4o-mini",
+            Temperature = 0.2f,
+            TurnContext = "caller-supplied turn context",
+        };
+
+        await CreateRunner().RunTurnAsync(supervisor, "hello", [], overrides, CancellationToken.None);
+
+        // Manager built first (call order matches RunTurnAsync's own build sequence).
+        seenOptions.Should().HaveCount(2);
+        seenOptions[0].AdditionalContext.Should().Be("Extra context for this turn");
+        seenOptions[0].DeploymentName.Should().Be("gpt-4o-mini");
+        seenOptions[0].Temperature.Should().Be(0.2f);
+
+        // Participant never receives caller-supplied overrides.
+        seenOptions[1].AdditionalContext.Should().BeNull();
+        seenOptions[1].DeploymentName.Should().BeNull();
+        seenOptions[1].Temperature.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task RunTurnAsync_TurnContext_IsClearedAfterTheWorkflowRuns()
+    {
+        // The ambient scope must not leak past this turn onto whatever the async flow does next.
+        var supervisor = Supervisor("researcher");
+        _agentRegistry.Setup(r => r.TryGet("researcher")).Returns(Participant("researcher"));
+
+        string? seenDuringRun = null;
+        _orchestrator
+            .Setup(o => o.RunAsync(It.IsAny<MagenticWorkflowRequest>(), It.IsAny<CancellationToken>()))
+            .Callback(() => seenDuringRun = CallerTurnContextScope.Current)
+            .ReturnsAsync(Result<MagenticWorkflowResult>.Success(SuccessResult()));
+
+        var overrides = new MagenticTurnOverrides { TurnContext = "mood: curious" };
+
+        await CreateRunner().RunTurnAsync(supervisor, "hello", [], overrides, CancellationToken.None);
+
+        seenDuringRun.Should().Be("mood: curious");
+        CallerTurnContextScope.Current.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task RunTurnAsync_AdmissionPipelineResetThrows_NeverArmsTheAmbientUsageCapture()
+    {
+        // Regression guard for the ordering fix: Reset() must run BEFORE LlmUsageCapture.Current is
+        // armed, so a throwing Reset() leaves nothing armed for a later, unrelated turn to inherit.
+        var supervisor = Supervisor("researcher");
+        _agentRegistry.Setup(r => r.TryGet("researcher")).Returns(Participant("researcher"));
+        _admissionPipeline.Setup(p => p.Reset()).Throws(new InvalidOperationException("boom"));
+
+        LlmUsageCapture.Current = null;
+
+        Func<Task> act = () => CreateRunner().RunTurnAsync(
+            supervisor, "hello", [], MagenticTurnOverrides.None, CancellationToken.None);
+
+        await act.Should().ThrowAsync<InvalidOperationException>();
+        LlmUsageCapture.Current.Should().BeNull();
+        _orchestrator.Verify(
+            o => o.RunAsync(It.IsAny<MagenticWorkflowRequest>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 }

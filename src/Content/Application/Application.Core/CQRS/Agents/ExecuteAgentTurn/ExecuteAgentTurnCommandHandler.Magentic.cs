@@ -4,6 +4,7 @@ using Application.Core.Orchestration.Magentic;
 using Domain.AI.Agents;
 using Domain.AI.Telemetry.Conventions;
 using Domain.Common.Extensions;
+using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 
 namespace Application.Core.CQRS.Agents.ExecuteAgentTurn;
@@ -34,9 +35,17 @@ public partial class ExecuteAgentTurnCommandHandler
 			request.UserMessage.Truncate(500), null, 0, 0, 0, 0, 0m, 0m, null,
 			request.UserMessage, cancellationToken);
 
+		var overrides = new MagenticTurnOverrides
+		{
+			SystemPromptOverride = request.SystemPromptOverride,
+			DeploymentOverride = request.DeploymentOverride,
+			Temperature = request.Temperature,
+			TurnContext = request.TurnContext,
+		};
+
 		var turnSw = System.Diagnostics.Stopwatch.StartNew();
 		var result = await _magenticTurnRunner.RunTurnAsync(
-			supervisor, request.UserMessage, request.ConversationHistory, cancellationToken);
+			supervisor, request.UserMessage, request.ConversationHistory, overrides, cancellationToken);
 		turnSw.Stop();
 
 		var agentTag = new TagList { { AgentConventions.Name, request.AgentName } };
@@ -52,6 +61,10 @@ public partial class ExecuteAgentTurnCommandHandler
 			return result;
 		}
 
+		// cacheHitPct is hardcoded 0 — AgentTurnResult carries no cache-hit-percentage field to source
+		// it from (unlike CacheRead/CacheWrite, which it does carry), so a Magentic turn always reports
+		// 0% here even when CacheRead is non-zero. Cosmetic in the observability store; not corrected
+		// by this change.
 		var assistantMessageId = await _observabilityStore.RecordMessageAsync(
 			request.ObservabilitySessionId, request.TurnNumber, "assistant",
 			result.ToolsInvoked.Count > 0 ? "assistant_mixed" : "assistant_text",
@@ -81,11 +94,21 @@ public partial class ExecuteAgentTurnCommandHandler
 		{
 			var (turnLoaded, turnLoadedBodies, registrations) = BuildTurnLoadedItems(
 				request.ConversationId, supervisor, request.UserMessage, result.Response, result.ToolsInvoked);
+
+			// history + this turn's user message, matching the single-agent path's #517 invariant: the
+			// snapshot must reflect "the state the last call's prompt actually saw," not just prior
+			// turns. request.ConversationHistory alone would undercount every Magentic turn's Messages
+			// size by the message that caused it — a first turn with empty history would record zero.
+			var snapshotHistory = new List<ChatMessage>(request.ConversationHistory)
+			{
+				new(ChatRole.User, request.UserMessage),
+			};
+
 			var snapshot = _snapshotComputer.Compute(
 				conversationId: request.ConversationId,
 				turnIndex: request.TurnNumber,
 				turnId: $"t-{request.TurnNumber:D2}",
-				history: request.ConversationHistory,
+				history: snapshotHistory,
 				registrations: registrations,
 				turnLoaded: turnLoaded,
 				capturedAtUtc: _timeProvider.GetUtcNow(),

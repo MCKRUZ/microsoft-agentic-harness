@@ -40,16 +40,52 @@ public interface IMagenticAgentTurnRunner
     /// takes a single task string, not a message list, so each live turn starts a fresh workflow run
     /// rather than resuming an in-progress one across turns.
     /// </param>
+    /// <param name="overrides">
+    /// Per-turn overrides carried on the request itself (as opposed to <see cref="AgentDefinition"/>,
+    /// which is per-agent and shared across every turn) — applied to the manager only, the same way a
+    /// single-agent turn applies them only to the one agent the caller addressed.
+    /// </param>
     /// <param name="cancellationToken">Cancellation token for the whole workflow run.</param>
     /// <returns>
     /// The turn's result in the same shape a single-agent turn returns. On workflow failure,
     /// <see cref="AgentTurnResult.Success"/> is <see langword="false"/> with
-    /// <see cref="AgentTurnResult.ErrorKind"/> set to <see cref="AgentTurnErrorKind.Internal"/> and
-    /// the workflow's own error message.
+    /// <see cref="AgentTurnResult.ErrorKind"/> set to <see cref="AgentTurnErrorKind.Internal"/> and a
+    /// generic error message — the workflow's own error text is logged, never returned to the caller
+    /// (it can carry a raw exception message; see <c>MagenticAgentTurnRunner.RunTurnAsync</c>).
     /// </returns>
     Task<AgentTurnResult> RunTurnAsync(
         AgentDefinition supervisor,
         string userMessage,
         IReadOnlyList<ChatMessage> conversationHistory,
+        MagenticTurnOverrides overrides,
         CancellationToken cancellationToken);
+}
+
+/// <summary>
+/// Per-turn overrides a caller can set on an individual request, distinct from the supervisor's own
+/// <see cref="AgentDefinition"/> — mirrors the subset of <c>ExecuteAgentTurnCommand</c>'s own override
+/// fields that apply to a single addressed agent. All optional; a default-constructed instance applies
+/// no overrides.
+/// </summary>
+public sealed record MagenticTurnOverrides
+{
+    /// <summary>No overrides — every field left at its manifest/provider default.</summary>
+    public static readonly MagenticTurnOverrides None = new();
+
+    /// <summary>Additional system-prompt context appended to the manager's base instructions.</summary>
+    public string? SystemPromptOverride { get; init; }
+
+    /// <summary>Deployment/model override for the manager, taking precedence over its declared default.</summary>
+    public string? DeploymentOverride { get; init; }
+
+    /// <summary>Sampling temperature override for the manager. Null preserves the provider default.</summary>
+    public float? Temperature { get; init; }
+
+    /// <summary>
+    /// Caller-supplied per-turn context, carried via the same ambient <c>CallerTurnContextScope</c>
+    /// rail a single-agent turn uses — applies to every model call the Magentic workflow makes
+    /// (manager and participants alike), not just the manager, since it travels ambiently rather than
+    /// through the manager's own construction.
+    /// </summary>
+    public string? TurnContext { get; init; }
 }
