@@ -1111,6 +1111,71 @@ window.SHOWCASE_CATEGORIES = [
                 exec: 'The system can review its own past failures, propose changes to a skill’s instructions, and test that proposal against a benchmark before adopting it.',
                 eng: 'RunHarnessOptimizationCommand: snapshot → propose → evaluate against a benchmark task suite → regression-gate against prior winners → promote.',
                 docLink: '../14-skill-training.html',
+                deepDive: {
+                    scenario: [
+                        {
+                            time: 'A weak spot',
+                            text: 'A skill has been quietly underperforming on a specific kind of question. The system reviews its own past benchmark runs and proposes a specific rewrite meant to fix it — then actually tests the proposal against a real benchmark, rather than trusting its own claim that the rewrite is better.',
+                        },
+                        {
+                            time: 'A hidden cost',
+                            text: 'The rewrite genuinely improves the target problem — but, unnoticed, it also quietly breaks a completely different case an earlier version had already solved. The candidate isn\'t accepted just because its overall average looks better; a separate check specifically catches that regression and rejects the change.',
+                        },
+                        {
+                            time: 'A permanent memory',
+                            text: 'Because that earlier case was solved once before by a past accepted version, it\'s permanently added to a growing list of things that must never break again — so every future proposal, not just this one, gets checked against it forever.',
+                        },
+                        {
+                            time: 'A bad attempt',
+                            text: 'One proposal in a batch throws an unexpected error partway through. That single failure doesn\'t sink the whole optimization run — it\'s recorded as a failed attempt, and the loop moves on to the next idea.',
+                        },
+                    ],
+                    flow: [
+                        { title: 'Review Past Performance', tone: 'info', body: 'Real evaluation history, not a guess, identifies where the current version falls short.' },
+                        { title: 'Propose A Specific Change', tone: 'jargon', body: 'A concrete rewrite of the skill\'s instructions, not a vague suggestion.' },
+                        { title: 'Test It For Real', tone: 'tip', body: 'The proposal runs against an actual benchmark suite before anyone decides anything about it.' },
+                        { title: 'Check It Never Un-Solves Something', tone: 'warn', body: 'A separately-maintained, ever-growing list of previously-fixed cases has to keep passing, or the "improvement" is rejected regardless of its overall score.' },
+                    ],
+                    narrative: [
+                        'This is the system reviewing its own history, proposing a concrete change, and testing that change against real evidence before adopting it — not just trusting an AI\'s own claim that its rewrite is better.',
+                        'What\'s real, and the most elegant part: acceptance isn\'t based on a single aggregate score. A separate, <mark class="hl">self-maintained regression suite grows automatically</mark> every time a new version is accepted — any specific case that version newly fixed gets permanently added to a "must never break again" list. A later proposal that improves the overall average but secretly regresses one of those previously-solved cases <mark class="hl">gets rejected, even though its headline number looks better</mark>. The check is conservative on purpose too: a tracked case that\'s simply <mark class="hl">missing from a new proposal\'s results counts as a failure</mark>, not a pass by default.',
+                        'The resilience detail: one bad proposal in a batch — a parsing error, an evaluation exception — <mark class="hl">doesn\'t take down the whole optimization run</mark>. It\'s recorded as a failed attempt and the loop moves on to the next idea.',
+                    ],
+                    techTable: {
+                        columns: ['Stage', 'What Happens'],
+                        rows: [
+                            ['Snapshot', 'Capture the current version of the skill as the baseline to improve on.'],
+                            ['Propose', 'Generate a specific, concrete rewrite — not a vague direction.'],
+                            ['Evaluate', 'Run the proposal against a real benchmark task suite.'],
+                            ['Regression-gate', 'Check it against every previously-solved case that must keep passing.'],
+                            ['Promote', 'Accept it as the new best, and add anything it newly fixed to the permanent list.'],
+                        ],
+                    },
+                    engineeringFacts: [
+                        {
+                            title: 'The regression suite is self-maintaining',
+                            body: 'It grows automatically every time a new best candidate is accepted, seeded from whatever cases that candidate fixed — no one hand-curates it.',
+                        },
+                        {
+                            title: 'A missing result counts as a failure, not a pass',
+                            body: 'A previously-solved case absent from a new proposal\'s results counts against it — the conservative reading, not the generous one.',
+                        },
+                        {
+                            title: 'Improvement alone doesn\'t win',
+                            body: 'A candidate with a better overall score can still be rejected if it regresses even one case already in the growing regression suite.',
+                        },
+                        {
+                            title: 'One failed proposal doesn\'t end the run',
+                            body: 'Parsing errors and evaluation exceptions are caught per-attempt, recorded, and the loop continues to the next idea.',
+                        },
+                        {
+                            title: 'The first accepted candidate seeds the whole suite',
+                            body: 'Everything it gets right becomes the baseline every future proposal has to keep matching.',
+                        },
+                    ],
+                    whyItMatters:
+                        'A system that improves itself only on the score it\'s being measured by will happily trade an old, quietly-working case for a new, showier one — the classic failure mode of "improved the metric, broke something real." Making the improvement process check itself against everything it has already gotten right before, not just the thing it\'s currently trying to fix, is what actually earns the word "improvement" instead of just "different."',
+                },
             },
         ],
     },
