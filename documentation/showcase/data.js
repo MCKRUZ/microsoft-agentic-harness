@@ -1488,6 +1488,70 @@ window.SHOWCASE_CATEGORIES = [
                 exec: 'Lets other AI agents call into this harness’s own capabilities over a standard web connection, with real authentication and rate limits.',
                 eng: 'ASP.NET Core WebAPI: .WithHttpTransport().LoadTools().LoadPrompts().LoadResources(), JWT Bearer auth via Entra ID.',
                 docLink: '../08-mcp.html',
+                deepDive: {
+                    scenario: [
+                        {
+                            time: 'A completely separate tool connects',
+                            text: 'An IDE, another agent, an automation pipeline — something that wants to use this harness\'s own skills and tools as if they were its own. It connects using the same open protocol MCP-compatible tools already speak to each other, not a bespoke integration.',
+                        },
+                        {
+                            time: 'Before the server even starts',
+                            text: 'It checks that a real authentication method is actually configured. If none is set up and nobody explicitly said "allow anonymous access," the whole server refuses to start — even in local development, where most systems would quietly let that slide.',
+                        },
+                        {
+                            time: 'If anonymous access is genuinely wanted',
+                            text: 'That has to be an explicit, visible opt-in written directly into the routing, not a silently-weaker default policy nobody would notice.',
+                        },
+                        {
+                            time: 'A burst of requests arrives',
+                            text: 'From more than one connected client at once. The rate limit that kicks in doesn\'t distinguish between them — it\'s one shared bucket for the whole server, not a separate allowance per client.',
+                        },
+                    ],
+                    flow: [
+                        { title: 'Speak The Real Protocol', tone: 'info', body: 'External tools connect using the actual open MCP protocol, not a custom API this harness invented.' },
+                        { title: 'Refuse To Start Insecure', tone: 'warn', body: 'If no real authentication is configured, the server won\'t even boot, regardless of environment.' },
+                        { title: 'Make Anonymous Access Visible, Not Default', tone: 'jargon', body: 'Allowing unauthenticated access is a deliberate, explicit choice in the routing code, never a fallback.' },
+                        { title: 'Rate-Limit The Whole Server, Not Per Client', tone: 'tip', body: 'One shared limit protects the server as a whole, currently without distinguishing which client is responsible for the load.' },
+                    ],
+                    narrative: [
+                        'This turns the harness into a genuine provider in the broader MCP ecosystem — any compatible external tool can connect and use its skills, tools, prompts, and resources through the same standard protocol, not a bespoke integration built for one consumer.',
+                        'What\'s real, and a genuinely strict default: this server checks its own authentication configuration at startup and <mark class="hl">refuses to run at all</mark> if nothing real is configured and nobody explicitly opted into anonymous access — in every environment, including local development, where most systems would quietly relax that requirement.',
+                        'One honest limitation worth knowing: the rate limit protecting this server is <mark class="hl">a single shared bucket for the whole server, not a separate allowance per connected client</mark> — so a hundred requests a minute is the total budget across everyone talking to it right now, not a hundred each.',
+                    ],
+                    techTable: {
+                        columns: ['Auth Mode', 'When It Applies'],
+                        rows: [
+                            ['API key', 'A static, pre-shared key.'],
+                            ['Static bearer token', 'A fixed, configured token.'],
+                            ['Entra ID (JWT)', 'A real identity provider.'],
+                            ['Explicit anonymous opt-in', 'Only when deliberately enabled — visible in the routing itself, never a silent fallback.'],
+                        ],
+                    },
+                    engineeringFacts: [
+                        {
+                            title: 'Refuses to start without real authentication',
+                            body: 'The check runs at startup, in every environment — not just production.',
+                        },
+                        {
+                            title: 'Anonymous access is a visible, explicit code path',
+                            body: 'A deliberate opt-in call, not something that happens by omission.',
+                        },
+                        {
+                            title: 'Rate limiting is currently one shared bucket',
+                            body: 'The partition key is a fixed string, not the caller\'s identity, so the limit is a total across every connected client combined, not per-client.',
+                        },
+                        {
+                            title: 'Exposes the harness\'s own skill catalog as real MCP tools',
+                            body: 'Listing, fetching, and searching skills are genuine callable tools external systems can invoke, not just documentation.',
+                        },
+                        {
+                            title: 'Runs as its own separate process',
+                            body: 'A standalone ASP.NET Core app, distinct from the harness\'s other hosts, that can also be embedded as a sub-application.',
+                        },
+                    ],
+                    whyItMatters:
+                        'Exposing a harness\'s real capabilities to the outside world only makes sense if the exposure itself doesn\'t become the weak point. Refusing to boot without real authentication, and making an anonymous-access decision something a person has to deliberately write down rather than something that just happens quietly, is what keeps "open to the MCP ecosystem" from also meaning "open to anyone."',
+                },
             },
             {
                 id: 'mcp-client',
