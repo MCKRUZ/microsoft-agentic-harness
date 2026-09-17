@@ -507,6 +507,70 @@ window.SHOWCASE_CATEGORIES = [
                 eng: 'Neo4j or PostgreSQL in production (in-memory for dev/test) behind one interface, Leiden community detection for graph-RAG, feedback-weighted retrieval, TenantIsolatedGraphStore for multi-tenant isolation.',
                 docLink: '../07-rag.html',
                 techs: ['Neo4j', 'Kuzu', 'PostgreSQL', 'In-memory (dev/test)'],
+                deepDive: {
+                    scenario: [
+                        {
+                            time: 'Ingestion',
+                            text: 'A batch of internal documents gets pulled in. Along the way, the system notices "Meridian," "Acme Corp," and a person\'s name showing up together across several of them, and quietly records that they\'re connected — not just that they appear in the same paragraph.',
+                        },
+                        {
+                            time: 'Later',
+                            text: 'Someone asks, "what\'s the status of Meridian?" Instead of returning one paragraph that happens to mention the word, the system can follow the relationship — Meridian, who owns it, what it depends on — to assemble a fuller answer.',
+                        },
+                        {
+                            time: 'Next message',
+                            text: 'The user replies, "no, that\'s the old vendor, we switched in March." Nobody clicked a thumbs-down. But the system reads that reaction and quietly treats whatever it just relied on as a little less trustworthy going forward.',
+                        },
+                        {
+                            time: 'Meanwhile',
+                            text: 'A second company using the same deployment has its own "Meridian" — a completely different project. Its data never mixes with the first company\'s, even though both are running through the identical graph.',
+                        },
+                    ],
+                    flow: [
+                        { title: 'Extract & Link', tone: 'info', body: 'While ingesting content, entities and the relationships between them are pulled out and written down — not just the documents themselves.' },
+                        { title: 'Group Into Communities', tone: 'jargon', body: 'Related entities are clustered together, so the system can reason and summarize at the level of a topic instead of one disconnected fact at a time.' },
+                        { title: 'Listen For Reaction', tone: 'tip', body: 'The user\'s very next message is read for satisfaction or frustration — no rating widget required.' },
+                        { title: 'Reweight', tone: 'warn', body: 'That implied reaction nudges how much the graph trusts whatever it just used, shifting future answers without anyone touching a setting.' },
+                    ],
+                    narrative: [
+                        'A knowledge graph is <mark class="hl">a map of things and how they relate</mark>, not just a pile of documents — so an answer can follow a connection ("who owns this, what does it depend on") instead of stopping at whichever single paragraph happened to mention the right word.',
+                        'What\'s real: entities and relationships are genuinely extracted and linked as content comes in, then <mark class="hl">clustered into higher-level groups</mark> so the system can summarize a whole topic instead of reasoning fact-by-fact. Isolation between tenants is enforced <mark class="hl">record by record, not all-or-nothing</mark> — two customers can run on the same deployment and never see each other\'s private data, while still sharing a common pool of general knowledge. And the feedback loop is genuinely quiet: it <mark class="hl">reads the user\'s next message for signs of satisfaction or frustration</mark> rather than requiring an explicit rating, and nudges the graph\'s confidence accordingly.',
+                        'One honest caveat: that feedback signal, by default, lives in <mark class="hl">fast in-memory storage, not the same durable database as the graph itself</mark> — restart the process and the graph survives, but everything it had learned from user reactions resets to neutral. The code says as much in its own comments; swapping in durable storage for it is a deliberate, documented next step, not a hidden gap.',
+                    ],
+                    techTable: {
+                        columns: ['Backend', 'Best For', 'Notes'],
+                        rows: [
+                            ['Neo4j', 'Production, dedicated graph workloads', 'Purpose-built graph database with native relationship traversal.'],
+                            ['Kuzu', 'Production without running a separate server', 'Embedded graph database — ships inside the process.'],
+                            ['PostgreSQL', 'Reusing infrastructure you already run', 'One less system to operate if Postgres is already in your stack.'],
+                            ['In-memory', 'Local development and tests only', 'Nothing persists across a restart.'],
+                        ],
+                    },
+                    engineeringFacts: [
+                        {
+                            title: 'Isolation is checked per record',
+                            body: 'Every read checks both tenant AND owner on that specific node — a user sees their tenant\'s shared knowledge plus their own private facts, never anyone else\'s.',
+                        },
+                        {
+                            title: 'Feedback comes from conversation, not a rating widget',
+                            body: 'An economy-tier model reads the user\'s next message to detect implicit satisfaction or frustration — no explicit thumbs-up/down UI exists or is required.',
+                        },
+                        {
+                            title: 'Reweighting is a fast running average',
+                            body: 'Feedback blends into a node or edge\'s trust score via an exponential moving average — a cheap incremental update, not a full recomputation.',
+                        },
+                        {
+                            title: 'Community detection is "Leiden-inspired," not the textbook algorithm',
+                            body: 'The clustering step is a simplified approximation of the published Leiden method, documented as such — a reasonable engineering tradeoff, not a case of overclaiming.',
+                        },
+                        {
+                            title: 'The feedback store defaults to in-memory',
+                            body: 'Its own code comments flag this: production deployments should back it with the same durable database as the graph, which isn\'t wired up by default.',
+                        },
+                    ],
+                    whyItMatters:
+                        'An assistant that only retrieves paragraphs treats every document as unrelated to every other one, and never gets better at knowing which ones to trust. A real graph can follow a relationship to assemble a fuller answer, and can quietly get better over time from how people actually react — not just from an explicit rating nobody bothers to leave. The gap worth watching is that "gets better over time" part currently forgets what it learned on every restart unless someone wires up durable storage for it.',
+                },
             },
             {
                 id: 'rag-pipeline',
