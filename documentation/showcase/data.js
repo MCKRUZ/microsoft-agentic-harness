@@ -871,6 +871,70 @@ window.SHOWCASE_CATEGORIES = [
                 status: 'built',
                 exec: 'Every meta-harness evaluation run — candidate skills, benchmark results, what won and why — is recorded, not thrown away after the run.',
                 eng: 'AgentEvaluationService + HarnessCandidate persist eval-run results consumed by the meta-harness promotion gate.',
+                deepDive: {
+                    scenario: [
+                        {
+                            time: 'A new idea',
+                            text: 'The meta-harness proposes a tweaked version of a skill — a candidate — and runs it against a benchmark to see if it\'s actually better.',
+                        },
+                        {
+                            time: 'Results come in',
+                            text: 'Not just a single pass/fail number — the outcome of every individual test case in the benchmark is recorded, so you can see exactly where the candidate did better or worse, not just whether it "won" overall.',
+                        },
+                        {
+                            time: 'Accidentally re-submitted',
+                            text: 'The same run gets ingested twice by mistake — a retried CI step, a duplicate webhook. Nothing bad happens: the second attempt is recognized as the same run and quietly ignored, rather than creating a confusing duplicate.',
+                        },
+                        {
+                            time: 'Weeks later',
+                            text: 'Someone wants to know whether accuracy has actually improved since an older version. Because every run is a permanent record, that comparison is a lookup, not a guess.',
+                        },
+                    ],
+                    flow: [
+                        { title: 'Propose', tone: 'info', body: 'A candidate configuration is generated — a specific version of a skill or setup being tried out.' },
+                        { title: 'Evaluate', tone: 'jargon', body: 'It runs against the benchmark, and the outcome of every individual case is captured — not just a single headline score.' },
+                        { title: 'Record, Once', tone: 'tip', body: 'The full result is written durably under a stable run identifier. Submitting the same run again changes nothing.' },
+                        { title: 'Promote Or Fail', tone: 'warn', body: 'The candidate\'s status is updated based on the outcome — a real decision, not just a number sitting in a log somewhere.' },
+                    ],
+                    narrative: [
+                        'The point of an eval store isn\'t just running a benchmark — it\'s making sure the result is <mark class="hl">a permanent record you can come back to</mark>, not a number that flashed by in a console and is gone.',
+                        'What\'s real: every run is recorded <mark class="hl">case by case, not just as a summary score</mark>, so you can see exactly which cases got better or worse. Re-submitting the identical run is <mark class="hl">safe by design</mark> — it\'s recognized and ignored rather than duplicated or silently overwritten, because a run\'s record is treated as a fact that doesn\'t change once it\'s written. And each candidate configuration moves through a real lifecycle — proposed, evaluated, and either promoted or marked failed — so the history is a decision trail, not just a pile of scores.',
+                        'One honest caveat, straight from the store\'s own documentation: it does <mark class="hl">not yet enforce isolation between tenants</mark> — every ingested run is visible to every caller today. A deployment sharing this across multiple customers needs to add that isolation outside this layer; it\'s a documented gap, not a hidden one.',
+                    ],
+                    techTable: {
+                        columns: ['Guarantee', 'What It Means'],
+                        rows: [
+                            ['Safe to re-submit', 'Ingesting the same run twice is a no-op — never a duplicate, never a silent overwrite.'],
+                            ['Immutable once written', 'A run\'s record is treated as a permanent fact, not something later processes edit.'],
+                            ['Safe under concurrent writes', 'One process can record a new run while another is still writing a different one.'],
+                            ['No tenant isolation yet', 'Every caller can see every run — real isolation, if needed, has to be added outside this layer.'],
+                        ],
+                    },
+                    engineeringFacts: [
+                        {
+                            title: 'Idempotency keyed on the run itself',
+                            body: 'Re-ingestion is checked against a stable run identifier, not an auto-incrementing row — the same run can be safely re-submitted from a retried pipeline step.',
+                        },
+                        {
+                            title: 'Per-case detail, kept cheap for lists',
+                            body: 'Full case-by-case results are retained, while the list view uses a separate lightweight summary so browsing recent runs doesn\'t pay the cost of every case\'s full payload.',
+                        },
+                        {
+                            title: 'A real status lifecycle',
+                            body: 'A candidate moves through Proposed, Evaluated, Failed, or Promoted — an explicit decision record, not an implicit one you\'d have to infer from a score.',
+                        },
+                        {
+                            title: 'Score comparisons always use the newest run',
+                            body: 'When the same case appears in multiple runs, comparisons resolve to the most recent one — so a historical regression can\'t accidentally get compared against instead of the current picture.',
+                        },
+                        {
+                            title: 'Multi-tenancy is a documented gap, not a silent one',
+                            body: 'The store\'s own interface says outright that it surfaces every run to every caller — an honest limitation flagged in the code, matching this page\'s own standard for saying what isn\'t finished.',
+                        },
+                    ],
+                    whyItMatters:
+                        'An evaluation system nobody can trust to keep an honest record is worse than none at all — it invites picking whichever run looked best and makes "did we actually get better" impossible to answer months later. Treating every run as a permanent, idempotent, per-case record is what turns a claim like "this candidate won" into something you can actually go back and check.',
+                },
             },
         ],
     },
