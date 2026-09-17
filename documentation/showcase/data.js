@@ -3045,6 +3045,69 @@ window.SHOWCASE_CATEGORIES = [
                 status: 'built',
                 exec: 'How independently an agent is allowed to act is a graded, configurable setting — not all-or-nothing.',
                 eng: 'AutonomyLevel on plugin/tool declarations, resolved alongside RiskTier at invocation time.',
+                deepDive: {
+                    scenario: [
+                        {
+                            time: 'Two agent instances, side by side',
+                            text: 'One is deliberately kept on a tight leash — every action it wants to take defaults to needing a person\'s go-ahead. The other operates with real independence — its default is to just act, without pausing to ask first.',
+                        },
+                        {
+                            time: 'A specific carve-out',
+                            text: 'The tightly-leashed one has one particular tool it\'s actually trusted to use without asking — a deliberate exception, while everything else it wants to do still defaults to asking.',
+                        },
+                        {
+                            time: 'Even the most trusted instance',
+                            text: 'Still isn\'t exempt from the deterministic safety checks or the risk-tier ceiling covered elsewhere in this category. Autonomy controls what happens by default when nothing else has an opinion — not whether those other checks run at all.',
+                        },
+                        {
+                            time: 'The same kind of agent, twice',
+                            text: 'One instance of a given agent type is restricted to read-only browsing; a completely separate instance of the identical type is trusted with full access. What kind of agent it is, and how much it\'s trusted, are two independent settings.',
+                        },
+                    ],
+                    flow: [
+                        { title: 'Set The Default Answer', tone: 'info', body: 'Restricted defaults to asking, supervised also defaults to asking but allows specific carve-outs, autonomous defaults to just acting.' },
+                        { title: 'Layer In Specific Exceptions', tone: 'jargon', body: 'A normally-cautious tier can still be trusted with one particular tool, without loosening everything else.' },
+                        { title: 'Never Let Autonomy Replace The Ceiling', tone: 'warn', body: 'The deterministic safety gates and the risk-tier ceiling still apply on top of whatever the autonomy tier\'s default is.' },
+                        { title: 'Keep Autonomy Independent Of Role', tone: 'tip', body: 'The same kind of agent can run at different trust levels in different instances, since the two settings are orthogonal.' },
+                    ],
+                    narrative: [
+                        '"Graded, not all-or-nothing" means a small number of real, meaningfully different tiers — not a single on/off switch for whether an agent can act independently.',
+                        'What\'s real: three genuine tiers exist, each with a real difference in default behavior — fully restricted (ask for everything), supervised (ask by default, but specific tools can be carved out as trusted exceptions), and autonomous (act by default). The key honest nuance: autonomy sets what happens when <mark class="hl">nothing else has already decided the answer</mark> — it\'s the baseline, not an override. The deterministic safety checks and the risk-tier ceiling covered elsewhere in this section <mark class="hl">still apply on top of even the most trusted tier</mark>; an autonomous agent isn\'t exempt from anything, it just doesn\'t need to ask on the things nothing else objects to.',
+                        'One more real design choice: autonomy level and what kind of agent this is are <mark class="hl">deliberately kept independent settings</mark> — the exact same kind of agent can exist as a cautious, restricted instance in one place and a fully trusted, autonomous instance somewhere else, because trust is a property of the specific instance, not something baked into the role itself.',
+                    ],
+                    techTable: {
+                        columns: ['Tier', 'Default Behavior'],
+                        rows: [
+                            ['Restricted', 'Ask for everything — no exceptions at this tier.'],
+                            ['Supervised', 'Ask by default, but specific tools can be carved out as pre-approved exceptions.'],
+                            ['Autonomous', 'Act by default — safety gates and the risk ceiling still apply on top.'],
+                        ],
+                    },
+                    engineeringFacts: [
+                        {
+                            title: 'Three real tiers, not a binary switch',
+                            body: 'Each with a genuinely different default answer to "should this be allowed."',
+                        },
+                        {
+                            title: 'Autonomy is a baseline, not a bypass',
+                            body: 'The deterministic safety checks and the risk-tier ceiling apply regardless of tier, even to the most trusted one.',
+                        },
+                        {
+                            title: 'A cautious tier can still carve out specific trusted exceptions',
+                            body: 'A supervised agent isn\'t all-or-nothing — individual tools can be pre-approved without loosening everything else.',
+                        },
+                        {
+                            title: 'Trust level and agent role are deliberately independent',
+                            body: 'The same kind of agent can run at different autonomy levels in different instances.',
+                        },
+                        {
+                            title: 'The tier ordering supports real comparisons',
+                            body: '"Requires at least this tier" is a valid, meaningful check because the levels are ordered by actual trust, not just labeled.',
+                        },
+                    ],
+                    whyItMatters:
+                        'An all-or-nothing autonomy switch forces an uncomfortable choice between an agent that can\'t do anything useful without constant interruption, and one that\'s fully unleashed with no default caution at all. Real, graded tiers — layered underneath, not instead of, the safety checks and risk ceiling covered elsewhere — let an operator match how much independence an agent gets to how much that specific agent has actually earned, without ever losing the hard limits that apply no matter what.',
+                },
             },
             {
                 id: 'compliance-reporting',
