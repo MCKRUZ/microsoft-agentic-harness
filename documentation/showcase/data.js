@@ -2973,6 +2973,71 @@ window.SHOWCASE_CATEGORIES = [
                 status: 'built',
                 exec: 'Risky actions can require a human’s sign-off before they happen, with the caution level matched to how much damage the action could do.',
                 eng: 'A tool’s RiskTier (BlastRadius) feeds the permission resolver’s autonomy-tier gate; a PendingApproval decision blocks fail-closed.',
+                deepDive: {
+                    scenario: [
+                        {
+                            time: 'A cosmetic change',
+                            text: 'An agent proposes fixing a typo in a comment. Graded as having essentially no blast radius, it can go through without ever needing a person, depending on the configured autonomy level.',
+                        },
+                        {
+                            time: 'A production database migration',
+                            text: 'A different proposal touches something with real, lasting impact. Even if every other check has already passed, its classification alone means a human always has to look at it before it goes further.',
+                        },
+                        {
+                            time: 'A self-reported estimate',
+                            text: 'The agent submits its own honest guess at how big a change\'s blast radius is. That guess isn\'t blindly trusted — a separate gate independently reviews the actual content and can revise the classification. Both numbers get recorded, so nobody has to take either on faith later.',
+                        },
+                        {
+                            time: 'The top tier',
+                            text: 'Exists specifically for things like authentication changes, secret rotation, or anything touching how changes get merged in the first place. No autonomy setting, no configuration flag, can make that tier skip a human — it\'s a hard ceiling, not a default that happens to usually apply.',
+                        },
+                    ],
+                    flow: [
+                        { title: 'Estimate The Blast Radius', tone: 'info', body: 'How much could this realistically break, graded from cosmetic to critical.' },
+                        { title: 'Let The Agent Guess First', tone: 'jargon', body: 'The proposer\'s own initial estimate is recorded, but treated as a starting point, not the final word.' },
+                        { title: 'Let A Separate Gate Confirm Or Revise It', tone: 'tip', body: 'The actual content gets independently re-assessed, and both numbers are kept in the audit trail.' },
+                        { title: 'Make The Top Tier Unconditional', tone: 'warn', body: 'Nothing above a certain severity can ever skip a human, regardless of any other setting.' },
+                    ],
+                    narrative: [
+                        'Matching the caution level to the potential damage needs a real, graded scale with concrete criteria — not a vague sense of "this feels risky."',
+                        'What\'s real: there\'s a genuine <mark class="hl">five-tier scale</mark>, from purely cosmetic changes with zero behavioral impact, up through changes that touch a public contract or production data, up to a top tier reserved specifically for things like authentication, secret rotation, and the merge pipeline itself. Each tier has real, concrete examples defining what belongs in it, not a fuzzy description.',
+                        'The honest, trust-but-verify detail: the proposing agent\'s own first guess at a change\'s blast radius gets recorded — but it\'s <mark class="hl">advisory, not authoritative</mark>. A separate part of the pipeline independently reviews the actual content and can confirm or revise that number, and both the original guess and the final call are kept, so a disagreement between the two is <mark class="hl">visible rather than quietly overwritten</mark>. And the top tier is a genuine hard ceiling: no autonomy setting exists that lets a Critical-blast-radius change skip a human, regardless of anything else about the deployment.',
+                    ],
+                    techTable: {
+                        columns: ['Tier', 'Example'],
+                        rows: [
+                            ['Trivial', 'Fixing a typo in a comment.'],
+                            ['Low', 'Adding a unit test, touching a single non-critical internal helper.'],
+                            ['Medium', 'Changing an internal method\'s body without touching its public signature.'],
+                            ['High', 'Modifying a database migration, changing an API contract, editing production infrastructure.'],
+                            ['Critical', 'Authentication changes, secret rotation, production IAM, the merge pipeline itself — always requires a human.'],
+                        ],
+                    },
+                    engineeringFacts: [
+                        {
+                            title: 'A real five-tier scale with concrete examples',
+                            body: 'Not a vague heuristic — each tier is defined by what kind of change actually belongs in it.',
+                        },
+                        {
+                            title: 'The proposer\'s own risk estimate is advisory, not final',
+                            body: 'A separate gate independently reviews the real content and can confirm or revise it.',
+                        },
+                        {
+                            title: 'Both the original and confirmed classification are recorded',
+                            body: 'A disagreement between the agent\'s guess and the gate\'s assessment is visible in the audit trail, not silently resolved.',
+                        },
+                        {
+                            title: 'The top tier is an unconditional requirement',
+                            body: 'No autonomy setting can let a Critical-blast-radius change skip human approval.',
+                        },
+                        {
+                            title: 'The scale\'s ordering is meaningful, not just labels',
+                            body: 'Each tier is a strict upper bound of the one before it, so a range check like "at or above High" is a valid, real comparison.',
+                        },
+                    ],
+                    whyItMatters:
+                        'Treating every risky action the same — either always asking a human or never asking one — either burns out the people meant to be reviewing things, or lets something genuinely dangerous through because it got lumped in with routine changes. Grading risk on a real, concrete scale, cross-checking an agent\'s own self-assessment rather than trusting it blindly, and drawing one hard line nothing can cross unsupervised is what makes "human sign-off, matched to the damage" an actual policy instead of a slogan.',
+                },
             },
             {
                 id: 'autonomy-tiers',
