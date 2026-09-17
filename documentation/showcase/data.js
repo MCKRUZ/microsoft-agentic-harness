@@ -753,6 +753,72 @@ window.SHOWCASE_CATEGORIES = [
                 exec: 'The assembly line every request runs through: check it’s safe, pick the right skill, get or build the right agent, run it, record what happened.',
                 eng: 'ExecuteAgentTurnCommand flows through ~14 ordered MediatR pipeline behaviors before ExecuteAgentTurnCommandHandler resolves skills and calls agent.RunAsync.',
                 docLink: '../04-message-journey.html',
+                deepDive: {
+                    scenario: [
+                        {
+                            time: 'A message arrives',
+                            text: 'Before any actual business logic runs, it passes through roughly fourteen separate, ordered checks — exception handling, identity resolution, content safety, prompt-injection screening, budget tracking, and more — each one wrapping the next.',
+                        },
+                        {
+                            time: 'Only then',
+                            text: 'The real work happens: figuring out which skills this turn needs, and either reusing the exact agent already built for this conversation, or building one for the first time.',
+                        },
+                        {
+                            time: 'Turn 30, an hour later',
+                            text: 'That same conversation continues. The agent isn\'t rebuilt from scratch every time — the same live instance is reused, saving all the overhead of reconstructing it turn after turn.',
+                        },
+                        {
+                            time: 'The conversation ends',
+                            text: 'The cached agent is explicitly released rather than left sitting around. And if a conversation is simply abandoned instead of cleanly ended, a background timer quietly cleans it up anyway after half an hour of inactivity.',
+                        },
+                    ],
+                    flow: [
+                        { title: 'Run The Pipeline, In Order', tone: 'info', body: 'Roughly fourteen separate behaviors, each wrapping the next, catch problems before real work ever starts.' },
+                        { title: 'Resolve What This Turn Needs', tone: 'jargon', body: 'Which skills apply, and what the agent needs access to.' },
+                        { title: 'Reuse Or Build The Agent', tone: 'tip', body: 'The same live agent instance is reused across a conversation\'s turns rather than rebuilt from scratch every time.' },
+                        { title: 'Clean Up When It\'s Done', tone: 'warn', body: 'The cached agent is explicitly released when a conversation ends, with a time-based safety net for ones that are simply abandoned.' },
+                    ],
+                    narrative: [
+                        'The orchestrator is the actual assembly line every ordinary request runs through, from the moment it arrives to the moment something is recorded about what happened.',
+                        'What\'s real: this is genuinely <mark class="hl">around fourteen separate, independently-authored checks and side effects</mark> layered in a specific order before the actual conversation logic ever runs — safety and identity checks wrap everything, while things like budget tracking and audit sit closer to the work itself. <mark class="hl">The order is deliberate</mark>, the same discipline seen in the tool-call governance layer elsewhere on this page.',
+                        'One detail worth calling out: agents aren\'t rebuilt on every single turn. The same live agent is <mark class="hl">created once and reused for the rest of that conversation</mark> — explicitly released when the conversation ends, with a time-based safety net that quietly cleans up anything abandoned rather than cleanly closed.',
+                    ],
+                    techTable: {
+                        columns: ['Behavior (a sample of ~14)', 'What It Does'],
+                        rows: [
+                            ['Unhandled Exception', 'Catches anything that goes wrong deeper in the pipeline.'],
+                            ['Agent Identity Resolution', 'Establishes which agent is actually running this turn.'],
+                            ['Content Safety', 'Screens output for policy violations before anything is trusted.'],
+                            ['Prompt Injection', 'Screens for injected instructions in the incoming content.'],
+                            ['Token Budget', 'Enforces spending limits for this conversation.'],
+                            ['Audit Trail', 'Records what happened for later review.'],
+                        ],
+                    },
+                    engineeringFacts: [
+                        {
+                            title: '~14 separate pipeline behaviors, not one big handler',
+                            body: 'Each one independently authored, doing one job, wrapped around the next in a specific, deliberate order.',
+                        },
+                        {
+                            title: 'Agents are cached per conversation, not rebuilt every turn',
+                            body: 'A real efficiency detail — a conversation\'s 30th turn is exactly as cheap to set up as its first.',
+                        },
+                        {
+                            title: 'Cache cleanup has two paths, not one',
+                            body: 'Explicit eviction on a clean conversation end, plus a 30-minute sliding-TTL safety net for conversations that just get abandoned.',
+                        },
+                        {
+                            title: 'Multiple skills merge into one agent context',
+                            body: 'A turn needing more than one skill doesn\'t spin up multiple agents — they merge into a single execution context.',
+                        },
+                        {
+                            title: 'The behavior order is deliberate, not incidental',
+                            body: 'Since each one wraps the next, what runs first can see and stop things that would otherwise reach deeper layers.',
+                        },
+                    ],
+                    whyItMatters:
+                        '"The orchestrator" sounds like it should be one big function doing everything, but a system this safe and reliable at scale is actually built from many small, independently-testable pieces stacked in a specific order — not one place where every concern is tangled together. That\'s what makes it possible to add a new safety check or a new kind of tracking without having to understand or risk breaking everything else already in the pipeline.',
+                },
             },
         ],
     },
