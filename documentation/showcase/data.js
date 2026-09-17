@@ -109,6 +109,70 @@ window.SHOWCASE_CATEGORIES = [
                 exec: 'A real HTTP API for driving the harness programmatically — bundles, workflows, tool discovery.',
                 eng: 'Presentation.ExecutionApi, spec-first via bundle-api.yaml, documented in the onboarding guide’s Execution API chapter.',
                 docLink: '../17-bundle-api.html',
+                deepDive: {
+                    scenario: [
+                        {
+                            time: 'An outside system connects',
+                            text: 'A team wants to run their own custom agent through this harness without that agent becoming a permanent part of it. They upload a zip bundle containing their own agent manifest and skills.',
+                        },
+                        {
+                            time: 'Before anything is parsed',
+                            text: 'That archive is treated as hostile. It gets checked for the specific tricks a malicious zip file plays — files that escape their extraction folder, absurd compression ratios, symlinks pointing somewhere they shouldn\'t — before a single file inside it is trusted enough to read.',
+                        },
+                        {
+                            time: 'The bundle asks for access',
+                            text: 'Its own manifest declares which tools and how much autonomy it wants. That\'s treated as a request, not a grant — what actually gets enforced comes from a completely separate table, resolved from the real caller\'s identity, independent of anything the bundle itself claims.',
+                        },
+                        {
+                            time: 'Someone probes a handle that isn\'t theirs',
+                            text: 'Instead of confirming "that exists, but you can\'t touch it," the API responds exactly as if it never existed — a plain 404, indistinguishable from a handle that was never created.',
+                        },
+                    ],
+                    flow: [
+                        { title: 'Treat Upload As Hostile', tone: 'warn', body: 'The archive is checked against real attack patterns — path escapes, compression bombs, bad symlinks — before anything inside it is parsed.' },
+                        { title: 'Request, Don\'t Grant', tone: 'jargon', body: 'A bundle\'s own manifest says what it wants; a separate, authoritative table decides what it actually gets, based on who\'s really calling.' },
+                        { title: 'One Execution Path, However It\'s Triggered', tone: 'info', body: 'Whether a run is queued in the background or streamed live, it goes through the exact same gate — nothing gets a second, less-guarded route.' },
+                        { title: 'Fail Closed, Never Open', tone: 'tip', body: 'An unrecognized caller, a missing setting, or a value that fails to parse all resolve to the most restrictive outcome, never the most permissive.' },
+                    ],
+                    narrative: [
+                        'This API is a way for an outside system to run <mark class="hl">an agent the harness itself never wrote</mark> — safely — not just a REST wrapper around the same conversations a logged-in chat user already has.',
+                        'What\'s real: uploaded content is handled as <mark class="hl">genuinely hostile input before it\'s ever parsed</mark>, checked against real archive-attack patterns rather than just "did the zip open." What a bundle\'s own manifest asks for is <mark class="hl">never trusted as the actual grant</mark> — a separate, authoritative permission table resolved from the real caller\'s identity decides what\'s actually enforced, and it\'s built to <mark class="hl">fail toward the most restrictive outcome</mark> whenever something is missing or ambiguous, never the most permissive. And an unauthorized attempt to touch someone else\'s bundle gets a response <mark class="hl">deliberately indistinguishable from that bundle never existing at all</mark>, so the API itself can\'t be used to confirm anyone else\'s private handles even exist.',
+                        'One more subtlety worth calling out: two different ways exist to trigger a run — queued in the background, or streamed live to a connected caller — and both are forced through <mark class="hl">the identical execution path</mark> specifically so the security enforcement can\'t quietly drift apart between them over time.',
+                    ],
+                    techTable: {
+                        columns: ['Guard', 'What It Prevents'],
+                        rows: [
+                            ['Archive shape validation', 'A malicious zip designed to blow up on extraction or escape its target folder.'],
+                            ['Capability envelope', 'A bundle\'s own manifest claiming more access than its real caller is actually entitled to.'],
+                            ['Non-disclosing ownership checks', 'Confirming to an attacker that someone else\'s private bundle handle even exists.'],
+                            ['One shared execution path', 'Background and live-streamed runs silently drifting into different security behavior over time.'],
+                        ],
+                    },
+                    engineeringFacts: [
+                        {
+                            title: 'A bundle\'s permissions are a request, never a grant',
+                            body: 'What it self-declares in its manifest is checked against a separate, authoritative table — the manifest never grants itself anything.',
+                        },
+                        {
+                            title: 'Fails toward the strictest outcome everywhere',
+                            body: 'An unmatched caller, missing configuration, or a value that fails to parse all resolve to no access rather than defaulting open.',
+                        },
+                        {
+                            title: 'Guards against specific, real archive attacks',
+                            body: 'Zip-slip path escapes, escaping symlinks, and disproportionate compression ratios are all checked — not just a basic file-size limit.',
+                        },
+                        {
+                            title: 'Ownership checks never disclose existence',
+                            body: 'Reading or deleting someone else\'s handle looks exactly like acting on one that was never created — never a confirming "found but forbidden."',
+                        },
+                        {
+                            title: 'Background and live runs share one execution gate on purpose',
+                            body: 'Both trigger paths are forced through the same executor specifically so their security enforcement can\'t quietly diverge over time.',
+                        },
+                    ],
+                    whyItMatters:
+                        'Letting an outside system run code your own harness didn\'t write is one of the riskiest things a platform like this can offer — the same shape of problem as running someone else\'s plugin. The difference between that being a real capability and a real liability is exactly this level of care: treating uploaded content as hostile by default, never trusting what it claims about itself, and closing every gap where two enforcement paths could quietly drift apart.',
+                },
             },
             {
                 id: 'a2a-inbound',
