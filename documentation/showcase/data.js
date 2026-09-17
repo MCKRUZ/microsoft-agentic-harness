@@ -1188,8 +1188,72 @@ window.SHOWCASE_CATEGORIES = [
             {
                 id: 'multi-model-routing',
                 name: 'Multi-Model Routing',
-                status: 'partial',
-                exec: 'The harness can fail over between providers, but genuinely dynamic per-request "use the cheapest/best model for this job" routing is thinner than the name implies.',
+                status: 'built',
+                exec: 'Genuinely dynamic, cross-provider, per-request routing — on by default, not a thin wrapper around a single fixed provider.',
+                eng: 'ModelRouter picks a cost-ordered ModelTier per request (each tier can point to a completely different provider), with per-conversation escalation on repeated bad outcomes; tiers separately reference a named fallback chain for provider outages.',
+                deepDive: {
+                    scenario: [
+                        {
+                            time: 'Two providers, one decision',
+                            text: 'A cheap, fast provider is configured for easy questions; a more capable, more expensive one for hard reasoning. The choice between them isn\'t hardcoded — it\'s made per request, based on how hard that specific request actually is.',
+                        },
+                        {
+                            time: 'A struggling conversation',
+                            text: 'A conversation starts on the cheap tier. Several turns in, it starts showing signs of trouble. Rather than staying stuck, that one conversation is automatically escalated to a more capable tier — unrelated conversations stay wherever their own complexity puts them.',
+                        },
+                        {
+                            time: 'A provider outage',
+                            text: 'Separately, each tier can point to its own named fallback chain — so if the specific provider a tier uses has an outage, that\'s handled by an entirely separate, already-solved mechanism, not something tier selection needs to know about.',
+                        },
+                        {
+                            time: 'If it\'s all turned off',
+                            text: 'The whole system falls back to one fixed default tier. Nothing breaks — it just stops being adaptive.',
+                        },
+                    ],
+                    flow: [
+                        { title: 'Classify Then Choose', tone: 'info', body: 'Complexity drives which cost-ordered tier a request starts on.' },
+                        { title: 'Different Tiers, Different Providers', tone: 'jargon', body: 'A tier isn\'t just "cheaper GPT" — it can point to an entirely different AI provider altogether.' },
+                        { title: 'Escalate The Struggling Conversation, Not Everyone', tone: 'warn', body: 'A per-conversation track record can bump just that conversation to a higher tier.' },
+                        { title: 'Let Fallback Chains Handle Outages', tone: 'tip', body: 'If the chosen tier\'s provider is actually down, that\'s a separate, already-solved concern.' },
+                    ],
+                    narrative: [
+                        'For "multi-model routing" to be real, it needs to mean more than "we can talk to more than one provider" — it needs a genuine, per-request decision about which provider handles a given job, made dynamically rather than fixed at deployment time.',
+                        'Correcting an earlier, too-modest description of this box: tier selection is <mark class="hl">on by default, genuinely cross-provider</mark> — each tier can be an entirely different AI provider, not just a cheaper deployment of the same one — and <mark class="hl">adapts per conversation</mark> when things aren\'t going well, not a static, one-size-fits-all mapping.',
+                        'How it stays clean: tier selection (which model handles a normal request) and fallback chains (what happens when a chosen provider is actually failing) are deliberately kept as <mark class="hl">two separate, cooperating mechanisms</mark> rather than one tangled system — a tier just names a fallback chain, and each side solves its own problem.',
+                    ],
+                    techTable: {
+                        columns: ['Concern', 'Handled By'],
+                        rows: [
+                            ['Which tier handles a request, by complexity', 'The router\'s complexity classification and cost-ordered tier list.'],
+                            ['What happens if that tier\'s provider goes down', 'A separately-configured, named fallback chain.'],
+                            ['A specific conversation that\'s struggling', 'Per-conversation escalation, independent of every other conversation.'],
+                        ],
+                    },
+                    engineeringFacts: [
+                        {
+                            title: 'Tiers are genuinely cross-provider, not cross-deployment',
+                            body: 'A tier\'s client type can point to a completely different AI provider than another tier — not just a cheaper deployment of the same one.',
+                        },
+                        {
+                            title: 'Dynamic routing is on by default',
+                            body: 'A single config flag disables it, falling back to one static tier — this isn\'t an opt-in extra.',
+                        },
+                        {
+                            title: 'Escalation is scoped to the one struggling conversation',
+                            body: 'Other conversations are unaffected by one conversation\'s bad run.',
+                        },
+                        {
+                            title: 'Tier selection and failure recovery are deliberately decoupled',
+                            body: 'A tier names a fallback chain rather than tier logic reimplementing retry or circuit-breaking itself.',
+                        },
+                        {
+                            title: 'Tiers are cost-ordered automatically',
+                            body: 'Config doesn\'t manually rank tiers — they\'re sorted by their own declared cost per 1K tokens.',
+                        },
+                    ],
+                    whyItMatters:
+                        'Real deployments care about both "don\'t overpay for easy questions" and "don\'t underpower hard ones," and doing that well means genuinely choosing between different providers per request — not just having more than one configured somewhere. Keeping that proactive choice cleanly separate from what happens when a provider is actually down is what keeps this system understandable instead of one tangled mass of routing-and-retry logic.',
+                },
             },
             {
                 id: 'fallback-chains',
