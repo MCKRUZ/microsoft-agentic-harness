@@ -1159,6 +1159,69 @@ window.SHOWCASE_CATEGORIES = [
                 status: 'built',
                 exec: 'A person can be pulled into the loop to review or approve something before it goes further.',
                 eng: 'HumanFeedbackRelay carries a pending decision to a human reviewer and the response back into the run.',
+                deepDive: {
+                    scenario: [
+                        {
+                            time: 'A risky step',
+                            text: 'The agent is about to do something that warrants a second opinion. It pauses and hands the decision to a person instead of just proceeding.',
+                        },
+                        {
+                            time: 'The reviewer responds',
+                            text: 'A human writes free-text feedback — "not yet, check with legal first" — and that response needs to go back to the agent so it can actually act on it.',
+                        },
+                        {
+                            time: 'The uncomfortable question',
+                            text: 'That reviewer\'s own words are about to be fed back into the model as part of its next instructions. What if the reviewer\'s account is compromised, or their comment happens to contain something that reads like a command?',
+                        },
+                        {
+                            time: 'How it\'s handled',
+                            text: 'The reviewer\'s text is wrapped in a marker the reviewer could never have predicted or forged, explicitly labeled "not a system instruction," and attributed by name — so the model can weigh it as input from a person, never mistake it for a command from itself or its operators.',
+                        },
+                    ],
+                    flow: [
+                        { title: 'Pause For A Person', tone: 'info', body: 'A step that warrants it hands off to a human reviewer instead of the agent deciding alone.' },
+                        { title: 'Collect Free-Text Feedback', tone: 'jargon', body: 'The reviewer can write actual instructions back, not just approve or deny.' },
+                        { title: 'Wrap It Unforgeably', tone: 'warn', body: 'That feedback is sealed with a random, one-time marker before it\'s relayed to the model, so nothing else — including the reviewer\'s own text — can impersonate it.' },
+                        { title: 'Resume, Informed', tone: 'tip', body: 'The agent continues with the human\'s actual words available to it, clearly attributed and clearly not a command.' },
+                    ],
+                    narrative: [
+                        'Human review means being able to <mark class="hl">genuinely pause an automated process and wait for a person</mark> — not a UI element that logs "reviewed" without actually blocking anything.',
+                        'What\'s real: a reviewer\'s free-text response is carried all the way back into the running agent, not just recorded as an approve/deny checkbox. The interesting engineering is in how that gets done safely — the reviewer\'s own words are wrapped in <mark class="hl">a random, one-time marker minted fresh for that message</mark>, one the reviewer has no way to predict or copy, and explicitly labeled as feedback, never a system instruction. That closes a real gap: earlier designs used a fixed, published delimiter, which meant anyone who read this code\'s own source knew exactly what string to forge inside their own feedback to make it look more authoritative than it is. For decisions that need more than one person, there\'s also a real <mark class="hl">multi-approver mechanism</mark> — require just one of several people to sign off, require all of them, or require a specific number out of a larger group.',
+                        'This is marked <mark class="hl">"Built," not "Partial"</mark> — the pause-and-wait mechanism, the unforgeable feedback wrapping, and all three multi-approver modes are real and exercised, not a UI mockup of a review step.',
+                    ],
+                    techTable: {
+                        columns: ['Approval Mode', 'What It Requires'],
+                        rows: [
+                            ['Any of', 'The first reviewer to respond decides — fastest resolution.'],
+                            ['All of', 'Every designated reviewer must approve; a single denial ends it immediately.'],
+                            ['Quorum', 'A specific number out of a larger group of reviewers must agree.'],
+                        ],
+                    },
+                    engineeringFacts: [
+                        {
+                            title: 'Unforgeable by construction, not by escaping',
+                            body: 'Each relayed message gets a fresh random tag rather than a fixed marker — there\'s no published constant left for a reviewer\'s own text to copy or impersonate.',
+                        },
+                        {
+                            title: 'The attribution line is sanitized too',
+                            body: 'A reviewer\'s own name or identity string is stripped of characters that could let it break out of its line and forge the start of fake content.',
+                        },
+                        {
+                            title: 'Explicitly labeled as input, not command',
+                            body: 'The wrapped text tells the model outright to weigh it "like any other input" — the framing itself pushes back on treating a human comment as an override.',
+                        },
+                        {
+                            title: 'Sanitization happens before wrapping, not instead of it',
+                            body: 'This mechanism only handles attribution and delimiting — the actual PII/injection scrubbing of the reviewer\'s text is a separate, required step that has to run first.',
+                        },
+                        {
+                            title: 'Three real approval strategies, not one implied by a checkbox',
+                            body: 'Any-of, all-of, and quorum-based approval are all implemented as distinct strategies a request can be configured to use.',
+                        },
+                    ],
+                    whyItMatters:
+                        'Putting a human in the loop only matters if the human\'s actual judgment reaches the agent intact — and if a person\'s own words can\'t be twisted into looking like a system command, by an attacker or by accident. Getting both of those right is what makes "a person can step in" a real safety property instead of a comforting UI label.',
+                },
             },
             {
                 id: 'drift-detection',
