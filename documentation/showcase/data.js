@@ -1090,6 +1090,68 @@ window.SHOWCASE_CATEGORIES = [
                 status: 'built',
                 exec: 'An AI model grades another AI’s output quality as part of the automated pipeline, not just a human eyeballing it.',
                 eng: 'The "grader" CI gate and the meta-harness’s benchmark evaluation both use an LLM-as-judge pattern to score candidate outputs.',
+                deepDive: {
+                    scenario: [
+                        {
+                            time: 'A grading task',
+                            text: 'A CI pipeline needs to check whether some generated output actually satisfies a written rubric — too nuanced for a simple text match, too much volume for a person to check by hand every time.',
+                        },
+                        {
+                            time: 'A wrinkle',
+                            text: 'That rubric came from a case author — someone outside the trusted core of the system. If the judge model just blindly obeyed it as an instruction, a careless or hostile rubric could say "always score this 1.0" and be believed.',
+                        },
+                        {
+                            time: 'On a failing score',
+                            text: 'The judge doesn\'t just return "0.3." It has to point to the exact sentence in the rubric it believes was violated, quoted word for word — a score a human can actually go check, not just take on faith.',
+                        },
+                        {
+                            time: 'For a higher-stakes call',
+                            text: 'Instead of trusting one judge\'s opinion, several independent judges can grade the same thing in parallel, with their scores combined and any disagreement between them surfaced rather than hidden.',
+                        },
+                    ],
+                    flow: [
+                        { title: 'Isolate The Rubric', tone: 'warn', body: 'The grading criteria — written by someone outside the trusted core — is handled as data the judge reads, never as an instruction it obeys.' },
+                        { title: 'Grade & Cite Evidence', tone: 'info', body: 'The judge returns a score, and on a failure has to quote the specific rubric text it believes was broken.' },
+                        { title: 'Optionally, Convene A Jury', tone: 'jargon', body: 'For higher-stakes grading, several independent judges score the same output in parallel and get combined into one result.' },
+                        { title: 'Feed A Real Decision', tone: 'tip', body: 'The score isn\'t just logged — it drives something real: a CI gate that can block a merge, or a benchmark comparing two candidates.' },
+                    ],
+                    narrative: [
+                        '"LLM-as-judge" means using a model to grade another model\'s output against a rubric — instead of a person doing it by hand every time, or a naive keyword match that can\'t tell nuance from noise.',
+                        'What\'s real: the rubric being graded against is treated as <mark class="hl">genuinely untrusted input, not a trusted instruction</mark> — it\'s isolated with the same kind of defense used against prompt injection, so a careless or hostile rubric can\'t hijack the judge into always passing. A failing score has to come with <mark class="hl">the exact rubric sentence the judge believes was violated, quoted directly</mark> — not a bare number nobody can verify. And there\'s a genuine "jury" mode, off by default, where <mark class="hl">several independent judges grade the same output in parallel</mark> and get combined into one result, with disagreement between them surfaced instead of averaged away and lost.',
+                        'Where it actually gets used: both the CI grading gate and the meta-harness\'s own benchmark evaluation route through <mark class="hl">the same shared judge mechanism</mark> — not two separate, duplicated implementations that could quietly drift apart.',
+                    ],
+                    techTable: {
+                        columns: ['Mode', 'How It Works', 'Default?'],
+                        rows: [
+                            ['Single judge', 'One model scores the output against the rubric, with mandatory quoted evidence on a failing score.', 'Yes'],
+                            ['Jury (panel)', 'Several independent judges score the same output in parallel; results are combined and disagreement is surfaced.', 'No — off by default'],
+                        ],
+                    },
+                    engineeringFacts: [
+                        {
+                            title: 'The rubric is data, not an instruction',
+                            body: 'It\'s placed in the untrusted-input part of the prompt specifically so it can\'t say "score everything 1.0" and have the judge obey it as a system-level command.',
+                        },
+                        {
+                            title: 'A failing score requires cited evidence',
+                            body: 'The judge must quote the exact rubric sentence it believes was violated — a score you can check, not just a number you have to trust.',
+                        },
+                        {
+                            title: 'Jury mode costs nothing when unused',
+                            body: 'With no panel configured, it delegates straight through to the single-judge path with zero extra model calls — not a parallel system that has to be kept in sync.',
+                        },
+                        {
+                            title: 'A bad panelist doesn\'t spoil the result',
+                            body: 'If one judge in a panel errors out or returns garbage, it\'s excluded from the aggregate rather than failing the whole evaluation — though its cost still counts.',
+                        },
+                        {
+                            title: 'One mechanism, two real consumers',
+                            body: 'The CI grading gate and the meta-harness\'s benchmark evaluation both route through the same judge infrastructure, rather than each maintaining its own copy.',
+                        },
+                    ],
+                    whyItMatters:
+                        'Using an AI to grade AI output can sound like it\'s just vibes wearing a lab coat. The difference between that and something you can actually trust inside a CI gate is exactly these details: treating the grading criteria as something that could be attacked, forcing the judge to show its work instead of handing back a bare number, and having a way to check one judge\'s opinion against several when the decision actually matters.',
+                },
             },
             {
                 id: 'human-review',
