@@ -6,7 +6,7 @@
         <title>Capability Showcase — Agentic Harness</title>
         <meta
             name="description"
-            content="An interactive, click-to-explore map of the Microsoft Agentic Harness's capabilities — skills, plugins, MCP, tools, orchestration, observability, RAG, and knowledge graph."
+            content="An honest, category-by-category map of what the Microsoft Agentic Harness actually builds, what's partial, and what's a deliberate integration point for outside systems."
         />
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -17,7 +17,7 @@
         <link rel="stylesheet" href="../assets/css/styles.css" />
         <link rel="stylesheet" href="assets/css/showcase.css" />
     </head>
-    <body>
+    <body class="showcase-body">
         <a href="#main" class="skip-link">Skip to content</a>
         <div class="app">
             <!-- ============ SIDEBAR ============ -->
@@ -54,34 +54,46 @@
                 <div class="content">
                     <section class="hero">
                         <span class="eyebrow">Capability Showcase</span>
-                        <h1 class="hero-title">What this harness can actually do.</h1>
+                        <h1 class="hero-title">What this harness actually builds — and what it doesn't.</h1>
                         <p class="hero-lead">
-                            Eight systems make up the Agentic Harness. Click any one below to see what it does in
-                            plain English, then flip to engineering detail for the real mechanism — and jump
-                            straight into the full documentation from there. This page is a map, not a
-                            replacement for
-                            <a href="../index.html">the developer guide</a> or the
-                            <a href="../reference/patterns-and-technologies.html">reference catalogue</a> — it's the
-                            fastest way to see the shape of the whole system before diving into any one part.
+                            Eleven categories, each honestly marked: <strong>Built</strong> (verified in the code),
+                            <strong>Partial</strong> (the capability is real, just not packaged as its own thing),
+                            <strong>Not Built</strong>, or <strong>External System</strong> (a deliberate integration
+                            point, not something this harness builds). Click any box for detail.
                         </p>
+                        <div class="status-legend" aria-hidden="true">
+                            <span class="status-legend-item"><span class="status-swatch status-built"></span>Built</span>
+                            <span class="status-legend-item"><span class="status-swatch status-partial"></span>Partial</span>
+                            <span class="status-legend-item"><span class="status-swatch status-not-built"></span>Not Built</span>
+                            <span class="status-legend-item"><span class="status-swatch status-external"></span>External System</span>
+                        </div>
                     </section>
 
-                    <div id="showcase-grid" class="showcase-grid" role="group" aria-label="Harness capabilities">
+                    <div id="capability-grid" class="capability-grid">
                         <!-- Rendered by assets/js/render.js from data.js -->
                     </div>
+                </div>
 
-                    <div id="dossier" class="dossier" aria-live="polite">
-                        <p class="dossier-empty">Pick a capability above to see what it does and how it&rsquo;s built.</p>
-                    </div>
+                <div class="showcase-footer">
+                    <p class="muted atlas-hint">
+                        Tip: the URL updates as you explore (e.g. <code>#agent-runtime:skills-system</code> or
+                        <code>#agent-runtime:skills-system:eng</code>), so a specific box is shareable — handy when
+                        we're talking through one piece at a time.
+                    </p>
 
                     <hr />
                     <p class="muted">
-                        Want the full narrative instead of a map? Start with
+                        Want the full narrative instead of a grid? Start with
                         <a href="../01-get-running.html">Get Running in 10 Minutes</a> or
                         <a href="../03-big-picture.html">The Big Picture</a>.
                     </p>
                 </div>
             </main>
+
+            <div id="overlay-backdrop" class="overlay-backdrop" hidden></div>
+            <div id="overlay" class="overlay" aria-live="polite" hidden>
+                <!-- Rendered by assets/js/render.js from data.js -->
+            </div>
         </div>
         <script src="data.js"></script>
         <script src="assets/js/render.js"></script>
