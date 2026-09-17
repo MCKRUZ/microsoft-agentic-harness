@@ -797,8 +797,73 @@ window.SHOWCASE_CATEGORIES = [
                 id: 'agent-registry',
                 name: 'Agent Registry',
                 status: 'partial',
-                exec: 'Agents can be listed and managed through the API, but there’s no dedicated registry service — it’s a controller, not a first-class subsystem.',
-                eng: 'AgentsController exposes agent management; no separate IAgentRegistry.',
+                exec: 'A real registry does discover and cache every agent on disk — but it only loads once, at first use, and there\'s no way to add, remove, or refresh an agent without restarting the process.',
+                eng: 'IAgentMetadataRegistry scans AGENT.md manifests, caches them for the process lifetime with no invalidation, and supports lookup by id/category/tags; a decorator layers in bundle-scoped agents without touching the base cache.',
+                deepDive: {
+                    scenario: [
+                        {
+                            time: 'Deploy time',
+                            text: 'A handful of AGENT.md files sit in a few configured folders, each describing one agent.',
+                        },
+                        {
+                            time: 'First request',
+                            text: 'The very first time anything actually needs the list of agents, the folders get scanned, each manifest gets parsed, and the result is cached in memory.',
+                        },
+                        {
+                            time: 'Every request after that',
+                            text: 'Looking an agent up by id, category, or tag is instant — answered straight from that cache, no disk access involved.',
+                        },
+                        {
+                            time: 'Ten minutes later',
+                            text: 'Someone drops a brand-new AGENT.md file into one of those folders, expecting the new agent to show up right away. It doesn\'t — the running process is still serving its original snapshot. Only a restart makes the new agent visible.',
+                        },
+                    ],
+                    flow: [
+                        { title: 'Wait For First Ask', tone: 'info', body: 'Nothing gets scanned at startup — the folders are only read the first time something actually asks what agents exist.' },
+                        { title: 'Scan & Cache', tone: 'jargon', body: 'Every configured folder is walked, each manifest is parsed, and the whole result is cached in memory for as long as the process runs.' },
+                        { title: 'Serve From Memory', tone: 'tip', body: 'Every lookup after that — by id, category, or tag — is answered from the cache, not by touching the filesystem again.' },
+                        { title: 'Frozen Until Restart', tone: 'warn', body: 'A manifest added, edited, or removed on disk is invisible to a running process — there\'s no built-in way to make it notice.' },
+                    ],
+                    narrative: [
+                        'A "registry" for agents is meant to be the directory of what exists and how to find it — the thing everything else asks instead of independently poking around the filesystem.',
+                        'Correcting the record here: a genuine, dedicated service does this — <mark class="hl">not just a controller</mark> — with its own tests, its own caching behavior, and lookup by id, category, and tags. There\'s even a decorator that layers in agents scoped to an active bundle without polluting the base list. That part is real and already built.',
+                        'What keeps this "partial": the registry is <mark class="hl">read-only and loads exactly once</mark>. Once a process starts serving traffic, its view of "what agents exist" is <mark class="hl">frozen until that process restarts</mark> — there\'s no endpoint to refresh it, and no way to register or retire an agent except by changing files on disk and cycling the host. The piece the name implies — a real registry — exists. The piece a "management" claim implies — adding, removing, or refreshing at runtime — doesn\'t yet.',
+                    ],
+                    techTable: {
+                        columns: ['Capability', 'Status'],
+                        rows: [
+                            ['Discover agents from their manifest files', 'Real'],
+                            ['Look up an agent by id, category, or tag', 'Real'],
+                            ['Layer in bundle-scoped agents without touching the base list', 'Real'],
+                            ['Add or remove an agent while the process is running', 'Not available — requires a restart'],
+                            ['Refresh the cache on demand', 'Not available'],
+                        ],
+                    },
+                    engineeringFacts: [
+                        {
+                            title: 'Lazy first-load, not startup-load',
+                            body: 'Nothing is scanned until the first real call needs it — deliberately mirroring how this codebase\'s skill discovery already works, per its own doc comments.',
+                        },
+                        {
+                            title: 'Bounded, leaf-stopping scan',
+                            body: 'Search depth is capped at 3 folder levels, and any folder containing an <code>AGENT.md</code> is treated as a leaf — it isn\'t recursed into further.',
+                        },
+                        {
+                            title: 'A bad manifest degrades quietly',
+                            body: 'A malformed <code>AGENT.md</code> is logged and skipped rather than crashing discovery for every other agent.',
+                        },
+                        {
+                            title: 'Bundle agents are layered, not merged in',
+                            body: 'The bundle-aware decorator adds scoped agents on top of a lookup; the base registry\'s own cache never stores or sees them.',
+                        },
+                        {
+                            title: 'This entry corrects an earlier, inaccurate description',
+                            body: 'An older pass on this page claimed no dedicated registry existed at all. Re-checked directly against the current code for this write-up — it does; the real gap is the lack of runtime refresh.',
+                        },
+                    ],
+                    whyItMatters:
+                        '"Knowing what agents exist" sounds trivial until you actually need to add one without downtime, or you change a manifest and can\'t figure out why nothing changed. A real discovery service that\'s frozen until restart is genuinely fine for a small, mostly-static set of agents — but it isn\'t yet the kind of registry an operations team could add or retire agents against live.',
+                },
             },
             {
                 id: 'eval-store',
