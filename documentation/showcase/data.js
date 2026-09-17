@@ -25,6 +25,70 @@ window.SHOWCASE_CATEGORIES = [
                 status: 'built',
                 exec: 'A full conversational web app — message list, tool inspector, agent picker — not a demo widget.',
                 eng: 'Presentation.WebUI: React SPA with ChatPanel/MessageList/ChatInput, an MCP tool/prompt/resource browser, and AG-UI streaming via useAgentHub.',
+                deepDive: {
+                    scenario: [
+                        {
+                            time: 'A structured question',
+                            text: 'Instead of asking the user to type a paragraph of details, the agent asks the browser to render an actual interactive form right inside the conversation.',
+                        },
+                        {
+                            time: 'Before it renders',
+                            text: 'The browser checks what the agent actually sent against what that specific form expects. An agent\'s output is something you can\'t fully trust any more than raw user input — it gets checked the same way.',
+                        },
+                        {
+                            time: 'Separately',
+                            text: 'A developer working on this harness wants to poke at one specific tool directly, without going through the agent at all. The same web app lets them browse every available tool, prompt, and resource and invoke one by hand to see exactly what it returns.',
+                        },
+                        {
+                            time: 'The whole time',
+                            text: 'Responses stream in live, token by token, over a real, open streaming protocol — not a custom polling loop reinventing that wheel.',
+                        },
+                    ],
+                    flow: [
+                        { title: 'Stream The Response', tone: 'info', body: 'Text arrives incrementally over a real streaming protocol, not a full-response wait.' },
+                        { title: 'Or, Render A Widget', tone: 'jargon', body: 'Instead of plain text, the agent can ask the browser to render a real interactive form, table, or image inline.' },
+                        { title: 'Validate Before Trusting It', tone: 'warn', body: 'The agent\'s request is checked against what that specific widget actually expects before anything real gets rendered.' },
+                        { title: 'Or, Poke At A Tool Directly', tone: 'tip', body: 'Independent of the agent, a person can browse and manually invoke any available tool to see what it returns.' },
+                    ],
+                    narrative: [
+                        'A "chat UI" for a template like this could easily mean a demo text box. What\'s actually here goes well past that.',
+                        'What\'s real: this streams over the <mark class="hl">real, open AG-UI protocol</mark>, not a custom polling loop — and the agent isn\'t limited to plain text. It can ask the browser to render an <mark class="hl">actual interactive form, table, or image</mark> right inline in the conversation. Because that request comes from the agent, and agent output is exactly the kind of thing that can\'t be fully trusted, the browser <mark class="hl">validates the specific arguments against what that widget expects before rendering anything real</mark> — the same discipline normally reserved for user input, applied here to AI output instead.',
+                        'It doubles as a genuine developer surface too: every tool, prompt, and resource the agent has access to can be <mark class="hl">browsed and manually invoked by a person</mark>, independent of the agent ever deciding to use it — useful for checking exactly what a tool returns without needing the agent to be the one asking.',
+                    ],
+                    techTable: {
+                        columns: ['Piece', 'What It Does'],
+                        rows: [
+                            ['Streaming', 'Real-time responses over the open AG-UI protocol, not a bespoke polling loop.'],
+                            ['Interactive widgets', 'Agent-triggered forms, tables, and images rendered inline — not just text.'],
+                            ['MCP browser', 'Every available tool, prompt, and resource can be browsed and manually invoked, independent of the agent.'],
+                            ['Real authentication', 'Microsoft Entra login gates the whole app — not a stubbed identity.'],
+                        ],
+                    },
+                    engineeringFacts: [
+                        {
+                            title: 'The agent can trigger real UI, not just text',
+                            body: 'A form, a table, or an image can be rendered directly in the conversation at the agent\'s request.',
+                        },
+                        {
+                            title: 'Widget arguments are validated at the client',
+                            body: 'The agent\'s request is checked against what that specific widget expects before rendering — the same trust-boundary discipline as validating user input, applied to AI output instead.',
+                        },
+                        {
+                            title: 'An oversized payload is handled explicitly, not silently guessed at',
+                            body: 'If a widget\'s real arguments are too large to stream, the client is told outright rather than treating an empty placeholder as if it were genuine (empty) input.',
+                        },
+                        {
+                            title: 'A real, open streaming protocol',
+                            body: 'Responses stream over AG-UI, an actual open protocol for agent runs — not a homegrown polling or server-sent-events workaround.',
+                        },
+                        {
+                            title: 'Doubles as a tool debugging surface',
+                            body: 'A person can manually invoke any MCP tool the agent has access to and inspect the raw result, without the agent needing to be involved at all.',
+                        },
+                    ],
+                    whyItMatters:
+                        'A chat box that only shows text caps what an agent can actually do for someone — some answers are genuinely better as a form to fill out or a table to scan than a paragraph to read through. Being able to render real UI from an agent\'s request safely, and giving a person a direct way to poke at the underlying tools, is the difference between a demo chat widget and something a team would actually want to work in every day.',
+                },
             },
             {
                 id: 'voice',
