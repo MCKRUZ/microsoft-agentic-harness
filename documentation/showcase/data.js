@@ -1229,6 +1229,72 @@ window.SHOWCASE_CATEGORIES = [
                 status: 'built',
                 exec: 'The system watches for its own behavior quietly changing over time and flags it, instead of finding out from a user complaint.',
                 eng: 'EWMA (exponentially weighted moving average) drift detection over governance/quality signals.',
+                deepDive: {
+                    scenario: [
+                        {
+                            time: 'Nothing obvious happens',
+                            text: 'No one changed anything on purpose, but a model provider update or a subtle prompt tweak makes the agent\'s answers a little less faithful to its source material over the following week.',
+                        },
+                        {
+                            time: 'No complaints yet',
+                            text: 'The change is too gradual for any single conversation to look obviously wrong. Nobody notices, because nobody\'s looking at any one interaction long enough to see a slow slide.',
+                        },
+                        {
+                            time: 'The system notices anyway',
+                            text: 'One specific quality signal — faithfulness to source material, tracked separately from everything else — has been quietly sliding for days compared to what\'s normal for that particular kind of task.',
+                        },
+                        {
+                            time: 'It escalates',
+                            text: 'Past a defined threshold, this gets flagged for a person\'s attention automatically — instead of everyone finding out three weeks later from a pattern of complaints.',
+                        },
+                    ],
+                    flow: [
+                        { title: 'Score Several Dimensions Separately', tone: 'info', body: 'Quality isn\'t one blended number — faithfulness, relevance, structure, tool accuracy, coherence, and instruction-following are each tracked on their own.' },
+                        { title: 'Compare Against A Moving Baseline', tone: 'jargon', body: 'Each new score is weighed against what\'s normal, weighted so recent behavior counts for more than old behavior.' },
+                        { title: 'Classify The Severity', tone: 'warn', body: 'The result lands in one of four tiers — none, warn, alert, or escalate — each triggering a different level of response.' },
+                        { title: 'Escalate, Don\'t Just Log', tone: 'tip', body: 'A genuinely serious drift pulls in the same human-escalation mechanism used elsewhere in the system, not just a line in a log nobody reads.' },
+                    ],
+                    narrative: [
+                        'The point of drift detection is catching quality <mark class="hl">quietly getting worse over time</mark>, before a user\'s complaint becomes the alarm.',
+                        'What\'s real: quality isn\'t reduced to one number. <mark class="hl">Six independent dimensions are tracked separately</mark> — faithfulness, relevance, structural conformance, tool usage accuracy, coherence, and instruction following — so a regression in one specific area shows up on its own instead of getting averaged away into a score that still looks fine overall. Each one is compared against a <mark class="hl">moving baseline that weights recent behavior more heavily than old behavior</mark>, and that baseline has a real fallback: if there isn\'t enough history yet for a narrow, specific task, the comparison automatically <mark class="hl">widens to the whole skill, then the whole agent</mark>, instead of having nothing meaningful to compare against.',
+                        'The severity model is real, not cosmetic: <mark class="hl">four distinct tiers</mark>, and only the most serious one actually pulls a human into the loop through the same escalation mechanism the rest of the system uses — the lower tiers log and notify without waking anyone up unnecessarily.',
+                    ],
+                    techTable: {
+                        columns: ['Dimension', 'What It Catches'],
+                        rows: [
+                            ['Faithfulness', 'Output drifting away from what the source material actually says.'],
+                            ['Relevance', 'Answers that are technically fine but stop actually addressing what was asked.'],
+                            ['Structural conformance', 'Output quietly stops following its expected format or schema.'],
+                            ['Tool usage accuracy', 'Tools invoked with increasingly wrong or malformed arguments.'],
+                            ['Coherence', 'Logical flow within an answer breaking down.'],
+                            ['Instruction following', 'The agent drifting away from its own system prompt or skill instructions.'],
+                        ],
+                    },
+                    engineeringFacts: [
+                        {
+                            title: 'Six dimensions, tracked independently',
+                            body: 'A regression in one specific area is visible on its own — it can\'t hide behind an average that still looks acceptable.',
+                        },
+                        {
+                            title: 'A real baseline fallback chain',
+                            body: 'Comparisons scope to task type first, then widen to skill, then to the whole agent — so a narrow, low-traffic task still has something meaningful to be measured against.',
+                        },
+                        {
+                            title: 'Same weighting philosophy used elsewhere in this harness',
+                            body: 'Recent behavior counts more than old behavior via a weighted moving average — the same underlying idea as the decay curve in Episodic Memory, applied here to quality instead of relevance.',
+                        },
+                        {
+                            title: 'Four severity tiers with genuinely different consequences',
+                            body: 'Warn and Alert log and notify; only Escalate triggers the shared human-escalation flow — the tiers aren\'t cosmetic labels on the same behavior.',
+                        },
+                        {
+                            title: 'Every evaluation is recorded, not just the alarming ones',
+                            body: 'Results are written to an audit store and persisted into the knowledge graph, so "why did this get flagged" has a real trail to check, not just a final verdict.',
+                        },
+                    ],
+                    whyItMatters:
+                        'The failure mode this exists to prevent is quiet, cumulative decay nobody notices until real damage is already done — an agent that\'s subtly gotten worse while still technically "working" on every individual interaction. Watching several distinct quality signals separately, weighed against what\'s actually normal for that specific task, is what catches "getting a little worse every day" instead of only catching outright broken.',
+                },
             },
             {
                 id: 'learnings-log',
