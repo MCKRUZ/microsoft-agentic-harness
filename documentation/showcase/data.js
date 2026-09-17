@@ -1021,8 +1021,68 @@ window.SHOWCASE_CATEGORIES = [
                 id: 'metrics',
                 name: 'Metrics',
                 status: 'built',
-                exec: 'Standard operational metrics — latency, error rates, throughput — exported the same way any production service would.',
-                eng: 'OpenTelemetry metrics exported to Prometheus/Grafana, optionally Azure Monitor.',
+                exec: 'Goes well past the ordinary operational basics — tracks AI-specific signals a normal web service dashboard has no concept of, like real dollar cost per session and whether a called tool actually helped.',
+                eng: 'Nearly 20 dedicated OpenTelemetry metric groups (session cost, resilience, content safety, tool usefulness, drift, and more), exported to Prometheus/Grafana or Azure Monitor.',
+                deepDive: {
+                    scenario: [
+                        {
+                            time: 'A cost question',
+                            text: 'A team wants to know if a recent change made the agent more expensive to run. Instead of waiting for a cloud bill weeks later, they check per-session cost — tracked as a real dollar figure, updated as sessions happen.',
+                        },
+                        {
+                            time: 'A quality question',
+                            text: 'Someone wonders whether a particular tool is actually helping, or if the agent keeps calling it and getting nothing useful back. There\'s a metric specifically for that — not just "was the tool called," but whether its result was actually used for anything.',
+                        },
+                        {
+                            time: 'A reliability question',
+                            text: 'A model provider starts failing intermittently. A counter tracking fallback activations spikes immediately on a dashboard, well before anyone would have noticed from user complaints.',
+                        },
+                    ],
+                    flow: [
+                        { title: 'Instrument At The Source', tone: 'info', body: 'A counter or duration is recorded right where the real event happens — a tool call, a safety block, a fallback — not reconstructed afterward from logs.' },
+                        { title: 'Export Through One Pipeline', tone: 'jargon', body: 'Metrics travel through the same OpenTelemetry pipeline as traces, so the two can be correlated together instead of living in separate systems.' },
+                        { title: 'Land In A Real Dashboard', tone: 'tip', body: 'The same instrumentation flows to Prometheus/Grafana locally or Azure Monitor in the cloud, without changing any code.' },
+                    ],
+                    narrative: [
+                        'The usual meaning of "metrics" for a web service is latency, error rate, and throughput — the operational basics, and those are genuinely here too.',
+                        'What\'s actually built goes well past that: this system tracks <mark class="hl">signals specific to running AI at scale</mark> that a typical service dashboard has no concept of — the real dollar cost of a session, whether a tool the agent called was genuinely useful or just noise, how often a request had to fall back to a backup model provider, and how much content got blocked or redacted for safety.',
+                        'The scope is real, not a token gesture: <mark class="hl">nearly twenty separate, purpose-built metric groups</mark> exist, covering cost, safety, resilience, tool quality, and governance signals alongside the ordinary operational ones — not one generic counter bolted onto an otherwise plain APM setup.',
+                    ],
+                    techTable: {
+                        columns: ['Metric Group', 'What It Tracks'],
+                        rows: [
+                            ['Session cost', 'The real dollar cost of a session — not just a token count someone has to convert later.'],
+                            ['Resilience', 'Provider fallback activations, circuit breaker transitions, retry attempts per provider.'],
+                            ['Content safety', 'Evaluations run, content blocked, PII redactions performed.'],
+                            ['Tool usefulness', 'Whether a called tool\'s result was actually useful, not just whether it ran.'],
+                            ['Drift', 'Quality signals moving away from baseline over time (see Drift Detection).'],
+                        ],
+                    },
+                    engineeringFacts: [
+                        {
+                            title: 'Nearly 20 dedicated metric groups',
+                            body: 'Separate, purpose-built groups exist for cost, safety, resilience, tool quality, governance, and the AI-usage basics — not a single catch-all counter file.',
+                        },
+                        {
+                            title: 'Cost is tracked in real dollars',
+                            body: 'Session cost is recorded as an actual USD figure at the point of measurement, not left as a token count for someone else to price out later.',
+                        },
+                        {
+                            title: 'Tool usefulness is measured, not just tool usage',
+                            body: 'A dedicated metric distinguishes a tool that ran from a tool whose result actually mattered — a meaningfully harder thing to track than a simple call counter.',
+                        },
+                        {
+                            title: 'Metrics and traces share one pipeline',
+                            body: 'Both travel through the same OpenTelemetry instrumentation, so a spike in a metric and the trace that explains it live in the same system rather than two disconnected tools.',
+                        },
+                        {
+                            title: 'Backend-agnostic by design',
+                            body: 'The same instrumentation already ships to more than one real backend (Prometheus/Grafana, Azure Monitor) — switching or adding one doesn\'t touch the metrics code itself.',
+                        },
+                    ],
+                    whyItMatters:
+                        'Running an AI agent at scale raises questions a normal web service dashboard was never built to answer — is this getting more expensive, is this tool actually helping, are we quietly falling back to a worse model more often than anyone realizes. Having dedicated, purpose-built answers to those questions sitting right next to the ordinary latency and error-rate numbers is what turns "the agent felt off today" into something you can actually go measure.',
+                },
             },
             {
                 id: 'llm-as-judge',
