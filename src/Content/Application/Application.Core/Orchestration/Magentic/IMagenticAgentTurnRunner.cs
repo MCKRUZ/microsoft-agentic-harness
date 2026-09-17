@@ -55,6 +55,27 @@ namespace Application.Core.Orchestration.Magentic;
 /// defeats provider-side prompt caching on the (growing, unbounded) history for every Magentic turn.
 /// Inherent to the wrapped framework's task-ledger model, not a bug in this runner.
 /// </description></item>
+/// <item><description>
+/// <strong>Cross-turn tool-call replay dedup degrades silently for a Magentic turn.</strong> A
+/// single-agent turn seeds and clears <c>ReplayedToolCallScope.Current</c> around its dispatch so
+/// <c>ToolDiagnosticsMiddleware</c> can tell a replayed tool call from a genuinely new one; this runner
+/// never touches that scope, so every model call the manager/participants make falls back to that
+/// middleware's process-lifetime, bounded fallback set instead — sized for its other named callers, not
+/// for Magentic's added volume. Deriving the right seed needs a single message list to check for prior
+/// <c>FunctionResultContent</c>, which a Magentic turn's task string doesn't have; revisit alongside the
+/// per-tool-call replay-records limitation above, since both stem from the same underlying gap.
+/// </description></item>
+/// <item><description>
+/// <strong>A participant that is itself a Magentic supervisor is silently downgraded to an ordinary
+/// agent.</strong> <c>MagenticAgentTurnRunner.BuildAgentAsync</c> resolves a participant through its own
+/// skills only — its <see cref="AgentDefinition.OrchestrationMode"/>,
+/// <see cref="AgentDefinition.Participants"/>, and <see cref="AgentDefinition.MagenticOptions"/> are
+/// never consulted. Nested supervisor-of-supervisors teams are not supported; a manifest author who
+/// configures one gets no error, just a participant that never spawns its own team. Intentionally out
+/// of scope for v1 rather than a bug to silently work around — nesting raises its own questions (does a
+/// nested workflow's HITL pause bubble up? what timeout applies to it?) that deserve a real design pass,
+/// not an incidental side effect of this runner's current agent-building code.
+/// </description></item>
 /// </list>
 /// </remarks>
 public interface IMagenticAgentTurnRunner
@@ -67,6 +88,14 @@ public interface IMagenticAgentTurnRunner
     /// <see cref="AgentDefinition.OrchestrationMode"/> equal to
     /// <see cref="AgentOrchestrationMode.Magentic"/> and a non-empty
     /// <see cref="AgentDefinition.Participants"/> list.
+    /// </param>
+    /// <param name="conversationId">
+    /// The real, stable conversation identifier this turn belongs to. Flowed into every agent this
+    /// runner builds (manager and participants alike) as their prerequisite-tracking scope — required
+    /// by <c>AgentFactory.ResolvePrerequisiteScope</c> for any agent whose skills declare prerequisites;
+    /// without it, building such an agent throws. Must be the caller's real conversation id, never a
+    /// synthetic per-call value — see <c>AgentFactory.ResolvePrerequisiteScope</c>'s own remarks for why
+    /// a synthetic scope would silently corrupt prerequisite-unlock state.
     /// </param>
     /// <param name="userMessage">The user's message for this turn.</param>
     /// <param name="conversationHistory">
@@ -81,14 +110,16 @@ public interface IMagenticAgentTurnRunner
     /// </param>
     /// <param name="cancellationToken">Cancellation token for the whole workflow run.</param>
     /// <returns>
-    /// The turn's result in the same shape a single-agent turn returns. On workflow failure,
-    /// <see cref="AgentTurnResult.Success"/> is <see langword="false"/> with
-    /// <see cref="AgentTurnResult.ErrorKind"/> set to <see cref="AgentTurnErrorKind.Internal"/> and a
-    /// generic error message — the workflow's own error text is logged, never returned to the caller
-    /// (it can carry a raw exception message; see <c>MagenticAgentTurnRunner.RunTurnAsync</c>).
+    /// The turn's result in the same shape a single-agent turn returns. On workflow failure, or on any
+    /// exception while resolving/building the manager or a participant, <see cref="AgentTurnResult.Success"/>
+    /// is <see langword="false"/> with <see cref="AgentTurnResult.ErrorKind"/> set to
+    /// <see cref="AgentTurnErrorKind.Internal"/> and a generic error message — this method never throws
+    /// for a build or workflow failure; the real detail is logged, never returned to the caller (it can
+    /// carry a raw exception message; see <c>MagenticAgentTurnRunner.RunTurnAsync</c>).
     /// </returns>
     Task<AgentTurnResult> RunTurnAsync(
         AgentDefinition supervisor,
+        string conversationId,
         string userMessage,
         IReadOnlyList<ChatMessage> conversationHistory,
         MagenticTurnOverrides overrides,

@@ -43,7 +43,8 @@ public partial class ExecuteAgentTurnCommandHandler
 
 		var turnSw = Stopwatch.StartNew();
 		var result = await _magenticTurnRunner.RunTurnAsync(
-			supervisor, request.UserMessage, request.ConversationHistory, overrides, cancellationToken);
+			supervisor, request.ConversationId, request.UserMessage, request.ConversationHistory, overrides,
+			cancellationToken);
 		turnSw.Stop();
 
 		if (!result.Success)

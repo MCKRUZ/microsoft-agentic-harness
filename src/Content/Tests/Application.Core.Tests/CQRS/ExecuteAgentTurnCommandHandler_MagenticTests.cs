@@ -69,7 +69,7 @@ public sealed class ExecuteAgentTurnCommandHandler_MagenticTests
         _agentRegistry.Setup(r => r.TryGet("supervisor-agent")).Returns(supervisor);
 
         _magenticTurnRunner
-            .Setup(r => r.RunTurnAsync(supervisor, "Plan and execute the task", It.IsAny<IReadOnlyList<ChatMessage>>(), It.IsAny<MagenticTurnOverrides>(), It.IsAny<CancellationToken>()))
+            .Setup(r => r.RunTurnAsync(supervisor, It.IsAny<string>(), "Plan and execute the task", It.IsAny<IReadOnlyList<ChatMessage>>(), It.IsAny<MagenticTurnOverrides>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new AgentTurnResult
             {
                 Success = true,
@@ -87,7 +87,7 @@ public sealed class ExecuteAgentTurnCommandHandler_MagenticTests
         result.OutputTokens.Should().Be(17);
 
         _magenticTurnRunner.Verify(
-            r => r.RunTurnAsync(supervisor, "Plan and execute the task", It.IsAny<IReadOnlyList<ChatMessage>>(), It.IsAny<MagenticTurnOverrides>(), It.IsAny<CancellationToken>()),
+            r => r.RunTurnAsync(supervisor, It.IsAny<string>(), "Plan and execute the task", It.IsAny<IReadOnlyList<ChatMessage>>(), It.IsAny<MagenticTurnOverrides>(), It.IsAny<CancellationToken>()),
             Times.Once);
 
         // The single-agent path must never run for a Magentic supervisor.
@@ -110,7 +110,7 @@ public sealed class ExecuteAgentTurnCommandHandler_MagenticTests
         _agentRegistry.Setup(r => r.TryGet("supervisor-agent")).Returns(supervisor);
 
         _magenticTurnRunner
-            .Setup(r => r.RunTurnAsync(supervisor, It.IsAny<string>(), It.IsAny<IReadOnlyList<ChatMessage>>(), It.IsAny<MagenticTurnOverrides>(), It.IsAny<CancellationToken>()))
+            .Setup(r => r.RunTurnAsync(supervisor, It.IsAny<string>(), It.IsAny<string>(), It.IsAny<IReadOnlyList<ChatMessage>>(), It.IsAny<MagenticTurnOverrides>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new AgentTurnResult
             {
                 Success = false,
@@ -139,7 +139,7 @@ public sealed class ExecuteAgentTurnCommandHandler_MagenticTests
 
         _magenticTurnRunner.Verify(
             r => r.RunTurnAsync(
-                It.IsAny<AgentDefinition>(), It.IsAny<string>(), It.IsAny<IReadOnlyList<ChatMessage>>(),
+                It.IsAny<AgentDefinition>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<IReadOnlyList<ChatMessage>>(),
                 It.IsAny<MagenticTurnOverrides>(), It.IsAny<CancellationToken>()),
             Times.Never);
     }

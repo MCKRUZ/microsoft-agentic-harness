@@ -1,4 +1,5 @@
 using System.Text;
+using Application.AI.Common.Factories;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Orchestration.Magentic;
@@ -64,6 +65,7 @@ public sealed class MagenticAgentTurnRunner : IMagenticAgentTurnRunner
 	/// <inheritdoc/>
 	public async Task<AgentTurnResult> RunTurnAsync(
 		AgentDefinition supervisor,
+		string conversationId,
 		string userMessage,
 		IReadOnlyList<ChatMessage> conversationHistory,
 		MagenticTurnOverrides overrides,
@@ -71,6 +73,7 @@ public sealed class MagenticAgentTurnRunner : IMagenticAgentTurnRunner
 	{
 		ArgumentNullException.ThrowIfNull(overrides);
 		ArgumentNullException.ThrowIfNull(supervisor);
+		ArgumentException.ThrowIfNullOrWhiteSpace(conversationId);
 		ArgumentException.ThrowIfNullOrWhiteSpace(userMessage);
 		ArgumentNullException.ThrowIfNull(conversationHistory);
 
@@ -88,37 +91,26 @@ public sealed class MagenticAgentTurnRunner : IMagenticAgentTurnRunner
 			"Running Magentic turn for supervisor {AgentId} with {ParticipantCount} participant(s)",
 			supervisor.Id, supervisor.Participants.Count);
 
-		// Overrides apply to the manager only — the agent the caller actually addressed — the same way
-		// a single-agent turn's SystemPromptOverride/DeploymentOverride/Temperature apply only to the
-		// one agent named on the request, never to whatever it delegates to internally.
-		//
-		// Manager and every resolvable participant are built concurrently: each build is a genuine
-		// async round-trip (skill resolution, prerequisite checks, chat-client construction) with no
-		// data dependency on any other, so building them one at a time would pay N+1 sequential
-		// round-trips for no reason.
-		var resolvedParticipantDefs = new List<AgentDefinition>(supervisor.Participants.Count);
-		foreach (var participantId in supervisor.Participants)
+		IReadOnlyList<AIAgent> participants;
+		AIAgent manager;
+		try
 		{
-			var participantDef = _agentRegistry.TryGet(participantId);
-			if (participantDef is null)
-			{
-				_logger.LogWarning(
-					"Supervisor {AgentId} names participant {ParticipantId}, which is not a registered agent; skipping it",
-					supervisor.Id, participantId);
-				continue;
-			}
-
-			resolvedParticipantDefs.Add(participantDef);
+			(manager, participants) = await BuildManagerAndParticipantsAsync(
+				supervisor, conversationId, overrides, cancellationToken);
 		}
+		catch (Exception ex) when (ex is not OperationCanceledException)
+		{
+			// Anything can fail here — most notably, an agent (manager or participant) whose skills
+			// declare prerequisites throws if the prerequisite-tracking scope isn't wired correctly.
+			// A build failure is exactly as much "this turn can't proceed" as an unresolvable
+			// participant is, so it gets the same graceful Failure rather than propagating raw and
+			// aborting the whole handler ungracefully.
+			_logger.LogError(ex,
+				"Supervisor {AgentId} failed to build its manager or a participant agent", supervisor.Id);
 
-		var managerTask = BuildAgentAsync(supervisor, cancellationToken, overrides);
-		var participantTasks = resolvedParticipantDefs
-			.Select(def => BuildAgentAsync(def, cancellationToken))
-			.ToArray();
-		await Task.WhenAll([managerTask, .. participantTasks]);
-
-		var manager = managerTask.Result;
-		var participants = participantTasks.Select(t => t.Result).ToList();
+			return Failure(userMessage, conversationHistory,
+				"This Magentic supervisor's agents could not be constructed.");
+		}
 
 		if (participants.Count == 0)
 		{
@@ -242,16 +234,89 @@ public sealed class MagenticAgentTurnRunner : IMagenticAgentTurnRunner
 	}
 
 	/// <summary>
+	/// Resolves every declared participant to a registered <see cref="AgentDefinition"/> (skipping and
+	/// warning about ones that aren't), then builds the manager and every resolved participant
+	/// concurrently — each build is a genuine async round-trip (skill resolution, prerequisite checks,
+	/// chat-client construction) with no data dependency on any other, so building them one at a time
+	/// would pay N+1 sequential round-trips for no reason.
+	/// </summary>
+	/// <remarks>
+	/// Deduplicates participant ids (including a participant that names the supervisor itself) before
+	/// building anything — a repeated or self-referential id would otherwise hand MAF's
+	/// <c>AddParticipants</c> two agent instances sharing the same name, which the framework has no
+	/// defined behaviour for.
+	/// </remarks>
+	private async Task<(AIAgent Manager, IReadOnlyList<AIAgent> Participants)> BuildManagerAndParticipantsAsync(
+		AgentDefinition supervisor, string conversationId, MagenticTurnOverrides overrides,
+		CancellationToken cancellationToken)
+	{
+		var seenParticipantIds = new HashSet<string>(StringComparer.Ordinal);
+		var resolvedParticipantDefs = new List<AgentDefinition>(supervisor.Participants.Count);
+		foreach (var participantId in supervisor.Participants)
+		{
+			if (string.Equals(participantId, supervisor.Id, StringComparison.Ordinal))
+			{
+				_logger.LogWarning(
+					"Supervisor {AgentId} names itself as a participant; skipping the self-reference",
+					supervisor.Id);
+				continue;
+			}
+
+			if (!seenParticipantIds.Add(participantId))
+			{
+				_logger.LogWarning(
+					"Supervisor {AgentId} names participant {ParticipantId} more than once; skipping the duplicate",
+					supervisor.Id, participantId);
+				continue;
+			}
+
+			var participantDef = _agentRegistry.TryGet(participantId);
+			if (participantDef is null)
+			{
+				_logger.LogWarning(
+					"Supervisor {AgentId} names participant {ParticipantId}, which is not a registered agent; skipping it",
+					supervisor.Id, participantId);
+				continue;
+			}
+
+			resolvedParticipantDefs.Add(participantDef);
+		}
+
+		// Overrides apply to the manager only — the agent the caller actually addressed — the same way
+		// a single-agent turn's SystemPromptOverride/DeploymentOverride/Temperature apply only to the
+		// one agent named on the request, never to whatever it delegates to internally.
+		var managerTask = BuildAgentAsync(supervisor, conversationId, cancellationToken, overrides);
+		var participantTasks = resolvedParticipantDefs
+			.Select(def => BuildAgentAsync(def, conversationId, cancellationToken))
+			.ToArray();
+		await Task.WhenAll([managerTask, .. participantTasks]);
+
+		return (managerTask.Result, participantTasks.Select(t => t.Result).ToList());
+	}
+
+	/// <summary>
 	/// Builds an <see cref="AIAgent"/> for one agent definition — the manager or a participant —
 	/// the same way <c>ExecuteAgentTurnCommandHandler</c> resolves any agent: through its own
 	/// declared skills, falling back to its id as a bare skill id when it declares none.
 	/// </summary>
+	/// <param name="conversationId">
+	/// Flowed into <see cref="AgentFactory.ConversationIdPropertyKey"/> so an agent whose skills
+	/// declare prerequisites can resolve its prerequisite-tracking scope — without this,
+	/// <c>AgentFactory.ResolvePrerequisiteScope</c> throws for any such agent. The single-agent path
+	/// gets this for free from <c>IAgentConversationCache.GetOrCreateAsync</c>; this runner builds
+	/// agents directly through <see cref="IAgentFactory"/> instead (see the "known v1 limitation" on
+	/// <see cref="IMagenticAgentTurnRunner"/> about the resulting empty context-cache registration
+	/// breakdown), so it sets this property itself rather than inheriting it from that cache.
+	/// </param>
 	/// <param name="overrides">
 	/// Per-turn overrides to apply — pass a non-null instance only for the manager (see the call site
 	/// in <see cref="RunTurnAsync"/>); a participant never receives caller-supplied overrides.
 	/// </param>
 	private Task<AIAgent> BuildAgentAsync(
-		AgentDefinition agentDef, CancellationToken cancellationToken, MagenticTurnOverrides? overrides = null)
+		AgentDefinition agentDef,
+		string conversationId,
+		CancellationToken cancellationToken,
+		MagenticTurnOverrides? overrides = null)
 	{
 		var skillIds = AgentDefinition.ResolveSkillIds(agentDef, agentDef.Id);
 
@@ -265,6 +330,10 @@ public sealed class MagenticAgentTurnRunner : IMagenticAgentTurnRunner
 				AdditionalContext = overrides?.SystemPromptOverride,
 				DeploymentName = overrides?.DeploymentOverride,
 				Temperature = overrides?.Temperature,
+				AdditionalProperties = new Dictionary<string, object>
+				{
+					[AgentFactory.ConversationIdPropertyKey] = conversationId,
+				},
 			},
 			cancellationToken);
 	}

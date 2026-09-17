@@ -146,4 +146,26 @@ public sealed class AgentDefinitionTests
         def.Skills[0].Should().Be("research-topic");
         def.Skills[1].Should().Be("make-ppt");
     }
+
+    [Fact]
+    public void ResolveSkillIds_AgentDeclaresSkills_ReturnsThem()
+    {
+        var def = new AgentDefinition { Id = "content-agent", Name = "Content Agent", Skills = ["research-topic", "make-ppt"] };
+
+        AgentDefinition.ResolveSkillIds(def, "content-agent").Should().BeEquivalentTo(["research-topic", "make-ppt"]);
+    }
+
+    [Fact]
+    public void ResolveSkillIds_AgentDeclaresNoSkills_FallsBackToFallbackId()
+    {
+        var def = new AgentDefinition { Id = "bare-agent", Name = "Bare Agent" };
+
+        AgentDefinition.ResolveSkillIds(def, "bare-agent").Should().BeEquivalentTo(["bare-agent"]);
+    }
+
+    [Fact]
+    public void ResolveSkillIds_NullAgentDefinition_FallsBackToFallbackId()
+    {
+        AgentDefinition.ResolveSkillIds(null, "some-skill-id").Should().BeEquivalentTo(["some-skill-id"]);
+    }
 }
