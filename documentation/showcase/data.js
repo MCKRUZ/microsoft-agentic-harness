@@ -391,6 +391,68 @@ window.SHOWCASE_CATEGORIES = [
                 status: 'partial',
                 exec: 'Real, but not packaged as its own product — it lives inside the egress and tool-governance layer rather than as a standalone credential-scoping service.',
                 eng: 'Enforced via SkillManifestEgressPolicyResolver and the tool-invocation governance chain, not a dedicated credentials-scoping component.',
+                deepDive: {
+                    scenario: [
+                        {
+                            time: 'A skill needs one thing',
+                            text: 'A skill\'s job legitimately requires calling one specific external API. Its manifest declares that host as an addition to the shared baseline — it can only ever widen what it\'s allowed to reach, never narrow another skill\'s access or override the shared default.',
+                        },
+                        {
+                            time: 'The call goes out',
+                            text: 'Before any name even resolves, the destination is checked against the allowlist for the specific skill actually running right now — not a single static setting shared by everything.',
+                        },
+                        {
+                            time: 'A known trick',
+                            text: 'Suppose a hostname is designed to resolve to something disallowed at the exact moment the real connection is made — a well-known way to slip past a check that only looks at the hostname. A second, independent layer checks the actual address at the moment of connecting, closing that gap.',
+                        },
+                        {
+                            time: 'No one to attribute it to',
+                            text: 'A background job with no attributable human or agent behind it tries an outbound call outside any real work in progress. It\'s refused outright — an unattributed call gets no benefit of the doubt.',
+                        },
+                    ],
+                    flow: [
+                        { title: 'Declare Additively, Never Override', tone: 'info', body: 'A skill can only widen its own outbound reach beyond the shared default — never narrow someone else\'s or replace the baseline.' },
+                        { title: 'Check The Hostname First', tone: 'jargon', body: 'The declared allowlist is checked before any name resolution happens.' },
+                        { title: 'Check The Real Connection Second', tone: 'warn', body: 'A separate, independent layer filters at the actual point of connection, closing a gap a hostname-only check can\'t.' },
+                        { title: 'No Identity, No Verdict', tone: 'tip', body: 'A call with no attributable identity behind it is refused by default, not waved through.' },
+                    ],
+                    narrative: [
+                        'This isn\'t a system for issuing and rotating API keys — it\'s a way of scoping which external destinations a given piece of running code is even allowed to reach.',
+                        'What\'s real, and genuinely well-built: every skill\'s allowlist is <mark class="hl">purely additive</mark> — a skill can widen the shared baseline for its own outbound calls, but can never narrow it or override what another skill is allowed. Enforcement is <mark class="hl">two independent layers, not one</mark>: a declared hostname allowlist checked before any name resolution happens, plus a separate check at the moment the real network connection is made — specifically closing a well-known trick where a hostname resolves to something different than what was checked a moment earlier. And a call with <mark class="hl">no attributable identity behind it gets refused outright</mark>, because an unattributable call can\'t be meaningfully audited or scoped in the first place.',
+                        'Why "partial" is honest here, not just modest: this genuinely controls what a skill can reach, but it isn\'t packaged as its own standalone product someone could point to and configure in isolation — it\'s <mark class="hl">one governance layer among several</mark>, and the label reflects that packaging reality, not a gap in the actual protection.',
+                    ],
+                    techTable: {
+                        columns: ['Layer', 'What It Checks', 'When'],
+                        rows: [
+                            ['Declared allowlist', 'The requested hostname against what this specific skill is permitted to reach.', 'Before any name resolution happens.'],
+                            ['Connection-time filter', 'The actual address the connection lands on.', 'At the moment of connecting.'],
+                        ],
+                    },
+                    engineeringFacts: [
+                        {
+                            title: 'Allowlists are additive only',
+                            body: 'A skill can widen its own outbound reach beyond the shared default; it can never narrow it or override another skill\'s.',
+                        },
+                        {
+                            title: 'Two independent layers, closing a real bypass',
+                            body: 'A hostname check before resolution, plus a separate connection-time address filter — specifically closing a known trick the first layer alone can\'t catch.',
+                        },
+                        {
+                            title: 'Scoped by skill, gated by identity — deliberately not mixed',
+                            body: 'Who\'s calling controls whether a call can happen at all; which skill is running controls which hosts that call can reach — two separate questions, kept separate on purpose.',
+                        },
+                        {
+                            title: 'No attributable identity means no verdict at all',
+                            body: 'Background work with nothing to attribute a call to is refused by default rather than falling back to a permissive default.',
+                        },
+                        {
+                            title: 'Every decision is audited, allow or deny',
+                            body: 'The outcome is written to an audit trail regardless of verdict — not just the interesting failures.',
+                        },
+                    ],
+                    whyItMatters:
+                        'Giving an AI agent the ability to call out to the internet is exactly the kind of capability that turns a clever prompt into a real data-exfiltration or server-side-request-forgery attempt if it isn\'t scoped tightly. Layering a declared allowlist with an independent connection-time check, and refusing calls with no attributable identity at all, is what makes "the agent can reach the network" survive contact with someone actually trying to abuse it.',
+                },
             },
             {
                 id: 'policy-engine',
