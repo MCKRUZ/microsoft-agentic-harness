@@ -180,6 +180,68 @@ window.SHOWCASE_CATEGORIES = [
                 status: 'built',
                 exec: 'Other AI agents can call into this harness using the open Agent-to-Agent protocol, with identity carried through, not dropped.',
                 eng: 'Infrastructure.AI/A2A/A2AIdentityPropagator.cs propagates caller identity across an inbound A2A call; backed by Domain.AI/Identity/AgentIdentity.cs.',
+                deepDive: {
+                    scenario: [
+                        {
+                            time: 'An outside agent calls in',
+                            text: 'A completely separate AI system, built by someone else, calls into this harness using the open Agent-to-Agent protocol — a standard way for different agent systems to talk to each other.',
+                        },
+                        {
+                            time: 'It claims an identity',
+                            text: 'The incoming message says who it\'s from and what kind of caller it is. None of that is simply believed — the harness independently confirms who\'s really calling through its own authentication layer.',
+                        },
+                        {
+                            time: 'What gets trusted, and what doesn\'t',
+                            text: 'The caller\'s self-declared identity in the message is never used as the actual identity — only what the harness\'s own auth layer confirmed is. The message\'s claim about what "kind" of caller it is IS used, but carefully: an unrecognized value can\'t accidentally look legitimate.',
+                        },
+                        {
+                            time: 'For the rest of the call',
+                            text: 'Every tool, skill, and audit log downstream sees the real, established caller — not a generic "external agent" placeholder every outside caller would otherwise look identical as.',
+                        },
+                    ],
+                    flow: [
+                        { title: 'Receive The Envelope', tone: 'info', body: 'A message arrives over the open, standard protocol other agent systems already use — nothing invented just for this harness.' },
+                        { title: 'Authenticate, Don\'t Trust The Message', tone: 'warn', body: 'Who\'s actually calling is established through the harness\'s own authentication layer, never taken from what the message itself claims.' },
+                        { title: 'Carry Identity Through The Call', tone: 'jargon', body: 'Once established, that identity becomes the ambient identity for the whole call — every tool and skill downstream sees the real caller.' },
+                        { title: 'Default To The Safe Reading', tone: 'tip', body: 'Anything taken from the message itself is parsed defensively, so a malformed or unrecognized value can\'t accidentally look authorized.' },
+                    ],
+                    narrative: [
+                        'A2A is an open, standardized way for one AI agent system to call into another — not a bespoke integration invented just for this harness.',
+                        'What\'s real: an inbound call genuinely carries the caller\'s identity through the whole interaction, so tools, skills, and audit logging downstream all see who\'s really calling — not a shared placeholder every outside agent looks identical as. The interesting detail is how carefully that identity is established: the caller\'s id is <mark class="hl">never taken from what the message itself claims</mark> — it\'s the identity the harness\'s own authentication layer already confirmed, independent of anything on the wire. A more permissive field, what "kind" of caller it claims to be, is taken from the message — but <mark class="hl">defensively</mark>: an unrecognized or malformed value doesn\'t get the benefit of the doubt, it falls back to the exact state every downstream check already treats as "nothing established," so it\'s denied by default rather than accidentally granted.',
+                        'This is the same discipline showing up again elsewhere on this page: <mark class="hl">whatever a caller claims about itself is something to verify, never a fact to trust outright</mark>.',
+                    ],
+                    techTable: {
+                        columns: ['Field', 'Where It Comes From', 'Trusted?'],
+                        rows: [
+                            ['Caller identity (who)', 'The harness\'s own authentication layer', 'Always — never taken from the message itself.'],
+                            ['Caller kind (what type)', 'The inbound message', 'Yes, but defensively — an unrecognized value denies rather than defaulting to authorized.'],
+                        ],
+                    },
+                    engineeringFacts: [
+                        {
+                            title: 'The caller id is never read from the message',
+                            body: 'Only what the harness\'s own authentication layer independently confirmed is used — a hostile message can\'t simply claim to be someone else.',
+                        },
+                        {
+                            title: 'An unrecognized "kind" value fails closed, not ambiguously',
+                            body: 'A naive parse could land a malformed value somewhere that\'s neither the legitimate state nor the deny-by-default one, and get read as authorized by accident — this explicitly avoids that gap.',
+                        },
+                        {
+                            title: 'Case-insensitive matching was a deliberate, documented change',
+                            body: 'Made consistent with how every other governance value in this codebase is read, closing a case where one comparison was silently stricter than the rest.',
+                        },
+                        {
+                            title: 'Identity persists for the whole call, not just at the door',
+                            body: 'Once established, it becomes the ambient identity for the duration of the call, so every downstream tool or skill invocation sees the real caller.',
+                        },
+                        {
+                            title: 'The same discipline applies in reverse, outbound',
+                            body: 'This harness refuses to make an outbound A2A call at all without a clear identity of its own to stamp on the envelope, rather than sending one anonymously.',
+                        },
+                    ],
+                    whyItMatters:
+                        'An open standard for agents calling other agents is only as trustworthy as how carefully each side verifies what the other side claims about itself. Treating an inbound caller\'s own self-description as a claim to verify, not a fact to trust, is exactly what keeps "any AI system can call into this one" from also meaning "any AI system can pretend to be anyone it wants."',
+                },
             },
         ],
     },
