@@ -1339,6 +1339,68 @@ window.SHOWCASE_CATEGORIES = [
                 status: 'built',
                 exec: 'Personal and sensitive data gets scrubbed out of logs and telemetry before it’s ever written down.',
                 eng: 'RedactionCategory + RedactionRule drive redaction in ContentCaptureConfig/LogsConfig, governed by PiiFilteringConfig.',
+                deepDive: {
+                    scenario: [
+                        {
+                            time: 'A tool call fails',
+                            text: 'Its error message happens to include something that looks like a Slack access token, buried in the raw response text. That error is about to be written into the audit trail, an escalation record, and a live monitoring dashboard.',
+                        },
+                        {
+                            time: 'Before any of that happens',
+                            text: 'The harness recognizes the specific shape of a vendor API token — not just "looks like a random string" — and strips it out.',
+                        },
+                        {
+                            time: 'Elsewhere, a different case',
+                            text: 'A span sent to a monitoring dashboard includes a user\'s email address. Rather than deleting it and losing the ability to answer "how many distinct users hit this error," it\'s replaced with a one-way hash — the same email always produces the same hash, so analytics still work, but nobody looking at the dashboard can recover the real address.',
+                        },
+                        {
+                            time: 'A category gets added later',
+                            text: 'Because of how the "redact everything, no exceptions" call sites are written, they all pick up the new category automatically — none of them keeps its own separate, hand-copied list that could quietly miss the update.',
+                        },
+                    ],
+                    flow: [
+                        { title: 'Recognize The Shape', tone: 'info', body: 'Not just "sensitive-looking text" — specific, named patterns: emails, tokens, card numbers, particular vendor API key formats.' },
+                        { title: 'Choose Delete Or Hash', tone: 'jargon', body: 'Some values have zero use even anonymized and get removed outright; others get a consistent hash that keeps analytical value without exposing the real value.' },
+                        { title: 'Cover Every Place It Could Leak', tone: 'warn', body: 'Logs, traces, the audit trail, escalation records, and error text streamed to a live UI all go through the same redaction.' },
+                        { title: 'Never Rely On A Hand-Copied List', tone: 'tip', body: 'A single, computed "every category" source feeds every unconditional-redaction call site.' },
+                    ],
+                    narrative: [
+                        'Real PII redaction means recognizing specific, named patterns — not guessing at anything that looks sensitive — and applying that consistently everywhere sensitive content could actually leak, not just in the one place someone remembered to add a check.',
+                        'What\'s real: <mark class="hl">nine distinct, named categories</mark> are recognized — not just email and phone, but specific vendor API key shapes (OpenAI, GitHub, and Slack tokens each have their own recognizable prefix and structure). Two genuinely different actions are available depending on the value: some things are <mark class="hl">deleted outright</mark> because they have no use even anonymized, others are replaced with a <mark class="hl">consistent one-way hash</mark> that keeps analytical value — the same input always hashes the same way — without exposing the real content.',
+                        'The real fix worth calling out: this used to be <mark class="hl">four separate, hand-copied "every category" lists</mark> scattered across the log, trace, and tool-error redaction paths, each with its own near-identical justification comment. A category missed in even one of those four lists would leak through that one path. Now there\'s exactly <mark class="hl">one computed source</mark>, and every one of those call sites reads from it — a new category added to the enum reaches all of them automatically, closing off the exact class of bug that happened here before.',
+                    ],
+                    techTable: {
+                        columns: ['Action', 'When Used', 'Example'],
+                        rows: [
+                            ['Delete', 'The value has no use even anonymized.', 'An authorization header.'],
+                            ['Hash (SHA-256)', 'Analytical value is worth preserving without exposing the real value.', 'An email address.'],
+                        ],
+                    },
+                    engineeringFacts: [
+                        {
+                            title: 'Nine distinct, named categories',
+                            body: 'Email, phone, SSN, credit card, IP address, AWS keys, JWT tokens, vendor API keys (OpenAI/GitHub/Slack), and a generic catch-all — not a vague "looks sensitive" heuristic.',
+                        },
+                        {
+                            title: 'Two genuinely different actions',
+                            body: 'Delete for values with zero use even hashed, hash for values worth keeping analytically useful without exposing the real content.',
+                        },
+                        {
+                            title: 'One computed "every category" source, not four hand-copied lists',
+                            body: 'The specific fix for a real, documented incident where a newly-added category could silently miss one of several redaction call sites.',
+                        },
+                        {
+                            title: 'Every mandatory redaction path shares that source',
+                            body: 'The audit trail, escalation memory, the live UI stream, and the trace exporter all redact identically, not independently.',
+                        },
+                        {
+                            title: 'Vendor API keys get their own dedicated category',
+                            body: 'A distinguishing prefix plus a fixed-format body, treated the same way as a cloud provider\'s own access keys rather than folded into a vague generic bucket.',
+                        },
+                    ],
+                    whyItMatters:
+                        'Redaction that misses even one leak path, or that has to be remembered and re-added every time a new sensitive pattern comes up, is a false sense of protection. One shared, computed source of truth for "everything that must always be redacted" is what makes it structurally hard to repeat the exact mistake that happened here once already — not just a policy that depends on everyone remembering.',
+                },
             },
             {
                 id: 'cost-governance',
