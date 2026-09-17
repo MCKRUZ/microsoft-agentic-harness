@@ -1041,6 +1041,68 @@ window.SHOWCASE_CATEGORIES = [
                 status: 'built',
                 exec: 'Tracks how much of the model’s attention and cost budget a conversation has used, and stops things before they run away.',
                 eng: 'IConversationBudgetTracker (InProcessConversationBudgetTracker) plus TokenEstimationHelper enforce a cross-turn token ceiling.',
+                deepDive: {
+                    scenario: [
+                        {
+                            time: 'A single turn',
+                            text: 'Is capped so it can\'t blow through a hard ceiling by itself — if it would, that\'s caught and stopped before the call even goes out.',
+                        },
+                        {
+                            time: 'Separately, and more subtly',
+                            text: 'The whole conversation — every turn added together — has its own running total. Once that crosses a threshold, the conversation is flagged so the loop can stop gracefully on the next turn, rather than being cut off mid-response.',
+                        },
+                        {
+                            time: 'Something different entirely',
+                            text: 'A background multi-step plan has its own budget too, tracked under its own separately namespaced key — specifically so a plan\'s spending can never accidentally erase or get mixed up with a conversation\'s total, even if they happen to share an identifying string.',
+                        },
+                        {
+                            time: 'A named risk',
+                            text: 'In a deployment where two different services can both continue the same conversation, each enforcing its own private copy of the budget would let that conversation spend roughly double what it should — a real risk this component\'s own documentation calls out directly.',
+                        },
+                    ],
+                    flow: [
+                        { title: 'Cap Each Turn On Its Own', tone: 'info', body: 'A hard per-turn ceiling throws before an over-budget call goes out.' },
+                        { title: 'Track The Whole Conversation Separately', tone: 'jargon', body: 'A running total across every turn is checked between turns, not mid-turn, so it can end things gracefully.' },
+                        { title: 'Keep Budgets From Colliding', tone: 'tip', body: 'A plan run and a conversation get separately namespaced keys, so one can never accidentally erase or share the other\'s total.' },
+                        { title: 'Watch For The Split-Brain Risk', tone: 'warn', body: 'A shared ceiling enforced independently by two different processes can silently double the real limit unless both read one shared, current total.' },
+                    ],
+                    narrative: [
+                        'The point is knowing how much of the model\'s attention and cost a conversation has used, and stopping gracefully before it runs away — not ignoring cost entirely, and not crashing mid-answer either.',
+                        'What\'s real: two genuinely different budgets exist for two genuinely different problems. One caps a single turn and <mark class="hl">throws immediately</mark> if it would be exceeded; the other tracks the whole conversation\'s running total and is checked <mark class="hl">between turns, specifically so it can end things gracefully</mark> instead of abruptly. The system is also deliberately careful that a background plan\'s own budget can never collide with a conversation\'s, even sharing an identifying string, by treating every key as opaque and namespacing it.',
+                        'One honest, self-documented caveat: the interface itself warns that if <mark class="hl">two separate host processes each enforce their own private copy of one ceiling, a conversation can spend roughly double what it\'s supposed to</mark> — and the implementation this harness ships by default is exactly the kind that warning describes. A deployment that actually runs multiple host processes against the same conversations needs a shared, durable implementation in its place, not the default.',
+                    ],
+                    techTable: {
+                        columns: ['Tracker', 'Scope', 'Behavior On Overage'],
+                        rows: [
+                            ['Per-turn budget', 'One single turn.', 'Throws immediately, before the call goes out.'],
+                            ['Conversation budget', 'Every turn in the conversation, added together.', 'Reports exhausted; the caller stops gracefully on the next turn — never throws.'],
+                        ],
+                    },
+                    engineeringFacts: [
+                        {
+                            title: 'Two genuinely separate budget concepts',
+                            body: 'A per-turn ceiling that throws pre-flight, and a whole-conversation running total checked between turns that never throws.',
+                        },
+                        {
+                            title: 'Budget keys are treated as opaque, on purpose',
+                            body: 'A plan run gets its own namespaced key precisely so its spending can never collide with a conversation\'s total that happens to share an identifier.',
+                        },
+                        {
+                            title: 'The interface documents a real multi-process risk',
+                            body: 'Two hosts each enforcing a private copy of the same ceiling can let a conversation spend roughly double the real limit.',
+                        },
+                        {
+                            title: 'The default implementation is exactly the kind that risk describes',
+                            body: 'InProcessConversationBudgetTracker — a deployment spanning multiple host processes needs a shared, durable implementation to actually enforce one true ceiling.',
+                        },
+                        {
+                            title: 'Entries are reclaimed, not kept forever',
+                            body: 'A long-lived deployment accumulates many tracked keys; implementations are expected to evict or expire them rather than grow unbounded.',
+                        },
+                    ],
+                    whyItMatters:
+                        'An agent that can run for many turns, or spin off background plans, needs a real answer to "how much has this actually cost so far" that survives more than one request — not a number that resets by accident or silently doubles because two servers each think they\'re the only one watching. Being explicit about which budget is being enforced, and honest about where the current default implementation\'s real limit is, is what keeps a cost control from becoming a false sense of one.',
+                },
             },
             {
                 id: 'meta-harness',
