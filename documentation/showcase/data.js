@@ -608,8 +608,71 @@ window.SHOWCASE_CATEGORIES = [
                 id: 'router',
                 name: 'Router',
                 status: 'partial',
-                exec: 'Same story as the classifier above — real routing logic exists for retrieval, not as a general request router.',
-                eng: 'Complexity-based routing lives inside the RAG pipeline only.',
+                exec: 'A real, general-purpose model router exists and is on by default for actual conversation turns — not scoped to retrieval — but it routes which model handles a call, not which skill or agent should own the task in the first place.',
+                eng: 'ModelRouter dynamically picks a cost-ordered model tier per turn (complexity-classified, with per-conversation escalation on repeated bad outcomes); a separate request/skill router doesn\'t exist as its own component.',
+                deepDive: {
+                    scenario: [
+                        {
+                            time: 'A new conversation starts',
+                            text: 'Its first message is straightforward, so the router picks a cheap, fast model for it.',
+                        },
+                        {
+                            time: 'Several turns later',
+                            text: 'That same conversation starts producing signs of a poor outcome, turn after turn. Without anyone touching a setting, the router quietly upgrades that specific conversation to a more capable model — not every conversation, just the one that\'s been struggling.',
+                        },
+                        {
+                            time: 'Meanwhile, elsewhere',
+                            text: 'A completely fixed, well-understood background task — pulling structured facts out of a finished turn — always uses the same cheap tier, by config, because it doesn\'t need a smart per-request decision at all.',
+                        },
+                        {
+                            time: 'If none of this is wanted',
+                            text: 'The dynamic routing can be turned off entirely — when it is, everything runs on one default tier, exactly as if none of this existed.',
+                        },
+                    ],
+                    flow: [
+                        { title: 'Classify The Turn', tone: 'info', body: 'A cheap heuristic tries first; an LLM-based fallback runs only when it\'s not confident.' },
+                        { title: 'Pick A Base Tier From That', tone: 'jargon', body: 'Trivial or simple work goes to the cheapest tier, complex work to a more capable one.' },
+                        { title: 'Check This Conversation\'s Own Track Record', tone: 'warn', body: 'If this specific conversation has been struggling, the tier gets bumped up further — independent of what a fresh conversation with the same message would get.' },
+                        { title: 'Some Work Skips All Of This', tone: 'tip', body: 'A handful of fixed, well-understood background tasks route to a config-set tier directly, because a "smart" decision would just be overhead.' },
+                    ],
+                    narrative: [
+                        'A genuine correction to what this box used to say: this isn\'t scoped to retrieval at all — it\'s the harness\'s real, general-purpose model router, and it\'s <mark class="hl">on by default for actual conversation turns</mark>, not something living only inside the RAG pipeline.',
+                        'What\'s real: every ordinary turn gets classified for complexity and routed to a cost-ordered tier based on that. On top of that, there\'s a genuinely adaptive layer most systems like this don\'t have: <mark class="hl">each conversation has its own quality track record</mark>, and one racking up consecutive bad outcomes gets automatically escalated to a more capable tier — specifically for that conversation, and capped so it can\'t run away unboundedly.',
+                        'Why it\'s still marked <mark class="hl">"partial"</mark>: what\'s real here is dynamic <em>model</em> routing — which provider or tier answers a given call. What doesn\'t exist as its own thing is a general <em>request</em> router that decides which skill or agent should even handle a task in the first place — that responsibility is spread across the Orchestrator and Supervisor Agent rather than consolidated into something you could point to and call "the router."',
+                    ],
+                    techTable: {
+                        columns: ['Path', 'How It Picks A Tier'],
+                        rows: [
+                            ['An ordinary conversation turn', 'Complexity classification, mapped to a cost-ordered tier.'],
+                            ['A conversation with a bad track record', 'The base tier, automatically bumped further based on recent negative outcomes.'],
+                            ['A fixed background task (e.g. fact extraction)', 'A single config-set tier — no per-request decision at all.'],
+                        ],
+                    },
+                    engineeringFacts: [
+                        {
+                            title: 'On by default for real conversation turns',
+                            body: 'Dynamic, complexity-based routing isn\'t an opt-in experiment — it\'s the default path, with a single config flag to disable it and fall back to one static tier.',
+                        },
+                        {
+                            title: 'A conversation\'s own history can override its base tier',
+                            body: 'Up to two escalation levels, tracked per conversation, triggered by consecutive negative outcomes — not a one-size-fits-all setting.',
+                        },
+                        {
+                            title: 'Escalation is capped, not unbounded',
+                            body: 'A struggling conversation can climb tiers, but only so far, so a genuinely broken loop can\'t silently spiral to the most expensive tier forever.',
+                        },
+                        {
+                            title: 'Fixed background tasks deliberately skip the smart path',
+                            body: 'A known-cheap task like fact extraction routes through a simple config override, because paying for a classification decision on every background call would be pure overhead.',
+                        },
+                        {
+                            title: 'Genuinely shared with the Classifier',
+                            body: 'The same complexity signal used for retrieval routing also feeds this general model router — they aren\'t two separate implementations.',
+                        },
+                    ],
+                    whyItMatters:
+                        'Real conversations don\'t all cost the same to run well, and the cheap model handling the first nine turns fine might start failing on the tenth. A router that not only picks a sensible starting tier but notices when a specific conversation isn\'t going well and adapts for that conversation alone is meaningfully more useful than a static per-operation setting — the honest gap is that this solves "which model," not "which skill or agent," a genuinely separate problem this taxonomy expects a router to also cover.',
+                },
             },
             {
                 id: 'planner',
