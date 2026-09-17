@@ -1302,6 +1302,71 @@ window.SHOWCASE_CATEGORIES = [
                 status: 'built',
                 exec: 'Insights the meta-harness discovers get written down somewhere durable, not lost at the end of the run that found them.',
                 eng: 'The meta-harness learnings memory channel, gated the same way other cross-run memory is.',
+                deepDive: {
+                    scenario: [
+                        {
+                            time: 'A run finds something',
+                            text: 'An optimization run discovers a genuine, recurring mistake pattern. Instead of that insight living only in that run\'s own disposable log, it gets written down as a durable "learning."',
+                        },
+                        {
+                            time: 'Weeks later',
+                            text: 'A completely different optimization run, working on a related problem, recalls that exact learning instead of rediscovering the same mistake from zero.',
+                        },
+                        {
+                            time: 'Meanwhile, in production',
+                            text: 'Drift detection independently notices the same category of quality regression and generates its own corrective learning automatically — tagged with exactly where it came from, joining the same pool a human correction would.',
+                        },
+                        {
+                            time: 'An attempted manipulation',
+                            text: 'Someone tries to slip a manipulative instruction into what looks like a legitimate learning entry. The same safety gate that screens memories elsewhere in the harness catches it here too — and the caller only ever sees a generic "rejected," never the specific reason that would help refine the attempt.',
+                        },
+                    ],
+                    flow: [
+                        { title: 'Something Worth Keeping Happens', tone: 'info', body: 'A correction, a drift alert, a resolved escalation, or the agent catching its own mistake.' },
+                        { title: 'Screen It', tone: 'warn', body: 'The same safety gate used elsewhere in the harness checks it before it\'s trusted — a learning gets no special pass.' },
+                        { title: 'Record It, With Its Origin', tone: 'jargon', body: 'The learning is saved along with exactly where it came from, not anonymously.' },
+                        { title: 'Recall It Later', tone: 'tip', body: 'A future run — potentially unrelated to the one that discovered it — can pull it back up instead of relearning the same lesson from scratch.' },
+                    ],
+                    narrative: [
+                        'The point of a learnings log is that <mark class="hl">a run that discovers something valuable shouldn\'t lose it the moment the run ends</mark> — the insight should be available to every future run, not locked inside one disposable log.',
+                        'What\'s real: this goes through the <mark class="hl">exact same Remember/Recall/Forget/Improve operations</mark> as the rest of this harness\'s memory system, and through <mark class="hl">the identical safety gate</mark> that screens every other memory write. A manipulative "learning" gets rejected the same way a manipulative memory would — and the caller only ever sees a scrubbed, generic rejection, never the gate\'s actual classification reason, specifically so <mark class="hl">probing it for weaknesses teaches an attacker nothing useful</mark>. It\'s also genuinely wired into the rest of the system: drift detection can generate its own corrective learnings automatically when it finds a regression, and every learning is tagged with real provenance — a human correction, a drift-detection finding, a resolved escalation, the agent\'s own self-correction, or a manual entry.',
+                        'Because it rides the standard command pipeline like everything else in this harness, each write also gets the same <mark class="hl">validation, audit trail, and telemetry</mark> any other operation gets — not a special-cased shortcut bolted on separately.',
+                    ],
+                    techTable: {
+                        columns: ['Origin', 'What Produced It'],
+                        rows: [
+                            ['Human correction', 'A person explicitly corrected the agent\'s output.'],
+                            ['Drift detection', 'An automatically-detected quality regression generated its own corrective entry.'],
+                            ['Escalation resolution', 'A human-reviewed escalation was resolved with a correction.'],
+                            ['Agent self-improvement', 'The agent caught and corrected its own mistake.'],
+                            ['Manual entry', 'An operator entered it directly.'],
+                        ],
+                    },
+                    engineeringFacts: [
+                        {
+                            title: 'Same four operations as the rest of this harness\'s memory',
+                            body: 'Remember, Recall, Forget, and Improve — not a separate, one-off mechanism built just for learnings.',
+                        },
+                        {
+                            title: 'Screened by the same safety gate as any other memory write',
+                            body: 'A learning gets no special exemption from the injection-screening gate that protects the rest of the harness\'s memory.',
+                        },
+                        {
+                            title: 'Rejection reasons are deliberately hidden from the caller',
+                            body: 'A refused write returns a stable, scrubbed error code — the gate\'s actual classification stays internal so probing it doesn\'t teach anything useful.',
+                        },
+                        {
+                            title: 'Real provenance, not an anonymous pool',
+                            body: 'Five distinct source types are tracked — used both for audit reporting and by drift detection\'s own filtering logic.',
+                        },
+                        {
+                            title: 'Routed through the standard command pipeline',
+                            body: 'Every write goes through the same validation, audit, and telemetry pipeline as any other command in this system, rather than a special-cased shortcut.',
+                        },
+                    ],
+                    whyItMatters:
+                        'An optimization process that forgets everything the moment each run ends is doomed to relearn the same lessons forever. Treating a discovered correction as a durable, safety-screened, provenance-tagged memory — not just a line in that run\'s own disposable log — is what lets improvement actually compound across runs instead of restarting from zero every time.',
+                },
             },
         ],
     },
