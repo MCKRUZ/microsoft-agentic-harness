@@ -277,4 +277,110 @@ public sealed class AgentMetadataParserTests : IDisposable
 
         definition.Skills.Should().BeEquivalentTo(["my-skill"]);
     }
+
+    [Fact]
+    public void ParseFromFile_NoOrchestrationField_DefaultsToSingle()
+    {
+        var dir = WriteAgent("default-orchestration", """
+            ---
+            name: normal-agent
+            ---
+            Agent body.
+            """);
+
+        var definition = CreateParser().ParseFromFile(Path.Combine(dir, "AGENT.md"), dir);
+
+        definition.OrchestrationMode.Should().Be(Domain.AI.Agents.AgentOrchestrationMode.Single);
+        definition.Participants.Should().BeEmpty();
+        definition.MagenticOptions.Should().BeNull();
+    }
+
+    [Fact]
+    public void ParseFromFile_MagenticOrchestrationWithParticipants_ParsesSupervisorFields()
+    {
+        var dir = WriteAgent("supervisor", """
+            ---
+            name: supervisor-agent
+            orchestration: magentic
+            participants: [researcher, writer]
+            ---
+            You coordinate a research-and-write workflow.
+            """);
+
+        var definition = CreateParser().ParseFromFile(Path.Combine(dir, "AGENT.md"), dir);
+
+        definition.OrchestrationMode.Should().Be(Domain.AI.Agents.AgentOrchestrationMode.Magentic);
+        definition.Participants.Should().BeEquivalentTo(["researcher", "writer"]);
+    }
+
+    [Fact]
+    public void ParseFromFile_OrchestrationCaseInsensitive_StillParsesAsMagentic()
+    {
+        var dir = WriteAgent("supervisor-case", """
+            ---
+            name: supervisor-agent
+            orchestration: MAGENTIC
+            participants: [researcher]
+            ---
+            """);
+
+        var definition = CreateParser().ParseFromFile(Path.Combine(dir, "AGENT.md"), dir);
+
+        definition.OrchestrationMode.Should().Be(Domain.AI.Agents.AgentOrchestrationMode.Magentic);
+    }
+
+    [Fact]
+    public void ParseFromFile_UnrecognisedOrchestrationValue_FallsBackToSingle()
+    {
+        var dir = WriteAgent("bad-orchestration", """
+            ---
+            name: typo-agent
+            orchestration: magentik
+            ---
+            """);
+
+        var definition = CreateParser().ParseFromFile(Path.Combine(dir, "AGENT.md"), dir);
+
+        definition.OrchestrationMode.Should().Be(Domain.AI.Agents.AgentOrchestrationMode.Single);
+    }
+
+    [Fact]
+    public void ParseFromFile_MagenticTuningFrontmatter_ParsesAllKnobs()
+    {
+        var dir = WriteAgent("tuned-supervisor", """
+            ---
+            name: tuned-supervisor
+            orchestration: magentic
+            participants: [researcher]
+            max-rounds: 5
+            max-stalls: 2
+            max-resets: 1
+            require-plan-signoff: true
+            ---
+            """);
+
+        var definition = CreateParser().ParseFromFile(Path.Combine(dir, "AGENT.md"), dir);
+
+        definition.MagenticOptions.Should().NotBeNull();
+        definition.MagenticOptions!.MaxRounds.Should().Be(5);
+        definition.MagenticOptions.MaxStalls.Should().Be(2);
+        definition.MagenticOptions.MaxResets.Should().Be(1);
+        definition.MagenticOptions.RequirePlanSignoff.Should().BeTrue();
+    }
+
+    [Fact]
+    public void ParseFromFile_MagenticWithNoTuningFrontmatter_LeavesOptionsNull()
+    {
+        var dir = WriteAgent("untuned-supervisor", """
+            ---
+            name: untuned-supervisor
+            orchestration: magentic
+            participants: [researcher]
+            ---
+            """);
+
+        var definition = CreateParser().ParseFromFile(Path.Combine(dir, "AGENT.md"), dir);
+
+        definition.MagenticOptions.Should().BeNull();
+    }
 }

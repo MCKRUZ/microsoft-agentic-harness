@@ -138,6 +138,9 @@ public sealed class ZeroLlmPipelineTests
             .Returns(new LlmUsageSnapshot(0, 0, 0, 0, null, 0m, 0m, Array.Empty<string>()));
         services.AddScoped<ILlmUsageCapture>(_ => usageCaptureMock.Object);
 
+        // Magentic supervisor turn runner — not under test here, just needed for DI resolution.
+        services.AddSingleton(new Mock<Application.Core.Orchestration.Magentic.IMagenticAgentTurnRunner>().Object);
+
         return (services.BuildServiceProvider(), log);
     }
 

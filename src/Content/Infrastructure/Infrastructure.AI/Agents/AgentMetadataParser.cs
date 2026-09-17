@@ -79,10 +79,60 @@ public sealed class AgentMetadataParser
             Skills = ParseSkills(yaml),
             AllowedTools = ParseList(yaml, "allowed-tools"),
             Instructions = instructions,
+            OrchestrationMode = ParseOrchestrationMode(yaml, agentFilePath),
+            Participants = ParseList(yaml, "participants"),
+            MagenticOptions = ParseMagenticOptions(yaml),
             FilePath = agentFilePath,
             BaseDirectory = baseDirectory,
             LoadedAt = DateTime.UtcNow,
         };
+    }
+
+    /// <summary>
+    /// Parses the <c>orchestration:</c> frontmatter key. Any value other than the literal
+    /// <c>magentic</c> (including an absent key) is <see cref="AgentOrchestrationMode.Single"/> —
+    /// an unrecognised value is logged and treated as the safe default rather than refused, since
+    /// a typo here should degrade to "runs as a normal agent," not fail the whole manifest.
+    /// </summary>
+    private AgentOrchestrationMode ParseOrchestrationMode(string? frontmatter, string agentFilePath)
+    {
+        var value = ParseString(frontmatter, "orchestration");
+        if (value is null)
+            return AgentOrchestrationMode.Single;
+
+        if (value.Equals("magentic", StringComparison.OrdinalIgnoreCase))
+            return AgentOrchestrationMode.Magentic;
+
+        _logger.LogWarning(
+            "AGENT.md at {Path} has unrecognised orchestration: '{Value}'; treating as Single",
+            agentFilePath, value);
+        return AgentOrchestrationMode.Single;
+    }
+
+    /// <summary>
+    /// Parses the optional Magentic tuning frontmatter (<c>max-rounds</c>, <c>max-stalls</c>,
+    /// <c>max-resets</c>, <c>require-plan-signoff</c>). Returns <see langword="null"/> when none of
+    /// them are present, so a supervisor manifest that omits tuning entirely runs with MAF's own
+    /// defaults via <see cref="AgentDefinition.MagenticOptions"/> being null, not a
+    /// <see cref="MagenticAgentOptions"/> whose defaults happen to match.
+    /// </summary>
+    private static MagenticAgentOptions? ParseMagenticOptions(string? frontmatter)
+    {
+        var maxRounds = ParseInt(frontmatter, "max-rounds");
+        var maxStalls = ParseInt(frontmatter, "max-stalls");
+        var maxResets = ParseInt(frontmatter, "max-resets");
+        var requirePlanSignoff = ParseBool(frontmatter, "require-plan-signoff");
+
+        if (maxRounds is null && maxStalls is null && maxResets is null && requirePlanSignoff is null)
+            return null;
+
+        var options = new MagenticAgentOptions { MaxRounds = maxRounds, MaxResets = maxResets };
+        if (maxStalls is { } stalls)
+            options = options with { MaxStalls = stalls };
+        if (requirePlanSignoff is { } signoff)
+            options = options with { RequirePlanSignoff = signoff };
+
+        return options;
     }
 
     /// <summary>
@@ -122,6 +172,29 @@ public sealed class AgentMetadataParser
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// Parses an integer-valued frontmatter key. Returns <see langword="null"/> when the key is
+    /// absent or its value doesn't parse as an integer — the caller treats either the same way
+    /// (fall back to the framework default), so a malformed value degrades safely rather than
+    /// refusing the manifest.
+    /// </summary>
+    private static int? ParseInt(string? frontmatter, string key)
+    {
+        var value = ParseString(frontmatter, key);
+        return value is not null && int.TryParse(value, out var parsed) ? parsed : null;
+    }
+
+    /// <summary>
+    /// Parses a boolean-valued frontmatter key. Returns <see langword="null"/> when the key is
+    /// absent or its value isn't <c>true</c>/<c>false</c> — see <see cref="ParseInt"/> for why an
+    /// absent value and a malformed one are treated identically.
+    /// </summary>
+    private static bool? ParseBool(string? frontmatter, string key)
+    {
+        var value = ParseString(frontmatter, key);
+        return value is not null && bool.TryParse(value, out var parsed) ? parsed : null;
     }
 
     private static IReadOnlyList<string> ParseList(string? frontmatter, string key)

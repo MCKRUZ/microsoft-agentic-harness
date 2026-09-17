@@ -30,7 +30,16 @@ namespace Application.Core.CQRS.Agents.ExecuteAgentTurn;
 /// Handles <see cref="ExecuteAgentTurnCommand"/> by creating an agent
 /// and executing a single conversation turn via the MS Agent Framework.
 /// </summary>
-public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCommand, AgentTurnResult>
+/// <remarks>
+/// Split across partials by responsibility, following this project's Partial Class Pattern: this
+/// file owns the single-agent path; <c>ExecuteAgentTurnCommandHandler.Magentic.cs</c> owns the
+/// branch for an <see cref="Domain.AI.Agents.AgentOrchestrationMode.Magentic"/> supervisor agent.
+/// This is the one place every live surface (chat, the bundle API, the planner, orchestrated-task
+/// delegation) already funnels a turn through, so branching here — rather than teaching every
+/// caller about a second command type — is what makes a Magentic supervisor reachable everywhere
+/// a normal agent already is, the moment its manifest opts in.
+/// </remarks>
+public partial class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCommand, AgentTurnResult>
 {
 	private readonly IAgentConversationCache _agentCache;
 	private readonly IToolCallAdmissionPipeline _admissionPipeline;
@@ -45,6 +54,7 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 	private readonly ILogger<ExecuteAgentTurnCommandHandler> _logger;
 	private readonly ISecretRedactor? _redactor;
 	private readonly IToolCallReplayTreatment _toolCallReplayTreatment;
+	private readonly Application.Core.Orchestration.Magentic.IMagenticAgentTurnRunner _magenticTurnRunner;
 
 	public ExecuteAgentTurnCommandHandler(
 		IAgentConversationCache agentCache,
@@ -59,6 +69,7 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 		TimeProvider timeProvider,
 		ILogger<ExecuteAgentTurnCommandHandler> logger,
 		IToolCallReplayTreatment toolCallReplayTreatment,
+		Application.Core.Orchestration.Magentic.IMagenticAgentTurnRunner magenticTurnRunner,
 		ISecretRedactor? redactor = null)
 	{
 		_agentCache = agentCache;
@@ -73,6 +84,7 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 		_timeProvider = timeProvider;
 		_logger = logger;
 		_toolCallReplayTreatment = toolCallReplayTreatment;
+		_magenticTurnRunner = magenticTurnRunner;
 		_redactor = redactor;
 	}
 
@@ -91,6 +103,10 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 			// registry, fall back to treating AgentName as a skill id directly so callers
 			// which still pass skill ids (tests, tools) keep working.
 			var agentDef = _agentRegistry.TryGet(request.AgentName);
+
+			if (agentDef?.OrchestrationMode == Domain.AI.Agents.AgentOrchestrationMode.Magentic)
+				return await HandleMagenticTurnAsync(request, agentDef, cancellationToken);
+
 			IReadOnlyList<string> skillIds = agentDef?.Skills is { Count: > 0 }
 				? agentDef.Skills
 				: [request.AgentName];
