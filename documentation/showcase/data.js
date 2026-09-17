@@ -680,6 +680,71 @@ window.SHOWCASE_CATEGORIES = [
                 status: 'built',
                 exec: 'A real planning engine that breaks work into a dependency graph and runs it with bounded concurrency, checkpointing, and error recovery.',
                 eng: 'PlanExecutor orchestrates a PlanGraph via keyed step executors (LlmCall, ToolUse, HumanGate, ConditionalBranch, SubPlanInvocation), with retry/escalate/skip recovery and EF Core-backed checkpoint/resume.',
+                deepDive: {
+                    scenario: [
+                        {
+                            time: 'Several steps, real dependencies',
+                            text: 'A request actually needs multiple steps, some of which can run at the same time and some of which have to wait on each other\'s results. Independent steps run concurrently — but never more than a set number at once.',
+                        },
+                        {
+                            time: 'A plan within a plan',
+                            text: 'One step is itself "run an entire other plan." The system tracks how deep that nesting goes, and if a plan tries to nest too many levels deep, it\'s refused outright rather than recursing until something breaks.',
+                        },
+                        {
+                            time: 'A restriction that follows the nesting',
+                            text: 'The parent plan was explicitly denied access to a particular tool. The nested sub-plan it kicks off inherits that exact same restriction automatically — it can\'t quietly regain access to something its parent was denied just by being one level removed.',
+                        },
+                        {
+                            time: 'When nothing is moving',
+                            text: 'The scheduler notices that work is technically still "pending" but nothing is actually progressing. Rather than spinning forever, it logs a warning and stops instead of hanging the whole plan indefinitely.',
+                        },
+                    ],
+                    flow: [
+                        { title: 'Build The Dependency Graph', tone: 'info', body: 'Work is broken into steps with real dependencies, not a flat list run top to bottom.' },
+                        { title: 'Run What\'s Ready, Bounded', tone: 'jargon', body: 'Independent steps run concurrently, capped at a configured limit — not unbounded parallelism.' },
+                        { title: 'Nest Safely', tone: 'warn', body: 'A step can invoke an entire child plan, inheriting the same governance restrictions as its parent, with a hard depth limit.' },
+                        { title: 'Never Spin Forever', tone: 'tip', body: 'If the scheduler ever finds itself with nothing progressing, it stops and reports rather than looping indefinitely.' },
+                    ],
+                    narrative: [
+                        'A real planning engine needs more than "does the work eventually run" — it needs genuine concurrency control, safe nesting, and a way to notice when it\'s stuck.',
+                        'What\'s real: steps that don\'t depend on each other actually run at the same time, bounded by a <mark class="hl">real concurrency limit</mark> — not unbounded, and not accidentally serial either. A step can invoke an entire nested sub-plan, and that nested plan <mark class="hl">inherits the parent\'s exact governance identity</mark> — a tool the parent was denied stays denied inside every sub-plan, automatically, not something each nested level has to remember to re-check. Nesting itself has a <mark class="hl">hard depth limit</mark>, so a plan that tries to recurse too deep is refused with a clear error instead of climbing until something breaks.',
+                        'The honest defensive detail: the scheduler has an explicit check for <mark class="hl">"nothing is actually progressing"</mark> — if it ever finds pending work but nothing ready and nothing running, it stops and logs a warning rather than spinning forever waiting for progress that will never come.',
+                    ],
+                    techTable: {
+                        columns: ['Step Type', 'What It Does'],
+                        rows: [
+                            ['LLM Call', 'A single call to a model.'],
+                            ['Tool Use', 'A single tool invocation.'],
+                            ['Human Gate', 'Pauses for a person\'s decision.'],
+                            ['Conditional Branch', 'Chooses which path the plan takes next.'],
+                            ['Sub-Plan Invocation', 'Runs an entire nested plan as one step.'],
+                        ],
+                    },
+                    engineeringFacts: [
+                        {
+                            title: 'Independent steps genuinely run concurrently',
+                            body: 'A real concurrency limit bounds how many steps run at once — not just a graph structured as if they could run in parallel.',
+                        },
+                        {
+                            title: 'A sub-plan inherits its parent\'s governance identity automatically',
+                            body: 'A tool denied to the parent is denied to every nested plan beneath it, without each level needing its own explicit check.',
+                        },
+                        {
+                            title: 'Nesting has a hard depth limit',
+                            body: 'A runaway or malicious plan that tries to nest sub-plans indefinitely is refused with a clear error, not left to recurse until something crashes.',
+                        },
+                        {
+                            title: 'The scheduler detects its own stuck state',
+                            body: 'An explicit "nothing is progressing" check prevents an infinite loop when a plan gets into a state where nothing can move forward.',
+                        },
+                        {
+                            title: 'Five distinct step types, not one generic "do a thing" step',
+                            body: 'Each kind of work — model call, tool call, human gate, branch, nested plan — is its own keyed executor.',
+                        },
+                    ],
+                    whyItMatters:
+                        'A plan that can only run one step at a time, that nests sub-plans without limit, or that silently hangs when it gets stuck isn\'t something you could trust with real, multi-step work. Bounded concurrency, governance that survives nesting, and a scheduler that notices its own dead ends are what separate a genuine planning engine from a script that happens to work on the happy path.',
+                },
             },
             {
                 id: 'orchestrator',
