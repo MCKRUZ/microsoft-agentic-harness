@@ -1261,6 +1261,71 @@ window.SHOWCASE_CATEGORIES = [
                 status: 'built',
                 exec: 'If one AI provider fails, the harness automatically tries the next one in line — real resilience, not just a retry loop.',
                 eng: 'IProviderErrorClassifier normalizes failures across providers (each SDK throws a different exception type for the same HTTP status); Polly owns retry and circuit-breaking, chain members run with SDK retry disabled.',
+                deepDive: {
+                    scenario: [
+                        {
+                            time: 'Rate-limited',
+                            text: 'A request to one provider gets rate-limited — a classic "try again in a moment" situation. It\'s retried automatically, and if it keeps failing, it\'s counted against that provider\'s health and the harness moves on to the next one in the chain.',
+                        },
+                        {
+                            time: 'A missing deployment',
+                            text: 'A different request fails because the specific model doesn\'t exist on this particular provider. Retrying the same provider is pointless — but a different one in the chain might actually serve it, so that\'s tried instead, without wasting time retrying uselessly first.',
+                        },
+                        {
+                            time: 'A rejected API key',
+                            text: 'A failure turns out to be an account-level problem, not a provider-level one. Rotating through every other provider wouldn\'t fix this — it would waste time and hide the real problem behind what looks like a generic outage. The harness stops immediately with a clear, specific error instead.',
+                        },
+                        {
+                            time: 'A user cancels',
+                            text: 'Someone simply cancels their own request mid-flight. That\'s not a sign anything is wrong with any provider — so it\'s not counted against anyone\'s health, and the harness doesn\'t waste time trying another provider for a request nobody is waiting on anymore.',
+                        },
+                    ],
+                    flow: [
+                        { title: 'Classify By What Can Be Done', tone: 'info', body: 'Not by which .NET exception type happened to be thrown.' },
+                        { title: 'Retry Only What\'s Worth Retrying', tone: 'jargon', body: 'A failure that might succeed the second time gets retried; one that provably won\'t doesn\'t.' },
+                        { title: 'Fall Back Only When It Could Help', tone: 'tip', body: 'A provider-specific problem tries the next provider; a shared, account-level problem doesn\'t bother.' },
+                        { title: 'Never Confuse "The User Left" With "The Provider Failed"', tone: 'warn', body: 'A caller\'s own cancellation is recognized as exactly that, not treated as a provider health signal.' },
+                    ],
+                    narrative: [
+                        'Real fallback needs more than "try another provider" — it needs to know which kind of failure justifies retrying, which kind justifies trying a different provider, and which kind means neither will help.',
+                        'What\'s real, and the specific bug this closes: each provider\'s own SDK throws a <mark class="hl">completely different .NET exception type for the identical HTTP status</mark> — so resilience logic built around matching exception types only ever really works for whichever provider happens to match, silently leaving the others unhandled. This harness instead classifies every failure into <mark class="hl">one of five distinct outcomes</mark>: retried and falls back, doesn\'t retry but still falls back, doesn\'t retry and specifically <mark class="hl">refuses to fall back</mark> because the problem is shared across every provider, an honestly-labeled "don\'t know" that still counts against the provider defensively, and a caller\'s own cancellation, recognized as not being a provider problem at all.',
+                        'The specific care taken with cancellation: distinguishing "the caller actually gave up" from "something else threw a cancellation-shaped exception" uses the <mark class="hl">original token the caller passed in</mark>, not a derived one a retry layer might have created along the way — getting this wrong either wastes effort retrying an abandoned request, or worse, blames a provider for a cancellation that was never about the provider at all.',
+                    ],
+                    techTable: {
+                        columns: ['Failure Kind', 'Retried?', 'Falls Back To Another Provider?'],
+                        rows: [
+                            ['Transient (rate limit, timeout)', 'Yes', 'Yes, if retries are exhausted.'],
+                            ['Fatal for this provider (missing deployment)', 'No', 'Yes — a different provider may serve it.'],
+                            ['Fatal for the whole chain (bad API key)', 'No', 'No — rotating providers would hide the real cause.'],
+                            ['Unrecognized', 'No', 'Yes, but flagged as unresolved.'],
+                            ['Caller cancelled', 'No', 'No — nobody is waiting for a response anymore.'],
+                        ],
+                    },
+                    engineeringFacts: [
+                        {
+                            title: 'One shared classifier, not per-provider exception matching',
+                            body: 'Exactly the bug this replaces: type-based handling only ever really worked for whichever provider\'s SDK happened to match.',
+                        },
+                        {
+                            title: 'Five distinct outcomes, not a binary retry/don\'t-retry',
+                            body: 'Each with independently justified retry, circuit-breaker-counting, and fallback behavior.',
+                        },
+                        {
+                            title: 'A shared-cause failure deliberately refuses to fall back',
+                            body: 'Rotating through every provider for a bad API key would waste time and disguise the real problem as a generic outage.',
+                        },
+                        {
+                            title: 'An unrecognized failure still counts against the provider',
+                            body: 'A defensive default that treats "don\'t know" as evidence, not as a free pass.',
+                        },
+                        {
+                            title: 'Cancellation detection uses the original, ambient token',
+                            body: 'Not a derived one a resilience layer created — so a caller\'s real withdrawal is never confused with an unrelated cancellation-shaped failure.',
+                        },
+                    ],
+                    whyItMatters:
+                        'A fallback system that just retries everything the same way, or rotates providers no matter what actually went wrong, either wastes time on failures that were never going to succeed or hides real, actionable problems behind a vague "service unavailable." Classifying failures by what can actually be done about them — not by which exception type a particular SDK happened to throw — is what makes multi-provider resilience genuinely useful instead of a false sense of it.',
+                },
             },
             {
                 id: 'semantic-cache',
