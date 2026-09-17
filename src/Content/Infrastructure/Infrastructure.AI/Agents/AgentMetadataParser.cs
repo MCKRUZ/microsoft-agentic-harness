@@ -118,9 +118,12 @@ public sealed class AgentMetadataParser
     /// </summary>
     private static MagenticAgentOptions? ParseMagenticOptions(string? frontmatter)
     {
-        var maxRounds = ParseInt(frontmatter, "max-rounds");
-        var maxStalls = ParseInt(frontmatter, "max-stalls");
-        var maxResets = ParseInt(frontmatter, "max-resets");
+        // minValue: 1 — a round/stall/reset ceiling of zero or negative is not a smaller ceiling, it's
+        // a nonsensical one that would otherwise reach MAF's WorkflowBuilder unvalidated and fail deep
+        // inside its coordination loop instead of degrading to "manifest didn't specify this."
+        var maxRounds = ParseInt(frontmatter, "max-rounds", minValue: 1);
+        var maxStalls = ParseInt(frontmatter, "max-stalls", minValue: 1);
+        var maxResets = ParseInt(frontmatter, "max-resets", minValue: 1);
         var requirePlanSignoff = ParseBool(frontmatter, "require-plan-signoff");
 
         if (maxRounds is null && maxStalls is null && maxResets is null && requirePlanSignoff is null)
@@ -176,14 +179,17 @@ public sealed class AgentMetadataParser
 
     /// <summary>
     /// Parses an integer-valued frontmatter key. Returns <see langword="null"/> when the key is
-    /// absent or its value doesn't parse as an integer — the caller treats either the same way
-    /// (fall back to the framework default), so a malformed value degrades safely rather than
-    /// refusing the manifest.
+    /// absent, its value doesn't parse as an integer, or it parses below <paramref name="minValue"/> —
+    /// the caller treats all three the same way (fall back to the framework default), so a malformed
+    /// or out-of-range value degrades safely rather than refusing the manifest or reaching whatever
+    /// consumes it unvalidated.
     /// </summary>
-    private static int? ParseInt(string? frontmatter, string key)
+    private static int? ParseInt(string? frontmatter, string key, int minValue = int.MinValue)
     {
         var value = ParseString(frontmatter, key);
-        return value is not null && int.TryParse(value, out var parsed) ? parsed : null;
+        return value is not null && int.TryParse(value, out var parsed) && parsed >= minValue
+            ? parsed
+            : null;
     }
 
     /// <summary>

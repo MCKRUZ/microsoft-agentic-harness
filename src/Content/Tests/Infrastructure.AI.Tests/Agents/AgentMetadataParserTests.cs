@@ -383,4 +383,48 @@ public sealed class AgentMetadataParserTests : IDisposable
 
         definition.MagenticOptions.Should().BeNull();
     }
+
+    [Fact]
+    public void ParseFromFile_NegativeOrZeroMagenticTuningValues_AreIgnoredNotPassedThrough()
+    {
+        // A round/stall/reset ceiling of zero or negative is nonsensical and would otherwise reach
+        // MAF's WorkflowBuilder unvalidated, failing deep inside its coordination loop instead of
+        // degrading to "manifest didn't specify this."
+        var dir = WriteAgent("bad-tuning", """
+            ---
+            name: bad-tuning-supervisor
+            orchestration: magentic
+            participants: [researcher]
+            max-rounds: 0
+            max-stalls: -1
+            max-resets: -5
+            ---
+            """);
+
+        var definition = CreateParser().ParseFromFile(Path.Combine(dir, "AGENT.md"), dir);
+
+        // None of the three out-of-range values survive; MagenticOptions is null rather than a record
+        // whose fields silently hold rejected values.
+        definition.MagenticOptions.Should().BeNull();
+    }
+
+    [Fact]
+    public void ParseFromFile_ValidTuningAlongsideOneNegativeValue_KeepsTheValidOnesAndDropsTheInvalidOne()
+    {
+        var dir = WriteAgent("mixed-tuning", """
+            ---
+            name: mixed-tuning-supervisor
+            orchestration: magentic
+            participants: [researcher]
+            max-rounds: 5
+            max-stalls: 0
+            ---
+            """);
+
+        var definition = CreateParser().ParseFromFile(Path.Combine(dir, "AGENT.md"), dir);
+
+        definition.MagenticOptions.Should().NotBeNull();
+        definition.MagenticOptions!.MaxRounds.Should().Be(5);
+        definition.MagenticOptions.MaxStalls.Should().Be(3); // MagenticAgentOptions' own default, not 0
+    }
 }

@@ -295,6 +295,71 @@ public sealed class MagenticAgentTurnRunnerTests
     }
 
     [Fact]
+    public async Task RunTurnAsync_EmptyFinalOutputWithToolActivity_SynthesizesPlaceholderResponse()
+    {
+        // RunConversationCommandHandler's durable-transcript gate drops a turn whose Response is empty
+        // AND ToolCalls is empty — this runner's ToolCalls is always empty (known v1 limitation), so an
+        // empty Response here would silently vanish from history despite the workflow having genuinely
+        // used tools. A non-empty placeholder keeps the turn storable.
+        var supervisor = Supervisor("researcher");
+        _agentRegistry.Setup(r => r.TryGet("researcher")).Returns(Participant("researcher"));
+
+        _usageCapture
+            .Setup(c => c.TakeSnapshot())
+            .Returns(new LlmUsageSnapshot(10, 20, 0, 0, "gpt-4o", 0.01m, 0m, ["search", "calculator"]));
+
+        _orchestrator
+            .Setup(o => o.RunAsync(It.IsAny<MagenticWorkflowRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result<MagenticWorkflowResult>.Success(new MagenticWorkflowResult
+            {
+                WorkflowId = Guid.NewGuid(),
+                WorkflowName = "supervisor-agent",
+                RoundsExecuted = 3,
+                ResetsExecuted = 1,
+                PlanReviewsExecuted = 0,
+                CompletionReason = "round_limit",
+                FinalOutput = null,
+            }));
+
+        var result = await CreateRunner().RunTurnAsync(
+            supervisor, "hello", [], MagenticTurnOverrides.None, CancellationToken.None);
+
+        result.Success.Should().BeTrue();
+        result.Response.Should().NotBeNullOrWhiteSpace();
+        result.Response.Should().Contain("search").And.Contain("calculator");
+    }
+
+    [Fact]
+    public async Task RunTurnAsync_EmptyFinalOutputWithNoToolActivity_LeavesResponseEmpty()
+    {
+        var supervisor = Supervisor("researcher");
+        _agentRegistry.Setup(r => r.TryGet("researcher")).Returns(Participant("researcher"));
+
+        _usageCapture
+            .Setup(c => c.TakeSnapshot())
+            .Returns(new LlmUsageSnapshot(10, 20, 0, 0, "gpt-4o", 0.01m, 0m, []));
+
+        _orchestrator
+            .Setup(o => o.RunAsync(It.IsAny<MagenticWorkflowRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result<MagenticWorkflowResult>.Success(new MagenticWorkflowResult
+            {
+                WorkflowId = Guid.NewGuid(),
+                WorkflowName = "supervisor-agent",
+                RoundsExecuted = 3,
+                ResetsExecuted = 1,
+                PlanReviewsExecuted = 0,
+                CompletionReason = "round_limit",
+                FinalOutput = null,
+            }));
+
+        var result = await CreateRunner().RunTurnAsync(
+            supervisor, "hello", [], MagenticTurnOverrides.None, CancellationToken.None);
+
+        result.Success.Should().BeTrue();
+        result.Response.Should().BeEmpty();
+    }
+
+    [Fact]
     public async Task RunTurnAsync_AdmissionPipelineResetThrows_NeverArmsTheAmbientUsageCapture()
     {
         // Regression guard for the ordering fix: Reset() must run BEFORE LlmUsageCapture.Current is

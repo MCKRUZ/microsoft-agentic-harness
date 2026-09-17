@@ -17,10 +17,13 @@ namespace Application.Core.CQRS.Agents.ExecuteAgentTurn;
 public partial class ExecuteAgentTurnCommandHandler
 {
 	/// <summary>
-	/// Runs a supervisor agent's turn via <see cref="IMagenticAgentTurnRunner"/> and threads the
-	/// result through the same observability recording, tool-execution metrics, and context
-	/// snapshot code a single-agent turn already gets — reusing <see cref="BuildTurnLoadedItems"/>
-	/// rather than duplicating it, so the two paths cannot silently diverge on what a "turn" records.
+	/// Runs a supervisor agent's turn via <see cref="IMagenticAgentTurnRunner"/> and records it the
+	/// same way a single-agent turn is recorded — message rows, tool-execution metrics, and a context
+	/// snapshot. <see cref="BuildTurnLoadedItems"/> itself is genuinely shared, not duplicated; the
+	/// surrounding message/metric-recording calls in this method are a deliberately small, separately
+	/// maintained copy of the equivalent calls in <see cref="Handle"/> — see the "known v1 limitations"
+	/// on <see cref="Application.Core.Orchestration.Magentic.IMagenticAgentTurnRunner"/> for where that
+	/// copy has already diverged (cache-hit percentage, last-call prompt tokens).
 	/// </summary>
 	/// <remarks>
 	/// Deliberately does not build <c>ToolCallRecord</c> replay entries — see the "known v1

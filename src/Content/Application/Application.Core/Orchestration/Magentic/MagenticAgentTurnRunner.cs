@@ -91,8 +91,12 @@ public sealed class MagenticAgentTurnRunner : IMagenticAgentTurnRunner
 		// Overrides apply to the manager only — the agent the caller actually addressed — the same way
 		// a single-agent turn's SystemPromptOverride/DeploymentOverride/Temperature apply only to the
 		// one agent named on the request, never to whatever it delegates to internally.
-		var manager = await BuildAgentAsync(supervisor, cancellationToken, overrides);
-		var participants = new List<AIAgent>(supervisor.Participants.Count);
+		//
+		// Manager and every resolvable participant are built concurrently: each build is a genuine
+		// async round-trip (skill resolution, prerequisite checks, chat-client construction) with no
+		// data dependency on any other, so building them one at a time would pay N+1 sequential
+		// round-trips for no reason.
+		var resolvedParticipantDefs = new List<AgentDefinition>(supervisor.Participants.Count);
 		foreach (var participantId in supervisor.Participants)
 		{
 			var participantDef = _agentRegistry.TryGet(participantId);
@@ -104,8 +108,17 @@ public sealed class MagenticAgentTurnRunner : IMagenticAgentTurnRunner
 				continue;
 			}
 
-			participants.Add(await BuildAgentAsync(participantDef, cancellationToken));
+			resolvedParticipantDefs.Add(participantDef);
 		}
+
+		var managerTask = BuildAgentAsync(supervisor, cancellationToken, overrides);
+		var participantTasks = resolvedParticipantDefs
+			.Select(def => BuildAgentAsync(def, cancellationToken))
+			.ToArray();
+		await Task.WhenAll([managerTask, .. participantTasks]);
+
+		var manager = managerTask.Result;
+		var participants = participantTasks.Select(t => t.Result).ToList();
 
 		if (participants.Count == 0)
 		{
@@ -191,7 +204,21 @@ public sealed class MagenticAgentTurnRunner : IMagenticAgentTurnRunner
 		}
 
 		var workflow = result.Value!;
-		var responseText = workflow.FinalOutput ?? string.Empty;
+
+		// A workflow that ends without synthesized text (e.g. it hit max-rounds/max-stalls before the
+		// manager produced final output) but genuinely invoked tools is a complete, storable exchange,
+		// not a blank one — RunConversationCommandHandler's durable-transcript gate drops a turn with
+		// both empty Response and empty ToolCalls, and this runner's ToolCalls is always empty (see the
+		// "known v1 limitation" above), so an empty Response here would silently vanish from the
+		// transcript despite real work having happened. Same placeholder philosophy as
+		// IToolCallReplayTreatment.NoResultPlaceholder: never let "nothing to show" collapse into
+		// "nothing happened."
+		var responseText = !string.IsNullOrWhiteSpace(workflow.FinalOutput)
+			? workflow.FinalOutput!
+			: usage.ToolNames.Count > 0
+				? $"[The workflow used {string.Join(", ", usage.ToolNames)} but did not produce a final response.]"
+				: string.Empty;
+
 		var updatedHistory = new List<ChatMessage>(conversationHistory)
 		{
 			new(ChatRole.User, userMessage),
