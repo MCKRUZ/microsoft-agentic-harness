@@ -1561,6 +1561,68 @@ window.SHOWCASE_CATEGORIES = [
                 eng: 'Discovers tools via tools/list at startup; supports HTTP or stdio transport and Bearer/Entra/ApiKey outbound authentication.',
                 docLink: '../08-mcp.html',
                 techs: ['HTTP Transport', 'stdio Transport'],
+                deepDive: {
+                    scenario: [
+                        {
+                            time: 'A useful external tool',
+                            text: 'Lives on a completely separate MCP server somewhere else. Rather than reimplementing it, the harness connects out and discovers what that server offers, making it available to the agent exactly like something built in.',
+                        },
+                        {
+                            time: 'A riskier kind of server',
+                            text: 'Some external servers aren\'t reached over the network at all — they\'re a local program the harness starts and talks to directly. That runs inside an actual sandbox, with a hard limit on how many can be alive across the whole host at once.',
+                        },
+                        {
+                            time: 'A subtle protocol limit',
+                            text: 'One of those local, subprocess-based servers belongs to a specific automated run of a specific bundle. The underlying protocol itself can\'t safely share that kind of connection between two callers at once — so the harness deliberately keys it to the one run that owns it, so two runs can never accidentally end up sharing a connection that was never meant to be shared.',
+                        },
+                        {
+                            time: 'Every outbound HTTP connection',
+                            text: 'To an external MCP server — whether configured by the host or brought in with a bundle — goes through the exact same defense as any other outbound call this harness makes. There\'s no separate, unguarded path.',
+                        },
+                    ],
+                    flow: [
+                        { title: 'Discover What\'s Out There', tone: 'info', body: 'Connect to an external server and ask it what tools, prompts, and resources it offers.' },
+                        { title: 'Make It Look Like A Built-In Tool', tone: 'jargon', body: 'Once discovered, the agent uses an external tool the same way it uses one written for this harness.' },
+                        { title: 'Sandbox Local Subprocess Connections', tone: 'warn', body: 'A server reached by starting a local program runs inside a real sandbox, bounded by a hard concurrency limit.' },
+                        { title: 'Never Let A Single-Session Protocol Get Shared', tone: 'tip', body: 'A connection type the protocol itself says can\'t be shared is deliberately scoped to the one run that owns it.' },
+                    ],
+                    narrative: [
+                        'This is the outbound half of MCP — connecting to tools hosted anywhere else and making them available to the agent exactly like a built-in tool, over either a normal web connection or by starting a local program directly.',
+                        'What\'s real, and the care taken with the riskier path: a server reached by launching a local subprocess is run inside a <mark class="hl">real sandbox, with a hard cap</mark> on how many can be alive across the whole host at once — not unbounded local process spawning. Because that kind of connection is inherently single-session by the protocol\'s own design, this harness <mark class="hl">deliberately keys each one to the specific run that owns it</mark>, so two concurrent runs can never end up sharing a connection that was never meant to be shared.',
+                        'One more real detail: the defense against a hostile outbound request reaching somewhere it shouldn\'t isn\'t optional here — every single HTTP-based connection this manager builds, host-configured or bundle-owned, is built on <mark class="hl">that same defense as a hard dependency</mark>, not a setting someone could accidentally turn off.',
+                    ],
+                    techTable: {
+                        columns: ['Transport', 'What It Is', 'How It\'s Protected'],
+                        rows: [
+                            ['HTTP / SSE', 'A normal network connection to a remote server.', 'The same SSRF defense every outbound call in this harness uses, as a hard dependency.'],
+                            ['Stdio', 'A local subprocess the harness starts directly.', 'Runs inside a real sandbox, bounded by a hard concurrency limit across the whole host.'],
+                        ],
+                    },
+                    engineeringFacts: [
+                        {
+                            title: 'Local subprocess connections are sandboxed, not just spawned',
+                            body: 'A real sandbox session wraps every stdio-transport connection, not a bare child process.',
+                        },
+                        {
+                            title: 'A hard concurrency cap bounds live sandboxed sessions',
+                            body: 'Across the entire host, not per-server, closing off unbounded local process spawning.',
+                        },
+                        {
+                            title: 'Single-session connections are keyed to the specific run that owns them',
+                            body: 'Because the protocol itself documents this transport as unsuitable for sharing across concurrent callers, this harness enforces that by construction rather than by convention.',
+                        },
+                        {
+                            title: 'The SSRF defense is a hard dependency for every HTTP-based connection',
+                            body: 'Host-configured or bundle-owned — there\'s no path that skips it.',
+                        },
+                        {
+                            title: 'Connections are cached and reused, not rebuilt per call',
+                            body: 'Discovered once, kept alive, and disposed properly when no longer needed.',
+                        },
+                    ],
+                    whyItMatters:
+                        'Consuming tools from anywhere else in the MCP ecosystem is only safe if "anywhere else" doesn\'t mean an unbounded number of local processes, or a connection two different callers can silently corrupt by sharing it. Sandboxing the riskier local-process path, enforcing single-session isolation by construction, and never letting an outbound HTTP call skip the SSRF defense is what makes consuming external tools something this harness can do without becoming the weak point itself.',
+                },
             },
             {
                 id: 'api-hub',
