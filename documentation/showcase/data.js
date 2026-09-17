@@ -436,6 +436,68 @@ window.SHOWCASE_CATEGORIES = [
                 status: 'built',
                 exec: 'Documents are converted into a searchable form based on meaning, not just keywords.',
                 eng: 'Dense (vector) retrieval fused with sparse (BM25) via Reciprocal Rank Fusion; backend is swappable (see Retrieval Backend under RAG Pipeline).',
+                deepDive: {
+                    scenario: [
+                        {
+                            time: 'Query',
+                            text: 'Someone asks the assistant, "how much time off do I get?" The company\'s actual policy document never uses the words "time off" — it says "PTO accrual."',
+                        },
+                        {
+                            time: '+0s',
+                            text: 'Two searches run against the same documents at the same time: one looks for passages that mean the same thing, the other looks for passages that use the same words.',
+                        },
+                        {
+                            time: '+0s',
+                            text: 'The meaning-based search finds the PTO policy even though no words match. A separate search, a moment later, is asked something with an exact acronym in it — and the keyword side catches that one instead, because meaning-based search alone can blur past precise terms.',
+                        },
+                        {
+                            time: '+0s',
+                            text: 'Both rankings are blended into one list mathematically, rather than picking a winner, so the final answer is grounded in whichever passage actually was the better match — regardless of which of the two searches found it.',
+                        },
+                    ],
+                    flow: [
+                        { title: 'Embed', tone: 'info', body: 'The question is converted into the same kind of "meaning fingerprint" the documents were converted into ahead of time.' },
+                        { title: 'Search Twice, At Once', tone: 'jargon', body: 'A meaning-based search and a traditional keyword search run concurrently against the same documents — neither waits on the other.' },
+                        { title: 'Fuse The Rankings', tone: 'tip', body: 'The two ranked lists are mathematically combined into one, so a passage that scores well on either search counts, not just the ones both agree on.' },
+                        { title: 'Degrade, Don\'t Fail', tone: 'warn', body: 'If one of the two searches errors out, the answer still comes back using whichever search still worked — the whole request doesn\'t fail because of one broken piece.' },
+                    ],
+                    narrative: [
+                        'A vector store\'s job is to let search work on <mark class="hl">meaning instead of exact wording</mark> — a question about "time off" should find a document that only ever says "PTO," the way a person would, instead of missing it because the words don\'t literally match.',
+                        'What\'s real: every search actually runs <mark class="hl">two retrieval methods at once</mark> — a meaning-based one and a traditional keyword one — and <mark class="hl">mathematically blends their two rankings into one</mark> rather than trusting either alone. That matters because meaning-based search can blur past an exact acronym or ID number a keyword search would catch instantly, and a pure keyword search misses paraphrasing entirely. If either side fails, the system quietly <mark class="hl">falls back to whichever one still works</mark> instead of failing the whole request. The storage layer underneath is also <mark class="hl">swappable behind one setting</mark> — a fully local, self-hosted stack or a managed cloud search service, without touching any calling code.',
+                        'This one is marked <mark class="hl">"Built," not "Partial"</mark> — unlike memory, there\'s no undifferentiated bucket or disconnected setting here. The blending math, the concurrent execution, and the graceful fallback are all real, all wired up, and all running on every retrieval call.',
+                    ],
+                    techTable: {
+                        columns: ['Provider', 'Meaning-Based Search', 'Keyword Search', 'Where It Runs'],
+                        rows: [
+                            ['Azure AI Search', 'Native managed vector index', 'Native managed keyword ranking', 'Microsoft-hosted cloud service'],
+                            ['FAISS + SQLite (default)', 'In-process vector index', 'SQLite full-text index', 'Local — no external service required'],
+                        ],
+                    },
+                    engineeringFacts: [
+                        {
+                            title: 'Both searches run concurrently',
+                            body: 'The meaning-based and keyword searches fire at the same time and are awaited together, so blending them costs no extra latency over running just one.',
+                        },
+                        {
+                            title: 'The blending formula is explicit',
+                            body: 'Reciprocal Rank Fusion scores each result as <code>1/(k + rank)</code> summed across both searches (default <code>k = 60</code>) — a well-known, tunable formula, not an ad hoc heuristic.',
+                        },
+                        {
+                            title: 'Each side can fail without sinking the request',
+                            body: 'If the meaning-based search throws, the system logs a warning and serves keyword-only results, and vice versa — a broken dependency degrades quality, it doesn\'t return an error page.',
+                        },
+                        {
+                            title: 'Over-fetches before fusing',
+                            body: 'Each search is asked for 3x the number of results actually needed, so there\'s enough overlap between the two rankings for the fusion math to be meaningful.',
+                        },
+                        {
+                            title: 'One config value swaps the whole backend',
+                            body: 'Switching from the local stack to Azure AI Search — or back — is a single provider setting; the retrieval code that calls it never changes.',
+                        },
+                    ],
+                    whyItMatters:
+                        'Grounding an answer in real documents only works if the right passage gets found in the first place. A system that only understands meaning misses exact terms; one that only matches keywords misses paraphrasing. Blending both, with one covering for the other when something breaks, is the difference between retrieval that works in a demo and retrieval that holds up when someone asks a question the way people actually talk.',
+                },
             },
             {
                 id: 'knowledge-graph',
