@@ -2832,6 +2832,69 @@ window.SHOWCASE_CATEGORIES = [
                 status: 'built',
                 exec: 'Every tool call, no matter where the tool came from, passes through the same three safety checks before anything actually happens.',
                 eng: 'GovernedAIFunction.InvokeCoreAsync runs IToolInvocationGovernor → IToolClassificationGate → IProgressEvaluator, in order.',
+                deepDive: {
+                    scenario: [
+                        {
+                            time: 'An agent calls a tool',
+                            text: 'Before that call actually runs, three separate, independent checks all have to agree — regardless of whether the tool came from this harness\'s own built-in set, an external MCP server, or a skill\'s own declaration. Every source goes through the exact same gate.',
+                        },
+                        {
+                            time: 'A different kind of question',
+                            text: 'One of the three checks isn\'t asking "is this allowed" at all — it\'s asking "is the agent actually making progress, or just calling the same thing over and over?" That detection needs no model call at all — it\'s a fast, deterministic count of what\'s already happened.',
+                        },
+                        {
+                            time: 'A burst of parallel calls',
+                            text: 'The agent decides to make several tool calls at once in a single turn. If the progress check asked "have I seen this before?" and only recorded the answer afterward, every one of those parallel calls would ask the question before any of them had been recorded — and all of them would be told "you\'re the first," defeating the entire point of the check.',
+                        },
+                        {
+                            time: 'A build-time observation',
+                            text: 'A tool that can read something sensitive and a tool that can send data somewhere external both show up in the same agent\'s available tool set. That combination gets tagged, so anything downstream that cares can see the risk of that specific pairing.',
+                        },
+                    ],
+                    flow: [
+                        { title: 'Same Gate, Every Source', tone: 'info', body: 'A tool call is checked identically whether it came from this harness, an external server, or a skill declaration.' },
+                        { title: 'Ask "Is This Allowed"', tone: 'jargon', body: 'The invocation governor and classification gate both weigh in before anything runs.' },
+                        { title: 'Ask "Is This Actually Progress"', tone: 'tip', body: 'A separate, model-free check watches for the agent calling the same thing repeatedly without moving forward.' },
+                        { title: 'Ask And Record As One Step', tone: 'warn', body: 'Specifically to prevent a burst of parallel calls from all slipping past the progress check at once.' },
+                    ],
+                    narrative: [
+                        '"Runtime guardrails" needs to mean one single chokepoint every tool call passes through, regardless of where the tool itself came from — not three separate systems that happen to exist.',
+                        'What\'s real: this used to be <mark class="hl">five separate execution paths that could each drift out of sync</mark> with the others — a real, documented lesson this harness learned once already. Now there\'s exactly one wrapper every tool call goes through, unconditionally, whatever its source.',
+                        'The genuinely subtle detail: the progress-tracking check deliberately treats "ask if this looks like a repeat" and "record that it happened" as <mark class="hl">one indivisible operation</mark>, not two separate steps — because tool calls in a single turn can run in parallel, and splitting those two steps would let an entire batch of simultaneous, identical calls all ask before any of them are recorded, each one told it\'s the first, and the <mark class="hl">whole batch waved through together</mark>. A dedicated regression test exists specifically to catch anyone reintroducing that exact mistake.',
+                    ],
+                    techTable: {
+                        columns: ['Gate', 'Question It Answers'],
+                        rows: [
+                            ['Invocation governor', 'Is this specific call permitted right now, given identity, risk, and policy?'],
+                            ['Classification gate', 'What kind of action is this, and does that classification change anything?'],
+                            ['Progress evaluator', 'Is the agent still making progress, or just repeating itself?'],
+                        ],
+                    },
+                    engineeringFacts: [
+                        {
+                            title: 'One wrapper, every tool source',
+                            body: 'Keyed-DI, MCP, and skill-provided tools all pass through the identical chokepoint, replacing five separate paths that used to drift apart.',
+                        },
+                        {
+                            title: 'The progress check needs no model call',
+                            body: 'Pure deterministic counting of call signatures — cheap, fast, and fully unit-testable.',
+                        },
+                        {
+                            title: 'Deciding and recording are deliberately fused into one step',
+                            body: 'Splitting them would let a parallel batch of identical calls all be told they\'re the first, defeating the check entirely — a dedicated test guards against anyone splitting them again.',
+                        },
+                        {
+                            title: 'A refused call is never counted toward looping',
+                            body: 'The progress check only ever sees calls that already cleared every earlier gate, so being blocked elsewhere doesn\'t get misread as a repeat.',
+                        },
+                        {
+                            title: 'Tool composition itself gets analyzed at build time',
+                            body: 'A sensitive-source tool and an external-sink tool showing up together in one agent\'s tool set gets flagged as its own kind of risk.',
+                        },
+                    ],
+                    whyItMatters:
+                        'Guardrails that only cover tools built one specific way, or a loop-detector a burst of parallel calls can slip past, are guardrails with a gap built into a system specifically designed to find gaps. One universal chokepoint regardless of tool source, and a progress check built to survive real concurrency rather than just the easy sequential case, is what makes "every tool call is governed" actually true instead of true most of the time.',
+                },
             },
             {
                 id: 'audit-log',
