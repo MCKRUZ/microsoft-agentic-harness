@@ -129,13 +129,13 @@ public sealed class AgentMetadataParser
         if (maxRounds is null && maxStalls is null && maxResets is null && requirePlanSignoff is null)
             return null;
 
-        var options = new MagenticAgentOptions { MaxRounds = maxRounds, MaxResets = maxResets };
-        if (maxStalls is { } stalls)
-            options = options with { MaxStalls = stalls };
-        if (requirePlanSignoff is { } signoff)
-            options = options with { RequirePlanSignoff = signoff };
-
-        return options;
+        return new MagenticAgentOptions
+        {
+            MaxRounds = maxRounds,
+            MaxStalls = maxStalls ?? 3,
+            MaxResets = maxResets,
+            RequirePlanSignoff = requirePlanSignoff ?? false,
+        };
     }
 
     /// <summary>

@@ -12,6 +12,7 @@ using Application.AI.Common.Models.Conversations;
 using Application.AI.Common.OpenTelemetry.Metrics;
 using Application.AI.Common.Services;
 using Application.AI.Common.Services.Governance;
+using Application.Core.Orchestration.Magentic;
 using Domain.AI.Agents;
 using Domain.AI.Context;
 using Domain.AI.Governance;
@@ -54,7 +55,7 @@ public partial class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAge
 	private readonly ILogger<ExecuteAgentTurnCommandHandler> _logger;
 	private readonly ISecretRedactor? _redactor;
 	private readonly IToolCallReplayTreatment _toolCallReplayTreatment;
-	private readonly Application.Core.Orchestration.Magentic.IMagenticAgentTurnRunner _magenticTurnRunner;
+	private readonly IMagenticAgentTurnRunner _magenticTurnRunner;
 
 	public ExecuteAgentTurnCommandHandler(
 		IAgentConversationCache agentCache,
@@ -69,7 +70,7 @@ public partial class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAge
 		TimeProvider timeProvider,
 		ILogger<ExecuteAgentTurnCommandHandler> logger,
 		IToolCallReplayTreatment toolCallReplayTreatment,
-		Application.Core.Orchestration.Magentic.IMagenticAgentTurnRunner magenticTurnRunner,
+		IMagenticAgentTurnRunner magenticTurnRunner,
 		ISecretRedactor? redactor = null)
 	{
 		_agentCache = agentCache;
@@ -107,9 +108,7 @@ public partial class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAge
 			if (agentDef?.OrchestrationMode == Domain.AI.Agents.AgentOrchestrationMode.Magentic)
 				return await HandleMagenticTurnAsync(request, agentDef, cancellationToken);
 
-			IReadOnlyList<string> skillIds = agentDef?.Skills is { Count: > 0 }
-				? agentDef.Skills
-				: [request.AgentName];
+			var skillIds = AgentDefinition.ResolveSkillIds(agentDef, request.AgentName);
 
 			var agent = await _agentCache.GetOrCreateAsync(
 				request.ConversationId,
@@ -131,10 +130,7 @@ public partial class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAge
 				new(ChatRole.User, request.UserMessage)
 			};
 
-			await _observabilityStore.RecordMessageAsync(
-				request.ObservabilitySessionId, request.TurnNumber, "user", "user_message",
-				request.UserMessage.Truncate(500), null, 0, 0, 0, 0, 0m, 0m, null,
-				request.UserMessage, cancellationToken);
+			await RecordUserMessageAsync(request, cancellationToken);
 
 			// Clear stale usage data before the agent turn
 			_usageCapture.TakeSnapshot();
@@ -263,18 +259,8 @@ public partial class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAge
 			}
 			else
 			{
-				foreach (var toolName in toolsInvoked)
-				{
-					ToolExecutionMetrics.Invocations.Add(1, new TagList
-					{
-						{ ToolConventions.Name, toolName },
-						{ ToolConventions.Status, ToolConventions.StatusValues.Success }
-					});
-
-					await _observabilityStore.RecordToolExecutionAsync(
-						request.ObservabilitySessionId, assistantMessageId, toolName, "keyed_di",
-						0, "success", cancellationToken: cancellationToken);
-				}
+				await RecordSimpleToolInvocationsAsync(
+					request.ObservabilitySessionId, assistantMessageId, toolsInvoked, "keyed_di", cancellationToken);
 			}
 
 			// Build updated history (add user message + assistant response)
@@ -283,59 +269,17 @@ public partial class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAge
 				new(ChatRole.Assistant, responseText)
 			};
 
-			// Foresight: compute, persist, and notify the per-turn context snapshot.
-			// Persistence + broadcast run concurrently because the broadcast does not
-			// depend on the persist result — live observers shouldn't wait on the
-			// DB round-trip, and a persist failure shouldn't suppress the broadcast.
-			// The wrapping try/catch is belt-and-braces so a bug in any of the three
-			// (compute, persist, notify) can never fail the turn.
-			try
-			{
-				var (turnLoaded, turnLoadedBodies, registrations) = BuildTurnLoadedItems(
-					request.ConversationId,
-					agentDef,
-					request.UserMessage,
-					responseText,
-					toolsInvoked);
-				var snapshot = _snapshotComputer.Compute(
-					conversationId: request.ConversationId,
-					turnIndex: request.TurnNumber,
-					turnId: $"t-{request.TurnNumber:D2}",
-					// #517: pre-response history — the state the last call's prompt actually saw.
-					// updatedHistory (below) additionally carries this turn's own assistant reply,
-					// which is output, never billed as input, and would misalign Messages against
-					// usage.LastCallPromptTokens by exactly one message.
-					history: messages,
-					registrations: registrations,
-					turnLoaded: turnLoaded,
-					capturedAtUtc: _timeProvider.GetUtcNow(),
-					lastCallPromptTokens: usage.LastCallPromptTokens);
+			// #517: pre-response history — the state the last call's prompt actually saw. updatedHistory
+			// additionally carries this turn's own assistant reply, which is output, never billed as
+			// input, and would misalign Messages against usage.LastCallPromptTokens by exactly one
+			// message.
+			await RecordContextSnapshotAsync(
+				request.ConversationId, request.TurnNumber, agentDef, request.UserMessage, responseText,
+				toolsInvoked, promptHistory: messages, usage.LastCallPromptTokens, request.AgentName,
+				cancellationToken);
 
-				// RecordLoadedBodiesAsync writes to the context_snapshot_loaded_bodies
-				// sidecar table — keeps the snapshot row + SignalR wire small (just
-				// labels + token counts) while still making the full prompt / skill /
-				// tool-schema text available to the drawer via the lazy
-				// GET /sessions/:id/turns/:turn/loaded/:idx/body endpoint.
-				await Task.WhenAll(
-					_observabilityStore.RecordContextSnapshotAsync(snapshot, cancellationToken),
-					_observabilityStore.RecordLoadedBodiesAsync(
-						request.ConversationId, request.TurnNumber, turnLoadedBodies, cancellationToken),
-					_snapshotNotifier.NotifyAsync(snapshot, cancellationToken))
-					.ConfigureAwait(false);
-			}
-			catch (Exception snapshotEx)
-			{
-				_logger.LogWarning(snapshotEx,
-					"Context snapshot for agent {AgentName} turn {TurnNumber} skipped — handler continues",
-					request.AgentName, request.TurnNumber);
-			}
-
-			var agentTag = new TagList { { AgentConventions.Name, request.AgentName } };
-			OrchestrationMetrics.TurnDuration.Record(turnSw.Elapsed.TotalMilliseconds, agentTag);
-			OrchestrationMetrics.TurnsTotal.Add(1, agentTag);
-
-			_logger.LogInformation("Agent {AgentName} turn {TurnNumber} completed — {InputTokens} in, {OutputTokens} out, ${Cost:F4}",
-				request.AgentName, request.TurnNumber, usage.InputTokens, usage.OutputTokens, usage.CostUsd);
+			RecordTurnCompletionMetrics(
+				request.AgentName, request.TurnNumber, turnSw.Elapsed, usage.InputTokens, usage.OutputTokens, usage.CostUsd);
 
 			return new AgentTurnResult
 			{
@@ -641,6 +585,134 @@ public partial class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAge
 		var errorTag = new TagList { { AgentConventions.Name, agentName } };
 		OrchestrationMetrics.TurnsTotal.Add(1, errorTag);
 		OrchestrationMetrics.TurnErrors.Add(1, errorTag);
+	}
+
+	/// <summary>
+	/// Records the turn's opening user message. Shared by the single-agent path and
+	/// <see cref="HandleMagenticTurnAsync"/> — identical for both, since the message a caller sent is
+	/// the message a caller sent regardless of which orchestration handles it.
+	/// </summary>
+	private Task RecordUserMessageAsync(ExecuteAgentTurnCommand request, CancellationToken cancellationToken) =>
+		_observabilityStore.RecordMessageAsync(
+			request.ObservabilitySessionId, request.TurnNumber, "user", "user_message",
+			request.UserMessage.Truncate(500), null, 0, 0, 0, 0, 0m, 0m, null,
+			request.UserMessage, cancellationToken);
+
+	/// <summary>
+	/// Records tool-execution metrics and observability rows for a turn's invoked tools when only
+	/// names are available (no per-call args/result detail) — the single-agent path's fallback branch
+	/// when <c>usage.ToolInvocations</c> is empty, and the Magentic path's only shape (it has no
+	/// per-invocation detail; see <c>MagenticAgentTurnRunner</c>'s "known v1 limitation" remarks).
+	/// </summary>
+	/// <param name="sourceLabel">
+	/// Distinguishes which execution path produced these tool calls in the persisted record —
+	/// <c>"keyed_di"</c> for the single-agent path, <c>"magentic_participant"</c> for a Magentic turn.
+	/// </param>
+	/// <remarks>
+	/// Writes run concurrently, not sequentially — each is an independent row for a different tool
+	/// name with no ordering dependency between them.
+	/// </remarks>
+	private async Task RecordSimpleToolInvocationsAsync(
+		Guid observabilitySessionId,
+		Guid assistantMessageId,
+		IReadOnlyList<string> toolNames,
+		string sourceLabel,
+		CancellationToken cancellationToken)
+	{
+		if (toolNames.Count == 0)
+			return;
+
+		foreach (var toolName in toolNames)
+		{
+			ToolExecutionMetrics.Invocations.Add(1, new TagList
+			{
+				{ ToolConventions.Name, toolName },
+				{ ToolConventions.Status, ToolConventions.StatusValues.Success }
+			});
+		}
+
+		await Task.WhenAll(toolNames.Select(toolName => _observabilityStore.RecordToolExecutionAsync(
+			observabilitySessionId, assistantMessageId, toolName, sourceLabel,
+			0, "success", cancellationToken: cancellationToken)));
+	}
+
+	/// <summary>
+	/// Computes, persists, and broadcasts the per-turn context snapshot — shared by the single-agent
+	/// path and <see cref="HandleMagenticTurnAsync"/>. <see cref="BuildTurnLoadedItems"/> itself was
+	/// already shared before this extraction; this wraps the surrounding compute/persist/notify
+	/// orchestration and its belt-and-braces try/catch so a snapshot bug can never fail a turn whose
+	/// answer is already produced, for both paths identically.
+	/// </summary>
+	/// <param name="promptHistory">
+	/// The history the model's prompt actually saw — for the single-agent path, prior turns plus this
+	/// turn's user message but NOT its own assistant reply (#517: the reply is output, never billed as
+	/// input). Callers build this list themselves rather than this method deriving it, since the two
+	/// paths construct their pre-response message list differently.
+	/// </param>
+	/// <param name="lastCallPromptTokens">
+	/// The turn's last model call's own prompt size, when known — null when unavailable (the Magentic
+	/// path does not currently source this; see <c>MagenticAgentTurnRunner</c>'s remarks).
+	/// </param>
+	/// <param name="agentNameForLogging">Used only in the catch block's warning log.</param>
+	private async Task RecordContextSnapshotAsync(
+		string conversationId,
+		int turnNumber,
+		AgentDefinition? agentDef,
+		string userMessage,
+		string responseText,
+		IReadOnlyList<string> toolsInvoked,
+		IReadOnlyList<ChatMessage> promptHistory,
+		int? lastCallPromptTokens,
+		string agentNameForLogging,
+		CancellationToken cancellationToken)
+	{
+		try
+		{
+			var (turnLoaded, turnLoadedBodies, registrations) = BuildTurnLoadedItems(
+				conversationId, agentDef, userMessage, responseText, toolsInvoked);
+			var snapshot = _snapshotComputer.Compute(
+				conversationId: conversationId,
+				turnIndex: turnNumber,
+				turnId: $"t-{turnNumber:D2}",
+				history: promptHistory,
+				registrations: registrations,
+				turnLoaded: turnLoaded,
+				capturedAtUtc: _timeProvider.GetUtcNow(),
+				lastCallPromptTokens: lastCallPromptTokens);
+
+			// RecordLoadedBodiesAsync writes to the context_snapshot_loaded_bodies
+			// sidecar table — keeps the snapshot row + SignalR wire small (just
+			// labels + token counts) while still making the full prompt / skill /
+			// tool-schema text available to the drawer via the lazy
+			// GET /sessions/:id/turns/:turn/loaded/:idx/body endpoint.
+			await Task.WhenAll(
+				_observabilityStore.RecordContextSnapshotAsync(snapshot, cancellationToken),
+				_observabilityStore.RecordLoadedBodiesAsync(
+					conversationId, turnNumber, turnLoadedBodies, cancellationToken),
+				_snapshotNotifier.NotifyAsync(snapshot, cancellationToken))
+				.ConfigureAwait(false);
+		}
+		catch (Exception snapshotEx)
+		{
+			_logger.LogWarning(snapshotEx,
+				"Context snapshot for agent {AgentName} turn {TurnNumber} skipped — handler continues",
+				agentNameForLogging, turnNumber);
+		}
+	}
+
+	/// <summary>
+	/// Records the turn-duration metric, the completed-turns counter, and the completion log line —
+	/// shared by the single-agent path and <see cref="HandleMagenticTurnAsync"/>.
+	/// </summary>
+	private void RecordTurnCompletionMetrics(
+		string agentName, int turnNumber, TimeSpan elapsed, int inputTokens, int outputTokens, decimal costUsd)
+	{
+		var agentTag = new TagList { { AgentConventions.Name, agentName } };
+		OrchestrationMetrics.TurnDuration.Record(elapsed.TotalMilliseconds, agentTag);
+		OrchestrationMetrics.TurnsTotal.Add(1, agentTag);
+
+		_logger.LogInformation("Agent {AgentName} turn {TurnNumber} completed — {InputTokens} in, {OutputTokens} out, ${Cost:F4}",
+			agentName, turnNumber, inputTokens, outputTokens, costUsd);
 	}
 
 	/// <summary>

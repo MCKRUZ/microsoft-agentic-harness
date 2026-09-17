@@ -134,4 +134,22 @@ public sealed record AgentDefinition
 
     /// <summary>Timestamp when this definition was loaded from disk.</summary>
     public DateTime LoadedAt { get; init; } = DateTime.UtcNow;
+
+    /// <summary>
+    /// Resolves the skill ids an agent's turn should be built from: its own declared
+    /// <see cref="Skills"/> when non-empty, otherwise <paramref name="fallbackId"/> treated as a bare
+    /// skill id — the same rule every construction path in this codebase applies, whether the agent
+    /// is being built for a normal single-agent turn or as a Magentic supervisor/participant.
+    /// </summary>
+    /// <param name="agentDef">
+    /// The agent's definition, or <see langword="null"/> when the registry has no manifest for this
+    /// id (a bare skill id passed directly by a test or tool) — treated identically to an agent with
+    /// no declared skills.
+    /// </param>
+    /// <param name="fallbackId">
+    /// The id to fall back to when <paramref name="agentDef"/> is null or declares no skills —
+    /// typically the requested agent name itself.
+    /// </param>
+    public static IReadOnlyList<string> ResolveSkillIds(AgentDefinition? agentDef, string fallbackId) =>
+        agentDef?.Skills is { Count: > 0 } ? agentDef.Skills : [fallbackId];
 }

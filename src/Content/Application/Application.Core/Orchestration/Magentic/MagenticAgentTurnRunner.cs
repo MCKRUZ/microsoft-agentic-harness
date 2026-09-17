@@ -253,7 +253,7 @@ public sealed class MagenticAgentTurnRunner : IMagenticAgentTurnRunner
 	private Task<AIAgent> BuildAgentAsync(
 		AgentDefinition agentDef, CancellationToken cancellationToken, MagenticTurnOverrides? overrides = null)
 	{
-		IReadOnlyList<string> skillIds = agentDef.Skills is { Count: > 0 } ? agentDef.Skills : [agentDef.Id];
+		var skillIds = AgentDefinition.ResolveSkillIds(agentDef, agentDef.Id);
 
 		return _agentFactory.CreateAgentFromSkillsAsync(
 			skillIds,
