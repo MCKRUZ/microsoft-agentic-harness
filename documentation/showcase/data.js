@@ -460,6 +460,70 @@ window.SHOWCASE_CATEGORIES = [
                 status: 'partial',
                 exec: 'Policy decisions are real and enforced, but there’s no single named "policy engine" — the logic lives inside the governance layer described under Governance & Control.',
                 eng: 'ToolInvocationGovernor and the surrounding governance chain make the actual policy decisions at tool-call time.',
+                deepDive: {
+                    scenario: [
+                        {
+                            time: 'An agent wants to call a tool',
+                            text: 'Several independent checks all have a say: what this agent is generally permitted to do, whether its current risk tier tightens that, whether the sandbox it\'s running in structurally supports this at all, and a separate written policy layer.',
+                        },
+                        {
+                            time: 'One check would deny it outright',
+                            text: 'That check runs first, before any human is ever paged — nobody gets interrupted for a decision the automatic checks were always going to reach on their own.',
+                        },
+                        {
+                            time: 'Two checks, two different reasons',
+                            text: 'Two completely different gates, for two completely different reasons, both want a human to weigh in on the same call. Instead of asking twice — or asking once and hiding the second reason — one question is asked that names everything actually being decided.',
+                        },
+                        {
+                            time: 'The human says yes',
+                            text: 'That approval settles exactly what was asked. It can\'t be silently read as also clearing some other gate\'s separate concern that happened to be pending at the same time.',
+                        },
+                    ],
+                    flow: [
+                        { title: 'Run Every Automatic Check First', tone: 'info', body: 'Permission, risk tier, sandbox capability, and written policy all get their say before a human is ever involved.' },
+                        { title: 'Only Ask If Something Still Needs A Person', tone: 'jargon', body: 'If every automatic check clears the call, nothing gets escalated at all.' },
+                        { title: 'Ask One Question, Not Several', tone: 'warn', body: 'If more than one gate wants a human for different reasons, those reasons are combined into a single, complete question.' },
+                        { title: 'Approval Answers Exactly What Was Asked', tone: 'tip', body: 'A "yes" can never be read as also clearing a reason the approver was never shown.' },
+                    ],
+                    narrative: [
+                        'This is a real, enforced decision process for whether an agent\'s tool call is allowed to happen — built after discovering that a whole separate set of governance checks, already written for a different call path, simply never ran for the agent\'s own live tool calls.',
+                        'What\'s real: <mark class="hl">four distinct, independently-authored checks</mark> — permission, risk-adjusted permission, sandbox capability, and a written policy layer — all run automatically, in a specific, deliberate order. A human only gets paged once every automatic check has already had its say, and only for the specific thing none of them could resolve on their own.',
+                        'The genuinely hard-won detail: if two different checks want a human for two different reasons, the system doesn\'t ask twice, and it doesn\'t ask once while hiding the second reason — it <mark class="hl">combines them into one question that shows everything actually being decided</mark>. That detail exists because getting it wrong is silent, and this exact codebase got it wrong twice before landing on the current design — once by letting an approval bypass a check it was never meant to touch, once by letting an approval for one reason quietly clear a second reason the approver never saw.',
+                    ],
+                    techTable: {
+                        columns: ['Gate', 'What It Checks'],
+                        rows: [
+                            ['Permission', 'What this specific agent is broadly allowed to do.'],
+                            ['Risk-adjusted permission', 'Whether the agent\'s current risk tier tightens that further — never loosens it.'],
+                            ['Sandbox capability', 'Whether the environment the agent is running in structurally supports this at all.'],
+                            ['Declarative policy', 'A separate, written set of rules that can still object even when everything else allows it.'],
+                        ],
+                    },
+                    engineeringFacts: [
+                        {
+                            title: 'Deterministic checks run before any human is asked',
+                            body: 'Specifically so a human isn\'t paged for a call the automatic checks were always going to deny anyway.',
+                        },
+                        {
+                            title: 'Multiple pending reasons get combined into one question',
+                            body: 'A human is never shown only the first of several reasons a call needs sign-off.',
+                        },
+                        {
+                            title: 'A risk-tier check can only tighten a decision, never loosen one',
+                            body: 'Already-denied access can\'t be granted back by a risk recalculation.',
+                        },
+                        {
+                            title: 'The whole decision reads one config snapshot, not two',
+                            body: 'So a live settings reload can\'t land mid-decision and judge half the call under old rules and half under new ones.',
+                        },
+                        {
+                            title: 'The audit trail can\'t contradict itself',
+                            body: 'A block can never be recorded as "the approver said no" for a call the approver actually approved — nothing can override an approval after the fact.',
+                        },
+                    ],
+                    whyItMatters:
+                        'A policy system that can be silently bypassed by an approval meant for something else, or that pages a human for a decision that was already settled, isn\'t actually a safety control — it\'s a false sense of one. Getting the order right, combining every reason into one honest question, and making the audit trail incapable of contradicting itself is what makes "an agent\'s tool calls are governed" something you can actually rely on instead of something that only looks that way until it\'s tested.',
+                },
             },
         ],
     },
