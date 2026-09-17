@@ -1406,8 +1406,72 @@ window.SHOWCASE_CATEGORIES = [
                 id: 'cost-governance',
                 name: 'Cost Governance',
                 status: 'built',
-                exec: 'Spend is tracked and capped per conversation, not just observed after the fact.',
-                eng: 'The same IConversationBudgetTracker used for context budgeting enforces a token/cost ceiling per conversation.',
+                exec: 'Real dollar spend is tracked continuously across the whole deployment over three rolling time windows, with hysteresis-based alerting — a genuinely different mechanism from Context Budget\'s per-conversation token ceiling, not the same tracker reused.',
+                eng: 'BudgetTrackingService tracks cumulative USD spend against daily/weekly/monthly thresholds with a hysteresis state machine (separate escalate/recover thresholds), publishing live ObservableGauge metrics for Prometheus.',
+                deepDive: {
+                    scenario: [
+                        {
+                            time: 'Every charge',
+                            text: 'Spend across the whole deployment is tracked continuously in real dollars — not tokens, and not just for one conversation, but rolled up across everyone using the system.',
+                        },
+                        {
+                            time: 'Three clocks at once',
+                            text: 'A daily total, a weekly total, and a monthly total each run independently against their own configured budget — so "today alone is unusually expensive" and "we\'re on pace to blow the monthly budget" are caught separately.',
+                        },
+                        {
+                            time: 'Right at the edge',
+                            text: 'Spend crosses a warning threshold and the status flips to Warning. A moment later, a small charge nudges the total back down slightly — but the status doesn\'t immediately flip back to Clear. It stays Warning until spend drops meaningfully below the line, not just barely under it, so the alert doesn\'t flap on and off every time the total wobbles near the threshold.',
+                        },
+                        {
+                            time: 'A new period begins',
+                            text: 'Each window\'s tracked total resets cleanly at its own natural boundary, and its status can genuinely return to Clear.',
+                        },
+                    ],
+                    flow: [
+                        { title: 'Record Spend In Real Dollars', tone: 'info', body: 'Not an estimate, not a token count converted later — an actual per-charge dollar amount.' },
+                        { title: 'Track Three Windows At Once', tone: 'jargon', body: 'Daily, weekly, and monthly totals run independently, each against its own configured limit.' },
+                        { title: 'Escalate At One Threshold, Recover At A Lower One', tone: 'warn', body: 'Going from Clear to Warning and going back from Warning to Clear use two different thresholds, on purpose.' },
+                        { title: 'Roll Over Automatically', tone: 'tip', body: 'Each period\'s total resets cleanly at its own natural boundary.' },
+                    ],
+                    narrative: [
+                        'This is distinct from Context Budget, which caps how many tokens one specific conversation can use. Cost Governance is a completely different concern — real dollar spend across the whole deployment, watched over three separate rolling time windows at once, for the kind of question someone running the deployment actually asks: are we on pace to blow through this month\'s budget, not just this one conversation\'s.',
+                        'What\'s real, and a genuinely clever detail: the alert state doesn\'t just flip on and off at a single number. Crossing <mark class="hl">up</mark> into a warning or critical state happens at one threshold; coming back <mark class="hl">down</mark> to normal requires spend to drop meaningfully below that same threshold, not just barely under it. Without that gap, a total sitting right at the line would flip back and forth on every small charge — and an alert that fires that often gets ignored.',
+                        '<mark class="hl">Three genuinely independent windows</mark>, not one number reused three ways — a deployment can be perfectly fine on its daily total while its monthly total is already flashing critical, and catching that distinction is exactly the point.',
+                    ],
+                    techTable: {
+                        columns: ['Transition', 'Trigger'],
+                        rows: [
+                            ['Clear → Warning', 'Spend crosses the warning threshold.'],
+                            ['Warning → Clear', 'Spend drops meaningfully below the warning threshold — not just under it.'],
+                            ['Warning → Critical', 'Spend crosses the critical threshold.'],
+                            ['Critical → Warning', 'Spend drops below the critical threshold but still above the recovery line.'],
+                        ],
+                    },
+                    engineeringFacts: [
+                        {
+                            title: 'Real dollar tracking, not a token proxy',
+                            body: 'Spend is recorded and compared against budgets in actual USD.',
+                        },
+                        {
+                            title: 'Three independent rolling windows',
+                            body: 'Daily, weekly, and monthly totals are tracked and evaluated separately, each against its own configured limit.',
+                        },
+                        {
+                            title: 'Hysteresis prevents alert flapping',
+                            body: 'The threshold to escalate a status and the threshold to recover from it are deliberately different values, not the same line crossed in both directions.',
+                        },
+                        {
+                            title: 'Each window rolls over on its own boundary',
+                            body: 'A new day, week, or month resets that window\'s total independently of the others.',
+                        },
+                        {
+                            title: 'Exposed as live gauges for monitoring',
+                            body: 'Current spend and status per period are published as metrics a dashboard can scrape continuously, not just logged after the fact.',
+                        },
+                    ],
+                    whyItMatters:
+                        'Knowing you\'re spending too much only after the invoice arrives is too late to do anything about it. Watching real spend continuously across multiple time horizons, with an alerting mechanism specifically designed not to cry wolf every time a total wobbles near a threshold, is what turns "we should probably keep an eye on cost" into something someone can actually act on before the bill is a surprise.',
+                },
             },
         ],
     },
