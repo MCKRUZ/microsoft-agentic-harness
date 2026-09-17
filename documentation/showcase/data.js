@@ -728,6 +728,70 @@ window.SHOWCASE_CATEGORIES = [
                 status: 'built',
                 exec: 'An in-progress multi-step plan can be checkpointed and resumed rather than starting over.',
                 eng: 'EfCorePlanStateStore persists PlanGraph execution state for PlanExecutor’s checkpoint/resume.',
+                deepDive: {
+                    scenario: [
+                        {
+                            time: 'Step 4 of 7',
+                            text: 'A multi-step plan is midway through. Steps 1 through 3 have genuinely finished, step 4 is actively running, and 5 through 7 haven\'t started yet. The process crashes — a deploy, an outage, anything.',
+                        },
+                        {
+                            time: 'On restart',
+                            text: 'The plan doesn\'t start over. Steps 1–3 stay marked done. Step 4 — the one that was actually running when everything stopped — is reset to "ready to try again," since nobody can know if it half-finished. Steps 5–7 are untouched.',
+                        },
+                        {
+                            time: 'Resumed',
+                            text: 'Execution picks back up from step 4 as if the crash were a hiccup, not a disaster. The plan\'s history records exactly when it resumed, for anyone auditing later.',
+                        },
+                        {
+                            time: 'If step 4 then genuinely fails',
+                            text: 'It\'s retried automatically, waiting a little longer between each attempt. Once its retry budget runs out, what happens next is a deliberate policy choice — not a hardcoded crash.',
+                        },
+                    ],
+                    flow: [
+                        { title: 'Checkpoint As You Go', tone: 'info', body: 'Each step\'s state is durably saved as it changes — not just held in the memory of whichever process happens to be running the plan.' },
+                        { title: 'Crash Doesn\'t Mean Restart', tone: 'jargon', body: 'On resume, finished steps stay finished. Only the step that was actually running when things stopped gets reset to try again.' },
+                        { title: 'Retry With Increasing Patience', tone: 'tip', body: 'A step that fails outright is retried automatically, waiting longer between each attempt, up to a configured limit.' },
+                        { title: 'Choose What "Give Up" Means', tone: 'warn', body: 'Once retries are exhausted, the plan\'s own policy decides: fail just that step, skip it and move on, fail the whole plan, or hand it to a human.' },
+                    ],
+                    narrative: [
+                        'The point of checkpointing a multi-step plan is that <mark class="hl">a crash costs at most the one step that was mid-flight</mark> — not the entire plan, and not silent data loss either.',
+                        'What\'s real: every step\'s state is written durably as the plan runs, not just held in memory. On resume, the system doesn\'t naively replay everything — it specifically <mark class="hl">resets only the step that was still running when the process died</mark>, because that one is genuinely ambiguous, while everything already finished is trusted and skipped. Each resume is <mark class="hl">recorded in the plan\'s own history</mark>, so an interrupted-and-recovered plan is auditable, not indistinguishable from one that ran straight through. And failure handling isn\'t a single behavior: a step gets retried with a growing delay between attempts, and only once that budget runs out does the plan\'s own policy decide whether to <mark class="hl">fail just that step, skip it, fail the whole plan, or escalate to a person</mark>.',
+                        'This is marked <mark class="hl">"Built," not "Partial"</mark> — the checkpointing, the resume-only-what-was-interrupted behavior, and all four failure policies are real and exercised on every plan run, not just the happy path.',
+                    ],
+                    techTable: {
+                        columns: ['When Retries Run Out', 'What Happens'],
+                        rows: [
+                            ['Fail this step', 'Only this step is marked failed; anything that doesn\'t depend on it still runs.'],
+                            ['Skip this step', 'The plan continues as if the step had completed.'],
+                            ['Fail the whole plan', 'Execution stops immediately — used when the failed step is load-bearing for everything after it.'],
+                            ['Escalate', 'Hands off to a human for manual intervention instead of failing automatically.'],
+                        ],
+                    },
+                    engineeringFacts: [
+                        {
+                            title: 'Only the interrupted step is reset on resume',
+                            body: 'Genuinely completed steps are never re-run after a crash — only a step caught mid-execution is put back to "ready," because its true outcome is unknown.',
+                        },
+                        {
+                            title: 'Resume is a distinct, logged event',
+                            body: 'Resuming a plan writes its own entry to the plan\'s execution history, separate from loading its current state for a status check.',
+                        },
+                        {
+                            title: 'Three backoff shapes for retries',
+                            body: 'A failing step can be retried with a fixed delay, a linearly growing one, or an exponentially growing one — a configurable choice per plan, not a single fixed policy.',
+                        },
+                        {
+                            title: 'Retries counted as attempts, not extra tries',
+                            body: 'A "3 retries" policy runs a step at most 4 times total (the original attempt plus 3 retries) — an easy off-by-one that\'s handled deliberately.',
+                        },
+                        {
+                            title: 'Resuming is ownership-checked before anything is touched',
+                            body: 'A plan can only be resumed by the caller who owns it — checked before the resume writes anything, not after.',
+                        },
+                    ],
+                    whyItMatters:
+                        'Long-running, multi-step work is exactly where a naive "just retry the whole thing" approach falls apart — steps that call real external systems (sending something, charging something, provisioning something) can\'t simply be re-run for free. Being precise about exactly what needs to resume, and giving the plan an explicit say in what "this step keeps failing" should mean, is what makes it safe to let an agent run something that takes minutes or hours instead of seconds.',
+                },
             },
             {
                 id: 'agent-registry',
