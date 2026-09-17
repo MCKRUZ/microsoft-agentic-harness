@@ -952,6 +952,70 @@ window.SHOWCASE_CATEGORIES = [
                 eng: 'Nested OpenTelemetry spans (command → turn → tool → LLM call) with GenAI semantic-convention attributes.',
                 docLink: '../10-observability.html',
                 techs: ['Jaeger', 'Prometheus', 'Azure Monitor'],
+                deepDive: {
+                    scenario: [
+                        {
+                            time: 'A complaint comes in',
+                            text: 'A user says the agent gave a bad answer somewhere in a long conversation. Nobody knows which step went wrong yet.',
+                        },
+                        {
+                            time: 'Open the trace',
+                            text: 'Instead of guessing from logs, someone opens the exact trace for that turn and sees the real sequence: which command ran, which tool got called, which model provider actually answered — and how long each step took.',
+                        },
+                        {
+                            time: 'A wrinkle',
+                            text: 'One of the underlying AI libraries involved has no concept of "conversation" or "turn" — on its own, its spans would show up as anonymous fragments with no way to tell which conversation they belong to.',
+                        },
+                        {
+                            time: 'Solved quietly',
+                            text: 'A separate mechanism tags every one of those anonymous spans with the right conversation and turn after the fact, so the whole trace still reads as one coherent story instead of disconnected pieces from different libraries.',
+                        },
+                    ],
+                    flow: [
+                        { title: 'Set The Context', tone: 'info', body: 'At the start of a turn, the conversation and turn identity is attached so everything that happens next can be tied back to it.' },
+                        { title: 'Nest The Work', tone: 'jargon', body: 'Each layer opens its own span inside the one before it — command, then turn, then a tool call or a model call.' },
+                        { title: 'Tag What The Libraries Don\'t Know', tone: 'warn', body: 'Third-party AI libraries emit their own spans with no idea what conversation or turn they belong to — those get tagged afterward.' },
+                        { title: 'Ship To A Real Backend', tone: 'tip', body: 'The finished trace goes to standard tracing tools, not a bespoke log format only this codebase can read.' },
+                    ],
+                    narrative: [
+                        'Distributed tracing means being able to <mark class="hl">literally replay, step by step, what happened during one specific turn</mark> — not just "an error occurred somewhere."',
+                        'What\'s real: this uses the actual <mark class="hl">industry-standard vocabulary for describing AI operations</mark> (OpenTelemetry\'s GenAI conventions), not a made-up schema — so it works with tracing tools built for that standard rather than something bespoke. It also solves a genuinely non-obvious problem: several different third-party AI libraries are stitched together here, and <mark class="hl">none of them know what a "conversation" or "turn" is</mark> on their own. A dedicated mechanism tags every one of their spans with that context after the fact, so what would otherwise be disconnected fragments from different libraries reads as one coherent trace.',
+                        'Where it goes a step further: there\'s a harness-specific extension to that standard vocabulary for things the official spec doesn\'t cover yet, and it\'s <mark class="hl">deliberately kept in its own separate namespace</mark> specifically so it won\'t collide with whatever the official spec adds later.',
+                    ],
+                    techTable: {
+                        columns: ['Span Layer', 'What It Represents'],
+                        rows: [
+                            ['Command', 'The top-level request that triggered a turn.'],
+                            ['Turn', 'One exchange within a conversation.'],
+                            ['Tool call', 'A single tool the agent invoked during that turn.'],
+                            ['Model call', 'A single request sent to an LLM provider.'],
+                        ],
+                    },
+                    engineeringFacts: [
+                        {
+                            title: 'Standard vocabulary, not a bespoke schema',
+                            body: 'Traces use OpenTelemetry\'s official GenAI semantic conventions, so they work with tracing tools built for that spec rather than something proprietary.',
+                        },
+                        {
+                            title: 'Harness extensions are namespaced on purpose',
+                            body: 'Anything the official spec doesn\'t cover yet lives under its own prefix specifically so it can\'t collide with a future official addition.',
+                        },
+                        {
+                            title: 'Third-party library spans get tagged after the fact',
+                            body: 'A dedicated processor copies conversation, turn, and agent identity onto spans emitted by AI libraries that have no concept of any of the three themselves.',
+                        },
+                        {
+                            title: 'Tracks intended provider vs. actual provider',
+                            body: 'A span records which model provider a call was originally meant for, separately from which one it actually ran on after a fallback — useful for diagnosing failover behavior after the fact.',
+                        },
+                        {
+                            title: 'Already wired to multiple real backends',
+                            body: 'Traces and metrics already ship to more than one real tool (Jaeger, Prometheus, Azure Monitor) rather than being locked to a single vendor.',
+                        },
+                    ],
+                    whyItMatters:
+                        'An agent that calls tools, hands off between skills, and falls back across model providers is genuinely hard to debug from plain logs — too many moving pieces, too many places something could have gone wrong. Being able to open one trace and see the actual sequence of what happened, not a guess reconstructed after the fact, is the difference between debugging with evidence and debugging by hunch.',
+                },
             },
             {
                 id: 'metrics',
