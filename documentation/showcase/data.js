@@ -971,6 +971,69 @@ window.SHOWCASE_CATEGORIES = [
                 eng: 'SKILL.md files loaded via three-tier progressive disclosure; SkillMetadataParser → SkillDefinition; multi-skill agents merge several via AgentExecutionContextFactory with prerequisite ordering.',
                 docLink: '../05-skills.html',
                 tech: 'SKILL.md · SkillDefinition',
+                deepDive: {
+                    scenario: [
+                        {
+                            time: 'Dozens of skills exist',
+                            text: 'A single conversation turn only needs one or two of them. Loading every skill\'s full instructions for every turn would burn a large chunk of the model\'s attention on things that don\'t apply right now.',
+                        },
+                        {
+                            time: 'Instead',
+                            text: 'Only a lightweight index card — name and description — is kept loaded for every available skill. The full instructions only get pulled in once a skill is actually selected for this turn.',
+                        },
+                        {
+                            time: 'A skill needs more still',
+                            text: 'A script, a template, a reference document. That loads only at the exact moment the skill actually runs and needs it — not a moment before.',
+                        },
+                        {
+                            time: 'A surprising wrinkle',
+                            text: 'Someone hand-writes a skill file with a structured field describing exactly which tools it needs. The open-source framework this harness builds on would have silently dropped that field entirely — no error, no warning — because its own reader can only capture flat text, not a structured list.',
+                        },
+                    ],
+                    flow: [
+                        { title: 'Load The Index Card First', tone: 'info', body: 'Name and description only — cheap enough to keep every skill\'s index loaded at all times.' },
+                        { title: 'Load Full Instructions On Selection', tone: 'jargon', body: 'The complete instruction document only loads once a skill is actually chosen for this turn.' },
+                        { title: 'Load Supporting Files On Execution', tone: 'tip', body: 'Scripts, templates, and references load only at the moment a skill actually runs and needs them.' },
+                        { title: 'Catch What The Framework Would Drop', tone: 'warn', body: 'This harness\'s own parser captures structured fields the underlying framework\'s own reader silently discards.' },
+                    ],
+                    narrative: [
+                        'A skill is a short instruction document telling an agent what role to play and what it\'s allowed to do — loaded in layers, cheapest first, so having many skills available never taxes the model\'s attention budget on the ones not actually being used.',
+                        'What\'s real, and a genuinely surprising detail: the open-source agent framework this harness is built on has its own way of reading a skill file, and it <mark class="hl">silently discards any custom field it doesn\'t already know about</mark>, with no warning at all. It also <mark class="hl">can\'t represent some of what this harness needs to describe</mark> — a structured list of tool declarations, a nested set of network rules — its own fallback only holds flat text. This harness runs its own additional parser specifically to catch and correctly represent everything the framework\'s reader would otherwise quietly lose.',
+                        'A second real distinction worth understanding: a skill written specifically for this harness <mark class="hl">declares its exact tools one by one</mark>; a skill bundled with an external plugin instead <mark class="hl">gets access to everything that plugin\'s own tool server offers, wholesale</mark> — a deliberately different, broader trust model for plugin-sourced skills versus the harness\'s own.',
+                    ],
+                    techTable: {
+                        columns: ['Tier', 'What Loads', 'When'],
+                        rows: [
+                            ['Index card', 'Name and description only.', 'At startup, for every available skill.'],
+                            ['Full instructions', 'The complete instruction document.', 'Once a skill is actually selected.'],
+                            ['Supporting files', 'Scripts, templates, references.', 'Only when the skill actually executes and needs them.'],
+                        ],
+                    },
+                    engineeringFacts: [
+                        {
+                            title: 'The framework\'s own parser silently drops unknown fields',
+                            body: 'No error, no warning — a real, documented gap this harness\'s own parser exists specifically to work around.',
+                        },
+                        {
+                            title: 'The framework can\'t represent structured data at all',
+                            body: 'Its flat-string-only fallback can\'t hold a list of tool declarations or a nested set of network rules, so this harness maintains its own parser to make those fields reach the runtime.',
+                        },
+                        {
+                            title: 'Two distinct trust models for skill-declared tools',
+                            body: 'A harness-native skill declares its tools precisely, one by one; a plugin-sourced skill gets everything its plugin\'s tool server offers, wholesale.',
+                        },
+                        {
+                            title: 'Skill parsing includes a real security scan',
+                            body: 'A dedicated scanner is part of the parsing pipeline itself, not bolted on separately afterward.',
+                        },
+                        {
+                            title: 'Prerequisites are enforced, not just documented',
+                            body: 'A multi-skill agent\'s skills load in an order that respects declared dependencies between them, not whatever order they happen to be listed in.',
+                        },
+                    ],
+                    whyItMatters:
+                        'An agent that can draw on many different skills is only actually cheap and fast if "many skills available" doesn\'t mean paying the token cost of all of them on every single turn. And building on an open-source framework doesn\'t mean trusting it blindly — this harness had to notice, and specifically guard against, an entire class of silent data loss the framework\'s own parser would otherwise cause.',
+                },
             },
             {
                 id: 'context-budget',
