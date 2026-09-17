@@ -322,6 +322,68 @@ window.SHOWCASE_CATEGORIES = [
                 status: 'built',
                 exec: 'The agent itself has a verifiable identity, distinct from the human or system that invoked it — needed the moment one agent calls another.',
                 eng: 'Domain.AI/Identity/AgentIdentity.cs, consumed by the A2A identity propagator on both inbound and outbound calls.',
+                deepDive: {
+                    scenario: [
+                        {
+                            time: 'A tool call that matters',
+                            text: 'An agent calls a tool that could touch a real cloud resource. Before it goes through, the system checks two separate things: who is this ultimately being done for, and which specific agent is actually making the call right now.',
+                        },
+                        {
+                            time: 'One agent calls another',
+                            text: 'The second agent needs its own answer to "who am I" — one that\'s completely independent of whatever the first agent\'s own text claims about itself.',
+                        },
+                        {
+                            time: 'A clever attempt',
+                            text: 'Someone crafts a prompt that convinces an agent to claim, in its own output, that it\'s actually a more privileged agent. That claim never gets anywhere near the real permission check — a piece of text inside a conversation can\'t talk its way into a runtime identity.',
+                        },
+                        {
+                            time: 'Bound to something real',
+                            text: 'This same identity can be tied to an actual cloud service principal — meaning the agent itself, not just the human behind it, can be individually granted or denied access to real infrastructure.',
+                        },
+                    ],
+                    flow: [
+                        { title: 'Establish The Agent\'s Own Identity', tone: 'info', body: 'Separate and independent from whatever human or system triggered this chain of work.' },
+                        { title: 'Check It Alongside The Human\'s', tone: 'jargon', body: 'Both the human-caller identity and the agent\'s own runtime identity are checked, and both have to pass.' },
+                        { title: 'Bind It To Something Real', tone: 'tip', body: 'The identity can be tied to an actual cloud service principal, with its own real access grants.' },
+                        { title: 'Validate At The Gate, Not At Creation', tone: 'warn', body: 'An identity record floating around isn\'t trusted just because it exists — it only becomes trustworthy once it\'s passed the real check.' },
+                    ],
+                    narrative: [
+                        'A system prompt telling an agent to "act carefully" is just text — it degrades the moment someone crafts input clever enough to talk around it. This gives an agent a runtime identity built differently: <mark class="hl">not something the agent\'s own output can influence at all</mark>.',
+                        'What\'s real: this identity is checked <mark class="hl">completely independently from, and in addition to, the human-caller identity</mark> — "who is this being done for" and "which specific agent is doing it right now" are two separate questions, and both have to come back yes. It\'s not just an internal label either — it can be bound to a <mark class="hl">real cloud identity with real access-control role assignments</mark>, so the agent itself can be individually granted or denied access the same way a real employee\'s account would be.',
+                        'One honest, deliberate design point: the feature that enforces this is opt-in, and turning it off doesn\'t degrade gracefully — it means <mark class="hl">none of this gets checked at all</mark>. That\'s a real, load-bearing security control, and this codebase specifically has an automated test whose entire job is catching the exact failure mode of a control like this existing and being tested, but quietly never getting wired into anything that actually calls it — a mistake this repo has documented making before.',
+                    ],
+                    techTable: {
+                        columns: ['Question', 'Answered By'],
+                        rows: [
+                            ['Who is this work ultimately for?', 'The human-caller scope.'],
+                            ['Which specific agent is doing the work right now?', 'Agent Identity — checked independently, both required.'],
+                        ],
+                    },
+                    engineeringFacts: [
+                        {
+                            title: 'Two independent checks, both required',
+                            body: 'The human-caller scope and the agent\'s own runtime identity are separate questions with separate answers, and both must pass.',
+                        },
+                        {
+                            title: 'Immune to what the agent says about itself',
+                            body: 'Runtime identity isn\'t derived from anything inside a conversation, so a prompt injection convincing the agent to claim a different identity has nowhere to attach.',
+                        },
+                        {
+                            title: 'Can be bound to a real cloud principal',
+                            body: 'A genuine cloud-registered identity, capable of carrying real access-control role assignments — not just an internal bookkeeping label.',
+                        },
+                        {
+                            title: 'Validated at the gate, not on creation',
+                            body: 'The identity record itself accepts any values when constructed; a dedicated authorization gate enforces the real rules, so anything obtained elsewhere should be treated as unverified until it actually passes that gate.',
+                        },
+                        {
+                            title: 'Opt-in, with a dedicated test to catch it going dark',
+                            body: 'Enforcement only runs when explicitly turned on, and this codebase has automated tests specifically confirming a security control like this one has a real caller — not just passing tests of its own.',
+                        },
+                    ],
+                    whyItMatters:
+                        'The moment one agent can call another, or an agent can touch real infrastructure, "who is actually doing this" stops being a rhetorical question. A runtime identity that a clever prompt can\'t talk its way into, checked independently of and in addition to who the human is, is what keeps "which agent did this" from ever being answerable only by trusting the agent\'s own account of itself.',
+                },
             },
             {
                 id: 'scoped-credentials',
