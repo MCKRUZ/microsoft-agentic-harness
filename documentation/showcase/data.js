@@ -1644,6 +1644,68 @@ window.SHOWCASE_CATEGORIES = [
                 status: 'built',
                 exec: 'When an agent needs to actually run code, it happens in an isolated box that can’t touch anything it wasn’t explicitly allowed to.',
                 eng: 'ProcessSandboxExecutor (Windows Job Objects) and DockerSandboxExecutor, both with HMAC attestation and a closed-by-default capability model.',
+                deepDive: {
+                    scenario: [
+                        {
+                            time: 'Code actually runs',
+                            text: 'An agent needs to run code, not just reason about it. That execution happens as a genuinely separate process, with OS-level resource limits enforced around it — not just trusted to behave.',
+                        },
+                        {
+                            time: 'A smuggled privilege',
+                            text: 'A caller tries to sneak in an environment variable that would grant the sandboxed process an elevated capability it shouldn\'t have. That\'s checked and explicitly rejected before the process is even started.',
+                        },
+                        {
+                            time: 'The execution finishes',
+                            text: 'What actually happened — success or failure, the real output — gets a cryptographically signed record attached to it, using a key that never lives in a plain config file.',
+                        },
+                        {
+                            time: 'Weeks later',
+                            text: 'Someone wants to audit that a specific execution really did produce the result everyone believed it did. Checking the signature alone only proves the record wasn\'t tampered with — a genuinely thorough check goes further and confirms the actual output bytes still match exactly what was signed, catching a case where the record\'s signature checks out fine but the stored output was quietly altered afterward.',
+                        },
+                    ],
+                    flow: [
+                        { title: 'Run It As A Real, Separate Process', tone: 'info', body: 'With OS-level resource limits, not just isolated code inside the same process.' },
+                        { title: 'Reject Smuggled-In Privileges', tone: 'warn', body: 'An attempt to grant the sandbox extra capability through its environment is caught and refused before execution starts.' },
+                        { title: 'Sign What Actually Happened', tone: 'jargon', body: 'A cryptographic attestation records the real outcome, keyed by a secret that never sits in plain configuration.' },
+                        { title: 'Verify The Record AND The Output', tone: 'tip', body: 'A thorough check confirms not just that the attestation wasn\'t forged, but that the output it describes hasn\'t been swapped out since.' },
+                    ],
+                    narrative: [
+                        'An "isolated sandbox" needs to mean a separate process with real OS-level limits around it, not just a promise that the code will behave.',
+                        'What\'s real: the sandbox <mark class="hl">actively rejects an attempt to smuggle in an elevated capability</mark> through the environment variables handed to it, and every execution\'s outcome gets a cryptographically signed attestation — proof of what actually happened, not just a log line someone could edit later. The signing key itself lives in a <mark class="hl">real secret store, never in a plain settings file</mark>.',
+                        'The genuinely thorough detail: verifying an attestation\'s signature alone only proves the <mark class="hl">record</mark> hasn\'t been tampered with — it says nothing about whether the actual output stored elsewhere still matches what was signed. A separate, stronger check recomputes the real output\'s hash and compares it to what was attested, so a <mark class="hl">result quietly swapped out after the fact fails this check</mark> even though its signature alone would still look perfectly valid.',
+                    ],
+                    techTable: {
+                        columns: ['Check', 'What It Proves'],
+                        rows: [
+                            ['Signature verification alone', 'The attestation record itself wasn\'t forged.'],
+                            ['Bound verification (signature + output hash)', 'The signature is valid AND the specific output it describes hasn\'t been altered since.'],
+                        ],
+                    },
+                    engineeringFacts: [
+                        {
+                            title: 'Smuggled environment-variable privileges are explicitly rejected',
+                            body: 'Before a sandboxed process is even started, not caught after the fact.',
+                        },
+                        {
+                            title: 'Attestation signing keys live in a real secret store',
+                            body: 'Development uses User Secrets, production uses Key Vault — never appsettings.json.',
+                        },
+                        {
+                            title: 'Two levels of verification exist for a reason',
+                            body: 'A valid signature alone doesn\'t prove the stored output wasn\'t swapped afterward; a separate bound check does.',
+                        },
+                        {
+                            title: 'Resource limits have an honest platform fallback',
+                            body: 'They use a Windows-specific mechanism; on other platforms execution still works, but those limits are skipped and logged, not silently ignored.',
+                        },
+                        {
+                            title: 'Launch preparation is shared code, not duplicated',
+                            body: 'The process executor and the sandboxed session factory share the exact same launch-preparation logic specifically so their security posture can never quietly drift apart.',
+                        },
+                    ],
+                    whyItMatters:
+                        'Letting an agent actually run code is one of the highest-stakes capabilities a harness can offer. The difference between a sandbox that\'s real and one that\'s a name is exactly this level of detail: rejecting privilege escalation attempts before they happen, cryptographically proving what really occurred, and being able to detect if that record was tampered with afterward — not just trusting it.',
+                },
             },
             {
                 id: 'computer-use',
