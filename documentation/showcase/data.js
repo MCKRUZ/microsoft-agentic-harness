@@ -580,6 +580,70 @@ window.SHOWCASE_CATEGORIES = [
                 eng: 'Five-stage pipeline: ingestion, query transformation (RAG Fusion, HyDE), hybrid retrieval, CRAG quality evaluation, token-budgeted assembly with citations.',
                 docLink: '../07-rag.html',
                 techs: ['Dense + BM25 Hybrid (default)', 'Azure AI Search (agentic retrieval)', 'FAISS', 'SQLite FTS5'],
+                deepDive: {
+                    scenario: [
+                        {
+                            time: 'Question asked',
+                            text: 'A user asks something that\'s actually answerable from the company\'s documents. The retrieved passages come back strong, and the answer is assembled and returned with citations — the fast path, and the common case.',
+                        },
+                        {
+                            time: 'A harder question',
+                            text: 'This time, what comes back is borderline — technically related, but not a confident match. Instead of answering from weak material, the system quietly rewrites the question and tries retrieval again.',
+                        },
+                        {
+                            time: 'Still not enough',
+                            text: 'The second attempt still isn\'t good enough, and retries are exhausted. Rather than presenting an answer built on shaky evidence, the system explicitly reports that it couldn\'t find relevant material — instead of guessing anyway.',
+                        },
+                        {
+                            time: 'A different case',
+                            text: 'A question turns out to genuinely be about something outside the ingested documents entirely. Here, the same quality check instead triggers a live web search to fill the gap, if that fallback is turned on.',
+                        },
+                    ],
+                    flow: [
+                        { title: 'Retrieve & Rerank', tone: 'info', body: 'Candidate passages come back from hybrid search, then get reordered by a more careful relevance pass before anything is judged.' },
+                        { title: 'Grade The Evidence', tone: 'jargon', body: 'A dedicated quality check scores how relevant what was retrieved actually is to the question — before any answer gets built from it.' },
+                        { title: 'Accept, Retry, Fall Back, or Refuse', tone: 'warn', body: 'Good evidence gets used. Borderline evidence triggers a rewritten retry (capped, so it can\'t loop forever). Weak evidence either falls back to a web search or is explicitly rejected — never silently guessed past.' },
+                        { title: 'Assemble With Citations', tone: 'tip', body: 'What survives is packed into a token budget and handed back with citations pointing to exactly which passages the answer came from.' },
+                    ],
+                    narrative: [
+                        'The core promise of this kind of system is <mark class="hl">answering from evidence instead of guessing</mark> — find the genuinely relevant material first, then answer only from that, and show your work with citations.',
+                        'What\'s real: retrieval doesn\'t just run once and hope. A dedicated quality check <mark class="hl">grades how relevant the retrieved passages actually are</mark> before anything gets built from them, and that grade drives one of four distinct outcomes — accept the evidence, quietly rewrite the question and try again (capped at a couple of attempts so it can\'t loop forever), fall back to a live web search if that\'s enabled, or <mark class="hl">explicitly refuse to answer rather than guess past weak evidence</mark>. Harder, multi-part questions get their own path — the system can retrieve <mark class="hl">in several rounds instead of one</mark>, gathering more evidence between rounds when a single pass wasn\'t enough.',
+                        'This is marked <mark class="hl">"Built," not "Partial"</mark> — the grading step, the four-way branching, the retry cap, and the citation-backed final answer are all real, all wired together, and all running on every question that reaches this pipeline.',
+                    ],
+                    techTable: {
+                        columns: ['Stage', 'What It Does'],
+                        rows: [
+                            ['Query transformation', 'Rewrites or expands the question before searching — including generating a hypothetical ideal answer and searching for passages that resemble it, which often finds better matches than searching with the raw question.'],
+                            ['Hybrid retrieval', 'Meaning-based and keyword search run together and get blended (see Vector Store).'],
+                            ['Quality evaluation', 'Grades the retrieved evidence and decides: accept, retry with a better question, fall back to the web, or refuse.'],
+                            ['Assembly', 'Packs what survives into a fixed token budget and attaches citations to the specific source passages.'],
+                        ],
+                    },
+                    engineeringFacts: [
+                        {
+                            title: 'Four distinct outcomes, not pass/fail',
+                            body: 'The quality check returns one of Accept, Refine, Reject, or WebFallback — a real decision tree, not a single relevance threshold.',
+                        },
+                        {
+                            title: 'Refinement is capped',
+                            body: 'A borderline result triggers a rewritten retry, but only up to a fixed retry limit — it degrades to "best available" rather than retrying indefinitely.',
+                        },
+                        {
+                            title: 'Rejection is a real, visible outcome',
+                            body: 'When evidence is judged irrelevant, the pipeline returns an explicit "nothing relevant found" result instead of assembling an answer from weak material anyway.',
+                        },
+                        {
+                            title: 'Complex questions get multi-round retrieval',
+                            body: 'Harder queries route to an iterative retriever that can fetch evidence across several rounds instead of a single retrieval pass, checked afterward by a separate faithfulness evaluator.',
+                        },
+                        {
+                            title: 'A missing evaluator fails safe, not open',
+                            body: 'If the quality check itself can\'t run, that\'s treated as "no confident judgment" and handled the same as an exhausted retry — never silently treated as a passing grade.',
+                        },
+                    ],
+                    whyItMatters:
+                        'The difference between a demo and something people can actually rely on is what happens when the first search doesn\'t find a good answer. A system that always just answers with whatever it retrieved will confidently answer questions it has no real basis for. This one grades its own evidence, tries again when it\'s not sure, reaches further when it genuinely needs to, and says so out loud when it can\'t find anything real — which is what makes the citations on a good answer actually mean something.',
+                },
             },
         ],
     },
