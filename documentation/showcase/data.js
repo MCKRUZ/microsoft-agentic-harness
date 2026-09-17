@@ -2902,6 +2902,70 @@ window.SHOWCASE_CATEGORIES = [
                 status: 'built',
                 exec: 'A record of what happened that can’t be quietly edited after the fact.',
                 eng: 'A durable PostgreSQL audit store backed by a hash-chained JSONL log, where each entry’s hash includes the previous entry’s.',
+                deepDive: {
+                    scenario: [
+                        {
+                            time: 'Every decision, logged',
+                            text: 'A tool call allowed or blocked, an escalation raised, a policy check passed or failed — each gets written as its own permanent record. That record\'s own fingerprint is computed from its content and the fingerprint of the record right before it.',
+                        },
+                        {
+                            time: 'An attempted edit',
+                            text: 'Someone with direct file access tries to quietly edit or delete one record from the middle of the log, to make an inconvenient past decision disappear. The moment that\'s done, every record written after it no longer matches its own expected fingerprint — the tampering invalidates the entire remainder of the chain, not just that one spot.',
+                        },
+                        {
+                            time: 'A more determined attempt',
+                            text: 'Someone deletes an entire day\'s worth of log file outright, hoping a missing file looks less suspicious than an edited one. That still breaks the chain exactly the same way — the next real record still points back to a fingerprint that file was supposed to contain, and it\'s gone.',
+                        },
+                        {
+                            time: 'A restart after a crash',
+                            text: 'Instead of blindly trusting whatever the last line in the file happens to be, the writer re-validates the entire chain from the start and only resumes from the last record it can cryptographically prove is legitimate — so a forged line spliced in while the service was down can never become the new trusted starting point.',
+                        },
+                    ],
+                    flow: [
+                        { title: 'Chain Each Record To The One Before It', tone: 'info', body: 'A record\'s own fingerprint depends on its position, its content, and the fingerprint of the record immediately prior.' },
+                        { title: 'Make Deletion As Detectable As Editing', tone: 'jargon', body: 'Removing an entire record, or an entire file segment, breaks the chain exactly the same way editing one would.' },
+                        { title: 'Never Trust An Unverified Tail', tone: 'warn', body: 'After a restart, the writer re-validates the whole chain rather than assuming the last line on disk is legitimate.' },
+                        { title: 'Reject Anything That Could Corrupt The Framing', tone: 'tip', body: 'A record containing a raw character that could be mistaken for a delimiter is refused outright, not silently accepted and risked.' },
+                    ],
+                    narrative: [
+                        'A record that "can\'t be quietly edited" needs more than an append-only file — it needs every subsequent record\'s validity to depend on everything that came before it, so tampering with the past is detectable no matter how it\'s done: editing a line, deleting a line, or deleting a whole file\'s worth of lines at once.',
+                        'What\'s real: the fingerprint for every entry deliberately <mark class="hl">includes its own position in the sequence</mark>, not just the previous entry\'s fingerprint — so a record can\'t be quietly reordered or renumbered without invalidating everything downstream. When the audit log spans multiple files (say, one per day), <mark class="hl">deleting an entire file breaks the chain exactly as cleanly as deleting a single line would</mark> — there\'s no smaller unit of tampering that slips through.',
+                        'The genuinely careful detail: after a crash or restart, this doesn\'t just trust whatever the last line in the file happens to be. It <mark class="hl">re-validates the entire chain and only resumes writing from the last record it can cryptographically prove is legitimate</mark> — so a forged or corrupted line spliced in while nobody was watching can never become the trusted head that future, real entries build on top of.',
+                    ],
+                    techTable: {
+                        columns: ['Tampering Attempt', 'Detected By'],
+                        rows: [
+                            ['Editing one record\'s content', 'Its own fingerprint no longer matches its content.'],
+                            ['Deleting or reordering one record', 'Every record after it stops matching its expected fingerprint.'],
+                            ['Deleting an entire log segment or file', 'The next real record still expects a fingerprint from what\'s now missing.'],
+                            ['Splicing a forged line in while offline', 'Re-validation on restart finds the last genuinely valid record and resumes from there, not from the forgery.'],
+                        ],
+                    },
+                    engineeringFacts: [
+                        {
+                            title: 'Each fingerprint includes its own sequence number',
+                            body: 'Not just the prior fingerprint — closing off reordering as a bypass, not just editing.',
+                        },
+                        {
+                            title: 'Deleting a whole file segment breaks the chain the same way',
+                            body: 'As deleting one line does — there\'s no unit of tampering small enough to avoid detection.',
+                        },
+                        {
+                            title: 'On restart, the writer re-validates the full chain',
+                            body: 'Rather than trusting the last line on disk — a forged tail can never become the new legitimate head.',
+                        },
+                        {
+                            title: 'Raw framing characters inside a record are rejected outright',
+                            body: 'Not silently escaped and risked — defense in depth against one logical record ever splitting across physical lines.',
+                        },
+                        {
+                            title: 'Older, pre-chain log lines are handled gracefully',
+                            body: 'The chain genesis starts at the first properly chained record rather than treating existing history as broken.',
+                        },
+                    ],
+                    whyItMatters:
+                        'An audit log that can be quietly edited after the fact isn\'t actually evidence of anything — it\'s just a record someone trusted you not to touch. Making every entry\'s validity depend on everything that came before it, and never trusting an unverified tail after a restart, is what turns "we log what happened" into "we can prove what happened," which is the entire point of keeping an audit trail at all.',
+                },
             },
             {
                 id: 'human-escalation',
