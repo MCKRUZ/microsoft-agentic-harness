@@ -144,6 +144,17 @@ public abstract class ConversationStoreContractTests
     }
 
     [Fact]
+    public async Task ReassignAgent_OnAnotherUsersConversation_IsRefused()
+    {
+        var record = await Store.CreateAsync("agent", Owner);
+
+        var act = () => Store.ReassignAgentAsync(record.Id, Stranger, "other-agent");
+
+        await act.Should().ThrowAsync<ConversationAccessDeniedException>();
+        (await Store.GetAsync(record.Id, Owner))!.AgentName.Should().Be("agent");
+    }
+
+    [Fact]
     public async Task GetHistoryForDispatch_OnAnotherUsersConversation_IsRefused()
     {
         // The path that actually feeds a model. A miss here would not merely leak a read — it would
@@ -198,6 +209,8 @@ public abstract class ConversationStoreContractTests
                 () => Store.UpdateSettingsAsync(record.Id, blank, new ConversationSettings(null, null, null))),
             ("UpdateTelemetryAsync",
                 () => Store.UpdateTelemetryAsync(record.Id, blank, Guid.NewGuid(), TelemetryAccumulator.Zero)),
+            ("ReassignAgentAsync",
+                () => Store.ReassignAgentAsync(record.Id, blank, "other-agent")),
             ("GetHistoryForDispatch", () => Store.GetHistoryForDispatch(record.Id, blank, 10)),
         ];
 

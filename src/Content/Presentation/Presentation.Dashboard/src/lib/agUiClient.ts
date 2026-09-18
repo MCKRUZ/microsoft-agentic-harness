@@ -57,14 +57,27 @@ export async function postToolResult(
   await apiClient.post('/ag-ui/tool-result', { threadId, callId, result });
 }
 
+/** Result of creating a conversation: its thread id and the agent it ended up bound to. */
+export interface CreatedConversation {
+  threadId: string;
+  agentName: string;
+}
+
 /**
- * Creates a new conversation owned by the caller and returns its thread id. The panel calls this
- * once per chat session before starting the first run.
+ * Creates a new conversation owned by the caller. The panel calls this once per chat session
+ * before starting the first run, passing exactly one of the two options below.
+ *
+ * Pass `agentName` for today's fixed-agent behavior. Pass `firstMessage` instead (and omit
+ * `agentName`) to opt into auto-routing — the backend picks an agent from the message text,
+ * falling back to the default agent whenever it isn't confident.
  */
-export async function createConversation(agentName = 'dashboard-agent'): Promise<string> {
+export async function createConversation(
+  options: { agentName?: string; firstMessage?: string },
+): Promise<CreatedConversation> {
+  const { agentName, firstMessage } = options;
   const { data } = await apiClient.post<{ threadId: string; agentName: string }>(
     '/api/conversations',
-    { agentName },
+    { agentName, firstMessage },
   );
-  return data.threadId;
+  return { threadId: data.threadId, agentName: data.agentName };
 }

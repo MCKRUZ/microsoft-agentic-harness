@@ -470,6 +470,30 @@ public sealed class EfCoreConversationStore : IConversationStore
     }
 
     /// <inheritdoc/>
+    public async Task<ConversationRecord?> ReassignAgentAsync(
+        string conversationId,
+        string callerId,
+        string agentName,
+        CancellationToken ct = default)
+    {
+        ConversationOwnership.RequireCallerId(callerId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(agentName);
+
+        var now = _timeProvider.GetUtcNow();
+        return await UpdateHeaderAsync(
+            conversationId,
+            callerId,
+            context => context.Conversations
+                .Where(c => c.Id == conversationId && c.UserId == callerId)
+                .ExecuteUpdateAsync(
+                    s => s
+                        .SetProperty(c => c.AgentName, agentName)
+                        .SetProperty(c => c.UpdatedAt, now),
+                    ct),
+            ct);
+    }
+
+    /// <inheritdoc/>
     public async Task<ConversationRecord?> UpdateTelemetryAsync(
         string conversationId,
         string callerId,

@@ -334,5 +334,7 @@ public sealed class AgUiClientToolBridgeTests
             throw new NotSupportedException();
         public Task<ConversationRecord?> UpdateTelemetryAsync(string conversationId, string callerId, Guid observabilitySessionId, TelemetryAccumulator telemetry, CancellationToken ct = default) =>
             throw new NotSupportedException();
+        public Task<ConversationRecord?> ReassignAgentAsync(string conversationId, string callerId, string agentName, CancellationToken ct = default) =>
+            throw new NotSupportedException();
     }
 }

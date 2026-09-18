@@ -389,6 +389,11 @@ public static partial class DependencyInjection
             new CapabilityMatchStrategy(sp.GetRequiredService<IOptionsMonitor<AppConfig>>()));
         services.AddSingleton<ISupervisor, CapabilityMatchSupervisor>();
 
+        // Second ISupervisorStrategy implementation, keyed separately — scores a cold, un-owned
+        // request by AGENT.md description/tag overlap instead of tool coverage. Consumed by
+        // IAgentRouter (front-door agent routing), registered below with the rest of routing.
+        services.AddKeyedSingleton<ISupervisorStrategy, AgentMatchStrategy>("agent-match");
+
         // --- Config discovery ---
 
         services.AddTransient<IConfigDiscoveryService, DirectoryWalkConfigDiscovery>();
@@ -500,6 +505,15 @@ public static partial class DependencyInjection
 
         // Eval probe exposing the task-complexity router to the routing-accuracy scorecard.
         services.AddSingleton<IRouterEvalProbe, TaskComplexityRouterProbe>();
+
+        // Request-intent classifier + front-door agent router. Sibling to the complexity
+        // classifier above — classifies WHAT KIND of request this is, consumed by
+        // IAgentRouter to help decide WHICH AGENT should own an incoming conversation.
+        services.AddSingleton<IRequestIntentClassifier, RequestIntentClassifier>();
+        services.AddSingleton<IAgentRouter, AgentRouter>();
+
+        // Eval probe exposing the request-intent classifier to the routing-accuracy scorecard.
+        services.AddSingleton<IRouterEvalProbe, RequestIntentRouterProbe>();
 
         // --- Tool output compression ---
 

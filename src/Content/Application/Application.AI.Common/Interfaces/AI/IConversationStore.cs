@@ -257,6 +257,26 @@ public interface IConversationStore
         CancellationToken ct = default);
 
     /// <summary>
+    /// Rebinds a conversation to a different agent — the explicit "re-route" a caller can invoke on
+    /// an existing thread, since a conversation's agent is otherwise pinned for its whole lifetime
+    /// (chosen once, at creation, and every subsequent turn reuses it). Returns the updated record,
+    /// or <c>null</c> if the conversation does not exist.
+    /// </summary>
+    /// <param name="conversationId">The conversation to rebind.</param>
+    /// <param name="callerId">The authenticated caller. Must be non-blank.</param>
+    /// <param name="agentName">The agent to bind the conversation to. Must be non-blank.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <exception cref="ArgumentException">
+    /// <paramref name="callerId"/> or <paramref name="agentName"/> is blank.
+    /// </exception>
+    /// <exception cref="UnauthorizedAccessException">The conversation belongs to another user.</exception>
+    Task<ConversationRecord?> ReassignAgentAsync(
+        string conversationId,
+        string callerId,
+        string agentName,
+        CancellationToken ct = default);
+
+    /// <summary>
     /// Persists the observability session ID and telemetry accumulator for the specified
     /// conversation. Called by the AG-UI handler after each turn to carry session state
     /// across stateless HTTP requests.

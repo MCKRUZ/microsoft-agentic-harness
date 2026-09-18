@@ -20,7 +20,16 @@ import { useChatStore } from '@/stores/chatStore';
 describe('AgentPanel', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    useChatStore.setState({ open: false, threadId: null, messages: [], status: 'idle', error: null, toolActivity: null });
+    useChatStore.setState({
+      open: false,
+      threadId: null,
+      messages: [],
+      status: 'idle',
+      error: null,
+      toolActivity: null,
+      autoRoute: false,
+      routedAgentName: null,
+    });
   });
 
   it('is not rendered when the store is closed', () => {
@@ -82,5 +91,29 @@ describe('AgentPanel', () => {
     useChatStore.setState({ open: true, status: 'error', error: 'Access denied.' });
     render(<AgentPanel />);
     expect(screen.getByTestId('agent-panel-error')).toHaveTextContent('Access denied.');
+  });
+
+  it('toggles auto-route and disables the toggle once a thread exists', () => {
+    useChatStore.setState({ open: true });
+    render(<AgentPanel />);
+
+    const toggle = screen.getByTestId('agent-panel-auto-route') as HTMLInputElement;
+    expect(toggle.checked).toBe(false);
+    expect(toggle.disabled).toBe(false);
+
+    fireEvent.click(toggle);
+    expect(useChatStore.getState().autoRoute).toBe(true);
+  });
+
+  it('disables the auto-route toggle once a conversation exists', () => {
+    useChatStore.setState({ open: true, threadId: 'thread-1' });
+    render(<AgentPanel />);
+    expect(screen.getByTestId('agent-panel-auto-route')).toBeDisabled();
+  });
+
+  it('shows which agent the conversation is bound to once routed', () => {
+    useChatStore.setState({ open: true, routedAgentName: 'research-agent' });
+    render(<AgentPanel />);
+    expect(screen.getByText('Talking to: research-agent')).toBeInTheDocument();
   });
 });

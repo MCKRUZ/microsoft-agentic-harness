@@ -807,6 +807,8 @@ public sealed class RunConversationDurableTests
             throw new NotSupportedException();
         public Task<ConversationRecord?> UpdateSettingsAsync(string conversationId, string callerId, ConversationSettings settings, CancellationToken ct = default) =>
             throw new NotSupportedException();
+        public Task<ConversationRecord?> ReassignAgentAsync(string conversationId, string callerId, string agentName, CancellationToken ct = default) =>
+            throw new NotSupportedException();
         /// <remarks>
         /// Records rather than applies: keeping <see cref="Telemetry"/> fixed is what lets a test set up
         /// "the conversation has already spent this much" once and read every write the run made against
