@@ -1,4 +1,5 @@
 using Domain.Common.Config.AI;
+using Infrastructure.AI.Skills;
 using Microsoft.Extensions.Logging;
 
 namespace Infrastructure.AI.Agents;
@@ -42,7 +43,12 @@ internal static class AgentSearchPathResolver
             string abs;
             try
             {
-                abs = Path.IsPathRooted(p) ? p : Path.GetFullPath(p, AppContext.BaseDirectory);
+                // SkillContentRoots.Resolve is this repo's one canonical answer to "resolve a
+                // configured path" — its own doc comment warns that a second, independently-drifting
+                // implementation is exactly the kind of defect that lets a skill/agent discovery root
+                // disagree with the sandbox or the bundle-overlap guard built on the same roots
+                // (/simplify finding on #705; was duplicated inline here before this fix).
+                abs = SkillContentRoots.Resolve(p);
             }
             catch (Exception ex) when (ex is ArgumentException or PathTooLongException or NotSupportedException)
             {

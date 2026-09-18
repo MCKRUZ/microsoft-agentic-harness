@@ -205,18 +205,26 @@ public sealed class AgentMetadataRegistry : IAgentMetadataRegistry, IAgentRegist
         // A directory this pass failed to enumerate (permission hiccup, network share stutter, a
         // mid-rename) makes `next` unreliable for the purpose of deciding what's GONE — an agent
         // missing only because its folder briefly failed to read looks identical to one that was
-        // really deleted. The registry cache itself self-heals on the next successful scan either
-        // way (SyncAgentOwnedSkills re-populates every currently-found agent's skills unconditionally
-        // — see its own remarks), but wiping AgentOwnedSkillStore here is NOT self-healing: nothing
-        // repopulates a still-present agent's private skills until IT is rediscovered too. So skip
-        // only that one destructive step on a partial scan, and say so (code review on issue #705).
+        // really deleted. Treat the classification as provisional across the board, not just for the
+        // owned-skill side effect (/simplify altitude pass on the code-review fix for issue #705: an
+        // earlier version of this guard only skipped the destructive AgentOwnedSkillStore.RemoveAgent
+        // call but still silently dropped the agent from `next` — inconsistent, since a scan too
+        // unreliable to trust for deleting a skill is equally too unreliable to trust for removing the
+        // agent from the live registry). Carry the previous definition forward into `next` so BOTH the
+        // agent and its owned skills stay exactly as they were until a clean, error-free scan actually
+        // confirms one way or the other.
         if (hadEnumerationErrors && removed.Count > 0)
         {
             _logger.LogWarning(
                 "Agent registry rebuild hit directory enumeration errors and would have classified " +
-                "{RemovedCount} agent(s) as removed — skipping owned-skill cleanup for them this cycle " +
-                "since the scan may be incomplete rather than those agents actually being gone",
+                "{RemovedCount} agent(s) as removed — keeping them as-is this cycle since the scan may " +
+                "be incomplete rather than those agents actually being gone",
                 removed.Count);
+
+            foreach (var id in removed)
+                next[id] = previous[id];
+
+            removed = [];
         }
         else
         {
