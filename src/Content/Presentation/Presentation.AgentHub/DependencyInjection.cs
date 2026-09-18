@@ -25,6 +25,7 @@ using Presentation.AgentHub.Planner;
 using Presentation.AgentHub.Config;
 using Presentation.AgentHub.Telemetry;
 using Domain.Common.Config;
+using Presentation.Common.AgentRegistry;
 using Presentation.Common.ChangeProposals;
 using Presentation.Common.Drift;
 using Presentation.Common.Escalations;
@@ -73,7 +74,11 @@ public static class DependencyInjection
             .AddChangeProposalApi()
             // Deliberate opt-in: AgentHub runs the drift subsystem (stores, EWMA state,
             // escalation bridge), so pushed evaluations must land in this process.
-            .AddDriftApi();
+            .AddDriftApi()
+            // Deliberate opt-in: AgentHub owns the IAgentMetadataRegistry singleton live
+            // conversation turns resolve agents from, so an operator-triggered refresh must run
+            // against this process's own instance.
+            .AddAgentRegistryApi();
 
         // Surfaces a missing/invalid AI provider configuration via /health/ai. Additive to the
         // health checks registered in Presentation.Common — Degraded (not Unhealthy) because the

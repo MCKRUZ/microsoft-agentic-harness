@@ -2327,14 +2327,14 @@ window.SHOWCASE_CATEGORIES = [
             {
                 id: 'agent-registry',
                 name: 'Agent Registry',
-                status: 'partial',
-                exec: 'A real registry does discover and cache every agent on disk — but it only loads once, at first use, and there\'s no way to add, remove, or refresh an agent without restarting the process.',
-                eng: 'IAgentMetadataRegistry scans AGENT.md manifests, caches them for the process lifetime with no invalidation, and supports lookup by id/category/tags; a decorator layers in bundle-scoped agents without touching the base cache.',
+                status: 'built',
+                exec: 'A real registry discovers and caches every agent on disk — and now notices when that changes. Add, edit, or remove an AGENT.md and it\'s picked up automatically, no restart required; an operator can also force an immediate rescan and get back a summary of exactly what changed.',
+                eng: 'IAgentMetadataRegistry gained an IAgentRegistryRefresher seam (Invalidate/Refresh). AgentManifestWatcherService debounces filesystem events into an automatic Invalidate; a role-guarded operator endpoint drives an eager Refresh and returns an added/updated/removed diff. A companion fix stops a removed agent\'s nested skills from lingering forever in the owned-skill store.',
                 deepDive: {
                     scenario: [
                         {
                             time: 'Deploy time',
-                            text: 'A handful of AGENT.md files sit in a few configured folders, each describing one agent.',
+                            text: 'A handful of AGENT.md files sit in a few configured folders, each describing one agent. A background watcher starts alongside the host, one per configured folder.',
                         },
                         {
                             time: 'First request',
@@ -2346,19 +2346,24 @@ window.SHOWCASE_CATEGORIES = [
                         },
                         {
                             time: 'Ten minutes later',
-                            text: 'Someone drops a brand-new AGENT.md file into one of those folders, expecting the new agent to show up right away. It doesn\'t — the running process is still serving its original snapshot. Only a restart makes the new agent visible.',
+                            text: 'Someone drops a brand-new AGENT.md file into one of those folders. The watcher notices, waits half a second for the write to settle, and drops the cache — the very next lookup re-scans and the new agent is there. No restart, nobody had to do anything.',
+                        },
+                        {
+                            time: 'An operator wants certainty',
+                            text: 'Instead of waiting on the automatic watcher, an operator calls the refresh endpoint directly and gets back exactly what changed: which agent ids were added, updated, or removed, and the new total.',
                         },
                     ],
                     flow: [
                         { title: 'Wait For First Ask', tone: 'info', body: 'Nothing gets scanned at startup — the folders are only read the first time something actually asks what agents exist.' },
-                        { title: 'Scan & Cache', tone: 'jargon', body: 'Every configured folder is walked, each manifest is parsed, and the whole result is cached in memory for as long as the process runs.' },
+                        { title: 'Scan & Cache', tone: 'jargon', body: 'Every configured folder is walked, each manifest is parsed, and the whole result is cached in memory.' },
                         { title: 'Serve From Memory', tone: 'tip', body: 'Every lookup after that — by id, category, or tag — is answered from the cache, not by touching the filesystem again.' },
-                        { title: 'Frozen Until Restart', tone: 'warn', body: 'A manifest added, edited, or removed on disk is invisible to a running process — there\'s no built-in way to make it notice.' },
+                        { title: 'Watch & Debounce', tone: 'jargon', body: 'A background watcher sees every AGENT.md create/edit/delete; a burst of events (most editors write via a temp file plus rename) collapses into one cache invalidation after a short quiet period.' },
+                        { title: 'Refresh On Demand', tone: 'tip', body: 'An operator can also force an immediate rescan through a role-guarded endpoint and get back a summary of exactly what changed.' },
                     ],
                     narrative: [
                         'A "registry" for agents is meant to be the directory of what exists and how to find it — the thing everything else asks instead of independently poking around the filesystem.',
-                        'Correcting the record here: a genuine, dedicated service does this — <mark class="hl">not just a controller</mark> — with its own tests, its own caching behavior, and lookup by id, category, and tags. There\'s even a decorator that layers in agents scoped to an active bundle without polluting the base list. That part is real and already built.',
-                        'What keeps this "partial": the registry is <mark class="hl">read-only and loads exactly once</mark>. Once a process starts serving traffic, its view of "what agents exist" is <mark class="hl">frozen until that process restarts</mark> — there\'s no endpoint to refresh it, and no way to register or retire an agent except by changing files on disk and cycling the host. The piece the name implies — a real registry — exists. The piece a "management" claim implies — adding, removing, or refreshing at runtime — doesn\'t yet.',
+                        'A genuine, dedicated service does this — <mark class="hl">not just a controller</mark> — with its own tests, its own caching behavior, and lookup by id, category, and tags. There\'s even a decorator that layers in agents scoped to an active bundle without polluting the base list.',
+                        'What used to keep this "partial": the registry loaded <mark class="hl">exactly once</mark> and was frozen until the process restarted. That gap is closed two ways — a background watcher that automatically notices a manifest change and drops the cache, and an operator-triggered refresh endpoint for anyone who wants an immediate, confirmed rescan rather than waiting on the automatic path. Fixing this also surfaced a second, narrower bug worth naming: the store tracking which nested skills belong to which agent could only ever <mark class="hl">add</mark> entries, never remove them — so a reload that dropped an agent would have silently left its private skills behind forever, resolvable under an id nothing owned any more. That\'s fixed too.',
                     ],
                     techTable: {
                         columns: ['Capability', 'Status'],
@@ -2366,8 +2371,9 @@ window.SHOWCASE_CATEGORIES = [
                             ['Discover agents from their manifest files', 'Real'],
                             ['Look up an agent by id, category, or tag', 'Real'],
                             ['Layer in bundle-scoped agents without touching the base list', 'Real'],
-                            ['Add or remove an agent while the process is running', 'Not available — requires a restart'],
-                            ['Refresh the cache on demand', 'Not available'],
+                            ['Add, edit, or remove an agent while the process is running', 'Real — picked up automatically'],
+                            ['Force an immediate refresh with a change summary', 'Real — operator endpoint'],
+                            ['Clean up a removed agent\'s nested skills on reload', 'Real'],
                         ],
                     },
                     engineeringFacts: [
@@ -2384,16 +2390,20 @@ window.SHOWCASE_CATEGORIES = [
                             body: 'A malformed <code>AGENT.md</code> is logged and skipped rather than crashing discovery for every other agent.',
                         },
                         {
+                            title: 'Debounced, not immediate',
+                            body: 'A single manifest edit produces several filesystem events; every event resets one shared timer so a burst collapses into exactly one cache invalidation, fired after the write settles rather than mid-write.',
+                        },
+                        {
+                            title: 'A refresh reports a real diff, not just success',
+                            body: 'The operator endpoint compares the old and new agent sets (ignoring the parse timestamp, which is stamped fresh on every load and would otherwise mark every unchanged agent as "updated") and returns exactly which ids were added, updated, or removed.',
+                        },
+                        {
                             title: 'Bundle agents are layered, not merged in',
                             body: 'The bundle-aware decorator adds scoped agents on top of a lookup; the base registry\'s own cache never stores or sees them.',
                         },
-                        {
-                            title: 'This entry corrects an earlier, inaccurate description',
-                            body: 'An older pass on this page claimed no dedicated registry existed at all. Re-checked directly against the current code for this write-up — it does; the real gap is the lack of runtime refresh.',
-                        },
                     ],
                     whyItMatters:
-                        '"Knowing what agents exist" sounds trivial until you actually need to add one without downtime, or you change a manifest and can\'t figure out why nothing changed. A real discovery service that\'s frozen until restart is genuinely fine for a small, mostly-static set of agents — but it isn\'t yet the kind of registry an operations team could add or retire agents against live.',
+                        '"Knowing what agents exist" sounds trivial until you actually need to add one without downtime, or you change a manifest and can\'t figure out why nothing changed. A registry that only updates on restart is the kind of gap an evaluator hits in the first ten minutes of trying this template out — this closes it the way a production system should: automatically for the common case, with an explicit, answerable action for an operator who wants certainty.',
                 },
             },
             {

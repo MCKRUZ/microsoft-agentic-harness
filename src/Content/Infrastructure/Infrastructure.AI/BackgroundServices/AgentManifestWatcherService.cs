@@ -1,0 +1,285 @@
+using System.Threading;
+using Application.AI.Common.Interfaces;
+using Domain.Common.Config;
+using Domain.Common.Config.AI;
+using Infrastructure.AI.Agents;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+
+namespace Infrastructure.AI.BackgroundServices;
+
+/// <summary>
+/// Watches every configured agent search path for <c>AGENT.md</c> changes and invalidates
+/// <see cref="IAgentRegistryRefresher"/> so the next read re-scans the filesystem — the automatic
+/// half of issue #705's "no restart to add/remove/refresh an agent" fix. The other half is the
+/// operator-triggered refresh command; this service's job is that an ordinary file save is enough
+/// on its own, with no one having to call anything.
+/// </summary>
+/// <remarks>
+/// <para>
+/// <b>No filesystem work in the constructor.</b> The production composition root's
+/// <c>ValidateOnBuild</c> eagerly constructs every registered <see cref="IHostedService"/> — a
+/// watcher created there, rather than in <see cref="ExecuteAsync"/>, would touch the filesystem
+/// during service-graph validation instead of host startup.
+/// </para>
+/// <para>
+/// <b>Debounced, not immediate.</b> A single manifest edit produces several filesystem events in
+/// quick succession (most editors write via a temp file plus rename). Every event resets one shared
+/// timer rather than triggering its own invalidation, so a burst collapses into exactly one
+/// invalidation fired <see cref="AgentsConfig.ChangeDebounceMilliseconds"/> after the <em>last</em>
+/// event in the burst — never after the first, which could still be reading a half-written file.
+/// </para>
+/// <para>
+/// <b>Invalidate, not eager refresh.</b> The watcher calls <see cref="IAgentRegistryRefresher.Invalidate"/>,
+/// not <see cref="IAgentRegistryRefresher.Refresh"/>: dropping the cache is cheap and idempotent, so a
+/// storm of filesystem events during, say, a plugin sync collapses to nothing more than "the next
+/// read re-scans" — there is no summary an unattended background trigger could usefully report
+/// anyway. <c>Refresh()</c> is reserved for the operator-triggered command, which has a caller who
+/// wants to know what changed.
+/// </para>
+/// <para>
+/// <b><see cref="FileSystemWatcher.Error"/> is handled.</b> A watcher whose internal event buffer
+/// overflows silently stops delivering events rather than throwing — without handling this, a burst
+/// of filesystem activity elsewhere in a watched tree could quietly disable live-reload for the rest
+/// of the process's life. On <c>Error</c>, this service invalidates unconditionally (the watcher may
+/// have missed changes) and rebuilds every watcher from the current configuration.
+/// </para>
+/// </remarks>
+public sealed class AgentManifestWatcherService : BackgroundService
+{
+    private readonly IOptionsMonitor<AppConfig> _appConfig;
+    private readonly IAgentRegistryRefresher _refresher;
+    private readonly TimeProvider _timeProvider;
+    private readonly ILogger<AgentManifestWatcherService> _logger;
+
+    private readonly Lock _watchersLock = new();
+    private List<FileSystemWatcher> _watchers = [];
+    private IReadOnlyList<string> _watchedPaths = [];
+    private ITimer? _debounceTimer;
+    private IDisposable? _optionsChangeSubscription;
+
+    /// <summary>Initialises the watcher with its dependencies. Touches no filesystem state.</summary>
+    /// <param name="appConfig">Monitor over the live application configuration (agent search paths and watch settings).</param>
+    /// <param name="refresher">The registry seam this service invalidates on a detected change.</param>
+    /// <param name="timeProvider">Drives the debounce timer — injected so the schedule is testable.</param>
+    /// <param name="logger">Logger for watcher lifecycle and change diagnostics.</param>
+    public AgentManifestWatcherService(
+        IOptionsMonitor<AppConfig> appConfig,
+        IAgentRegistryRefresher refresher,
+        TimeProvider timeProvider,
+        ILogger<AgentManifestWatcherService> logger)
+    {
+        ArgumentNullException.ThrowIfNull(appConfig);
+        ArgumentNullException.ThrowIfNull(refresher);
+        ArgumentNullException.ThrowIfNull(timeProvider);
+        ArgumentNullException.ThrowIfNull(logger);
+
+        _appConfig = appConfig;
+        _refresher = refresher;
+        _timeProvider = timeProvider;
+        _logger = logger;
+    }
+
+    /// <summary>The paths currently being watched. Empty when disabled or no paths resolved.</summary>
+    internal IReadOnlyList<string> WatchedPaths
+    {
+        get
+        {
+            lock (_watchersLock)
+                return _watchedPaths;
+        }
+    }
+
+    /// <inheritdoc />
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        var agentsConfig = _appConfig.CurrentValue.AI?.Agents;
+        if (agentsConfig?.WatchForChanges != true)
+        {
+            _logger.LogInformation(
+                "Agent manifest watching is disabled (AI:Agents:WatchForChanges is false or unset) — " +
+                "changes require an explicit refresh or a process restart to be picked up");
+            return;
+        }
+
+        _optionsChangeSubscription = _appConfig.OnChange((config, _) => RetargetWatchers(config.AI?.Agents));
+        RetargetWatchers(agentsConfig);
+
+        try
+        {
+            // All real work happens via FileSystemWatcher event callbacks; this just holds the
+            // service alive until the host asks it to stop.
+            await Task.Delay(Timeout.InfiniteTimeSpan, stoppingToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
+            // Host is shutting down — expected.
+        }
+        finally
+        {
+            Shutdown();
+        }
+    }
+
+    /// <summary>
+    /// Rebuilds the watcher set from <paramref name="agentsConfig"/>'s currently-resolved paths,
+    /// unless they are identical to what is already being watched — a no-op guard that absorbs both
+    /// a config reload that did not actually change agent paths and the double-fire some file-based
+    /// configuration providers produce for a single edit.
+    /// </summary>
+    private void RetargetWatchers(AgentsConfig? agentsConfig)
+    {
+        if (agentsConfig?.WatchForChanges != true)
+        {
+            StopWatching();
+            return;
+        }
+
+        var resolvedPaths = AgentSearchPathResolver.Resolve(agentsConfig, _logger);
+
+        lock (_watchersLock)
+        {
+            if (_watchedPaths.SequenceEqual(resolvedPaths, StringComparer.OrdinalIgnoreCase))
+                return;
+
+            DisposeWatchersNoLock();
+
+            if (resolvedPaths.Count == 0)
+            {
+                _watchedPaths = [];
+                return;
+            }
+
+            var watchers = new List<FileSystemWatcher>(resolvedPaths.Count);
+            foreach (var path in resolvedPaths)
+            {
+                var watcher = new FileSystemWatcher(path)
+                {
+                    IncludeSubdirectories = true,
+                    Filter = "AGENT.md",
+                    NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName,
+                };
+
+                watcher.Created += OnManifestChanged;
+                watcher.Changed += OnManifestChanged;
+                watcher.Deleted += OnManifestChanged;
+                watcher.Renamed += OnManifestChanged;
+                watcher.Error += OnWatcherError;
+
+                watcher.EnableRaisingEvents = true;
+                watchers.Add(watcher);
+            }
+
+            _watchers = watchers;
+            _watchedPaths = resolvedPaths;
+
+            _logger.LogInformation("Agent manifest watcher active for {Count} path(s)", resolvedPaths.Count);
+        }
+    }
+
+    private void OnManifestChanged(object sender, FileSystemEventArgs e) => ScheduleInvalidate();
+
+    /// <summary>
+    /// Handles a <see cref="FileSystemWatcher.Error"/> event — the internal event buffer overflowed
+    /// or the underlying watch failed. The watcher that raised this is no longer reliably delivering
+    /// events, so rather than trying to repair just that one, every watcher is disposed and rebuilt
+    /// from the current configuration, and the cache is invalidated unconditionally since a change
+    /// may already have been missed.
+    /// </summary>
+    internal void OnWatcherError(object? sender, ErrorEventArgs e)
+    {
+        _logger.LogWarning(e.GetException(),
+            "Agent manifest watcher error (buffer overflow or watch failure) — invalidating and rebuilding watchers");
+
+        _refresher.Invalidate();
+
+        lock (_watchersLock)
+        {
+            // Force RetargetWatchers to treat this as a change rather than a no-op, even though the
+            // resolved path SET has not changed — the watcher instances themselves are the thing
+            // that needs replacing.
+            _watchedPaths = [];
+        }
+
+        RetargetWatchers(_appConfig.CurrentValue.AI?.Agents);
+    }
+
+    /// <summary>
+    /// Resets the single shared debounce timer so a burst of filesystem events collapses into one
+    /// invalidation, fired the configured quiet period after the LAST event in the burst.
+    /// </summary>
+    internal void ScheduleInvalidate()
+    {
+        var configuredMs = _appConfig.CurrentValue.AI?.Agents?.ChangeDebounceMilliseconds ?? 500;
+        var debounce = TimeSpan.FromMilliseconds(Math.Clamp(configuredMs, 50, 30_000));
+
+        lock (_watchersLock)
+        {
+            if (_debounceTimer is null)
+            {
+                _debounceTimer = _timeProvider.CreateTimer(
+                    _ => FireInvalidate(),
+                    state: null,
+                    dueTime: debounce,
+                    period: Timeout.InfiniteTimeSpan);
+            }
+            else
+            {
+                _debounceTimer.Change(debounce, Timeout.InfiniteTimeSpan);
+            }
+        }
+    }
+
+    private void FireInvalidate()
+    {
+        _refresher.Invalidate();
+        _logger.LogDebug("Agent manifest change detected; registry cache invalidated");
+    }
+
+    private void Shutdown()
+    {
+        _optionsChangeSubscription?.Dispose();
+        _optionsChangeSubscription = null;
+
+        lock (_watchersLock)
+        {
+            _debounceTimer?.Dispose();
+            _debounceTimer = null;
+            DisposeWatchersNoLock();
+        }
+    }
+
+    private void StopWatching()
+    {
+        lock (_watchersLock)
+        {
+            DisposeWatchersNoLock();
+        }
+    }
+
+    /// <summary>Caller must hold <see cref="_watchersLock"/>.</summary>
+    private void DisposeWatchersNoLock()
+    {
+        foreach (var watcher in _watchers)
+        {
+            watcher.EnableRaisingEvents = false;
+            watcher.Created -= OnManifestChanged;
+            watcher.Changed -= OnManifestChanged;
+            watcher.Deleted -= OnManifestChanged;
+            watcher.Renamed -= OnManifestChanged;
+            watcher.Error -= OnWatcherError;
+            watcher.Dispose();
+        }
+
+        _watchers = [];
+        _watchedPaths = [];
+    }
+
+    /// <inheritdoc/>
+    public override void Dispose()
+    {
+        base.Dispose();
+        Shutdown();
+    }
+}

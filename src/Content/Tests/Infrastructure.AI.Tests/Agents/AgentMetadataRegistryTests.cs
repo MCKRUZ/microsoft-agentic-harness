@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Skills;
 using Domain.Common.Config;
@@ -27,7 +28,7 @@ public sealed class AgentMetadataRegistryTests
     private static AgentMetadataRegistry CreateRegistry(string? agentsPath = null)
         => CreateRegistry(new AgentOwnedSkillStore(), agentsPath);
 
-    private static AgentMetadataRegistry CreateRegistry(IAgentOwnedSkillStore ownedSkills, string? agentsPath = null)
+    private static AgentMetadataRegistry CreateRegistry(AgentOwnedSkillStore ownedSkills, string? agentsPath = null)
     {
         var resolvedPath = agentsPath ?? RepoAgentsPath;
         var appConfig = new AppConfig
@@ -148,7 +149,7 @@ public sealed class AgentMetadataRegistryTests
         services.AddSingleton<FluentValidation.IValidator<Domain.AI.Skills.EgressManifest>,
             Application.AI.Common.Skills.EgressManifestValidator>();
         services.AddSingleton<SkillMetadataParser>();
-        services.AddSingleton<IAgentOwnedSkillStore, AgentOwnedSkillStore>();
+        services.AddSingleton<AgentOwnedSkillStore>();
         services.AddSingleton<IAgentMetadataRegistry, AgentMetadataRegistry>();
 
         using var provider = services.BuildServiceProvider();
@@ -282,6 +283,279 @@ public sealed class AgentMetadataRegistryTests
             var owned = store.GetForAgent("dup").Select(s => s.Id).ToList();
             owned.Should().ContainSingle();
             owned.Should().BeSubsetOf(["first-skill", "second-skill"]);
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Refresh_NewAgentAddedToDisk_ReportsItAsAdded()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"agents-refresh-add-{Guid.NewGuid():N}");
+        try
+        {
+            WriteAgent(tempRoot, "alpha", """
+                ---
+                id: alpha
+                name: Alpha
+                ---
+                """);
+
+            var registry = CreateRegistry(agentsPath: tempRoot);
+            registry.GetAll().Should().ContainSingle(); // loads the initial cache
+
+            WriteAgent(tempRoot, "beta", """
+                ---
+                id: beta
+                name: Beta
+                ---
+                """);
+
+            var summary = registry.Refresh();
+
+            summary.Added.Should().ContainSingle(id => id == "beta");
+            summary.Updated.Should().BeEmpty();
+            summary.Removed.Should().BeEmpty();
+            summary.TotalAgentCount.Should().Be(2);
+            registry.GetAll().Should().HaveCount(2);
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Refresh_AgentManifestEdited_ReportsItAsUpdated()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"agents-refresh-edit-{Guid.NewGuid():N}");
+        try
+        {
+            WriteAgent(tempRoot, "alpha", """
+                ---
+                id: alpha
+                name: Alpha
+                ---
+                """);
+
+            var registry = CreateRegistry(agentsPath: tempRoot);
+            registry.GetAll().Should().ContainSingle();
+
+            WriteAgent(tempRoot, "alpha", """
+                ---
+                id: alpha
+                name: Alpha Renamed
+                ---
+                """);
+
+            var summary = registry.Refresh();
+
+            summary.Updated.Should().ContainSingle(id => id == "alpha");
+            summary.Added.Should().BeEmpty();
+            summary.Removed.Should().BeEmpty();
+            registry.TryGet("alpha")!.Name.Should().Be("Alpha Renamed");
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Refresh_ManifestUnchangedOnDisk_IsNotReportedAsUpdated()
+    {
+        // Regression guard: AgentDefinition.LoadedAt is stamped fresh on every parse, so a naive
+        // record-equality diff would classify every still-present, byte-for-byte-unchanged agent as
+        // "updated" on every single refresh.
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"agents-refresh-noop-{Guid.NewGuid():N}");
+        try
+        {
+            WriteAgent(tempRoot, "alpha", """
+                ---
+                id: alpha
+                name: Alpha
+                ---
+                """);
+
+            var registry = CreateRegistry(agentsPath: tempRoot);
+            registry.GetAll().Should().ContainSingle();
+
+            var summary = registry.Refresh();
+
+            summary.Updated.Should().BeEmpty();
+            summary.Added.Should().BeEmpty();
+            summary.Removed.Should().BeEmpty();
+            summary.TotalAgentCount.Should().Be(1);
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Refresh_AgentDirectoryDeleted_RemovesAgentAndItsOwnedSkills()
+    {
+        // The orphan regression this feature exists to close: AgentOwnedSkillStore was add-only, so
+        // a naive reload would drop the agent from the registry but leave its nested skills resolvable
+        // by an id no agent owns any more.
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"agents-refresh-remove-{Guid.NewGuid():N}");
+        var store = new AgentOwnedSkillStore();
+        try
+        {
+            WriteAgent(tempRoot, "alpha", """
+                ---
+                id: alpha
+                name: Alpha
+                skills: [alpha-only]
+                ---
+                """);
+            WriteNestedSkill(tempRoot, "alpha", "alpha-only", "Alpha's private skill.");
+
+            var registry = CreateRegistry(store, agentsPath: tempRoot);
+            registry.GetAll().Should().ContainSingle();
+            store.TryGet("alpha", "alpha-only").Should().NotBeNull();
+
+            Directory.Delete(Path.Combine(tempRoot, "alpha"), recursive: true);
+
+            var summary = registry.Refresh();
+
+            summary.Removed.Should().ContainSingle(id => id == "alpha");
+            summary.TotalAgentCount.Should().Be(0);
+            registry.GetAll().Should().BeEmpty();
+            registry.TryGet("alpha").Should().BeNull();
+
+            // The orphan check: the agent's nested skill must not linger in the owned-skill store.
+            store.GetForAgent("alpha").Should().BeEmpty();
+            store.TryGet("alpha", "alpha-only").Should().BeNull();
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Refresh_AgentKeepsExistingButDeletesOneNestedSkill_DropsOnlyThatSkill()
+    {
+        // A narrower version of the same add-only defect: the AGENT still exists, but one of its
+        // nested SKILL.md files was removed. ReplaceAgentSkills (a full swap) must drop it; the old
+        // per-skill Register call could never observe a deletion.
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"agents-refresh-skill-remove-{Guid.NewGuid():N}");
+        var store = new AgentOwnedSkillStore();
+        try
+        {
+            WriteAgent(tempRoot, "alpha", """
+                ---
+                id: alpha
+                name: Alpha
+                skills: [keep, drop]
+                ---
+                """);
+            WriteNestedSkill(tempRoot, "alpha", "keep", "Kept skill.");
+            WriteNestedSkill(tempRoot, "alpha", "drop", "Dropped skill.");
+
+            var registry = CreateRegistry(store, agentsPath: tempRoot);
+            registry.GetAll().Should().ContainSingle();
+            store.GetForAgent("alpha").Select(s => s.Id).Should().BeEquivalentTo(["keep", "drop"]);
+
+            Directory.Delete(Path.Combine(tempRoot, "alpha", "skills", "drop"), recursive: true);
+
+            registry.Refresh();
+
+            store.GetForAgent("alpha").Select(s => s.Id).Should().BeEquivalentTo(["keep"]);
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Invalidate_ThenNextRead_RescansFilesystem()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"agents-invalidate-{Guid.NewGuid():N}");
+        try
+        {
+            WriteAgent(tempRoot, "alpha", """
+                ---
+                id: alpha
+                name: Alpha
+                ---
+                """);
+
+            var registry = CreateRegistry(agentsPath: tempRoot);
+            registry.GetAll().Should().ContainSingle();
+
+            WriteAgent(tempRoot, "beta", """
+                ---
+                id: beta
+                name: Beta
+                ---
+                """);
+
+            // Without Invalidate, the cache would still hold only "alpha" — GetAll never rescans on
+            // its own.
+            registry.Invalidate();
+
+            registry.GetAll().Should().HaveCount(2);
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task ConcurrentReadsDuringRepeatedInvalidation_NeverThrowAndAlwaysSeeACompleteSet()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"agents-concurrency-{Guid.NewGuid():N}");
+        try
+        {
+            for (var i = 0; i < 5; i++)
+            {
+                WriteAgent(tempRoot, $"agent-{i}", $"""
+                    ---
+                    id: agent-{i}
+                    name: Agent {i}
+                    ---
+                    """);
+            }
+
+            var registry = CreateRegistry(agentsPath: tempRoot);
+            registry.GetAll().Should().HaveCount(5);
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+            var readerExceptions = new ConcurrentBag<Exception>();
+
+            var readers = Enumerable.Range(0, 4).Select(_ => Task.Run(() =>
+            {
+                try
+                {
+                    while (!cts.IsCancellationRequested)
+                    {
+                        // A reader mid-reload must never see a partially-built dictionary — every
+                        // snapshot returned by GetAll is either the old complete set or the new one.
+                        registry.GetAll().Should().HaveCount(5);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    readerExceptions.Add(ex);
+                }
+            }));
+
+            var invalidator = Task.Run(() =>
+            {
+                while (!cts.IsCancellationRequested)
+                    registry.Invalidate();
+            });
+
+            await Task.WhenAll([.. readers, invalidator]);
+
+            readerExceptions.Should().BeEmpty();
         }
         finally
         {

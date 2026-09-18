@@ -18,8 +18,11 @@ namespace Infrastructure.AI.Agents;
 /// Mirrors the behaviour of <c>SkillMetadataRegistry</c> so agent and skill discovery share an
 /// identical operational model: lazy first-load, dictionary-backed cache keyed by id, and
 /// best-effort parsing that logs but does not fail the host when a manifest is malformed.
+/// Also implements <see cref="IAgentRegistryRefresher"/> (issue #705): the cache can be invalidated
+/// or eagerly rebuilt after the initial load, by <c>AgentManifestWatcherService</c>
+/// reacting to filesystem changes or by an operator-triggered refresh command.
 /// </remarks>
-public sealed class AgentMetadataRegistry : IAgentMetadataRegistry
+public sealed class AgentMetadataRegistry : IAgentMetadataRegistry, IAgentRegistryRefresher
 {
     private const int MaxSearchDepth = 3;
 
@@ -28,7 +31,7 @@ public sealed class AgentMetadataRegistry : IAgentMetadataRegistry
     private readonly AgentMetadataParser _parser;
     private readonly SkillMetadataParser _skillParser;
     private readonly ISkillFileReader _skillFileReader;
-    private readonly IAgentOwnedSkillStore _ownedSkills;
+    private readonly AgentOwnedSkillStore _ownedSkills;
 
     private Dictionary<string, AgentDefinition>? _cache;
     private IReadOnlyList<string> _searchedPaths = [];
@@ -46,7 +49,10 @@ public sealed class AgentMetadataRegistry : IAgentMetadataRegistry
     /// <param name="ownedSkills">
     /// Store populated during discovery with the skills found under each agent's
     /// <c>&lt;agentDir&gt;/skills/</c> directory, so <c>AgentFactory</c> can resolve them ahead of the
-    /// global registry without polluting it.
+    /// global registry without polluting it. Taken as the concrete type — not
+    /// <see cref="IAgentOwnedSkillStore"/> — because discovery needs <c>ReplaceAgentSkills</c> and
+    /// <c>RemoveAgent</c> for reload reconciliation (issue #705), which are deliberately not on the
+    /// interface the per-bundle-run overlay decorator also implements.
     /// </param>
     public AgentMetadataRegistry(
         ILogger<AgentMetadataRegistry> logger,
@@ -54,7 +60,7 @@ public sealed class AgentMetadataRegistry : IAgentMetadataRegistry
         AgentMetadataParser parser,
         SkillMetadataParser skillParser,
         ISkillFileReader skillFileReader,
-        IAgentOwnedSkillStore ownedSkills)
+        AgentOwnedSkillStore ownedSkills)
     {
         ArgumentNullException.ThrowIfNull(skillFileReader);
 
@@ -70,86 +76,129 @@ public sealed class AgentMetadataRegistry : IAgentMetadataRegistry
     public IReadOnlyList<string> SearchedPaths => _searchedPaths;
 
     /// <inheritdoc />
-    public IReadOnlyList<AgentDefinition> GetAll()
-    {
-        EnsureLoaded();
-        return [.. _cache!.Values];
-    }
+    public IReadOnlyList<AgentDefinition> GetAll() => [.. GetOrLoadCache().Values];
 
     /// <inheritdoc />
-    public AgentDefinition? TryGet(string agentId)
-    {
-        EnsureLoaded();
-        _cache!.TryGetValue(agentId, out var agent);
-        return agent;
-    }
+    public AgentDefinition? TryGet(string agentId) =>
+        GetOrLoadCache().TryGetValue(agentId, out var agent) ? agent : null;
 
     /// <inheritdoc />
-    public IReadOnlyList<AgentDefinition> GetByCategory(string category)
-    {
-        EnsureLoaded();
-        return _cache!.Values
+    public IReadOnlyList<AgentDefinition> GetByCategory(string category) =>
+        GetOrLoadCache().Values
             .Where(a => string.Equals(a.Category, category, StringComparison.OrdinalIgnoreCase))
             .ToList();
-    }
 
     /// <inheritdoc />
     public IReadOnlyList<AgentDefinition> GetByTags(IEnumerable<string> tags)
     {
-        EnsureLoaded();
         var tagSet = new HashSet<string>(tags, StringComparer.OrdinalIgnoreCase);
-        return _cache!.Values
+        return GetOrLoadCache().Values
             .Where(a => a.Tags.Any(t => tagSet.Contains(t)))
             .ToList();
     }
 
-    private void EnsureLoaded()
+    /// <inheritdoc />
+    public void Invalidate()
     {
-        if (_cache is not null)
-            return;
-
         lock (_lock)
         {
-            if (_cache is not null)
-                return;
-
-            _cache = Discover();
+            _cache = null;
         }
     }
 
+    /// <inheritdoc />
+    public AgentRegistryRefreshResult Refresh()
+    {
+        lock (_lock)
+        {
+            var previous = _cache ?? new Dictionary<string, AgentDefinition>(StringComparer.OrdinalIgnoreCase);
+            var next = Discover();
+
+            var added = new List<string>();
+            var updated = new List<string>();
+            foreach (var (id, agent) in next)
+            {
+                if (!previous.TryGetValue(id, out var previousAgent))
+                    added.Add(id);
+                else if (!DefinitionsAreEquivalent(previousAgent, agent))
+                    updated.Add(id);
+            }
+
+            var removed = previous.Keys.Where(id => !next.ContainsKey(id)).ToList();
+            foreach (var id in removed)
+                _ownedSkills.RemoveAgent(id);
+
+            _cache = next;
+
+            _logger.LogInformation(
+                "Agent registry refreshed: {Added} added, {Updated} updated, {Removed} removed, {Total} total",
+                added.Count, updated.Count, removed.Count, next.Count);
+
+            return new AgentRegistryRefreshResult
+            {
+                Added = added,
+                Updated = updated,
+                Removed = removed,
+                TotalAgentCount = next.Count,
+                SearchedPaths = _searchedPaths
+            };
+        }
+    }
+
+    /// <summary>
+    /// Returns the current cache, loading it on first use. A single local snapshot is captured and
+    /// returned — every caller reads through that one reference rather than touching the
+    /// <c>_cache</c> field a second time, so a concurrent <see cref="Invalidate"/> landing between two
+    /// field reads on the old (non-nullable-suppressed) implementation can no longer null-reference a
+    /// reader. The returned dictionary is never mutated after <see cref="Discover"/> builds it — only
+    /// replaced wholesale — so a reader holding an older snapshot during a concurrent reload is safe.
+    /// </summary>
+    private Dictionary<string, AgentDefinition> GetOrLoadCache()
+    {
+        var cache = _cache;
+        if (cache is not null)
+            return cache;
+
+        lock (_lock)
+        {
+            cache = _cache;
+            if (cache is not null)
+                return cache;
+
+            cache = Discover();
+            _cache = cache;
+            return cache;
+        }
+    }
+
+    /// <summary>
+    /// Compares two definitions for the same agent id for the purpose of the
+    /// <see cref="AgentRegistryRefreshResult.Updated"/> classification. Deliberately not record
+    /// equality: <see cref="AgentDefinition.LoadedAt"/> is stamped fresh on every parse, so a
+    /// byte-for-byte-unchanged manifest would otherwise compare unequal on every single reload.
+    /// </summary>
+    private static bool DefinitionsAreEquivalent(AgentDefinition a, AgentDefinition b) =>
+        a.Id == b.Id
+        && a.Name == b.Name
+        && a.Description == b.Description
+        && a.Category == b.Category
+        && a.Domain == b.Domain
+        && a.Version == b.Version
+        && a.Author == b.Author
+        && a.Instructions == b.Instructions
+        && a.OrchestrationMode == b.OrchestrationMode
+        && a.FilePath == b.FilePath
+        && a.BaseDirectory == b.BaseDirectory
+        && a.Tags.SequenceEqual(b.Tags)
+        && a.Skills.SequenceEqual(b.Skills)
+        && a.AllowedTools.SequenceEqual(b.AllowedTools)
+        && a.Participants.SequenceEqual(b.Participants)
+        && Equals(a.MagenticOptions, b.MagenticOptions);
+
     private Dictionary<string, AgentDefinition> Discover()
     {
-        var agentsConfig = _appConfig.CurrentValue.AI?.Agents;
-        var paths = agentsConfig?.AllPaths.ToList() ?? [];
-
-        if (paths.Count == 0)
-        {
-            _logger.LogInformation("No agent paths configured in AppConfig.AI.Agents — skipping agent discovery");
-            _searchedPaths = [];
-            return new Dictionary<string, AgentDefinition>(StringComparer.OrdinalIgnoreCase);
-        }
-
-        // Resolve relative paths against AppContext.BaseDirectory (the bin folder)
-        // so they match where csproj Content Include copies skills/agents at build time.
-        // Avoids coupling configured paths to the process CWD, which differs between
-        // `dotnet run` (project dir) and a published deployment (publish dir).
-        var resolvedPaths = new List<string>();
-        foreach (var p in paths)
-        {
-            var abs = Path.IsPathRooted(p) ? p : Path.GetFullPath(p, AppContext.BaseDirectory);
-            if (Directory.Exists(abs))
-                resolvedPaths.Add(abs);
-            else
-                _logger.LogWarning("Agent path not found, skipping: {Path}", abs);
-        }
-
+        var resolvedPaths = AgentSearchPathResolver.Resolve(_appConfig.CurrentValue.AI?.Agents, _logger);
         _searchedPaths = resolvedPaths;
-
-        if (resolvedPaths.Count == 0)
-        {
-            _logger.LogWarning("No valid agent paths found — agent discovery produced no results");
-            return new Dictionary<string, AgentDefinition>(StringComparer.OrdinalIgnoreCase);
-        }
 
         var result = new Dictionary<string, AgentDefinition>(StringComparer.OrdinalIgnoreCase);
 
@@ -193,7 +242,7 @@ public sealed class AgentMetadataRegistry : IAgentMetadataRegistry
                     {
                         result[definition.Id] = definition;
                         _logger.LogDebug("Discovered agent: {AgentId} from {Path}", definition.Id, directory);
-                        DiscoverAgentOwnedSkills(directory, definition.Id);
+                        SyncAgentOwnedSkills(directory, definition.Id);
                     }
                 }
             }
@@ -218,19 +267,28 @@ public sealed class AgentMetadataRegistry : IAgentMetadataRegistry
     }
 
     /// <summary>
-    /// Scans an agent's own <c>skills/</c> subdirectory for nested <c>SKILL.md</c> files and registers
-    /// each into the <see cref="IAgentOwnedSkillStore"/> keyed by <paramref name="agentId"/>. These
+    /// Scans an agent's own <c>skills/</c> subdirectory for nested <c>SKILL.md</c> files and replaces
+    /// its full set in <see cref="AgentOwnedSkillStore"/> keyed by <paramref name="agentId"/>. These
     /// skills are private to the agent: they are deliberately kept out of the global
     /// <c>SkillMetadataRegistry</c> so they neither leak to other agents nor collide with shared skills.
     /// A missing <c>skills/</c> directory is the common case and is silently skipped; a single malformed
     /// nested skill logs a warning without failing the rest of discovery.
     /// </summary>
-    private void DiscoverAgentOwnedSkills(string agentDirectory, string agentId)
+    /// <remarks>
+    /// A full replace rather than incremental registration (issue #705): on a reload, an agent that
+    /// deleted one of its nested <c>SKILL.md</c> files must lose that skill from the store too. Scanning
+    /// and re-registering each surviving skill one at a time would leave the deleted one behind forever
+    /// — <see cref="AgentOwnedSkillStore.ReplaceAgentSkills"/> swaps in exactly the current set.
+    /// </remarks>
+    private void SyncAgentOwnedSkills(string agentDirectory, string agentId)
     {
         var skillsRoot = Path.Combine(agentDirectory, "skills");
-        foreach (var skill in NestedSkillScanner.Scan(skillsRoot, _skillParser, _skillFileReader, _logger))
+        var skills = NestedSkillScanner.Scan(skillsRoot, _skillParser, _skillFileReader, _logger).ToList();
+
+        _ownedSkills.ReplaceAgentSkills(agentId, skills);
+
+        foreach (var skill in skills)
         {
-            _ownedSkills.Register(agentId, skill);
             _logger.LogDebug(
                 "Discovered agent-owned skill {SkillId} for agent {AgentId}", skill.Id, agentId);
         }
