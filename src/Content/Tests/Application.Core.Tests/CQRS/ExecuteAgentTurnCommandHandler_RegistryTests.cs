@@ -44,7 +44,8 @@ public class ExecuteAgentTurnCommandHandler_RegistryTests
             new NullContextSnapshotNotifier(),
             TimeProvider.System,
             NullLogger<ExecuteAgentTurnCommandHandler>.Instance,
-            new PassthroughToolCallReplayTreatment());
+            new PassthroughToolCallReplayTreatment(),
+            Mock.Of<Application.Core.Orchestration.Magentic.IMagenticAgentTurnRunner>());
     }
 
     [Fact]

@@ -47,7 +47,8 @@ public class ExecuteAgentTurnCommandHandlerTests
             new NullContextSnapshotNotifier(),
             TimeProvider.System,
             NullLogger<ExecuteAgentTurnCommandHandler>.Instance,
-            new PassthroughToolCallReplayTreatment());
+            new PassthroughToolCallReplayTreatment(),
+            Mock.Of<Application.Core.Orchestration.Magentic.IMagenticAgentTurnRunner>());
     }
 
     private static ExecuteAgentTurnCommand CreateCommand(
@@ -260,7 +261,8 @@ public class ExecuteAgentTurnCommandHandlerTests
             new NullContextSnapshotNotifier(),
             TimeProvider.System,
             logger.Object,
-            new PassthroughToolCallReplayTreatment());
+            new PassthroughToolCallReplayTreatment(),
+            Mock.Of<Application.Core.Orchestration.Magentic.IMagenticAgentTurnRunner>());
 
         Application.AI.Common.Services.AgentTurnStreamSink.Current =
             new Application.AI.Common.Services.AgentTurnStreamSink(
@@ -351,7 +353,8 @@ public class ExecuteAgentTurnCommandHandlerTests
             new NullContextSnapshotNotifier(),
             TimeProvider.System,
             NullLogger<ExecuteAgentTurnCommandHandler>.Instance,
-            disabledTreatment.Object);
+            disabledTreatment.Object,
+            Mock.Of<Application.Core.Orchestration.Magentic.IMagenticAgentTurnRunner>());
 
         // Act
         var result = await handlerWithDisabledReplay.Handle(CreateCommand(), CancellationToken.None);
@@ -405,7 +408,8 @@ public class ExecuteAgentTurnCommandHandlerTests
             new NullContextSnapshotNotifier(),
             TimeProvider.System,
             NullLogger<ExecuteAgentTurnCommandHandler>.Instance,
-            cappedTreatment);
+            cappedTreatment,
+            Mock.Of<Application.Core.Orchestration.Magentic.IMagenticAgentTurnRunner>());
 
         // Act
         var result = await handler.Handle(CreateCommand(), CancellationToken.None);
@@ -892,6 +896,7 @@ public class ExecuteAgentTurnCommandHandlerTests
             TimeProvider.System,
             NullLogger<ExecuteAgentTurnCommandHandler>.Instance,
             new PassthroughToolCallReplayTreatment(),
+            Mock.Of<Application.Core.Orchestration.Magentic.IMagenticAgentTurnRunner>(),
             redactor.Object);
 
         var args = string.Empty;

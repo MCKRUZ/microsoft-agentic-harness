@@ -118,6 +118,10 @@ public class AgentPipelineIntegrationTests
         services.AddSingleton<IContextSnapshotNotifier, NullContextSnapshotNotifier>();
         services.AddSingleton(TimeProvider.System);
 
+        // Magentic supervisor turn runner — not under test here (registryMock above never resolves a
+        // Magentic-mode AgentDefinition), so a mock only needs to satisfy DI resolution.
+        services.AddSingleton(new Mock<Application.Core.Orchestration.Magentic.IMagenticAgentTurnRunner>().Object);
+
         return services.BuildServiceProvider();
     }
 

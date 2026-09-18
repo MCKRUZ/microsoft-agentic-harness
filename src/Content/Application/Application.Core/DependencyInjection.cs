@@ -90,6 +90,13 @@ public static class DependencyInjection
 		services.AddKeyedSingleton<IApprovalStrategy>(ApprovalStrategyType.AllOf, (_, _) => new AllOfApprovalStrategy());
 		services.AddKeyedSingleton<IApprovalStrategy>(ApprovalStrategyType.Quorum, (_, _) => new QuorumApprovalStrategy());
 
+		// Magentic supervisor turns — the ExecuteAgentTurnCommandHandler chokepoint dispatches here
+		// for any agent whose manifest declares orchestration: magentic. Registered unconditionally,
+		// same as IMagenticOrchestrator itself: an absent supervisor manifest equals an absent feature.
+		services.AddScoped<
+			Orchestration.Magentic.IMagenticAgentTurnRunner,
+			Orchestration.Magentic.MagenticAgentTurnRunner>();
+
 		services.AddWorkflowDependencies();
 
 		return services;

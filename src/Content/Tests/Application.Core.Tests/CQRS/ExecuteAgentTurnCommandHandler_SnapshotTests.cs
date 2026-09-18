@@ -62,7 +62,8 @@ public class ExecuteAgentTurnCommandHandler_SnapshotTests
             notifier,
             TimeProvider.System,
             NullLogger<ExecuteAgentTurnCommandHandler>.Instance,
-            new PassthroughToolCallReplayTreatment());
+            new PassthroughToolCallReplayTreatment(),
+            Mock.Of<Application.Core.Orchestration.Magentic.IMagenticAgentTurnRunner>());
     }
 
     private void SetupAgent(string response = "ok")
