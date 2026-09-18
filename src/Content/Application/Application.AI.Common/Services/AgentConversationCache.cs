@@ -91,17 +91,11 @@ internal sealed class AgentConversationCache : IAgentConversationCache
     }
 
     /// <summary>
-    /// Finalizes and disposes the execution-trace writer an evicted context was carrying, if any.
+    /// Finalizes and disposes the execution-trace writer an evicted context was carrying, if any —
+    /// delegates to <see cref="Traces.ExecutionTraceWriterCleanup.CompleteAsync"/>, the logic shared
+    /// with <c>MagenticAgentTurnRunner</c>'s equivalent, non-cache-eviction-driven cleanup.
     /// </summary>
     /// <remarks>
-    /// <para>
-    /// <see cref="Interfaces.Traces.ITraceWriter.CompleteAsync"/> stamps <c>write_completed</c> into
-    /// the run manifest; without it every production run stays flagged incomplete to any reader that
-    /// honours the flag, and the writer's semaphore and file handle are never released. Only the
-    /// meta-harness evaluation loop did this correctly before #505 — the conversation path created
-    /// writers and abandoned them, which was harmless only for as long as nothing wrote to them.
-    /// </para>
-    /// <para>
     /// Blocking here does not block a caller: this callback is observed to run asynchronously, off
     /// the thread that triggered the eviction. That is not asserted from documentation — the first
     /// draft of <c>AgentConversationCacheTraceLifecycleTests</c> asserted immediately after
@@ -109,51 +103,14 @@ internal sealed class AgentConversationCache : IAgentConversationCache
     /// a signal rather than racing it, and would fail loudly if the dispatch ever became
     /// synchronous, since the signal would already be set. The work itself is a short atomic file
     /// write plus a handle close.
-    ///
-    /// Failure is contained rather than propagated, and logged rather than hidden: an eviction
-    /// callback that throws surfaces on an unrelated thread and would take out whatever triggered
-    /// the eviction, and losing a manifest stamp must not be able to fail a conversation.
-    /// </para>
     /// </remarks>
     private static void CompleteTraceWriter(object? evictedContext, ILogger? logger)
     {
-        if (evictedContext is not AgentExecutionContext context
-            || context.AdditionalProperties is null
-            || !context.AdditionalProperties.TryGetValue(
-                Interfaces.Traces.ITraceWriter.AdditionalPropertiesKey, out var stashed)
-            || stashed is not Interfaces.Traces.ITraceWriter writer)
-        {
+        if (evictedContext is not AgentExecutionContext context)
             return;
-        }
 
-        try
-        {
-            writer.CompleteAsync(CancellationToken.None).GetAwaiter().GetResult();
-        }
-        catch (Exception ex)
-        {
-            // Swallowed, but never silently: this repo's rule is that an error may be tolerated,
-            // not hidden. A run whose manifest was never stamped is indistinguishable on disk from
-            // one still in flight, so without this line the only evidence would be absence.
-            logger?.LogWarning(ex,
-                "Failed to finalize the execution trace for run {ExecutionRunId} — its manifest "
-                + "will stay marked incomplete.",
-                writer.Scope.ExecutionRunId);
-        }
-        finally
-        {
-            try
-            {
-                writer.DisposeAsync().AsTask().GetAwaiter().GetResult();
-            }
-            catch (Exception ex)
-            {
-                logger?.LogWarning(ex,
-                    "Failed to dispose the execution trace writer for run {ExecutionRunId} — its "
-                    + "file handle and semaphore may not have been released.",
-                    writer.Scope.ExecutionRunId);
-            }
-        }
+        Traces.ExecutionTraceWriterCleanup.CompleteAsync(context, logger, CancellationToken.None)
+            .GetAwaiter().GetResult();
     }
 
     /// <summary>

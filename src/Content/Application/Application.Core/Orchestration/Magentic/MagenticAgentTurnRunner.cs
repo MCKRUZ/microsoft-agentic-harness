@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text;
 using Application.AI.Common.Factories;
 using Application.AI.Common.Interfaces;
@@ -5,6 +6,7 @@ using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Orchestration.Magentic;
 using Application.AI.Common.Services;
 using Application.AI.Common.Services.Governance;
+using Application.AI.Common.Services.Traces;
 using Application.Core.CQRS.Agents.ExecuteAgentTurn;
 using Domain.AI.Agents;
 using Domain.AI.Skills;
@@ -91,12 +93,49 @@ public sealed class MagenticAgentTurnRunner : IMagenticAgentTurnRunner
 			"Running Magentic turn for supervisor {AgentId} with {ParticipantCount} participant(s)",
 			supervisor.Id, supervisor.Participants.Count);
 
+		// Collects every agent-execution context this turn builds (manager and every participant,
+		// including ones whose sibling build failed) so their execution-trace writers — opened by
+		// AgentExecutionContextFactory.StartTraceRunAsync when MetaHarness.ExecutionTracingEnabled is
+		// on — are always finalized and disposed, no matter how this method exits. The single-agent
+		// path gets this for free from IAgentConversationCache's eviction callback
+		// (ExecutionTraceWriterCleanup, extracted from there); this runner builds agents directly
+		// through IAgentFactory instead and so must finalize them itself, immediately, since these
+		// agents are never cached or reused past this one turn anyway.
+		var builtContexts = new ConcurrentBag<AgentExecutionContext>();
+		try
+		{
+			return await RunTurnCoreAsync(
+				supervisor, conversationId, userMessage, conversationHistory, overrides, builtContexts,
+				cancellationToken);
+		}
+		finally
+		{
+			foreach (var context in builtContexts)
+				await ExecutionTraceWriterCleanup.CompleteAsync(context, _logger, CancellationToken.None);
+		}
+	}
+
+	/// <summary>
+	/// The actual turn logic, split out of <see cref="RunTurnAsync"/> only so that method's
+	/// trace-writer-cleanup <c>finally</c> can wrap every exit path (including the early
+	/// no-participants-declared return, which never reaches here) without the wrapper itself growing
+	/// past the point of being one function's worth of responsibility.
+	/// </summary>
+	private async Task<AgentTurnResult> RunTurnCoreAsync(
+		AgentDefinition supervisor,
+		string conversationId,
+		string userMessage,
+		IReadOnlyList<ChatMessage> conversationHistory,
+		MagenticTurnOverrides overrides,
+		ConcurrentBag<AgentExecutionContext> builtContexts,
+		CancellationToken cancellationToken)
+	{
 		IReadOnlyList<AIAgent> participants;
 		AIAgent manager;
 		try
 		{
 			(manager, participants) = await BuildManagerAndParticipantsAsync(
-				supervisor, conversationId, overrides, cancellationToken);
+				supervisor, conversationId, overrides, builtContexts, cancellationToken);
 		}
 		catch (Exception ex) when (ex is not OperationCanceledException)
 		{
@@ -248,7 +287,7 @@ public sealed class MagenticAgentTurnRunner : IMagenticAgentTurnRunner
 	/// </remarks>
 	private async Task<(AIAgent Manager, IReadOnlyList<AIAgent> Participants)> BuildManagerAndParticipantsAsync(
 		AgentDefinition supervisor, string conversationId, MagenticTurnOverrides overrides,
-		CancellationToken cancellationToken)
+		ConcurrentBag<AgentExecutionContext> builtContexts, CancellationToken cancellationToken)
 	{
 		var seenParticipantIds = new HashSet<string>(StringComparer.Ordinal);
 		var resolvedParticipantDefs = new List<AgentDefinition>(supervisor.Participants.Count);
@@ -285,9 +324,9 @@ public sealed class MagenticAgentTurnRunner : IMagenticAgentTurnRunner
 		// Overrides apply to the manager only — the agent the caller actually addressed — the same way
 		// a single-agent turn's SystemPromptOverride/DeploymentOverride/Temperature apply only to the
 		// one agent named on the request, never to whatever it delegates to internally.
-		var managerTask = BuildAgentAsync(supervisor, conversationId, cancellationToken, overrides);
+		var managerTask = BuildAgentAsync(supervisor, conversationId, builtContexts, cancellationToken, overrides);
 		var participantTasks = resolvedParticipantDefs
-			.Select(def => BuildAgentAsync(def, conversationId, cancellationToken))
+			.Select(def => BuildAgentAsync(def, conversationId, builtContexts, cancellationToken))
 			.ToArray();
 		await Task.WhenAll([managerTask, .. participantTasks]);
 
@@ -308,19 +347,27 @@ public sealed class MagenticAgentTurnRunner : IMagenticAgentTurnRunner
 	/// <see cref="IMagenticAgentTurnRunner"/> about the resulting empty context-cache registration
 	/// breakdown), so it sets this property itself rather than inheriting it from that cache.
 	/// </param>
+	/// <param name="builtContexts">
+	/// Collects this build's <see cref="AgentExecutionContext"/> so <see cref="RunTurnAsync"/>'s
+	/// trace-writer cleanup can finalize it regardless of whether this or a sibling concurrent build
+	/// later throws. Populated as soon as this build succeeds — added before <c>Task.WhenAll</c> can
+	/// possibly observe another build's failure, so a partially-failed concurrent build never leaks
+	/// the contexts that DID complete.
+	/// </param>
 	/// <param name="overrides">
 	/// Per-turn overrides to apply — pass a non-null instance only for the manager (see the call site
 	/// in <see cref="RunTurnAsync"/>); a participant never receives caller-supplied overrides.
 	/// </param>
-	private Task<AIAgent> BuildAgentAsync(
+	private async Task<AIAgent> BuildAgentAsync(
 		AgentDefinition agentDef,
 		string conversationId,
+		ConcurrentBag<AgentExecutionContext> builtContexts,
 		CancellationToken cancellationToken,
 		MagenticTurnOverrides? overrides = null)
 	{
 		var skillIds = AgentDefinition.ResolveSkillIds(agentDef, agentDef.Id);
 
-		return _agentFactory.CreateAgentFromSkillsAsync(
+		var built = await _agentFactory.CreateAgentWithContextFromSkillsAsync(
 			skillIds,
 			new SkillAgentOptions
 			{
@@ -336,6 +383,9 @@ public sealed class MagenticAgentTurnRunner : IMagenticAgentTurnRunner
 				},
 			},
 			cancellationToken);
+
+		builtContexts.Add(built.Context);
+		return built.Agent;
 	}
 
 	/// <summary>

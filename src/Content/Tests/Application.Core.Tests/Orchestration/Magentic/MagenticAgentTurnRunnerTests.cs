@@ -2,12 +2,14 @@ using Application.AI.Common.Factories;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Orchestration.Magentic;
+using Application.AI.Common.Interfaces.Traces;
 using Application.AI.Common.Services;
 using Application.Core.Orchestration.Magentic;
 using Application.Core.Tests.Helpers;
 using Domain.AI.Agents;
 using Domain.AI.Skills;
 using Domain.Common;
+using Domain.Common.MetaHarness;
 using FluentAssertions;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -61,9 +63,9 @@ public sealed class MagenticAgentTurnRunnerTests
     public MagenticAgentTurnRunnerTests()
     {
         _agentFactory
-            .Setup(f => f.CreateAgentFromSkillsAsync(
+            .Setup(f => f.CreateAgentWithContextFromSkillsAsync(
                 It.IsAny<IReadOnlyList<string>>(), It.IsAny<SkillAgentOptions>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new TestableAIAgent("agent response"));
+            .ReturnsAsync(new AgentBuildResult(new TestableAIAgent("agent response"), new AgentExecutionContext()));
 
         _usageCapture
             .Setup(c => c.TakeSnapshot())
@@ -242,11 +244,11 @@ public sealed class MagenticAgentTurnRunnerTests
 
         var seenOptions = new List<SkillAgentOptions>();
         _agentFactory
-            .Setup(f => f.CreateAgentFromSkillsAsync(
+            .Setup(f => f.CreateAgentWithContextFromSkillsAsync(
                 It.IsAny<IReadOnlyList<string>>(), It.IsAny<SkillAgentOptions>(), It.IsAny<CancellationToken>()))
             .Callback<IReadOnlyList<string>, SkillAgentOptions, CancellationToken>(
                 (_, opts, _) => seenOptions.Add(opts))
-            .ReturnsAsync(new TestableAIAgent("agent response"));
+            .ReturnsAsync(new AgentBuildResult(new TestableAIAgent("agent response"), new AgentExecutionContext()));
 
         _orchestrator
             .Setup(o => o.RunAsync(It.IsAny<MagenticWorkflowRequest>(), It.IsAny<CancellationToken>()))
@@ -392,11 +394,11 @@ public sealed class MagenticAgentTurnRunnerTests
 
         var seenOptions = new List<SkillAgentOptions>();
         _agentFactory
-            .Setup(f => f.CreateAgentFromSkillsAsync(
+            .Setup(f => f.CreateAgentWithContextFromSkillsAsync(
                 It.IsAny<IReadOnlyList<string>>(), It.IsAny<SkillAgentOptions>(), It.IsAny<CancellationToken>()))
             .Callback<IReadOnlyList<string>, SkillAgentOptions, CancellationToken>(
                 (_, opts, _) => seenOptions.Add(opts))
-            .ReturnsAsync(new TestableAIAgent("agent response"));
+            .ReturnsAsync(new AgentBuildResult(new TestableAIAgent("agent response"), new AgentExecutionContext()));
 
         _orchestrator
             .Setup(o => o.RunAsync(It.IsAny<MagenticWorkflowRequest>(), It.IsAny<CancellationToken>()))
@@ -421,7 +423,7 @@ public sealed class MagenticAgentTurnRunnerTests
         var supervisor = Supervisor("researcher");
         _agentRegistry.Setup(r => r.TryGet("researcher")).Returns(Participant("researcher"));
         _agentFactory
-            .Setup(f => f.CreateAgentFromSkillsAsync(
+            .Setup(f => f.CreateAgentWithContextFromSkillsAsync(
                 It.IsAny<IReadOnlyList<string>>(), It.IsAny<SkillAgentOptions>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new InvalidOperationException(
                 "Agent 'researcher' declares skill prerequisites but no conversation scope was supplied."));
@@ -433,6 +435,52 @@ public sealed class MagenticAgentTurnRunnerTests
         result.ErrorKind.Should().Be(Application.Core.CQRS.Agents.ExecuteAgentTurn.AgentTurnErrorKind.Internal);
         _orchestrator.Verify(
             o => o.RunAsync(It.IsAny<MagenticWorkflowRequest>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task RunTurnAsync_ExecutionTracingOn_CompletesAndDisposesEveryBuiltAgentsTraceWriter()
+    {
+        // Regression guard: MagenticAgentTurnRunner.BuildAgentAsync used to discard the
+        // AgentExecutionContext CreateAgentWithContextFromSkillsAsync returns, so a trace writer
+        // AgentExecutionContextFactory stashed into it (when MetaHarness.ExecutionTracingEnabled) was
+        // never completed or disposed — leaking a file handle and semaphore per agent, per turn. Found
+        // by CI's correctness-review after this PR's local review rounds missed it.
+        var supervisor = Supervisor("researcher");
+        _agentRegistry.Setup(r => r.TryGet("researcher")).Returns(Participant("researcher"));
+
+        var managerWriter = new Mock<ITraceWriter>();
+        managerWriter.Setup(w => w.Scope).Returns(TraceScope.ForExecution(Guid.NewGuid()));
+        var participantWriter = new Mock<ITraceWriter>();
+        participantWriter.Setup(w => w.Scope).Returns(TraceScope.ForExecution(Guid.NewGuid()));
+
+        var callCount = 0;
+        _agentFactory
+            .Setup(f => f.CreateAgentWithContextFromSkillsAsync(
+                It.IsAny<IReadOnlyList<string>>(), It.IsAny<SkillAgentOptions>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(() =>
+            {
+                var writer = Interlocked.Increment(ref callCount) == 1 ? managerWriter.Object : participantWriter.Object;
+                var context = new AgentExecutionContext
+                {
+                    AdditionalProperties = new Dictionary<string, object>
+                    {
+                        [ITraceWriter.AdditionalPropertiesKey] = writer,
+                    },
+                };
+                return new AgentBuildResult(new TestableAIAgent("agent response"), context);
+            });
+
+        _orchestrator
+            .Setup(o => o.RunAsync(It.IsAny<MagenticWorkflowRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result<MagenticWorkflowResult>.Success(SuccessResult()));
+
+        await CreateRunner().RunTurnAsync(
+            supervisor, "conv-1", "hello", [], MagenticTurnOverrides.None, CancellationToken.None);
+
+        managerWriter.Verify(w => w.CompleteAsync(It.IsAny<CancellationToken>()), Times.Once);
+        managerWriter.Verify(w => w.DisposeAsync(), Times.Once);
+        participantWriter.Verify(w => w.CompleteAsync(It.IsAny<CancellationToken>()), Times.Once);
+        participantWriter.Verify(w => w.DisposeAsync(), Times.Once);
     }
 
     [Fact]
