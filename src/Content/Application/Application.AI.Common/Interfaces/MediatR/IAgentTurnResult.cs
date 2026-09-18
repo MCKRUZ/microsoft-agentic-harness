@@ -18,4 +18,10 @@ public interface IAgentTurnResult
 
     /// <summary>Gets the output (completion) tokens produced across the LLM calls in this turn.</summary>
     int OutputTokens { get; }
+
+    /// <summary>
+    /// Gets the ids of the skill(s) active for this turn's agent, for attributing turn outcomes back to
+    /// the skill(s) responsible (#695). Empty when no skill could be attributed.
+    /// </summary>
+    IReadOnlyList<string> SkillIds { get; }
 }

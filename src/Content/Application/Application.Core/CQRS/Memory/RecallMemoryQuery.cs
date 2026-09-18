@@ -20,4 +20,11 @@ public sealed record RecallMemoryQuery : IRequest<Result<IReadOnlyList<MemoryEnt
 
     /// <summary>Maximum number of results to return (1–50). Default 5.</summary>
     public int MaxResults { get; init; } = 5;
+
+    /// <summary>
+    /// Optional exact-match filter on entity type (e.g. <c>"Fact"</c>) — restricts results to that one
+    /// memory kind instead of every kind the caller has ever remembered. <see langword="null"/> (the
+    /// default) is unfiltered, matching the query's original behavior.
+    /// </summary>
+    public string? EntityType { get; init; }
 }

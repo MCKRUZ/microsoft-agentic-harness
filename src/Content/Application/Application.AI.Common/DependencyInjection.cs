@@ -60,6 +60,7 @@ namespace Application.AI.Common;
 ///   <item><description><c>ToolOutputCompressionBehavior</c> — post-execution: compresses large tool output for context window savings</description></item>
 ///   <item><description><c>KnowledgeExtractionBehavior</c> — post-turn: extracts facts to knowledge graph (fire-and-forget)</description></item>
 ///   <item><description><c>WorkEpisodeCaptureBehavior</c> — post-turn: records what the agent did as a WorkEpisode (fire-and-forget)</description></item>
+///   <item><description><c>SkillEffectivenessTrackingBehavior</c> — post-turn: records per-skill success/failure for procedural memory (fire-and-forget)</description></item>
 /// </list>
 /// </para>
 /// </remarks>
@@ -118,6 +119,7 @@ public static class DependencyInjection
             .AddTransient(typeof(IPipelineBehavior<,>), typeof(ToolOutputCompressionBehavior<,>))
             .AddTransient(typeof(IPipelineBehavior<,>), typeof(KnowledgeExtractionBehavior<,>))
             .AddTransient(typeof(IPipelineBehavior<,>), typeof(WorkEpisodeCaptureBehavior<,>))
+            .AddTransient(typeof(IPipelineBehavior<,>), typeof(SkillEffectivenessTrackingBehavior<,>))
             .AddTransient(typeof(IPipelineBehavior<,>), typeof(PromptUsageTrackingBehavior<,>));
 
         // Shared bounded-key-set-gated first-party ITool lookup — the one place ToolCapabilityResolver

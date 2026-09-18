@@ -291,6 +291,110 @@ public class AgentExecutionContextFactoryTests
         context.Instruction.Should().Be("Base instructions.\n\nExtra context.");
     }
 
+    // ISkillAmendmentProvider is scoped (it resolves ambient tenant/owner identity), while
+    // AgentExecutionContextFactory is a singleton — the same captive-dependency shape
+    // ComposeStaticSystemPromptAsync already works around, and why these three tests build a real
+    // container + ambient scope (mirroring AgentExecutionContextFactoryPromptComposerTests) rather
+    // than passing the provider as a constructor argument.
+    private static ServiceProvider BuildAmendmentAwareProvider(
+        Application.AI.Common.Interfaces.Skills.ISkillAmendmentProvider? amendmentProvider)
+    {
+        var services = new ServiceCollection();
+        services.AddSingleton(RedactionFilter);
+        services.AddSingleton<IAmbientRequestScope, Application.AI.Common.Services.AmbientRequestScope>();
+        if (amendmentProvider is not null)
+            services.AddScoped(_ => amendmentProvider);
+        return services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
+    }
+
+    [Fact]
+    public async Task MapToAgentContext_SkillHasLearnedAmendments_AppendsThemToInstruction()
+    {
+        // Proves #695's wiring is real: deleting the factory's amendment-fetch call would make this
+        // test fail even though the provider itself was already fully tested before it existed.
+        var skill = SimpleSkill(id: "researcher");
+        skill.Instructions = "Do the research.";
+        var amendmentProvider = new Mock<Application.AI.Common.Interfaces.Skills.ISkillAmendmentProvider>();
+        amendmentProvider
+            .Setup(p => p.GetAmendmentsAsync("researcher", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(
+            [
+                new Domain.AI.Skills.SkillAmendment
+                {
+                    Id = "a1",
+                    SkillId = "researcher",
+                    Content = "Always cite sources.",
+                    LearnedFrom = "turn-outcome",
+                    CreatedAt = DateTimeOffset.UtcNow,
+                }
+            ]);
+        await using var root = BuildAmendmentAwareProvider(amendmentProvider.Object);
+        var factory = CreateFactory(serviceProvider: root);
+        var ambient = root.GetRequiredService<IAmbientRequestScope>();
+
+        using var scope = root.CreateScope();
+        using (ambient.BeginScope(scope.ServiceProvider))
+        {
+            var context = await factory.MapToAgentContextAsync(skill, new SkillAgentOptions());
+
+            context.Instruction.Should().Contain("Do the research.");
+            context.Instruction.Should().Contain("Always cite sources.");
+        }
+    }
+
+    [Fact]
+    public async Task MapToAgentContext_NoAmendmentProviderConfigured_InstructionUnaffected()
+    {
+        // No ISkillAmendmentProvider registered in the container at all — the template-consumer
+        // case where the knowledge-graph infrastructure was never wired in.
+        var skill = SimpleSkill();
+        skill.Instructions = "Do the thing.";
+        var factory = CreateFactory();
+
+        var context = await factory.MapToAgentContextAsync(skill, new SkillAgentOptions());
+
+        context.Instruction.Should().Be("Do the thing.");
+    }
+
+    [Fact]
+    public async Task MapToAgentContext_NoAmbientScopeEstablished_InstructionUnaffected()
+    {
+        // A provider IS registered, but nothing ever called ambient.BeginScope — mirrors any
+        // background/non-turn code path that builds a context outside a request.
+        var skill = SimpleSkill();
+        skill.Instructions = "Do the thing.";
+        var amendmentProvider = new Mock<Application.AI.Common.Interfaces.Skills.ISkillAmendmentProvider>();
+        await using var root = BuildAmendmentAwareProvider(amendmentProvider.Object);
+        var factory = CreateFactory(serviceProvider: root);
+
+        var context = await factory.MapToAgentContextAsync(skill, new SkillAgentOptions());
+
+        context.Instruction.Should().Be("Do the thing.");
+        amendmentProvider.Verify(p => p.GetAmendmentsAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task MapToAgentContext_AmendmentProviderThrows_FailsOpenToUnmodifiedInstruction()
+    {
+        var skill = SimpleSkill();
+        skill.Instructions = "Do the thing.";
+        var amendmentProvider = new Mock<Application.AI.Common.Interfaces.Skills.ISkillAmendmentProvider>();
+        amendmentProvider
+            .Setup(p => p.GetAmendmentsAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("graph store unavailable"));
+        await using var root = BuildAmendmentAwareProvider(amendmentProvider.Object);
+        var factory = CreateFactory(serviceProvider: root);
+        var ambient = root.GetRequiredService<IAmbientRequestScope>();
+
+        using var scope = root.CreateScope();
+        using (ambient.BeginScope(scope.ServiceProvider))
+        {
+            var context = await factory.MapToAgentContextAsync(skill, new SkillAgentOptions());
+
+            context.Instruction.Should().Be("Do the thing.", "amendments are an enhancement, never a hard dependency of building a turn's instructions");
+        }
+    }
+
     // --- Agent naming ---
 
     [Fact]

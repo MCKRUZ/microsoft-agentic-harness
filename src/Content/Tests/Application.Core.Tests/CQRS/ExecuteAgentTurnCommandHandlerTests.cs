@@ -90,6 +90,51 @@ public class ExecuteAgentTurnCommandHandlerTests
     }
 
     [Fact]
+    public async Task Handle_ValidRequest_PopulatesSkillIdsForEffectivenessTracking()
+    {
+        // #695: SkillEffectivenessTrackingBehavior attributes a turn's outcome to the skill(s) that
+        // ran it — this is the field it reads. With no registered AgentDefinition (the default in
+        // this fixture), AgentDefinition.ResolveSkillIds falls back to treating AgentName as the
+        // skill id directly.
+        var agent = new TestableAIAgent("Agent response text");
+        _agentCache
+            .Setup(c => c.GetOrCreateAsync(
+                It.IsAny<string>(),
+                It.IsAny<IReadOnlyList<string>>(),
+                It.IsAny<SkillAgentOptions>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(agent);
+
+        var result = await _handler.Handle(CreateCommand(agentName: "TestAgent"), CancellationToken.None);
+
+        result.SkillIds.Should().BeEquivalentTo(["TestAgent"]);
+    }
+
+    [Fact]
+    public async Task Handle_InternalErrorAfterSkillResolution_StillPopulatesSkillIds()
+    {
+        // The skillIds local is hoisted above the try specifically so a caught failure still reports
+        // which skill(s) the turn was attempting to run under — attribution matters for a failed
+        // outcome too. Reverting that hoist (declaring skillIds with `var` inside the try) would make
+        // this test fail to compile, and reverting to a fresh empty default inside the catch instead
+        // would make it fail at runtime.
+        var agent = TestableAIAgent.Throwing(new InvalidOperationException("boom"));
+        _agentCache
+            .Setup(c => c.GetOrCreateAsync(
+                It.IsAny<string>(),
+                It.IsAny<IReadOnlyList<string>>(),
+                It.IsAny<SkillAgentOptions>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(agent);
+
+        var result = await _handler.Handle(CreateCommand(agentName: "TestAgent"), CancellationToken.None);
+
+        result.Success.Should().BeFalse();
+        result.ErrorKind.Should().Be(AgentTurnErrorKind.Internal);
+        result.SkillIds.Should().BeEquivalentTo(["TestAgent"]);
+    }
+
+    [Fact]
     public async Task Handle_BlockingRunWithToolCall_PopulatesTreatedToolCallsOnResult()
     {
         // Arrange — the non-streaming path: AgentResponse.Messages carries the call/result pair

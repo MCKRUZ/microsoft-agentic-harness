@@ -442,7 +442,10 @@ skills:
 
                     <h2>Skill amendments and learnings</h2>
                     <p>
-                        Skills aren't static. The <strong>meta-harness</strong> (see <a href="10-observability.html">Observability &amp; Safety</a>) can propose <code>SkillAmendment</code>s based on what the agent has learned across runs — tweaks to instructions, added examples, refined tool restrictions. These flow through the same loader pipeline and become part of the next session's Tier-2 content.
+                        Skills aren't static. A <code>SkillAmendment</code> is a short, plain-language note attached to one skill — what was learned, and what triggered it. Unlike a <code>SKILL.md</code> change, an amendment doesn't need a host restart: <code>AgentExecutionContextFactory</code> loads a skill's amendments from the knowledge graph, entirely independent of the file-based skill loader, whenever that skill's agent is (re)built — immediately for any brand-new conversation, and for an already-open one once its cached agent is rebuilt, the same cadence the rest of that agent's static instructions already follow. It is not re-checked on every turn of an ongoing conversation.
+                    </p>
+                    <p>
+                        The harness also tracks, automatically, whether each skill succeeds — broken down by what kind of request it was handling — so the data needed to decide "this skill needs an amendment" is being collected on every turn. Turning that track record into a written amendment is currently a manual step: nothing in the harness yet decides on its own when a pattern is strong enough to act on.
                     </p>
 
                     <hr />

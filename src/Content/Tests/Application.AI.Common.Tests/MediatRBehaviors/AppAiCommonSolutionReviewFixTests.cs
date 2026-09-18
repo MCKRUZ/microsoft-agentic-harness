@@ -193,6 +193,7 @@ public sealed class AppAiCommonSolutionReviewFixTests
         public string Response => "noted";
         public int InputTokens => 0;
         public int OutputTokens => 0;
+        public IReadOnlyList<string> SkillIds => [];
     }
 
     private sealed class SingleFactExtractor : IConversationFactExtractor
@@ -239,7 +240,7 @@ public sealed class AppAiCommonSolutionReviewFixTests
             => _written.Task.WaitAsync(timeout);
 
         public Task<IReadOnlyList<GraphNode>> RecallAsync(
-            string query, int maxResults = 5, CancellationToken cancellationToken = default)
+            string query, int maxResults = 5, string? entityType = null, CancellationToken cancellationToken = default)
             => Task.FromResult<IReadOnlyList<GraphNode>>([]);
 
         public Task ForgetAsync(string key, CancellationToken cancellationToken = default)

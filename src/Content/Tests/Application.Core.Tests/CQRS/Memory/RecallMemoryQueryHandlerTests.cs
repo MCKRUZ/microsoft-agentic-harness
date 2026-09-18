@@ -28,7 +28,7 @@ public sealed class RecallMemoryQueryHandlerTests
     public async Task Handle_MapsNodesToSlimEntries()
     {
         var createdAt = new DateTimeOffset(2026, 7, 1, 12, 0, 0, TimeSpan.Zero);
-        _memory.Setup(m => m.RecallAsync("color", 5, It.IsAny<CancellationToken>()))
+        _memory.Setup(m => m.RecallAsync("color", 5, It.IsAny<string?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(
             [
                 new GraphNode
@@ -59,7 +59,7 @@ public sealed class RecallMemoryQueryHandlerTests
     {
         // Recall can surface corpus entity nodes matched by graph traversal; they carry no
         // "content" property and must project as empty rather than throwing or leaking properties.
-        _memory.Setup(m => m.RecallAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
+        _memory.Setup(m => m.RecallAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(
             [
                 new GraphNode { Id = "azure:entity", Name = "azure", Type = "Technology" }
@@ -75,7 +75,7 @@ public sealed class RecallMemoryQueryHandlerTests
     [Fact]
     public async Task Handle_PassesQueryAndMaxResultsThrough()
     {
-        _memory.Setup(m => m.RecallAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
+        _memory.Setup(m => m.RecallAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync([]);
 
         var result = await _handler.Handle(
@@ -83,6 +83,21 @@ public sealed class RecallMemoryQueryHandlerTests
 
         result.IsSuccess.Should().BeTrue();
         result.Value.Should().BeEmpty();
-        _memory.Verify(m => m.RecallAsync("deadline", 17, It.IsAny<CancellationToken>()), Times.Once);
+        _memory.Verify(m => m.RecallAsync("deadline", 17, null, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task Handle_PassesEntityTypeThrough()
+    {
+        // Proves the fact-only-recall wiring is real: a caller filtering to one memory kind (e.g.
+        // "Fact") actually reaches IKnowledgeMemory.RecallAsync's entityType parameter, not just the
+        // DTO. Deleting the pass-through in the handler would fail this test.
+        _memory.Setup(m => m.RecallAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync([]);
+
+        await _handler.Handle(
+            new RecallMemoryQuery { Query = "color", EntityType = "Fact" }, CancellationToken.None);
+
+        _memory.Verify(m => m.RecallAsync("color", 5, "Fact", It.IsAny<CancellationToken>()), Times.Once);
     }
 }

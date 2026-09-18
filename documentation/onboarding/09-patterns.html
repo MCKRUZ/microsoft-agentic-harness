@@ -140,7 +140,7 @@ throw new ValidationException(failures);  // fallback for non-Result handlers</c
                         <li><code>ContentSafetyBehavior</code>, <code>PromptInjectionBehavior</code> — the safety stack: content moderation and prompt-injection defense on the way in.</li>
                         <li><code>TokenBudgetBehavior</code>, <code>HookBehavior</code>, <code>RetrievalAuditBehavior</code> — enforce the per-turn token budget, run lifecycle hooks, and audit RAG retrievals.</li>
                         <li><code>ResponseSanitizationBehavior</code>, <code>ToolOutputCompressionBehavior</code> — post-execution: scrub the response and compress large tool output.</li>
-                        <li><code>KnowledgeExtractionBehavior</code>, <code>WorkEpisodeCaptureBehavior</code> — post-turn, fire-and-forget knowledge/episode capture.</li>
+                        <li><code>KnowledgeExtractionBehavior</code>, <code>WorkEpisodeCaptureBehavior</code>, <code>SkillEffectivenessTrackingBehavior</code> — post-turn, fire-and-forget knowledge/episode/effectiveness capture.</li>
                         <li><code>PromptUsageTrackingBehavior</code> — records prompt/token usage metrics.</li>
                     </ul>
 

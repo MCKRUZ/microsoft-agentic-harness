@@ -155,6 +155,7 @@ var result = await _mediator.Send(cmd, cancellationToken);</code></pre>
                                 <li><code>ToolOutputCompressionBehavior</code> — <em>post-execution</em>; compresses large tool outputs by content type to reduce token usage.</li>
                                 <li><code>KnowledgeExtractionBehavior</code> — <em>post-turn, fire-and-forget</em>; extracts knowledge-graph facts.</li>
                                 <li><code>WorkEpisodeCaptureBehavior</code> — <em>post-turn, fire-and-forget</em>; captures a work-memory episode.</li>
+                                <li><code>SkillEffectivenessTrackingBehavior</code> — <em>post-turn, fire-and-forget</em>; records per-skill success/failure for procedural memory.</li>
                                 <li><code>PromptUsageTrackingBehavior</code> — records prompt/token usage metrics.</li>
                             </ol>
                             <p>

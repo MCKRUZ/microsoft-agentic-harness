@@ -103,7 +103,7 @@ public class KnowledgeGraphMemoryExample
 
         foreach (var query in queries)
         {
-            var results = await _knowledgeMemory.RecallAsync(query, maxResults: 5, cancellationToken);
+            var results = await _knowledgeMemory.RecallAsync(query, maxResults: 5, cancellationToken: cancellationToken);
             AnsiConsole.MarkupLine($"\n  [bold]Query:[/] [white]{query}[/] → [grey]{results.Count} result(s)[/]");
 
             if (results.Count > 0)
@@ -128,7 +128,7 @@ public class KnowledgeGraphMemoryExample
 
     private async Task ImproveFromFeedbackAsync(CancellationToken cancellationToken)
     {
-        var queryResults = await _knowledgeMemory.RecallAsync("AI", maxResults: 3, cancellationToken);
+        var queryResults = await _knowledgeMemory.RecallAsync("AI", maxResults: 3, cancellationToken: cancellationToken);
 
         if (queryResults.Count == 0)
         {
@@ -176,7 +176,7 @@ public class KnowledgeGraphMemoryExample
         await _knowledgeMemory.ForgetAsync("rag-system", cancellationToken);
         AnsiConsole.MarkupLine("  [green]✓[/] Forgot memory: [white]rag-system[/]");
 
-        var results = await _knowledgeMemory.RecallAsync("RAG", maxResults: 5, cancellationToken);
+        var results = await _knowledgeMemory.RecallAsync("RAG", maxResults: 5, cancellationToken: cancellationToken);
         AnsiConsole.MarkupLine($"  [grey]Recall after forget: {results.Count} result(s) (should be 0 if unique)[/]");
     }
 
