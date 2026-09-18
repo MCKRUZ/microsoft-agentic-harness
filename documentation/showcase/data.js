@@ -536,9 +536,9 @@ window.SHOWCASE_CATEGORIES = [
             {
                 id: 'classifier',
                 name: 'Classifier',
-                status: 'partial',
-                exec: 'A real classifier exists and is genuinely shared — it scores task complexity for both model-tier routing and retrieval routing — but it only classifies one dimension (how hard is this), not general request-type or intent classification.',
-                eng: 'TaskComplexityClassifier (LLM-based, four tiers: trivial/simple/moderate/complex) is consumed by both ModelRouter and RagOrchestrator — one shared classifier, not duplicated per caller.',
+                status: 'built',
+                exec: 'Two classifiers, not one — the original complexity classifier (how hard is this) still drives model-tier and retrieval routing, and a second, genuinely different classifier now scores what kind of request this is (a question, a coding task, research, planning, small talk), which the new agent router consumes to help decide who should own it.',
+                eng: 'TaskComplexityClassifier (four tiers) is joined by a sibling, RequestIntentClassifier (eight intents), same LLM-fallback-over-heuristic shape, same economy-tier routing through IModelRouter — a second classifying dimension, not a rewrite of the first.',
                 deepDive: {
                     scenario: [
                         {
@@ -555,61 +555,63 @@ window.SHOWCASE_CATEGORIES = [
                         },
                         {
                             time: 'Most of the time',
-                            text: 'None of this costs an extra model call at all — a cheaper heuristic is tried first, and the real classifier here only gets invoked when that heuristic isn\'t confident enough to decide on its own.',
+                            text: 'None of this costs an extra model call at all — a cheaper heuristic is tried first for complexity, and both classifiers only get invoked when a cheap path isn\'t confident enough to decide on its own.',
+                        },
+                        {
+                            time: 'A brand-new conversation with no agent picked yet',
+                            text: 'The new intent classifier reads the opening message, decides it looks like a research request, and hands that signal to the router deciding which agent should take the conversation — the "what kind of request is this" question the complexity classifier was never built to answer.',
                         },
                     ],
                     flow: [
                         { title: 'Try The Cheap Path First', tone: 'info', body: 'A lightweight heuristic attempts to judge complexity without an extra model call.' },
                         { title: 'Fall Back Only When Unsure', tone: 'jargon', body: 'An actual model call happens only when that heuristic isn\'t confident, using the cheapest available tier.' },
                         { title: 'Classify Into Four Tiers', tone: 'tip', body: 'Trivial, simple, moderate, or complex — each defined with concrete examples of what belongs where.' },
-                        { title: 'Feed Two Different Decisions', tone: 'warn', body: 'The same result drives which model tier handles a request and how thorough a retrieval pass needs to be.' },
+                        { title: 'A Second Classifier, A Second Question', tone: 'warn', body: 'What kind of request is this — question, task, code, research, planning, or just conversation — feeds agent routing instead of model-tier routing.' },
                     ],
                     narrative: [
-                        'What\'s real, and a genuine correction from what this box used to say: the classifier isn\'t a one-off tucked inside retrieval routing — <mark class="hl">the same shared classifier also decides which cost tier of model handles an ordinary request</mark>, so a trivial greeting and a genuinely hard reasoning task don\'t cost the same amount to answer.',
-                        'What keeps it "partial": it only classifies <mark class="hl">one specific dimension — how complex is this</mark> — not general-purpose intent or request-type classification (what kind of task is this, which skill should own it). A classifier in the fuller sense this taxonomy implies would cover more ground than complexity alone.',
-                        'A real cost-conscious detail: it doesn\'t run a model call on every single request. A <mark class="hl">cheaper heuristic is tried first</mark>, and the actual classification here fires only when that heuristic isn\'t confident — spending the extra latency and token cost only on the requests that actually need it.',
+                        'What\'s real: the original classifier isn\'t a one-off tucked inside retrieval routing — <mark class="hl">the same shared complexity classifier also decides which cost tier of model handles an ordinary request</mark>, so a trivial greeting and a genuinely hard reasoning task don\'t cost the same amount to answer.',
+                        'What closes the old gap: a sibling classifier now answers the question complexity alone never could — <mark class="hl">not how hard is this, but what kind of request is it</mark>. Same shape (LLM few-shot, economy-tier, safe fallback), genuinely different output: question, task execution, code generation, creative content, research, planning, or conversational chatter.',
+                        'Why it\'s a second component and not a rewrite of the first: complexity still only ever needs to answer "how hard," and intent only ever needs to answer "what kind" — collapsing them into one classifier would mean every consumer has to filter out the half it doesn\'t need. Kept separate, the model-tier router only sees complexity, and the new agent router only sees intent.',
                     ],
                     techTable: {
-                        columns: ['Tier', 'What It Looks Like'],
+                        columns: ['Classifier', 'Answers', 'Consumed By'],
                         rows: [
-                            ['Trivial', 'Greetings, acknowledgments, simple lookups.'],
-                            ['Simple', 'One tool, straightforward Q&A.'],
-                            ['Moderate', 'Multiple tools, synthesis across sources.'],
-                            ['Complex', 'Deep multi-step reasoning, planning, architecture-level work.'],
+                            ['TaskComplexityClassifier', 'How hard is this? (trivial/simple/moderate/complex)', 'Model-tier router, retrieval router'],
+                            ['RequestIntentClassifier', 'What kind of request is this? (question/task/code/research/planning/creative/conversational/other)', 'Front-door agent router'],
                         ],
                     },
                     engineeringFacts: [
                         {
-                            title: 'Genuinely shared across two real systems',
-                            body: 'Both general model-tier routing and RAG retrieval routing consume the exact same classifier — not two separate copies.',
+                            title: 'Genuinely shared, both of them',
+                            body: 'The complexity classifier is consumed by model-tier routing and RAG retrieval routing; the intent classifier is consumed by agent routing and by its own evaluation scorecard — no consumer holds a private copy.',
                         },
                         {
-                            title: 'A cheap heuristic runs first',
-                            body: 'The model-based classification is explicitly a fallback for when that heuristic isn\'t confident, not the default path for every request.',
+                            title: 'A cheap heuristic still runs first, for complexity',
+                            body: 'The model-based classification is explicitly a fallback for when that heuristic isn\'t confident, not the default path for every request. The intent classifier has no heuristic to fall back on — it\'s deliberately simple, so it always makes the one economy-tier call.',
                         },
                         {
-                            title: 'Fails to a safe middle tier, not an extreme',
-                            body: 'A classification failure defaults to "Moderate" — not the cheapest tier, which could starve a hard request of the right model, and not the most expensive one, which could waste money on a trivial one.',
+                            title: 'Both fail closed to a conservative default',
+                            body: 'A complexity failure defaults to "Moderate," not an extreme tier. An intent failure defaults to "Other" with 0.5 confidence — low enough that the agent router won\'t act on it without a real signal.',
                         },
                         {
-                            title: 'It replaced an earlier, narrower interface',
-                            body: 'Its own documentation notes it explicitly supersedes a prior query-only complexity classifier — a sign of real iteration, not a first draft left in place.',
+                            title: 'Low confidence is a refusal, not a guess',
+                            body: 'The agent router won\'t route on an intent classification below a confidence floor — it declines and falls back to the default agent rather than silently pick wrong.',
                         },
                         {
-                            title: 'Only classifies complexity, not intent',
-                            body: 'A genuinely different, harder problem — what is this request, not just how hard is it — that this component doesn\'t attempt.',
+                            title: 'Same measurement discipline as the original',
+                            body: 'Both classifiers ship an evaluation probe wired into the same routing-accuracy scorecard, so a regression in either one is measurable, not just assumed.',
                         },
                     ],
                     whyItMatters:
-                        'Routing every request through the same expensive model regardless of how hard it actually is wastes money on easy questions and can under-serve hard ones. A shared, reused complexity signal that only spends the cost of a model call when a cheap heuristic can\'t decide on its own is a genuinely good design — the honest gap is that "how complex" is a narrower question than "what kind of request is this," and this component only answers the first one.',
+                        'Routing every request through the same expensive model regardless of how hard it actually is wastes money on easy questions and can under-serve hard ones — that problem was already solved. The harder, separate problem was deciding which agent should even handle a request in the first place, which needed a different question answered: not how hard, but what kind. Building that as its own classifier — reusing the same safe-fallback, cost-conscious shape rather than overloading the existing one — is what closes the gap without duplicating anything.',
                 },
             },
             {
                 id: 'router',
                 name: 'Router',
-                status: 'partial',
-                exec: 'A real, general-purpose model router exists and is on by default for actual conversation turns — not scoped to retrieval — but it routes which model handles a call, not which skill or agent should own the task in the first place.',
-                eng: 'ModelRouter dynamically picks a cost-ordered model tier per turn (complexity-classified, with per-conversation escalation on repeated bad outcomes); a separate request/skill router doesn\'t exist as its own component.',
+                status: 'built',
+                exec: 'Two routers now, covering two different questions: the existing model router still decides which model tier answers a call, and a new front-door agent router decides which agent should own an incoming conversation — opt-in, conservative (it declines rather than guesses), and wired into the dashboard chat as an explicit "let the system choose" toggle.',
+                eng: 'ModelRouter is unchanged — cost-ordered tier per turn, complexity-classified, with per-conversation escalation. The new AgentRouter sits in front of conversation creation: it gates on intent-classification confidence, scores registered agents by AGENT.md description/tag/category overlap via a second ISupervisorStrategy implementation, and falls back to the configured default agent whenever it isn\'t confident.',
                 deepDive: {
                     scenario: [
                         {
@@ -625,53 +627,64 @@ window.SHOWCASE_CATEGORIES = [
                             text: 'A completely fixed, well-understood background task — pulling structured facts out of a finished turn — always uses the same cheap tier, by config, because it doesn\'t need a smart per-request decision at all.',
                         },
                         {
-                            time: 'If none of this is wanted',
-                            text: 'The dynamic routing can be turned off entirely — when it is, everything runs on one default tier, exactly as if none of this existed.',
+                            time: 'A user opts in',
+                            text: 'The dashboard chat exposes a small "let the system choose an agent" toggle. Leave it off and every new conversation still goes to the same fixed agent it always has — nothing about existing behavior changes by default.',
+                        },
+                        {
+                            time: 'Turn it on and start a new conversation',
+                            text: 'The opening message — "find prior art for this rate-limiting approach" — goes to the new agent router instead of a fixed name. It classifies the intent, scores every registered agent\'s description and tags against the message, and picks the closest match.',
+                        },
+                        {
+                            time: 'The router isn\'t confident',
+                            text: 'A vague or ambiguous opening message doesn\'t get a forced guess — the router declines outright and the conversation falls back to the same default agent it would have used with the toggle off.',
+                        },
+                        {
+                            time: 'Later, on an existing thread',
+                            text: 'A conversation is bound to one agent for its whole life by default — but a caller can explicitly ask for it to be re-routed, either to a named agent or by re-running the router against the thread\'s latest message.',
                         },
                     ],
                     flow: [
-                        { title: 'Classify The Turn', tone: 'info', body: 'A cheap heuristic tries first; an LLM-based fallback runs only when it\'s not confident.' },
-                        { title: 'Pick A Base Tier From That', tone: 'jargon', body: 'Trivial or simple work goes to the cheapest tier, complex work to a more capable one.' },
-                        { title: 'Check This Conversation\'s Own Track Record', tone: 'warn', body: 'If this specific conversation has been struggling, the tier gets bumped up further — independent of what a fresh conversation with the same message would get.' },
-                        { title: 'Some Work Skips All Of This', tone: 'tip', body: 'A handful of fixed, well-understood background tasks route to a config-set tier directly, because a "smart" decision would just be overhead.' },
+                        { title: 'Classify The Turn', tone: 'info', body: 'A cheap heuristic tries first; an LLM-based fallback runs only when it\'s not confident. (Model router, unchanged.)' },
+                        { title: 'Pick A Base Tier From That', tone: 'jargon', body: 'Trivial or simple work goes to the cheapest tier, complex work to a more capable one. (Model router, unchanged.)' },
+                        { title: 'Opt In To Agent Routing', tone: 'tip', body: 'A caller creating a conversation can supply its opening message instead of a fixed agent name — the signal that turns routing on for that one thread.' },
+                        { title: 'Score Every Registered Agent', tone: 'warn', body: 'The router matches the message against each agent\'s AGENT.md description, tags, category, and domain, and picks the strongest match — or declines if intent confidence or the match itself is too weak.' },
                     ],
                     narrative: [
-                        'A genuine correction to what this box used to say: this isn\'t scoped to retrieval at all — it\'s the harness\'s real, general-purpose model router, and it\'s <mark class="hl">on by default for actual conversation turns</mark>, not something living only inside the RAG pipeline.',
-                        'What\'s real: every ordinary turn gets classified for complexity and routed to a cost-ordered tier based on that. On top of that, there\'s a genuinely adaptive layer most systems like this don\'t have: <mark class="hl">each conversation has its own quality track record</mark>, and one racking up consecutive bad outcomes gets automatically escalated to a more capable tier — specifically for that conversation, and capped so it can\'t run away unboundedly.',
-                        'Why it\'s still marked <mark class="hl">"partial"</mark>: what\'s real here is dynamic <em>model</em> routing — which provider or tier answers a given call. What doesn\'t exist as its own thing is a general <em>request</em> router that decides which skill or agent should even handle a task in the first place — that responsibility is spread across the Orchestrator and Supervisor Agent rather than consolidated into something you could point to and call "the router."',
+                        'What was already real: the model router is the harness\'s general-purpose model-tier router, on by default for every conversation turn, with per-conversation escalation for a thread that keeps producing bad outcomes.',
+                        'What closes the gap this box used to name: a genuinely separate <mark class="hl">agent router</mark> now exists — not a rename of the model router, a new component answering a different question (which agent, not which model). It sits in front of conversation creation, reuses the harness\'s existing agent-scoring contract with a new implementation suited to a cold request, and is opt-in rather than silently changing default behavior on the one production chat surface that exists today.',
+                        'The design choice worth naming: an agent is still <mark class="hl">pinned for a conversation\'s whole life</mark> once chosen, exactly like today — the router only ever makes that one decision, at the start. What\'s new on top is an explicit way to ask for a fresh decision later, rather than being stuck with turn one\'s pick forever.',
                     ],
                     techTable: {
-                        columns: ['Path', 'How It Picks A Tier'],
+                        columns: ['Router', 'Decides', 'Trigger'],
                         rows: [
-                            ['An ordinary conversation turn', 'Complexity classification, mapped to a cost-ordered tier.'],
-                            ['A conversation with a bad track record', 'The base tier, automatically bumped further based on recent negative outcomes.'],
-                            ['A fixed background task (e.g. fact extraction)', 'A single config-set tier — no per-request decision at all.'],
+                            ['ModelRouter', 'Which model tier answers this call', 'Every conversation turn, on by default'],
+                            ['AgentRouter', 'Which agent owns this conversation', 'Opt-in, at conversation creation, or explicit re-route on an existing thread'],
                         ],
                     },
                     engineeringFacts: [
                         {
-                            title: 'On by default for real conversation turns',
-                            body: 'Dynamic, complexity-based routing isn\'t an opt-in experiment — it\'s the default path, with a single config flag to disable it and fall back to one static tier.',
+                            title: 'Reused the scoring contract, not the algorithm',
+                            body: 'The harness already had a pluggable agent-selection interface used for task delegation. Its existing implementation scores tool coverage and a fixed set of built-in archetypes — neither applies to a cold request naming no tools against real registered agents — so the router uses a second implementation of the same interface, built for what\'s actually knowable up front: description, tags, category, domain.',
                         },
                         {
-                            title: 'A conversation\'s own history can override its base tier',
-                            body: 'Up to two escalation levels, tracked per conversation, triggered by consecutive negative outcomes — not a one-size-fits-all setting.',
+                            title: 'Confidence gates the whole decision, twice',
+                            body: 'A low-confidence intent classification stops the router before it even looks at agents. A weak or absent description match stops it after. Either way, "not confident" means fall back to the configured default — never a forced pick.',
                         },
                         {
-                            title: 'Escalation is capped, not unbounded',
-                            body: 'A struggling conversation can climb tiers, but only so far, so a genuinely broken loop can\'t silently spiral to the most expensive tier forever.',
+                            title: 'Opt-in, not a default-behavior change',
+                            body: 'The one production chat surface today always named a fixed agent explicitly. Routing needed a real caller to be more than a class nothing invokes, so it shipped as a small, explicit toggle rather than silently flipping the default.',
                         },
                         {
-                            title: 'Fixed background tasks deliberately skip the smart path',
-                            body: 'A known-cheap task like fact extraction routes through a simple config override, because paying for a classification decision on every background call would be pure overhead.',
+                            title: 'Pinned by default, explicitly re-routable',
+                            body: 'A conversation still keeps one agent for its whole life unless a caller deliberately asks otherwise — either by naming a different agent directly or by asking the router to re-decide from the thread\'s latest message.',
                         },
                         {
-                            title: 'Genuinely shared with the Classifier',
-                            body: 'The same complexity signal used for retrieval routing also feeds this general model router — they aren\'t two separate implementations.',
+                            title: 'Same ownership enforcement as every other conversation mutation',
+                            body: 'Re-routing an existing thread goes through the same caller-identity check every other write to a conversation record already enforces — not a new, hand-rolled comparison.',
                         },
                     ],
                     whyItMatters:
-                        'Real conversations don\'t all cost the same to run well, and the cheap model handling the first nine turns fine might start failing on the tenth. A router that not only picks a sensible starting tier but notices when a specific conversation isn\'t going well and adapts for that conversation alone is meaningfully more useful than a static per-operation setting — the honest gap is that this solves "which model," not "which skill or agent," a genuinely separate problem this taxonomy expects a router to also cover.',
+                        'Picking the right model tier for a request and picking the right agent for it are genuinely different problems, and conflating them either means every agent has to be generically capable, or someone has to manually configure which agent handles what. A router that can suggest an agent from what the user actually asked — while staying conservative enough to defer to a human-picked default when it isn\'t sure, and never silently overriding a running conversation\'s existing agent — is a real step toward the harness routing work the way this taxonomy describes, without pretending confidence it doesn\'t have.',
                 },
             },
             {

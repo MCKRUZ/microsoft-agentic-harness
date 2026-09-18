@@ -172,8 +172,12 @@ export function useDashboardAgent() {
       try {
         let threadId = store.threadId;
         if (!threadId) {
-          threadId = await createConversation();
+          const created = store.autoRoute
+            ? await createConversation({ firstMessage: trimmed })
+            : await createConversation({ agentName: 'dashboard-agent' });
+          threadId = created.threadId;
           store.setThreadId(threadId);
+          store.setRoutedAgentName(created.agentName);
         }
 
         const agent = await createAuthenticatedAgUiAgent();

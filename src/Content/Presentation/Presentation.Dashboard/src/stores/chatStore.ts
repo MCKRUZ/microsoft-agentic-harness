@@ -43,6 +43,15 @@ interface ChatState {
   error: string | null;
   /** A short, transient note describing the action the agent is performing (e.g. "navigate → /spend"). */
   toolActivity: string | null;
+  /**
+   * Opt-in toggle: when true, the next conversation is created without a fixed agent name, letting
+   * the backend router pick one from the first message instead of always using `dashboard-agent`.
+   * Read once, at the moment a new thread is created — flipping it mid-conversation has no effect
+   * on the thread already open.
+   */
+  autoRoute: boolean;
+  /** The agent the current thread is actually bound to, once known. Null until the first response. */
+  routedAgentName: string | null;
 
   setOpen: (open: boolean) => void;
   toggle: () => void;
@@ -50,6 +59,8 @@ interface ChatState {
   setStatus: (status: ChatStatus) => void;
   setError: (message: string | null) => void;
   setToolActivity: (activity: string | null) => void;
+  setAutoRoute: (autoRoute: boolean) => void;
+  setRoutedAgentName: (agentName: string | null) => void;
   /** Appends a new message to the transcript. */
   addMessage: (message: ChatMessage) => void;
   /** Appends a text delta to the message with the given id (no-op if it does not exist). */
@@ -65,6 +76,8 @@ export const useChatStore = create<ChatState>((set) => ({
   status: 'idle',
   error: null,
   toolActivity: null,
+  autoRoute: false,
+  routedAgentName: null,
 
   setOpen: (open) => set({ open }),
   toggle: () => set((state) => ({ open: !state.open })),
@@ -72,6 +85,8 @@ export const useChatStore = create<ChatState>((set) => ({
   setStatus: (status) => set({ status }),
   setError: (error) => set({ error }),
   setToolActivity: (toolActivity) => set({ toolActivity }),
+  setAutoRoute: (autoRoute) => set({ autoRoute }),
+  setRoutedAgentName: (routedAgentName) => set({ routedAgentName }),
 
   addMessage: (message) => set((state) => ({ messages: [...state.messages, message] })),
 
@@ -82,5 +97,5 @@ export const useChatStore = create<ChatState>((set) => ({
       ),
     })),
 
-  reset: () => set({ messages: [], status: 'idle', error: null, toolActivity: null }),
+  reset: () => set({ messages: [], status: 'idle', error: null, toolActivity: null, routedAgentName: null }),
 }));

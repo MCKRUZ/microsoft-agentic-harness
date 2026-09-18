@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Options;
 using Application.AI.Common.Interfaces.AI;
+using Application.AI.Common.Interfaces.Routing;
 using Application.AI.Common.Models.Conversations;
 using Presentation.AgentHub.Config;
 using Presentation.Common.Extensions;
@@ -30,6 +31,7 @@ public sealed class AgentsController : ControllerBase
 
     private readonly IConversationStore _store;
     private readonly IAgentMetadataRegistry _agentRegistry;
+    private readonly IAgentRouter _agentRouter;
     private readonly IOptionsMonitor<AgentHubConfig> _config;
     private readonly ILogger<AgentsController> _logger;
 
@@ -37,11 +39,13 @@ public sealed class AgentsController : ControllerBase
     public AgentsController(
         IConversationStore store,
         IAgentMetadataRegistry agentRegistry,
+        IAgentRouter agentRouter,
         IOptionsMonitor<AgentHubConfig> config,
         ILogger<AgentsController> logger)
     {
         _store = store;
         _agentRegistry = agentRegistry;
+        _agentRouter = agentRouter;
         _config = config;
         _logger = logger;
     }
@@ -110,20 +114,25 @@ public sealed class AgentsController : ControllerBase
     /// panel calls this to obtain a thread before opening the AG-UI run stream.
     /// </summary>
     /// <remarks>
-    /// The agent is taken from the request body, falling back to
-    /// <see cref="AgentHubConfig.DefaultAgentName"/> when omitted. A 400 is returned when neither
-    /// supplies an agent name, so a conversation is never created against an unspecified agent.
+    /// <para>
+    /// Agent resolution, in order: an explicit <see cref="CreateConversationRequest.AgentName"/> wins
+    /// outright (today's default — the dashboard always sends <c>dashboard-agent</c> unless the caller
+    /// has explicitly opted into auto-routing). Otherwise, if the caller supplied
+    /// <see cref="CreateConversationRequest.FirstMessage"/>, <see cref="IAgentRouter"/> attempts to
+    /// pick an agent from it — this is the opt-in path; the router itself declines (returns
+    /// <see langword="null"/>) whenever it isn't confident, rather than guessing. Anything that didn't
+    /// resolve an agent falls back to <see cref="AgentHubConfig.DefaultAgentName"/>. A 400 is returned
+    /// only when nothing above supplies a usable name, so a conversation is never created unassigned.
+    /// </para>
     /// </remarks>
     [HttpPost("conversations")]
     public async Task<IActionResult> CreateConversation(
         [FromBody] CreateConversationRequest? request, CancellationToken ct)
     {
-        var agentName = !string.IsNullOrWhiteSpace(request?.AgentName)
-            ? request!.AgentName!.Trim()
-            : _config.CurrentValue.DefaultAgentName;
+        var agentName = await ResolveAgentNameAsync(request, ct);
 
         if (string.IsNullOrWhiteSpace(agentName))
-            return BadRequest(new { error = "An agent name is required (none supplied and no default configured)." });
+            return BadRequest(new { error = "An agent name is required (none supplied, routing declined, and no default configured)." });
 
         var userId = User.GetUserId();
         var record = await _store.CreateAsync(agentName, userId, conversationId: null, ct);
@@ -135,15 +144,96 @@ public sealed class AgentsController : ControllerBase
         return CreatedAtAction(nameof(GetConversation), new { id = record.Id },
             new CreateConversationResponse(record.Id, record.AgentName));
     }
+
+    /// <summary>See the resolution order documented on <see cref="CreateConversation"/>.</summary>
+    private async Task<string?> ResolveAgentNameAsync(CreateConversationRequest? request, CancellationToken ct)
+    {
+        if (!string.IsNullOrWhiteSpace(request?.AgentName))
+            return request!.AgentName!.Trim();
+
+        if (!string.IsNullOrWhiteSpace(request?.FirstMessage))
+        {
+            var selection = await _agentRouter.RouteAsync(request!.FirstMessage!.Trim(), ct);
+            if (selection is not null)
+            {
+                _logger.LogInformation(
+                    "Routed conversation to agent {AgentId} (confidence {Confidence:F2}): {Reasoning}",
+                    selection.SelectedAgent.AgentId, selection.ConfidenceScore, selection.Reasoning);
+                return selection.SelectedAgent.AgentId;
+            }
+        }
+
+        return _config.CurrentValue.DefaultAgentName;
+    }
+
+    /// <summary>
+    /// Rebinds an existing conversation to a different agent — the explicit "re-route" a caller can
+    /// invoke on a thread, since an agent is otherwise pinned for the conversation's whole lifetime
+    /// once chosen. 404 if the conversation doesn't exist, 403 if not owned by the caller.
+    /// </summary>
+    /// <remarks>
+    /// With an explicit <see cref="ReassignAgentRequest.AgentName"/>, that name is used directly — a
+    /// manual override, not re-routed. Without one, <see cref="IAgentRouter"/> is re-run against the
+    /// conversation's most recent user message; a 400 covers both the case where the router can't
+    /// find one to route on and the case where it declines rather than guess.
+    /// </remarks>
+    [HttpPatch("conversations/{id}/agent")]
+    public async Task<IActionResult> ReassignAgent(
+        string id, [FromBody] ReassignAgentRequest? request, CancellationToken ct)
+    {
+        var userId = User.GetUserId();
+        var agentName = request?.AgentName?.Trim();
+
+        if (string.IsNullOrWhiteSpace(agentName))
+        {
+            var record = await _store.GetAsync(id, userId, ct);
+            if (record is null)
+                return NotFound();
+
+            var lastUserMessage = record.Messages.LastOrDefault(m => m.Role == MessageRole.User)?.Content;
+            if (string.IsNullOrWhiteSpace(lastUserMessage))
+                return BadRequest(new { error = "No target agent supplied and the conversation has no user message to route on." });
+
+            var selection = await _agentRouter.RouteAsync(lastUserMessage, ct);
+            if (selection is null)
+                return BadRequest(new { error = "Routing declined to pick an agent; supply an explicit agentName instead." });
+
+            agentName = selection.SelectedAgent.AgentId;
+        }
+
+        var updated = await _store.ReassignAgentAsync(id, userId, agentName, ct);
+        if (updated is null)
+            return NotFound();
+
+        _logger.LogInformation(
+            "Reassigned conversation {ConversationId} for user {UserId} to agent {AgentName}.",
+            id, userId, agentName);
+
+        return Ok(new CreateConversationResponse(updated.Id, updated.AgentName));
+    }
 }
 
 /// <summary>Request body for <see cref="AgentsController.CreateConversation"/>.</summary>
 /// <param name="AgentName">
-/// The agent to bind the conversation to. Optional — falls back to the configured default agent.
+/// The agent to bind the conversation to. Optional — takes priority over <see cref="FirstMessage"/>
+/// and the configured default when supplied.
 /// </param>
-public sealed record CreateConversationRequest(string? AgentName);
+/// <param name="FirstMessage">
+/// The user's opening message, used to auto-route to an agent when <see cref="AgentName"/> is
+/// omitted. Optional and ignored when <see cref="AgentName"/> is supplied — this is the opt-in
+/// signal for routing, not a default: a caller that wants today's fixed-agent behavior simply
+/// omits it (or keeps sending an explicit <see cref="AgentName"/>).
+/// </param>
+public sealed record CreateConversationRequest(string? AgentName, string? FirstMessage = null);
 
 /// <summary>Response for <see cref="AgentsController.CreateConversation"/>.</summary>
 /// <param name="ThreadId">The new conversation's id, used as the AG-UI <c>threadId</c>.</param>
 /// <param name="AgentName">The agent the conversation was bound to.</param>
 public sealed record CreateConversationResponse(string ThreadId, string AgentName);
+
+/// <summary>Request body for <see cref="AgentsController.ReassignAgent"/>.</summary>
+/// <param name="AgentName">
+/// The agent to rebind the conversation to. Optional — omit it to have <c>IAgentRouter</c> pick one
+/// from the conversation's most recent user message instead of naming one explicitly.
+/// </param>
+public sealed record ReassignAgentRequest(string? AgentName = null);

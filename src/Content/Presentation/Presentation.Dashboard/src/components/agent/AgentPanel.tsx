@@ -20,6 +20,10 @@ export function AgentPanel() {
   const status = useChatStore((s) => s.status);
   const error = useChatStore((s) => s.error);
   const toolActivity = useChatStore((s) => s.toolActivity);
+  const threadId = useChatStore((s) => s.threadId);
+  const autoRoute = useChatStore((s) => s.autoRoute);
+  const setAutoRoute = useChatStore((s) => s.setAutoRoute);
+  const routedAgentName = useChatStore((s) => s.routedAgentName);
   const { sendMessage } = useDashboardAgent();
 
   const [draft, setDraft] = useState('');
@@ -56,7 +60,7 @@ export function AgentPanel() {
             <div className="flex-1 min-w-0">
               <Dialog.Title className="text-sm font-semibold text-foreground">Dashboard Agent</Dialog.Title>
               <Dialog.Description className="text-xs text-muted-foreground">
-                Ask about the dashboard or tell it what to show.
+                {routedAgentName ? `Talking to: ${routedAgentName}` : 'Ask about the dashboard or tell it what to show.'}
               </Dialog.Description>
             </div>
             <Dialog.Close
@@ -91,6 +95,23 @@ export function AgentPanel() {
           </div>
 
           <form onSubmit={handleSubmit} className="border-t border-border bg-card px-3 py-3">
+            <label
+              className={cn(
+                'mb-2 flex items-center gap-2 text-xs text-muted-foreground',
+                threadId && 'opacity-50',
+              )}
+              title={threadId ? 'Only applies to a new conversation — this one already has an agent.' : undefined}
+            >
+              <input
+                type="checkbox"
+                data-testid="agent-panel-auto-route"
+                checked={autoRoute}
+                disabled={Boolean(threadId)}
+                onChange={(e) => setAutoRoute(e.target.checked)}
+                className="h-3.5 w-3.5 rounded border-border"
+              />
+              Let the system choose an agent
+            </label>
             <div className="flex items-end gap-2">
               <input
                 data-testid="agent-panel-input"

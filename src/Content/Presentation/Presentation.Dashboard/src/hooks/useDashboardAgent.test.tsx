@@ -3,7 +3,7 @@ import { renderHook, act, waitFor } from '@testing-library/react';
 import { of } from 'rxjs';
 import { EventType } from '@ag-ui/core';
 
-const createConversation = vi.fn(async () => 'thread-1');
+const createConversation = vi.fn(async () => ({ threadId: 'thread-1', agentName: 'dashboard-agent' }));
 const postToolResult = vi.fn(async () => {});
 const runMock = vi.fn();
 const createAuthenticatedAgUiAgent = vi.fn(async () => ({ run: runMock }));
@@ -38,7 +38,16 @@ function runWith(events: unknown[]) {
 describe('useDashboardAgent', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    useChatStore.setState({ open: true, threadId: null, messages: [], status: 'idle', error: null, toolActivity: null });
+    useChatStore.setState({
+      open: true,
+      threadId: null,
+      messages: [],
+      status: 'idle',
+      error: null,
+      toolActivity: null,
+      autoRoute: false,
+      routedAgentName: null,
+    });
   });
 
   it('creates a conversation, dispatches a dashboard_control call, posts the result, and streams text', async () => {
@@ -59,7 +68,9 @@ describe('useDashboardAgent', () => {
     });
 
     expect(createConversation).toHaveBeenCalledTimes(1);
+    expect(createConversation).toHaveBeenCalledWith({ agentName: 'dashboard-agent' });
     expect(useChatStore.getState().threadId).toBe('thread-1');
+    expect(useChatStore.getState().routedAgentName).toBe('dashboard-agent');
 
     await waitFor(() => expect(dispatchDashboardAction).toHaveBeenCalledWith('navigate', { path: '/spend' }));
     await waitFor(() => expect(postToolResult).toHaveBeenCalledWith('thread-1', 'call-1', 'navigated to /spend'));
@@ -68,6 +79,20 @@ describe('useDashboardAgent', () => {
     expect(messages[0]).toMatchObject({ role: 'user', content: 'show spend' });
     expect(messages.some((m) => m.role === 'assistant' && m.content === 'Done.')).toBe(true);
     expect(useChatStore.getState().status).toBe('idle');
+  });
+
+  it('passes the first message instead of a fixed agent name when auto-route is on', async () => {
+    createConversation.mockResolvedValueOnce({ threadId: 'thread-2', agentName: 'research-agent' });
+    useChatStore.setState({ autoRoute: true });
+    runWith([{ type: EventType.RUN_FINISHED, threadId: 'thread-2', runId: 'r1' }]);
+
+    const { result } = renderHook(() => useDashboardAgent());
+    await act(async () => {
+      await result.current.sendMessage('find prior art for this approach');
+    });
+
+    expect(createConversation).toHaveBeenCalledWith({ firstMessage: 'find prior art for this approach' });
+    expect(useChatStore.getState().routedAgentName).toBe('research-agent');
   });
 
   it('renders a chart on a render_chart call and appends a chart message', async () => {

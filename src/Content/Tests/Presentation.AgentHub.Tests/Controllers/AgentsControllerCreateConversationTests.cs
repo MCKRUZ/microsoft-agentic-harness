@@ -12,6 +12,10 @@ using System.Net;
 using System.Net.Http.Json;
 using Xunit;
 using Application.AI.Common.Interfaces.AI;
+using Application.AI.Common.Interfaces.Routing;
+using Domain.AI.Agents;
+using Domain.AI.Governance;
+using Domain.AI.Orchestration;
 
 namespace Presentation.AgentHub.Tests.Controllers;
 
@@ -96,5 +100,95 @@ public sealed class AgentsControllerCreateConversationTests : IClassFixture<Test
         var response = await client.PostAsJsonAsync("/api/conversations", new { });
 
         response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    /// <summary>
+    /// Builds an authenticated client with <see cref="AgentHubConfig.DefaultAgentName"/> pinned and
+    /// <see cref="IAgentRouter"/> replaced by <paramref name="router"/>, so the router-dispatch branch
+    /// in <c>AgentsController.ResolveAgentNameAsync</c> can be tested in isolation — the router's
+    /// own classification/matching logic has its own dedicated unit tests elsewhere.
+    /// </summary>
+    private HttpClient CreateClientAs(string userId, string defaultAgentName, IAgentRouter router)
+    {
+        var options = new Mock<IOptionsMonitor<AgentHubConfig>>();
+        options.Setup(m => m.CurrentValue).Returns(new AgentHubConfig { DefaultAgentName = defaultAgentName });
+
+        var client = _factory
+            .WithWebHostBuilder(b => b.ConfigureTestServices(services =>
+            {
+                services.AddAuthentication(TestAuthHandler.SchemeName)
+                    .AddScheme<AuthenticationSchemeOptions, TestAuthHandler>(TestAuthHandler.SchemeName, _ => { });
+                services.RemoveAll<IOptionsMonitor<AgentHubConfig>>();
+                services.AddSingleton(options.Object);
+                services.RemoveAll<IAgentRouter>();
+                services.AddSingleton(router);
+            }))
+            .CreateClient();
+        client.DefaultRequestHeaders.Add(TestAuthHandler.UserIdHeader, userId);
+        return client;
+    }
+
+    private static AgentSelection Selection(string agentId) => new()
+    {
+        SelectedAgent = new AgentCandidate
+        {
+            AgentId = agentId,
+            AgentType = SubagentType.NamedAgent,
+            AutonomyLevel = AutonomyLevel.Restricted,
+            AvailableTools = []
+        },
+        ConfidenceScore = 0.9,
+        Reasoning = "test selection"
+    };
+
+    [Fact]
+    public async Task CreateConversation_NoAgentNameWithFirstMessage_UsesRouterSelection()
+    {
+        var userId = $"create-routed-{Guid.NewGuid():N}";
+        var mockRouter = new Mock<IAgentRouter>();
+        mockRouter
+            .Setup(r => r.RouteAsync("find prior art for this approach", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Selection("research-agent"));
+        using var client = CreateClientAs(userId, defaultAgentName: "fallback-agent", mockRouter.Object);
+
+        var response = await client.PostAsJsonAsync(
+            "/api/conversations", new { firstMessage = "find prior art for this approach" });
+
+        response.StatusCode.Should().Be(HttpStatusCode.Created);
+        var body = await response.Content.ReadFromJsonAsync<CreateConversationResponse>();
+        body!.AgentName.Should().Be("research-agent");
+    }
+
+    [Fact]
+    public async Task CreateConversation_RouterDeclines_FallsBackToConfiguredDefault()
+    {
+        var userId = $"create-declined-{Guid.NewGuid():N}";
+        var mockRouter = new Mock<IAgentRouter>();
+        mockRouter
+            .Setup(r => r.RouteAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((AgentSelection?)null);
+        using var client = CreateClientAs(userId, defaultAgentName: "fallback-agent", mockRouter.Object);
+
+        var response = await client.PostAsJsonAsync("/api/conversations", new { firstMessage = "hmm" });
+
+        response.StatusCode.Should().Be(HttpStatusCode.Created);
+        var body = await response.Content.ReadFromJsonAsync<CreateConversationResponse>();
+        body!.AgentName.Should().Be("fallback-agent");
+    }
+
+    [Fact]
+    public async Task CreateConversation_ExplicitAgentNameWithFirstMessage_AgentNameWinsWithoutCallingRouter()
+    {
+        var userId = $"create-explicit-{Guid.NewGuid():N}";
+        var mockRouter = new Mock<IAgentRouter>();
+        using var client = CreateClientAs(userId, defaultAgentName: "fallback-agent", mockRouter.Object);
+
+        var response = await client.PostAsJsonAsync(
+            "/api/conversations", new { agentName = "dashboard-agent", firstMessage = "irrelevant" });
+
+        response.StatusCode.Should().Be(HttpStatusCode.Created);
+        var body = await response.Content.ReadFromJsonAsync<CreateConversationResponse>();
+        body!.AgentName.Should().Be("dashboard-agent");
+        mockRouter.Verify(r => r.RouteAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 }
