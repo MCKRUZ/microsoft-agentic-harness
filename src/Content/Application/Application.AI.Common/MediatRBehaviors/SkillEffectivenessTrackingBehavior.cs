@@ -139,8 +139,8 @@ public sealed class SkillEffectivenessTrackingBehavior<TRequest, TResponse>
                 CancellationToken.None);
             var queryClassification = assessment.Intent.ToString();
 
-            foreach (var skillId in skillIds)
-                await RecordOutcomeAsync(tracker, skillId, queryClassification, succeeded, conversationId, turnNumber);
+            await Task.WhenAll(skillIds.Select(skillId =>
+                RecordOutcomeAsync(tracker, skillId, queryClassification, succeeded, conversationId, turnNumber)));
         }
         catch (Exception ex)
         {

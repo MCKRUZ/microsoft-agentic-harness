@@ -208,11 +208,15 @@ public sealed partial class KnowledgeMemoryService : IKnowledgeMemory
         // pipeline step could still see past (see the "closing a governance check against the wrong stage"
         // caution in CLAUDE.md — the fix there was tracing to the true final exit, which is exactly what
         // this is). When a filter is requested, over-fetch so narrowing by kind doesn't starve the result
-        // count more than necessary.
+        // count more than necessary — smaller when harmonic mode is active, since RecallHarmonicFusedAsync
+        // already widens its own candidate pool 2x for quality; stacking a full 3x on top of that would
+        // compound to 6x instead of adding, for no extra benefit toward the kind filter specifically.
         var harmonic = _configMonitor.CurrentValue.AI.HarmonicMemory;
-        var fetchCount = entityType is null ? maxResults : maxResults * 3;
+        var harmonicEnabled = harmonic.Mode != HarmonicMemoryMode.Off;
+        var entityTypeMultiplier = harmonicEnabled ? 2 : 3;
+        var fetchCount = entityType is null ? maxResults : maxResults * entityTypeMultiplier;
 
-        var results = harmonic.Mode != HarmonicMemoryMode.Off
+        var results = harmonicEnabled
             ? await RecallHarmonicFusedAsync(query, fetchCount, harmonic, cancellationToken)
             : await RecallLegacyAsync(query, fetchCount, cancellationToken);
 
