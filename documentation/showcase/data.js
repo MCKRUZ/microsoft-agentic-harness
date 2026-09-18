@@ -1818,9 +1818,9 @@ window.SHOWCASE_CATEGORIES = [
             {
                 id: 'semantic-memory',
                 name: 'Semantic Memory',
-                status: 'partial',
-                exec: 'A background process pulls durable facts out of what you say and remembers them — just not as a separate memory type from episodic events.',
-                eng: 'ConversationFactExtractor runs an LLM-based extraction after each turn; facts above a confidence bar are written through the same KnowledgeMemoryService.RememberAsync pipeline Episodic Memory uses, tagged as a fact instead of an event.',
+                status: 'built',
+                exec: 'A background process pulls durable facts out of what you say, keeps them as their own first-class memory type you can query for on their own, and a real confidence dial controls how sure it has to be before it keeps one.',
+                eng: 'ConversationFactExtractor runs an LLM-based extraction after each turn using a live-reloadable confidence threshold (KnowledgeBridgeConfig.MinConfidence); IKnowledgeMemory.RecallAsync\'s entityType filter lets a caller ask for just that kind, applied after the same quarantine check every recall already goes through — no second store, no second security gate to keep in sync.',
                 deepDive: {
                     scenario: [
                         {
@@ -1847,13 +1847,13 @@ window.SHOWCASE_CATEGORIES = [
                             tone: 'warn',
                             body: 'Each candidate fact comes back with a confidence score. Anything underneath the line is silently dropped before it\'s ever written down.',
                         },
-                        { title: 'Remember', tone: 'jargon', body: 'What survives is filed through the exact same pipeline Episodic Memory uses — the same safety scan, the same decay — just tagged "Fact" instead of an event.' },
-                        { title: 'Recall', tone: 'tip', body: 'Later, recall doesn\'t distinguish "a fact about you" from "something that happened" — it returns whichever is relevant, from the same undifferentiated bucket.' },
+                        { title: 'Remember', tone: 'jargon', body: 'What survives is filed through the exact same safety-scanned pipeline every other memory uses — but tagged, and now genuinely queryable, as its own first-class kind.' },
+                        { title: 'Recall', tone: 'tip', body: 'A caller can now ask for just this kind — "give me only the durable facts" — instead of getting back whatever\'s relevant, blended in with raw events.' },
                     ],
                     narrative: [
                         'Semantic memory usually means <mark class="hl">a durable fact about the world, detached from the moment you learned it</mark> — "the user is a CTO," not "the user told me on Tuesday they\'re a CTO." That second, timestamped version is episodic memory; the two are supposed to be different systems.',
                         'What\'s real: after every successful turn, a <mark class="hl">background call to a cheaper model reads the conversation and pulls out discrete facts</mark> — not the raw text, but short, structured claims, each with a confidence score attached. Anything below the confidence bar is <mark class="hl">thrown away before it\'s ever stored</mark>, and the whole extraction step runs fire-and-forget on its own timer, so it never adds latency to the response the user is waiting for.',
-                        'Why it\'s <mark class="hl">"partial," not "built"</mark>: once a fact survives, it isn\'t stored anywhere distinct from an event — it\'s written into <mark class="hl">the exact same bucket as Episodic Memory</mark>, just with a different label. And the dial that\'s supposed to tune how strict the confidence bar is exists in configuration, but <mark class="hl">isn\'t actually wired to the code that filters facts</mark> — turning it up or down currently does nothing.',
+                        'What closed the gap: a fact is now a <mark class="hl">first-class, separately-queryable memory kind</mark> — recall can filter to just "Fact"-tagged memories, applied after the same single, already-audited quarantine check every recall goes through, rather than needing a whole second store with its own copy of the injection gate, the trust filter, and tenant isolation. And the confidence dial is <mark class="hl">actually wired now</mark>: the setting is read fresh on every extraction, so turning it up or down takes effect immediately, no redeploy required.',
                     ],
                     techTable: {
                         columns: ['Source', 'How It Gets In', 'Scope'],
@@ -1868,12 +1868,12 @@ window.SHOWCASE_CATEGORIES = [
                             body: '<code>ConversationFactExtractor</code> runs a dedicated prompt through the cheapest available model tier after each successful turn — fire-and-forget, never blocking the response.',
                         },
                         {
-                            title: 'The confidence knob is disconnected',
-                            body: 'A configurable minimum-confidence setting exists (<code>KnowledgeBridgeConfig.MinConfidence</code>), but the extractor filters against its own fixed 0.7 constant instead — changing the setting has no effect today.',
+                            title: 'The confidence knob is live',
+                            body: 'The configurable minimum-confidence setting (<code>KnowledgeBridgeConfig.MinConfidence</code>) is read fresh on every extraction — turning it up or down takes effect immediately, no redeploy.',
                         },
                         {
-                            title: 'Facts and events share one bucket',
-                            body: 'A kept fact is written through the identical Remember call Episodic Memory uses, just tagged "Fact" — same decay curve, same safety gate, same graph.',
+                            title: 'Facts are a first-class, queryable kind',
+                            body: 'A kept fact still writes through the identical Remember call every other memory uses — same decay curve, same safety gate — but recall can now ask for just that one kind through an <code>entityType</code> filter, applied after the quarantine check so trust enforcement stays a single authority rather than being duplicated onto a second store.',
                         },
                         {
                             title: 'Off by default',
@@ -1885,14 +1885,81 @@ window.SHOWCASE_CATEGORIES = [
                         },
                     ],
                     whyItMatters:
-                        'This is the difference between an agent that remembers you said something and one that actually knows something about you. The gap isn\'t the idea — the extraction, the confidence gate, the decay are all real and running on every turn. It\'s finishing the separation: giving facts their own store instead of folding them into the same bucket as raw events, and actually wiring the confidence knob that\'s already been built.',
+                        'This is the difference between an agent that remembers you said something and one that actually knows something about you — and can be asked for just that. The extraction, the confidence gate, and the decay were already real and running on every turn; what closed the gap was making facts genuinely their own memory kind at read time, and making the confidence dial something an operator can actually turn.',
                 },
             },
             {
                 id: 'procedural-memory',
                 name: 'Procedural Memory',
-                status: 'not-built',
-                exec: 'Not built. The harness doesn’t separately store "how to do X" procedures distinct from its other memory types.',
+                status: 'built',
+                exec: 'The harness tracks whether each skill actually succeeds, broken down by what kind of request it was handling — and any learned note about a skill\'s blind spot gets automatically folded into that skill\'s own instructions the next time it runs.',
+                eng: 'ISkillEffectivenessTracker records a success/failure outcome per skill per turn, classified by the request-intent classifier; AgentExecutionContextFactory pulls any ISkillAmendmentProvider notes for a skill and appends them to that skill\'s instructions each time it\'s composed — both backed by the knowledge graph, both now wired into the live turn path via SkillEffectivenessTrackingBehavior.',
+                deepDive: {
+                    scenario: [
+                        {
+                            time: 'Turns 1–40',
+                            text: 'The "Researcher" skill handles a wide mix of requests well, but consistently forgets to cite sources whenever the request is specifically asking it to research something — a narrow, specific failure mode, not a general one.',
+                        },
+                        {
+                            time: '+0s, every turn',
+                            text: 'Each turn finishes and its response goes back immediately. Separately, in the background, a classifier tags what kind of request it was, and a success/fail outcome for "Researcher" is logged against that specific kind — invisibly, with zero added latency.',
+                        },
+                        {
+                            time: 'After enough turns',
+                            text: 'A clear pattern is now sitting in the data: Researcher\'s failure rate on "research" requests specifically is far higher than its failure rate on everything else.',
+                        },
+                        {
+                            time: 'A note gets written',
+                            text: 'A short, plain-language amendment — "always cite sources" — gets attached to the Researcher skill.',
+                        },
+                        {
+                            time: 'Turn 41',
+                            text: 'The next time Researcher is composed for any conversation, that note is appended to its instructions automatically. No redeploy, no editing the skill\'s file by hand.',
+                        },
+                    ],
+                    flow: [
+                        { title: 'Every Turn', tone: 'info', body: 'After the response is already on its way back, a classifier tags the request\'s kind and a success/fail outcome is logged for every skill that was active — fire-and-forget, no added latency.' },
+                        { title: 'Outcomes Accumulate', tone: 'jargon', body: 'Success and failure counts build up per skill, per request kind — not just "is this skill good," but "is this skill good at this."' },
+                        { title: 'A Note Gets Attached', tone: 'warn', body: 'A learned amendment — a short, plain-language note — gets attached to a skill. This step itself isn\'t automatic today: nothing in the harness yet decides on its own when a pattern is strong enough to act on.' },
+                        { title: 'Composed In, Automatically', tone: 'tip', body: 'From that point on, every time the skill is loaded, its amendments are appended to its instructions without anyone touching the skill\'s file.' },
+                    ],
+                    narrative: [
+                        'Procedural memory usually means <mark class="hl">knowledge of how to do something, learned from experience</mark> — distinct from a fact you know (semantic) or an event you remember happening (episodic). For an agent harness, the natural version is: does a given skill actually work, and does the harness get better at using it over time?',
+                        'What\'s real: <mark class="hl">every turn now records whether the active skill(s) succeeded or failed</mark>, broken down by what kind of request it was — not a single up-or-down score, but a per-skill, per-request-kind track record. And on the other side, <mark class="hl">any learned note about a skill gets pulled in and appended to that skill\'s instructions automatically</mark>, every time it\'s composed, the same way the rest of its instructions are assembled — no manual edit to the skill\'s file required.',
+                        'What\'s still a manual step: <mark class="hl">turning an accumulated track record into a written note isn\'t automatic yet</mark> — nothing in the harness currently decides on its own "this skill is failing often enough at this kind of request, write an amendment." That judgment call — and the actual call that writes the note — is something an operator or a future automation makes today, not something the harness does by itself. The two halves either side of that step — recording outcomes, and consuming notes once they exist — are both real and running on every turn.',
+                    ],
+                    techTable: {
+                        columns: ['Concept', 'What It Tracks', 'When It Runs'],
+                        rows: [
+                            ['Effectiveness record', 'Success/failure count and average quality per skill, per request-intent classification.', 'Written after every turn, in the background, for every skill that was active.'],
+                            ['Learned amendment', 'A short, plain-language note attached to one skill, with what it was learned from and when.', 'Read and appended to instructions every time that skill is composed for a turn.'],
+                        ],
+                    },
+                    engineeringFacts: [
+                        {
+                            title: 'Classified by request kind, not just pass/fail',
+                            body: 'Outcomes are recorded against the same request-intent classification the front-door router uses — "is this skill good at code generation" is tracked separately from "is this skill good at research."',
+                        },
+                        {
+                            title: 'Zero added latency',
+                            body: 'Recording runs fire-and-forget on a background thread after the turn\'s response has already gone out, mirroring the pattern used for extracting durable facts and capturing work episodes.',
+                        },
+                        {
+                            title: 'A whole-workflow turn deliberately records nothing',
+                            body: 'A multi-agent (Magentic) turn\'s outcome belongs to the whole workflow, not one skill — attributing a failure caused by one participant onto every other participant\'s skills would penalize skills that behaved correctly, so those turns record no outcome at all rather than a misleading one.',
+                        },
+                        {
+                            title: 'Amendments are additive, never a rewrite',
+                            body: 'A learned note is appended after a skill\'s own instructions, never replacing or reordering them — the skill\'s author-written behavior always leads.',
+                        },
+                        {
+                            title: 'Both halves fail open',
+                            body: 'A failure recording one skill\'s outcome never blocks recording another\'s; a failure loading amendments falls back to the skill\'s unmodified instructions. Neither is a hard dependency of running a turn.',
+                        },
+                    ],
+                    whyItMatters:
+                        'This is the difference between a skill that quietly keeps making the same mistake forever and a harness that can actually notice the pattern and do something about it — without a human combing through transcripts to find it. The recording half and the consuming half are both real and running on every turn; the piece still done by hand is deciding when a pattern is worth writing down, which is a reasonable place to draw the line before adding an autonomous judgment call about a skill\'s own competence.',
+                },
             },
             {
                 id: 'vector-store',
