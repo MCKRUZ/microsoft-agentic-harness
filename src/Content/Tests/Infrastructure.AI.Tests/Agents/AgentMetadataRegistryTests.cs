@@ -474,6 +474,93 @@ public sealed class AgentMetadataRegistryTests
     }
 
     [Fact]
+    public void Invalidate_AgentDirectoryDeleted_ThenNextRead_RemovesAgentAndItsOwnedSkills()
+    {
+        // The bug this test exists to catch (caught by CI's correctness/grader gates on the first
+        // pass): the automatic watcher path calls ONLY Invalidate, never Refresh. If reconciliation
+        // lived exclusively in Refresh (as the first cut of this feature had it), a deleted agent's
+        // owned skills would never be cleaned up on the default, no-restart path this issue exists to
+        // support — only an operator explicitly hitting the refresh endpoint would clean them up. This
+        // drives the same scenario as Refresh_AgentDirectoryDeleted_RemovesAgentAndItsOwnedSkills but
+        // through Invalidate + a lazy read instead of an explicit Refresh call.
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"agents-invalidate-remove-{Guid.NewGuid():N}");
+        var store = new AgentOwnedSkillStore();
+        try
+        {
+            WriteAgent(tempRoot, "alpha", """
+                ---
+                id: alpha
+                name: Alpha
+                skills: [alpha-only]
+                ---
+                """);
+            WriteNestedSkill(tempRoot, "alpha", "alpha-only", "Alpha's private skill.");
+
+            var registry = CreateRegistry(store, agentsPath: tempRoot);
+            registry.GetAll().Should().ContainSingle();
+            store.TryGet("alpha", "alpha-only").Should().NotBeNull();
+
+            Directory.Delete(Path.Combine(tempRoot, "alpha"), recursive: true);
+
+            registry.Invalidate();
+            registry.GetAll().Should().BeEmpty();
+            registry.TryGet("alpha").Should().BeNull();
+
+            // The orphan check, via the automatic (Invalidate, not Refresh) path.
+            store.GetForAgent("alpha").Should().BeEmpty();
+            store.TryGet("alpha", "alpha-only").Should().BeNull();
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Refresh_AfterWatcherStyleInvalidate_DiffsAgainstLastKnownStateNotAnEmptySet()
+    {
+        // The correctness-gate finding on the first pass: Refresh used to diff against `_cache`
+        // directly, and Invalidate used to null that field. A watcher-triggered Invalidate landing
+        // before an operator's Refresh meant Refresh's "previous" baseline was empty — every surviving
+        // agent misreported as newly "added," and any real removal was missed entirely (including its
+        // owned-skill cleanup, since that only runs for ids Refresh classifies as removed).
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"agents-refresh-after-invalidate-{Guid.NewGuid():N}");
+        try
+        {
+            WriteAgent(tempRoot, "alpha", """
+                ---
+                id: alpha
+                name: Alpha
+                ---
+                """);
+            WriteAgent(tempRoot, "beta", """
+                ---
+                id: beta
+                name: Beta
+                ---
+                """);
+
+            var registry = CreateRegistry(agentsPath: tempRoot);
+            registry.GetAll().Should().HaveCount(2);
+
+            // Simulates the watcher noticing an unrelated change and invalidating first.
+            registry.Invalidate();
+
+            Directory.Delete(Path.Combine(tempRoot, "beta"), recursive: true);
+
+            var summary = registry.Refresh();
+
+            summary.Added.Should().BeEmpty();
+            summary.Removed.Should().ContainSingle(id => id == "beta");
+            summary.TotalAgentCount.Should().Be(1);
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public void Invalidate_ThenNextRead_RescansFilesystem()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"agents-invalidate-{Guid.NewGuid():N}");

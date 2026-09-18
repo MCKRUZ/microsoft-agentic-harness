@@ -34,6 +34,7 @@ public sealed class AgentMetadataRegistry : IAgentMetadataRegistry, IAgentRegist
     private readonly AgentOwnedSkillStore _ownedSkills;
 
     private Dictionary<string, AgentDefinition>? _cache;
+    private bool _stale;
     private IReadOnlyList<string> _searchedPaths = [];
     private readonly Lock _lock = new();
 
@@ -97,12 +98,32 @@ public sealed class AgentMetadataRegistry : IAgentMetadataRegistry, IAgentRegist
             .ToList();
     }
 
-    /// <inheritdoc />
+    /// <summary>
+    /// Marks the cache stale WITHOUT discarding it (issue #705 follow-up — see remarks). The next call
+    /// to any read method triggers a lazy rebuild via <see cref="GetOrLoadCache"/>, which — like an
+    /// explicit <see cref="Refresh"/> — reconciles <see cref="AgentOwnedSkillStore"/> against whatever
+    /// changed.
+    /// </summary>
+    /// <remarks>
+    /// The original implementation set <c>_cache = null</c> here, which broke two things once a
+    /// filesystem watcher started calling this automatically: (1) it discarded the only record of what
+    /// was previously loaded, so a <see cref="Refresh"/> that ran afterward diffed against an empty set
+    /// instead of the real prior state — every surviving agent misreported as "added," every removal
+    /// silently missed; (2) the automatic (watcher-driven) path never calls <see cref="Refresh"/> at
+    /// all — it calls only this method — and the pre-fix <c>Discover</c> performed no reconciliation of
+    /// its own, so a deleted agent's owned skills were never cleaned up on the default, no-restart path
+    /// this issue exists to support; only an operator explicitly hitting the refresh endpoint reconciled
+    /// them. Both are symptoms of the same mistake: reconciliation lived only in <see cref="Refresh"/>,
+    /// while invalidation destroyed the baseline that reconciliation needs. Fixed by keeping the last
+    /// snapshot in place — <see cref="GetOrLoadCache"/> now rebuilds through the same reconciling path
+    /// <see cref="Refresh"/> uses whenever <see cref="_stale"/> is set, so cleanup happens on every
+    /// reload, automatic or operator-triggered, and always against an accurate prior snapshot.
+    /// </remarks>
     public void Invalidate()
     {
         lock (_lock)
         {
-            _cache = null;
+            _stale = true;
         }
     }
 
@@ -111,64 +132,76 @@ public sealed class AgentMetadataRegistry : IAgentMetadataRegistry, IAgentRegist
     {
         lock (_lock)
         {
-            var previous = _cache ?? new Dictionary<string, AgentDefinition>(StringComparer.OrdinalIgnoreCase);
-            var next = Discover();
-
-            var added = new List<string>();
-            var updated = new List<string>();
-            foreach (var (id, agent) in next)
-            {
-                if (!previous.TryGetValue(id, out var previousAgent))
-                    added.Add(id);
-                else if (!DefinitionsAreEquivalent(previousAgent, agent))
-                    updated.Add(id);
-            }
-
-            var removed = previous.Keys.Where(id => !next.ContainsKey(id)).ToList();
-            foreach (var id in removed)
-                _ownedSkills.RemoveAgent(id);
-
-            _cache = next;
-
-            _logger.LogInformation(
-                "Agent registry refreshed: {Added} added, {Updated} updated, {Removed} removed, {Total} total",
-                added.Count, updated.Count, removed.Count, next.Count);
-
-            return new AgentRegistryRefreshResult
-            {
-                Added = added,
-                Updated = updated,
-                Removed = removed,
-                TotalAgentCount = next.Count,
-                SearchedPaths = _searchedPaths
-            };
+            return RebuildAndReconcile();
         }
     }
 
     /// <summary>
-    /// Returns the current cache, loading it on first use. A single local snapshot is captured and
-    /// returned — every caller reads through that one reference rather than touching the
-    /// <c>_cache</c> field a second time, so a concurrent <see cref="Invalidate"/> landing between two
-    /// field reads on the old (non-nullable-suppressed) implementation can no longer null-reference a
-    /// reader. The returned dictionary is never mutated after <see cref="Discover"/> builds it — only
-    /// replaced wholesale — so a reader holding an older snapshot during a concurrent reload is safe.
+    /// Returns the current cache, rebuilding it if it has never been loaded or has been marked stale by
+    /// <see cref="Invalidate"/>. A single local snapshot is captured and returned — every caller reads
+    /// through that one reference rather than touching the <c>_cache</c> field a second time, so a
+    /// concurrent invalidation landing between two field reads can never null-reference a reader. The
+    /// returned dictionary is never mutated after <see cref="Discover"/> builds it — only replaced
+    /// wholesale — so a reader holding an older snapshot during a concurrent reload is safe.
     /// </summary>
     private Dictionary<string, AgentDefinition> GetOrLoadCache()
     {
         var cache = _cache;
-        if (cache is not null)
+        if (cache is not null && !_stale)
             return cache;
 
         lock (_lock)
         {
             cache = _cache;
-            if (cache is not null)
+            if (cache is not null && !_stale)
                 return cache;
 
-            cache = Discover();
-            _cache = cache;
-            return cache;
+            RebuildAndReconcile();
+            return _cache!;
         }
+    }
+
+    /// <summary>
+    /// Rediscovers agents from disk, diffs the result against the last known snapshot, reconciles
+    /// <see cref="AgentOwnedSkillStore"/> for every agent id that disappeared, and swaps in the new
+    /// cache — the single reconciling rebuild both <see cref="Refresh"/> and the lazy path in
+    /// <see cref="GetOrLoadCache"/> share, so cleanup is never skipped regardless of which one triggered
+    /// it (issue #705). Caller must hold <see cref="_lock"/>.
+    /// </summary>
+    private AgentRegistryRefreshResult RebuildAndReconcile()
+    {
+        var previous = _cache ?? new Dictionary<string, AgentDefinition>(StringComparer.OrdinalIgnoreCase);
+        var next = Discover();
+
+        var added = new List<string>();
+        var updated = new List<string>();
+        foreach (var (id, agent) in next)
+        {
+            if (!previous.TryGetValue(id, out var previousAgent))
+                added.Add(id);
+            else if (!DefinitionsAreEquivalent(previousAgent, agent))
+                updated.Add(id);
+        }
+
+        var removed = previous.Keys.Where(id => !next.ContainsKey(id)).ToList();
+        foreach (var id in removed)
+            _ownedSkills.RemoveAgent(id);
+
+        _cache = next;
+        _stale = false;
+
+        _logger.LogInformation(
+            "Agent registry rebuilt: {Added} added, {Updated} updated, {Removed} removed, {Total} total",
+            added.Count, updated.Count, removed.Count, next.Count);
+
+        return new AgentRegistryRefreshResult
+        {
+            Added = added,
+            Updated = updated,
+            Removed = removed,
+            TotalAgentCount = next.Count,
+            SearchedPaths = _searchedPaths
+        };
     }
 
     /// <summary>
