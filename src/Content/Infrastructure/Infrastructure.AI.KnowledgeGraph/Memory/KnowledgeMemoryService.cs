@@ -193,6 +193,7 @@ public sealed partial class KnowledgeMemoryService : IKnowledgeMemory
     public async Task<IReadOnlyList<GraphNode>> RecallAsync(
         string query,
         int maxResults = 5,
+        string? entityType = null,
         CancellationToken cancellationToken = default)
     {
         // Dispatch on the harmonic memory mode, mirroring the write path. Off (the default) is the legacy
@@ -200,11 +201,28 @@ public sealed partial class KnowledgeMemoryService : IKnowledgeMemory
         // the primary abstraction + cue anchors the write path stamped on each node, and fuses that with the
         // legacy list (see RecallHarmonicFusedAsync). Both paths funnel through IsRecallable, so the
         // "quarantined facts are never served" invariant holds regardless of mode.
+        //
+        // The entityType filter is applied here, at the single public exit point, rather than threaded
+        // into the legacy/harmonic internals: both already return an already-deduped, already-quarantine-
+        // filtered list, so this is genuinely the final published state, not an intermediate stage a later
+        // pipeline step could still see past (see the "closing a governance check against the wrong stage"
+        // caution in CLAUDE.md — the fix there was tracing to the true final exit, which is exactly what
+        // this is). When a filter is requested, over-fetch so narrowing by kind doesn't starve the result
+        // count more than necessary.
         var harmonic = _configMonitor.CurrentValue.AI.HarmonicMemory;
-        if (harmonic.Mode != HarmonicMemoryMode.Off)
-            return await RecallHarmonicFusedAsync(query, maxResults, harmonic, cancellationToken);
+        var fetchCount = entityType is null ? maxResults : maxResults * 3;
 
-        return await RecallLegacyAsync(query, maxResults, cancellationToken);
+        var results = harmonic.Mode != HarmonicMemoryMode.Off
+            ? await RecallHarmonicFusedAsync(query, fetchCount, harmonic, cancellationToken)
+            : await RecallLegacyAsync(query, fetchCount, cancellationToken);
+
+        if (entityType is null)
+            return results;
+
+        return results
+            .Where(n => string.Equals(n.Type, entityType, StringComparison.OrdinalIgnoreCase))
+            .Take(maxResults)
+            .ToList();
     }
 
     /// <summary>

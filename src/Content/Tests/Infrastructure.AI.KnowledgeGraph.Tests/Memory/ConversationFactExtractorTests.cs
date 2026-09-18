@@ -5,9 +5,11 @@ using Application.AI.Common.Prompts.Models;
 using Domain.AI.KnowledgeGraph.Models;
 using Domain.AI.Prompts;
 using Domain.AI.Routing.Models;
+using Domain.Common.Config.AI;
 using Infrastructure.AI.KnowledgeGraph.Memory;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using Moq;
 using Xunit;
 using FluentAssertions;
@@ -21,6 +23,7 @@ public class ConversationFactExtractorTests
     private readonly Mock<IPromptRegistry> _mockRegistry = new();
     private readonly Mock<IPromptRenderer> _mockRenderer = new();
     private readonly Mock<IPromptUsageRecorder> _mockRecorder = new();
+    private readonly Mock<IOptionsMonitor<KnowledgeBridgeConfig>> _mockConfig = new();
     private readonly ConversationFactExtractor _sut;
 
     public ConversationFactExtractorTests()
@@ -77,11 +80,14 @@ public class ConversationFactExtractorTests
                 RecordedAtUtc = DateTimeOffset.UtcNow,
             });
 
+        _mockConfig.Setup(c => c.CurrentValue).Returns(new KnowledgeBridgeConfig { MinConfidence = 0.7 });
+
         _sut = new ConversationFactExtractor(
             _mockRouter.Object,
             _mockRegistry.Object,
             _mockRenderer.Object,
             _mockRecorder.Object,
+            _mockConfig.Object,
             NullLogger<ConversationFactExtractor>.Instance);
     }
 
@@ -232,6 +238,24 @@ public class ConversationFactExtractorTests
 
         result.Should().HaveCount(1);
         result[0].Content.Should().Be("Exactly at threshold");
+    }
+
+    [Fact]
+    public async Task ExtractAsync_ConfigThresholdRaised_DiscardsFactsThatPassedTheDefault()
+    {
+        // Proves MinConfidence is read live from config, not a fixed const baked into the extractor —
+        // deleting the config wiring and reverting to a hardcoded 0.7 would make this test fail even
+        // though ExtractAsync_DefaultConfidenceThreshold_Is07 above still passes.
+        _mockConfig.Setup(c => c.CurrentValue).Returns(new KnowledgeBridgeConfig { MinConfidence = 0.95 });
+        SetupLlmResponse("""
+            [
+              {"key": "used_to_pass", "content": "Confident but not confident enough now", "entity_type": "Fact", "confidence": 0.9}
+            ]
+            """);
+
+        var result = await _sut.ExtractAsync("msg", "resp", "conv-1", 1);
+
+        result.Should().BeEmpty("0.9 cleared the old 0.7 default but not the raised 0.95 threshold");
     }
 
     private void SetupLlmResponse(string responseText)

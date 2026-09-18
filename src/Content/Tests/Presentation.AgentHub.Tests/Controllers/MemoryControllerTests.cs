@@ -127,12 +127,27 @@ public sealed class MemoryControllerTests
                 (q, _) => captured = (RecallMemoryQuery)q)
             .ReturnsAsync(Result<IReadOnlyList<MemoryEntry>>.Success(entries));
 
-        var result = await _sut.Search("color", 7, CancellationToken.None);
+        var result = await _sut.Search("color", 7, cancellationToken: CancellationToken.None);
 
         var ok = result.Should().BeOfType<OkObjectResult>().Subject;
         ok.Value.Should().BeSameAs(entries);
         captured!.Query.Should().Be("color");
         captured.MaxResults.Should().Be(7);
+        captured.EntityType.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Search_EntityTypeSupplied_PassesThroughToQuery()
+    {
+        RecallMemoryQuery? captured = null;
+        _mediator.Setup(m => m.Send(It.IsAny<RecallMemoryQuery>(), It.IsAny<CancellationToken>()))
+            .Callback<IRequest<Result<IReadOnlyList<MemoryEntry>>>, CancellationToken>(
+                (q, _) => captured = (RecallMemoryQuery)q)
+            .ReturnsAsync(Result<IReadOnlyList<MemoryEntry>>.Success([]));
+
+        await _sut.Search("color", 5, "Fact", CancellationToken.None);
+
+        captured!.EntityType.Should().Be("Fact");
     }
 
     [Fact]
@@ -141,7 +156,7 @@ public sealed class MemoryControllerTests
         _mediator.Setup(m => m.Send(It.IsAny<RecallMemoryQuery>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(Result<IReadOnlyList<MemoryEntry>>.ValidationFailure(["Query must not be empty."]));
 
-        var result = await _sut.Search(null, 5, CancellationToken.None);
+        var result = await _sut.Search(null, 5, cancellationToken: CancellationToken.None);
 
         var problem = result.Should().BeOfType<ObjectResult>().Subject;
         problem.StatusCode.Should().Be(StatusCodes.Status400BadRequest);

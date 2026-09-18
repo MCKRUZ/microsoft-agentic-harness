@@ -239,7 +239,7 @@ public sealed class AppAiCommonSolutionReviewFixTests
             => _written.Task.WaitAsync(timeout);
 
         public Task<IReadOnlyList<GraphNode>> RecallAsync(
-            string query, int maxResults = 5, CancellationToken cancellationToken = default)
+            string query, int maxResults = 5, string? entityType = null, CancellationToken cancellationToken = default)
             => Task.FromResult<IReadOnlyList<GraphNode>>([]);
 
         public Task ForgetAsync(string key, CancellationToken cancellationToken = default)

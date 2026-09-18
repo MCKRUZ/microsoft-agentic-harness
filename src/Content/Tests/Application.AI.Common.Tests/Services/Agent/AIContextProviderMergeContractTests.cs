@@ -111,7 +111,7 @@ public sealed class AIContextProviderMergeContractTests
     private static KnowledgeMemoryContextProvider BuildKnowledgeMemory()
     {
         var memory = new Mock<IKnowledgeMemory>();
-        memory.Setup(m => m.RecallAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
+        memory.Setup(m => m.RecallAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new[]
             {
                 new GraphNode

@@ -109,7 +109,7 @@ public sealed class OwaspAsi06RuntimeInvoker : IAgentInvoker
         await memory.RememberAsync(AttackKey, AttackContent, "Fact", cancellationToken);
 
         // Defense under test: recall must not surface the quarantined fact...
-        var recalled = await memory.RecallAsync(AttackKey, maxResults: 5, cancellationToken);
+        var recalled = await memory.RecallAsync(AttackKey, maxResults: 5, cancellationToken: cancellationToken);
 
         // ...but it must remain in the durable store for forensics, marked untrusted.
         var stored = await graphStore.GetAllNodesAsync(cancellationToken);
