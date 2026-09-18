@@ -284,6 +284,19 @@ public partial class AgentExecutionContextFactory
     /// <see langword="null"/>, so <see cref="SkillInstructionMerger.Merge"/> sees the same "nothing to
     /// add" shape either way.
     /// </para>
+    /// <para>
+    /// <strong>Cadence: per agent build, not per turn.</strong> This runs inside <c>MapToAgentContextAsync</c>,
+    /// which builds the static, per-conversation-cached <c>AIAgent</c> — <c>AgentConversationCache</c>
+    /// returns that same cached agent on every subsequent turn of an ongoing conversation without calling
+    /// back in here. A new amendment therefore takes effect for any brand-new conversation immediately,
+    /// and for an already-open conversation once its cache entry is rebuilt (idle eviction), not on the
+    /// very next turn of that specific conversation — the same cadence every other piece of this static
+    /// instruction (the skill's own body, the agent's own instructions) already has.
+    /// </para>
+    /// <para>
+    /// Fetches every skill's amendments concurrently rather than one at a time: a multi-skill agent pays
+    /// for the slowest single graph lookup, not the sum of all of them.
+    /// </para>
     /// </remarks>
     private async Task<IReadOnlyDictionary<string, IReadOnlyList<SkillAmendment>>?> BuildAmendmentsBySkillIdAsync(
         IReadOnlyList<SkillDefinition> skills)
@@ -293,24 +306,36 @@ public partial class AgentExecutionContextFactory
         if (provider is null)
             return null;
 
+        var lookups = await Task.WhenAll(skills.Select(skill => FetchAmendmentsAsync(provider, skill.Id)));
+
         var result = new Dictionary<string, IReadOnlyList<SkillAmendment>>(StringComparer.OrdinalIgnoreCase);
-        foreach (var skill in skills)
+        foreach (var (skillId, amendments) in lookups)
         {
-            try
-            {
-                var amendments = await provider.GetAmendmentsAsync(skill.Id);
-                if (amendments.Count > 0)
-                    result[skill.Id] = amendments;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex,
-                    "Failed to load learned amendments for skill {SkillId}; continuing without them",
-                    skill.Id);
-            }
+            if (amendments.Count > 0)
+                result[skillId] = amendments;
         }
 
         return result.Count > 0 ? result : null;
+    }
+
+    /// <summary>
+    /// Fetches one skill's amendments, failing open: a lookup failure is logged and treated as "no
+    /// amendments" for that skill rather than aborting the concurrent fetch for every other skill.
+    /// </summary>
+    private async Task<(string SkillId, IReadOnlyList<SkillAmendment> Amendments)> FetchAmendmentsAsync(
+        ISkillAmendmentProvider provider, string skillId)
+    {
+        try
+        {
+            return (skillId, await provider.GetAmendmentsAsync(skillId));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex,
+                "Failed to load learned amendments for skill {SkillId}; continuing without them",
+                skillId);
+            return (skillId, []);
+        }
     }
 
     /// <summary>

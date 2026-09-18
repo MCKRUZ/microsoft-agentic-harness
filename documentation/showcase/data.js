@@ -1913,8 +1913,8 @@ window.SHOWCASE_CATEGORIES = [
                             text: 'A short, plain-language amendment — "always cite sources" — gets attached to the Researcher skill.',
                         },
                         {
-                            time: 'Turn 41',
-                            text: 'The next time Researcher is composed for any conversation, that note is appended to its instructions automatically. No redeploy, no editing the skill\'s file by hand.',
+                            time: 'Next conversation',
+                            text: 'The next time Researcher\'s agent is built — a brand-new conversation, or an existing one whose cached agent has since been rebuilt — that note is appended to its instructions automatically. No redeploy, no editing the skill\'s file by hand.',
                         },
                     ],
                     flow: [
