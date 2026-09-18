@@ -77,8 +77,13 @@ public sealed class SkillEffectivenessTrackingBehavior<TRequest, TResponse>
     {
         var response = await next();
 
-        // Read live so a hot config change takes effect without evicting anything — mirrors the
-        // GraphRagConfig.SkillEffectivenessEnabled gate the tracker's own DI registration checks.
+        // Read live so this gate alone stays hot-reloadable — but flipping it true at runtime is not,
+        // by itself, sufficient to enable the feature: ISkillEffectivenessTracker is only registered
+        // when Infrastructure.AI.KnowledgeGraph's DI extension observes this same flag at STARTUP.
+        // Enabling it live still passes this check and then fails GetRequiredService<ISkillEffectivenessTracker>()
+        // in RecordAsync below, which the outer catch there logs and swallows once per turn rather than
+        // ever recording an outcome — fail-open by design (same as an absent knowledge-graph host
+        // entirely), but worth knowing before assuming a runtime flip alone turns this on.
         if (!_appConfig.CurrentValue.AI.Rag.GraphRag.SkillEffectivenessEnabled)
             return response;
 

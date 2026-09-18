@@ -23,7 +23,7 @@ public class ConversationFactExtractorTests
     private readonly Mock<IPromptRegistry> _mockRegistry = new();
     private readonly Mock<IPromptRenderer> _mockRenderer = new();
     private readonly Mock<IPromptUsageRecorder> _mockRecorder = new();
-    private readonly Mock<IOptionsMonitor<KnowledgeBridgeConfig>> _mockConfig = new();
+    private readonly Mock<IOptions<KnowledgeBridgeConfig>> _mockConfig = new();
     private readonly ConversationFactExtractor _sut;
 
     public ConversationFactExtractorTests()
@@ -80,7 +80,7 @@ public class ConversationFactExtractorTests
                 RecordedAtUtc = DateTimeOffset.UtcNow,
             });
 
-        _mockConfig.Setup(c => c.CurrentValue).Returns(new KnowledgeBridgeConfig { MinConfidence = 0.7 });
+        _mockConfig.Setup(c => c.Value).Returns(new KnowledgeBridgeConfig { MinConfidence = 0.7 });
 
         _sut = new ConversationFactExtractor(
             _mockRouter.Object,
@@ -243,10 +243,10 @@ public class ConversationFactExtractorTests
     [Fact]
     public async Task ExtractAsync_ConfigThresholdRaised_DiscardsFactsThatPassedTheDefault()
     {
-        // Proves MinConfidence is read live from config, not a fixed const baked into the extractor —
-        // deleting the config wiring and reverting to a hardcoded 0.7 would make this test fail even
-        // though ExtractAsync_DefaultConfidenceThreshold_Is07 above still passes.
-        _mockConfig.Setup(c => c.CurrentValue).Returns(new KnowledgeBridgeConfig { MinConfidence = 0.95 });
+        // Proves MinConfidence is genuinely read from the injected config, not a fixed const baked into
+        // the extractor — deleting the config wiring and reverting to a hardcoded 0.7 would make this
+        // test fail even though ExtractAsync_DefaultConfidenceThreshold_Is07 above still passes.
+        _mockConfig.Setup(c => c.Value).Returns(new KnowledgeBridgeConfig { MinConfidence = 0.95 });
         SetupLlmResponse("""
             [
               {"key": "used_to_pass", "content": "Confident but not confident enough now", "entity_type": "Fact", "confidence": 0.9}

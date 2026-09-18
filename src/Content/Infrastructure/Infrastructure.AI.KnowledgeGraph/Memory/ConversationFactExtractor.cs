@@ -38,7 +38,7 @@ public sealed class ConversationFactExtractor : IConversationFactExtractor
     private readonly IPromptRegistry _promptRegistry;
     private readonly IPromptRenderer _promptRenderer;
     private readonly IPromptUsageRecorder _usageRecorder;
-    private readonly IOptionsMonitor<KnowledgeBridgeConfig> _config;
+    private readonly IOptions<KnowledgeBridgeConfig> _config;
     private readonly ILogger<ConversationFactExtractor> _logger;
 
     /// <summary>
@@ -48,15 +48,24 @@ public sealed class ConversationFactExtractor : IConversationFactExtractor
     /// <param name="promptRegistry">Versioned prompt registry; resolves the fact-extractor template.</param>
     /// <param name="promptRenderer">Renders the resolved template with variable substitution (Scriban).</param>
     /// <param name="usageRecorder">Stamps OTel / persists which prompt version was used per turn.</param>
-    /// <param name="config">Live-reloadable knowledge-bridge configuration; <see cref="KnowledgeBridgeConfig.MinConfidence"/>
-    /// is read fresh on every extraction so an operator can retune the threshold without a redeploy.</param>
+    /// <param name="config">
+    /// Knowledge-bridge configuration; <see cref="KnowledgeBridgeConfig.MinConfidence"/> is read on every
+    /// extraction so a caller-configured threshold is genuinely used, not silently ignored in favor of a
+    /// hardcoded default. <see cref="IOptions{TOptions}"/>, not <see cref="IOptionsMonitor{TOptions}"/>:
+    /// this type is registered as a fixed singleton snapshot at startup
+    /// (<c>Infrastructure.AI/DependencyInjection.cs</c>, matching <c>KnowledgeExtractionBehavior</c>'s own
+    /// dependency on the same config), with no <c>Configure&lt;KnowledgeBridgeConfig&gt;</c> binding
+    /// anywhere — so <see cref="IOptionsMonitor{TOptions}"/> would have nothing to monitor and would
+    /// silently fall back to an unconfigured default instead of the real value. A config change here does
+    /// require a redeploy, same as every other config this extractor reads.
+    /// </param>
     /// <param name="logger">Logger for recording extraction results and failures.</param>
     public ConversationFactExtractor(
         IModelRouter modelRouter,
         IPromptRegistry promptRegistry,
         IPromptRenderer promptRenderer,
         IPromptUsageRecorder usageRecorder,
-        IOptionsMonitor<KnowledgeBridgeConfig> config,
+        IOptions<KnowledgeBridgeConfig> config,
         ILogger<ConversationFactExtractor> logger)
     {
         ArgumentNullException.ThrowIfNull(modelRouter);
@@ -122,7 +131,7 @@ public sealed class ConversationFactExtractor : IConversationFactExtractor
             var response = await client.GetResponseAsync(rendered.Body, cancellationToken: cancellationToken);
 
             var json = response.Text ?? "[]";
-            var facts = ParseFacts(json, conversationId, turnNumber, _config.CurrentValue.MinConfidence);
+            var facts = ParseFacts(json, conversationId, turnNumber, _config.Value.MinConfidence);
 
             _logger.LogDebug(
                 "Extracted {Count} facts from conversation {ConversationId} turn {Turn}",

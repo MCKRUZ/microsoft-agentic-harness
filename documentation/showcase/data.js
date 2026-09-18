@@ -1820,7 +1820,7 @@ window.SHOWCASE_CATEGORIES = [
                 name: 'Semantic Memory',
                 status: 'built',
                 exec: 'A background process pulls durable facts out of what you say, keeps them as their own first-class memory type you can query for on their own, and a real confidence dial controls how sure it has to be before it keeps one.',
-                eng: 'ConversationFactExtractor runs an LLM-based extraction after each turn using a live-reloadable confidence threshold (KnowledgeBridgeConfig.MinConfidence); IKnowledgeMemory.RecallAsync\'s entityType filter lets a caller ask for just that kind, applied after the same quarantine check every recall already goes through — no second store, no second security gate to keep in sync.',
+                eng: 'ConversationFactExtractor runs an LLM-based extraction after each turn using its configured confidence threshold (KnowledgeBridgeConfig.MinConfidence); IKnowledgeMemory.RecallAsync\'s entityType filter lets a caller ask for just that kind, applied after the same quarantine check every recall already goes through — no second store, no second security gate to keep in sync.',
                 deepDive: {
                     scenario: [
                         {
@@ -1853,7 +1853,7 @@ window.SHOWCASE_CATEGORIES = [
                     narrative: [
                         'Semantic memory usually means <mark class="hl">a durable fact about the world, detached from the moment you learned it</mark> — "the user is a CTO," not "the user told me on Tuesday they\'re a CTO." That second, timestamped version is episodic memory; the two are supposed to be different systems.',
                         'What\'s real: after every successful turn, a <mark class="hl">background call to a cheaper model reads the conversation and pulls out discrete facts</mark> — not the raw text, but short, structured claims, each with a confidence score attached. Anything below the confidence bar is <mark class="hl">thrown away before it\'s ever stored</mark>, and the whole extraction step runs fire-and-forget on its own timer, so it never adds latency to the response the user is waiting for.',
-                        'What closed the gap: a fact is now a <mark class="hl">first-class, separately-queryable memory kind</mark> — recall can filter to just "Fact"-tagged memories, applied after the same single, already-audited quarantine check every recall goes through, rather than needing a whole second store with its own copy of the injection gate, the trust filter, and tenant isolation. And the confidence dial is <mark class="hl">actually wired now</mark>: the setting is read fresh on every extraction, so turning it up or down takes effect immediately, no redeploy required.',
+                        'What closed the gap: a fact is now a <mark class="hl">first-class, separately-queryable memory kind</mark> — recall can filter to just "Fact"-tagged memories, applied after the same single, already-audited quarantine check every recall goes through, rather than needing a whole second store with its own copy of the injection gate, the trust filter, and tenant isolation. And the confidence dial is <mark class="hl">actually wired now</mark>: the setting an operator configures is what the extractor genuinely filters on, not a hardcoded 0.7 the setting silently had no effect on.',
                     ],
                     techTable: {
                         columns: ['Source', 'How It Gets In', 'Scope'],
@@ -1868,8 +1868,8 @@ window.SHOWCASE_CATEGORIES = [
                             body: '<code>ConversationFactExtractor</code> runs a dedicated prompt through the cheapest available model tier after each successful turn — fire-and-forget, never blocking the response.',
                         },
                         {
-                            title: 'The confidence knob is live',
-                            body: 'The configurable minimum-confidence setting (<code>KnowledgeBridgeConfig.MinConfidence</code>) is read fresh on every extraction — turning it up or down takes effect immediately, no redeploy.',
+                            title: 'The confidence knob is actually connected',
+                            body: 'The configurable minimum-confidence setting (<code>KnowledgeBridgeConfig.MinConfidence</code>) is what the extractor genuinely filters on now, in place of a hardcoded 0.7 the setting used to have zero effect on. It still takes a redeploy to change, same as the extractor\'s other configuration.',
                         },
                         {
                             title: 'Facts are a first-class, queryable kind',
