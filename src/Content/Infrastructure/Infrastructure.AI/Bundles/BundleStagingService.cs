@@ -400,7 +400,10 @@ public sealed partial class BundleStagingService : IBundleStagingService
         // Reuses the same nested-skill discovery a host agent uses for its own <agentDir>/skills/, so a
         // malformed SKILL.md is skipped-and-warned rather than aborting the whole bundle. This layer only
         // adds bundle-specific de-duplication (keep first) on top of the shared scan.
-        var scanned = NestedSkillScanner.Scan(
+        // The HadScanErrors flag (issue #705) is for reconciling against a PREVIOUS
+        // scan on a reload — staging always expands a fresh, just-unpacked bundle with nothing prior
+        // to reconcile against, so there is nothing to keep-instead-of-replacing here.
+        var (scanned, _) = NestedSkillScanner.Scan(
             Path.Combine(bundleDir, "skills"), _skillParser, _skillFileReader, _logger);
 
         var byId = new Dictionary<string, SkillDefinition>(StringComparer.OrdinalIgnoreCase);

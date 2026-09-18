@@ -29,6 +29,10 @@ public sealed class AgentMetadataRegistryTests
         => CreateRegistry(new AgentOwnedSkillStore(), agentsPath);
 
     private static AgentMetadataRegistry CreateRegistry(AgentOwnedSkillStore ownedSkills, string? agentsPath = null)
+        => CreateRegistry(ownedSkills, new UnsandboxedSkillFileReader(), agentsPath);
+
+    private static AgentMetadataRegistry CreateRegistry(
+        AgentOwnedSkillStore ownedSkills, ISkillFileReader skillFileReader, string? agentsPath = null)
     {
         var resolvedPath = agentsPath ?? RepoAgentsPath;
         var appConfig = new AppConfig
@@ -44,11 +48,86 @@ public sealed class AgentMetadataRegistryTests
             new AgentMetadataParser(
                 NullLogger<AgentMetadataParser>.Instance, TestMcpSecurityScanner.AlwaysSafe(), TestMcpSecurityScanner.DefaultConfig()),
             new SkillMetadataParser(
-                NullLogger<SkillMetadataParser>.Instance, new UnsandboxedSkillFileReader(),
+                NullLogger<SkillMetadataParser>.Instance, skillFileReader,
                 TestMcpSecurityScanner.AlwaysSafe(), TestMcpSecurityScanner.DefaultConfig(),
                 TestMcpSecurityScanner.RealEgressValidator()),
-            new UnsandboxedSkillFileReader(),
+            skillFileReader,
             ownedSkills);
+    }
+
+    /// <summary>
+    /// Delegates to a real <see cref="UnsandboxedSkillFileReader"/> for everything except
+    /// <see cref="EnumerateDirectories"/> on a specific armed path, which throws — simulating the
+    /// transient enumeration failure issue #705 identified
+    /// (<see cref="NestedSkillScanner.Scan"/> reads through this interface, so it is the one seam
+    /// that lets this scenario be tested deterministically and portably, unlike the un-interfaced
+    /// <c>Directory.EnumerateDirectories</c> call in <c>AgentMetadataRegistry.DiscoverInDirectory</c>).
+    /// </summary>
+    private sealed class FailingEnumerateDirectoriesReader : ISkillFileReader
+    {
+        private readonly ISkillFileReader _inner = new UnsandboxedSkillFileReader();
+
+        /// <summary>When set, <see cref="EnumerateDirectories"/> throws for exactly this path.</summary>
+        public string? FailPath { get; set; }
+
+        public string ReadText(string path) => _inner.ReadText(path);
+
+        public Task<string> ReadTextAsync(string path, CancellationToken cancellationToken = default) =>
+            _inner.ReadTextAsync(path, cancellationToken);
+
+        public bool FileExists(string path) => _inner.FileExists(path);
+
+        public bool DirectoryExists(string path) => _inner.DirectoryExists(path);
+
+        public IReadOnlyList<string> EnumerateDirectories(string path) =>
+            FailPath is not null && string.Equals(path, FailPath, StringComparison.OrdinalIgnoreCase)
+                ? throw new IOException("Simulated transient enumeration failure")
+                : _inner.EnumerateDirectories(path);
+    }
+
+    [Fact]
+    public void Refresh_NestedSkillEnumerationFails_KeepsPreviouslyKnownOwnedSkillsRatherThanWipingThem()
+    {
+        // Closes the gap NestedSkillScanner's HadScanErrors flag exists for (issue #705): before this
+        // fix, a transient failure enumerating an agent's own skills/ directory made the scan return an
+        // empty list — indistinguishable from the agent genuinely owning no skills — and
+        // SyncAgentOwnedSkills would then wipe the owned-skill store for it. AgentFactory falls back to
+        // the GLOBAL skill registry for an unowned id, so this could silently swap in a different,
+        // shared skill under the same id (see AgentMetadataRegistry.SyncAgentOwnedSkills' remarks).
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"agents-skill-scan-error-{Guid.NewGuid():N}");
+        var store = new AgentOwnedSkillStore();
+        var reader = new FailingEnumerateDirectoriesReader();
+        try
+        {
+            WriteAgent(tempRoot, "alpha", """
+                ---
+                id: alpha
+                name: Alpha
+                skills: [alpha-only]
+                ---
+                """);
+            WriteNestedSkill(tempRoot, "alpha", "alpha-only", "Alpha's private skill.");
+
+            var registry = CreateRegistry(store, reader, agentsPath: tempRoot);
+            registry.GetAll().Should().ContainSingle();
+            store.TryGet("alpha", "alpha-only").Should().NotBeNull();
+
+            // Arm the fake to fail enumerating exactly alpha's skills/ directory on the next scan —
+            // alpha's own AGENT.md is untouched, only its nested skill scan fails.
+            reader.FailPath = Path.Combine(tempRoot, "alpha", "skills");
+
+            var summary = registry.Refresh();
+
+            summary.Removed.Should().BeEmpty();
+            registry.TryGet("alpha").Should().NotBeNull();
+
+            // The previously-known owned skill must survive a failed scan, not be wiped by it.
+            store.TryGet("alpha", "alpha-only").Should().NotBeNull();
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
     }
 
     [Fact]

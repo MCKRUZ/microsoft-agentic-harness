@@ -367,11 +367,32 @@ public sealed class AgentMetadataRegistry : IAgentMetadataRegistry, IAgentRegist
     /// deleted one of its nested <c>SKILL.md</c> files must lose that skill from the store too. Scanning
     /// and re-registering each surviving skill one at a time would leave the deleted one behind forever
     /// — <see cref="AgentOwnedSkillStore.ReplaceAgentSkills"/> swaps in exactly the current set.
+    /// <para>
+    /// <b>#705: a scan that failed must not replace anything.</b> Before this fix,
+    /// a transient failure enumerating <c>skills/</c> (permission hiccup, network stutter, mid-rename)
+    /// made <see cref="NestedSkillScanner.Scan"/> return an empty list — indistinguishable from the
+    /// agent genuinely owning no skills — and this method would then WIPE the owned-skill store for it.
+    /// <see cref="Application.AI.Common.Factories.AgentFactory"/> resolves an unowned skill id from the
+    /// GLOBAL <c>SkillMetadataRegistry</c> as a fallback, so the agent would silently rebuild with a
+    /// same-id GLOBAL skill instead of its own — different instructions, different tool declarations,
+    /// invisible above a log warning. This is the same "a scan too unreliable to trust for removal is
+    /// too unreliable to trust for reconciliation" rule <see cref="RebuildAndReconcile"/> applies for
+    /// agent-level removal, just one call deeper — a transient failure now keeps the PREVIOUSLY-known
+    /// owned skills in place rather than replacing them with a possibly-incomplete (or empty) set.
+    /// </para>
     /// </remarks>
     private void SyncAgentOwnedSkills(string agentDirectory, string agentId)
     {
         var skillsRoot = Path.Combine(agentDirectory, "skills");
-        var skills = NestedSkillScanner.Scan(skillsRoot, _skillParser, _skillFileReader, _logger).ToList();
+        var (skills, hadScanErrors) = NestedSkillScanner.Scan(skillsRoot, _skillParser, _skillFileReader, _logger);
+
+        if (hadScanErrors)
+        {
+            _logger.LogWarning(
+                "Nested skill scan for agent {AgentId} hit errors — keeping the previously-registered " +
+                "owned skills rather than replacing them with a possibly-incomplete set", agentId);
+            return;
+        }
 
         _ownedSkills.ReplaceAgentSkills(agentId, skills);
 
