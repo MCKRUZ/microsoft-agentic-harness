@@ -4,6 +4,8 @@ using Application.AI.Common.Interfaces.Routing;
 using Domain.AI.Agents;
 using Domain.AI.Governance;
 using Domain.AI.Orchestration;
+using Domain.AI.Routing.Models;
+using Infrastructure.AI.Agents;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
@@ -64,7 +66,7 @@ public sealed class AgentRouter : IAgentRouter
             return null;
 
         var conversationId = Guid.NewGuid().ToString();
-        var turnContext = new Domain.AI.Routing.Models.AgentTurnContext
+        var turnContext = new AgentTurnContext
         {
             ConversationId = conversationId,
             UserMessage = userMessage,
@@ -109,15 +111,12 @@ public sealed class AgentRouter : IAgentRouter
         };
     }
 
-    private static AgentCandidate ToCandidate(AgentDefinition agentDef) => new()
-    {
-        AgentId = agentDef.Id,
-        AgentType = SubagentType.NamedAgent,
-        AutonomyLevel = AutonomyLevel.Restricted,
-        AvailableTools = [],
-        Description = agentDef.Description,
-        Tags = agentDef.Tags,
-        Category = agentDef.Category,
-        Domain = agentDef.Domain
-    };
+    private static AgentCandidate ToCandidate(AgentDefinition agentDef) =>
+        AgentCandidateMapping.FromDefinition(agentDef, AutonomyLevel.Restricted) with
+        {
+            Description = agentDef.Description,
+            Tags = agentDef.Tags,
+            Category = agentDef.Category,
+            Domain = agentDef.Domain
+        };
 }

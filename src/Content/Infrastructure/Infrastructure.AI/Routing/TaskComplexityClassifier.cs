@@ -3,7 +3,6 @@ using System.Text.Json;
 using Application.AI.Common.Interfaces.Routing;
 using Domain.AI.Routing.Enums;
 using Domain.AI.Routing.Models;
-using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 
 namespace Infrastructure.AI.Routing;
@@ -62,79 +61,50 @@ public sealed class TaskComplexityClassifier : ITaskComplexityClassifier
     }
 
     /// <inheritdoc/>
-    public async Task<TaskComplexityAssessment> ClassifyAsync(
+    public Task<TaskComplexityAssessment> ClassifyAsync(
         AgentTurnContext context,
         CancellationToken ct = default)
     {
-        try
-        {
-            var routingDecision = await _modelRouter.RouteOperationAsync("complexity_classification", ct);
-            var client = routingDecision.Client;
+        var userPrompt = $"""
+            User message: "{context.UserMessage}"
+            Turn number: {context.TurnNumber}
+            Available tools: {context.AvailableToolCount}
+            Recent tools used: {(context.RecentToolNames is { Count: > 0 } tools ? string.Join(", ", tools) : "none")}
+            """;
 
-            var userPrompt = $"""
-                User message: "{context.UserMessage}"
-                Turn number: {context.TurnNumber}
-                Available tools: {context.AvailableToolCount}
-                Recent tools used: {(context.RecentToolNames is { Count: > 0 } tools ? string.Join(", ", tools) : "none")}
-                """;
-
-            var messages = new ChatMessage[]
-            {
-                new(ChatRole.System, SystemPrompt),
-                new(ChatRole.User, userPrompt)
-            };
-
-            var options = new ChatOptions
-            {
-                Temperature = 0.0f,
-                MaxOutputTokens = 150
-            };
-
-            var response = await client.GetResponseAsync(messages, options, ct);
-            var responseText = response.Text?.Trim() ?? string.Empty;
-
-            return ParseResponse(responseText, context.ConversationId);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogWarning(ex, "LLM complexity classification failed for conversation {ConversationId}, falling back to Moderate",
-                context.ConversationId);
-            return FallbackAssessment;
-        }
+        return LlmFewShotClassifier.ClassifyAsync(
+            _modelRouter,
+            "complexity_classification",
+            SystemPrompt,
+            userPrompt,
+            ParseResponse,
+            FallbackAssessment,
+            _logger,
+            $"conversation {context.ConversationId}",
+            ct);
     }
 
-    private TaskComplexityAssessment ParseResponse(string responseText, string conversationId)
+    private static TaskComplexityAssessment ParseResponse(JsonElement root)
     {
-        try
+        var complexityStr = root.GetProperty("complexity").GetString() ?? "moderate";
+        var confidence = root.GetProperty("confidence").GetDouble();
+        var reasoning = root.TryGetProperty("reasoning", out var reasonProp) ? reasonProp.GetString() : null;
+
+        var complexity = complexityStr.ToLowerInvariant() switch
         {
-            using var doc = JsonDocument.Parse(responseText);
-            var root = doc.RootElement;
+            "trivial" => TaskComplexity.Trivial,
+            "simple" => TaskComplexity.Simple,
+            "moderate" => TaskComplexity.Moderate,
+            "complex" => TaskComplexity.Complex,
+            _ => TaskComplexity.Moderate
+        };
 
-            var complexityStr = root.GetProperty("complexity").GetString() ?? "moderate";
-            var confidence = root.GetProperty("confidence").GetDouble();
-            var reasoning = root.TryGetProperty("reasoning", out var reasonProp) ? reasonProp.GetString() : null;
-
-            var complexity = complexityStr.ToLowerInvariant() switch
-            {
-                "trivial" => TaskComplexity.Trivial,
-                "simple" => TaskComplexity.Simple,
-                "moderate" => TaskComplexity.Moderate,
-                "complex" => TaskComplexity.Complex,
-                _ => TaskComplexity.Moderate
-            };
-
-            return new TaskComplexityAssessment
-            {
-                Complexity = complexity,
-                Confidence = Math.Clamp(confidence, 0.0, 1.0),
-                Source = ClassificationSource.LlmClassifier,
-                Reasoning = reasoning
-            };
-        }
-        catch (JsonException ex)
+        return new TaskComplexityAssessment
         {
-            _logger.LogWarning(ex, "Failed to parse LLM classification response for conversation {ConversationId}", conversationId);
-            return FallbackAssessment;
-        }
+            Complexity = complexity,
+            Confidence = Math.Clamp(confidence, 0.0, 1.0),
+            Source = ClassificationSource.LlmClassifier,
+            Reasoning = reasoning
+        };
     }
 }

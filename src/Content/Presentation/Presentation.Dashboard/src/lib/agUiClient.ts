@@ -65,16 +65,16 @@ export interface CreatedConversation {
 
 /**
  * Creates a new conversation owned by the caller. The panel calls this once per chat session
- * before starting the first run.
+ * before starting the first run, passing exactly one of the two options below.
  *
- * Pass `firstMessage` (and omit `agentName`) to opt into auto-routing — the backend picks an
- * agent from the message text, falling back to the default agent whenever it isn't confident.
- * The default (no options) preserves today's fixed-agent behavior.
+ * Pass `agentName` for today's fixed-agent behavior. Pass `firstMessage` instead (and omit
+ * `agentName`) to opt into auto-routing — the backend picks an agent from the message text,
+ * falling back to the default agent whenever it isn't confident.
  */
 export async function createConversation(
-  options: { agentName?: string; firstMessage?: string } = {},
+  options: { agentName?: string; firstMessage?: string },
 ): Promise<CreatedConversation> {
-  const { agentName = options.firstMessage ? undefined : 'dashboard-agent', firstMessage } = options;
+  const { agentName, firstMessage } = options;
   const { data } = await apiClient.post<{ threadId: string; agentName: string }>(
     '/api/conversations',
     { agentName, firstMessage },

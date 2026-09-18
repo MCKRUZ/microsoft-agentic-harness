@@ -3,7 +3,6 @@ using System.Text.Json;
 using Application.AI.Common.Interfaces.Routing;
 using Domain.AI.Routing.Enums;
 using Domain.AI.Routing.Models;
-using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 
 namespace Infrastructure.AI.Routing;
@@ -86,79 +85,50 @@ public sealed class RequestIntentClassifier : IRequestIntentClassifier
     }
 
     /// <inheritdoc/>
-    public async Task<RequestIntentAssessment> ClassifyAsync(
+    public Task<RequestIntentAssessment> ClassifyAsync(
         AgentTurnContext context,
         CancellationToken ct = default)
     {
-        try
-        {
-            var routingDecision = await _modelRouter.RouteOperationAsync("intent_classification", ct);
-            var client = routingDecision.Client;
+        var userPrompt = $"""
+            User message: "{context.UserMessage}"
+            """;
 
-            var userPrompt = $"""
-                User message: "{context.UserMessage}"
-                """;
-
-            var messages = new ChatMessage[]
-            {
-                new(ChatRole.System, SystemPrompt),
-                new(ChatRole.User, userPrompt)
-            };
-
-            var options = new ChatOptions
-            {
-                Temperature = 0.0f,
-                MaxOutputTokens = 150
-            };
-
-            var response = await client.GetResponseAsync(messages, options, ct);
-            var responseText = response.Text?.Trim() ?? string.Empty;
-
-            return ParseResponse(responseText, context.ConversationId);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogWarning(ex, "LLM intent classification failed for conversation {ConversationId}, falling back to Other",
-                context.ConversationId);
-            return FallbackAssessment;
-        }
+        return LlmFewShotClassifier.ClassifyAsync(
+            _modelRouter,
+            "intent_classification",
+            SystemPrompt,
+            userPrompt,
+            ParseResponse,
+            FallbackAssessment,
+            _logger,
+            $"conversation {context.ConversationId}",
+            ct);
     }
 
-    private RequestIntentAssessment ParseResponse(string responseText, string conversationId)
+    private static RequestIntentAssessment ParseResponse(JsonElement root)
     {
-        try
+        var intentStr = root.GetProperty("intent").GetString() ?? "other";
+        var confidence = root.GetProperty("confidence").GetDouble();
+        var reasoning = root.TryGetProperty("reasoning", out var reasonProp) ? reasonProp.GetString() : null;
+
+        var intent = intentStr.ToLowerInvariant() switch
         {
-            using var doc = JsonDocument.Parse(responseText);
-            var root = doc.RootElement;
+            "question" => RequestIntent.Question,
+            "task_execution" => RequestIntent.TaskExecution,
+            "code_generation" => RequestIntent.CodeGeneration,
+            "creative_content" => RequestIntent.CreativeContent,
+            "research" => RequestIntent.Research,
+            "planning" => RequestIntent.Planning,
+            "conversational" => RequestIntent.Conversational,
+            _ => RequestIntent.Other
+        };
 
-            var intentStr = root.GetProperty("intent").GetString() ?? "other";
-            var confidence = root.GetProperty("confidence").GetDouble();
-            var reasoning = root.TryGetProperty("reasoning", out var reasonProp) ? reasonProp.GetString() : null;
-
-            var intent = intentStr.ToLowerInvariant() switch
-            {
-                "question" => RequestIntent.Question,
-                "task_execution" => RequestIntent.TaskExecution,
-                "code_generation" => RequestIntent.CodeGeneration,
-                "creative_content" => RequestIntent.CreativeContent,
-                "research" => RequestIntent.Research,
-                "planning" => RequestIntent.Planning,
-                "conversational" => RequestIntent.Conversational,
-                _ => RequestIntent.Other
-            };
-
-            return new RequestIntentAssessment
-            {
-                Intent = intent,
-                Confidence = Math.Clamp(confidence, 0.0, 1.0),
-                Source = ClassificationSource.LlmClassifier,
-                Reasoning = reasoning
-            };
-        }
-        catch (JsonException ex)
+        return new RequestIntentAssessment
         {
-            _logger.LogWarning(ex, "Failed to parse LLM intent classification response for conversation {ConversationId}", conversationId);
-            return FallbackAssessment;
-        }
+            Intent = intent,
+            Confidence = Math.Clamp(confidence, 0.0, 1.0),
+            Source = ClassificationSource.LlmClassifier,
+            Reasoning = reasoning
+        };
     }
 }
