@@ -55,6 +55,7 @@ public class AgentRouterTests
     [Fact]
     public async Task RouteAsync_LowIntentConfidence_ReturnsNullWithoutCallingStrategy()
     {
+        _agentRegistry.Setup(r => r.GetAll()).Returns([Agent("research-agent")]);
         _classifier.Setup(c => c.ClassifyAsync(It.IsAny<AgentTurnContext>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(Intent(0.1));
 
@@ -74,6 +75,35 @@ public class AgentRouterTests
         var result = await _router.RouteAsync("find prior art");
 
         Assert.Null(result);
+    }
+
+    [Fact]
+    public async Task RouteAsync_NoRegisteredAgents_NeverCallsTheClassifier()
+    {
+        // The registry check must run first -- no reason to pay for an LLM classification call
+        // when there is nothing to route to.
+        _agentRegistry.Setup(r => r.GetAll()).Returns([]);
+
+        await _router.RouteAsync("find prior art");
+
+        _classifier.Verify(c => c.ClassifyAsync(It.IsAny<AgentTurnContext>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task RouteAsync_IntentClassifierFellBackToItsFailureConfidence_DeclinesRatherThanRoutes()
+    {
+        // Regression test for a confirmed bug: RequestIntentClassifier.FallbackConfidence (what a
+        // real classifier failure reports) must sit strictly below AgentRouter's decline threshold,
+        // or a failed classification reads as "confident enough" and the router routes on a signal
+        // that is actually a failure marker, not a real classification.
+        _classifier.Setup(c => c.ClassifyAsync(It.IsAny<AgentTurnContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Intent(RequestIntentClassifier.FallbackConfidence));
+        _agentRegistry.Setup(r => r.GetAll()).Returns([Agent("research-agent")]);
+
+        var result = await _router.RouteAsync("anything");
+
+        Assert.Null(result);
+        _strategy.Verify(s => s.SelectAgent(It.IsAny<SupervisorDecisionContext>()), Times.Never);
     }
 
     [Fact]

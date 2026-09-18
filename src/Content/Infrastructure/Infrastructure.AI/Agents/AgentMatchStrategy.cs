@@ -24,6 +24,15 @@ namespace Infrastructure.AI.Agents;
 /// </remarks>
 public sealed class AgentMatchStrategy : ISupervisorStrategy
 {
+    /// <summary>
+    /// Minimum overlap-coefficient score required before a match is accepted. Below this, an
+    /// accidental one-word overlap against a long description reads as "meaningful overlap" when
+    /// it isn't — the whole point of this strategy is to decline rather than bind a conversation to
+    /// a near-arbitrary agent, the same discipline <see cref="Infrastructure.AI.Routing.AgentRouter"/>
+    /// applies to intent confidence.
+    /// </summary>
+    private const double MinConfidence = 0.3;
+
     /// <inheritdoc/>
     public AgentSelection? SelectAgent(SupervisorDecisionContext context)
     {
@@ -32,7 +41,9 @@ public sealed class AgentMatchStrategy : ISupervisorStrategy
         if (context.AvailableAgents.Count == 0)
             return null;
 
-        var taskTokens = new HashSet<string>(TextTokenizer.Tokenize(context.TaskDescription), StringComparer.OrdinalIgnoreCase);
+        // Meaningful tokens only — a shared "the" or "is" is not a signal any candidate should win
+        // on, and unfiltered filler words let arbitrary candidates clear a score-only check.
+        var taskTokens = new HashSet<string>(TextTokenizer.TokenizeMeaningful(context.TaskDescription), StringComparer.OrdinalIgnoreCase);
         if (taskTokens.Count == 0)
             return null;
 
@@ -60,7 +71,7 @@ public sealed class AgentMatchStrategy : ISupervisorStrategy
             bestScore = score;
         }
 
-        if (bestCandidate is null)
+        if (bestCandidate is null || bestScore < MinConfidence)
             return null;
 
         return new AgentSelection
@@ -77,6 +88,6 @@ public sealed class AgentMatchStrategy : ISupervisorStrategy
             .Where(s => !string.IsNullOrEmpty(s))
             .Concat(candidate.Tags));
 
-        return TextTokenizer.Tokenize(text);
+        return TextTokenizer.TokenizeMeaningful(text);
     }
 }

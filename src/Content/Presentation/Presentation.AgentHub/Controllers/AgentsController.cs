@@ -186,11 +186,14 @@ public sealed class AgentsController : ControllerBase
 
         if (string.IsNullOrWhiteSpace(agentName))
         {
-            var record = await _store.GetAsync(id, userId, ct);
-            if (record is null)
+            // Bounded tail read, not the full transcript — GetHistoryForDispatch is built for
+            // exactly this "recent messages" access pattern, and a re-route only ever needs the
+            // latest user turn, never the whole history of a conversation that may run for hundreds.
+            var recentMessages = await _store.GetHistoryForDispatch(id, userId, maxMessages: 20, ct);
+            if (recentMessages is null)
                 return NotFound();
 
-            var lastUserMessage = record.Messages.LastOrDefault(m => m.Role == MessageRole.User)?.Content;
+            var lastUserMessage = recentMessages.LastOrDefault(m => m.Role == MessageRole.User)?.Content;
             if (string.IsNullOrWhiteSpace(lastUserMessage))
                 return BadRequest(new { error = "No target agent supplied and the conversation has no user message to route on." });
 

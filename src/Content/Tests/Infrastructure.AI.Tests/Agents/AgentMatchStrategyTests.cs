@@ -114,4 +114,39 @@ public class AgentMatchStrategyTests
         var strategy = new AgentMatchStrategy();
         Assert.Throws<ArgumentNullException>(() => strategy.SelectAgent(null!));
     }
+
+    [Fact]
+    public void SelectAgent_OnlyOverlapIsStopWords_ReturnsNull()
+    {
+        // Regression test for a confirmed bug: a shared filler word ("the", "is", "a"...) is not a
+        // meaningful signal, but the un-filtered tokenizer used to count it as a match, letting a
+        // near-arbitrary agent get selected on nothing but common-word overlap. Both sides here
+        // share real, raw-token overlap on "for" and "the" -- before the fix, that alone was enough
+        // to select this candidate.
+        var strategy = new AgentMatchStrategy();
+        var candidate = Candidate("unrelated-agent", "Handles invoices and payment reconciliation for the finance team");
+
+        var selection = strategy.SelectAgent(Context("is this for the", candidate));
+
+        Assert.Null(selection);
+    }
+
+    [Fact]
+    public void SelectAgent_ScoreBelowFloor_ReturnsNullEvenWithNonzeroOverlap()
+    {
+        // Regression test for a confirmed bug: SelectAgent used to accept any candidate with
+        // overlap > 0, with no minimum confidence -- a single incidental word match against an
+        // otherwise unrelated candidate could still "win" (there being no other candidate to beat)
+        // with a near-zero score. The overlap coefficient normalizes by the SMALLER token set, so a
+        // long task message against a short, mostly-unrelated candidate description is the shape
+        // that actually produces a sub-floor score.
+        var strategy = new AgentMatchStrategy();
+        var candidate = Candidate("loosely-related-agent", "Handles python scripts occasionally");
+
+        var selection = strategy.SelectAgent(Context(
+            "please refactor this python module and also update the deployment pipeline configuration files today",
+            candidate));
+
+        Assert.Null(selection);
+    }
 }

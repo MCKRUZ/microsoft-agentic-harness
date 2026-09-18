@@ -24,7 +24,13 @@ public sealed class AgentRouter : IAgentRouter
     /// wrong guess here silently binds a conversation to the wrong agent for its whole lifetime —
     /// worse than falling back to the configured default.
     /// </summary>
-    private const double MinIntentConfidence = 0.4;
+    /// <remarks>
+    /// Deliberately defined as <see cref="RequestIntentClassifier.FallbackConfidence"/> plus a
+    /// margin, not an independent literal — a classifier failure must never read as "confident
+    /// enough to route." A bare number here could silently drift below the fallback value again on
+    /// a future edit to either constant; this compile-time reference can't.
+    /// </remarks>
+    private const double MinIntentConfidence = RequestIntentClassifier.FallbackConfidence + 0.1;
 
     private readonly IRequestIntentClassifier _intentClassifier;
     private readonly IAgentMetadataRegistry _agentRegistry;
@@ -51,6 +57,12 @@ public sealed class AgentRouter : IAgentRouter
     /// <inheritdoc/>
     public async Task<AgentSelection?> RouteAsync(string userMessage, CancellationToken ct = default)
     {
+        // Cheap, cached check first — no reason to pay for an LLM classification call in a
+        // freshly-bootstrapped or misconfigured host with nothing registered to route to.
+        var agents = _agentRegistry.GetAll();
+        if (agents.Count == 0)
+            return null;
+
         var conversationId = Guid.NewGuid().ToString();
         var turnContext = new Domain.AI.Routing.Models.AgentTurnContext
         {
@@ -67,10 +79,6 @@ public sealed class AgentRouter : IAgentRouter
                 conversationId, intent.Confidence, MinIntentConfidence);
             return null;
         }
-
-        var agents = _agentRegistry.GetAll();
-        if (agents.Count == 0)
-            return null;
 
         var candidates = agents
             .Select(ToCandidate)

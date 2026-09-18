@@ -15,10 +15,21 @@ namespace Infrastructure.AI.Routing;
 /// </summary>
 public sealed class RequestIntentClassifier : IRequestIntentClassifier
 {
+    /// <summary>
+    /// Confidence stamped on a classification that failed and fell back, rather than one the model
+    /// was actually unsure about. A consumer that gates on confidence — <see cref="AgentRouter"/> is
+    /// the one today — must use a threshold strictly above this value, or a failure silently reads as
+    /// "confident enough," which is the opposite of what the fallback exists to signal. Exposed
+    /// (rather than left as a literal on <see cref="FallbackAssessment"/>) specifically so that
+    /// threshold is a compile-time reference to this value, not an independently-tuned number that
+    /// can drift out of sync with it.
+    /// </summary>
+    internal const double FallbackConfidence = 0.5;
+
     private static readonly RequestIntentAssessment FallbackAssessment = new()
     {
         Intent = RequestIntent.Other,
-        Confidence = 0.5,
+        Confidence = FallbackConfidence,
         Source = ClassificationSource.LlmClassifier,
         Reasoning = "Fallback — classification failed or was ambiguous"
     };
