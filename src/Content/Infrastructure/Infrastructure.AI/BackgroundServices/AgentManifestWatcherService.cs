@@ -94,17 +94,16 @@ public sealed class AgentManifestWatcherService : BackgroundService
     /// <inheritdoc />
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        var agentsConfig = _appConfig.CurrentValue.AI?.Agents;
-        if (agentsConfig?.WatchForChanges != true)
-        {
-            _logger.LogInformation(
-                "Agent manifest watching is disabled (AI:Agents:WatchForChanges is false or unset) — " +
-                "changes require an explicit refresh or a process restart to be picked up");
-            return;
-        }
-
+        // The OnChange subscription is registered UNCONDITIONALLY, before looking at the current
+        // value, and the service stays alive (the Task.Delay below) regardless of the initial
+        // WatchForChanges setting. The first cut of this method returned immediately when disabled
+        // at startup without ever subscribing — so a host that starts with watching off and later
+        // flips AI:Agents:WatchForChanges to true via a hot-reloadable config source (file-based
+        // appsettings reload, Azure App Configuration) had no live subscription to react to that
+        // flip: watching stayed off until a restart, asymmetric with the reverse (true→false), which
+        // DID work because the subscription was already active in that case (code review on #705).
         _optionsChangeSubscription = _appConfig.OnChange((config, _) => RetargetWatchers(config.AI?.Agents));
-        RetargetWatchers(agentsConfig);
+        RetargetWatchers(_appConfig.CurrentValue.AI?.Agents);
 
         try
         {
@@ -128,10 +127,25 @@ public sealed class AgentManifestWatcherService : BackgroundService
     /// a config reload that did not actually change agent paths and the double-fire some file-based
     /// configuration providers produce for a single edit.
     /// </summary>
-    private void RetargetWatchers(AgentsConfig? agentsConfig)
+    /// <param name="agentsConfig">The current agent configuration, or <see langword="null"/>.</param>
+    /// <param name="forceRebuild">
+    /// Bypasses the unchanged-paths no-op guard even though the resolved path SET is identical — used
+    /// by <see cref="OnWatcherError"/>, where the watcher INSTANCES (not the paths) are what need
+    /// replacing. A previous version achieved this by clobbering <c>_watchedPaths</c> to force a
+    /// mismatch; an explicit parameter (code review on #705) keeps that intent from silently breaking
+    /// if this method ever grows a second no-op condition that runs before the path check.
+    /// </param>
+    private void RetargetWatchers(AgentsConfig? agentsConfig, bool forceRebuild = false)
     {
         if (agentsConfig?.WatchForChanges != true)
         {
+            if (_watchers.Count > 0)
+            {
+                _logger.LogInformation(
+                    "Agent manifest watching disabled (AI:Agents:WatchForChanges) — changes require an " +
+                    "explicit refresh or a process restart to be picked up");
+            }
+
             StopWatching();
             return;
         }
@@ -140,7 +154,7 @@ public sealed class AgentManifestWatcherService : BackgroundService
 
         lock (_watchersLock)
         {
-            if (_watchedPaths.SequenceEqual(resolvedPaths, StringComparer.OrdinalIgnoreCase))
+            if (!forceRebuild && _watchedPaths.SequenceEqual(resolvedPaths, StringComparer.OrdinalIgnoreCase))
                 return;
 
             DisposeWatchersNoLock();
@@ -154,27 +168,48 @@ public sealed class AgentManifestWatcherService : BackgroundService
             var watchers = new List<FileSystemWatcher>(resolvedPaths.Count);
             foreach (var path in resolvedPaths)
             {
-                var watcher = new FileSystemWatcher(path)
+                FileSystemWatcher watcher;
+                try
                 {
-                    IncludeSubdirectories = true,
-                    Filter = "AGENT.md",
-                    NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName,
-                };
+                    watcher = new FileSystemWatcher(path)
+                    {
+                        IncludeSubdirectories = true,
+                        Filter = "AGENT.md",
+                        NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName,
+                    };
 
-                watcher.Created += OnManifestChanged;
-                watcher.Changed += OnManifestChanged;
-                watcher.Deleted += OnManifestChanged;
-                watcher.Renamed += OnManifestChanged;
-                watcher.Error += OnWatcherError;
+                    watcher.Created += OnManifestChanged;
+                    watcher.Changed += OnManifestChanged;
+                    watcher.Deleted += OnManifestChanged;
+                    watcher.Renamed += OnManifestChanged;
+                    watcher.Error += OnWatcherError;
 
-                watcher.EnableRaisingEvents = true;
+                    watcher.EnableRaisingEvents = true;
+                }
+                catch (Exception ex)
+                {
+                    // A path that exists (AgentSearchPathResolver already checked Directory.Exists)
+                    // can still fail here — a network share or container-mounted volume that doesn't
+                    // support native change notifications, or a permissions edge case. This runs
+                    // inside a BackgroundService, whose unhandled exceptions stop the ENTIRE host by
+                    // default (HostOptions.BackgroundServiceExceptionBehavior) — a live-reload
+                    // convenience for ONE misbehaving path must not take the whole process down with
+                    // it (code review on #705). Skip that path; every other configured path still
+                    // gets a working watcher.
+                    _logger.LogError(ex,
+                        "Could not create a filesystem watcher for agent path {Path} — live reload is " +
+                        "unavailable for this path; an explicit refresh or restart is still needed for " +
+                        "changes under it", path);
+                    continue;
+                }
+
                 watchers.Add(watcher);
             }
 
             _watchers = watchers;
             _watchedPaths = resolvedPaths;
 
-            _logger.LogInformation("Agent manifest watcher active for {Count} path(s)", resolvedPaths.Count);
+            _logger.LogInformation("Agent manifest watcher active for {Count} path(s)", watchers.Count);
         }
     }
 
@@ -193,16 +228,7 @@ public sealed class AgentManifestWatcherService : BackgroundService
             "Agent manifest watcher error (buffer overflow or watch failure) — invalidating and rebuilding watchers");
 
         _refresher.Invalidate();
-
-        lock (_watchersLock)
-        {
-            // Force RetargetWatchers to treat this as a change rather than a no-op, even though the
-            // resolved path SET has not changed — the watcher instances themselves are the thing
-            // that needs replacing.
-            _watchedPaths = [];
-        }
-
-        RetargetWatchers(_appConfig.CurrentValue.AI?.Agents);
+        RetargetWatchers(_appConfig.CurrentValue.AI?.Agents, forceRebuild: true);
     }
 
     /// <summary>
@@ -212,7 +238,16 @@ public sealed class AgentManifestWatcherService : BackgroundService
     internal void ScheduleInvalidate()
     {
         var configuredMs = _appConfig.CurrentValue.AI?.Agents?.ChangeDebounceMilliseconds ?? 500;
-        var debounce = TimeSpan.FromMilliseconds(Math.Clamp(configuredMs, 50, 30_000));
+        var clampedMs = Math.Clamp(configuredMs, 50, 30_000);
+        if (clampedMs != configuredMs)
+        {
+            _logger.LogWarning(
+                "AI:Agents:ChangeDebounceMilliseconds ({ConfiguredMs}) is outside the supported range " +
+                "[50, 30000] — using {ClampedMs}ms instead",
+                configuredMs, clampedMs);
+        }
+
+        var debounce = TimeSpan.FromMilliseconds(clampedMs);
 
         lock (_watchersLock)
         {

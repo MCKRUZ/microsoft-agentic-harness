@@ -39,7 +39,20 @@ internal static class AgentSearchPathResolver
         var resolved = new List<string>();
         foreach (var p in paths)
         {
-            var abs = Path.IsPathRooted(p) ? p : Path.GetFullPath(p, AppContext.BaseDirectory);
+            string abs;
+            try
+            {
+                abs = Path.IsPathRooted(p) ? p : Path.GetFullPath(p, AppContext.BaseDirectory);
+            }
+            catch (Exception ex) when (ex is ArgumentException or PathTooLongException or NotSupportedException)
+            {
+                // A malformed AdditionalPaths entry must not abort resolution of every other
+                // configured path (issue #705 code review) — the same "skip and log, don't fail
+                // the host" contract every other entry in this loop already gets.
+                logger.LogWarning(ex, "Agent path is malformed, skipping: {Path}", p);
+                continue;
+            }
+
             if (Directory.Exists(abs))
                 resolved.Add(abs);
             else

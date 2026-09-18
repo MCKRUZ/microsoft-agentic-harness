@@ -156,7 +156,24 @@ public sealed class AgentMetadataRegistry : IAgentMetadataRegistry, IAgentRegist
             if (cache is not null && !_stale)
                 return cache;
 
-            RebuildAndReconcile();
+            try
+            {
+                RebuildAndReconcile();
+            }
+            catch (Exception ex) when (_cache is not null)
+            {
+                // A rebuild failure must not strand a previously-successful load (code review on
+                // issue #705): before Invalidate() existed, once _cache was populated it was never
+                // touched again, so a bad configured path could never break an already-working
+                // registry. Now, ANY exception here would otherwise leave _stale permanently true —
+                // every subsequent call re-enters this branch, retries, fails, and re-throws, forever
+                // discarding perfectly good data still sitting in _cache. Serve the last known set
+                // instead; _stale stays true so the next Invalidate/Refresh still retries.
+                _logger.LogError(ex,
+                    "Agent registry rebuild failed — continuing to serve the last known agent set");
+                return _cache;
+            }
+
             return _cache!;
         }
     }
@@ -171,7 +188,7 @@ public sealed class AgentMetadataRegistry : IAgentMetadataRegistry, IAgentRegist
     private AgentRegistryRefreshResult RebuildAndReconcile()
     {
         var previous = _cache ?? new Dictionary<string, AgentDefinition>(StringComparer.OrdinalIgnoreCase);
-        var next = Discover();
+        var (next, hadEnumerationErrors) = Discover();
 
         var added = new List<string>();
         var updated = new List<string>();
@@ -184,8 +201,28 @@ public sealed class AgentMetadataRegistry : IAgentMetadataRegistry, IAgentRegist
         }
 
         var removed = previous.Keys.Where(id => !next.ContainsKey(id)).ToList();
-        foreach (var id in removed)
-            _ownedSkills.RemoveAgent(id);
+
+        // A directory this pass failed to enumerate (permission hiccup, network share stutter, a
+        // mid-rename) makes `next` unreliable for the purpose of deciding what's GONE — an agent
+        // missing only because its folder briefly failed to read looks identical to one that was
+        // really deleted. The registry cache itself self-heals on the next successful scan either
+        // way (SyncAgentOwnedSkills re-populates every currently-found agent's skills unconditionally
+        // — see its own remarks), but wiping AgentOwnedSkillStore here is NOT self-healing: nothing
+        // repopulates a still-present agent's private skills until IT is rediscovered too. So skip
+        // only that one destructive step on a partial scan, and say so (code review on issue #705).
+        if (hadEnumerationErrors && removed.Count > 0)
+        {
+            _logger.LogWarning(
+                "Agent registry rebuild hit directory enumeration errors and would have classified " +
+                "{RemovedCount} agent(s) as removed — skipping owned-skill cleanup for them this cycle " +
+                "since the scan may be incomplete rather than those agents actually being gone",
+                removed.Count);
+        }
+        else
+        {
+            foreach (var id in removed)
+                _ownedSkills.RemoveAgent(id);
+        }
 
         _cache = next;
         _stale = false;
@@ -228,27 +265,36 @@ public sealed class AgentMetadataRegistry : IAgentMetadataRegistry, IAgentRegist
         && a.Participants.SequenceEqual(b.Participants)
         && Equals(a.MagenticOptions, b.MagenticOptions);
 
-    private Dictionary<string, AgentDefinition> Discover()
+    /// <summary>
+    /// Scans every configured, existing agent path and returns the discovered agents alongside
+    /// whether any directory along the way failed to enumerate. That second flag exists solely so
+    /// <see cref="RebuildAndReconcile"/> can tell "this agent is genuinely gone" apart from "we
+    /// failed to see it this pass" (issue #705 code review) — a distinction the result dictionary
+    /// alone cannot make.
+    /// </summary>
+    private (Dictionary<string, AgentDefinition> Agents, bool HadEnumerationErrors) Discover()
     {
         var resolvedPaths = AgentSearchPathResolver.Resolve(_appConfig.CurrentValue.AI?.Agents, _logger);
         _searchedPaths = resolvedPaths;
 
         var result = new Dictionary<string, AgentDefinition>(StringComparer.OrdinalIgnoreCase);
+        var hadEnumerationErrors = false;
 
         foreach (var rootPath in resolvedPaths)
-            DiscoverInDirectory(rootPath, depth: 0, result);
+            DiscoverInDirectory(rootPath, depth: 0, result, ref hadEnumerationErrors);
 
         _logger.LogInformation(
             "Agent discovery complete: {Count} agents found across {PathCount} path(s)",
             result.Count, resolvedPaths.Count);
 
-        return result;
+        return (result, hadEnumerationErrors);
     }
 
     private void DiscoverInDirectory(
         string directory,
         int depth,
-        Dictionary<string, AgentDefinition> result)
+        Dictionary<string, AgentDefinition> result,
+        ref bool hadEnumerationErrors)
     {
         if (depth > MaxSearchDepth)
             return;
@@ -291,11 +337,12 @@ public sealed class AgentMetadataRegistry : IAgentMetadataRegistry, IAgentRegist
         try
         {
             foreach (var subDir in Directory.EnumerateDirectories(directory))
-                DiscoverInDirectory(subDir, depth + 1, result);
+                DiscoverInDirectory(subDir, depth + 1, result, ref hadEnumerationErrors);
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Could not enumerate directory: {Path}", directory);
+            hadEnumerationErrors = true;
         }
     }
 
