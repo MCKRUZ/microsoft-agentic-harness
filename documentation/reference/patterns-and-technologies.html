@@ -134,6 +134,7 @@
                         <li><code>ToolOutputCompressionBehavior</code> — compresses large tool outputs by content type (post-execution)</li>
                         <li><code>KnowledgeExtractionBehavior</code> — extracts facts from conversation into the knowledge graph (post-turn, fire-and-forget)</li>
                         <li><code>WorkEpisodeCaptureBehavior</code> — captures work episodes for self-improving memory (post-turn, fire-and-forget)</li>
+                        <li><code>SkillEffectivenessTrackingBehavior</code> — records per-skill success/failure for procedural memory (post-turn, fire-and-forget)</li>
                         <li><code>PromptUsageTrackingBehavior</code> — records prompt cache hit/miss for cost analysis</li>
                     </ol>
                     <p>All behaviour files live under <code>src/Content/Application/Application.AI.Common/MediatRBehaviors/</code>.</p>
