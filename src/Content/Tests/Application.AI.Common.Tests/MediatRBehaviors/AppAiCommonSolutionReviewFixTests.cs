@@ -193,6 +193,7 @@ public sealed class AppAiCommonSolutionReviewFixTests
         public string Response => "noted";
         public int InputTokens => 0;
         public int OutputTokens => 0;
+        public IReadOnlyList<string> SkillIds => [];
     }
 
     private sealed class SingleFactExtractor : IConversationFactExtractor

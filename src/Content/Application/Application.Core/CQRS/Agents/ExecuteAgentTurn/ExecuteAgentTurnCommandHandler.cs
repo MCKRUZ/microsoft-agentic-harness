@@ -97,6 +97,11 @@ public partial class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAge
 		_logger.LogInformation("Executing turn {TurnNumber} for agent {AgentName}",
 			request.TurnNumber, request.AgentName);
 
+		// Hoisted above the try so a failure caught below still reports which skill(s) this turn was
+		// attempting to run under (#695) — attribution matters for a failed outcome too, not only a
+		// successful one. Stays empty if the turn fails before resolution reaches it.
+		IReadOnlyList<string> skillIds = [];
+
 		try
 		{
 			// AgentName from the hub is an agent id — resolve the declared skill ids from the
@@ -108,7 +113,7 @@ public partial class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAge
 			if (agentDef?.OrchestrationMode == Domain.AI.Agents.AgentOrchestrationMode.Magentic)
 				return await HandleMagenticTurnAsync(request, agentDef, cancellationToken);
 
-			var skillIds = AgentDefinition.ResolveSkillIds(agentDef, request.AgentName);
+			skillIds = AgentDefinition.ResolveSkillIds(agentDef, request.AgentName);
 
 			var agent = await _agentCache.GetOrCreateAsync(
 				request.ConversationId,
@@ -294,7 +299,8 @@ public partial class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAge
 				CacheWrite = usage.CacheWrite,
 				CostUsd = usage.CostUsd,
 				Model = usage.Model,
-				Governance = _admissionPipeline.GetTrace()
+				Governance = _admissionPipeline.GetTrace(),
+				SkillIds = skillIds
 			};
 		}
 		catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -314,7 +320,8 @@ public partial class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAge
 				Response = string.Empty,
 				UpdatedHistory = [.. request.ConversationHistory, new ChatMessage(ChatRole.User, request.UserMessage)],
 				Error = "The agent turn was cancelled.",
-				ErrorKind = AgentTurnErrorKind.Cancelled
+				ErrorKind = AgentTurnErrorKind.Cancelled,
+				SkillIds = skillIds
 			};
 		}
 		catch (Exception ex) when (FindConfigurationError(ex) is { } configError)
@@ -331,7 +338,8 @@ public partial class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAge
 				Response = string.Empty,
 				UpdatedHistory = [.. request.ConversationHistory, new ChatMessage(ChatRole.User, request.UserMessage)],
 				Error = configError.Message,
-				ErrorKind = AgentTurnErrorKind.Configuration
+				ErrorKind = AgentTurnErrorKind.Configuration,
+				SkillIds = skillIds
 			};
 		}
 		catch (Exception ex)
@@ -346,7 +354,8 @@ public partial class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAge
 				Response = string.Empty,
 				UpdatedHistory = [.. request.ConversationHistory, new ChatMessage(ChatRole.User, request.UserMessage)],
 				Error = "An internal error occurred during the agent turn.",
-				ErrorKind = AgentTurnErrorKind.Internal
+				ErrorKind = AgentTurnErrorKind.Internal,
+				SkillIds = skillIds
 			};
 		}
 	}

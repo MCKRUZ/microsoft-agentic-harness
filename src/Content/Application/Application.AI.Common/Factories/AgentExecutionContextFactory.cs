@@ -16,6 +16,7 @@ using Domain.Common.Config;
 using Domain.Common.Config.AI;
 using Domain.Common.MetaHarness;
 using Microsoft.Agents.AI;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -166,8 +167,9 @@ public partial class AgentExecutionContextFactory
         // PromptComposition is enabled, the authoritative section composer reframes that same skill
         // content with identity + permission-rules sections within a token budget; per-turn dynamic
         // context (session state, memory) stays on the AIContextProvider rail, never baked in here.
+        var amendmentsBySkillId = await BuildAmendmentsBySkillIdAsync(skills);
         var instruction = SkillInstructionMerger.Merge(
-            skills, options.AdditionalContext, options.AgentInstructions, disclosedOnDemand);
+            skills, options.AdditionalContext, options.AgentInstructions, disclosedOnDemand, amendmentsBySkillId);
         if (_appConfig.CurrentValue.AI?.ContextManagement?.PromptComposition?.Enabled == true)
             instruction = await ComposeStaticSystemPromptAsync(agentName, instruction);
 
@@ -260,6 +262,55 @@ public partial class AgentExecutionContextFactory
             skills.Count, agentName, tools?.Count ?? 0, aiContextProviders?.Count ?? 0);
 
         return context;
+    }
+
+    /// <summary>
+    /// Loads learned instruction amendments (#695) for each skill, keyed by <see cref="SkillDefinition.Id"/>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <see cref="ISkillAmendmentProvider"/> is scoped (it resolves the ambient
+    /// tenant/owner-aware graph store), while this factory is a singleton — the same captive-dependency
+    /// constraint <see cref="ComposeStaticSystemPromptAsync"/> already works around. It is therefore
+    /// resolved per invocation from the current request scope via <see cref="IAmbientRequestScope"/>,
+    /// never taken as a constructor parameter (that shape was tried and rejected: it fails
+    /// <c>ValidateOnBuild</c> at startup with "Cannot consume scoped service ... from singleton", because
+    /// nothing here is a first-class per-request object the container could construct scoped-first).
+    /// </para>
+    /// <para>
+    /// Fails open per skill: a lookup failure for one skill is logged and skipped rather than failing the
+    /// whole turn — amendments are an enhancement to the static instructions, never a hard dependency of
+    /// building them. No ambient scope, no registered provider, or every skill amendment-free all return
+    /// <see langword="null"/>, so <see cref="SkillInstructionMerger.Merge"/> sees the same "nothing to
+    /// add" shape either way.
+    /// </para>
+    /// </remarks>
+    private async Task<IReadOnlyDictionary<string, IReadOnlyList<SkillAmendment>>?> BuildAmendmentsBySkillIdAsync(
+        IReadOnlyList<SkillDefinition> skills)
+    {
+        var scope = _serviceProvider.GetService<IAmbientRequestScope>()?.Current;
+        var provider = scope?.GetService<ISkillAmendmentProvider>();
+        if (provider is null)
+            return null;
+
+        var result = new Dictionary<string, IReadOnlyList<SkillAmendment>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var skill in skills)
+        {
+            try
+            {
+                var amendments = await provider.GetAmendmentsAsync(skill.Id);
+                if (amendments.Count > 0)
+                    result[skill.Id] = amendments;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex,
+                    "Failed to load learned amendments for skill {SkillId}; continuing without them",
+                    skill.Id);
+            }
+        }
+
+        return result.Count > 0 ? result : null;
     }
 
     /// <summary>

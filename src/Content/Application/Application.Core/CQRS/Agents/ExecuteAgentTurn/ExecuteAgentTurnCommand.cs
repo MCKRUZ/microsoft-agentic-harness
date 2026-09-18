@@ -97,6 +97,16 @@ public record AgentTurnResult : IAgentTurnResult
 	public IReadOnlyList<string> ToolsInvoked { get; init; } = [];
 
 	/// <summary>
+	/// Ids of the skill(s) whose composed instructions and tools were active for this turn's agent
+	/// (see <c>AgentExecutionContext.SkillIds</c>). Consumed by <c>SkillEffectivenessTrackingBehavior</c>
+	/// (#695) to attribute the turn's success/failure back to the skill(s) responsible, so the harness
+	/// can learn which skill is actually working rather than only whether the agent as a whole is.
+	/// Empty when no skill-cache path resolved an agent definition for this turn (e.g. some Magentic
+	/// runs) — an empty list means "no attribution," never a false one.
+	/// </summary>
+	public IReadOnlyList<string> SkillIds { get; init; } = [];
+
+	/// <summary>
 	/// This turn's tool calls, extracted and treated for durable, model-facing replay (#249 item 6),
 	/// in call order. Empty when the turn made no tool calls. Every entry is guaranteed to carry a
 	/// result — including an orphaned call — see <c>IToolCallReplayTreatment.NoResultPlaceholder</c>;

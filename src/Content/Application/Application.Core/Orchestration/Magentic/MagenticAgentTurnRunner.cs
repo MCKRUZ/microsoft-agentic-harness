@@ -31,6 +31,15 @@ namespace Application.Core.Orchestration.Magentic;
 /// but per-call replay memory (#249 item 6) does not yet cover Magentic turns. Revisit if/when a
 /// Magentic turn needs to participate in tool-call replay history.
 /// </para>
+/// <para>
+/// <strong>Known v1 limitation — no per-skill effectiveness attribution.</strong> A Magentic turn's
+/// success or failure is a property of the whole workflow (manager plus every participant), not of
+/// one agent's one skill set the way a single-agent turn's is. <see cref="AgentTurnResult.SkillIds"/>
+/// (#695) is always empty here rather than the union of every participant's skills: a workflow
+/// failure caused by one misbehaving participant would otherwise get spread across every other
+/// participant's skills too, penalizing skills that behaved correctly. Revisit only with a real
+/// per-participant success signal, not by flattening the workflow outcome onto every skill involved.
+/// </para>
 /// </remarks>
 public sealed class MagenticAgentTurnRunner : IMagenticAgentTurnRunner
 {
