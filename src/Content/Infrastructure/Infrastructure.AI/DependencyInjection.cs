@@ -25,6 +25,7 @@ using Domain.Common.Config;
 using Domain.Common.Workflow;
 using Infrastructure.AI.Agents;
 using Infrastructure.AI.Audit;
+using Infrastructure.AI.BackgroundServices;
 using Infrastructure.AI.Bundles;
 using Infrastructure.AI.Compaction;
 using Infrastructure.AI.Compaction.Strategies;
@@ -241,6 +242,20 @@ public static partial class DependencyInjection
         services.AddSingleton<AgentMetadataRegistry>();
         services.AddSingleton<IAgentMetadataRegistry>(sp =>
             new OverlayAwareAgentMetadataRegistry(sp.GetRequiredService<AgentMetadataRegistry>()));
+
+        // Reload seam (#705) — same singleton instance IAgentMetadataRegistry resolves to (NOT the
+        // overlay decorator above: a reload is a host-level lifecycle operation, not something a
+        // per-bundle-run overlay participates in), so an invalidate/refresh is immediately visible
+        // to every reader. Registered unconditionally: resolving it costs nothing until something
+        // actually calls Invalidate/Refresh — the watcher below is what does that automatically, and
+        // the operator refresh command does it on demand.
+        services.AddSingleton<IAgentRegistryRefresher>(sp => sp.GetRequiredService<AgentMetadataRegistry>());
+
+        // Automatic half of #705: watches the configured agent paths and invalidates the registry on
+        // change. Self-disables from AI:Agents:WatchForChanges (default true) — see
+        // AgentManifestWatcherService's own remarks for why it is safe to register unconditionally
+        // (no filesystem work happens before ExecuteAsync runs).
+        services.AddHostedService<AgentManifestWatcherService>();
 
         // --- Bundle execution (staging) ---
         // Off by default (AI:BundleExecution:Enabled). The staging service is passive — it does nothing

@@ -18,8 +18,11 @@ namespace Infrastructure.AI.Agents;
 /// Mirrors the behaviour of <c>SkillMetadataRegistry</c> so agent and skill discovery share an
 /// identical operational model: lazy first-load, dictionary-backed cache keyed by id, and
 /// best-effort parsing that logs but does not fail the host when a manifest is malformed.
+/// Also implements <see cref="IAgentRegistryRefresher"/> (issue #705): the cache can be invalidated
+/// or eagerly rebuilt after the initial load, by <c>AgentManifestWatcherService</c>
+/// reacting to filesystem changes or by an operator-triggered refresh command.
 /// </remarks>
-public sealed class AgentMetadataRegistry : IAgentMetadataRegistry
+public sealed class AgentMetadataRegistry : IAgentMetadataRegistry, IAgentRegistryRefresher
 {
     private const int MaxSearchDepth = 3;
 
@@ -28,9 +31,10 @@ public sealed class AgentMetadataRegistry : IAgentMetadataRegistry
     private readonly AgentMetadataParser _parser;
     private readonly SkillMetadataParser _skillParser;
     private readonly ISkillFileReader _skillFileReader;
-    private readonly IAgentOwnedSkillStore _ownedSkills;
+    private readonly AgentOwnedSkillStore _ownedSkills;
 
     private Dictionary<string, AgentDefinition>? _cache;
+    private volatile bool _stale;
     private IReadOnlyList<string> _searchedPaths = [];
     private readonly Lock _lock = new();
 
@@ -46,7 +50,10 @@ public sealed class AgentMetadataRegistry : IAgentMetadataRegistry
     /// <param name="ownedSkills">
     /// Store populated during discovery with the skills found under each agent's
     /// <c>&lt;agentDir&gt;/skills/</c> directory, so <c>AgentFactory</c> can resolve them ahead of the
-    /// global registry without polluting it.
+    /// global registry without polluting it. Taken as the concrete type — not
+    /// <see cref="IAgentOwnedSkillStore"/> — because discovery needs <c>ReplaceAgentSkills</c> and
+    /// <c>RemoveAgent</c> for reload reconciliation (issue #705), which are deliberately not on the
+    /// interface the per-bundle-run overlay decorator also implements.
     /// </param>
     public AgentMetadataRegistry(
         ILogger<AgentMetadataRegistry> logger,
@@ -54,7 +61,7 @@ public sealed class AgentMetadataRegistry : IAgentMetadataRegistry
         AgentMetadataParser parser,
         SkillMetadataParser skillParser,
         ISkillFileReader skillFileReader,
-        IAgentOwnedSkillStore ownedSkills)
+        AgentOwnedSkillStore ownedSkills)
     {
         ArgumentNullException.ThrowIfNull(skillFileReader);
 
@@ -70,103 +77,250 @@ public sealed class AgentMetadataRegistry : IAgentMetadataRegistry
     public IReadOnlyList<string> SearchedPaths => _searchedPaths;
 
     /// <inheritdoc />
-    public IReadOnlyList<AgentDefinition> GetAll()
-    {
-        EnsureLoaded();
-        return [.. _cache!.Values];
-    }
+    public IReadOnlyList<AgentDefinition> GetAll() => [.. GetOrLoadCache().Values];
 
     /// <inheritdoc />
-    public AgentDefinition? TryGet(string agentId)
-    {
-        EnsureLoaded();
-        _cache!.TryGetValue(agentId, out var agent);
-        return agent;
-    }
+    public AgentDefinition? TryGet(string agentId) =>
+        GetOrLoadCache().TryGetValue(agentId, out var agent) ? agent : null;
 
     /// <inheritdoc />
-    public IReadOnlyList<AgentDefinition> GetByCategory(string category)
-    {
-        EnsureLoaded();
-        return _cache!.Values
+    public IReadOnlyList<AgentDefinition> GetByCategory(string category) =>
+        GetOrLoadCache().Values
             .Where(a => string.Equals(a.Category, category, StringComparison.OrdinalIgnoreCase))
             .ToList();
-    }
 
     /// <inheritdoc />
     public IReadOnlyList<AgentDefinition> GetByTags(IEnumerable<string> tags)
     {
-        EnsureLoaded();
         var tagSet = new HashSet<string>(tags, StringComparer.OrdinalIgnoreCase);
-        return _cache!.Values
+        return GetOrLoadCache().Values
             .Where(a => a.Tags.Any(t => tagSet.Contains(t)))
             .ToList();
     }
 
-    private void EnsureLoaded()
+    /// <summary>
+    /// Marks the cache stale WITHOUT discarding it (issue #705 follow-up — see remarks). The next call
+    /// to any read method triggers a lazy rebuild via <see cref="GetOrLoadCache"/>, which — like an
+    /// explicit <see cref="Refresh"/> — reconciles <see cref="AgentOwnedSkillStore"/> against whatever
+    /// changed.
+    /// </summary>
+    /// <remarks>
+    /// The original implementation set <c>_cache = null</c> here, which broke two things once a
+    /// filesystem watcher started calling this automatically: (1) it discarded the only record of what
+    /// was previously loaded, so a <see cref="Refresh"/> that ran afterward diffed against an empty set
+    /// instead of the real prior state — every surviving agent misreported as "added," every removal
+    /// silently missed; (2) the automatic (watcher-driven) path never calls <see cref="Refresh"/> at
+    /// all — it calls only this method — and the pre-fix <c>Discover</c> performed no reconciliation of
+    /// its own, so a deleted agent's owned skills were never cleaned up on the default, no-restart path
+    /// this issue exists to support; only an operator explicitly hitting the refresh endpoint reconciled
+    /// them. Both are symptoms of the same mistake: reconciliation lived only in <see cref="Refresh"/>,
+    /// while invalidation destroyed the baseline that reconciliation needs. Fixed by keeping the last
+    /// snapshot in place — <see cref="GetOrLoadCache"/> now rebuilds through the same reconciling path
+    /// <see cref="Refresh"/> uses whenever <see cref="_stale"/> is set, so cleanup happens on every
+    /// reload, automatic or operator-triggered, and always against an accurate prior snapshot.
+    /// </remarks>
+    public void Invalidate()
     {
-        if (_cache is not null)
-            return;
-
         lock (_lock)
         {
-            if (_cache is not null)
-                return;
-
-            _cache = Discover();
+            _stale = true;
         }
     }
 
-    private Dictionary<string, AgentDefinition> Discover()
+    /// <inheritdoc />
+    public AgentRegistryRefreshResult Refresh()
     {
-        var agentsConfig = _appConfig.CurrentValue.AI?.Agents;
-        var paths = agentsConfig?.AllPaths.ToList() ?? [];
-
-        if (paths.Count == 0)
+        lock (_lock)
         {
-            _logger.LogInformation("No agent paths configured in AppConfig.AI.Agents — skipping agent discovery");
-            _searchedPaths = [];
-            return new Dictionary<string, AgentDefinition>(StringComparer.OrdinalIgnoreCase);
+            return RebuildAndReconcile();
+        }
+    }
+
+    /// <summary>
+    /// Returns the current cache, rebuilding it if it has never been loaded or has been marked stale by
+    /// <see cref="Invalidate"/>. A single local snapshot is captured and returned — every caller reads
+    /// through that one reference rather than touching the <c>_cache</c> field a second time, so a
+    /// concurrent invalidation landing between two field reads can never null-reference a reader. The
+    /// returned dictionary is never mutated after <see cref="Discover"/> builds it — only replaced
+    /// wholesale — so a reader holding an older snapshot during a concurrent reload is safe.
+    /// </summary>
+    private Dictionary<string, AgentDefinition> GetOrLoadCache()
+    {
+        var cache = _cache;
+        if (cache is not null && !_stale)
+            return cache;
+
+        lock (_lock)
+        {
+            cache = _cache;
+            if (cache is not null && !_stale)
+                return cache;
+
+            try
+            {
+                RebuildAndReconcile();
+            }
+            catch (Exception ex) when (_cache is not null)
+            {
+                // A rebuild failure must not strand a previously-successful load (code review on
+                // issue #705): before Invalidate() existed, once _cache was populated it was never
+                // touched again, so a bad configured path could never break an already-working
+                // registry. Now, ANY exception here would otherwise leave _stale permanently true —
+                // every subsequent call re-enters this branch, retries, fails, and re-throws, forever
+                // discarding perfectly good data still sitting in _cache. Serve the last known set
+                // instead; _stale stays true so the next Invalidate/Refresh still retries.
+                _logger.LogError(ex,
+                    "Agent registry rebuild failed — continuing to serve the last known agent set");
+                return _cache;
+            }
+
+            return _cache!;
+        }
+    }
+
+    /// <summary>
+    /// Rediscovers agents from disk, diffs the result against the last known snapshot, reconciles
+    /// <see cref="AgentOwnedSkillStore"/> for every agent id that disappeared, and swaps in the new
+    /// cache — the single reconciling rebuild both <see cref="Refresh"/> and the lazy path in
+    /// <see cref="GetOrLoadCache"/> share, so cleanup is never skipped regardless of which one triggered
+    /// it (issue #705). Caller must hold <see cref="_lock"/>.
+    /// </summary>
+    private AgentRegistryRefreshResult RebuildAndReconcile()
+    {
+        var previous = _cache ?? new Dictionary<string, AgentDefinition>(StringComparer.OrdinalIgnoreCase);
+        var previousSearchedPaths = _searchedPaths;
+        var (next, hadEnumerationErrors) = Discover();
+
+        var added = new List<string>();
+        var updated = new List<string>();
+        foreach (var (id, agent) in next)
+        {
+            if (!previous.TryGetValue(id, out var previousAgent))
+                added.Add(id);
+            else if (!DefinitionsAreEquivalent(previousAgent, agent))
+                updated.Add(id);
         }
 
-        // Resolve relative paths against AppContext.BaseDirectory (the bin folder)
-        // so they match where csproj Content Include copies skills/agents at build time.
-        // Avoids coupling configured paths to the process CWD, which differs between
-        // `dotnet run` (project dir) and a published deployment (publish dir).
-        var resolvedPaths = new List<string>();
-        foreach (var p in paths)
+        var removed = previous.Keys.Where(id => !next.ContainsKey(id)).ToList();
+
+        // Two independent ways this scan can be too unreliable to trust for deciding what's GONE:
+        //
+        // (1) A directory this pass failed to ENUMERATE (permission hiccup, network share stutter, a
+        //     mid-rename) — hadEnumerationErrors.
+        // (2) A root that resolved and was searched LAST time no longer resolves at all this time
+        //     (CI correctness-review finding: a transiently-unreachable network mount, or a
+        //     config/disk-readiness race, makes AgentSearchPathResolver.Resolve return fewer paths —
+        //     that resolver treats "not found" as an ORDINARY, expected condition, since a template
+        //     consumer's unused AdditionalPaths entry must not break discovery of everything else, so
+        //     it never sets hadEnumerationErrors on its own. Without this second check, every agent
+        //     under a root that just blipped away would be wiped, registry AND owned skills, with
+        //     nothing to self-heal from — worse than an active enumeration exception, not better).
+        //
+        // Either way, an agent missing only because its folder (or the root above it) briefly failed
+        // to resolve looks identical to one that was really deleted. Treat the classification as
+        // provisional across the board, not just for the owned-skill side effect (an earlier version
+        // of this guard only skipped the destructive AgentOwnedSkillStore.RemoveAgent call but still
+        // silently dropped the agent from `next` — inconsistent, since a scan too unreliable to trust
+        // for deleting a skill is equally too unreliable to trust for removing the agent from the live
+        // registry). Carry the previous definition forward into `next` so BOTH the agent and its owned
+        // skills stay exactly as they were until a clean, error-free scan actually confirms one way or
+        // the other.
+        var rootsVanished = previousSearchedPaths.Any(
+            p => !_searchedPaths.Contains(p, StringComparer.OrdinalIgnoreCase));
+        var scanIsUnreliable = hadEnumerationErrors || rootsVanished;
+
+        if (scanIsUnreliable && removed.Count > 0)
         {
-            var abs = Path.IsPathRooted(p) ? p : Path.GetFullPath(p, AppContext.BaseDirectory);
-            if (Directory.Exists(abs))
-                resolvedPaths.Add(abs);
-            else
-                _logger.LogWarning("Agent path not found, skipping: {Path}", abs);
+            _logger.LogWarning(
+                "Agent registry rebuild scan was unreliable ({Reason}) and would have classified " +
+                "{RemovedCount} agent(s) as removed — keeping them as-is this cycle since the scan may " +
+                "be incomplete rather than those agents actually being gone",
+                hadEnumerationErrors && rootsVanished ? "enumeration errors and a vanished root"
+                    : hadEnumerationErrors ? "enumeration errors" : "a vanished root",
+                removed.Count);
+
+            foreach (var id in removed)
+                next[id] = previous[id];
+
+            removed = [];
+        }
+        else
+        {
+            foreach (var id in removed)
+                _ownedSkills.RemoveAgent(id);
         }
 
+        _cache = next;
+        _stale = false;
+
+        _logger.LogInformation(
+            "Agent registry rebuilt: {Added} added, {Updated} updated, {Removed} removed, {Total} total",
+            added.Count, updated.Count, removed.Count, next.Count);
+
+        return new AgentRegistryRefreshResult
+        {
+            Added = added,
+            Updated = updated,
+            Removed = removed,
+            TotalAgentCount = next.Count,
+            SearchedPaths = _searchedPaths
+        };
+    }
+
+    /// <summary>
+    /// Compares two definitions for the same agent id for the purpose of the
+    /// <see cref="AgentRegistryRefreshResult.Updated"/> classification. Deliberately not record
+    /// equality: <see cref="AgentDefinition.LoadedAt"/> is stamped fresh on every parse, so a
+    /// byte-for-byte-unchanged manifest would otherwise compare unequal on every single reload.
+    /// </summary>
+    private static bool DefinitionsAreEquivalent(AgentDefinition a, AgentDefinition b) =>
+        a.Id == b.Id
+        && a.Name == b.Name
+        && a.Description == b.Description
+        && a.Category == b.Category
+        && a.Domain == b.Domain
+        && a.Version == b.Version
+        && a.Author == b.Author
+        && a.Instructions == b.Instructions
+        && a.OrchestrationMode == b.OrchestrationMode
+        && a.FilePath == b.FilePath
+        && a.BaseDirectory == b.BaseDirectory
+        && a.Tags.SequenceEqual(b.Tags)
+        && a.Skills.SequenceEqual(b.Skills)
+        && a.AllowedTools.SequenceEqual(b.AllowedTools)
+        && a.Participants.SequenceEqual(b.Participants)
+        && Equals(a.MagenticOptions, b.MagenticOptions);
+
+    /// <summary>
+    /// Scans every configured, existing agent path and returns the discovered agents alongside
+    /// whether any directory along the way failed to enumerate. That second flag exists solely so
+    /// <see cref="RebuildAndReconcile"/> can tell "this agent is genuinely gone" apart from "we
+    /// failed to see it this pass" (issue #705 code review) — a distinction the result dictionary
+    /// alone cannot make.
+    /// </summary>
+    private (Dictionary<string, AgentDefinition> Agents, bool HadEnumerationErrors) Discover()
+    {
+        var resolvedPaths = AgentSearchPathResolver.Resolve(_appConfig.CurrentValue.AI?.Agents, _logger);
         _searchedPaths = resolvedPaths;
 
-        if (resolvedPaths.Count == 0)
-        {
-            _logger.LogWarning("No valid agent paths found — agent discovery produced no results");
-            return new Dictionary<string, AgentDefinition>(StringComparer.OrdinalIgnoreCase);
-        }
-
         var result = new Dictionary<string, AgentDefinition>(StringComparer.OrdinalIgnoreCase);
+        var hadEnumerationErrors = false;
 
         foreach (var rootPath in resolvedPaths)
-            DiscoverInDirectory(rootPath, depth: 0, result);
+            DiscoverInDirectory(rootPath, depth: 0, result, ref hadEnumerationErrors);
 
         _logger.LogInformation(
             "Agent discovery complete: {Count} agents found across {PathCount} path(s)",
             result.Count, resolvedPaths.Count);
 
-        return result;
+        return (result, hadEnumerationErrors);
     }
 
     private void DiscoverInDirectory(
         string directory,
         int depth,
-        Dictionary<string, AgentDefinition> result)
+        Dictionary<string, AgentDefinition> result,
+        ref bool hadEnumerationErrors)
     {
         if (depth > MaxSearchDepth)
             return;
@@ -193,7 +347,7 @@ public sealed class AgentMetadataRegistry : IAgentMetadataRegistry
                     {
                         result[definition.Id] = definition;
                         _logger.LogDebug("Discovered agent: {AgentId} from {Path}", definition.Id, directory);
-                        DiscoverAgentOwnedSkills(directory, definition.Id);
+                        SyncAgentOwnedSkills(directory, definition.Id);
                     }
                 }
             }
@@ -209,28 +363,59 @@ public sealed class AgentMetadataRegistry : IAgentMetadataRegistry
         try
         {
             foreach (var subDir in Directory.EnumerateDirectories(directory))
-                DiscoverInDirectory(subDir, depth + 1, result);
+                DiscoverInDirectory(subDir, depth + 1, result, ref hadEnumerationErrors);
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Could not enumerate directory: {Path}", directory);
+            hadEnumerationErrors = true;
         }
     }
 
     /// <summary>
-    /// Scans an agent's own <c>skills/</c> subdirectory for nested <c>SKILL.md</c> files and registers
-    /// each into the <see cref="IAgentOwnedSkillStore"/> keyed by <paramref name="agentId"/>. These
+    /// Scans an agent's own <c>skills/</c> subdirectory for nested <c>SKILL.md</c> files and replaces
+    /// its full set in <see cref="AgentOwnedSkillStore"/> keyed by <paramref name="agentId"/>. These
     /// skills are private to the agent: they are deliberately kept out of the global
     /// <c>SkillMetadataRegistry</c> so they neither leak to other agents nor collide with shared skills.
     /// A missing <c>skills/</c> directory is the common case and is silently skipped; a single malformed
     /// nested skill logs a warning without failing the rest of discovery.
     /// </summary>
-    private void DiscoverAgentOwnedSkills(string agentDirectory, string agentId)
+    /// <remarks>
+    /// A full replace rather than incremental registration (issue #705): on a reload, an agent that
+    /// deleted one of its nested <c>SKILL.md</c> files must lose that skill from the store too. Scanning
+    /// and re-registering each surviving skill one at a time would leave the deleted one behind forever
+    /// — <see cref="AgentOwnedSkillStore.ReplaceAgentSkills"/> swaps in exactly the current set.
+    /// <para>
+    /// <b>#705: a scan that failed must not replace anything.</b> Before this fix,
+    /// a transient failure enumerating <c>skills/</c> (permission hiccup, network stutter, mid-rename)
+    /// made <see cref="NestedSkillScanner.Scan"/> return an empty list — indistinguishable from the
+    /// agent genuinely owning no skills — and this method would then WIPE the owned-skill store for it.
+    /// <see cref="Application.AI.Common.Factories.AgentFactory"/> resolves an unowned skill id from the
+    /// GLOBAL <c>SkillMetadataRegistry</c> as a fallback, so the agent would silently rebuild with a
+    /// same-id GLOBAL skill instead of its own — different instructions, different tool declarations,
+    /// invisible above a log warning. This is the same "a scan too unreliable to trust for removal is
+    /// too unreliable to trust for reconciliation" rule <see cref="RebuildAndReconcile"/> applies for
+    /// agent-level removal, just one call deeper — a transient failure now keeps the PREVIOUSLY-known
+    /// owned skills in place rather than replacing them with a possibly-incomplete (or empty) set.
+    /// </para>
+    /// </remarks>
+    private void SyncAgentOwnedSkills(string agentDirectory, string agentId)
     {
         var skillsRoot = Path.Combine(agentDirectory, "skills");
-        foreach (var skill in NestedSkillScanner.Scan(skillsRoot, _skillParser, _skillFileReader, _logger))
+        var (skills, hadScanErrors) = NestedSkillScanner.Scan(skillsRoot, _skillParser, _skillFileReader, _logger);
+
+        if (hadScanErrors)
         {
-            _ownedSkills.Register(agentId, skill);
+            _logger.LogWarning(
+                "Nested skill scan for agent {AgentId} hit errors — keeping the previously-registered " +
+                "owned skills rather than replacing them with a possibly-incomplete set", agentId);
+            return;
+        }
+
+        _ownedSkills.ReplaceAgentSkills(agentId, skills);
+
+        foreach (var skill in skills)
+        {
             _logger.LogDebug(
                 "Discovered agent-owned skill {SkillId} for agent {AgentId}", skill.Id, agentId);
         }

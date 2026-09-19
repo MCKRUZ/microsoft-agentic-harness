@@ -384,7 +384,7 @@ You are the team's automated code review assistant. For each pull request:
 
                         <li class="step">
                             <div class="step-title">Verify the agent loader picks it up</div>
-                            <p>Restart. The agent metadata registry now contains <code>code-review-bot</code>. Because this agent lists two skills, <code>AgentExecutionContextFactory</code> will merge both skills' instructions into the system prompt and combine both skills' tool lists. If <code>code-reviewer</code> declares <code>prerequisites: [git-history]</code>, the git-history skill's <code>CompletionTool</code> must be called before code-reviewer activates.</p>
+                            <p>No restart needed — the harness watches <code>agents/</code> for changes by default (<code>AI:Agents:WatchForChanges</code>) and picks up the new <code>AGENT.md</code> automatically within <code>ChangeDebounceMilliseconds</code> (500ms default). If <code>WatchForChanges</code> is disabled, or you want to confirm the change immediately, restart the host or call the operator refresh endpoint. Either way, the agent metadata registry now contains <code>code-review-bot</code>. Because this agent lists two skills, <code>AgentExecutionContextFactory</code> will merge both skills' instructions into the system prompt and combine both skills' tool lists. If <code>code-reviewer</code> declares <code>prerequisites: [git-history]</code>, the git-history skill's <code>CompletionTool</code> must be called before code-reviewer activates.</p>
                         </li>
 
                         <li class="step">

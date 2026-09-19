@@ -600,14 +600,20 @@
 },
 "Agents": {
   "BasePath": "agents",
-  "AdditionalPaths": []
+  "AdditionalPaths": [],
+  "WatchForChanges": true,
+  "ChangeDebounceMilliseconds": 500
 }</code></pre>
                     </div>
 
                     <p>
                         <code>BasePath</code> is the primary location. <code>AdditionalPaths</code> lets you layer
                         tenant- or environment-specific definitions on top of the built-ins — useful when you ship a
-                        base set of skills and your customer adds their own without forking.
+                        base set of skills and your customer adds their own without forking. For agents,
+                        <code>WatchForChanges</code> (default on) enables a filesystem watcher that picks up an
+                        added, edited, or removed <code>AGENT.md</code> without a restart, and
+                        <code>ChangeDebounceMilliseconds</code> controls how long it waits for a burst of writes to
+                        settle before reloading.
                     </p>
 
                     <h2 id="section-mcp">AppConfig.AI.McpServers</h2>
