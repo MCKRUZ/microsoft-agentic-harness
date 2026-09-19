@@ -140,6 +140,17 @@ public sealed class SkillMetadataRegistry : ISkillMetadataRegistry, ISkillRegist
         lock (_lock)
         {
             _stale = true;
+
+            // Advances Version here too, not only inside RebuildAndReconcile (CI correctness-review
+            // finding on #709's own security fix): a consumer like SkillManifestEgressPolicyResolver
+            // checks Version on every call but only calls back into THIS registry (TryGet/GetAll/…)
+            // on a cache MISS — the whole point of caching. Before this fix, an automatic
+            // watcher-driven Invalidate() left Version unchanged, so such a consumer's cache stayed a
+            // hit forever and the registry itself was never asked to rebuild — Version was stuck,
+            // waiting for a read that caching was specifically designed to avoid. Bumping it here
+            // means "the data may be stale" propagates to a Version-checking consumer immediately,
+            // not only after some unrelated caller happens to read this registry first.
+            Interlocked.Increment(ref _version);
         }
     }
 

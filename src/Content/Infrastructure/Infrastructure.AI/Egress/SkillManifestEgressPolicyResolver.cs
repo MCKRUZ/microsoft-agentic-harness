@@ -73,7 +73,7 @@ public sealed class SkillManifestEgressPolicyResolver : IEgressPolicyResolver
     // that took two review rounds to actually get right. A comparer keyed directly on the list
     // sidesteps that whole class of encoding-collision reasoning: two lists are the same cache slot
     // exactly when SkillIdListComparer says they're equal, by construction, for any arity).
-    private readonly ConcurrentDictionary<IReadOnlyList<string>, IEgressPolicy> _skillCache =
+    private readonly ConcurrentDictionary<IReadOnlyList<string>, VersionedPolicy> _skillCache =
         new(SkillIdListComparer.Instance);
 
     // Issue #709 security-review finding: this cache was previously permanent — nothing ever cleared
@@ -83,6 +83,18 @@ public sealed class SkillManifestEgressPolicyResolver : IEgressPolicyResolver
     // misses and establishes a baseline — ISkillMetadataRegistry.Version is only ever incremented, so
     // -1 can never collide with a real version.
     private long _cachedForSkillRegistryVersion = -1;
+
+    /// <summary>
+    /// An egress policy paired with the <see cref="ISkillMetadataRegistry.Version"/> it was built
+    /// from — the per-entry half of the #709 security-review fix. Bulk-clearing <see cref="_skillCache"/>
+    /// in <see cref="InvalidateIfSkillRegistryChanged"/> alone leaves a narrow window: a request already
+    /// in flight can finish building a policy from OLD skill data and write it into the cache AFTER a
+    /// concurrent reload's bulk clear already ran, where it would otherwise sit undetected until the
+    /// next version change. Stamping every entry with the version it was built for, and treating a
+    /// mismatch against the CURRENT version as a miss on every read, closes that window completely —
+    /// not just narrows it — regardless of how a stale entry got there.
+    /// </summary>
+    private readonly record struct VersionedPolicy(IEgressPolicy Policy, long BuiltForVersion);
 
     /// <summary>Initializes a new <see cref="SkillManifestEgressPolicyResolver"/>.</summary>
     public SkillManifestEgressPolicyResolver(
@@ -114,12 +126,25 @@ public sealed class SkillManifestEgressPolicyResolver : IEgressPolicyResolver
     {
         ArgumentNullException.ThrowIfNull(identity);
 
-        InvalidateIfSkillRegistryChanged();
+        var currentVersion = _skillRegistry.Version;
+        InvalidateIfSkillRegistryChanged(currentVersion);
 
         var skillIds = _currentSkill.CurrentSkillIds;
-        return skillIds.Count == 0
-            ? _noSkillPolicy.Value
-            : _skillCache.GetOrAdd(skillIds, static (ids, self) => self.BuildPolicyForSkills(ids), this);
+        if (skillIds.Count == 0)
+            return _noSkillPolicy.Value;
+
+        // Not GetOrAdd: a stale entry (see VersionedPolicy's remarks) must be treated as a miss even
+        // though the key is present, which GetOrAdd's "return the existing value if the key exists"
+        // contract can't express. A concurrent cache miss for the same skill-id list can now build the
+        // policy more than once — harmless, since BuildPolicyForSkills is a pure function of current
+        // skill data and the last writer's entry is exactly as valid as any other built for the same
+        // version.
+        if (_skillCache.TryGetValue(skillIds, out var cached) && cached.BuiltForVersion == currentVersion)
+            return cached.Policy;
+
+        var policy = BuildPolicyForSkills(skillIds);
+        _skillCache[skillIds] = new VersionedPolicy(policy, currentVersion);
+        return policy;
     }
 
     /// <summary>
@@ -127,18 +152,12 @@ public sealed class SkillManifestEgressPolicyResolver : IEgressPolicyResolver
     /// since the cache was last built (issue #709 security-review finding). Runs on every
     /// <see cref="ResolveFor"/> call — cheap (one <see cref="Interlocked.Exchange(ref long, long)"/>
     /// and, in the overwhelmingly common no-change case, nothing else) since this sits on the governed
-    /// outbound-request hot path.
+    /// outbound-request hot path. This bulk clear is a fast-path optimization, not the sole correctness
+    /// mechanism: <see cref="VersionedPolicy"/>'s per-entry stamp is what actually guarantees a stale
+    /// entry can never be served, including one written after this clear already ran.
     /// </summary>
-    /// <remarks>
-    /// A narrow window exists where a request already in flight populates one cache entry with data
-    /// resolved just before a concurrent reload's version bump, and that entry survives until the
-    /// NEXT call notices the version change — an inherent limit of invalidating without a synchronous
-    /// notification from the registry, not a bug specific to this method. It converts "never" into
-    /// "within about one request," which is the fix this finding asked for.
-    /// </remarks>
-    private void InvalidateIfSkillRegistryChanged()
+    private void InvalidateIfSkillRegistryChanged(long currentVersion)
     {
-        var currentVersion = _skillRegistry.Version;
         var previousVersion = Interlocked.Exchange(ref _cachedForSkillRegistryVersion, currentVersion);
         if (previousVersion != currentVersion)
             _skillCache.Clear();
