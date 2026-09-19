@@ -596,6 +596,51 @@ public sealed class AgentMetadataRegistryTests
     }
 
     [Fact]
+    public void Refresh_ConfiguredRootVanishes_KeepsPreviouslyKnownAgentsRatherThanWipingTheRegistry()
+    {
+        // CI correctness-review finding on #705: AgentSearchPathResolver.Resolve treats "this root
+        // doesn't exist" as an ORDINARY, expected condition — an unused AdditionalPaths entry must
+        // not break discovery of everything else — so it never sets hadEnumerationErrors. A
+        // previously-resolved root that transiently stops resolving (a network mount blip, a
+        // disk-readiness race at boot) looks identical to "the whole tree was deleted" from
+        // Discover()'s point of view, and without this guard would wipe the ENTIRE registry and
+        // every owned skill, with nothing to self-heal from — worse than an active enumeration
+        // exception, not better.
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"agents-root-vanishes-{Guid.NewGuid():N}");
+        var store = new AgentOwnedSkillStore();
+        try
+        {
+            WriteAgent(tempRoot, "alpha", """
+                ---
+                id: alpha
+                name: Alpha
+                skills: [alpha-only]
+                ---
+                """);
+            WriteNestedSkill(tempRoot, "alpha", "alpha-only", "Alpha's private skill.");
+
+            var registry = CreateRegistry(store, agentsPath: tempRoot);
+            registry.GetAll().Should().ContainSingle();
+            store.TryGet("alpha", "alpha-only").Should().NotBeNull();
+
+            // The root vanishes entirely — logged as a normal "not found, skipping", never as an
+            // enumeration error.
+            Directory.Delete(tempRoot, recursive: true);
+
+            var summary = registry.Refresh();
+
+            summary.Removed.Should().BeEmpty();
+            registry.GetAll().Should().ContainSingle(a => a.Id == "alpha");
+            store.TryGet("alpha", "alpha-only").Should().NotBeNull();
+        }
+        finally
+        {
+            if (Directory.Exists(tempRoot))
+                Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public void Refresh_AfterWatcherStyleInvalidate_DiffsAgainstLastKnownStateNotAnEmptySet()
     {
         // The correctness-gate finding on the first pass: Refresh used to diff against `_cache`

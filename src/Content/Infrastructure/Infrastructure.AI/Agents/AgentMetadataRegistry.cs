@@ -188,6 +188,7 @@ public sealed class AgentMetadataRegistry : IAgentMetadataRegistry, IAgentRegist
     private AgentRegistryRefreshResult RebuildAndReconcile()
     {
         var previous = _cache ?? new Dictionary<string, AgentDefinition>(StringComparer.OrdinalIgnoreCase);
+        var previousSearchedPaths = _searchedPaths;
         var (next, hadEnumerationErrors) = Discover();
 
         var added = new List<string>();
@@ -202,23 +203,40 @@ public sealed class AgentMetadataRegistry : IAgentMetadataRegistry, IAgentRegist
 
         var removed = previous.Keys.Where(id => !next.ContainsKey(id)).ToList();
 
-        // A directory this pass failed to enumerate (permission hiccup, network share stutter, a
-        // mid-rename) makes `next` unreliable for the purpose of deciding what's GONE — an agent
-        // missing only because its folder briefly failed to read looks identical to one that was
-        // really deleted. Treat the classification as provisional across the board, not just for the
-        // owned-skill side effect (/simplify altitude pass on the code-review fix for issue #705: an
-        // earlier version of this guard only skipped the destructive AgentOwnedSkillStore.RemoveAgent
-        // call but still silently dropped the agent from `next` — inconsistent, since a scan too
-        // unreliable to trust for deleting a skill is equally too unreliable to trust for removing the
-        // agent from the live registry). Carry the previous definition forward into `next` so BOTH the
-        // agent and its owned skills stay exactly as they were until a clean, error-free scan actually
-        // confirms one way or the other.
-        if (hadEnumerationErrors && removed.Count > 0)
+        // Two independent ways this scan can be too unreliable to trust for deciding what's GONE:
+        //
+        // (1) A directory this pass failed to ENUMERATE (permission hiccup, network share stutter, a
+        //     mid-rename) — hadEnumerationErrors.
+        // (2) A root that resolved and was searched LAST time no longer resolves at all this time
+        //     (CI correctness-review finding: a transiently-unreachable network mount, or a
+        //     config/disk-readiness race, makes AgentSearchPathResolver.Resolve return fewer paths —
+        //     that resolver treats "not found" as an ORDINARY, expected condition, since a template
+        //     consumer's unused AdditionalPaths entry must not break discovery of everything else, so
+        //     it never sets hadEnumerationErrors on its own. Without this second check, every agent
+        //     under a root that just blipped away would be wiped, registry AND owned skills, with
+        //     nothing to self-heal from — worse than an active enumeration exception, not better).
+        //
+        // Either way, an agent missing only because its folder (or the root above it) briefly failed
+        // to resolve looks identical to one that was really deleted. Treat the classification as
+        // provisional across the board, not just for the owned-skill side effect (an earlier version
+        // of this guard only skipped the destructive AgentOwnedSkillStore.RemoveAgent call but still
+        // silently dropped the agent from `next` — inconsistent, since a scan too unreliable to trust
+        // for deleting a skill is equally too unreliable to trust for removing the agent from the live
+        // registry). Carry the previous definition forward into `next` so BOTH the agent and its owned
+        // skills stay exactly as they were until a clean, error-free scan actually confirms one way or
+        // the other.
+        var rootsVanished = previousSearchedPaths.Any(
+            p => !_searchedPaths.Contains(p, StringComparer.OrdinalIgnoreCase));
+        var scanIsUnreliable = hadEnumerationErrors || rootsVanished;
+
+        if (scanIsUnreliable && removed.Count > 0)
         {
             _logger.LogWarning(
-                "Agent registry rebuild hit directory enumeration errors and would have classified " +
+                "Agent registry rebuild scan was unreliable ({Reason}) and would have classified " +
                 "{RemovedCount} agent(s) as removed — keeping them as-is this cycle since the scan may " +
                 "be incomplete rather than those agents actually being gone",
+                hadEnumerationErrors && rootsVanished ? "enumeration errors and a vanished root"
+                    : hadEnumerationErrors ? "enumeration errors" : "a vanished root",
                 removed.Count);
 
             foreach (var id in removed)
