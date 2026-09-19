@@ -230,6 +230,21 @@ public static partial class DependencyInjection
         // registered piecemeal, and why the reader is a separate sandbox from IFileSystemService.
         services.AddSkillDiscovery();
 
+        // Reload seam (#709, mirrors #705's IAgentRegistryRefresher) — same singleton instance
+        // ISkillMetadataRegistry resolves to (skills have no per-bundle-run overlay decorator the
+        // way agents do, so this is a direct forward, not routed around one), so an
+        // invalidate/refresh is immediately visible to every reader. Registered unconditionally:
+        // resolving it costs nothing until something actually calls Invalidate/Refresh — the
+        // watcher below is what does that automatically, and the operator refresh command does it
+        // on demand.
+        services.AddSingleton<ISkillRegistryRefresher>(sp => sp.GetRequiredService<SkillMetadataRegistry>());
+
+        // Automatic half of #709: watches the configured skill paths and invalidates the registry
+        // on change. Self-disables from AI:Skills:WatchForChanges (default true) — see
+        // SkillManifestWatcherService's own remarks for why it is safe to register unconditionally
+        // (no filesystem work happens before ExecuteAsync runs).
+        services.AddHostedService<SkillManifestWatcherService>();
+
         // The owned-skill store and agent registry are decorated so a bundle run can resolve its
         // ephemeral agent and owned skills from an ambient overlay ahead of the persistent registries,
         // without those definitions ever being written into them. The decorators are behaviour-neutral

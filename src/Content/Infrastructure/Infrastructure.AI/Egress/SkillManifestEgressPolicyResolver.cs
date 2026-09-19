@@ -32,9 +32,12 @@ namespace Infrastructure.AI.Egress;
 /// Cache safety: the cache key is the skill id; on cache miss the resolver
 /// constructs a new <see cref="DefaultEgressPolicy"/> by merging the default
 /// and per-skill entries, then stores it. The same identifier always returns
-/// the same instance (test 6 in the PR-3c suite verifies this). The default
-/// policy itself is computed once at construction and re-used for the
-/// "no skill in scope" path.
+/// the same instance (test 6 in the PR-3c suite verifies this) UNTIL the skill
+/// registry's <see cref="ISkillMetadataRegistry.Version"/> advances (issue #709
+/// security-review finding — see <see cref="InvalidateIfSkillRegistryChanged"/>).
+/// The default policy itself is computed once at construction and re-used for
+/// the "no skill in scope" path — it depends only on <c>AppConfig.AI.Egress
+/// .DefaultAllowlist</c>, never on skill data, so it needs no invalidation.
 /// </para>
 /// <para>
 /// Identity is intentionally not part of the cache key — egress allowlists are
@@ -70,8 +73,28 @@ public sealed class SkillManifestEgressPolicyResolver : IEgressPolicyResolver
     // that took two review rounds to actually get right. A comparer keyed directly on the list
     // sidesteps that whole class of encoding-collision reasoning: two lists are the same cache slot
     // exactly when SkillIdListComparer says they're equal, by construction, for any arity).
-    private readonly ConcurrentDictionary<IReadOnlyList<string>, IEgressPolicy> _skillCache =
+    private readonly ConcurrentDictionary<IReadOnlyList<string>, VersionedPolicy> _skillCache =
         new(SkillIdListComparer.Instance);
+
+    // Issue #709 security-review finding: this cache was previously permanent — nothing ever cleared
+    // it, so an operator narrowing or revoking a skill's egress allowlist via a hot-reloaded SKILL.md
+    // would keep having the OLD, broader policy enforced until process restart, silently defeating the
+    // exact security fix they believed they'd just applied. -1 guarantees the first real call always
+    // misses and establishes a baseline — ISkillMetadataRegistry.Version is only ever incremented, so
+    // -1 can never collide with a real version.
+    private long _cachedForSkillRegistryVersion = -1;
+
+    /// <summary>
+    /// An egress policy paired with the <see cref="ISkillMetadataRegistry.Version"/> it was built
+    /// from — the per-entry half of the #709 security-review fix. Bulk-clearing <see cref="_skillCache"/>
+    /// in <see cref="InvalidateIfSkillRegistryChanged"/> alone leaves a narrow window: a request already
+    /// in flight can finish building a policy from OLD skill data and write it into the cache AFTER a
+    /// concurrent reload's bulk clear already ran, where it would otherwise sit undetected until the
+    /// next version change. Stamping every entry with the version it was built for, and treating a
+    /// mismatch against the CURRENT version as a miss on every read, closes that window completely —
+    /// not just narrows it — regardless of how a stale entry got there.
+    /// </summary>
+    private readonly record struct VersionedPolicy(IEgressPolicy Policy, long BuiltForVersion);
 
     /// <summary>Initializes a new <see cref="SkillManifestEgressPolicyResolver"/>.</summary>
     public SkillManifestEgressPolicyResolver(
@@ -103,10 +126,41 @@ public sealed class SkillManifestEgressPolicyResolver : IEgressPolicyResolver
     {
         ArgumentNullException.ThrowIfNull(identity);
 
+        var currentVersion = _skillRegistry.Version;
+        InvalidateIfSkillRegistryChanged(currentVersion);
+
         var skillIds = _currentSkill.CurrentSkillIds;
-        return skillIds.Count == 0
-            ? _noSkillPolicy.Value
-            : _skillCache.GetOrAdd(skillIds, static (ids, self) => self.BuildPolicyForSkills(ids), this);
+        if (skillIds.Count == 0)
+            return _noSkillPolicy.Value;
+
+        // Not GetOrAdd: a stale entry (see VersionedPolicy's remarks) must be treated as a miss even
+        // though the key is present, which GetOrAdd's "return the existing value if the key exists"
+        // contract can't express. A concurrent cache miss for the same skill-id list can now build the
+        // policy more than once — harmless, since BuildPolicyForSkills is a pure function of current
+        // skill data and the last writer's entry is exactly as valid as any other built for the same
+        // version.
+        if (_skillCache.TryGetValue(skillIds, out var cached) && cached.BuiltForVersion == currentVersion)
+            return cached.Policy;
+
+        var policy = BuildPolicyForSkills(skillIds);
+        _skillCache[skillIds] = new VersionedPolicy(policy, currentVersion);
+        return policy;
+    }
+
+    /// <summary>
+    /// Clears <see cref="_skillCache"/> when <see cref="ISkillMetadataRegistry.Version"/> has advanced
+    /// since the cache was last built (issue #709 security-review finding). Runs on every
+    /// <see cref="ResolveFor"/> call — cheap (one <see cref="Interlocked.Exchange(ref long, long)"/>
+    /// and, in the overwhelmingly common no-change case, nothing else) since this sits on the governed
+    /// outbound-request hot path. This bulk clear is a fast-path optimization, not the sole correctness
+    /// mechanism: <see cref="VersionedPolicy"/>'s per-entry stamp is what actually guarantees a stale
+    /// entry can never be served, including one written after this clear already ran.
+    /// </summary>
+    private void InvalidateIfSkillRegistryChanged(long currentVersion)
+    {
+        var previousVersion = Interlocked.Exchange(ref _cachedForSkillRegistryVersion, currentVersion);
+        if (previousVersion != currentVersion)
+            _skillCache.Clear();
     }
 
     /// <summary>

@@ -438,7 +438,7 @@ skills:
                         <li>Make sure every tool in <code>allowed-tools</code> is registered in DI under that key.</li>
                         <li>(Optionally) reference the skill from an <code>AGENT.md</code> so an orchestrator can route to it.</li>
                     </ol>
-                    <p>You don't need to redeploy or recompile. The skill loader picks it up at next startup. There is no hot reload today — the host must be restarted for a changed <code>SKILL.md</code> to take effect.</p>
+                    <p>You don't need to redeploy or recompile. No restart needed — the harness watches skill paths for changes by default (<code>AI:Skills:WatchForChanges</code>) and picks up an added, edited, or removed <code>SKILL.md</code> automatically within <code>ChangeDebounceMilliseconds</code> (500ms default). If <code>WatchForChanges</code> is disabled, restart the host or call the operator refresh endpoint (<code>POST /api/skill-registry/refresh</code>) to confirm immediately.</p>
 
                     <h2>Skill amendments and learnings</h2>
                     <p>

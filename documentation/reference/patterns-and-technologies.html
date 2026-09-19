@@ -389,6 +389,15 @@ know the exact filename. Cite file paths in `path:line` form.</code></pre>
                         <li>Graph amendment: <code>Infrastructure.AI.KnowledgeGraph/Skills/GraphSkillAmendmentProvider.cs</code> (skills updated by learnings)</li>
                     </ul>
 
+                    <p>
+                        <code>SkillMetadataRegistry</code> parses <code>SKILL.md</code> files on first use and stays
+                        current afterward: a background watcher (<code>SkillManifestWatcherService</code>, gated by
+                        <code>AI:Skills:WatchForChanges</code>) picks up an added, edited, or removed manifest
+                        automatically, and a role-guarded operator endpoint
+                        (<code>POST /api/skill-registry/refresh</code>) can force an immediate rescan — the same
+                        no-restart model as the agent manifest registry below.
+                    </p>
+
                     <h3 id="plugin-system">Plugin system &amp; boundary governance</h3>
                     <p>
                         Plugins are filesystem directories with a <code>plugin.json</code> manifest declaring the skills

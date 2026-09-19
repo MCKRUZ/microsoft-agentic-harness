@@ -22,6 +22,20 @@ namespace Infrastructure.AI.Tests.Egress;
 /// </summary>
 public sealed class SkillManifestEgressPolicyResolverTests
 {
+    /// <summary>
+    /// Every test in this file cares about per-skill allowlist merging, not registry-version
+    /// invalidation (see <see cref="SkillManifestEgressPolicyResolverInvalidationTests"/> for that) —
+    /// a strict mock still needs <see cref="ISkillMetadataRegistry.Version"/> configured, since
+    /// <c>ResolveFor</c> reads it on every call (issue #709 security-review fix). A constant value is
+    /// correct here: nothing in these tests reloads the registry mid-test.
+    /// </summary>
+    private static Mock<ISkillMetadataRegistry> NewStrictRegistryMock()
+    {
+        var registry = new Mock<ISkillMetadataRegistry>(MockBehavior.Strict);
+        registry.SetupGet(r => r.Version).Returns(1L);
+        return registry;
+    }
+
     private static SkillDefinition SkillWithAllowlist(string id, params EgressAllowlistEntry[] entries)
     {
         return new SkillDefinition
@@ -66,7 +80,7 @@ public sealed class SkillManifestEgressPolicyResolverTests
             Ports = [443]
         });
 
-        var registry = new Mock<ISkillMetadataRegistry>(MockBehavior.Strict);
+        var registry = NewStrictRegistryMock();
         registry.Setup(r => r.TryGet("github-reader")).Returns(skill);
 
         var resolver = NewResolver(accessor, registry.Object,
@@ -117,7 +131,7 @@ public sealed class SkillManifestEgressPolicyResolverTests
             Host = "b.example.com", Schemes = ["https"], Ports = [443]
         });
 
-        var registry = new Mock<ISkillMetadataRegistry>(MockBehavior.Strict);
+        var registry = NewStrictRegistryMock();
         registry.Setup(r => r.TryGet("skill-a")).Returns(skillA);
         registry.Setup(r => r.TryGet("skill-b")).Returns(skillB);
 
@@ -161,7 +175,7 @@ public sealed class SkillManifestEgressPolicyResolverTests
         var skillTenAbc = SkillWithAllowlist("10abcdefghij", new EgressAllowlistEntry
         { Host = "set-b-only.example.com", Schemes = ["https"], Ports = [443] });
 
-        var registry = new Mock<ISkillMetadataRegistry>(MockBehavior.Strict);
+        var registry = NewStrictRegistryMock();
         registry.Setup(r => r.TryGet("2")).Returns(skillTwo);
         registry.Setup(r => r.TryGet("abcdefghij")).Returns(skillAbc);
         registry.Setup(r => r.TryGet("zzz")).Returns(skillZzz);
@@ -207,7 +221,7 @@ public sealed class SkillManifestEgressPolicyResolverTests
             Ports = [443]
         });
 
-        var registry = new Mock<ISkillMetadataRegistry>(MockBehavior.Strict);
+        var registry = NewStrictRegistryMock();
         // Setup once; assert the resolver doesn't ask twice.
         registry.Setup(r => r.TryGet("cached-skill")).Returns(skill);
 
@@ -230,7 +244,7 @@ public sealed class SkillManifestEgressPolicyResolverTests
     public async Task ResolveFor_NoSkillActive_FallsBackToDefaultOnlyPolicy()
     {
         var accessor = new CurrentSkillAccessor(); // no BeginScope — null current
-        var registry = new Mock<ISkillMetadataRegistry>(MockBehavior.Strict);
+        var registry = NewStrictRegistryMock();
 
         var resolver = NewResolver(accessor, registry.Object,
             new EgressAllowlistConfigEntry
@@ -263,7 +277,7 @@ public sealed class SkillManifestEgressPolicyResolverTests
         var accessor = new CurrentSkillAccessor();
         using var _ = accessor.BeginScope(["unknown-skill"]);
 
-        var registry = new Mock<ISkillMetadataRegistry>(MockBehavior.Strict);
+        var registry = NewStrictRegistryMock();
         registry.Setup(r => r.TryGet("unknown-skill")).Returns((SkillDefinition?)null);
 
         var resolver = NewResolver(accessor, registry.Object,
@@ -294,7 +308,7 @@ public sealed class SkillManifestEgressPolicyResolverTests
         var accessor = new CurrentSkillAccessor();
         using var _ = accessor.BeginScope(["empty-allowlist"]);
 
-        var registry = new Mock<ISkillMetadataRegistry>(MockBehavior.Strict);
+        var registry = NewStrictRegistryMock();
         registry.Setup(r => r.TryGet("empty-allowlist"))
             .Returns(SkillWithAllowlist("empty-allowlist"));
 
@@ -338,7 +352,7 @@ public sealed class SkillManifestEgressPolicyResolverTests
             Ports = [443]
         });
 
-        var registry = new Mock<ISkillMetadataRegistry>(MockBehavior.Strict);
+        var registry = NewStrictRegistryMock();
         registry.Setup(r => r.TryGet("<NO-SKILL>")).Returns(skill);
 
         var resolver = NewResolver(accessor, registry.Object,

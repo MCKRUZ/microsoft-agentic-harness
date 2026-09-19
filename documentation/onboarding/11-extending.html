@@ -293,7 +293,7 @@ miss, you push back on premature abstractions, and you say what you mean.
 
                         <li class="step">
                             <div class="step-title">Verify the loader picks it up</div>
-                            <p>Restart the host. The skill loader will discover the new <code>SKILL.md</code> at startup. From the console UI, you can now route requests to <code>"code-reviewer"</code> as an <code>AgentName</code>.</p>
+                            <p>No restart needed — the harness watches skill paths for changes by default (<code>AI:Skills:WatchForChanges</code>) and picks up the new <code>SKILL.md</code> automatically within <code>ChangeDebounceMilliseconds</code> (500ms default). If <code>WatchForChanges</code> is disabled, or you want to confirm the change immediately, restart the host or call the operator refresh endpoint (<code>POST /api/skill-registry/refresh</code>). Either way, from the console UI you can now route requests to <code>"code-reviewer"</code> as an <code>AgentName</code>.</p>
                             <div class="callout callout-tip">
                                 <span class="callout-icon">✓</span>
                                 <div class="callout-body">
