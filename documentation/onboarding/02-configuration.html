@@ -596,7 +596,9 @@
                         </div>
                         <pre><code>"Skills": {
   "BasePath": "skills",
-  "AdditionalPaths": []
+  "AdditionalPaths": [],
+  "WatchForChanges": true,
+  "ChangeDebounceMilliseconds": 500
 },
 "Agents": {
   "BasePath": "agents",
@@ -609,11 +611,11 @@
                     <p>
                         <code>BasePath</code> is the primary location. <code>AdditionalPaths</code> lets you layer
                         tenant- or environment-specific definitions on top of the built-ins — useful when you ship a
-                        base set of skills and your customer adds their own without forking. For agents,
-                        <code>WatchForChanges</code> (default on) enables a filesystem watcher that picks up an
-                        added, edited, or removed <code>AGENT.md</code> without a restart, and
-                        <code>ChangeDebounceMilliseconds</code> controls how long it waits for a burst of writes to
-                        settle before reloading.
+                        base set of skills and your customer adds their own without forking. Both <code>Skills</code>
+                        and <code>Agents</code> support <code>WatchForChanges</code> (default on), which enables a
+                        filesystem watcher that picks up an added, edited, or removed manifest without a restart, and
+                        <code>ChangeDebounceMilliseconds</code>, which controls how long it waits for a burst of
+                        writes to settle before reloading.
                     </p>
 
                     <h2 id="section-mcp">AppConfig.AI.McpServers</h2>

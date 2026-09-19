@@ -31,13 +31,15 @@ namespace Infrastructure.AI.Skills;
 /// changes or by an operator-triggered refresh command.
 /// </para>
 /// <para>
-/// <b>Known limitation, out of scope for #709:</b> <c>PluginPermissionRuleProvider</c> builds its
-/// plugin-tool rule set once at DI registration time from whatever this registry held at that
-/// moment. A reload here does not retroactively update that already-built rule set — a skill added
-/// or removed after startup is visible through every read method on this registry immediately, but
-/// a plugin's permission rules derived from it are not. Tracked as a follow-up issue rather than
-/// fixed here: it is a different component with its own design questions (re-run per refresh? per
-/// request? its own cache with its own invalidation?).
+/// <b><see cref="Version"/> exists for consumers with their own derived cache (security-review
+/// finding on #709).</b> Two production components previously assumed this registry's data never
+/// changed after startup: <c>SkillManifestEgressPolicyResolver</c> cached a per-skill egress policy
+/// forever, so narrowing or revoking a skill's allowed outbound hosts would keep being enforced as
+/// the old, broader policy until process restart — actively dangerous once this class made
+/// hot-reload the advertised way to apply that kind of change. <c>PluginPermissionRuleProvider</c>
+/// cached its plugin-tool rules keyed only on the plugin registry's own version, with its own doc
+/// comment explicitly relying on this registry being "one-shot with no invalidation" — a statement
+/// this class now makes false. Both now key their cache on <see cref="Version"/> too.
 /// </para>
 /// </remarks>
 public sealed class SkillMetadataRegistry : ISkillMetadataRegistry, ISkillRegistryRefresher
@@ -53,6 +55,7 @@ public sealed class SkillMetadataRegistry : ISkillMetadataRegistry, ISkillRegist
     private Dictionary<string, SkillDefinition>? _cache;
     private volatile bool _stale;
     private IReadOnlyList<string> _searchedPaths = [];
+    private long _version;
     private readonly Lock _lock = new();
 
     /// <summary>
@@ -90,6 +93,9 @@ public sealed class SkillMetadataRegistry : ISkillMetadataRegistry, ISkillRegist
 
     /// <inheritdoc />
     public IReadOnlyList<string> SearchedPaths => _searchedPaths;
+
+    /// <inheritdoc />
+    public long Version => Interlocked.Read(ref _version);
 
     /// <inheritdoc />
     public IReadOnlyList<SkillDefinition> GetAll() => [.. GetOrLoadCache().Values];
@@ -254,6 +260,7 @@ public sealed class SkillMetadataRegistry : ISkillMetadataRegistry, ISkillRegist
 
         _cache = next;
         _stale = false;
+        Interlocked.Increment(ref _version);
 
         _logger.LogInformation(
             "Skill registry rebuilt: {Added} added, {Updated} updated, {Removed} removed, {Total} total",
@@ -278,6 +285,14 @@ public sealed class SkillMetadataRegistry : ISkillMetadataRegistry, ISkillRegist
     /// — not the derived resource lists (Templates/References/Scripts/Assets), whose deep comparison
     /// would be expensive and whose presence is already implied by a change to the fields compared.
     /// </summary>
+    /// <remarks>
+    /// Includes <see cref="SkillDefinition.Egress"/>'s allowlist (security-review finding on #709): an
+    /// edit that narrows or revokes a skill's egress allowlist is exactly the case where "reported as
+    /// unchanged" would be actively misleading to an operator relying on the refresh summary to
+    /// confirm their edit took effect — <see cref="ISkillMetadataRegistry.Version"/> is what actually
+    /// keeps <c>SkillManifestEgressPolicyResolver</c> safe regardless of this comparison's accuracy,
+    /// but the reported summary should still be honest about what changed.
+    /// </remarks>
     private static bool DefinitionsAreEquivalent(SkillDefinition a, SkillDefinition b) =>
         a.Id == b.Id
         && a.Name == b.Name
@@ -296,7 +311,8 @@ public sealed class SkillMetadataRegistry : ISkillMetadataRegistry, ISkillRegist
         && a.BaseDirectory == b.BaseDirectory
         && a.Tags.SequenceEqual(b.Tags)
         && (a.AllowedTools ?? []).SequenceEqual(b.AllowedTools ?? [])
-        && a.Prerequisites.SequenceEqual(b.Prerequisites);
+        && a.Prerequisites.SequenceEqual(b.Prerequisites)
+        && (a.Egress?.Allowlist ?? []).SequenceEqual(b.Egress?.Allowlist ?? []);
 
     /// <summary>
     /// Scans every configured, existing skill path and returns the discovered skills alongside

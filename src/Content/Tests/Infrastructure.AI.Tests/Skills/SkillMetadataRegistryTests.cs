@@ -542,6 +542,40 @@ public sealed class SkillMetadataRegistryTests
         }
     }
 
+    [Fact]
+    public void Version_IncrementsOnEveryRebuild_EvenWhenNothingActuallyChanged()
+    {
+        // Proves the contract ISkillMetadataRegistry.Version's own doc comment states: bumped
+        // unconditionally on every successful rebuild, not only when a diff was detected. Consumers
+        // like SkillManifestEgressPolicyResolver rely on this to be a trustworthy "something may have
+        // changed" signal without re-deriving change detection themselves (issue #709 security-review
+        // finding).
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"skills-version-{Guid.NewGuid():N}");
+        try
+        {
+            WriteSkill(tempRoot, "alpha", """
+                ---
+                name: alpha
+                ---
+                """);
+
+            var registry = CreateRegistry(skillsPath: tempRoot);
+            registry.GetAll().Should().ContainSingle();
+            var afterFirstLoad = registry.Version;
+            afterFirstLoad.Should().BeGreaterThan(0, "the first load is itself a rebuild");
+
+            // Refresh again with nothing on disk having changed at all.
+            registry.Refresh();
+
+            registry.Version.Should().BeGreaterThan(afterFirstLoad,
+                "Version must advance on every rebuild, not only when a real diff was found");
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
     private sealed class OptionsMonitorStub : IOptionsMonitor<AppConfig>
     {
         public OptionsMonitorStub(AppConfig value) => CurrentValue = value;

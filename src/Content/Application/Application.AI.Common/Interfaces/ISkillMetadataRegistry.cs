@@ -42,4 +42,22 @@ public interface ISkillMetadataRegistry
     /// Returns the filesystem paths that were searched during discovery.
     /// </summary>
     IReadOnlyList<string> SearchedPaths { get; }
+
+    /// <summary>
+    /// Monotonically increasing generation counter, incremented every time the underlying cache is
+    /// successfully rebuilt — whether or not the rebuild found any actual differences.
+    /// </summary>
+    /// <remarks>
+    /// Exists for a consumer that derives and caches a value FROM this registry's contents per some
+    /// other key (for example <c>SkillManifestEgressPolicyResolver</c> caching a per-skill egress
+    /// policy, or <c>PluginPermissionRuleProvider</c> caching plugin-derived tool rules) and needs a
+    /// cheap way to detect "the underlying skill data may have changed" without this registry needing
+    /// to know who is watching, or without re-deriving change detection itself (security-review
+    /// finding on issue #709: before this existed, a hot-reloaded skill's egress allowlist could be
+    /// narrowed or revoked and a consumer's stale cached policy would keep enforcing the old, broader
+    /// one until process restart). Deliberately incremented unconditionally on every rebuild, not only
+    /// when a diff was detected — a consumer relying on it for a security-relevant decision must never
+    /// have to trust this registry's own best-effort added/updated/removed classification to stay safe.
+    /// </remarks>
+    long Version { get; }
 }
