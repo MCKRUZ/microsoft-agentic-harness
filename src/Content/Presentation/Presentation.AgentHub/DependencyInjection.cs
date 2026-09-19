@@ -30,6 +30,7 @@ using Presentation.Common.ChangeProposals;
 using Presentation.Common.Drift;
 using Presentation.Common.Escalations;
 using Presentation.Common.Governance;
+using Presentation.Common.SkillRegistry;
 using Microsoft.Extensions.Options;
 
 namespace Presentation.AgentHub;
@@ -78,7 +79,10 @@ public static class DependencyInjection
             // Deliberate opt-in: AgentHub owns the IAgentMetadataRegistry singleton live
             // conversation turns resolve agents from, so an operator-triggered refresh must run
             // against this process's own instance.
-            .AddAgentRegistryApi();
+            .AddAgentRegistryApi()
+            // Deliberate opt-in: AgentHub also owns the ISkillMetadataRegistry singleton live
+            // conversation turns resolve skills from (issue #709).
+            .AddSkillRegistryApi();
 
         // Surfaces a missing/invalid AI provider configuration via /health/ai. Additive to the
         // health checks registered in Presentation.Common — Degraded (not Unhealthy) because the

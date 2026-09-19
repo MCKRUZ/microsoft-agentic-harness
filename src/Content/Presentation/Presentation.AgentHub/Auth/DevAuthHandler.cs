@@ -50,6 +50,8 @@ internal sealed class DevAuthHandler(
             // deployment must grant this separately from ordinary agent read access, but the dev
             // principal holds it so the endpoint is exercisable locally.
             new Claim(ClaimTypes.Role, Presentation.Common.AgentRegistry.AgentRegistryController.OperateRole),
+            // Skill registry refresh (issue #709) — same reasoning as agent registry refresh above.
+            new Claim(ClaimTypes.Role, Presentation.Common.SkillRegistry.SkillRegistryController.OperateRole),
         };
         var identity = new ClaimsIdentity(claims, Scheme.Name);
         var ticket = new AuthenticationTicket(new ClaimsPrincipal(identity), Scheme.Name);
