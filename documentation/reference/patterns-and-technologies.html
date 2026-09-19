@@ -415,8 +415,11 @@ know the exact filename. Cite file paths in `path:line` form.</code></pre>
                     <p>
                         Agents declare themselves in <code>AGENT.md</code> — name, system-prompt fragments, the skills
                         they load, the MCP servers they connect to, the decision frameworks they follow. The
-                        <code>AgentMetadataRegistry</code> parses these at startup; the <code>AgentFactory</code>
-                        consumes them at turn-construction time.
+                        <code>AgentMetadataRegistry</code> parses these on first use and stays current afterward: a
+                        background watcher (<code>AI:Agents:WatchForChanges</code>) picks up an added, edited, or
+                        removed manifest automatically, and a role-guarded operator endpoint
+                        (<code>POST /api/agent-registry/refresh</code>) can force an immediate rescan. The
+                        <code>AgentFactory</code> consumes the registry's contents at turn-construction time.
                     </p>
 
                     <h3 id="tool-keyed-di">Tool registration via keyed DI</h3>

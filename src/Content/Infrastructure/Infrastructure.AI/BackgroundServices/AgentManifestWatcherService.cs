@@ -59,6 +59,16 @@ public sealed class AgentManifestWatcherService : BackgroundService
     private ITimer? _debounceTimer;
     private IDisposable? _optionsChangeSubscription;
 
+    /// <summary>
+    /// Set once by <see cref="Shutdown"/>. A filesystem callback that arrives after shutdown has
+    /// already disposed the watchers and timer could otherwise recreate a debounce timer
+    /// (<see cref="ScheduleInvalidate"/>) or new watchers (<see cref="RetargetWatchers"/>) that
+    /// nothing ever cleans up (correctness-gate advisory on #705) — a leak, since the window between
+    /// a callback firing and shutdown completing is narrow, not a correctness failure, but cheap to
+    /// close outright.
+    /// </summary>
+    private bool _stopped;
+
     /// <summary>Initialises the watcher with its dependencies. Touches no filesystem state.</summary>
     /// <param name="appConfig">Monitor over the live application configuration (agent search paths and watch settings).</param>
     /// <param name="refresher">The registry seam this service invalidates on a detected change.</param>
@@ -154,6 +164,9 @@ public sealed class AgentManifestWatcherService : BackgroundService
 
         lock (_watchersLock)
         {
+            if (_stopped)
+                return;
+
             if (!forceRebuild && _watchedPaths.SequenceEqual(resolvedPaths, StringComparer.OrdinalIgnoreCase))
                 return;
 
@@ -174,8 +187,16 @@ public sealed class AgentManifestWatcherService : BackgroundService
                     watcher = new FileSystemWatcher(path)
                     {
                         IncludeSubdirectories = true,
-                        Filter = "AGENT.md",
-                        NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName,
+                        // No Filter (correctness gate finding on #705): a Filter of "AGENT.md" only
+                        // matches an item literally named that, so moving or renaming an entire agent
+                        // folder — `mv billing-agent agents/billing-agent`, or an Explorer delete,
+                        // which moves the folder to the Recycle Bin — raises a single folder-level
+                        // event whose Name is the folder, not "AGENT.md", and that event was silently
+                        // dropped: the new agent stayed invisible, and a "deleted" agent kept being
+                        // served indefinitely. Watching every item and adding NotifyFilters.DirectoryName
+                        // catches both; the handler doesn't need to know WHAT changed since it always
+                        // just marks the registry stale for a full rescan.
+                        NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName | NotifyFilters.DirectoryName,
                     };
 
                     watcher.Created += OnManifestChanged;
@@ -251,6 +272,9 @@ public sealed class AgentManifestWatcherService : BackgroundService
 
         lock (_watchersLock)
         {
+            if (_stopped)
+                return;
+
             if (_debounceTimer is null)
             {
                 _debounceTimer = _timeProvider.CreateTimer(
@@ -279,6 +303,7 @@ public sealed class AgentManifestWatcherService : BackgroundService
 
         lock (_watchersLock)
         {
+            _stopped = true;
             _debounceTimer?.Dispose();
             _debounceTimer = null;
             DisposeWatchersNoLock();

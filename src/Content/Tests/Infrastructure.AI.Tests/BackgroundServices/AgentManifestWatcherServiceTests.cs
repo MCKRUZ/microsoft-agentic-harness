@@ -135,6 +135,61 @@ public sealed class AgentManifestWatcherServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task RealWatcher_AgentFolderMovedIntoWatchedRoot_TriggersInvalidate()
+    {
+        // The correctness-gate finding this test closes (#705): a Filter of "AGENT.md" only
+        // matches an item literally named that, so moving or renaming an entire agent folder into
+        // the watched root — `mv billing-agent agents/billing-agent`, or restoring a folder from
+        // the Recycle Bin — raises a single folder-level event whose Name is the folder, not
+        // "AGENT.md". That event was silently dropped: the new agent stayed invisible until
+        // something else triggered a reload. Uses a real FileSystemWatcher against the real
+        // filesystem (unlike the debounce-logic tests above, which exercise the internal methods
+        // directly) because the defect is specifically in what the OS-level watcher is configured
+        // to listen for — a fake can't reproduce it. Real TimeProvider, not the class's shared fake,
+        // so the debounce timer fires on its own after the real OS event arrives, rather than
+        // requiring the test to guess when to advance a fake clock relative to unpredictable OS
+        // event delivery timing.
+        var outsideDir = Path.Combine(Path.GetTempPath(), $"agent-watcher-outside-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(outsideDir);
+        File.WriteAllText(Path.Combine(outsideDir, "AGENT.md"), "---\nid: moved-in\nname: Moved In\n---\n");
+
+        var appConfig = new AppConfig
+        {
+            AI = new AIConfig
+            {
+                Agents = new AgentsConfig
+                {
+                    BasePath = _tempDir,
+                    WatchForChanges = true,
+                    ChangeDebounceMilliseconds = 50,
+                },
+            },
+        };
+        var refresher = new FakeRefresher();
+        var service = new AgentManifestWatcherService(
+            new StaticOptionsMonitor(appConfig), refresher, TimeProvider.System,
+            NullLogger<AgentManifestWatcherService>.Instance);
+        _created.Add(service);
+
+        try
+        {
+            await service.StartAsync(CancellationToken.None);
+            await WaitUntilAsync(() => service.WatchedPaths.Count > 0);
+
+            Directory.Move(outsideDir, Path.Combine(_tempDir, "moved-in"));
+
+            await WaitUntilAsync(() => refresher.InvalidateCount > 0, timeoutMs: 5000);
+
+            await service.StopAsync(CancellationToken.None);
+        }
+        finally
+        {
+            if (Directory.Exists(outsideDir))
+                Directory.Delete(outsideDir, recursive: true);
+        }
+    }
+
+    [Fact]
     public void ScheduleInvalidate_SingleEvent_InvalidatesOnlyAfterTheDebouncePeriod()
     {
         var service = CreateService(debounceMs: 500);

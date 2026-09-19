@@ -34,7 +34,7 @@ public sealed class AgentMetadataRegistry : IAgentMetadataRegistry, IAgentRegist
     private readonly AgentOwnedSkillStore _ownedSkills;
 
     private Dictionary<string, AgentDefinition>? _cache;
-    private bool _stale;
+    private volatile bool _stale;
     private IReadOnlyList<string> _searchedPaths = [];
     private readonly Lock _lock = new();
 
