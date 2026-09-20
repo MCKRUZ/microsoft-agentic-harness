@@ -1,4 +1,6 @@
+using System.Text.Json;
 using Domain.AI.Observability.Models;
+using Domain.Common;
 using Microsoft.Extensions.Logging;
 using Npgsql;
 
@@ -320,5 +322,115 @@ public sealed partial class PostgresObservabilityStore
         Severity = reader.IsDBNull(5) ? null : reader.GetInt32(5),
         FilterName = reader.IsDBNull(6) ? null : reader.GetString(6),
         CreatedAt = reader.GetFieldValue<DateTimeOffset>(7)
+    };
+
+    /// <inheritdoc />
+    public async Task<Result<IReadOnlyList<AuditEntry>>> GetAuditEntriesAsync(
+        DateTimeOffset? since, DateTimeOffset? until, string? source, int limit, int offset,
+        CancellationToken cancellationToken = default)
+    {
+        const string columns = """
+            SELECT id, operation, source, session_id, metadata, created_at
+            FROM audit_log
+            """;
+
+        var clauses = new List<string>();
+        var paramIndex = 3;
+
+        if (since.HasValue)
+            clauses.Add($"created_at >= ${paramIndex++}");
+        if (until.HasValue)
+            clauses.Add($"created_at < ${paramIndex++}");
+        if (!string.IsNullOrEmpty(source))
+            clauses.Add($"source = ${paramIndex++}");
+
+        var where = clauses.Count > 0 ? "WHERE " + string.Join(" AND ", clauses) : "";
+        var sql = $"{columns} {where} ORDER BY created_at DESC LIMIT $1 OFFSET $2";
+
+        try
+        {
+            await using var cmd = _dataSource.CreateCommand(sql);
+            cmd.Parameters.AddWithValue(limit);
+            cmd.Parameters.AddWithValue(offset);
+            if (since.HasValue)
+                cmd.Parameters.AddWithValue(since.Value);
+            if (until.HasValue)
+                cmd.Parameters.AddWithValue(until.Value);
+            if (!string.IsNullOrEmpty(source))
+                cmd.Parameters.AddWithValue(source);
+
+            await using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
+            var results = new List<AuditEntry>();
+            while (await reader.ReadAsync(cancellationToken))
+                results.Add(ReadAuditEntry(reader));
+
+            return Result<IReadOnlyList<AuditEntry>>.Success(results);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to read audit entries (since={Since}, until={Until}, source={Source})", since, until, source);
+            return Result<IReadOnlyList<AuditEntry>>.Fail($"Failed to read audit entries: {ex.Message}");
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task<Result<IReadOnlyList<SafetyEventRecord>>> GetSafetyEventsAsync(
+        DateTimeOffset? since, DateTimeOffset? until, string? outcome, int limit, int offset,
+        CancellationToken cancellationToken = default)
+    {
+        const string columns = """
+            SELECT id, session_id, phase, outcome, category, severity, filter_name, created_at
+            FROM safety_events
+            """;
+
+        var clauses = new List<string>();
+        var paramIndex = 3;
+
+        if (since.HasValue)
+            clauses.Add($"created_at >= ${paramIndex++}");
+        if (until.HasValue)
+            clauses.Add($"created_at < ${paramIndex++}");
+        if (!string.IsNullOrEmpty(outcome))
+            clauses.Add($"outcome = ${paramIndex++}");
+
+        var where = clauses.Count > 0 ? "WHERE " + string.Join(" AND ", clauses) : "";
+        var sql = $"{columns} {where} ORDER BY created_at DESC LIMIT $1 OFFSET $2";
+
+        try
+        {
+            await using var cmd = _dataSource.CreateCommand(sql);
+            cmd.Parameters.AddWithValue(limit);
+            cmd.Parameters.AddWithValue(offset);
+            if (since.HasValue)
+                cmd.Parameters.AddWithValue(since.Value);
+            if (until.HasValue)
+                cmd.Parameters.AddWithValue(until.Value);
+            if (!string.IsNullOrEmpty(outcome))
+                cmd.Parameters.AddWithValue(outcome);
+
+            await using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
+            var results = new List<SafetyEventRecord>();
+            while (await reader.ReadAsync(cancellationToken))
+                results.Add(ReadSafetyEventRecord(reader));
+
+            return Result<IReadOnlyList<SafetyEventRecord>>.Success(results);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to read safety events (since={Since}, until={Until}, outcome={Outcome})", since, until, outcome);
+            return Result<IReadOnlyList<SafetyEventRecord>>.Fail($"Failed to read safety events: {ex.Message}");
+        }
+    }
+
+    private static AuditEntry ReadAuditEntry(NpgsqlDataReader reader) => new()
+    {
+        Id = reader.GetGuid(0),
+        Operation = reader.GetString(1),
+        Source = reader.GetString(2),
+        SessionId = reader.IsDBNull(3) ? null : reader.GetGuid(3),
+        Metadata = reader.IsDBNull(4)
+            ? null
+            : JsonSerializer.Deserialize<Dictionary<string, object>>(reader.GetString(4)),
+        CreatedAt = reader.GetFieldValue<DateTimeOffset>(5)
     };
 }

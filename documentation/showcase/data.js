@@ -3203,8 +3203,9 @@ window.SHOWCASE_CATEGORIES = [
             {
                 id: 'compliance-reporting',
                 name: 'Compliance Reporting',
-                status: 'not-built',
-                exec: 'Not built as a distinct feature. The audit log and safety gates exist; a formal compliance-report generator on top of them doesn’t.',
+                status: 'built',
+                exec: 'A report an auditor can request for a time period — every governance decision, network access decision, human approval, drift finding, and blocked/redacted piece of content, with a live check that none of the underlying logs have been tampered with.',
+                eng: 'GenerateComplianceReportQueryHandler fans out concurrently across five hash-chained audit trails (governance, change, egress, escalation, drift) and the conversation database (sessions, safety events, audit log), verifies every chain’s tamper-evidence live, and renders the result as JSON or Markdown via GET /api/compliance/reports. A source that fails to answer is recorded as a warning, never silently reported as "nothing happened."',
             },
         ],
     },
