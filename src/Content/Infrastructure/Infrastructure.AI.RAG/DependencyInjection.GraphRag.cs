@@ -47,11 +47,22 @@ public static partial class DependencyInjection
     }
 
     /// <summary>
-    /// Registers cross-session memory services: memory store and decay service.
-    /// Only registered when <c>CrossSessionMemoryConfig.Enabled</c> is <c>true</c>.
+    /// Registers cross-session memory services: memory store and decay service. When
+    /// <c>AppConfig:AI:RemoteMemory:Enabled</c> is <see langword="true"/>, both seams are answered
+    /// by network-free no-op stand-ins instead — the remote memory contract's cross-session/prune
+    /// endpoints are deliberately inert for this phase of the avatar-hosting migration, so there is
+    /// nothing for a real local decay/cross-session subsystem to do, and no scheduler is started.
+    /// Otherwise, registered only when <c>CrossSessionMemoryConfig.Enabled</c> is <c>true</c>.
     /// </summary>
     private static void AddRagCrossSessionMemory(IServiceCollection services, AppConfig appConfig)
     {
+        if (appConfig.AI.RemoteMemory.Enabled)
+        {
+            services.AddSingleton<ICrossSessionMemoryStore, Remote.RemoteCrossSessionMemoryStore>();
+            services.AddSingleton<IMemoryDecayService, Remote.RemoteMemoryDecayService>();
+            return;
+        }
+
         var memoryConfig = appConfig.AI.Rag.CrossSessionMemory;
         if (!memoryConfig.Enabled)
             return;

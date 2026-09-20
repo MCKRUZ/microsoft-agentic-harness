@@ -111,7 +111,12 @@ public partial class AgentExecutionContextFactory
         // tenant-aware dependency per invocation from the current request scope, so both are safe to
         // attach to a singleton-cached agent; the learnings one injects the most task-relevant lessons
         // at turn start, which is the read half of the self-improving loop.
-        if (_appConfig.CurrentValue.AI?.KnowledgeBridge?.Enabled == true)
+        // Skipped when remote memory hosting is active: recall is already solved by push, through
+        // the unconditional CallerTurnContextProvider below, so a local mid-turn RecallAsync call
+        // here would be redundant — and, since RemoteKnowledgeMemory answers it over HTTP, an
+        // avoidable extra network round-trip on every turn.
+        if (_appConfig.CurrentValue.AI?.KnowledgeBridge?.Enabled == true &&
+            _appConfig.CurrentValue.AI?.RemoteMemory?.Enabled != true)
         {
             AddRecallProvider(
                 providers,
