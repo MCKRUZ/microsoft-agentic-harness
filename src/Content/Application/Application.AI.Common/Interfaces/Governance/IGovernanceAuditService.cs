@@ -1,3 +1,6 @@
+using Domain.AI.Governance;
+using Domain.Common;
+
 namespace Application.AI.Common.Interfaces.Governance;
 
 /// <summary>
@@ -37,4 +40,14 @@ public interface IGovernanceAuditService
 
     /// <summary>Gets the total number of audit entries in the chain.</summary>
     int EntryCount { get; }
+
+    /// <summary>
+    /// Queries governance audit records matching the specified filters (#714 — prerequisite for
+    /// compliance reporting, #696). Unlike <see cref="Log"/>, this member is async and may fail:
+    /// a read is not on the hot tool-call path, so there is no equivalent "never throw" contract.
+    /// </summary>
+    /// <param name="query">Filters narrowing which records to return.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    Task<Result<IReadOnlyList<GovernanceAuditRecord>>> GetRecordsAsync(
+        GovernanceAuditQuery query, CancellationToken cancellationToken);
 }

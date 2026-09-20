@@ -4,6 +4,7 @@ using Application.AI.Common.Interfaces.Audit;
 using Application.AI.Common.Interfaces.Escalation;
 using Domain.AI.Audit;
 using Domain.AI.Escalation;
+using Domain.Common;
 using Domain.Common.Config;
 using Infrastructure.AI.Audit;
 using Microsoft.Extensions.Logging;
@@ -131,6 +132,48 @@ public sealed class JsonlEscalationAuditStore : IEscalationAuditStore, IVerifiab
         Guid escalationId,
         CancellationToken ct)
     {
+        var records = await ReadAllRecordsAsync(ct);
+        return records.Where(r => r.EscalationId == escalationId).OrderBy(r => r.Timestamp).ToList();
+    }
+
+    /// <inheritdoc />
+    public async Task<Result<IReadOnlyList<EscalationAuditRecord>>> QueryAsync(
+        EscalationAuditQuery query, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+
+        List<EscalationAuditRecord> records;
+        try
+        {
+            records = await ReadAllRecordsAsync(cancellationToken);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            _logger.LogError(ex, "Failed to read escalation audit records from {FilePath}", _filePath);
+            return Result<IReadOnlyList<EscalationAuditRecord>>.Fail($"Failed to read audit records: {ex.Message}");
+        }
+
+        var filtered = records.AsEnumerable();
+        if (query.Start.HasValue)
+            filtered = filtered.Where(r => r.Timestamp >= query.Start.Value);
+        if (query.End.HasValue)
+            filtered = filtered.Where(r => r.Timestamp <= query.End.Value);
+        if (query.EscalationId.HasValue)
+            filtered = filtered.Where(r => r.EscalationId == query.EscalationId.Value);
+        if (query.RecordType.HasValue)
+            filtered = filtered.Where(r => r.RecordType == query.RecordType.Value);
+
+        var result = filtered.OrderBy(r => r.Timestamp).ToList();
+        return Result<IReadOnlyList<EscalationAuditRecord>>.Success(result.AsReadOnly());
+    }
+
+    /// <summary>
+    /// Reads every record from the chain, across the whole file, tolerating corrupt lines by
+    /// skipping them with a warning. Shared by <see cref="GetHistoryAsync"/> (which then filters
+    /// to one escalation) and <see cref="QueryAsync"/> (which applies the caller's filters).
+    /// </summary>
+    private async Task<List<EscalationAuditRecord>> ReadAllRecordsAsync(CancellationToken ct)
+    {
         if (!File.Exists(_filePath))
             return [];
 
@@ -152,7 +195,7 @@ public sealed class JsonlEscalationAuditStore : IEscalationAuditStore, IVerifiab
             {
                 var json = HashChainedJsonlWriter.ExtractPayload(line);
                 var record = JsonSerializer.Deserialize<EscalationAuditRecord>(json, DeserializeOptions);
-                if (record is not null && record.EscalationId == escalationId)
+                if (record is not null)
                     records.Add(record);
             }
             catch (JsonException)
@@ -163,7 +206,7 @@ public sealed class JsonlEscalationAuditStore : IEscalationAuditStore, IVerifiab
             }
         }
 
-        return records.OrderBy(r => r.Timestamp).ToList();
+        return records;
     }
 
     /// <inheritdoc />

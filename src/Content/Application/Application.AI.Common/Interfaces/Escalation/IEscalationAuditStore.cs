@@ -1,4 +1,5 @@
 using Domain.AI.Escalation;
+using Domain.Common;
 
 namespace Application.AI.Common.Interfaces.Escalation;
 
@@ -44,4 +45,16 @@ public interface IEscalationAuditStore
     /// approved, or its approved action has not been reported yet.
     /// </summary>
     Task<EscalationExecutionRecord?> GetLatestExecutionAsync(Guid escalationId, CancellationToken ct);
+
+    /// <summary>
+    /// Queries escalation audit records across the whole trail, or a time-windowed/type-filtered
+    /// slice of it — unlike <see cref="GetHistoryAsync"/>, the escalation id filter is optional
+    /// here (#714, prerequisite for compliance reporting, #696). Returns <see cref="Result{T}"/>
+    /// rather than a bare list, since this member backs a compliance report that must be able to
+    /// tell "zero matches" apart from "the read failed".
+    /// </summary>
+    /// <param name="query">Filters narrowing which records to return.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    Task<Result<IReadOnlyList<EscalationAuditRecord>>> QueryAsync(
+        EscalationAuditQuery query, CancellationToken cancellationToken);
 }

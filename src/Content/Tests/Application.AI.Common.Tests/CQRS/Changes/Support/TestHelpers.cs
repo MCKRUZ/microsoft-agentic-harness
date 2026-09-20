@@ -2,6 +2,7 @@ using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Changes;
 using Domain.AI.Changes;
 using Domain.AI.Identity;
+using Domain.Common;
 using Domain.Common.Config;
 using Microsoft.Extensions.Options;
 using EditOp = Domain.AI.SkillTraining.EditOp;
@@ -123,6 +124,11 @@ internal static class TestHelpers
             return Task.CompletedTask;
         }
 
+        public Task<Result<IReadOnlyList<ChangeAuditRecord>>> GetRecordsAsync(
+            ChangeAuditQuery query, CancellationToken cancellationToken) =>
+            Task.FromResult(Result<IReadOnlyList<ChangeAuditRecord>>.Success(
+                Array.Empty<ChangeAuditRecord>()));
+
         /// <param name="StatusAtAppend">
         /// The proposal status at append time. Proves audit-before-save ordering: the append must
         /// observe the pre-transition status, never the post-transition one.
@@ -157,6 +163,10 @@ internal static class TestHelpers
             throw new IOException(
                 @"Failed to append change audit record: C:\secret-audit-path\changes.jsonl is locked.");
         }
+
+        public Task<Result<IReadOnlyList<ChangeAuditRecord>>> GetRecordsAsync(
+            ChangeAuditQuery query, CancellationToken cancellationToken) =>
+            throw new NotSupportedException("Not exercised by these tests.");
     }
 
     public static IOptionsMonitor<AppConfig> EnabledConfigMonitor(string mode = "Live")

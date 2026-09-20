@@ -5,6 +5,7 @@ using Application.AI.Common.Interfaces.Egress;
 using Domain.AI.Audit;
 using Domain.AI.Egress;
 using Domain.AI.Identity;
+using Domain.Common;
 using Domain.Common.Config;
 using Infrastructure.AI.Audit;
 using Microsoft.Extensions.Logging;
@@ -39,6 +40,14 @@ public sealed class JsonlEgressAuditWriter : IEgressAuditWriter, IVerifiableAudi
         Converters = { new JsonStringEnumConverter() }
     };
 
+    private static readonly JsonSerializerOptions DeserializeOptions = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
+        PropertyNameCaseInsensitive = true,
+        Converters = { new JsonStringEnumConverter() }
+    };
+
+    private readonly string _filePath;
     private readonly HashChainedJsonlWriter _chain;
     private readonly ILogger<JsonlEgressAuditWriter> _logger;
 
@@ -51,7 +60,8 @@ public sealed class JsonlEgressAuditWriter : IEgressAuditWriter, IVerifiableAudi
         ArgumentNullException.ThrowIfNull(logger);
 
         var dir = config.CurrentValue.AI.Egress.AuditStoragePath;
-        _chain = new HashChainedJsonlWriter(Path.Combine(dir, "egress.jsonl"), logger);
+        _filePath = Path.Combine(dir, "egress.jsonl");
+        _chain = new HashChainedJsonlWriter(_filePath, logger);
         _logger = logger;
     }
 
@@ -103,26 +113,49 @@ public sealed class JsonlEgressAuditWriter : IEgressAuditWriter, IVerifiableAudi
         _chain.VerifyChainAsync(cancellationToken);
 
     /// <inheritdoc />
+    public async Task<Result<IReadOnlyList<EgressAuditRecord>>> GetRecordsAsync(
+        EgressAuditQuery query, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+
+        var records = new List<EgressAuditRecord>();
+
+        try
+        {
+            await foreach (var payload in _chain.ReadAllPayloadsAsync(cancellationToken).ConfigureAwait(false))
+            {
+                try
+                {
+                    var record = JsonSerializer.Deserialize<EgressAuditRecord>(payload, DeserializeOptions);
+                    if (record is not null)
+                        records.Add(record);
+                }
+                catch (JsonException)
+                {
+                    _logger.LogWarning("Skipped corrupted egress audit record in {FilePath}", _filePath);
+                }
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            _logger.LogError(ex, "Failed to read egress audit records from {FilePath}", _filePath);
+            return Result<IReadOnlyList<EgressAuditRecord>>.Fail($"Failed to read audit records: {ex.Message}");
+        }
+
+        var filtered = records.AsEnumerable();
+        if (query.Start.HasValue)
+            filtered = filtered.Where(r => r.Timestamp >= query.Start.Value);
+        if (query.End.HasValue)
+            filtered = filtered.Where(r => r.Timestamp <= query.End.Value);
+        if (query.Allowed.HasValue)
+            filtered = filtered.Where(r => r.Allowed == query.Allowed.Value);
+        if (!string.IsNullOrEmpty(query.Host))
+            filtered = filtered.Where(r => r.Host == query.Host);
+
+        var result = filtered.OrderBy(r => r.Timestamp).ToList();
+        return Result<IReadOnlyList<EgressAuditRecord>>.Success(result.AsReadOnly());
+    }
+
+    /// <inheritdoc />
     public void Dispose() => _chain.Dispose();
-
-    private sealed record EgressAuditRecord
-    {
-        public required DateTimeOffset Timestamp { get; init; }
-        public required bool Allowed { get; init; }
-        public required string Target { get; init; }
-        public required string Host { get; init; }
-        public required string Scheme { get; init; }
-        public required int Port { get; init; }
-        public required string Reason { get; init; }
-        public string? MatchedAllowlistEntry { get; init; }
-        public string? FinalIpAddress { get; init; }
-        public required EgressAuditIdentity AgentIdentity { get; init; }
-    }
-
-    private sealed record EgressAuditIdentity
-    {
-        public string? Tenant { get; init; }
-        public required string Agent { get; init; }
-        public required string Kind { get; init; }
-    }
 }

@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Application.AI.Common.Interfaces.Escalation;
 using Domain.AI.Escalation;
 using Domain.Common.Config;
 using Domain.Common.Config.AI;
@@ -319,5 +320,132 @@ public sealed class JsonlEscalationAuditStoreTests : IDisposable
         var decision = JsonSerializer.Deserialize<ApproverDecision>(history[0].Payload, ModernReadOptions);
 
         decision!.Verdict.Should().Be(ApproverVerdict.Deny);
+    }
+
+    // ===== QueryAsync (#714): the broader read that GetHistoryAsync cannot do — no required
+    // escalation id, so it can see across the whole trail =====
+
+    [Fact]
+    public async Task QueryAsync_NoFilters_ReturnsRecordsAcrossMultipleEscalations()
+    {
+        // This is the actual new capability over GetHistoryAsync, which is keyed to one
+        // escalation id and can never return records spanning more than one.
+        var first = Guid.NewGuid();
+        var second = Guid.NewGuid();
+        await _store.RecordRequestAsync(BuildRequest(first), CancellationToken.None);
+        await _store.RecordRequestAsync(BuildRequest(second), CancellationToken.None);
+
+        var result = await _store.QueryAsync(new EscalationAuditQuery(), CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value!.Select(r => r.EscalationId).Should().BeEquivalentTo([first, second]);
+    }
+
+    [Fact]
+    public async Task QueryAsync_EscalationIdFilter_ReturnsOnlyThatEscalation()
+    {
+        var target = Guid.NewGuid();
+        var other = Guid.NewGuid();
+        await _store.RecordRequestAsync(BuildRequest(target), CancellationToken.None);
+        await _store.RecordRequestAsync(BuildRequest(other), CancellationToken.None);
+
+        var result = await _store.QueryAsync(
+            new EscalationAuditQuery { EscalationId = target }, CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Should().ContainSingle(r => r.EscalationId == target);
+    }
+
+    [Fact]
+    public async Task QueryAsync_TimeRangeFilter_ExcludesRecordsOutsideTheWindow()
+    {
+        var inWindowId = Guid.NewGuid();
+        var beforeWindowId = Guid.NewGuid();
+
+        // Hand-write a record with a timestamp before the query window, since RecordRequestAsync
+        // always stamps DateTimeOffset.UtcNow and the test needs one deterministically outside
+        // the window it is about to query.
+        var beforeRecord = new EscalationAuditRecord
+        {
+            RecordType = EscalationAuditRecordType.Request,
+            EscalationId = beforeWindowId,
+            Timestamp = DateTimeOffset.UtcNow.AddDays(-2),
+            Payload = JsonSerializer.Serialize(BuildRequest(beforeWindowId), ModernReadOptions)
+        };
+        var filePath = Path.Combine(_tempDir, "escalations.jsonl");
+        using (var rawWriter = new HashChainedJsonlWriter(filePath, NullLogger.Instance))
+        {
+            var json = JsonSerializer.Serialize(beforeRecord, ModernReadOptions);
+            (await rawWriter.AppendAsync(json, CancellationToken.None)).IsSuccess.Should().BeTrue();
+        }
+
+        await _store.RecordRequestAsync(BuildRequest(inWindowId), CancellationToken.None);
+
+        var result = await _store.QueryAsync(new EscalationAuditQuery
+        {
+            Start = DateTimeOffset.UtcNow.AddHours(-1)
+        }, CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Should().ContainSingle(r => r.EscalationId == inWindowId);
+    }
+
+    [Fact]
+    public async Task QueryAsync_RecordTypeFilter_ReturnsOnlyThatType()
+    {
+        var escalationId = Guid.NewGuid();
+        await _store.RecordRequestAsync(BuildRequest(escalationId), CancellationToken.None);
+        await _store.RecordDecisionAsync(escalationId, BuildDecision(), CancellationToken.None);
+        await _store.RecordOutcomeAsync(BuildOutcome(escalationId), CancellationToken.None);
+
+        var result = await _store.QueryAsync(
+            new EscalationAuditQuery { RecordType = EscalationAuditRecordType.Decision },
+            CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Should().ContainSingle(r => r.RecordType == EscalationAuditRecordType.Decision);
+    }
+
+    [Fact]
+    public async Task QueryAsync_EmptyFile_ReturnsEmptySuccess()
+    {
+        var result = await _store.QueryAsync(new EscalationAuditQuery(), CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task QueryAsync_CorruptLine_SkipsItAndReturnsTheRest()
+    {
+        var escalationId = Guid.NewGuid();
+        var filePath = Path.Combine(_tempDir, "escalations.jsonl");
+
+        await _store.RecordRequestAsync(BuildRequest(escalationId), CancellationToken.None);
+        using (var rawWriter = new HashChainedJsonlWriter(filePath, NullLogger.Instance))
+        {
+            await rawWriter.AppendAsync("{ not valid json", CancellationToken.None);
+        }
+        await _store.RecordDecisionAsync(escalationId, BuildDecision(), CancellationToken.None);
+
+        var result = await _store.QueryAsync(new EscalationAuditQuery(), CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Should().HaveCount(2,
+            "the corrupt line is skipped with a warning, not surfaced as a failure");
+    }
+
+    [Fact]
+    public async Task QueryAsync_OrdersResultsByTimestamp()
+    {
+        var first = Guid.NewGuid();
+        var second = Guid.NewGuid();
+        await _store.RecordRequestAsync(BuildRequest(first), CancellationToken.None);
+        await _store.RecordRequestAsync(BuildRequest(second), CancellationToken.None);
+
+        var result = await _store.QueryAsync(new EscalationAuditQuery(), CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Should().BeInAscendingOrder(r => r.Timestamp);
     }
 }
