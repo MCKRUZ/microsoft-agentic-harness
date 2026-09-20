@@ -1,5 +1,6 @@
 using Domain.AI.Egress;
 using Domain.AI.Identity;
+using Domain.Common;
 
 namespace Application.AI.Common.Interfaces.Egress;
 
@@ -29,4 +30,13 @@ public interface IEgressAuditWriter
         EgressDecision decision,
         AgentIdentity identity,
         CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Queries egress audit records matching the specified filters (#714 — prerequisite for
+    /// compliance reporting, #696).
+    /// </summary>
+    /// <param name="query">Filters narrowing which records to return.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    Task<Result<IReadOnlyList<EgressAuditRecord>>> GetRecordsAsync(
+        EgressAuditQuery query, CancellationToken cancellationToken);
 }
