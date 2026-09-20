@@ -1,6 +1,7 @@
 using Application.AI.Common.Interfaces;
 using Domain.AI.Context;
 using Domain.AI.Observability.Models;
+using Domain.Common;
 
 namespace Infrastructure.Observability.Persistence;
 
@@ -135,4 +136,16 @@ public sealed class NullObservabilityStore : IObservabilityStore
         string conversationId, int turnIndex, int loadedIndex,
         CancellationToken cancellationToken = default)
         => Task.FromResult<string?>(null);
+
+    /// <inheritdoc />
+    public Task<Result<IReadOnlyList<AuditEntry>>> GetAuditEntriesAsync(
+        DateTimeOffset? since, DateTimeOffset? until, string? source, int limit, int offset,
+        CancellationToken cancellationToken = default)
+        => Task.FromResult(Result<IReadOnlyList<AuditEntry>>.Success(Array.Empty<AuditEntry>()));
+
+    /// <inheritdoc />
+    public Task<Result<IReadOnlyList<SafetyEventRecord>>> GetSafetyEventsAsync(
+        DateTimeOffset? since, DateTimeOffset? until, string? outcome, int limit, int offset,
+        CancellationToken cancellationToken = default)
+        => Task.FromResult(Result<IReadOnlyList<SafetyEventRecord>>.Success(Array.Empty<SafetyEventRecord>()));
 }

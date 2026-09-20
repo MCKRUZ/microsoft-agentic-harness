@@ -1,5 +1,6 @@
 using Domain.AI.Context;
 using Domain.AI.Observability.Models;
+using Domain.Common;
 
 namespace Application.AI.Common.Interfaces;
 
@@ -327,5 +328,53 @@ public interface IObservabilityStore
         string conversationId,
         int turnIndex,
         int loadedIndex,
+        CancellationToken cancellationToken = default);
+
+    // ── Compliance reporting (#696) ─────────────────────────────────────
+
+    /// <summary>
+    /// Retrieves audit-log entries across the whole store, optionally windowed by time and
+    /// filtered by source, for a compliance report covering a period rather than one session.
+    /// </summary>
+    /// <remarks>
+    /// Unlike every other read on this interface, a store failure here is reported as a failed
+    /// <see cref="Result{T}"/> rather than swallowed into an empty list — a compliance report must
+    /// never be able to say "no audit entries" when the read actually failed.
+    /// </remarks>
+    /// <param name="since">Optional lower bound on <c>created_at</c> (inclusive).</param>
+    /// <param name="until">Optional upper bound on <c>created_at</c> (exclusive).</param>
+    /// <param name="source">Optional exact-match filter on the entry's source.</param>
+    /// <param name="limit">Maximum number of entries to return.</param>
+    /// <param name="offset">Number of entries to skip, for pagination.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    Task<Result<IReadOnlyList<AuditEntry>>> GetAuditEntriesAsync(
+        DateTimeOffset? since,
+        DateTimeOffset? until,
+        string? source,
+        int limit,
+        int offset,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Retrieves safety-filter events across every session, optionally windowed by time and
+    /// filtered by outcome, for a compliance report covering a period rather than one session
+    /// (<see cref="GetSessionSafetyEventsAsync"/> is scoped to a single session).
+    /// </summary>
+    /// <remarks>
+    /// Same honesty contract as <see cref="GetAuditEntriesAsync"/>: a store failure is a failed
+    /// <see cref="Result{T}"/>, not an empty list.
+    /// </remarks>
+    /// <param name="since">Optional lower bound on <c>created_at</c> (inclusive).</param>
+    /// <param name="until">Optional upper bound on <c>created_at</c> (exclusive).</param>
+    /// <param name="outcome">Optional exact-match filter on the event's outcome (e.g. <c>"block"</c>).</param>
+    /// <param name="limit">Maximum number of events to return.</param>
+    /// <param name="offset">Number of events to skip, for pagination.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    Task<Result<IReadOnlyList<SafetyEventRecord>>> GetSafetyEventsAsync(
+        DateTimeOffset? since,
+        DateTimeOffset? until,
+        string? outcome,
+        int limit,
+        int offset,
         CancellationToken cancellationToken = default);
 }
