@@ -144,6 +144,13 @@ public static class DependencyInjection
 
         services.AddSingleton<KnowledgeScopeHubFilter>();
         services.AddSingleton<HubRateLimitFilter>();
+
+        // Validated eagerly, right here at composition time — not deferred into AddSignalR's
+        // options delegate, which only runs whenever something first resolves IOptions<HubOptions>
+        // (SignalR endpoint mapping, in a real host, but not guaranteed to be synchronous with
+        // this method the way a startup-time throw here is).
+        var signalRMaxReceiveMessageSizeBytes = ResolveSignalRMaxMessageSizeBytes(configuration);
+
         services.AddSignalR(options =>
             {
                 if (environment.IsDevelopment())
@@ -151,6 +158,14 @@ public static class DependencyInjection
 
                 options.ClientTimeoutInterval = TimeSpan.FromSeconds(120);
                 options.KeepAliveInterval = TimeSpan.FromSeconds(30);
+
+                // #603: SignalR's own 32KB default is too small for a legitimately large
+                // per-call payload (e.g. a full persona/system-prompt override sent through
+                // SetConversationSettings). Only override when explicitly configured — leaving
+                // this unset here preserves SignalR's 32KB default rather than forwarding a
+                // null, which SignalR reads as "no limit".
+                if (signalRMaxReceiveMessageSizeBytes is { } maxMessageSize)
+                    options.MaximumReceiveMessageSize = maxMessageSize;
 
                 // Establish per-invocation knowledge scope (user/tenant) from the authenticated
                 // caller — the SignalR-transport equivalent of KnowledgeScopeMiddleware.
@@ -445,6 +460,37 @@ public static class DependencyInjection
                     sp.GetRequiredService<SignalRSpanExporter>())));
 
         return services;
+    }
+
+    /// <summary>
+    /// Reads and validates <c>AppConfig:AgentHub:SignalRMaxReceiveMessageSizeBytes</c> (#603).
+    /// </summary>
+    /// <remarks>
+    /// Binds through <see cref="Config.AgentHubConfig"/> — the same
+    /// <c>configuration.GetSection(...).Get&lt;T&gt;() ?? new T()</c> shape this file already uses
+    /// for <c>PrometheusConfig</c> — rather than a hand-typed <c>GetValue&lt;long?&gt;</c> path
+    /// string: a rename of the property, or a restructure of the section, becomes a compile error
+    /// here instead of <c>GetValue</c> silently returning null and the validation going quietly
+    /// inert. Throws synchronously, as part of composing this host's services, so a misconfigured
+    /// value fails the host at startup rather than the first time something resolves
+    /// <c>IOptions&lt;HubOptions&gt;</c>.
+    /// </remarks>
+    private static long? ResolveSignalRMaxMessageSizeBytes(IConfiguration configuration)
+    {
+        var agentHubConfig = configuration.GetSection("AppConfig:AgentHub").Get<AgentHubConfig>()
+            ?? new AgentHubConfig();
+        var maxMessageSizeBytes = agentHubConfig.SignalRMaxReceiveMessageSizeBytes;
+
+        if (maxMessageSizeBytes is { } bytes && bytes <= 0)
+        {
+            throw new InvalidOperationException(
+                $"AppConfig:AgentHub:SignalRMaxReceiveMessageSizeBytes must be a positive number " +
+                $"of bytes when set (got {bytes}). Leave it unset to keep SignalR's 32KB default — " +
+                "0 is not 'unlimited' here, SignalR would apply it literally and reject every hub " +
+                "invocation.");
+        }
+
+        return maxMessageSizeBytes;
     }
 }
 

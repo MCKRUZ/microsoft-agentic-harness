@@ -526,6 +526,10 @@ public static partial class DependencyInjection
 
         // --- Unified model routing ---
 
+        // ModelRouter falls back to this when AppConfig:AI:ModelRouting:Tiers has no entries
+        // (#599) — routing every call to the primary AgentFramework client instead of throwing
+        // "Sequence contains no elements" at the first routed call.
+        services.AddSingleton(Options.Create(appConfig.AI.AgentFramework));
         services.AddSingleton(Options.Create(appConfig.AI.ModelRouting));
         services.AddSingleton(Options.Create(appConfig.AI.KnowledgeBridge));
         services.AddSingleton<ITaskComplexityHeuristic, TaskComplexityHeuristic>();

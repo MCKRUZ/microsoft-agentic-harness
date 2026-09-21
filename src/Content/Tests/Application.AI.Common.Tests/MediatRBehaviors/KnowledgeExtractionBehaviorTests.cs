@@ -7,6 +7,7 @@ using Domain.AI.KnowledgeGraph.Models;
 using Domain.Common.Config.AI;
 using FluentAssertions;
 using MediatR;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Moq;
@@ -196,6 +197,73 @@ public class KnowledgeExtractionBehaviorTests
         _mockMemory.Verify(m => m.RememberAsync("conv-1:1:1", "Fact B", "Fact", It.IsAny<CancellationToken>()), Times.Once);
     }
 
+    [Fact]
+    public async Task Handle_AllFactsFailToPersist_DoesNotLogPersistedCount()
+    {
+        // #600: the "Persisted N facts" log used to be based on how many facts were extracted,
+        // not how many actually persisted — it fired even when every RememberAsync call threw,
+        // giving a real deployment a false "memory is working" signal from its own logs.
+        var facts = new List<ConversationFact>
+        {
+            new() { Key = "conv-1:1:0", Content = "Fact A", Confidence = 0.9 },
+            new() { Key = "conv-1:1:1", Content = "Fact B", Confidence = 0.85 }
+        };
+        _mockExtractor
+            .Setup(e => e.ExtractAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(facts);
+        _mockMemory
+            .Setup(m => m.RememberAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("graph unavailable"));
+
+        var logger = new Mock<ILogger<KnowledgeExtractionBehavior<ExecuteAgentTurnCommand, AgentTurnResult>>>();
+        var behavior = CreateAgentTurnBehavior(logger.Object);
+        var command = CreateCommand("msg", "conv-1", 1);
+        var response = CreateSuccessResponse("resp");
+
+        await behavior.Handle(command, () => Task.FromResult(response), CancellationToken.None);
+
+        // MemoryInvocationCount()==2 only proves both RememberAsync calls were reached — Moq
+        // records an invocation at call time, before the awaited continuation (persistedCount++,
+        // then the loop exit and the log decision) has necessarily run. Poll for the second
+        // fact's own "Failed to persist" warning instead: that log statement sits inside the same
+        // catch block, immediately after the await, so observing it proves the method has moved
+        // past both RememberAsync attempts and into (or past) the final log-decision point.
+        await WaitForAsync(() => LoggerLogged(logger, LogLevel.Warning, "conv-1:1:1"), ExtractionTimeout);
+
+        LoggerLogged(logger, LogLevel.Information, "Persisted").Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Handle_PartialPersistFailure_LogsActualPersistedCountNotExtractedCount()
+    {
+        var facts = new List<ConversationFact>
+        {
+            new() { Key = "conv-1:1:0", Content = "Fact A", Confidence = 0.9 },
+            new() { Key = "conv-1:1:1", Content = "Fact B", Confidence = 0.85 }
+        };
+        _mockExtractor
+            .Setup(e => e.ExtractAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(facts);
+        _mockMemory
+            .Setup(m => m.RememberAsync("conv-1:1:0", It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("graph full"));
+
+        var logger = new Mock<ILogger<KnowledgeExtractionBehavior<ExecuteAgentTurnCommand, AgentTurnResult>>>();
+        var behavior = CreateAgentTurnBehavior(logger.Object);
+        var command = CreateCommand("msg", "conv-1", 1);
+        var response = CreateSuccessResponse("resp");
+
+        await behavior.Handle(command, () => Task.FromResult(response), CancellationToken.None);
+
+        // Poll for the log line itself rather than for SecondFactRemembered(): Moq records a
+        // RememberAsync invocation at call time, before the awaited continuation that increments
+        // persistedCount and writes this log has necessarily run — polling on the memory mock
+        // could observe the second fact's call before the log statement executes.
+        await WaitForAsync(() => LoggerLogged(logger, LogLevel.Information, "Persisted 1 facts"), ExtractionTimeout);
+
+        LoggerLogged(logger, LogLevel.Information, "Persisted 1 facts").Should().BeTrue();
+    }
+
     // --- Helpers ---
 
     /// <summary>
@@ -234,6 +302,23 @@ public class KnowledgeExtractionBehaviorTests
             i.Arguments.Count > 0 &&
             (i.Arguments[0] as string) == "conv-1:1:1");
 
+    /// <summary>
+    /// Returns <c>true</c> once <paramref name="logger"/> has recorded a log at <paramref name="level"/>
+    /// whose formatted message contains <paramref name="containsText"/>. Reads Moq's invocation log
+    /// directly, the same pattern as <see cref="MemoryInvocationCount"/>, so it can be polled without
+    /// triggering the throwing behavior of <c>Verify</c> mid-wait.
+    /// </summary>
+    private static bool LoggerLogged<TRequest, TResponse>(
+        Mock<ILogger<KnowledgeExtractionBehavior<TRequest, TResponse>>> logger,
+        LogLevel level,
+        string containsText)
+        where TRequest : notnull =>
+        logger.Invocations.Any(i =>
+            i.Method.Name == nameof(ILogger.Log) &&
+            i.Arguments.Count > 2 &&
+            i.Arguments[0] is LogLevel loggedLevel && loggedLevel == level &&
+            i.Arguments[2]?.ToString()?.Contains(containsText) == true);
+
     // The behavior resolves IConversationFactExtractor and IKnowledgeMemory from a fresh DI
     // scope (created per background extraction). Build a scope factory whose provider returns
     // the same mocks so the existing assertions on _mockExtractor/_mockMemory still hold.
@@ -268,13 +353,14 @@ public class KnowledgeExtractionBehaviorTests
             NullLogger<KnowledgeExtractionBehavior<TRequest, TResponse>>.Instance);
     }
 
-    private KnowledgeExtractionBehavior<ExecuteAgentTurnCommand, AgentTurnResult> CreateAgentTurnBehavior()
+    private KnowledgeExtractionBehavior<ExecuteAgentTurnCommand, AgentTurnResult> CreateAgentTurnBehavior(
+        ILogger<KnowledgeExtractionBehavior<ExecuteAgentTurnCommand, AgentTurnResult>>? logger = null)
     {
         return new KnowledgeExtractionBehavior<ExecuteAgentTurnCommand, AgentTurnResult>(
             BuildScopeFactory(),
             BuildAmbientScope(),
             Options.Create(_config),
-            NullLogger<KnowledgeExtractionBehavior<ExecuteAgentTurnCommand, AgentTurnResult>>.Instance);
+            logger ?? NullLogger<KnowledgeExtractionBehavior<ExecuteAgentTurnCommand, AgentTurnResult>>.Instance);
     }
 
     private static ExecuteAgentTurnCommand CreateCommand(
