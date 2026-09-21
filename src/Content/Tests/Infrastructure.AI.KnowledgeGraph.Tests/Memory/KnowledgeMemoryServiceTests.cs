@@ -175,12 +175,7 @@ public sealed class KnowledgeMemoryServiceTests
                 Reason = "quarantined: injection/DirectOverride"
             });
 
-        var service = new KnowledgeMemoryService(
-            _cache, _graphStore, _scope,
-            _feedbackDetector.Object, _feedbackStore.Object,
-            _configMonitor.Object,
-            NullLogger<KnowledgeMemoryService>.Instance,
-            gate.Object);
+        var service = CreateServiceWithGate(gate.Object);
 
         await service.RememberAsync("conv-1:0:0", "my favorite color is teal");
         for (var i = 0; i < 5; i++)
@@ -471,12 +466,17 @@ public sealed class KnowledgeMemoryServiceTests
                 It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(decision);
 
+        return CreateServiceWithGate(gate.Object);
+    }
+
+    private KnowledgeMemoryService CreateServiceWithGate(IMemoryWriteGate gate)
+    {
         return new KnowledgeMemoryService(
             _cache, _graphStore, _scope,
             _feedbackDetector.Object, _feedbackStore.Object,
             _configMonitor.Object,
             NullLogger<KnowledgeMemoryService>.Instance,
-            gate.Object);
+            gate);
     }
 
     private static MemoryWriteDecision TrustedDecision() => new()

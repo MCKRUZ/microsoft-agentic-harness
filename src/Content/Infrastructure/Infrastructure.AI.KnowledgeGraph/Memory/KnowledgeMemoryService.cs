@@ -144,7 +144,7 @@ public sealed partial class KnowledgeMemoryService : IKnowledgeMemory
             Id = MemoryNodeId(key),
             Name = key,
             Type = entityType,
-            Properties = new Dictionary<string, string> { ["content"] = content },
+            Properties = new Dictionary<string, string> { [GraphNodeMemoryExtensions.ContentPropertyKey] = content },
             ChunkIds = [],
             OwnerId = _scope.UserId,
             TenantId = _scope.TenantId,
@@ -374,38 +374,47 @@ public sealed partial class KnowledgeMemoryService : IKnowledgeMemory
             }
         }
 
-        // #598: content search over this caller's own memory nodes. Every lookup above requires a query
-        // word to literally equal a whole key or entity id — which a fact written by the automatic
-        // conversation-fact-extraction pipeline can never satisfy, since its key embeds a never-repeating
-        // conversation id and it is never linked into the entity graph. Ranked by token overlap (reusing
-        // the harmonic path's own scorer) so a handful of generic shared words (e.g. "my", "is") don't
-        // crowd out a genuinely relevant fact; the graph-store fetch below still loads every node (there is
-        // no indexed way to fetch only this scope's), but GetScopedMemoryNodesAsync's prefix + trust filter
-        // narrows it to the caller's own recallable facts before ranking. Trust is filtered HERE, not left
-        // to RecallLegacyAsync's downstream IsRecallable pass: this block ranks-then-Takes a bounded slice,
-        // so an untrusted candidate that outscores real matches would consume a slot and never be replaced
-        // — letting a quarantined, injection-bearing fact crowd out genuinely trusted results (an attacker
-        // need only pad the quarantined content with likely query words).
+        // #598: content search over this caller's own memory nodes — the only path that can ever recall
+        // a fact whose key/name don't literally equal a query word, such as every fact written by the
+        // automatic conversation-fact-extraction pipeline (its key embeds a never-repeating conversation
+        // id and it is never linked into the entity graph).
         if (matched.Count < maxResults)
-        {
-            var queryTokens = Tokenize(query);
-            var memoryNodes = await GetScopedMemoryNodesAsync(cancellationToken);
-            var ranked = memoryNodes
-                .Where(n => !seen.Contains(n.Id))
-                .Select(n => (Node: n, Score: TokenOverlap(queryTokens, Tokenize(MemoryNodeSearchText(n)))))
-                .Where(x => x.Score > 0)
-                .OrderByDescending(x => x.Score)
-                .ThenBy(x => x.Node.Id, StringComparer.Ordinal)
-                .Take(maxResults - matched.Count);
-
-            foreach (var (node, _) in ranked)
-            {
-                if (seen.Add(node.Id))
-                    matched.Add(node);
-            }
-        }
+            await AppendContentSearchMatchesAsync(query, maxResults, matched, seen, cancellationToken);
 
         return matched;
+    }
+
+    /// <summary>
+    /// The #598 content-search fallback: ranks this scope's recallable memory nodes by token overlap with
+    /// the query and appends the top-scoring ones to <paramref name="matched"/> (up to <paramref
+    /// name="maxResults"/>). Ranked, not just filtered, so a handful of generic shared words (e.g. "my",
+    /// "is") don't crowd out a genuinely relevant fact.
+    /// </summary>
+    /// <remarks>
+    /// Trust is filtered inside <see cref="GetScopedRecallableMemoryNodesAsync"/>, before ranking — not
+    /// left to <see cref="RecallLegacyAsync"/>'s downstream <see cref="IsRecallable"/> pass. This method
+    /// ranks-then-takes a bounded slice, so an unfiltered quarantined candidate that outscores a real
+    /// match would consume a result slot and never be replaced, letting a quarantined, injection-bearing
+    /// fact crowd out genuinely trusted results (an attacker need only pad the quarantined content with
+    /// likely query words).
+    /// </remarks>
+    private async Task AppendContentSearchMatchesAsync(
+        string query, int maxResults, List<GraphNode> matched, HashSet<string> seen, CancellationToken cancellationToken)
+    {
+        var queryTokens = Tokenize(query);
+        if (queryTokens.Count == 0)
+            return;
+
+        var memoryNodes = await GetScopedRecallableMemoryNodesAsync(cancellationToken);
+        var candidates = memoryNodes.Where(n => !seen.Contains(n.Id));
+        var ranked = RankByScore(
+            candidates, n => TokenOverlap(queryTokens, Tokenize(MemoryNodeSearchText(n))), maxResults - matched.Count);
+
+        foreach (var node in ranked)
+        {
+            if (seen.Add(node.Id))
+                matched.Add(node);
+        }
     }
 
     private static bool MatchesQuery(GraphNode node, string[] terms)
@@ -417,27 +426,34 @@ public sealed partial class KnowledgeMemoryService : IKnowledgeMemory
 
     /// <summary>
     /// Retrieves this scope's recallable memory-namespaced nodes for the #598 content-search fallback.
-    /// Trust is filtered <em>here</em>, not left to <see cref="RecallLegacyAsync"/>'s downstream
-    /// <see cref="IsRecallable"/> pass: the caller ranks this list and takes only the top few, so an
-    /// unfiltered quarantined fact that happens to outscore a trusted one would consume a result slot and
-    /// be discarded — silently hiding the trusted fact instead of ever reaching it. Unlike
-    /// <see cref="GetScopedTrustedMemoryNodesAsync"/> (the harmonic candidate pool), this does not also
-    /// require an abstraction, since legacy-mode facts never carry one.
+    /// Shares <see cref="GetScopedMemoryNodesAsync"/>'s scan with <see cref="GetScopedTrustedMemoryNodesAsync"/>
+    /// (the harmonic candidate pool), differing only in the predicate: this does not also require an
+    /// abstraction, since legacy-mode facts never carry one.
     /// </summary>
-    private async Task<IReadOnlyList<GraphNode>> GetScopedMemoryNodesAsync(CancellationToken cancellationToken)
+    private Task<IReadOnlyList<GraphNode>> GetScopedRecallableMemoryNodesAsync(CancellationToken cancellationToken) =>
+        GetScopedMemoryNodesAsync(IsRecallable, cancellationToken);
+
+    /// <summary>
+    /// Retrieves this scope's memory-namespaced nodes matching <paramref name="predicate"/> — the shared
+    /// scan behind both <see cref="GetScopedRecallableMemoryNodesAsync"/> (legacy content search) and
+    /// <see cref="GetScopedTrustedMemoryNodesAsync"/> (the harmonic candidate pool), so scoping the scan to
+    /// the caller's own <c>memory:</c> nodes lives in exactly one place.
+    /// </summary>
+    private async Task<IReadOnlyList<GraphNode>> GetScopedMemoryNodesAsync(
+        Func<GraphNode, bool> predicate, CancellationToken cancellationToken)
     {
         var all = await _graphStore.GetAllNodesAsync(cancellationToken);
         var scopePrefix = $"memory:{ScopeKey()}:";
 
         return all
             .Where(n => n.Id.StartsWith(scopePrefix, StringComparison.Ordinal))
-            .Where(IsRecallable)
+            .Where(predicate)
             .ToList();
     }
 
     /// <summary>The text a memory node is matched against for content search: its name plus its raw content.</summary>
     private static string MemoryNodeSearchText(GraphNode node) =>
-        $"{node.Name} {node.Properties.GetValueOrDefault("content", string.Empty)}";
+        $"{node.Name} {node.GetContent()}";
 
     // Quarantined (untrusted-provenance) facts are persisted for audit but never served by recall.
     // Implements the "treat retrieval as a risk decision" principle: trust is re-checked at read.

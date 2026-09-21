@@ -129,4 +129,21 @@ public static class GraphNodeMemoryExtensions
                 ? raw.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
                 : [];
     }
+
+    /// <summary>
+    /// The <see cref="GraphNode.Properties"/> key under which a memory node's raw remembered content
+    /// is stored.
+    /// </summary>
+    public const string ContentPropertyKey = "content";
+
+    /// <summary>
+    /// Reads the raw remembered content from a memory node. Returns an empty string when the node
+    /// carries none (a non-memory node, or a legacy write that predates this accessor).
+    /// </summary>
+    public static string GetContent(this GraphNode node)
+    {
+        ArgumentNullException.ThrowIfNull(node);
+
+        return node.Properties.GetValueOrDefault(ContentPropertyKey, string.Empty);
+    }
 }
