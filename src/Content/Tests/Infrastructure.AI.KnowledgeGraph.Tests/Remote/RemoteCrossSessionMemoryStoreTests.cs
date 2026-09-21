@@ -55,13 +55,15 @@ public sealed class RemoteCrossSessionMemoryStoreTests
     }
 
     [Fact]
-    public async Task PurgeByOwnerAsync_ReturnsZero()
+    public async Task PurgeByOwnerAsync_ThrowsInsteadOfClaimingZeroPurged()
     {
+        // A silent 0 here would let DefaultErasureOrchestrator certify a right-to-erasure request
+        // as Full while the subject's facts remain in the remote store — see the class remarks.
         var sut = new RemoteCrossSessionMemoryStore();
 
-        var purged = await sut.PurgeByOwnerAsync("user-1");
+        var act = () => sut.PurgeByOwnerAsync("user-1");
 
-        purged.Should().Be(0);
+        await act.Should().ThrowAsync<NotImplementedException>();
     }
 
     [Fact]

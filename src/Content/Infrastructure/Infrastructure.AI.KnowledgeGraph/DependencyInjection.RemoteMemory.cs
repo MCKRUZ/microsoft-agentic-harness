@@ -28,8 +28,20 @@ public static partial class DependencyInjection
 
         services.AddHttpClient(RemoteMemoryHttpClientNames.ClientName, (sp, client) =>
         {
+            // Re-read from IOptionsMonitor (not the captured `config` above) and re-assert https on
+            // every call, not just at RemoteMemoryConfigValidator's one-time ValidateOnStart check —
+            // a hot config reload that changes BaseUrl to http:// after boot must not silently start
+            // sending the API key and full conversation transcripts in cleartext.
             var current = sp.GetRequiredService<IOptionsMonitor<AppConfig>>().CurrentValue.AI.RemoteMemory;
-            client.BaseAddress = new Uri($"{current.BaseUrl.TrimEnd('/')}/api/v1/harness-memory/{current.AvatarId}/");
+            var baseUri = new Uri($"{current.BaseUrl.TrimEnd('/')}/api/v1/harness-memory/{Uri.EscapeDataString(current.AvatarId)}/");
+            if (baseUri.Scheme != Uri.UriSchemeHttps)
+            {
+                throw new InvalidOperationException(
+                    $"AppConfig:AI:RemoteMemory:BaseUrl must be https:// (was '{baseUri.Scheme}://') — " +
+                    "refusing to send the API key and conversation transcripts in cleartext.");
+            }
+
+            client.BaseAddress = baseUri;
             client.DefaultRequestHeaders.Add("X-Api-Key", current.ApiKey);
             client.Timeout = TimeSpan.FromSeconds(current.TimeoutSeconds);
         });

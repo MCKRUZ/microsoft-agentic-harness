@@ -224,8 +224,21 @@ public sealed class DefaultErasureOrchestrator : IErasureOrchestrator
         var canonicalOwner = ScopeIdentity.Canonicalize(ownerId);
         if (ownerScopeRequested && canonicalOwner is not null && _crossSessionMemory is not null)
         {
-            crossSessionDeleted = await _crossSessionMemory
-                .PurgeByOwnerAsync(canonicalOwner, cancellationToken);
+            try
+            {
+                crossSessionDeleted = await _crossSessionMemory
+                    .PurgeByOwnerAsync(canonicalOwner, cancellationToken);
+            }
+            catch (NotImplementedException)
+            {
+                // A backend that cannot actually delete anything (e.g. RemoteCrossSessionMemoryStore
+                // when remote memory hosting is enabled) throws here rather than silently returning
+                // 0 — see its own remarks. Downgrading to Partial, rather than letting the whole
+                // request fail, is what keeps the graph/vector/BM25 sweeps above this one meaningful.
+                partialReasons.Add(
+                    "cross-session memory purge is not supported by the configured backend; the " +
+                    "subject's cross-session-memory records were not erased");
+            }
         }
 
         // Completeness: an owner-scoped request whose owner could not be resolved cannot sweep

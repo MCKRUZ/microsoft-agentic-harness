@@ -1,8 +1,10 @@
 using System.Net;
 using System.Text;
+using Application.AI.Common.Interfaces.KnowledgeGraph;
 using FluentAssertions;
 using Infrastructure.AI.KnowledgeGraph.Remote;
 using Microsoft.Extensions.Logging.Abstractions;
+using Moq;
 using Xunit;
 
 namespace Infrastructure.AI.KnowledgeGraph.Tests.Remote;
@@ -11,12 +13,20 @@ namespace Infrastructure.AI.KnowledgeGraph.Tests.Remote;
 /// Tests for <see cref="RemoteConversationFactExtractor"/> against a stubbed avatar
 /// <c>/extract</c> endpoint. Pins the fail-safe contract every <c>IConversationFactExtractor</c>
 /// must honor: an HTTP failure, an empty/malformed body, or a thrown exception all degrade to "no
-/// facts extracted this turn" rather than propagating to the caller.
+/// facts extracted this turn" rather than propagating to the caller, and a caller with no resolved
+/// identity is refused before any network call.
 /// </summary>
 public sealed class RemoteConversationFactExtractorTests
 {
-    private static RemoteConversationFactExtractor CreateSut(StubHandler handler) =>
-        new(new StubHttpClientFactory(handler), NullLogger<RemoteConversationFactExtractor>.Instance);
+    private static RemoteConversationFactExtractor CreateSut(
+        StubHandler handler, string? userId = "user-1", string? tenantId = null)
+    {
+        var scope = new Mock<IKnowledgeScope>();
+        scope.SetupGet(s => s.UserId).Returns(userId);
+        scope.SetupGet(s => s.TenantId).Returns(tenantId);
+        return new RemoteConversationFactExtractor(
+            new StubHttpClientFactory(handler), scope.Object, NullLogger<RemoteConversationFactExtractor>.Instance);
+    }
 
     [Fact]
     public async Task ExtractAsync_SuccessResponse_MapsToConversationFacts()
@@ -114,6 +124,32 @@ public sealed class RemoteConversationFactExtractorTests
 
         var facts = await act.Should().NotThrowAsync();
         facts.Which.Should().BeEmpty();
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task ExtractAsync_NoResolvedUserId_RefusesWithoutCallingTheNetwork(string? userId)
+    {
+        var handler = new StubHandler(_ => throw new InvalidOperationException("should never be called"));
+        var sut = CreateSut(handler, userId: userId);
+
+        var facts = await sut.ExtractAsync("u", "a", "conv-1", 1);
+
+        facts.Should().BeEmpty("a caller with no resolved identity must never send transcript content to the remote service");
+    }
+
+    [Fact]
+    public async Task ExtractAsync_PostsCallerIdentity()
+    {
+        var handler = new StubHandler(_ => Ok("[]"));
+        var sut = CreateSut(handler, userId: "alice", tenantId: "acme");
+
+        await sut.ExtractAsync("u", "a", "conv-1", 1);
+
+        handler.LastRequestBody.Should().Contain("\"userId\":\"alice\"");
+        handler.LastRequestBody.Should().Contain("\"tenantId\":\"acme\"");
     }
 
     [Fact]

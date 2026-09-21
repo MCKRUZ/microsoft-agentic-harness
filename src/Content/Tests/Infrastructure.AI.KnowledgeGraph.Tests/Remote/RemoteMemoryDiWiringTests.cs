@@ -81,6 +81,36 @@ public sealed class RemoteMemoryDiWiringTests
         client.BaseAddress.Should().BeNull();
     }
 
+    [Fact]
+    public void HotConfigReloadToHttp_RefusesToCreateTheClient()
+    {
+        // The named client's configure delegate re-reads IOptionsMonitor on every CreateClient
+        // call, so a config value that goes from https:// to http:// after boot (a hot reload) must
+        // still be refused — RemoteMemoryConfigValidator's ValidateOnStart only ever checks the
+        // value at boot, not on every later reload.
+        var config = new AppConfig();
+        config.AI.Rag.GraphRag.GraphProvider = "in_memory";
+        config.AI.RemoteMemory.Enabled = true;
+        config.AI.RemoteMemory.BaseUrl = "https://avatar.example.com";
+        config.AI.RemoteMemory.AvatarId = "avatar-1";
+        config.AI.RemoteMemory.ApiKey = "key";
+
+        using var provider = BuildProviderForConfig(config);
+        var factory = provider.GetRequiredService<IHttpClientFactory>();
+
+        using (var client = factory.CreateClient(RemoteMemoryHttpClientNames.ClientName))
+        {
+            client.BaseAddress.Should().NotBeNull("https:// must succeed before the simulated reload");
+        }
+
+        config.AI.RemoteMemory.BaseUrl = "http://avatar.example.com";
+
+        var act = () => factory.CreateClient(RemoteMemoryHttpClientNames.ClientName);
+
+        act.Should().Throw<InvalidOperationException>()
+            .WithMessage("*https*", "a reloaded http:// BaseUrl must never silently start sending the API key and transcripts in cleartext");
+    }
+
     private static ServiceProvider BuildProvider(
         bool enabled, string baseUrl = "https://avatar.example.com", string avatarId = "avatar-1", string apiKey = "key")
     {
@@ -91,6 +121,11 @@ public sealed class RemoteMemoryDiWiringTests
         config.AI.RemoteMemory.AvatarId = avatarId;
         config.AI.RemoteMemory.ApiKey = apiKey;
 
+        return BuildProviderForConfig(config);
+    }
+
+    private static ServiceProvider BuildProviderForConfig(AppConfig config)
+    {
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddHttpClient();

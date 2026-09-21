@@ -8,7 +8,10 @@ namespace Infrastructure.AI.KnowledgeGraph.Remote;
 // this harness's own — collapsing them into one type would make an unrelated change on the remote
 // side (a renamed JSON field) a breaking change to this harness's public interfaces.
 
-/// <summary>Request body for <c>POST {avatarId}/extract</c>.</summary>
+/// <summary>
+/// Request body for <c>POST {avatarId}/extract</c>. <see cref="UserId"/>/<see cref="TenantId"/> are
+/// sent for the same forward-compatibility reason as <see cref="RememberRequest"/> — see its remarks.
+/// </summary>
 internal sealed record ExtractFactsRequest
 {
     public required string ThreadId { get; init; }
@@ -16,6 +19,8 @@ internal sealed record ExtractFactsRequest
     public required string AssistantResponse { get; init; }
     public required int TurnNumber { get; init; }
     public required string RunId { get; init; }
+    public required string UserId { get; init; }
+    public string? TenantId { get; init; }
 }
 
 /// <summary>One element of the array <c>POST {avatarId}/extract</c> returns.</summary>

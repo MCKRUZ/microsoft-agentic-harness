@@ -359,6 +359,30 @@ public sealed class DefaultErasureOrchestratorTests
             Times.Never);
     }
 
+    [Fact]
+    public async Task EraseByOwner_CrossSessionStoreCannotErase_ReceiptIsPartial_RestOfSweepStillRuns()
+    {
+        // A backend that cannot actually delete anything (e.g. RemoteCrossSessionMemoryStore when
+        // remote memory hosting is enabled) throws NotImplementedException from PurgeByOwnerAsync
+        // rather than silently returning 0 — a Full receipt would certify an erasure that never
+        // happened. The rest of the sweep (graph nodes/edges here) must still complete.
+        var memory = new Mock<ICrossSessionMemoryStore>();
+        memory.Setup(m => m.PurgeByOwnerAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new NotImplementedException("no remote delete endpoint"));
+        var orchestrator = OrchestratorWith(crossSession: memory.Object);
+
+        _graphStore.Setup(g => g.GetNodesByOwnerAsync("user-1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync([new GraphNode { Id = "n1", Name = "T", Type = "Fact", OwnerId = "user-1" }]);
+
+        var receipt = await orchestrator.EraseByOwnerAsync("user-1");
+
+        receipt.Completeness.Should().Be(ErasureCompleteness.Partial,
+            "a backend that cannot delete anything must never let the receipt read as a clean success");
+        receipt.CompletenessReason.Should().NotBeNullOrEmpty();
+        receipt.NodesDeleted.Should().Be(1, "the graph sweep must still complete even though the cross-session sweep could not");
+        receipt.CrossSessionMemoriesDeleted.Should().Be(0);
+    }
+
     private DefaultErasureOrchestrator OrchestratorWith(
         IBm25Store? bm25 = null,
         ICrossSessionMemoryStore? crossSession = null) =>
