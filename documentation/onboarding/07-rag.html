@@ -328,7 +328,9 @@ Cite chunk IDs in the format [doc:chunk-id] when quoting passages.</code></pre>
                             matches on meaning and topic, not just literal text, and related facts cluster together.
                             Recall fuses those matches with the legacy path via Reciprocal Rank Fusion. Gated behind
                             <code>AppConfig:AI:HarmonicMemory:Mode</code> (<code>Off</code> by default — it costs an LLM
-                            call per write); <code>Off</code> is the unchanged legacy behavior.
+                            call per write); <code>Off</code> keeps the same write path, though recall now also
+                            falls back to a scoped content search over the caller's own memory nodes when a
+                            fact's key doesn't literally match the query.
                         </li>
                         <li>
                             <strong>Provenance + compliance</strong> — <code>DefaultProvenanceStamper</code> tags every

@@ -12,6 +12,7 @@ namespace Application.AI.Common.Services.KnowledgeGraph;
 /// the fail-fast <see cref="NotConfiguredMemoryAbstractor"/> placeholder.
 /// </summary>
 /// <remarks>
+/// <para>
 /// Without this guard, the exact same misconfiguration is only discovered on the first
 /// <c>RememberAsync</c> call inside a live conversation turn — and when that call runs through
 /// the unattended fact-extraction pipeline, the thrown exception is caught and merely logged as a
@@ -20,6 +21,14 @@ namespace Application.AI.Common.Services.KnowledgeGraph;
 /// <see cref="Extensions.HarmonicMemoryDependencyInjection.AddHarmonicMemoryDependencies"/>; the
 /// check itself is a no-op whenever Mode is <see cref="HarmonicMemoryMode.Off"/> (the default) or
 /// a consumer has registered a real agent-backed implementation.
+/// </para>
+/// <para>
+/// The check runs once, at startup. If a hot config reload later raises <c>Mode</c> above
+/// <see cref="HarmonicMemoryMode.Off"/> with no real abstractor still registered, this guard does
+/// not re-fire — the original first-write failure this guard exists to prevent returns for that
+/// case, since <see cref="Microsoft.Extensions.Options.IOptionsMonitor{TOptions}"/> is only read
+/// once, in <see cref="StartAsync"/>.
+/// </para>
 /// </remarks>
 public sealed class HarmonicMemoryAbstractorStartupGuard : IHostedService
 {

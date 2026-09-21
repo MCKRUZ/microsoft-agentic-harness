@@ -379,8 +379,13 @@ public sealed partial class KnowledgeMemoryService : IKnowledgeMemory
         // conversation-fact-extraction pipeline can never satisfy, since its key embeds a never-repeating
         // conversation id and it is never linked into the entity graph. Ranked by token overlap (reusing
         // the harmonic path's own scorer) so a handful of generic shared words (e.g. "my", "is") don't
-        // crowd out a genuinely relevant fact; bounded to this scope's memory nodes, so the O(n) scan below
-        // stays a scan of the caller's own facts, not the whole graph.
+        // crowd out a genuinely relevant fact; the graph-store fetch below still loads every node (there is
+        // no indexed way to fetch only this scope's), but GetScopedMemoryNodesAsync's prefix + trust filter
+        // narrows it to the caller's own recallable facts before ranking. Trust is filtered HERE, not left
+        // to RecallLegacyAsync's downstream IsRecallable pass: this block ranks-then-Takes a bounded slice,
+        // so an untrusted candidate that outscores real matches would consume a slot and never be replaced
+        // — letting a quarantined, injection-bearing fact crowd out genuinely trusted results (an attacker
+        // need only pad the quarantined content with likely query words).
         if (matched.Count < maxResults)
         {
             var queryTokens = Tokenize(query);
@@ -411,19 +416,23 @@ public sealed partial class KnowledgeMemoryService : IKnowledgeMemory
     }
 
     /// <summary>
-    /// Retrieves this scope's memory-namespaced nodes for the #598 content-search fallback. Unlike
-    /// <see cref="GetScopedTrustedMemoryNodesAsync"/> (the harmonic candidate pool), this includes every
-    /// memory node regardless of trust or abstraction — <see cref="IsRecallable"/> already filters the
-    /// result downstream in <see cref="RecallLegacyAsync"/>, so narrowing here would only risk hiding a
-    /// trusted fact behind an unrelated requirement (e.g. having an abstraction, which legacy-mode facts
-    /// never carry).
+    /// Retrieves this scope's recallable memory-namespaced nodes for the #598 content-search fallback.
+    /// Trust is filtered <em>here</em>, not left to <see cref="RecallLegacyAsync"/>'s downstream
+    /// <see cref="IsRecallable"/> pass: the caller ranks this list and takes only the top few, so an
+    /// unfiltered quarantined fact that happens to outscore a trusted one would consume a result slot and
+    /// be discarded — silently hiding the trusted fact instead of ever reaching it. Unlike
+    /// <see cref="GetScopedTrustedMemoryNodesAsync"/> (the harmonic candidate pool), this does not also
+    /// require an abstraction, since legacy-mode facts never carry one.
     /// </summary>
     private async Task<IReadOnlyList<GraphNode>> GetScopedMemoryNodesAsync(CancellationToken cancellationToken)
     {
         var all = await _graphStore.GetAllNodesAsync(cancellationToken);
         var scopePrefix = $"memory:{ScopeKey()}:";
 
-        return all.Where(n => n.Id.StartsWith(scopePrefix, StringComparison.Ordinal)).ToList();
+        return all
+            .Where(n => n.Id.StartsWith(scopePrefix, StringComparison.Ordinal))
+            .Where(IsRecallable)
+            .ToList();
     }
 
     /// <summary>The text a memory node is matched against for content search: its name plus its raw content.</summary>
