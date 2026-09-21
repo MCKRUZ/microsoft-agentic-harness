@@ -54,15 +54,19 @@ public class ModelRouterTests
             .Setup(sp => sp.GetService(typeof(ITaskComplexityClassifier)))
             .Returns(_mockClassifier.Object);
 
-        _sut = new ModelRouter(
+        _sut = BuildSut(_config);
+    }
+
+    /// <summary>Builds a <see cref="ModelRouter"/> wired to this fixture's mocks.</summary>
+    private ModelRouter BuildSut(ModelRoutingConfig config, IOptions<AgentFrameworkConfig>? agentFrameworkConfig = null) =>
+        new(
             _mockHeuristic.Object,
             _mockServiceProvider.Object,
             _mockEscalation.Object,
             _mockClientFactory.Object,
-            Options.Create(_config),
-            _agentFrameworkConfig,
+            Options.Create(config),
+            agentFrameworkConfig ?? _agentFrameworkConfig,
             NullLogger<ModelRouter>.Instance);
-    }
 
     [Fact]
     public async Task RouteAgentTurnAsync_HeuristicConfident_SkipsLlm()
@@ -165,14 +169,7 @@ public class ModelRouterTests
             Tiers = _config.Tiers
         };
 
-        var sut = new ModelRouter(
-            _mockHeuristic.Object,
-            _mockServiceProvider.Object,
-            _mockEscalation.Object,
-            _mockClientFactory.Object,
-            Options.Create(config),
-            _agentFrameworkConfig,
-            NullLogger<ModelRouter>.Instance);
+        var sut = BuildSut(config);
 
         var context = new AgentTurnContext { ConversationId = "test", UserMessage = "complex task", TurnNumber = 5, AvailableToolCount = 10 };
         var result = await sut.RouteAgentTurnAsync(context);
@@ -193,14 +190,7 @@ public class ModelRouterTests
     {
         var config = new ModelRoutingConfig { Tiers = [] };
 
-        var exception = Record.Exception(() => new ModelRouter(
-            _mockHeuristic.Object,
-            _mockServiceProvider.Object,
-            _mockEscalation.Object,
-            _mockClientFactory.Object,
-            Options.Create(config),
-            _agentFrameworkConfig,
-            NullLogger<ModelRouter>.Instance));
+        var exception = Record.Exception(() => BuildSut(config));
 
         Assert.Null(exception);
     }
@@ -215,14 +205,7 @@ public class ModelRouterTests
             DefaultDeployment = "gpt-4o-mini"
         });
 
-        var sut = new ModelRouter(
-            _mockHeuristic.Object,
-            _mockServiceProvider.Object,
-            _mockEscalation.Object,
-            _mockClientFactory.Object,
-            Options.Create(config),
-            agentFramework,
-            NullLogger<ModelRouter>.Instance);
+        var sut = BuildSut(config, agentFramework);
 
         var result = await sut.RouteOperationAsync("unknown_operation");
 
@@ -238,14 +221,7 @@ public class ModelRouterTests
     {
         var config = new ModelRoutingConfig { Tiers = [], Enabled = true };
 
-        var sut = new ModelRouter(
-            _mockHeuristic.Object,
-            _mockServiceProvider.Object,
-            _mockEscalation.Object,
-            _mockClientFactory.Object,
-            Options.Create(config),
-            _agentFrameworkConfig,
-            NullLogger<ModelRouter>.Instance);
+        var sut = BuildSut(config);
 
         var assessment = new TaskComplexityAssessment
         {
@@ -277,14 +253,7 @@ public class ModelRouterTests
     {
         var config = new ModelRoutingConfig { Tiers = [], DefaultTier = null! };
 
-        var sut = new ModelRouter(
-            _mockHeuristic.Object,
-            _mockServiceProvider.Object,
-            _mockEscalation.Object,
-            _mockClientFactory.Object,
-            Options.Create(config),
-            _agentFrameworkConfig,
-            NullLogger<ModelRouter>.Instance);
+        var sut = BuildSut(config);
 
         var exception = await Record.ExceptionAsync(() => sut.RouteOperationAsync("unknown_operation"));
 

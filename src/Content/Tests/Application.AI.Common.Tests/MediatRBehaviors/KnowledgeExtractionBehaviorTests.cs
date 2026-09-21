@@ -230,14 +230,7 @@ public class KnowledgeExtractionBehaviorTests
         // past both RememberAsync attempts and into (or past) the final log-decision point.
         await WaitForAsync(() => LoggerLogged(logger, LogLevel.Warning, "conv-1:1:1"), ExtractionTimeout);
 
-        logger.Verify(
-            l => l.Log(
-                LogLevel.Information,
-                It.IsAny<EventId>(),
-                It.Is<It.IsAnyType>((v, _) => v.ToString()!.Contains("Persisted")),
-                null,
-                It.IsAny<Func<It.IsAnyType, Exception?, string>>()),
-            Times.Never);
+        LoggerLogged(logger, LogLevel.Information, "Persisted").Should().BeFalse();
     }
 
     [Fact]
@@ -268,14 +261,7 @@ public class KnowledgeExtractionBehaviorTests
         // could observe the second fact's call before the log statement executes.
         await WaitForAsync(() => LoggerLogged(logger, LogLevel.Information, "Persisted 1 facts"), ExtractionTimeout);
 
-        logger.Verify(
-            l => l.Log(
-                LogLevel.Information,
-                It.IsAny<EventId>(),
-                It.Is<It.IsAnyType>((v, _) => v.ToString()!.Contains("Persisted 1 facts")),
-                null,
-                It.IsAny<Func<It.IsAnyType, Exception?, string>>()),
-            Times.Once);
+        LoggerLogged(logger, LogLevel.Information, "Persisted 1 facts").Should().BeTrue();
     }
 
     // --- Helpers ---

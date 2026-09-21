@@ -466,17 +466,20 @@ public static class DependencyInjection
     /// Reads and validates <c>AppConfig:AgentHub:SignalRMaxReceiveMessageSizeBytes</c> (#603).
     /// </summary>
     /// <remarks>
-    /// Reads the single value directly via <c>IConfiguration.GetValue&lt;T&gt;</c>
-    /// rather than binding the whole <see cref="Config.AgentHubConfig"/> record a second time —
-    /// <see cref="AddAgentHubServices"/> already binds it once for <c>IOptions&lt;AgentHubConfig&gt;</c>
-    /// consumers further down. Throws synchronously, as part of composing this host's services,
-    /// so a misconfigured value fails the host at startup rather than the first time something
-    /// resolves <c>IOptions&lt;HubOptions&gt;</c>.
+    /// Binds through <see cref="Config.AgentHubConfig"/> — the same
+    /// <c>configuration.GetSection(...).Get&lt;T&gt;() ?? new T()</c> shape this file already uses
+    /// for <c>PrometheusConfig</c> — rather than a hand-typed <c>GetValue&lt;long?&gt;</c> path
+    /// string: a rename of the property, or a restructure of the section, becomes a compile error
+    /// here instead of <c>GetValue</c> silently returning null and the validation going quietly
+    /// inert. Throws synchronously, as part of composing this host's services, so a misconfigured
+    /// value fails the host at startup rather than the first time something resolves
+    /// <c>IOptions&lt;HubOptions&gt;</c>.
     /// </remarks>
     private static long? ResolveSignalRMaxMessageSizeBytes(IConfiguration configuration)
     {
-        var maxMessageSizeBytes = configuration.GetValue<long?>(
-            "AppConfig:AgentHub:SignalRMaxReceiveMessageSizeBytes");
+        var agentHubConfig = configuration.GetSection("AppConfig:AgentHub").Get<AgentHubConfig>()
+            ?? new AgentHubConfig();
+        var maxMessageSizeBytes = agentHubConfig.SignalRMaxReceiveMessageSizeBytes;
 
         if (maxMessageSizeBytes is { } bytes && bytes <= 0)
         {
