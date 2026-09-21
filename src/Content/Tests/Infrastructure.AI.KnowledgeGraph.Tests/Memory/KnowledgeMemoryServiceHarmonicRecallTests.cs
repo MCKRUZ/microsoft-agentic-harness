@@ -28,15 +28,17 @@ public sealed class KnowledgeMemoryServiceHarmonicRecallTests
     [Fact]
     public async Task CueAnchorHit_HarmonicSurfacesNode_LegacyMisses()
     {
-        // The node's name/type carry nothing about "vegetarian" — only its cue anchor does. The legacy
-        // substring path (Off) matches name/type and misses it; harmonic recall matches the cue anchor.
+        // Neither the node's name/type nor its raw content mention "diet" — only its cue anchor does
+        // (#598 taught the legacy path to also search name+content, so the query term must be absent from
+        // both for this to genuinely isolate harmonic's distinct value). Legacy (Off) misses it; harmonic
+        // recall matches the cue anchor.
         await SeedMemoryNodeAsync($"{DefaultNs}:pref-1", "pref-1", "The user is vegetarian",
             new MemoryAbstraction { Abstraction = "user dietary preference", CueAnchors = ["vegetarian diet"] });
 
-        var offResult = await CreateService(ConfigWith(HarmonicMemoryMode.Off)).RecallAsync("vegetarian");
-        offResult.Should().BeEmpty("the legacy path matches only node name/type, which carry no cue anchor");
+        var offResult = await CreateService(ConfigWith(HarmonicMemoryMode.Off)).RecallAsync("diet");
+        offResult.Should().BeEmpty("the legacy path matches name/content, neither of which mentions 'diet'");
 
-        var harmonicResult = await CreateService(ConfigWith(HarmonicMemoryMode.AbstractOnly)).RecallAsync("vegetarian");
+        var harmonicResult = await CreateService(ConfigWith(HarmonicMemoryMode.AbstractOnly)).RecallAsync("diet");
         harmonicResult.Should().ContainSingle(n => n.Id == $"{DefaultNs}:pref-1",
             "harmonic recall matches the query against the indexed cue anchors the legacy path ignores");
     }

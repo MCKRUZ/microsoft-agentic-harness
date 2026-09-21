@@ -786,8 +786,13 @@ return quality.MaxScore switch
                         lexical — no LLM on the recall path. The whole layer is a graduated, off-by-default toggle
                         (<code>Off</code> / <code>AbstractOnly</code> / <code>Full</code> under
                         <code>AppConfig:AI:HarmonicMemory</code>) because abstraction costs one to two LLM calls per
-                        write; <code>Off</code> is the byte-identical legacy path. The abstractor and consolidator ship as
-                        <code>NotConfigured</code> seams — the consumer supplies the agent-backed implementations.
+                        write; <code>Off</code> keeps the legacy write path unchanged, though legacy recall (used
+                        in every mode) now also falls back to a scoped content search over the caller's own
+                        memory nodes when a fact's key doesn't literally match the query — e.g.
+                        automatically-extracted facts keyed by conversation id. The abstractor and consolidator
+                        ship as <code>NotConfigured</code> seams — the consumer supplies the agent-backed
+                        implementations, and a startup guard fails host startup (rather than deferring to the
+                        first write) if <code>Mode</code> is raised without one registered.
                     </p>
                     <ul>
                         <li><code>Memory/KnowledgeMemoryService.Harmonic.cs</code> — write path (abstraction + consolidation)</li>
