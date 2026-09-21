@@ -24,6 +24,7 @@ public class ModelRouterTests
     private readonly Mock<IServiceProvider> _mockServiceProvider = new();
     private readonly ModelRouter _sut;
     private readonly ModelRoutingConfig _config;
+    private readonly IOptions<AgentFrameworkConfig> _agentFrameworkConfig = Options.Create(new AgentFrameworkConfig());
 
     public ModelRouterTests()
     {
@@ -59,6 +60,7 @@ public class ModelRouterTests
             _mockEscalation.Object,
             _mockClientFactory.Object,
             Options.Create(_config),
+            _agentFrameworkConfig,
             NullLogger<ModelRouter>.Instance);
     }
 
@@ -169,6 +171,7 @@ public class ModelRouterTests
             _mockEscalation.Object,
             _mockClientFactory.Object,
             Options.Create(config),
+            _agentFrameworkConfig,
             NullLogger<ModelRouter>.Instance);
 
         var context = new AgentTurnContext { ConversationId = "test", UserMessage = "complex task", TurnNumber = 5, AvailableToolCount = 10 };
@@ -176,5 +179,115 @@ public class ModelRouterTests
 
         Assert.Equal("standard", result.SelectedTier.Name);
         _mockHeuristic.Verify(h => h.Classify(It.IsAny<AgentTurnContext>()), Times.Never);
+    }
+
+    // #599: AppConfig:AI:ModelRouting:Tiers has no entries. Before the fix, constructing the
+    // router with an empty Tiers list left _orderedTiers empty, and every routing path —
+    // including the disabled-routing and unknown-operation fallbacks below — threw
+    // "Sequence contains no elements" (GetDefaultTier's _orderedTiers.First()) or
+    // IndexOutOfRangeException (GetBaseTierForComplexity's _orderedTiers[index]) at the first
+    // routed call instead of at startup or never at all.
+
+    [Fact]
+    public void Constructor_NoTiersConfigured_DoesNotThrow()
+    {
+        var config = new ModelRoutingConfig { Tiers = [] };
+
+        var exception = Record.Exception(() => new ModelRouter(
+            _mockHeuristic.Object,
+            _mockServiceProvider.Object,
+            _mockEscalation.Object,
+            _mockClientFactory.Object,
+            Options.Create(config),
+            _agentFrameworkConfig,
+            NullLogger<ModelRouter>.Instance));
+
+        Assert.Null(exception);
+    }
+
+    [Fact]
+    public async Task RouteOperationAsync_NoTiersConfigured_RoutesToAgentFrameworkDefault()
+    {
+        var config = new ModelRoutingConfig { Tiers = [], DefaultTier = "standard" };
+        var agentFramework = Options.Create(new AgentFrameworkConfig
+        {
+            ClientType = AIAgentFrameworkClientType.OpenAI,
+            DefaultDeployment = "gpt-4o-mini"
+        });
+
+        var sut = new ModelRouter(
+            _mockHeuristic.Object,
+            _mockServiceProvider.Object,
+            _mockEscalation.Object,
+            _mockClientFactory.Object,
+            Options.Create(config),
+            agentFramework,
+            NullLogger<ModelRouter>.Instance);
+
+        var result = await sut.RouteOperationAsync("unknown_operation");
+
+        Assert.Equal(AIAgentFrameworkClientType.OpenAI, result.SelectedTier.ClientType);
+        Assert.Equal("gpt-4o-mini", result.SelectedTier.DeploymentName);
+        _mockClientFactory.Verify(
+            f => f.GetChatClientAsync(AIAgentFrameworkClientType.OpenAI, "gpt-4o-mini", It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task RouteAgentTurnAsync_NoTiersConfigured_EscalationAndComplexityFallbacksResolve()
+    {
+        var config = new ModelRoutingConfig { Tiers = [], Enabled = true };
+
+        var sut = new ModelRouter(
+            _mockHeuristic.Object,
+            _mockServiceProvider.Object,
+            _mockEscalation.Object,
+            _mockClientFactory.Object,
+            Options.Create(config),
+            _agentFrameworkConfig,
+            NullLogger<ModelRouter>.Instance);
+
+        var assessment = new TaskComplexityAssessment
+        {
+            Complexity = TaskComplexity.Complex,
+            Confidence = 0.9,
+            Source = ClassificationSource.Heuristic
+        };
+        _mockHeuristic.Setup(h => h.Classify(It.IsAny<AgentTurnContext>())).Returns(assessment);
+        _mockEscalation
+            .Setup(e => e.GetEffectiveTier(It.IsAny<string>(), TaskComplexity.Complex, It.IsAny<IReadOnlyList<ModelTier>>()))
+            .Returns<string, TaskComplexity, IReadOnlyList<ModelTier>>((_, _, tiers) => tiers[0]);
+
+        var context = new AgentTurnContext { ConversationId = "test", UserMessage = "refactor this", TurnNumber = 1 };
+        var exception = await Record.ExceptionAsync(() => sut.RouteAgentTurnAsync(context));
+
+        Assert.Null(exception);
+    }
+
+    // #599 code-review (round 2): BuildUnconfiguredFallbackTier used to set the fallback tier's
+    // Name directly from _config.DefaultTier with no null guard. DefaultTier has a non-null C#
+    // default ("standard") but is a plain settable string, so an explicit "DefaultTier": null in
+    // config binds over it — and with Tiers empty, GetDefaultTier()'s
+    // _orderedTiers.FirstOrDefault(t => t.Name.Equals(...)) calls .Equals as an instance method ON
+    // that null Name, throwing NullReferenceException on the first routed call. That reopened,
+    // for a null-DefaultTier misconfiguration, the exact "crash on first routed call" failure this
+    // fallback exists to close for the empty-Tiers case.
+    [Fact]
+    public async Task RouteOperationAsync_NoTiersConfiguredAndDefaultTierNull_DoesNotThrow()
+    {
+        var config = new ModelRoutingConfig { Tiers = [], DefaultTier = null! };
+
+        var sut = new ModelRouter(
+            _mockHeuristic.Object,
+            _mockServiceProvider.Object,
+            _mockEscalation.Object,
+            _mockClientFactory.Object,
+            Options.Create(config),
+            _agentFrameworkConfig,
+            NullLogger<ModelRouter>.Instance);
+
+        var exception = await Record.ExceptionAsync(() => sut.RouteOperationAsync("unknown_operation"));
+
+        Assert.Null(exception);
     }
 }

@@ -27,4 +27,14 @@ public sealed record AgentHubConfig
 
     /// <summary>CORS configuration for this host.</summary>
     public AgentHubCorsConfig Cors { get; init; } = new();
+
+    /// <summary>
+    /// Overrides SignalR's own 32KB default cap on a single hub-method invocation payload, in
+    /// bytes. Leave unset (<see langword="null"/>) to keep that 32KB default — a consumer sending
+    /// legitimately large per-call content (e.g. a full persona/system-prompt override via
+    /// <c>SetConversationSettings</c>) raises this rather than needing a code change. Deliberately
+    /// <em>not</em> forwarded to SignalR's own <see langword="null"/> ("no limit") when unset:
+    /// this stays a bounded override, never an accidental removal of the cap.
+    /// </summary>
+    public long? SignalRMaxReceiveMessageSizeBytes { get; init; }
 }

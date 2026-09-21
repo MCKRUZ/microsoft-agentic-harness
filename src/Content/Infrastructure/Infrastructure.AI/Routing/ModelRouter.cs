@@ -3,6 +3,7 @@ using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Routing;
 using Domain.AI.Routing.Enums;
 using Domain.AI.Routing.Models;
+using Domain.Common.Config.AI;
 using Domain.Common.Config.AI.Routing;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
@@ -42,6 +43,7 @@ public sealed class ModelRouter : IModelRouter
         IEscalationTracker escalationTracker,
         IChatClientFactory clientFactory,
         IOptions<ModelRoutingConfig> config,
+        IOptions<AgentFrameworkConfig> agentFrameworkConfig,
         ILogger<ModelRouter> logger)
     {
         _heuristic = heuristic;
@@ -51,7 +53,7 @@ public sealed class ModelRouter : IModelRouter
         _config = config.Value;
         _logger = logger;
 
-        _orderedTiers = _config.Tiers
+        var configuredTiers = _config.Tiers
             .OrderBy(t => t.EstimatedCostPer1KTokens)
             .Select(t => new ModelTier
             {
@@ -63,6 +65,51 @@ public sealed class ModelRouter : IModelRouter
                 EstimatedCostPer1KTokens = t.EstimatedCostPer1KTokens
             })
             .ToList();
+
+        _orderedTiers = configuredTiers.Count > 0
+            ? configuredTiers
+            : [BuildUnconfiguredFallbackTier(agentFrameworkConfig.Value)];
+    }
+
+    /// <summary>
+    /// Builds the single tier used when <c>AppConfig:AI:ModelRouting:Tiers</c> has no entries.
+    /// </summary>
+    /// <remarks>
+    /// Every routing path — including the disabled-routing and unknown-operation fallbacks —
+    /// resolves a tier via <see cref="GetDefaultTier"/> or <see cref="GetBaseTierForComplexity"/>,
+    /// both of which index into <see cref="_orderedTiers"/>; an empty list used to surface as
+    /// "Sequence contains no elements" at the first routed call instead of a usable default
+    /// (#599). Routing to the primary <see cref="AgentFrameworkConfig"/> client, rather than
+    /// throwing, means a template consumer who has not configured tiered routing still gets a
+    /// working host — cost tiering is an opt-in feature, not a prerequisite to boot. Takes the
+    /// resolved config directly, rather than service-locating it from <c>_serviceProvider</c>
+    /// with a silent fallback to blank defaults: if <see cref="IOptions{TOptions}"/> of
+    /// <see cref="AgentFrameworkConfig"/> is ever missing from the container, construction fails
+    /// loudly here instead of quietly routing to an unreachable client.
+    /// </remarks>
+    private ModelTier BuildUnconfiguredFallbackTier(AgentFrameworkConfig agentFramework)
+    {
+        _logger.LogWarning(
+            "AppConfig:AI:ModelRouting:Tiers has no entries — routing every call to the primary " +
+            "AgentFramework client ({ClientType}/{DeploymentName}) instead of a named cost tier. " +
+            "Configure at least one entry under AppConfig:AI:ModelRouting:Tiers to enable " +
+            "cost-aware routing.",
+            agentFramework.ClientType, agentFramework.DefaultDeployment);
+
+        return new ModelTier
+        {
+            // ModelRoutingConfig.DefaultTier has a non-null C# default ("standard"), but it's a
+            // plain settable string — an explicit `"DefaultTier": null` in config binds over that
+            // default. GetDefaultTier()'s _orderedTiers.FirstOrDefault(t => t.Name.Equals(...))
+            // calls .Equals as an instance method ON this tier's Name when Tiers is empty (this is
+            // the only tier), so a null Name here would NRE on the first routed call — reopening,
+            // for this specific misconfiguration, the exact "crash instead of a usable default"
+            // failure this fallback exists to close for the empty-Tiers case (#599).
+            Name = string.IsNullOrWhiteSpace(_config.DefaultTier) ? "default" : _config.DefaultTier,
+            ClientType = agentFramework.ClientType,
+            DeploymentName = agentFramework.DefaultDeployment,
+            EstimatedCostPer1KTokens = 0m
+        };
     }
 
     /// <inheritdoc />

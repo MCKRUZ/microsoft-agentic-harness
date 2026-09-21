@@ -123,12 +123,15 @@ public sealed class KnowledgeExtractionBehavior<TRequest, TResponse>
                 turnNumber,
                 cts.Token);
 
+            var persistedCount = 0;
+
             foreach (var fact in facts)
             {
                 try
                 {
                     await knowledgeMemory.RememberAsync(
                         fact.Key, fact.Content, fact.EntityType, cts.Token);
+                    persistedCount++;
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {
@@ -138,11 +141,11 @@ public sealed class KnowledgeExtractionBehavior<TRequest, TResponse>
                 }
             }
 
-            if (facts.Count > 0)
+            if (persistedCount > 0)
             {
                 _logger.LogInformation(
                     "Persisted {Count} facts from conversation {ConversationId} turn {Turn}",
-                    facts.Count, conversationId, turnNumber);
+                    persistedCount, conversationId, turnNumber);
             }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
