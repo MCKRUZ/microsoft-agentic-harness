@@ -101,8 +101,11 @@ public sealed class RemoteConversationFactExtractor : IConversationFactExtractor
 
             return facts;
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
         {
+            // A client-side timeout also throws OperationCanceledException, so the caller's own
+            // token — not the exception type — is what distinguishes "the caller cancelled" from
+            // "the remote call failed"; see the analogous fix in MultiSourceOrchestrator.
             _logger.LogWarning(ex,
                 "Remote fact extraction failed for conversation {ConversationId} turn {Turn}; returning no facts.",
                 conversationId, turnNumber);

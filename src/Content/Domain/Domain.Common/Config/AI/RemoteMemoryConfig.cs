@@ -77,4 +77,15 @@ public sealed class RemoteMemoryConfig
     /// is held to the same latency budget as the local extraction pipeline it replaces.
     /// </summary>
     public int TimeoutSeconds { get; set; } = 10;
+
+    /// <summary>
+    /// Required to be <see langword="true"/> when <see cref="Enabled"/> is <see langword="true"/>
+    /// (enforced by <c>RemoteMemoryConfigValidator</c>) — an explicit, conscious acknowledgement
+    /// that every caller sharing this <see cref="AvatarId"/> shares one recall pool with no
+    /// per-caller filtering (see <see cref="AvatarId"/>'s remarks). Defaults to
+    /// <see langword="false"/> so an operator cannot enable remote memory without deliberately
+    /// setting this too — the isolation gap is a config value that fails startup, not a paragraph
+    /// of documentation an operator can skip past.
+    /// </summary>
+    public bool AcknowledgeSharedRecallBoundary { get; set; }
 }

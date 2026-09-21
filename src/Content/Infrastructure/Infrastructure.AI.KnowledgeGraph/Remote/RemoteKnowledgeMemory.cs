@@ -15,14 +15,16 @@ namespace Infrastructure.AI.KnowledgeGraph.Remote;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>Write gate still runs locally.</b> Unlike the local implementation, which resolves
-/// <c>IMemoryWriteGate</c> from the same request scope, this class also runs it — first, before
-/// ever contacting the remote service — rather than trusting the remote <c>/remember</c>
-/// endpoint's own gate evaluation unverified. A local Reject never leaves this process. A local
-/// Quarantine or Trusted result is still sent to the remote service, and the remote service's own
-/// <see cref="RememberResponse.Trust"/> is combined conservatively (the more restrictive of the
-/// two wins), so a compromised or misconfigured remote gate can only ever narrow trust, never
-/// widen it.
+/// <b>Write gate still runs locally, and quarantine never leaves this process.</b> Unlike the
+/// local implementation, which resolves <c>IMemoryWriteGate</c> from the same request scope, this
+/// class also runs it — first, before ever contacting the remote service — rather than trusting
+/// the remote <c>/remember</c> endpoint's own gate evaluation unverified. A local Reject or
+/// Quarantine never leaves this process: the remote wire contract carries no trust field on either
+/// <c>/remember</c> or <c>/recall</c>, so a quarantined fact sent to the remote store would come
+/// back on a later recall indistinguishable from a trusted one (the same "unmarked defaults to
+/// Trusted" rule the local backend's own <c>GetTrust()</c> uses). Only a local Trusted result is
+/// ever sent, and the remote service's own <see cref="RememberResponse.Trust"/> can still downgrade
+/// it — trust only ever narrows across the two gates, never widens.
 /// </para>
 /// <para>
 /// <b>Caller identity is required, not defaulted.</b> An authenticated caller whose
@@ -109,10 +111,14 @@ public sealed class RemoteKnowledgeMemory : IKnowledgeMemory
 
         var localDecision = await _writeGate.EvaluateAsync(key, content, entityType, cancellationToken)
             .ConfigureAwait(false);
-        if (!localDecision.Persist)
+        if (!localDecision.Persist || localDecision.Trust == MemoryTrust.Untrusted)
         {
+            // Reject never leaves this process, and neither does Quarantine: the remote wire
+            // contract has no trust field, so a quarantined fact sent to /remember would come back
+            // from a later /recall indistinguishable from a trusted one. Only a fully Trusted local
+            // decision is ever forwarded — see the class remarks.
             _logger.LogInformation(
-                "Remote remember rejected locally for key {Key} before contacting the remote service: {Reason}",
+                "Remote remember stopped locally for key {Key} before contacting the remote service: {Reason}",
                 key, localDecision.Reason);
             return localDecision;
         }
@@ -162,18 +168,22 @@ public sealed class RemoteKnowledgeMemory : IKnowledgeMemory
                 };
             }
 
-            // Combine conservatively: the remote gate can only narrow what the local gate already
-            // allowed, never widen it. A local Trusted + remote Untrusted stays Untrusted; a local
-            // Trusted + remote Persist=false is not persisted at all.
+            // localDecision.Trust is always Trusted here (the guard above stops anything else), so
+            // the remote gate can only narrow trust further, never widen it: a remote Untrusted wins,
+            // otherwise the local Trusted result stands.
             return new MemoryWriteDecision
             {
                 Persist = result.Persist,
-                Trust = result.Trust == MemoryTrust.Untrusted ? MemoryTrust.Untrusted : localDecision.Trust,
+                Trust = result.Trust,
                 Reason = result.Reason,
             };
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
         {
+            // Catches everything except the caller's own cancellation — including a timeout, which
+            // .NET surfaces as an OperationCanceledException indistinguishable from real cancellation
+            // by type alone. Checking the caller's token, not the exception type, is what actually
+            // tells the two apart (see the analogous fix in MultiSourceOrchestrator).
             _logger.LogWarning(ex, "Remote remember failed for key {Key}; treating as rejected.", key);
             return new MemoryWriteDecision
             {
@@ -243,8 +253,11 @@ public sealed class RemoteKnowledgeMemory : IKnowledgeMemory
                 })
                 .ToList();
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
         {
+            // See RememberAsync's catch clause: a client-side timeout also throws
+            // OperationCanceledException, so the caller's own token — not the exception type — is
+            // what distinguishes "the caller cancelled" from "the remote call failed."
             _logger.LogWarning(ex, "Remote recall failed for query {Query}; returning no matches.", query);
             return [];
         }

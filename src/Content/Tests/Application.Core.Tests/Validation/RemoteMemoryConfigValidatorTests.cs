@@ -96,6 +96,18 @@ public sealed class RemoteMemoryConfigValidatorTests
         result.Errors.Should().Contain(e => e.PropertyName == "TimeoutSeconds");
     }
 
+    [Fact]
+    public async Task Validate_EnabledWithoutAcknowledgingSharedRecallBoundary_HasError()
+    {
+        var config = CreateValidConfig();
+        config.AcknowledgeSharedRecallBoundary = false;
+
+        var result = await _validator.ValidateAsync(config);
+
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.PropertyName == "AcknowledgeSharedRecallBoundary");
+    }
+
     private static RemoteMemoryConfig CreateValidConfig() => new()
     {
         Enabled = true,
@@ -103,5 +115,6 @@ public sealed class RemoteMemoryConfigValidatorTests
         ApiKey = "secret-key",
         AvatarId = "avatar-1",
         TimeoutSeconds = 10,
+        AcknowledgeSharedRecallBoundary = true,
     };
 }

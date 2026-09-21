@@ -114,10 +114,12 @@ public sealed class RemoteKnowledgeMemoryTests
     }
 
     [Fact]
-    public async Task RememberAsync_LocalGateQuarantines_RemoteTrustedResponse_StaysQuarantined()
+    public async Task RememberAsync_LocalGateQuarantines_NeverCallsTheNetwork()
     {
-        // The remote gate can only narrow trust, never widen what the local gate already decided.
-        var handler = new StubHandler(_ => Ok("""{ "persist": true, "trust": 0, "reason": "trusted" }"""));
+        // The remote wire contract carries no trust field, so a quarantined fact sent to /remember
+        // would come back on a later /recall indistinguishable from a trusted one. Quarantine must
+        // stop here, the same as Reject — never send it to a system with no concept of "hidden."
+        var handler = new StubHandler(_ => throw new InvalidOperationException("should never be called"));
         var gate = new Mock<IMemoryWriteGate>();
         gate.Setup(g => g.EvaluateAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new MemoryWriteDecision { Persist = true, Trust = MemoryTrust.Untrusted, Reason = "quarantined locally" });
@@ -126,6 +128,50 @@ public sealed class RemoteKnowledgeMemoryTests
         var decision = await sut.RememberAsync("key", "content");
 
         decision.Trust.Should().Be(MemoryTrust.Untrusted);
+        decision.Reason.Should().Be("quarantined locally");
+    }
+
+    [Fact]
+    public async Task RememberAsync_RemoteDowngradesLocalTrustedResponse_StaysUntrusted()
+    {
+        // A fully-Trusted local decision is the only thing ever sent; the remote gate can still
+        // narrow it further, never widen it.
+        var handler = new StubHandler(_ => Ok("""{ "persist": true, "trust": 1, "reason": "remote quarantine" }"""));
+        var sut = CreateSut(handler);
+
+        var decision = await sut.RememberAsync("key", "content");
+
+        decision.Trust.Should().Be(MemoryTrust.Untrusted);
+    }
+
+    [Fact]
+    public async Task RememberAsync_RemoteCallTimesOut_ReturnsRejectedWithoutPropagating()
+    {
+        // HttpClient.Timeout surfaces as a TaskCanceledException — an OperationCanceledException —
+        // even though the caller's own token was never cancelled. This must still degrade
+        // gracefully, not propagate as if the caller itself cancelled the operation.
+        var handler = new StubHandler(_ => throw new TaskCanceledException("timeout", new TimeoutException()));
+        var sut = CreateSut(handler);
+
+        var act = () => sut.RememberAsync("key", "content", cancellationToken: CancellationToken.None);
+
+        var decision = await act.Should().NotThrowAsync();
+        decision.Which.Persist.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task RememberAsync_CallerCancels_PropagatesCancellation()
+    {
+        // The opposite of the timeout case: when the caller's own token requested cancellation,
+        // that must still propagate rather than being swallowed into a rejected decision.
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+        var handler = new StubHandler(_ => throw new OperationCanceledException(cts.Token));
+        var sut = CreateSut(handler);
+
+        var act = () => sut.RememberAsync("key", "content", cancellationToken: cts.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
     }
 
     [Fact]
@@ -202,6 +248,31 @@ public sealed class RemoteKnowledgeMemoryTests
         var nodes = await sut.RecallAsync("query");
 
         nodes.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task RecallAsync_RemoteCallTimesOut_ReturnsEmptyWithoutPropagating()
+    {
+        var handler = new StubHandler(_ => throw new TaskCanceledException("timeout", new TimeoutException()));
+        var sut = CreateSut(handler);
+
+        var act = () => sut.RecallAsync("query", cancellationToken: CancellationToken.None);
+
+        var nodes = await act.Should().NotThrowAsync();
+        nodes.Which.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task RecallAsync_CallerCancels_PropagatesCancellation()
+    {
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+        var handler = new StubHandler(_ => throw new OperationCanceledException(cts.Token));
+        var sut = CreateSut(handler);
+
+        var act = () => sut.RecallAsync("query", cancellationToken: cts.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
     }
 
     [Fact]

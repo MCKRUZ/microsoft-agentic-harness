@@ -43,6 +43,15 @@ public sealed class RemoteMemoryConfigValidator : AbstractValidator<RemoteMemory
             RuleFor(x => x.TimeoutSeconds)
                 .GreaterThan(0)
                 .WithMessage("TimeoutSeconds must be > 0 when RemoteMemory is enabled.");
+
+            RuleFor(x => x.AcknowledgeSharedRecallBoundary)
+                .Equal(true)
+                .WithMessage(
+                    "AcknowledgeSharedRecallBoundary must be true when RemoteMemory is enabled — " +
+                    "the current remote contract does not filter recall by caller identity, so every " +
+                    "caller sharing this AvatarId shares one recall pool. Set this only after " +
+                    "provisioning a separate harness deployment (and AvatarId) per isolation " +
+                    "boundary you actually need — see RemoteMemoryConfig.AvatarId's remarks.");
         });
     }
 

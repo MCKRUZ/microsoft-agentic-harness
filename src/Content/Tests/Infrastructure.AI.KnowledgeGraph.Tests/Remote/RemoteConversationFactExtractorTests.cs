@@ -101,6 +101,34 @@ public sealed class RemoteConversationFactExtractorTests
         facts.Which.Should().BeEmpty();
     }
 
+    [Fact]
+    public async Task ExtractAsync_RemoteCallTimesOut_ReturnsEmptyWithoutPropagating()
+    {
+        // HttpClient.Timeout surfaces as a TaskCanceledException — an OperationCanceledException —
+        // even though the caller's own token was never cancelled; this must still degrade
+        // gracefully rather than propagate as if the caller itself cancelled the turn.
+        var handler = new StubHandler(_ => throw new TaskCanceledException("timeout", new TimeoutException()));
+        var sut = CreateSut(handler);
+
+        var act = () => sut.ExtractAsync("u", "a", "conv-1", 1, CancellationToken.None);
+
+        var facts = await act.Should().NotThrowAsync();
+        facts.Which.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task ExtractAsync_CallerCancels_PropagatesCancellation()
+    {
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+        var handler = new StubHandler(_ => throw new OperationCanceledException(cts.Token));
+        var sut = CreateSut(handler);
+
+        var act = () => sut.ExtractAsync("u", "a", "conv-1", 1, cts.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+    }
+
     private static HttpResponseMessage Ok(string json) =>
         new(HttpStatusCode.OK) { Content = new StringContent(json, Encoding.UTF8, "application/json") };
 
