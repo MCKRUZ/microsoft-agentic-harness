@@ -38,5 +38,7 @@ public static partial class DependencyInjection
         services.AddScoped<IKnowledgeMemory, RemoteKnowledgeMemory>();
         services.AddSingleton<IMemoryAbstractor, RemoteMemoryAbstractor>();
         services.AddSingleton<IMemoryConsolidator, RemoteMemoryConsolidator>();
+
+        services.AddHostedService<RemoteMemoryEnabledStartupWarning>();
     }
 }

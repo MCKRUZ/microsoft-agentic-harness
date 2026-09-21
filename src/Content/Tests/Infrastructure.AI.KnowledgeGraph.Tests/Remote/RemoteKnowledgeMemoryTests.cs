@@ -14,17 +14,36 @@ namespace Infrastructure.AI.KnowledgeGraph.Tests.Remote;
 /// Tests for <see cref="RemoteKnowledgeMemory"/> against a stubbed avatar
 /// <c>/remember</c>/<c>/recall</c> endpoint pair. Pins the fail-safe contract: an HTTP failure or
 /// malformed body on <c>RememberAsync</c> is treated as a rejection (never a persisted, trusted
-/// write), a failure on <c>RecallAsync</c> degrades to no matches, and <c>ForgetAsync</c>/
-/// <c>ImproveAsync</c> are true no-ops that never call the network at all.
+/// write), a failure on <c>RecallAsync</c> degrades to no matches, a caller with no resolved
+/// identity is refused before any network call, the local write gate runs before every remote
+/// write, and <c>ForgetAsync</c> throws rather than reporting a false success.
 /// </summary>
 public sealed class RemoteKnowledgeMemoryTests
 {
-    private static RemoteKnowledgeMemory CreateSut(StubHandler handler, string? conversationId = "conv-1")
+    private static RemoteKnowledgeMemory CreateSut(
+        StubHandler handler,
+        string? conversationId = "conv-1",
+        string? userId = "user-1",
+        string? tenantId = null,
+        IMemoryWriteGate? writeGate = null)
     {
         var scope = new Mock<IKnowledgeScope>();
         scope.SetupGet(s => s.ConversationId).Returns(conversationId);
+        scope.SetupGet(s => s.UserId).Returns(userId);
+        scope.SetupGet(s => s.TenantId).Returns(tenantId);
         return new RemoteKnowledgeMemory(
-            new StubHttpClientFactory(handler), scope.Object, NullLogger<RemoteKnowledgeMemory>.Instance);
+            new StubHttpClientFactory(handler),
+            scope.Object,
+            writeGate ?? AllowGate(),
+            NullLogger<RemoteKnowledgeMemory>.Instance);
+    }
+
+    private static IMemoryWriteGate AllowGate()
+    {
+        var gate = new Mock<IMemoryWriteGate>();
+        gate.Setup(g => g.EvaluateAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(MemoryWriteDecision.Allow());
+        return gate.Object;
     }
 
     [Fact]
@@ -41,19 +60,21 @@ public sealed class RemoteKnowledgeMemoryTests
     }
 
     [Fact]
-    public async Task RememberAsync_PostsToRememberWithConversationIdAsThreadId()
+    public async Task RememberAsync_PostsToRememberWithConversationIdAsThreadIdAndCallerIdentity()
     {
         var handler = new StubHandler(_ => Ok("""{ "persist": false, "trust": 1, "reason": "quarantined" }"""));
-        var sut = CreateSut(handler, conversationId: "conv-99");
+        var sut = CreateSut(handler, conversationId: "conv-99", userId: "alice", tenantId: "acme");
 
         await sut.RememberAsync("key", "content");
 
         handler.LastRequestUri!.AbsolutePath.Should().EndWith("/remember");
         handler.LastRequestBody.Should().Contain("\"threadId\":\"conv-99\"");
+        handler.LastRequestBody.Should().Contain("\"userId\":\"alice\"");
+        handler.LastRequestBody.Should().Contain("\"tenantId\":\"acme\"");
     }
 
     [Fact]
-    public async Task RememberAsync_NullConversationId_FallsBackToUnscoped()
+    public async Task RememberAsync_NullConversationId_FallsBackToUnscopedThreadId()
     {
         var handler = new StubHandler(_ => Ok("""{ "persist": true, "trust": 0, "reason": "trusted" }"""));
         var sut = CreateSut(handler, conversationId: null);
@@ -61,6 +82,50 @@ public sealed class RemoteKnowledgeMemoryTests
         await sut.RememberAsync("key", "content");
 
         handler.LastRequestBody.Should().Contain("\"threadId\":\"unscoped\"");
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task RememberAsync_NoResolvedUserId_RefusesWithoutCallingTheNetwork(string? userId)
+    {
+        var handler = new StubHandler(_ => throw new InvalidOperationException("should never be called"));
+        var sut = CreateSut(handler, userId: userId);
+
+        var decision = await sut.RememberAsync("key", "content");
+
+        decision.Persist.Should().BeFalse("a caller with no resolved identity must never write into a shared unscoped bucket");
+    }
+
+    [Fact]
+    public async Task RememberAsync_LocalGateRejects_NeverCallsTheNetwork()
+    {
+        var handler = new StubHandler(_ => throw new InvalidOperationException("should never be called"));
+        var gate = new Mock<IMemoryWriteGate>();
+        gate.Setup(g => g.EvaluateAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new MemoryWriteDecision { Persist = false, Trust = MemoryTrust.Untrusted, Reason = "rejected: injection detected" });
+        var sut = CreateSut(handler, writeGate: gate.Object);
+
+        var decision = await sut.RememberAsync("key", "malicious content");
+
+        decision.Persist.Should().BeFalse();
+        decision.Reason.Should().Be("rejected: injection detected");
+    }
+
+    [Fact]
+    public async Task RememberAsync_LocalGateQuarantines_RemoteTrustedResponse_StaysQuarantined()
+    {
+        // The remote gate can only narrow trust, never widen what the local gate already decided.
+        var handler = new StubHandler(_ => Ok("""{ "persist": true, "trust": 0, "reason": "trusted" }"""));
+        var gate = new Mock<IMemoryWriteGate>();
+        gate.Setup(g => g.EvaluateAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new MemoryWriteDecision { Persist = true, Trust = MemoryTrust.Untrusted, Reason = "quarantined locally" });
+        var sut = CreateSut(handler, writeGate: gate.Object);
+
+        var decision = await sut.RememberAsync("key", "content");
+
+        decision.Trust.Should().Be(MemoryTrust.Untrusted);
     }
 
     [Fact]
@@ -88,18 +153,44 @@ public sealed class RemoteKnowledgeMemoryTests
     }
 
     [Fact]
-    public async Task RecallAsync_SuccessResponse_MapsToGraphNodes()
+    public async Task RecallAsync_SuccessResponse_MapsToGraphNodesWithFixedHonestType()
     {
         var handler = new StubHandler(_ => Ok("""
             [ { "id": "mem-1", "content": "User likes blue", "score": 0.87 } ]
             """));
         var sut = CreateSut(handler);
 
-        var nodes = await sut.RecallAsync("favorite color");
+        var nodes = await sut.RecallAsync("favorite color", entityType: "Person");
 
         nodes.Should().ContainSingle();
         nodes[0].Id.Should().Be("mem-1");
         nodes[0].Properties["content"].Should().Be("User likes blue");
+        nodes[0].Type.Should().Be("Fact", "the remote contract carries no per-result type — the caller's filter must never be fabricated onto the result");
+    }
+
+    [Fact]
+    public async Task RecallAsync_PostsCallerIdentity()
+    {
+        var handler = new StubHandler(_ => Ok("[]"));
+        var sut = CreateSut(handler, userId: "bob", tenantId: "acme");
+
+        await sut.RecallAsync("query");
+
+        handler.LastRequestBody.Should().Contain("\"userId\":\"bob\"");
+        handler.LastRequestBody.Should().Contain("\"tenantId\":\"acme\"");
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    public async Task RecallAsync_NoResolvedUserId_RefusesWithoutCallingTheNetwork(string? userId)
+    {
+        var handler = new StubHandler(_ => throw new InvalidOperationException("should never be called"));
+        var sut = CreateSut(handler, userId: userId);
+
+        var nodes = await sut.RecallAsync("query");
+
+        nodes.Should().BeEmpty();
     }
 
     [Fact]
@@ -114,14 +205,15 @@ public sealed class RemoteKnowledgeMemoryTests
     }
 
     [Fact]
-    public async Task ForgetAsync_NeverCallsTheNetwork()
+    public async Task ForgetAsync_ThrowsInsteadOfClaimingSuccess()
     {
         var handler = new StubHandler(_ => throw new InvalidOperationException("should never be called"));
         var sut = CreateSut(handler);
 
         var act = () => sut.ForgetAsync("key");
 
-        await act.Should().NotThrowAsync();
+        await act.Should().ThrowAsync<NotImplementedException>(
+            "a fake 204 for a delete that never happened is a right-to-erasure defect, not a harmless no-op");
     }
 
     [Fact]

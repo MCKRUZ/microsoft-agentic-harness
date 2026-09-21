@@ -27,13 +27,21 @@ internal sealed record ExtractedFactResponse
     public double Confidence { get; init; }
 }
 
-/// <summary>Request body for <c>POST {avatarId}/remember</c>.</summary>
+/// <summary>
+/// Request body for <c>POST {avatarId}/remember</c>. <see cref="UserId"/>/<see cref="TenantId"/>
+/// are sent so a remote service that partitions its store by caller can honor the same
+/// per-user/per-tenant isolation this harness's local backend enforces; the current avatar
+/// contract does not yet filter on them, so isolation still depends on deployment topology
+/// (one harness+avatar pair per isolation boundary) until it does.
+/// </summary>
 internal sealed record RememberRequest
 {
     public required string ThreadId { get; init; }
     public required string Key { get; init; }
     public required string Content { get; init; }
     public required string EntityType { get; init; }
+    public required string UserId { get; init; }
+    public string? TenantId { get; init; }
 }
 
 /// <summary>
@@ -50,11 +58,16 @@ internal sealed record RememberResponse
     public string Reason { get; init; } = string.Empty;
 }
 
-/// <summary>Request body for <c>POST {avatarId}/recall</c>.</summary>
+/// <summary>
+/// Request body for <c>POST {avatarId}/recall</c>. <see cref="UserId"/>/<see cref="TenantId"/> are
+/// sent for the same forward-compatibility reason as <see cref="RememberRequest"/> — see its remarks.
+/// </summary>
 internal sealed record RecallRequest
 {
     public required string Query { get; init; }
     public int? MaxResults { get; init; }
+    public required string UserId { get; init; }
+    public string? TenantId { get; init; }
 }
 
 /// <summary>One element of the array <c>POST {avatarId}/recall</c> returns.</summary>

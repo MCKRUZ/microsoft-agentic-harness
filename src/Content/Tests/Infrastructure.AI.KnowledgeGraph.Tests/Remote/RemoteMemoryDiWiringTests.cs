@@ -65,7 +65,7 @@ public sealed class RemoteMemoryDiWiringTests
         using var client = factory.CreateClient(RemoteMemoryHttpClientNames.ClientName);
 
         client.BaseAddress.Should().Be(new Uri("https://avatar.example.com/api/v1/harness-memory/sage-1/"));
-        client.DefaultRequestHeaders.GetValues("X-Api-Key").Should().ContainSingle("secret-key");
+        client.DefaultRequestHeaders.GetValues("X-Api-Key").Should().ContainSingle().Which.Should().Be("secret-key");
     }
 
     [Fact]

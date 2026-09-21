@@ -3,7 +3,7 @@ namespace Infrastructure.AI.KnowledgeGraph.Remote;
 /// <summary>
 /// The <see cref="IHttpClientFactory"/> client name every <c>Remote*</c> memory-seam
 /// implementation resolves. Registered once in
-/// <c>DependencyInjection.RemoteMemory.RegisterRemoteMemoryServices</c> with the remote service's
+/// <c>DependencyInjection.AddRemoteMemoryDependencies</c> with the remote service's
 /// base address (already scoped to the configured avatar id) and <c>X-Api-Key</c> header, so every
 /// consumer here uses plain relative paths.
 /// </summary>
