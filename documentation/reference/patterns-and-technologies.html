@@ -754,6 +754,17 @@ return quality.MaxScore switch
                         <li><code>Memory/ConversationFactExtractor.cs</code></li>
                         <li><code>Infrastructure.AI.RAG/GraphRag/CrossSessionMemoryStore.cs</code></li>
                     </ul>
+                    <p>
+                        As of the avatar-hosting migration (M3a), this pipeline can instead be answered by an
+                        external HTTP-hosted memory service — gated behind
+                        <code>AppConfig:AI:RemoteMemory:Enabled</code> (<code>Off</code> by default). When on,
+                        <code>Remote/RemoteConversationFactExtractor.cs</code> /
+                        <code>Remote/RemoteKnowledgeMemory.cs</code> replace the local implementations above, and
+                        <code>Infrastructure.AI.RAG/Remote/RemoteCrossSessionMemoryStore.cs</code> stands in as an
+                        always-empty store — the remote contract's cross-session endpoints are deliberately inert
+                        for this phase. See the security guide's data-protection chapter for the recall-isolation
+                        caveat this currently carries.
+                    </p>
 
                     <h3 id="harmonic-memory">Harmonic memory — abstraction + cue-anchor recall</h3>
                     <p>
@@ -785,6 +796,12 @@ return quality.MaxScore switch
                         <li><code>Domain.AI/KnowledgeGraph/Models/GraphNodeMemoryExtensions.cs</code> — abstraction + cue anchors stored in node properties</li>
                         <li><code>Domain.Common/Config/AI/HarmonicMemory/HarmonicMemoryConfig.cs</code> — the mode toggle + cost/recall knobs</li>
                     </ul>
+                    <p>
+                        When remote memory hosting is enabled, these two seams are pre-wired to
+                        <code>Remote/RemoteMemoryAbstractor.cs</code> / <code>Remote/RemoteMemoryConsolidator.cs</code>
+                        instead of staying <code>NotConfigured</code> — safe no-op stand-ins, since the remote
+                        contract has no abstraction/consolidation endpoint yet.
+                    </p>
 
                     <h3 id="memory-decay">Memory decay tiers</h3>
                     <p>

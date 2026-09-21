@@ -341,6 +341,13 @@ Cite chunk IDs in the format [doc:chunk-id] when quoting passages.</code></pre>
                             scope boundaries (user → dataset → owner) so multiple agents/users share infrastructure
                             without leaking knowledge.
                         </li>
+                        <li>
+                            <strong>Remote memory hosting</strong> (opt-in) — the whole seam above (extraction,
+                            remember, recall) can instead be delegated to an external HTTP-hosted memory service,
+                            gated behind <code>AppConfig:AI:RemoteMemory:Enabled</code> (<code>Off</code> by default,
+                            so a cloned template never silently phones home). See the security guide's
+                            data-protection chapter for the isolation caveat this currently carries.
+                        </li>
                     </ul>
                     <p>
                         If you're extending the harness with domain-specific intelligence, this is where richer

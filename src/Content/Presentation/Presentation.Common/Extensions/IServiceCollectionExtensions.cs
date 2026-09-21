@@ -322,6 +322,13 @@ public static class IServiceCollectionExtensions
             .ValidateFluentValidation<Domain.Common.Config.AI.RAG.RagConfig, RagConfigValidator>()
             .ValidateOnStart();
 
+        // Remote memory hosting (avatar-hosting migration). Rules are conditional on Enabled and the
+        // class default is Enabled=false, so hosts that omit this section keep booting unaffected.
+        services.AddOptions<RemoteMemoryConfig>()
+            .Bind(configuration.GetSection("AppConfig:AI:RemoteMemory"))
+            .ValidateFluentValidation<RemoteMemoryConfig, RemoteMemoryConfigValidator>()
+            .ValidateOnStart();
+
         return services;
     }
 

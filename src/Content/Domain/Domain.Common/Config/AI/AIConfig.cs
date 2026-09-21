@@ -161,6 +161,15 @@ public class AIConfig
     public KnowledgeBridgeConfig KnowledgeBridge { get; set; } = new();
 
     /// <summary>
+    /// Remote memory-hosting configuration. Off by default — when enabled, this harness's
+    /// knowledge-memory seams (<see cref="KnowledgeBridge"/>'s extraction pipeline included) are
+    /// answered by an external HTTP service instead of this harness's own local memory stores.
+    /// Orthogonal to <see cref="KnowledgeBridge"/>: that section decides whether the pipeline runs
+    /// at all, this one decides which backend answers it.
+    /// </summary>
+    public RemoteMemoryConfig RemoteMemory { get; set; } = new();
+
+    /// <summary>
     /// LLM provider resilience configuration including fallback chains,
     /// circuit breakers, retry policies, and degraded mode behavior.
     /// </summary>
