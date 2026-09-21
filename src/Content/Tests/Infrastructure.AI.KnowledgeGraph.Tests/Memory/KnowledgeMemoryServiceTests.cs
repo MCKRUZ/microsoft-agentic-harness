@@ -137,6 +137,22 @@ public sealed class KnowledgeMemoryServiceTests
     }
 
     [Fact]
+    public async Task Recall_FindsFactByContent_AcrossConversations_WhenKeyIsOpaque()
+    {
+        // Reproduces #598: ConversationFactExtractor keys automatically-extracted facts
+        // "{conversationId}:{turnNumber}:{factIndex}" — a label that never repeats and never
+        // appears as a word in a later recall query. A fresh conversation (new session cache,
+        // same durable graph store) must still be able to find the fact by its actual content.
+        await _service.RememberAsync("conv-abc123:0:0", "my favorite color is teal");
+
+        var newConversation = CreateService(_scope);
+        var results = await newConversation.RecallAsync("what's my favorite color?");
+
+        results.Should().ContainSingle("the fact's content, not its opaque key, is what a later query can match on");
+        results[0].Properties["content"].Should().Be("my favorite color is teal");
+    }
+
+    [Fact]
     public async Task Recall_DeduplicatesBetweenCacheAndGraph()
     {
         await _service.RememberAsync("Azure", "From cache");
