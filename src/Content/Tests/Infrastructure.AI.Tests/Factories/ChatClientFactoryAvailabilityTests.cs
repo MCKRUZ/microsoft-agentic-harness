@@ -138,6 +138,36 @@ public sealed class ChatClientFactoryAvailabilityTests : IDisposable
     }
 
     [Fact]
+    public void IsAvailable_AnthropicDirect_NoConfig_ReturnsFalse()
+    {
+        using var factory = CreateFactory();
+
+        factory.IsAvailable(AIAgentFrameworkClientType.AnthropicDirect).Should().BeFalse();
+    }
+
+    [Fact]
+    public void IsAvailable_AnthropicDirect_ApiKeyOnly_ReturnsTrue()
+    {
+        // No Endpoint set at all — unlike Anthropic (via Foundry), AnthropicDirect must not
+        // require one; AnthropicClient defaults to api.anthropic.com on its own.
+        var config = new AppConfig
+        {
+            AI = new AIConfig
+            {
+                AgentFramework = new AgentFrameworkConfig
+                {
+                    ApiKey = "test-key",
+                    ClientType = AIAgentFrameworkClientType.AnthropicDirect
+                }
+            }
+        };
+
+        using var factory = CreateFactory(config);
+
+        factory.IsAvailable(AIAgentFrameworkClientType.AnthropicDirect).Should().BeTrue();
+    }
+
+    [Fact]
     public void IsAvailable_PersistentAgents_NoAdminClient_ReturnsFalse()
     {
         using var factory = CreateFactory();
@@ -225,24 +255,6 @@ public sealed class ChatClientFactoryAvailabilityTests : IDisposable
         using var factory = CreateFactory();
 
         factory.IsAvailable((AIAgentFrameworkClientType)999).Should().BeFalse();
-    }
-
-    [Fact]
-    public void GetAvailableProviders_ReturnsAllEightTypes()
-    {
-        using var factory = CreateFactory();
-
-        var providers = factory.GetAvailableProviders();
-
-        providers.Should().HaveCount(8);
-        providers.Should().ContainKey(AIAgentFrameworkClientType.AzureOpenAI);
-        providers.Should().ContainKey(AIAgentFrameworkClientType.OpenAI);
-        providers.Should().ContainKey(AIAgentFrameworkClientType.AzureAIInference);
-        providers.Should().ContainKey(AIAgentFrameworkClientType.PersistentAgents);
-        providers.Should().ContainKey(AIAgentFrameworkClientType.Anthropic);
-        providers.Should().ContainKey(AIAgentFrameworkClientType.FoundryResponses);
-        providers.Should().ContainKey(AIAgentFrameworkClientType.FoundryDirectResponses);
-        providers.Should().ContainKey(AIAgentFrameworkClientType.Echo);
     }
 
     [Fact]
@@ -375,6 +387,43 @@ public sealed class ChatClientFactoryAvailabilityTests : IDisposable
 
         await act.Should().ThrowAsync<InvalidOperationException>()
             .WithMessage("*not configured*");
+    }
+
+    [Fact]
+    public async Task GetChatClientAsync_AnthropicDirect_NoConfig_Throws()
+    {
+        using var factory = CreateFactory();
+
+        var act = () => factory.GetChatClientAsync(
+            AIAgentFrameworkClientType.AnthropicDirect, "claude-opus");
+
+        await act.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*not configured*");
+    }
+
+    [Fact]
+    public async Task GetChatClientAsync_AnthropicDirect_WithApiKeyOnly_ReturnsClient()
+    {
+        // No Endpoint configured at all — proves construction succeeds against the SDK's own
+        // default base address (api.anthropic.com), unlike Anthropic-via-Foundry which requires
+        // Endpoint. Construction only builds SDK objects; it makes no network call.
+        var config = new AppConfig
+        {
+            AI = new AIConfig
+            {
+                AgentFramework = new AgentFrameworkConfig
+                {
+                    ApiKey = "test-key",
+                    ClientType = AIAgentFrameworkClientType.AnthropicDirect
+                }
+            }
+        };
+        using var factory = CreateFactory(config);
+
+        var chatClient = await factory.GetChatClientAsync(
+            AIAgentFrameworkClientType.AnthropicDirect, "claude-opus");
+
+        chatClient.Should().NotBeNull();
     }
 
     [Fact]

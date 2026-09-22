@@ -542,12 +542,15 @@
                                 <td><code>ClientType</code></td>
                                 <td>enum</td>
                                 <td>
-                                    One of seven <code>AIAgentFrameworkClientType</code> values:
+                                    One of nine <code>AIAgentFrameworkClientType</code> values:
                                     <code>AzureOpenAI</code> | <code>OpenAI</code> | <code>AzureAIInference</code> |
                                     <code>PersistentAgents</code> | <code>Anthropic</code> | <code>Echo</code> |
-                                    <code>FoundryResponses</code>. Selects which SDK <code>ChatClientFactory</code>
+                                    <code>FoundryResponses</code> | <code>FoundryDirectResponses</code> |
+                                    <code>AnthropicDirect</code>. Selects which SDK <code>ChatClientFactory</code>
                                     uses. (There is no <code>OpenRouter</code> value — point the <code>OpenAI</code>
-                                    client at an OpenAI-compatible <code>Endpoint</code> to use OpenRouter.)
+                                    client at an OpenAI-compatible <code>Endpoint</code> to use OpenRouter. For Claude
+                                    specifically, see the "Claude without Azure" callout below for the choice between
+                                    OpenRouter and calling Anthropic directly.)
                                 </td>
                             </tr>
                             <tr>
@@ -582,6 +585,36 @@
                             </tr>
                         </tbody>
                     </table>
+
+                    <div class="callout callout-info">
+                        <span class="callout-icon">i</span>
+                        <div class="callout-body">
+                            <div class="callout-title">Claude without Azure</div>
+                            <p style="margin: 0">
+                                Two ways to reach Claude with no Azure AI Foundry relay involved, both proven against
+                                the same underlying model:
+                            </p>
+                            <ul style="margin: var(--space-2) 0 0">
+                                <li>
+                                    <strong>Through a gateway</strong> — <code>ClientType: "OpenAI"</code> with
+                                    <code>Endpoint</code> set to an OpenAI-compatible gateway such as
+                                    <a href="https://openrouter.ai">OpenRouter</a>. Prompt caching goes through
+                                    <code>EnablePromptCaching</code>, which rewrites the request body into the
+                                    gateway's OpenAI-shaped <code>cache_control</code> format.
+                                </li>
+                                <li>
+                                    <strong>Direct to Anthropic</strong> —
+                                    <code>ClientType: "AnthropicDirect"</code> calls
+                                    <code>api.anthropic.com</code> with only <code>ApiKey</code> set (no
+                                    <code>Endpoint</code> needed — unlike <code>Anthropic</code>, which requires one
+                                    because it relays through a Foundry resource). <code>EnablePromptCaching</code>
+                                    here enables Anthropic's own native caching directly, with no request-rewriting
+                                    step in between. This is the option for a self-hosted, non-Azure deployment that
+                                    still wants Claude's caching discount.
+                                </li>
+                            </ul>
+                        </div>
+                    </div>
 
                     <h2 id="section-skills-paths">AppConfig.AI.Skills and AppConfig.AI.Agents</h2>
                     <p>
