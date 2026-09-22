@@ -1,0 +1,35 @@
+# Self-hosted, non-Azure deployment of Presentation.AgentHub (issue #591). See
+# documentation/onboarding/18-self-hosted-docker.html for the full walkthrough, and
+# .env.example for every environment variable this expects.
+#
+# Run from the repository root:
+#   docker compose -f deploy/agenthub/docker-compose.yml --env-file deploy/agenthub/.env up --build
+services:
+  agenthub:
+    build:
+      context: ../..
+      dockerfile: src/Content/Presentation/Presentation.AgentHub/Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      # LLM provider — required. See .env.example for the full set and OpenRouter setup notes.
+      AppConfig__AI__AgentFramework__Endpoint: ${AGENT_FRAMEWORK_ENDPOINT}
+      AppConfig__AI__AgentFramework__ApiKey: ${AGENT_FRAMEWORK_API_KEY}
+      AppConfig__AI__AgentFramework__DefaultDeployment: ${AGENT_FRAMEWORK_DEFAULT_DEPLOYMENT}
+      # Uncomment to point at a sibling OTel collector instead of running with telemetry off:
+      # AppConfig__Observability__Exporters__Otlp__Enabled: "true"
+      # AppConfig__Observability__Exporters__Otlp__Endpoint: "http://otel-collector:4317"
+    volumes:
+      - agenthub-data:/app/appdata
+    healthcheck:
+      # /health/ai is anonymous and reports Degraded (not Unhealthy) when the LLM provider isn't
+      # configured, so this only fails the container health check on a true boot problem.
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health/ai"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    restart: unless-stopped
+
+volumes:
+  agenthub-data:

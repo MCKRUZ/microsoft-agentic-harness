@@ -517,6 +517,8 @@ To tear down:
 
 > **Without Docker:** The harness still runs, but session data, metrics, and traces won't be captured. You'll see a warning at startup: *"Session, message, and tool execution data will NOT be persisted."*
 
+> **Running the harness itself in Docker, outside Azure?** See [Self-Hosted, Non-Azure Docker](documentation/onboarding/18-self-hosted-docker.html) — build/run steps for x64 and arm64, container network settings, and the auth trade-offs of a deployment with no Entra tenant.
+
 ### Run
 
 ```bash

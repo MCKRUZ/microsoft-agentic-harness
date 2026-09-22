@@ -75,6 +75,15 @@ app.MapHealthChecks("/health/ai", new HealthCheckOptions
     ResponseWriter = AiHealthEndpoint.WriteResponse,
 });
 
+// Composed-subsystems visibility for a self-hosted, non-Azure deployment (issue #591). Anonymous,
+// like /health/ai — reuses its writer since ComposedSubsystemsHealthCheck's data dictionary is
+// already names/enums/booleans only, never a secret.
+app.MapHealthChecks("/health/subsystems", new HealthCheckOptions
+{
+    Predicate = static registration => registration.Tags.Contains("composition"),
+    ResponseWriter = AiHealthEndpoint.WriteResponse,
+});
+
 app.Run();
 
 // Exposes Program as a public partial class so WebApplicationFactory<Program>
