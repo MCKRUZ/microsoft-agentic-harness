@@ -124,9 +124,7 @@ public sealed partial class ChatClientFactory : IChatClientFactory, IDisposable
         if (string.IsNullOrWhiteSpace(framework.ApiKey))
             missing.Add("AppConfig:AI:AgentFramework:ApiKey");
 
-        if (string.IsNullOrWhiteSpace(framework.Endpoint)
-            && clientType is not AIAgentFrameworkClientType.OpenAI
-            and not AIAgentFrameworkClientType.PersistentAgents)
+        if (string.IsNullOrWhiteSpace(framework.Endpoint) && RequiresEndpoint(clientType))
             missing.Add("AppConfig:AI:AgentFramework:Endpoint");
 
         if (clientType == AIAgentFrameworkClientType.PersistentAgents && _adminClient is null)
@@ -135,6 +133,36 @@ public sealed partial class ChatClientFactory : IChatClientFactory, IDisposable
         return missing;
     }
 
+    /// <summary>
+    /// Whether <paramref name="clientType"/> requires <c>AppConfig:AI:AgentFramework:Endpoint</c> to
+    /// be set. Single source of truth for both <see cref="ComputeMissingSettings"/> and
+    /// <see cref="IsAvailable"/>, so a new endpoint-optional client type is declared exempt in one
+    /// place instead of needing the same fact re-derived independently in both methods.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="AIAgentFrameworkClientType.OpenAI"/> and
+    /// <see cref="AIAgentFrameworkClientType.PersistentAgents"/> route through SDK clients whose
+    /// base address is resolved elsewhere (DI registration, Azure Foundry admin credentials);
+    /// <see cref="AIAgentFrameworkClientType.AnthropicDirect"/>'s underlying SDK client defaults to
+    /// <c>https://api.anthropic.com</c> on its own (issue #592). Every other type not covered by
+    /// <see cref="ComputeMissingSettings"/>'s own Foundry-specific branch requires it.
+    /// </remarks>
+    private static bool RequiresEndpoint(AIAgentFrameworkClientType clientType) => clientType switch
+    {
+        AIAgentFrameworkClientType.OpenAI => false,
+        AIAgentFrameworkClientType.PersistentAgents => false,
+        AIAgentFrameworkClientType.AnthropicDirect => false,
+        _ => true
+    };
+
+    /// <summary>
+    /// Whether the configured <c>AppConfig:AI:AgentFramework:Endpoint</c> satisfies
+    /// <paramref name="clientType"/>'s requirement — trivially true for a type
+    /// <see cref="RequiresEndpoint"/> exempts, otherwise true only when Endpoint is set.
+    /// </summary>
+    private bool IsEndpointSatisfied(AIAgentFrameworkClientType clientType) =>
+        !RequiresEndpoint(clientType) || !string.IsNullOrWhiteSpace(_appConfig.CurrentValue.AI.AgentFramework.Endpoint);
+
     /// <inheritdoc />
     public bool IsAvailable(AIAgentFrameworkClientType clientType)
     {
@@ -142,10 +170,12 @@ public sealed partial class ChatClientFactory : IChatClientFactory, IDisposable
         {
             AIAgentFrameworkClientType.AzureOpenAI => _serviceProvider.GetService<AzureOpenAIClient>() != null,
             AIAgentFrameworkClientType.OpenAI => _serviceProvider.GetService<OpenAIClient>() != null,
-            AIAgentFrameworkClientType.AzureAIInference => !string.IsNullOrWhiteSpace(_appConfig.CurrentValue.AI.AgentFramework.Endpoint)
+            AIAgentFrameworkClientType.AzureAIInference => IsEndpointSatisfied(clientType)
                 && _appConfig.CurrentValue.AI.AgentFramework.IsConfigured,
             AIAgentFrameworkClientType.PersistentAgents => _adminClient != null,
-            AIAgentFrameworkClientType.Anthropic => !string.IsNullOrWhiteSpace(_appConfig.CurrentValue.AI.AgentFramework.Endpoint)
+            AIAgentFrameworkClientType.Anthropic => IsEndpointSatisfied(clientType)
+                && _appConfig.CurrentValue.AI.AgentFramework.IsConfigured,
+            AIAgentFrameworkClientType.AnthropicDirect => IsEndpointSatisfied(clientType)
                 && _appConfig.CurrentValue.AI.AgentFramework.IsConfigured,
             // FoundryResponses yields an AIAgent (built by AgentFactory via IFoundryAgentProvider),
             // not an IChatClient. Availability is reported here for consistency and health checks,
@@ -179,9 +209,9 @@ public sealed partial class ChatClientFactory : IChatClientFactory, IDisposable
     /// policy.
     /// </summary>
     /// <remarks>
-    /// Anthropic and Echo ignore <paramref name="disableProviderRetry"/> because neither retries
-    /// internally — Anthropic.SDK throws on the first non-success status. PersistentAgents
-    /// honours it by delegating to the Azure OpenAI path, which does.
+    /// Anthropic, AnthropicDirect, and Echo ignore <paramref name="disableProviderRetry"/> because
+    /// none retries internally — Anthropic.SDK throws on the first non-success status.
+    /// PersistentAgents honours it by delegating to the Azure OpenAI path, which does.
     /// </remarks>
     private async Task<IChatClient> CreateChatClientAsync(
         AIAgentFrameworkClientType clientType,
@@ -196,6 +226,7 @@ public sealed partial class ChatClientFactory : IChatClientFactory, IDisposable
             AIAgentFrameworkClientType.AzureAIInference => await GetAzureAIInferenceChatClientAsync(deploymentOrAgentId, disableProviderRetry, cancellationToken),
             AIAgentFrameworkClientType.PersistentAgents => await GetPersistentAgentChatClientAsync(deploymentOrAgentId, disableProviderRetry, cancellationToken),
             AIAgentFrameworkClientType.Anthropic => GetAnthropicChatClient(deploymentOrAgentId),
+            AIAgentFrameworkClientType.AnthropicDirect => await GetAnthropicDirectChatClientAsync(deploymentOrAgentId, cancellationToken),
             AIAgentFrameworkClientType.FoundryResponses => throw new InvalidOperationException(
                 "ClientType 'FoundryResponses' does not expose an IChatClient — it produces an AIAgent. " +
                 "Build it through AgentFactory (which uses IFoundryAgentProvider), not IChatClientFactory.GetChatClientAsync."),
@@ -206,19 +237,16 @@ public sealed partial class ChatClientFactory : IChatClientFactory, IDisposable
     }
 
     /// <inheritdoc />
+    /// <remarks>
+    /// Iterates <see cref="Enum.GetValues{TEnum}"/> rather than a hand-typed list of members —
+    /// this repo's own CLAUDE.md records the mirrored-list failure shape (a new enum member added
+    /// without updating every hand-maintained "all values" list) as a defect that has landed
+    /// repeatedly. Enumerating the enum directly means a future member is included automatically.
+    /// </remarks>
     public IReadOnlyDictionary<AIAgentFrameworkClientType, bool> GetAvailableProviders()
     {
-        return new Dictionary<AIAgentFrameworkClientType, bool>
-        {
-            { AIAgentFrameworkClientType.AzureOpenAI, IsAvailable(AIAgentFrameworkClientType.AzureOpenAI) },
-            { AIAgentFrameworkClientType.OpenAI, IsAvailable(AIAgentFrameworkClientType.OpenAI) },
-            { AIAgentFrameworkClientType.AzureAIInference, IsAvailable(AIAgentFrameworkClientType.AzureAIInference) },
-            { AIAgentFrameworkClientType.PersistentAgents, IsAvailable(AIAgentFrameworkClientType.PersistentAgents) },
-            { AIAgentFrameworkClientType.Anthropic, IsAvailable(AIAgentFrameworkClientType.Anthropic) },
-            { AIAgentFrameworkClientType.FoundryResponses, IsAvailable(AIAgentFrameworkClientType.FoundryResponses) },
-            { AIAgentFrameworkClientType.FoundryDirectResponses, IsAvailable(AIAgentFrameworkClientType.FoundryDirectResponses) },
-            { AIAgentFrameworkClientType.Echo, IsAvailable(AIAgentFrameworkClientType.Echo) }
-        };
+        return Enum.GetValues<AIAgentFrameworkClientType>()
+            .ToDictionary(clientType => clientType, IsAvailable);
     }
 
     /// <inheritdoc />

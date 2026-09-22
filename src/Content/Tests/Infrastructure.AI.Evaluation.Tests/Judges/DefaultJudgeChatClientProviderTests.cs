@@ -79,6 +79,64 @@ public sealed class DefaultJudgeChatClientProviderTests
     }
 
     [Fact]
+    public async Task GetJudgeAsync_never_prefers_echo_over_a_real_provider_regardless_of_dictionary_order()
+    {
+        // Regression test for issue #592's review: GetAvailableProviders() switched from a
+        // hand-ordered dictionary (which always listed Echo last) to Enum.GetValues() order, which
+        // places Echo before FoundryResponses/FoundryDirectResponses/AnthropicDirect. Without an
+        // explicit exclusion, PickFirstAvailable()'s plain foreach would silently pick the
+        // always-available canned-response Echo client over a genuinely configured late-declared
+        // provider, breaking the LLM judge with no error. Echo is placed first here specifically to
+        // prove the fix does not depend on incidental dictionary ordering.
+        var client = Mock.Of<IChatClient>();
+        var factory = new Mock<IChatClientFactory>();
+        factory.Setup(f => f.GetAvailableProviders()).Returns(new Dictionary<AIAgentFrameworkClientType, bool>
+        {
+            [AIAgentFrameworkClientType.Echo] = true,
+            [AIAgentFrameworkClientType.AzureOpenAI] = false,
+            [AIAgentFrameworkClientType.AnthropicDirect] = true
+        });
+        factory.Setup(f => f.GetChatClientAsync(
+                AIAgentFrameworkClientType.AnthropicDirect,
+                "judge-deployment",
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(client);
+
+        var sut = new DefaultJudgeChatClientProvider(
+            factory.Object,
+            Options(new JudgeOptions { Deployment = "judge-deployment" }));
+
+        var result = await sut.GetJudgeAsync(CancellationToken.None);
+
+        result.Should().BeSameAs(client);
+    }
+
+    [Fact]
+    public async Task GetJudgeAsync_falls_back_to_echo_when_it_is_the_only_available_provider()
+    {
+        var client = Mock.Of<IChatClient>();
+        var factory = new Mock<IChatClientFactory>();
+        factory.Setup(f => f.GetAvailableProviders()).Returns(new Dictionary<AIAgentFrameworkClientType, bool>
+        {
+            [AIAgentFrameworkClientType.AzureOpenAI] = false,
+            [AIAgentFrameworkClientType.Echo] = true
+        });
+        factory.Setup(f => f.GetChatClientAsync(
+                AIAgentFrameworkClientType.Echo,
+                "judge-deployment",
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(client);
+
+        var sut = new DefaultJudgeChatClientProvider(
+            factory.Object,
+            Options(new JudgeOptions { Deployment = "judge-deployment" }));
+
+        var result = await sut.GetJudgeAsync(CancellationToken.None);
+
+        result.Should().BeSameAs(client);
+    }
+
+    [Fact]
     public async Task GetJudgeAsync_throws_when_no_provider_available_and_client_type_unset()
     {
         var factory = new Mock<IChatClientFactory>();

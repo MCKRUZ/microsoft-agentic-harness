@@ -209,13 +209,17 @@
                             <div class="callout-title">One switch, many providers</div>
                             <p style="margin: 0">
                                 The <code>AI:AgentFramework:ClientType</code> setting picks the SDK path. The
-                                <code>AIAgentFrameworkClientType</code> enum has seven values:
+                                <code>AIAgentFrameworkClientType</code> enum has nine values:
                                 <code>AzureOpenAI</code>, <code>OpenAI</code>, <code>AzureAIInference</code>,
                                 <code>PersistentAgents</code>, <code>Anthropic</code>, <code>Echo</code> (a
-                                deterministic test client), and <code>FoundryResponses</code>. Then
-                                <code>Endpoint</code>, <code>DefaultDeployment</code>, and <code>ApiKey</code> point it
-                                at the chosen provider. Switching providers is a config change, not a code change.
-                                See <a href="architecture/02-compute-and-ai.html">Architecture &middot; Compute
+                                deterministic test client), <code>FoundryResponses</code>,
+                                <code>FoundryDirectResponses</code>, and <code>AnthropicDirect</code> (Claude via
+                                <code>api.anthropic.com</code> directly, no Azure relay — see
+                                <a href="02-configuration.html#section-ai-framework">Configuration &middot;
+                                Claude without Azure</a>). Then <code>Endpoint</code>, <code>DefaultDeployment</code>,
+                                and <code>ApiKey</code> point it at the chosen provider. Switching providers is a
+                                config change, not a code change. See
+                                <a href="architecture/02-compute-and-ai.html">Architecture &middot; Compute
                                 &amp; AI</a> for the full provider matrix.
                             </p>
                         </div>

@@ -324,6 +324,7 @@ public static partial class DependencyInjection
 
             case AIAgentFrameworkClientType.AzureAIInference:
             case AIAgentFrameworkClientType.Anthropic:
+            case AIAgentFrameworkClientType.AnthropicDirect:
             case AIAgentFrameworkClientType.Echo:
                 // ChatClientFactory creates these directly with a custom endpoint
                 // and caches them internally — no shared SDK singleton needed.

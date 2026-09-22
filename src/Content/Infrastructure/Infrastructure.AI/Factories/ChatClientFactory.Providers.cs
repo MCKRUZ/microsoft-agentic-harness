@@ -1,14 +1,17 @@
 using Anthropic.SDK;
+using Anthropic.SDK.Messaging;
 using Application.AI.Common.Exceptions;
 using Azure.AI.Agents.Persistent;
 using Azure.AI.Inference;
 using Azure.AI.OpenAI;
+using Domain.Common.Config;
 using Infrastructure.AI.Clients;
 using Infrastructure.AI.Helpers;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using OpenAI;
 
 namespace Infrastructure.AI.Factories;
@@ -43,6 +46,49 @@ public sealed partial class ChatClientFactory
         => disableProviderRetry ? $"{prefix}_noretry_{id}" : $"{prefix}_{id}";
 
     /// <summary>
+    /// Returns the cached <see cref="IChatClient"/> for <paramref name="cacheKey"/>, or builds one
+    /// via <paramref name="factory"/> under the shared cache lock (double-checked: once before
+    /// acquiring the lock, once after) and stores it with the given sliding expiration.
+    /// </summary>
+    /// <remarks>
+    /// Every cached provider in this file shares this single-flight construction pattern, so a
+    /// future fix to eviction or exception-safety behavior lands once instead of needing to be
+    /// hand-copied across each provider's near-identical block — this repo's own CLAUDE.md
+    /// documents exactly that "fix landed once, sibling copy missed it" failure shape as a
+    /// recurring defect.
+    /// </remarks>
+    private async Task<IChatClient> GetOrCreateCachedClientAsync(
+        string cacheKey,
+        TimeSpan slidingExpiration,
+        Func<CancellationToken, Task<IChatClient>> factory,
+        CancellationToken cancellationToken)
+    {
+        if (_clientCache.TryGetValue(cacheKey, out IChatClient? cached) && cached is not null)
+            return cached;
+
+        await _cacheLock.WaitAsync(cancellationToken);
+        try
+        {
+            if (_clientCache.TryGetValue(cacheKey, out cached) && cached is not null)
+                return cached;
+
+            var chatClient = await factory(cancellationToken);
+
+            _clientCache.Set(cacheKey, chatClient, new MemoryCacheEntryOptions
+            {
+                SlidingExpiration = slidingExpiration,
+                Size = 1
+            });
+
+            return chatClient;
+        }
+        finally
+        {
+            _cacheLock.Release();
+        }
+    }
+
+    /// <summary>
     /// Normalizes an Azure AI Inference endpoint URI. For Azure AI Foundry multi-model resources
     /// (<c>*.services.ai.azure.com</c>) with no path, appends <c>/models</c> so the chat completions
     /// path resolves correctly (<c>{endpoint}/chat/completions</c>).
@@ -66,20 +112,13 @@ public sealed partial class ChatClientFactory
     /// <c>api-key</c> in the request header, which is required by Azure AI Foundry. Using
     /// <see cref="OpenAI.OpenAIClient"/> here would send <c>Authorization: Bearer</c> and result in a 401.
     /// </summary>
-    private async Task<IChatClient> GetAzureAIInferenceChatClientAsync(
+    private Task<IChatClient> GetAzureAIInferenceChatClientAsync(
         string deploymentName, bool disableProviderRetry, CancellationToken cancellationToken)
     {
         var cacheKey = CacheKey("inference", deploymentName, disableProviderRetry);
 
-        if (_clientCache.TryGetValue(cacheKey, out IChatClient? cached) && cached is not null)
-            return cached;
-
-        await _cacheLock.WaitAsync(cancellationToken);
-        try
+        return GetOrCreateCachedClientAsync(cacheKey, TimeSpan.FromHours(1), _ =>
         {
-            if (_clientCache.TryGetValue(cacheKey, out cached) && cached is not null)
-                return cached;
-
             var config = _appConfig.CurrentValue.AI.AgentFramework;
             if (string.IsNullOrWhiteSpace(config.Endpoint) || string.IsNullOrWhiteSpace(config.ApiKey))
             {
@@ -105,20 +144,8 @@ public sealed partial class ChatClientFactory
                 new Azure.AzureKeyCredential(config.ApiKey),
                 AgentFrameworkHelper.GetAzureAIInferenceClientOptions(disableProviderRetry));
 
-            var chatClient = client.AsIChatClient(deploymentName);
-
-            _clientCache.Set(cacheKey, chatClient, new MemoryCacheEntryOptions
-            {
-                SlidingExpiration = TimeSpan.FromHours(1),
-                Size = 1
-            });
-
-            return chatClient;
-        }
-        finally
-        {
-            _cacheLock.Release();
-        }
+            return Task.FromResult<IChatClient>(client.AsIChatClient(deploymentName));
+        }, cancellationToken);
     }
 
     /// <summary>
@@ -157,7 +184,7 @@ public sealed partial class ChatClientFactory
     /// <see cref="IChatClient"/> for that model. The agent's instructions and tools are
     /// applied by the <see cref="Application.AI.Common.Factories.AgentFactory"/> pipeline, not by the chat client.
     /// </summary>
-    private async Task<IChatClient> GetPersistentAgentChatClientAsync(
+    private Task<IChatClient> GetPersistentAgentChatClientAsync(
         string agentId, bool disableProviderRetry, CancellationToken cancellationToken)
     {
         if (_adminClient is null)
@@ -171,18 +198,11 @@ public sealed partial class ChatClientFactory
         // are genuinely different clients and need separate cache entries.
         var cacheKey = CacheKey("persistent_agent", agentId, disableProviderRetry);
 
-        if (_clientCache.TryGetValue(cacheKey, out IChatClient? cached) && cached is not null)
-            return cached;
-
-        await _cacheLock.WaitAsync(cancellationToken);
-        try
+        return GetOrCreateCachedClientAsync(cacheKey, TimeSpan.FromMinutes(30), async ct =>
         {
-            if (_clientCache.TryGetValue(cacheKey, out cached) && cached is not null)
-                return cached;
-
             _logger?.LogInformation("Resolving persistent agent {AgentId} from AI Foundry", agentId);
 
-            var agentResponse = await _adminClient.GetAgentAsync(agentId, cancellationToken);
+            var agentResponse = await _adminClient.GetAgentAsync(agentId, ct);
             var agent = agentResponse.Value;
 
             _logger?.LogInformation(
@@ -190,22 +210,8 @@ public sealed partial class ChatClientFactory
                 agentId, agent.Model, agent.Name);
 
             // Use the agent's model via Azure OpenAI — AI Foundry agents run on AOAI
-            var chatClient = await GetAzureOpenAIChatClientAsync(agent.Model, disableProviderRetry, cancellationToken);
-
-            var cacheOptions = new MemoryCacheEntryOptions
-            {
-                SlidingExpiration = TimeSpan.FromMinutes(30),
-                Size = 1
-            };
-
-            _clientCache.Set(cacheKey, chatClient, cacheOptions);
-
-            return chatClient;
-        }
-        finally
-        {
-            _cacheLock.Release();
-        }
+            return await GetAzureOpenAIChatClientAsync(agent.Model, disableProviderRetry, ct);
+        }, cancellationToken);
     }
 
     /// <summary>
@@ -245,6 +251,40 @@ public sealed partial class ChatClientFactory
     }
 
     /// <summary>
+    /// Creates an <see cref="IChatClient"/> for Claude models via <c>api.anthropic.com</c>
+    /// directly — no Azure AI Foundry relay (issue #592). Unlike <see cref="GetAnthropicChatClient"/>,
+    /// this client IS cached, matching the other providers in this file; the non-cached Foundry
+    /// path is a pre-existing wart this method deliberately does not copy.
+    /// </summary>
+    private Task<IChatClient> GetAnthropicDirectChatClientAsync(string modelId, CancellationToken cancellationToken)
+    {
+        var cacheKey = CacheKey("anthropic_direct", modelId, disableProviderRetry: false);
+
+        return GetOrCreateCachedClientAsync(cacheKey, TimeSpan.FromHours(1), _ =>
+        {
+            var config = _appConfig.CurrentValue.AI.AgentFramework;
+            if (string.IsNullOrWhiteSpace(config.ApiKey))
+            {
+                throw new AiProviderNotConfiguredException(
+                    "AnthropicDirect client is not configured. Set AppConfig:AI:AgentFramework:ApiKey.");
+            }
+
+            _logger?.LogInformation(
+                "Creating AnthropicDirect client for model {Model} against api.anthropic.com", modelId);
+
+            // No endpoint override and no rewriting handler — AnthropicClient's own default
+            // (https://api.anthropic.com) is exactly what this client type is for. The x-api-key
+            // header the SDK sets is already correct for the real API.
+            var anthropicClient = new AnthropicClient(config.ApiKey);
+
+            IChatClient chatClient = new AnthropicPromptCachingChatClient(anthropicClient.Messages, _appConfig);
+            chatClient = new ModelBoundChatClient(chatClient, modelId);
+
+            return Task.FromResult(chatClient);
+        }, cancellationToken);
+    }
+
+    /// <summary>
     /// Wraps an <see cref="IChatClient"/> to inject a fixed <c>ModelId</c> into every
     /// <see cref="ChatOptions"/> before delegating to the inner client. This ensures the
     /// Anthropic <see cref="Anthropic.SDK.Messaging.MessagesEndpoint"/> always receives
@@ -273,6 +313,74 @@ public sealed partial class ChatClientFactory
             options.ModelId ??= modelId;
             return base.GetStreamingResponseAsync(messages, options, cancellationToken);
         }
+    }
+
+    /// <summary>
+    /// Enables Anthropic's native prompt caching (issue #592) by supplying a
+    /// <see cref="ChatOptions.RawRepresentationFactory"/> that pre-populates
+    /// <see cref="MessageParameters.PromptCaching"/> before the SDK's own
+    /// <c>ChatClientHelper.CreateMessageParameters</c> builds the request from it. The SDK then
+    /// automatically cache-tags the last system message and last tool on every call — this
+    /// decorator only has to ask for that once per call, not implement it.
+    /// </summary>
+    /// <remarks>
+    /// Reads <c>EnablePromptCaching</c> from <see cref="IOptionsMonitor{TOptions}"/> on every call
+    /// rather than once at construction, so a live config reload takes effect immediately instead
+    /// of only after this factory's client cache entry expires. Never overwrites a
+    /// <c>RawRepresentationFactory</c> the caller already set — this is additive, not a policy
+    /// override.
+    /// </remarks>
+    private sealed class AnthropicPromptCachingChatClient(IChatClient inner, IOptionsMonitor<AppConfig> appConfig)
+        : DelegatingChatClient(inner)
+    {
+        public override Task<ChatResponse> GetResponseAsync(
+            IEnumerable<ChatMessage> messages,
+            ChatOptions? options = null,
+            CancellationToken cancellationToken = default)
+        {
+            options = ApplyCachingIfEnabled(options);
+            return base.GetResponseAsync(messages, options, cancellationToken);
+        }
+
+        public override IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
+            IEnumerable<ChatMessage> messages,
+            ChatOptions? options = null,
+            CancellationToken cancellationToken = default)
+        {
+            options = ApplyCachingIfEnabled(options);
+            return base.GetStreamingResponseAsync(messages, options, cancellationToken);
+        }
+
+        /// <summary>
+        /// Returns a copy of <paramref name="options"/> with caching applied or cleared to match
+        /// the current <c>AI:AgentFramework:EnablePromptCaching</c> config value.
+        /// </summary>
+        /// <remarks>
+        /// Clones rather than mutating the caller's instance (matching the clone-before-mutate
+        /// idiom used elsewhere in this codebase for a shared <see cref="ChatOptions"/>): the
+        /// caller's instance is typically built once per agent and reused across every turn of
+        /// its conversation, so mutating it in place would leak this decorator's caching state
+        /// onto every other consumer of that instance and could only ever turn caching on, never
+        /// off, once a live config reload changed the setting.
+        /// </remarks>
+        private ChatOptions ApplyCachingIfEnabled(ChatOptions? options)
+        {
+            var clone = options?.Clone() ?? new ChatOptions();
+
+            // Only touch a factory this decorator itself previously set — never overwrite one the
+            // caller supplied for another purpose.
+            if (clone.RawRepresentationFactory is null || clone.RawRepresentationFactory == _cachingFactory)
+            {
+                clone.RawRepresentationFactory = appConfig.CurrentValue.AI.AgentFramework.EnablePromptCaching
+                    ? _cachingFactory
+                    : null;
+            }
+
+            return clone;
+        }
+
+        private static readonly Func<IChatClient, object?> _cachingFactory =
+            _ => new MessageParameters { PromptCaching = PromptCacheType.AutomaticToolsAndSystem };
     }
 
     /// <summary>
