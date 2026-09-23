@@ -356,6 +356,10 @@ public static class IServiceCollectionExtensions
     {
         var config = AppConfigHelper.LoadAppConfig();
 
+        // Captures which providers actually loaded (see HarnessConfigSourceReport's remarks for why
+        // this must read the root LoadAppConfig built, not a host's separate builder.Configuration).
+        services.AddSingleton(Configuration.HarnessConfigSourceReport.FromConfigurationRoot((IConfigurationRoot)config));
+
         services.RegisterConfigSections(config);
 
         var appConfig = config.GetSection("AppConfig").Get<AppConfig>() ?? new AppConfig();

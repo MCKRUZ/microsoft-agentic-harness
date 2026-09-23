@@ -29,6 +29,7 @@ namespace Presentation.Common.Helpers;
 /// <list type="bullet">
 ///   <item>Compilation mode — excluded in <c>DEBUG</c> builds to avoid Azure dependencies during local development</item>
 ///   <item>Connection string presence — skipped when the corresponding connection string is not configured</item>
+///   <item>The explicit <c>DisableAzureConfigSources</c> flag — see <see cref="ShouldLoadAzureConfigSources"/></item>
 /// </list>
 /// </para>
 /// </remarks>
@@ -90,17 +91,41 @@ public static class AppConfigHelper
         // must be present in this snapshot for the gate below to fire.
         var initialConfig = builder.Build();
 
-        if (!debug && initialConfig["AzureKeyVaultUri"] != null)
+        if (ShouldLoadAzureConfigSources(initialConfig, debug) && initialConfig["AzureKeyVaultUri"] != null)
             AddAzureKeyVault(builder, initialConfig);
 
         // Rebuild so Key Vault secrets are available for App Configuration connection string.
         initialConfig = builder.Build();
 
-        if (!debug && !string.IsNullOrEmpty(initialConfig["AzureAppConfigConnectionString"]))
+        if (ShouldLoadAzureConfigSources(initialConfig, debug)
+            && !string.IsNullOrEmpty(initialConfig["AzureAppConfigConnectionString"]))
             AddAzureAppConfig(builder, initialConfig);
 
         return builder.Build();
     }
+
+    /// <summary>
+    /// Whether Azure Key Vault / Azure App Configuration should be attempted as configuration
+    /// sources at all, independent of whether their connection string/URI is actually present.
+    /// </summary>
+    /// <param name="bootstrap">
+    /// The configuration snapshot built from the non-Azure sources, read for the
+    /// <c>DisableAzureConfigSources</c> flag.
+    /// </param>
+    /// <param name="isDebugBuild">Whether this binary was compiled in a <c>DEBUG</c> configuration.</param>
+    /// <remarks>
+    /// A container built in <c>Release</c> configuration has no way to guarantee it will never reach
+    /// out to Azure, short of trusting that its environment never happens to carry
+    /// <c>AzureKeyVaultUri</c> or <c>AzureAppConfigConnectionString</c> — a stray value from a copied
+    /// environment file is not this repo's to control. <c>DisableAzureConfigSources=true</c> is an
+    /// explicit, documented kill switch a self-hosted, non-Azure deployment (see issue #591) can set
+    /// to force this off regardless of build configuration or what else is present in the
+    /// environment. Extracted as its own testable function — a test running in a <c>DEBUG</c> build
+    /// (as this whole suite does) cannot otherwise distinguish "the flag works" from "DEBUG always
+    /// disables this anyway".
+    /// </remarks>
+    public static bool ShouldLoadAzureConfigSources(IConfiguration bootstrap, bool isDebugBuild)
+        => !isDebugBuild && !bootstrap.GetValue<bool>("DisableAzureConfigSources");
 
     /// <summary>
     /// Loads configuration and returns the strongly-typed <see cref="AppConfig"/> bound

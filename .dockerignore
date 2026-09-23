@@ -1,0 +1,13 @@
+**/bin/
+**/obj/
+**/.vs/
+**/node_modules/
+**/TestResults/
+**/*.user
+.git/
+.github/
+documentation/
+Dashboards/
+docs/
+planning/
+eval-datasets/

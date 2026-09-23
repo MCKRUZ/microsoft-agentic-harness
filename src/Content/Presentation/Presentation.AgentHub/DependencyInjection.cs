@@ -93,18 +93,32 @@ public static class DependencyInjection
             .AddCheck<HealthChecks.AiProviderHealthCheck>(
                 "ai_provider",
                 failureStatus: Microsoft.Extensions.Diagnostics.HealthChecks.HealthStatus.Degraded,
-                tags: ["ai"]);
+                tags: ["ai"])
+            // Composed-subsystems visibility for a self-hosted, non-Azure deployment (issue #591) —
+            // see /health/subsystems in Program.cs. Tagged "composition" only (not "ai"/"ready"):
+            // it never fails, it only reports.
+            .AddCheck<HealthChecks.ComposedSubsystemsHealthCheck>(
+                "composed_subsystems",
+                tags: ["composition"]);
 
-        var authDisabled = environment.IsDevelopment()
-            && configuration.GetValue<bool>("Auth:Disabled");
+        var bypassScheme = Auth.AuthBypassPolicy.GetBypassSchemeName(environment, configuration);
 
-        if (authDisabled)
+        if (bypassScheme == DevAuthHandler.SchemeName)
         {
-            // Dev bypass: auto-authenticates every request as a synthetic "dev user".
-            // Double-guarded: only active when IsDevelopment() AND Auth:Disabled=true.
+            // Local dev bypass: auto-authenticates every request as a synthetic, operator-capable
+            // "dev user". Gated by AuthBypassPolicy.GetBypassSchemeName — see its doc comment for
+            // why this handler is never used outside Development.
             services.AddAuthentication(DevAuthHandler.SchemeName)
                     .AddScheme<AuthenticationSchemeOptions, DevAuthHandler>(
                         DevAuthHandler.SchemeName, _ => { });
+        }
+        else if (bypassScheme == SelfHostedAuthHandler.SchemeName)
+        {
+            // Self-hosted, non-Azure deployment bypass (issue #591): auto-authenticates every
+            // request as a synthetic caller with NO elevated roles — deliberately not DevAuthHandler.
+            services.AddAuthentication(SelfHostedAuthHandler.SchemeName)
+                    .AddScheme<AuthenticationSchemeOptions, SelfHostedAuthHandler>(
+                        SelfHostedAuthHandler.SchemeName, _ => { });
         }
         else
         {

@@ -6,8 +6,8 @@ using Microsoft.Extensions.Options;
 namespace Presentation.AgentHub.Auth;
 
 /// <summary>
-/// Development-only authentication handler that auto-authenticates every request
-/// as a synthetic "dev user". Never registered outside of Development + Auth:Disabled=true.
+/// Authentication handler that auto-authenticates every request as a synthetic "dev user".
+/// Only registered when <see cref="AuthBypassPolicy.IsBypassed"/> returns true.
 /// </summary>
 internal sealed class DevAuthHandler(
     IOptionsMonitor<AuthenticationSchemeOptions> options,

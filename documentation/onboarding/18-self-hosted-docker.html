@@ -1,0 +1,449 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>18 · Self-Hosted, Non-Azure Docker — Agentic Harness Developer Guide</title>
+        <meta
+            name="description"
+            content="Run the harness headless, outside Azure, in a container on any x64 or arm64 machine — build steps, container network settings, auth trade-offs, and how to verify the no-Azure guarantee."
+        />
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+        <link
+            href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap"
+            rel="stylesheet"
+        />
+        <link rel="stylesheet" href="assets/css/styles.css" />
+    </head>
+    <body>
+        <a href="#main" class="skip-link">Skip to content</a>
+        <div class="app">
+            <!-- ============ SIDEBAR ============ -->
+            <aside class="sidebar">
+                <div class="sidebar-header">
+                    <a class="sidebar-brand" href="index.html">
+                        <span class="sidebar-brand-mark">AH</span>
+                        <span>
+                            <span class="sidebar-brand-text">Agentic Harness</span><br />
+                            <span class="sidebar-brand-sub">Developer Guide</span>
+                        </span>
+                    </a>
+                </div>
+                <nav class="sidebar-nav" aria-label="Documentation navigation">
+                    <div class="sidebar-group">
+                        <div class="sidebar-group-title">Getting Started</div>
+                        <a class="sidebar-link" href="index.html"><span class="sidebar-link-num">00</span> Welcome</a>
+                        <a class="sidebar-link" href="01-get-running.html"
+                            ><span class="sidebar-link-num">01</span> Get Running in 10 Minutes</a
+                        >
+                    </div>
+                    <div class="sidebar-group">
+                        <div class="sidebar-group-title">Configuration</div>
+                        <a class="sidebar-link" href="02-configuration.html"
+                            ><span class="sidebar-link-num">02</span> Configuration Reference</a
+                        >
+                    </div>
+                    <div class="sidebar-group">
+                        <div class="sidebar-group-title">Architecture</div>
+                        <a class="sidebar-link" href="03-big-picture.html"
+                            ><span class="sidebar-link-num">03</span> The Big Picture</a
+                        >
+                        <a class="sidebar-link" href="04-message-journey.html"
+                            ><span class="sidebar-link-num">04</span> A Message's Journey</a
+                        >
+                    </div>
+                    <div class="sidebar-group">
+                        <div class="sidebar-group-title">Systems</div>
+                        <a class="sidebar-link" href="05-skills.html"
+                            ><span class="sidebar-link-num">05</span> Skills System</a
+                        >
+                        <a class="sidebar-link" href="06-tools.html"
+                            ><span class="sidebar-link-num">06</span> Tools &amp; Keyed DI</a
+                        >
+                        <a class="sidebar-link" href="07-rag.html"
+                            ><span class="sidebar-link-num">07</span> The RAG Pipeline</a
+                        >
+                        <a class="sidebar-link" href="08-mcp.html"
+                            ><span class="sidebar-link-num">08</span> MCP Server &amp; Client</a
+                        >
+                        <a class="sidebar-link" href="16-generative-ui.html"
+                            ><span class="sidebar-link-num">16</span> Generative UI &amp; Widgets</a
+                        ><a class="sidebar-link" href="17-bundle-api.html"
+                            ><span class="sidebar-link-num">17</span> Execution API (HTTP)</a
+                        >
+                    </div>
+                    <div class="sidebar-group">
+                        <div class="sidebar-group-title">Patterns</div>
+                        <a class="sidebar-link" href="09-patterns.html"
+                            ><span class="sidebar-link-num">09</span> Patterns You'll Use Daily</a
+                        >
+                        <a class="sidebar-link" href="10-observability.html"
+                            ><span class="sidebar-link-num">10</span> Observability &amp; Safety</a
+                        >
+                    </div>
+                    <div class="sidebar-group">
+                        <div class="sidebar-group-title">Building</div>
+                        <a class="sidebar-link" href="11-extending.html"
+                            ><span class="sidebar-link-num">11</span> Extending the Harness</a
+                        >
+                    </div>
+                    <div class="sidebar-group"><div class="sidebar-group-title">Deployment</div><a class="sidebar-link" href="18-self-hosted-docker.html"><span class="sidebar-link-num">18</span> Self-Hosted, Non-Azure Docker</a></div>
+                    <div class="sidebar-group">
+                        <div class="sidebar-group-title">Quality</div>
+                        <a class="sidebar-link" href="13-evaluation.html"
+                            ><span class="sidebar-link-num">13</span> Evaluation Framework</a
+                        ><a class="sidebar-link" href="14-skill-training.html"
+                            ><span class="sidebar-link-num">14</span> Skill Training</a
+                        >
+                    </div>
+                    <div class="sidebar-group"><div class="sidebar-group-title">Delivery</div><a class="sidebar-link" href="15-delivery-governance.html"><span class="sidebar-link-num">15</span> Delivery &amp; CI Governance</a></div>
+                    <div class="sidebar-group">
+                        <div class="sidebar-group-title">Reference</div>
+                        <a class="sidebar-link" href="12-reference.html"
+                            ><span class="sidebar-link-num">12</span> Cheatsheet &amp; Glossary</a
+                        >
+                    </div>
+                    <div class="sidebar-group">
+                        <div class="sidebar-group-title">Other Guides</div>
+                        <a class="sidebar-link" href="showcase/index.html">&#8592; Capability Showcase</a>
+                        <a class="sidebar-link" href="architecture/index.html">&#8592; Architecture Guide</a>
+                        <a class="sidebar-link" href="agentic-harness-course/index.html">&#8592; Interactive Course</a>
+                        <a class="sidebar-link" href="security/index.html">&#8592; Security Guide</a>
+                    </div>
+                </nav>
+            </aside>
+
+            <!-- ============ MAIN ============ -->
+            <main id="main" class="content-wrap">
+                <div class="content">
+                    <span class="eyebrow">Chapter 18 · Deployment</span>
+                    <h1 class="page-title">Self-Hosted, Non-Azure Docker</h1>
+                    <p class="page-lead">
+                        Everything so far assumed Azure: Azure OpenAI, Azure Key Vault, Microsoft Entra sign-in. None
+                        of that is required. This page runs the harness headless — API and real-time messaging only,
+                        no web dashboard — in a container on a plain Linux box, an x64 workstation, or an Apple
+                        Silicon Mac, with zero Azure configuration anywhere. This is the exact path proven while
+                        adopting the harness as the runtime for a Discord-based AI companion running on a Mac Mini
+                        with no Azure tenant at all (issue #591).
+                    </p>
+
+                    <div class="callout callout-info">
+                        <span class="callout-icon">i</span>
+                        <div class="callout-body">
+                            <div class="callout-title">Which host is this?</div>
+                            <p style="margin: 0">
+                                <code>Presentation.AgentHub</code> — the same SignalR-based service you'd otherwise
+                                run with <code>dotnet run</code>. Nothing new was built to make this work; the
+                                composition root
+                                (<a href="03-big-picture.html">The Big Picture</a>) already builds cleanly with zero
+                                Azure configuration. This page is about packaging that fact into a container and
+                                closing the two real gaps that only show up once Azure identity genuinely isn't
+                                there.
+                            </p>
+                        </div>
+                    </div>
+
+                    <h2>What you get, and what you give up</h2>
+                    <p>
+                        Read this before you deploy — the trade-offs are deliberate, not oversights, but you should
+                        make them with eyes open.
+                    </p>
+                    <div class="def">
+                        <div class="def-term">No web dashboard</div>
+                        <div class="def-desc">
+                            The container build runs in Release configuration, which drops the two frontend
+                            projects entirely. You get the HTTP API and the SignalR hub — no browser UI ships in
+                            this image.
+                        </div>
+                    </div>
+                    <div class="def">
+                        <div class="def-term">No sign-in, by default</div>
+                        <div class="def-desc">
+                            A self-hosted deployment usually has no Microsoft Entra tenant to authenticate against.
+                            The shipped container configuration turns sign-in off entirely
+                            (<a href="#auth">details below</a>) rather than silently failing every request. Put this
+                            behind a private network or a reverse proxy with its own authentication if that matters
+                            to your deployment.
+                        </div>
+                    </div>
+                    <div class="def">
+                        <div class="def-term">No telemetry export, by default</div>
+                        <div class="def-desc">
+                            With no observability collector running alongside it, the container ships with trace/log
+                            export turned off rather than emitting failed export attempts on a loop. Turn it back on
+                            with two settings if you run a collector (<a href="10-observability.html">Observability
+                            &amp; Safety</a> covers what that buys you).
+                        </div>
+                    </div>
+                    <div class="def">
+                        <div class="def-term">Any OpenAI-compatible provider still works</div>
+                        <div class="def-desc">
+                            This deployment mode changes nothing about model access. OpenRouter (proven end-to-end),
+                            plain OpenAI, or any OpenAI-compatible gateway all work exactly as in
+                            <a href="01-get-running.html">Get Running in 10 Minutes</a>.
+                        </div>
+                    </div>
+
+                    <hr />
+
+                    <h2>Build and run</h2>
+                    <p>
+                        One <code>Dockerfile</code> builds images for both Intel/AMD (<code>x64</code>) and Apple
+                        Silicon/ARM servers (<code>arm64</code>) machines — the underlying publish is
+                        framework-dependent, so no per-architecture build step is needed.
+                    </p>
+
+                    <div class="callout callout-warn">
+                        <span class="callout-icon">!</span>
+                        <div class="callout-body">
+                            <div class="callout-title">Build context is the repository root, not <code>src/</code></div>
+                            <p style="margin: 0">
+                                <code>Presentation.AgentHub</code> pulls its skill and agent definitions from two
+                                folders that live <em>above</em> <code>src/</code>. Building from <code>src/</code>
+                                alone (the pattern the Azure/Foundry container uses) builds and boots without error,
+                                then fails every agent-turn request because no agents were ever packaged into the
+                                image. The commands below already account for this.
+                            </p>
+                        </div>
+                    </div>
+
+                    <ol class="steps">
+                        <li class="step">
+                            <div class="step-meta">Step 1</div>
+                            <div class="step-title">Configure your provider</div>
+                            <p>From the repository root:</p>
+                            <div class="code-block">
+                                <div class="code-block-header">
+                                    <span class="code-block-lang">bash</span>
+                                </div>
+                                <pre><code>cp deploy/agenthub/.env.example deploy/agenthub/.env
+# edit deploy/agenthub/.env: set your provider API key, endpoint, and model</code></pre>
+                            </div>
+                            <p>
+                                <code>deploy/agenthub/.env</code> is already excluded from version control. Never
+                                put real credentials in any tracked <code>appsettings*.json</code> file — see
+                                <a href="02-configuration.html">Configuration Reference</a> for the full secrets
+                                story.
+                            </p>
+                        </li>
+
+                        <li class="step">
+                            <div class="step-meta">Step 2</div>
+                            <div class="step-title">Build and run</div>
+                            <div class="code-block">
+                                <div class="code-block-header">
+                                    <span class="code-block-lang">bash</span>
+                                </div>
+                                <pre><code>docker compose -f deploy/agenthub/docker-compose.yml --env-file deploy/agenthub/.env up --build</code></pre>
+                            </div>
+                            <p>
+                                For a multi-architecture image outside compose (e.g. to push to a registry both an
+                                x64 CI runner and an arm64 device will pull from):
+                            </p>
+                            <div class="code-block">
+                                <div class="code-block-header">
+                                    <span class="code-block-lang">bash</span>
+                                </div>
+                                <pre><code>docker buildx build --platform linux/amd64,linux/arm64 \
+  -f src/Content/Presentation/Presentation.AgentHub/Dockerfile \
+  -t agenthub:latest .</code></pre>
+                            </div>
+                        </li>
+
+                        <li class="step">
+                            <div class="step-meta">Step 3</div>
+                            <div class="step-title">Verify</div>
+                            <div class="code-block">
+                                <div class="code-block-header">
+                                    <span class="code-block-lang">bash</span>
+                                </div>
+                                <pre><code>curl http://localhost:8080/health/ai
+curl http://localhost:8080/health/subsystems</code></pre>
+                            </div>
+                            <p>
+                                <code>/health/ai</code> confirms the model provider is reachable.
+                                <code>/health/subsystems</code> is new to this deployment path — see
+                                <a href="#verifying-no-azure">below</a> for what it reports and why it exists.
+                            </p>
+                        </li>
+                    </ol>
+
+                    <hr />
+
+                    <h2>The two container-specific gotchas</h2>
+                    <p>
+                        Both were found the hard way, on real hardware, during the harness's own adoption as a
+                        Discord companion's runtime. Both are already fixed in the shipped Dockerfile and container
+                        settings — this section explains why they exist, in case you hit a variant of either one.
+                    </p>
+
+                    <h3>1 · Kestrel needs both endpoints overridden, not just one</h3>
+                    <p>
+                        The default configuration binds an HTTP and an HTTPS endpoint. A fresh container has no TLS
+                        certificate, so if only the HTTP endpoint is redirected to a plain port, the host still fails
+                        outright at startup trying to configure HTTPS. The Dockerfile sets both:
+                    </p>
+                    <div class="code-block">
+                        <div class="code-block-header">
+                            <span class="code-block-lang">Dockerfile</span>
+                        </div>
+                        <pre><code>ENV Kestrel__Endpoints__Http__Url=http://+:8080 \
+    Kestrel__Endpoints__Https__Url=http://+:8081</code></pre>
+                    </div>
+                    <p>
+                        Also note that <code>ASPNETCORE_URLS</code> is silently ignored whenever
+                        <code>Kestrel:Endpoints</code> is set in configuration — which it is here — so that
+                        environment variable is not a working alternative.
+                    </p>
+
+                    <h3>2 · Prompt caching and the storage paths need Linux-shaped values</h3>
+                    <p>
+                        The default configuration ships with a Windows-style conversation storage path, which only
+                        matters on Linux the moment a conversation is actually written. The container's own settings
+                        file redirects every persistent path — conversation history, planner state, governance
+                        state, logs — to one directory, mounted as a single Docker volume so nothing is lost on
+                        restart.
+                    </p>
+
+                    <hr />
+
+                    <h2 id="auth">Authentication: off by default, and why</h2>
+                    <p>
+                        The harness normally requires signing in through Microsoft Entra. A self-hosted deployment
+                        usually has no Entra tenant at all, so the container ships with two settings that together
+                        turn sign-in off entirely:
+                    </p>
+                    <div class="code-block">
+                        <div class="code-block-header">
+                            <span class="code-block-lang">appsettings.Container.json</span>
+                        </div>
+                        <pre><code>"Auth": {
+  "Disabled": true,
+  "AllowOutsideDevelopment": true
+}</code></pre>
+                    </div>
+                    <p>
+                        Both flags are required together, deliberately. <code>Auth:Disabled</code> alone only takes
+                        effect in the Development environment — it does nothing in a production-configured
+                        container. <code>AllowOutsideDevelopment</code> is the explicit, reviewable decision to
+                        accept that trade-off outside Development, instead of the alternative of mislabeling a real
+                        deployment as "Development" (which also silently turns off unrelated hardening, like forced
+                        HTTPS).
+                    </p>
+                    <div class="callout callout-warn">
+                        <span class="callout-icon">!</span>
+                        <div class="callout-body">
+                            <div class="callout-title">This means anyone who can reach the port can use it</div>
+                            <p style="margin: 0">
+                                Treat network placement as your access control here: put this behind a private
+                                network, a VPN, or a reverse proxy that enforces its own authentication before
+                                traffic reaches the container. If you do have an Entra tenant, set both flags back
+                                to <code>false</code> and configure Entra normally — everything else on this page
+                                still applies.
+                            </p>
+                            <p style="margin: var(--space-2) 0 0">
+                                "Use it" means ordinary agent turns only — the auto-authenticated identity this mode
+                                grants deliberately holds no elevated roles. It cannot approve escalations, decide
+                                change proposals, or trigger drift/registry operate actions. Someone who reaches the
+                                port can talk to the agent; they cannot administer the deployment.
+                            </p>
+                        </div>
+                    </div>
+
+                    <hr />
+
+                    <h2 id="verifying-no-azure">Verifying the no-Azure guarantee</h2>
+                    <p>
+                        Two independent layers guarantee this container never reaches out to Azure for
+                        configuration, and you can check both yourself rather than take it on faith:
+                    </p>
+                    <ol>
+                        <li>
+                            An explicit <code>DisableAzureConfigSources</code> flag, set both as a container
+                            environment variable and in the shipped settings file, forces Azure Key Vault and Azure
+                            App Configuration off regardless of anything else present in the environment.
+                        </li>
+                        <li>
+                            <code>GET /health/subsystems</code> reports, among other things, whether either Azure
+                            configuration provider actually loaded at startup — not merely whether the flag is set,
+                            but whether it worked:
+                        </li>
+                    </ol>
+                    <div class="code-block">
+                        <div class="code-block-header">
+                            <span class="code-block-lang">json</span>
+                        </div>
+                        <pre><code>{
+  "aiProvider": "OpenAI",
+  "aiProviderConfigured": true,
+  "authMode": "disabled",
+  "azureKeyVaultConfigSourceLoaded": false,
+  "azureAppConfigurationSourceLoaded": false,
+  "cacheBackend": "None",
+  "sandboxEnabled": true,
+  "governanceEnabled": true,
+  "otlpEnabled": false
+}</code></pre>
+                    </div>
+                    <p>
+                        This endpoint reports names, enum values, and booleans only — the same convention
+                        <code>/health/ai</code> and <code>GET /api/config/status</code> already follow. It never
+                        returns a secret, a connection string, or a file path.
+                    </p>
+
+                    <hr />
+
+                    <h2>What just happened</h2>
+                    <p>
+                        Nothing about the harness's core composition changed for this deployment mode — every Azure
+                        service registration was already conditional on Azure configuration actually being present.
+                        What this page added was the missing packaging and two pieces of hardening that only matter
+                        once that configuration is genuinely, permanently absent: a real sign-in off-switch that
+                        doesn't require lying about the environment, and an explicit, verifiable guarantee that no
+                        Azure configuration source will ever be attempted.
+                    </p>
+
+                    <h2>Where to go from here</h2>
+                    <div class="card-grid">
+                        <a class="card" href="02-configuration.html">
+                            <span class="card-num">02</span>
+                            <div class="card-title">Configuration Reference</div>
+                            <p class="card-desc">
+                                Every setting this page touched, and every one it didn't — the full picture of how
+                                configuration is loaded and layered.
+                            </p>
+                        </a>
+                        <a class="card" href="10-observability.html">
+                            <span class="card-num">10</span>
+                            <div class="card-title">Observability &amp; Safety</div>
+                            <p class="card-desc">
+                                Turn telemetry export back on against a collector, and understand what you're
+                                trading away by leaving it off.
+                            </p>
+                        </a>
+                    </div>
+
+                    <!-- Footer nav -->
+                    <div class="page-nav">
+                        <a class="page-nav-link page-nav-prev" href="11-extending.html">
+                            <div class="page-nav-label">← Previous</div>
+                            <div class="page-nav-title">11 · Extending the Harness</div>
+                        </a>
+                        <a class="page-nav-link page-nav-next" href="13-evaluation.html">
+                            <div class="page-nav-label">Next →</div>
+                            <div class="page-nav-title">13 · Evaluation Framework</div>
+                        </a>
+                    </div>
+                </div>
+
+                <!-- TOC -->
+                <aside class="toc" aria-label="On this page">
+                    <div class="toc-title">On this page</div>
+                    <ul class="toc-list"></ul>
+                </aside>
+            </main>
+        </div>
+        <script src="assets/js/main.js"></script>
+    </body>
+</html>
