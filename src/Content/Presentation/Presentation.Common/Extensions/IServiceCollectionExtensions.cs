@@ -292,6 +292,15 @@ public static class IServiceCollectionExtensions
             .ValidateFluentValidation<WorkflowSubmissionConfig, WorkflowSubmissionConfigValidator>()
             .ValidateOnStart();
 
+        // Recurring-schedule seam (#593): tick interval and per-owner schedule quota. Same posture
+        // as its neighbours — unconditional positivity rules over all-valid defaults, so hosts that
+        // omit the section keep booting, and a bad explicit value fails closed at startup instead of
+        // spinning the tick service or silently refusing every schedule.
+        services.AddOptions<Domain.Common.Config.AI.Schedules.ScheduleConfig>()
+            .Bind(configuration.GetSection("AppConfig:AI:Schedules"))
+            .ValidateFluentValidation<Domain.Common.Config.AI.Schedules.ScheduleConfig, Application.Core.Validation.ScheduleConfigValidator>()
+            .ValidateOnStart();
+
         // Direct tool-invocation bounds (request size, deadline, output ceiling, parameter count).
         // Same posture again, and it matters more here than for its siblings: two of these bounds fail
         // in ways the caller cannot diagnose. A non-positive output ceiling turns a successful tool

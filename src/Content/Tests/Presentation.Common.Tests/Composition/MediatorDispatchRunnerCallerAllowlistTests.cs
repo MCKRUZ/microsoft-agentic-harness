@@ -38,7 +38,11 @@ public sealed class MediatorDispatchRunnerCallerAllowlistTests
     private static readonly HashSet<string> Allowed = new(StringComparer.OrdinalIgnoreCase)
     {
         "DocumentIngestTool.cs",
-        "WorkspaceWriteFileTool.cs"
+        "WorkspaceWriteFileTool.cs",
+        // ManageSchedulesTool (#593): every failureContext it passes is a hardcoded operation-name
+        // literal ("list"/"pause"/"resume"/"delete"), never anything derived from caller input — the
+        // safest shape a failureContext argument can take, stricter than either existing caller's.
+        "ManageSchedulesTool.cs"
     };
 
     private const string CallPattern = @"\bMediatorDispatchRunner\.RunAsync\b";

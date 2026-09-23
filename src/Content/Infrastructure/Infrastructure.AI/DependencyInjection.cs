@@ -512,6 +512,7 @@ public static partial class DependencyInjection
         // --- Planner and sandbox ---
 
         RegisterPlannerDbContext(services, appConfig);
+        RegisterScheduleDbContext(services, appConfig);
         RegisterPlannerServices(services);
         RegisterSandboxServices(services);
 

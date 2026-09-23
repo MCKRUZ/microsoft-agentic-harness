@@ -22,6 +22,7 @@ using Domain.Common.Config.AI.HarmonicMemory;
 using Domain.Common.Config.AI.Resilience;
 using Domain.Common.Config.AI.Routing;
 using Domain.Common.Config.AI.Sandbox;
+using Domain.Common.Config.AI.Schedules;
 using Domain.Common.Config.AI.Telemetry;
 using Domain.Common.Config.AI.WorkflowSubmission;
 using Domain.Common.Config.AI.WorkMemory;
@@ -241,6 +242,13 @@ public class AIConfig
     /// in the host built to serve it.
     /// </summary>
     public DirectToolInvocationConfig DirectToolInvocation { get; set; } = new();
+
+    /// <summary>
+    /// Recurring-schedule configuration (#593). Off by default — when enabled, a caller may register
+    /// a cron-driven schedule that enqueues a run of a given <c>Domain.AI.Runs.RunKind</c> on a clock,
+    /// independent of any live request.
+    /// </summary>
+    public ScheduleConfig Schedules { get; set; } = new();
 
     /// <summary>
     /// Server-side evaluation configuration: the directories dataset files may be read from, and the
