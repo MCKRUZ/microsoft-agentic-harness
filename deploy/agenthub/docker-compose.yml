@@ -10,7 +10,13 @@ services:
       context: ../..
       dockerfile: src/Content/Presentation/Presentation.AgentHub/Dockerfile
     ports:
-      - "8080:8080"
+      # Bound to loopback only, not "8080:8080" (which Docker publishes on every host interface).
+      # Auth:Disabled + Auth:AllowOutsideDevelopment are both true in this mode (see README's "What
+      # this does not include") — publishing on 0.0.0.0 would put an unauthenticated agent surface
+      # (turns, tools, sandbox, provider key) on the network by default, contradicting this repo's
+      # own documented guidance to run this behind a private network or reverse proxy. Change this
+      # to "0.0.0.0:8080:8080" (or a specific private interface) only once that boundary exists.
+      - "127.0.0.1:8080:8080"
     environment:
       # LLM provider — required. See .env.example for the full set and OpenRouter setup notes.
       AppConfig__AI__AgentFramework__Endpoint: ${AGENT_FRAMEWORK_ENDPOINT}
