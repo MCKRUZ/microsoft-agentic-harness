@@ -40,9 +40,15 @@ public sealed record HarnessConfigSourceReport(
             ProviderTypeNames: providers.Select(p => p.GetType().Name).ToArray(),
             AzureKeyVaultLoaded: providers.Any(p =>
                 p is Azure.Extensions.AspNetCore.Configuration.Secrets.AzureKeyVaultConfigurationProvider),
-            // AzureAppConfigurationProvider itself is internal to its package; its public
-            // extensibility marker interface is the compiler-checked substitute.
+            // The real provider type (AzureAppConfigurationProvider) is internal to its package, so
+            // a public marker interface is the compiler-checked substitute — but it must be one THAT
+            // PROVIDER ITSELF implements. IConfigurationRefresherProvider is a different object
+            // entirely (AzureAppConfigurationRefresherProvider, used to look up refresh handles) and
+            // never appears in IConfigurationRoot.Providers, so checking for it always returned
+            // false regardless of whether App Configuration loaded. IConfigurationRefresher is the
+            // interface the provider implements directly (confirmed against the shipped assembly's
+            // metadata for the pinned 8.1.0 version).
             AzureAppConfigurationLoaded: providers.Any(p =>
-                p is Microsoft.Extensions.Configuration.AzureAppConfiguration.IConfigurationRefresherProvider));
+                p is Microsoft.Extensions.Configuration.AzureAppConfiguration.IConfigurationRefresher));
     }
 }
