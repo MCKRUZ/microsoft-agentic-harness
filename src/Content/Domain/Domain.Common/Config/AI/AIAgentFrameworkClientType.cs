@@ -86,4 +86,18 @@ public enum AIAgentFrameworkClientType
 	/// </para>
 	/// </remarks>
 	FoundryDirectResponses,
+
+	/// <summary>
+	/// Anthropic Claude via <c>api.anthropic.com</c> directly — native Anthropic Messages API,
+	/// native prompt caching, no Azure AI Foundry relay. Use this for a self-hosted, non-Azure
+	/// deployment (see issue #591) or whenever the Foundry hop isn't wanted. Only
+	/// <c>AppConfig:AI:AgentFramework:ApiKey</c> is required; <c>Endpoint</c> is not used —
+	/// unlike <see cref="Anthropic"/>, which requires both because it rewrites every request onto
+	/// a Foundry resource endpoint.
+	/// </summary>
+	/// <remarks>
+	/// Appended last to preserve the existing integer ordinals of the other members (enum values
+	/// may be persisted). New members must be added at the end for the same reason.
+	/// </remarks>
+	AnthropicDirect,
 }

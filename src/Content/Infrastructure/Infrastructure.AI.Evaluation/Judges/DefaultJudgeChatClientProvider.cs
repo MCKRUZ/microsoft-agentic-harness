@@ -154,12 +154,21 @@ public sealed class DefaultJudgeChatClientProvider : IJudgeChatClientProvider, I
 
     private AIAgentFrameworkClientType PickFirstAvailable()
     {
-        foreach (var (type, available) in _factory.GetAvailableProviders())
+        var providers = _factory.GetAvailableProviders();
+
+        // Echo is a canned-response test double, never a real judge — prefer any other
+        // configured provider over it regardless of enum declaration order, falling back to
+        // Echo only when nothing else is available.
+        foreach (var (type, available) in providers)
         {
-            if (available) return type;
+            if (available && type != AIAgentFrameworkClientType.Echo) return type;
         }
+
+        if (providers.TryGetValue(AIAgentFrameworkClientType.Echo, out var echoAvailable) && echoAvailable)
+            return AIAgentFrameworkClientType.Echo;
+
         throw new InvalidOperationException(
             "No AI provider is available for the LLM judge. " +
-            "Ensure at least one of AzureOpenAI / OpenAI / PersistentAgents is configured.");
+            "Ensure AppConfig:AI:AgentFramework is configured for at least one supported client type.");
     }
 }

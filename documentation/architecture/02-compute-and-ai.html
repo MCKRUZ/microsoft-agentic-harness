@@ -341,6 +341,25 @@
                                     with harness-composed model/instructions/tools. Yields an <code>AIAgent</code>
                                     (not an <code>IChatClient</code>), so it wires in at the agent-factory level.</td>
                             </tr>
+                            <tr>
+                                <td>Azure AI Foundry (responses API, direct)</td>
+                                <td><code>FoundryDirectResponses</code></td>
+                                <td><code>AppConfig:AI:AIFoundry:ResourceEndpoint</code></td>
+                                <td>Calls the bare Foundry resource endpoint directly, bypassing
+                                    <code>AIProjectClient</code>'s Project-scoped routing (issue #382: Project-scoped
+                                    routing measured ~15&times; higher per-call latency for the identical
+                                    model/tenant/credential). Entra ID auth.</td>
+                            </tr>
+                            <tr>
+                                <td>Claude (direct, no Azure)</td>
+                                <td><code>AnthropicDirect</code></td>
+                                <td>None &mdash; the Anthropic SDK defaults to
+                                    <code>https://api.anthropic.com</code></td>
+                                <td>Talks to Anthropic's own API with just <code>AppConfig:AI:AgentFramework:ApiKey</code>,
+                                    no Azure AI Foundry relay. <code>DefaultDeployment</code> is the model id (e.g.
+                                    <code>claude-sonnet-4-6</code>). Native prompt caching is enabled automatically
+                                    when <code>EnablePromptCaching</code> is set.</td>
+                            </tr>
                         </tbody>
                     </table>
 

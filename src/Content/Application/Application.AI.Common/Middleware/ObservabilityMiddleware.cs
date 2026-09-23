@@ -1,3 +1,4 @@
+using Application.AI.Common.Extensions;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Services;
 using Microsoft.Extensions.AI;
@@ -106,20 +107,13 @@ public sealed class ObservabilityMiddleware : DelegatingChatClient
 
         var inputTokens = (int)Math.Min(usage.InputTokenCount ?? 0, int.MaxValue);
         var outputTokens = (int)Math.Min(usage.OutputTokenCount ?? 0, int.MaxValue);
-        var cacheRead = GetAdditionalCount(usage, "cache_read_input_tokens");
-        var cacheWrite = GetAdditionalCount(usage, "cache_creation_input_tokens");
+        var cacheRead = (int)Math.Min(usage.GetCacheReadTokens(), int.MaxValue);
+        var cacheWrite = (int)Math.Min(usage.GetCacheCreationTokens(), int.MaxValue);
         // Prefer the model the provider actually reported on the response; the per-call
         // ChatOptions.ModelId is usually null because the model is configured on the client.
         // A still-null model is defaulted to a priced model downstream in LlmUsageCapture.
         var model = response.ModelId ?? options?.ModelId;
 
         (_usageCapture ?? LlmUsageCapture.Current)?.Record(inputTokens, outputTokens, cacheRead, cacheWrite, model);
-    }
-
-    private static int GetAdditionalCount(UsageDetails usage, string key)
-    {
-        if (usage.AdditionalCounts?.TryGetValue(key, out var value) == true)
-            return (int)Math.Min(value, int.MaxValue);
-        return 0;
     }
 }
