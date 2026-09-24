@@ -294,10 +294,8 @@ public sealed class FirstPartyToolLookup
             return true;
         }
 
-        // toolKey! — the null-forgiving operator asserts nothing new here: a null key took this exact
-        // path before #651 too (the compiler only sees the possibility now because the memo probe above
-        // had to test for it). TryResolve's catch-all is what handles it, which is the behaviour the
-        // check above deliberately preserves rather than changing in a perf-motivated PR.
+        // toolKey! asserts nothing new: the compiler only sees the null possibility because the guard
+        // above had to test for it, and TryResolve's catch-all has always been what handles it.
         var tool = TryResolve(toolKey!, out constructionError);
         if (tool is not null)
         {

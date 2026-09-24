@@ -81,12 +81,10 @@ public sealed class FirstPartyToolLookupTests
         constructionError.Should().BeNull();
     }
 
-    // --- #651: a successful published-name resolution is memoized for the process lifetime, so the
-    // permission-rule providers that call this on every tool-permission resolution stop paying a DI
-    // probe per name per call. The two NEGATIVE cases below are the safety half of that memo and matter
-    // more than the positive one: memoizing an unknown name would let a caller grow the dictionary
-    // without bound (MCP names embed a per-run bundle id), and memoizing a construction failure would
-    // permanently downgrade a security control on the strength of one transient fault.
+    // --- #651: a successful published-name resolution is memoized for the process lifetime. The two
+    // NEGATIVE cases below matter more than the positive one — see FirstPartyToolLookup's
+    // _publishedNameByKey remarks for why not memoizing a miss or a construction failure is a safety
+    // requirement rather than an oversight; each test states only what it alone pins.
 
     /// <summary>
     /// Builds a lookup whose tool records every member access, so a test can count reads of
@@ -113,13 +111,11 @@ public sealed class FirstPartyToolLookupTests
         var (lookup, tool) = LookupWithRecordingTool("registered_key", "self_reported_name");
 
         lookup.TryResolvePublishedName("registered_key", out var first, out _).Should().BeTrue();
-        var readsAfterFirstCall = tool.Invocations.Count;
         lookup.TryResolvePublishedName("registered_key", out var second, out _).Should().BeTrue();
         lookup.TryResolvePublishedName("registered_key", out var third, out _).Should().BeTrue();
 
-        readsAfterFirstCall.Should().BeGreaterThan(0, "the first call must actually resolve the name");
-        tool.Invocations.Count.Should().Be(readsAfterFirstCall,
-            "the mapping cannot change, so later calls must be served from the memo");
+        tool.VerifyGet(t => t.Name, Times.Once(),
+            "the mapping cannot change, so only the first call may reach the tool");
         first.Should().Be("self_reported_name");
         second.Should().Be(first);
         third.Should().Be(first);
@@ -133,10 +129,9 @@ public sealed class FirstPartyToolLookupTests
         var (lookup, tool) = LookupWithRecordingTool("bash", "bash");
 
         lookup.TryResolvePublishedName("bash", out _, out _).Should().BeTrue();
-        var readsAfterFirstCall = tool.Invocations.Count;
         lookup.TryResolvePublishedName("BASH", out var published, out _).Should().BeTrue();
 
-        tool.Invocations.Count.Should().Be(readsAfterFirstCall,
+        tool.VerifyGet(t => t.Name, Times.Once(),
             "a casing variant of an already-memoized key must hit the same entry");
         published.Should().Be("bash");
     }
@@ -169,12 +164,9 @@ public sealed class FirstPartyToolLookupTests
     [Fact]
     public void TryResolvePublishedName_NullKey_ReturnsFalseInsteadOfThrowing()
     {
-        // A null key is reachable from operator-authored config: PluginPermissionRuleProvider forwards
-        // every PluginDeclaration.DeniedTools entry unfiltered, and that list is bound from JSON where
-        // ["bash", null] yields a null element. ThreePhasePermissionResolver does not catch provider
-        // exceptions, so a throw here would take down permission resolution for every tool call in the
-        // host — which is what an unguarded ConcurrentDictionary memo probe (it throws on a null key)
-        // would have introduced.
+        // A null key is reachable from operator-authored plugin config, and an unguarded memo probe
+        // throws on one — see the null-guard comment in TryResolvePublishedName for the full path and
+        // why a throw there would take down permission resolution host-wide.
         var services = new ServiceCollection();
         var lookup = new FirstPartyToolLookup(
             services.BuildServiceProvider(), new HashSet<string> { "bash" });
