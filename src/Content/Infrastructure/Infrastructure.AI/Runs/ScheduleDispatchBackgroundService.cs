@@ -198,6 +198,21 @@ public sealed class ScheduleDispatchBackgroundService : BackgroundService
             return;
         }
 
+        if (isBacklogMiss && schedule.MissedRunPolicy == MissedRunPolicy.CatchUpOnce
+            && !ScheduleOccurrenceCalculator.IsWithinActiveHours(
+                now, schedule.TimeZoneId, schedule.ActiveHoursStart, schedule.ActiveHoursEnd))
+        {
+            // CatchUpOnce fires its one recovery run at `now`, not at a recomputed occurrence — so
+            // unlike the normal due-schedule path below, nothing upstream has already confirmed `now`
+            // itself respects the active-hours window declared for this schedule. Firing outside it
+            // would violate the window's whole purpose (e.g. a host down overnight recovering at 3am
+            // against a 9-5 window). `nextFireAt` was already computed respecting the window, so the
+            // schedule still advances correctly; the catch-up is forfeited, same as Skip would do.
+            await _scheduleStore.TryClaimAsync(
+                schedule.ScheduleId, schedule.Version, nextFireAt, now, cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
         var won = await _scheduleStore.TryClaimAsync(
             schedule.ScheduleId, schedule.Version, nextFireAt, now, cancellationToken).ConfigureAwait(false);
 

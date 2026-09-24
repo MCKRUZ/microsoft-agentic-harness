@@ -17,10 +17,11 @@ public static class ScheduleOccurrenceCalculator
 {
     /// <summary>
     /// Floor on how many candidate occurrences <see cref="ComputeNextOccurrence"/> will examine while
-    /// searching for one inside an active-hours window, before giving up. Defensive: a well-formed
-    /// window intersects any cron expression within a handful of candidates, so hitting this cap means
-    /// the window and expression cannot both be satisfied and the caller should surface an error rather
-    /// than loop.
+    /// searching for one inside an active-hours window, before giving up. Defensive only: each rejected
+    /// candidate jumps straight to the window's next opening (see the loop below) rather than stepping
+    /// minute-by-minute, so a genuinely satisfiable window/expression pair converges in a handful of
+    /// candidates regardless of cron granularity — hitting this cap means the window and expression
+    /// cannot both be satisfied at all, and the caller should surface an error rather than loop.
     /// </summary>
     public const int MaxActiveHoursSearchAttempts = 1000;
 
@@ -66,13 +67,35 @@ public static class ScheduleOccurrenceCalculator
             if (IsWithinActiveHours(nextOffset, zone, activeHoursStart, activeHoursEnd))
                 return nextOffset;
 
-            // Not in the window: step just past this candidate and ask Cronos for the next one.
-            candidateUtc = next.AddMinutes(1);
+            // Not in the window: jump straight to the window's next opening rather than stepping one
+            // minute past this candidate. A minute-by-minute step needed up to ~1440 iterations for an
+            // every-minute cron against a narrow window — enough to exceed MaxActiveHoursSearchAttempts
+            // and wrongly reject a schedule that IS satisfiable. Jumping converges in a handful of
+            // candidates regardless of cron granularity, since Cronos still finds the actual valid tick
+            // at or after the opening on the next loop iteration.
+            candidateUtc = NextWindowOpeningUtc(nextOffset, zone, activeHoursStart, activeHoursEnd).UtcDateTime;
         }
 
         throw new InvalidOperationException(
             $"Could not find an occurrence of '{cronExpression}' within the configured active-hours "
             + $"window after {MaxActiveHoursSearchAttempts} attempts.");
+    }
+
+    /// <summary>
+    /// Whether <paramref name="instant"/> falls inside the active-hours window, in
+    /// <paramref name="timeZoneId"/>. Exposed for callers (the tick service's catch-up-run path) that
+    /// must confirm a specific moment — not just a computed occurrence — respects the window before
+    /// acting on it.
+    /// </summary>
+    /// <param name="instant">The instant to check.</param>
+    /// <param name="timeZoneId">IANA time zone the window's fields are evaluated in.</param>
+    /// <param name="start">Earliest time of day an instant may fall at. Null means no lower bound.</param>
+    /// <param name="end">Latest time of day (exclusive) an instant may fall at. Null means no upper bound.</param>
+    /// <exception cref="TimeZoneNotFoundException"><paramref name="timeZoneId"/> does not resolve.</exception>
+    public static bool IsWithinActiveHours(DateTimeOffset instant, string timeZoneId, TimeSpan? start, TimeSpan? end)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(timeZoneId);
+        return IsWithinActiveHours(instant, TimeZoneInfo.FindSystemTimeZoneById(timeZoneId), start, end);
     }
 
     private static bool IsWithinActiveHours(
@@ -83,6 +106,26 @@ public static class ScheduleOccurrenceCalculator
 
         var local = TimeZoneInfo.ConvertTime(candidateUtc, zone).TimeOfDay;
         return local >= (start ?? TimeSpan.Zero) && local < (end ?? TimeSpan.FromHours(24));
+    }
+
+    /// <summary>
+    /// The next instant, at or after <paramref name="candidateUtc"/>, the active-hours window opens.
+    /// Only called once <paramref name="candidateUtc"/> is already known to fall outside the window, so
+    /// the window either hasn't opened yet today (jump to today's opening) or has already closed for
+    /// the day (jump to tomorrow's opening) — <c>CreateScheduleCommandValidator</c> requires
+    /// <c>ActiveHoursStart &lt; ActiveHoursEnd</c>, so a window never wraps past midnight and this
+    /// two-way split is exhaustive.
+    /// </summary>
+    private static DateTimeOffset NextWindowOpeningUtc(
+        DateTimeOffset candidateUtc, TimeZoneInfo zone, TimeSpan? start, TimeSpan? end)
+    {
+        var windowStart = start ?? TimeSpan.Zero;
+        var local = TimeZoneInfo.ConvertTime(candidateUtc, zone);
+
+        var openingDate = local.TimeOfDay < windowStart ? local.Date : local.Date.AddDays(1);
+        var openingLocal = DateTime.SpecifyKind(openingDate + windowStart, DateTimeKind.Unspecified);
+
+        return new DateTimeOffset(TimeZoneInfo.ConvertTimeToUtc(openingLocal, zone), TimeSpan.Zero);
     }
 
     /// <summary>

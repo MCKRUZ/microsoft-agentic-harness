@@ -123,6 +123,40 @@ public sealed class ScheduleDispatchBackgroundServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task CatchUpOncePolicy_BacklogMissOutsideActiveHours_AdvancesWithoutFiring()
+    {
+        // Origin is 12:00 UTC. A 13:00-17:00 window excludes it, simulating a host that was down
+        // overnight and comes back up outside the schedule's declared active hours: the recovery fire
+        // must not happen just because CatchUpOnce would otherwise fire immediately at `now`.
+        await _scheduleStore.CreateAsync(new ScheduleRecord
+        {
+            ScheduleId = "s-catchup-outside-window",
+            Kind = RunKind.Workflow,
+            TargetId = Guid.NewGuid().ToString(),
+            OwnerId = "alice",
+            Envelope = new CapabilityEnvelope(),
+            CronExpression = "*/30 * * * *",
+            TimeZoneId = "UTC",
+            ActiveHoursStart = TimeSpan.FromHours(13),
+            ActiveHoursEnd = TimeSpan.FromHours(17),
+            MissedRunPolicy = MissedRunPolicy.CatchUpOnce,
+            Enabled = true,
+            NextFireAt = Origin.AddHours(-2),
+            CreatedAt = Origin.AddDays(-1),
+            Version = 0,
+        }, CancellationToken.None);
+
+        await StartAndWaitForFirstTimer();
+        await AdvanceAndSettle(TimeSpan.FromMinutes(1));
+
+        _queue.Enqueued.Should().BeEmpty(
+            "the recovery fire would land at `now` (12:00 UTC), outside the declared 13:00-17:00 window");
+        var schedule = await _scheduleStore.GetAsync("s-catchup-outside-window", "alice", null, CancellationToken.None);
+        schedule!.NextFireAt.Should().BeOnOrAfter(Origin.AddHours(1),
+            "the schedule must still advance to a window-respecting occurrence rather than staying stuck");
+    }
+
+    [Fact]
     public async Task ScheduleFiresAcrossARestart_WithoutDuplication()
     {
         // The literal acceptance criterion: a schedule fires on time across a host restart, without

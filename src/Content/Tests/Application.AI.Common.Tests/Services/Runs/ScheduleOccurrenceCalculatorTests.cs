@@ -69,6 +69,51 @@ public sealed class ScheduleOccurrenceCalculatorTests
     }
 
     [Fact]
+    public void ComputeNextOccurrence_EveryMinuteWithNarrowWindow_FindsNextDaysOpeningWithoutHittingSearchCap()
+    {
+        // A 1-minute-wide window (09:00-09:01) on an every-minute cron: the OLD implementation stepped
+        // one minute past each rejected candidate, needing ~1439 steps to skip a whole rejected day —
+        // more than MaxActiveHoursSearchAttempts (1000) — so it incorrectly threw even though the
+        // window is satisfiable every day. The fix jumps straight to the window's next opening, so
+        // this must resolve in a handful of iterations regardless of the gap's size.
+        var justAfterWindowCloses = new DateTimeOffset(2026, 9, 22, 9, 1, 0, TimeSpan.Zero);
+
+        var next = ScheduleOccurrenceCalculator.ComputeNextOccurrence(
+            "* * * * *", "UTC", justAfterWindowCloses,
+            activeHoursStart: TimeSpan.FromHours(9), activeHoursEnd: TimeSpan.FromHours(9) + TimeSpan.FromMinutes(1));
+
+        next.Should().Be(new DateTimeOffset(2026, 9, 23, 9, 0, 0, TimeSpan.Zero));
+    }
+
+    [Fact]
+    public void IsWithinActiveHours_InsideWindow_ReturnsTrue()
+    {
+        var insideWindow = new DateTimeOffset(2026, 9, 22, 12, 0, 0, TimeSpan.Zero);
+
+        ScheduleOccurrenceCalculator.IsWithinActiveHours(
+            insideWindow, "UTC", TimeSpan.FromHours(9), TimeSpan.FromHours(17)).Should().BeTrue();
+    }
+
+    [Fact]
+    public void IsWithinActiveHours_OutsideWindow_ReturnsFalse()
+    {
+        // Exactly what a CatchUpOnce recovery must never fire against: a real-world "the host was
+        // down overnight" instant, outside a 9-5 window.
+        var threeAm = new DateTimeOffset(2026, 9, 22, 3, 0, 0, TimeSpan.Zero);
+
+        ScheduleOccurrenceCalculator.IsWithinActiveHours(
+            threeAm, "UTC", TimeSpan.FromHours(9), TimeSpan.FromHours(17)).Should().BeFalse();
+    }
+
+    [Fact]
+    public void IsWithinActiveHours_NoWindowDeclared_AlwaysReturnsTrue()
+    {
+        var anyInstant = new DateTimeOffset(2026, 9, 22, 3, 0, 0, TimeSpan.Zero);
+
+        ScheduleOccurrenceCalculator.IsWithinActiveHours(anyInstant, "UTC", null, null).Should().BeTrue();
+    }
+
+    [Fact]
     public void ComputeNextOccurrence_UnknownTimeZone_Throws()
     {
         var act = () => ScheduleOccurrenceCalculator.ComputeNextOccurrence(
