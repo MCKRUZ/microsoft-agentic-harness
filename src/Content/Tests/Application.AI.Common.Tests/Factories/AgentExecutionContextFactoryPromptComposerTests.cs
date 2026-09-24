@@ -86,6 +86,13 @@ public sealed class AgentExecutionContextFactoryPromptComposerTests
         services.AddSingleton(Mock.Of<IContextBudgetTracker>());
         services.AddSingleton<IAmbientRequestScope, AmbientRequestScope>();
         services.AddSingleton<IContentRedactionFilter>(TestRedactionFilter.Instance);
+
+        // PermissionRulesSectionProvider resolves a rule's pattern to the tool's published name so one
+        // tool is summarised once (#652). Empty key set — this graph registers no first-party tools, so
+        // every pattern resolves to itself.
+        services.AddSingleton(new FirstPartyToolLookup(
+            new ServiceCollection().BuildServiceProvider(), new HashSet<string>()));
+
         services.AddSystemPromptComposition();
         return services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
     }

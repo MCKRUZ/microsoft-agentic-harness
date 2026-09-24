@@ -1,8 +1,11 @@
 using Application.AI.Common.Interfaces.Permissions;
+using Application.AI.Common.Interfaces.Tools;
+using Application.AI.Common.Services.Tools;
 using Domain.AI.Permissions;
 using Domain.AI.Prompts;
 using FluentAssertions;
 using Infrastructure.AI.Prompts.Sections;
+using Microsoft.Extensions.DependencyInjection;
 using Moq;
 using Xunit;
 
@@ -17,7 +20,7 @@ public sealed class PermissionRulesSectionProviderTests
     [Fact]
     public void SectionType_IsPermissionRules()
     {
-        var provider = new PermissionRulesSectionProvider(Enumerable.Empty<IPermissionRuleProvider>());
+        var provider = Sut();
 
         provider.SectionType.Should().Be(SystemPromptSectionType.PermissionRules);
     }
@@ -26,7 +29,7 @@ public sealed class PermissionRulesSectionProviderTests
     public async Task GetSectionAsync_NoRules_ReturnsNull()
     {
         var emptyProvider = CreateRuleProvider(PermissionRuleSource.ProjectSettings);
-        var provider = new PermissionRulesSectionProvider(new[] { emptyProvider });
+        var provider = Sut(emptyProvider);
 
         var section = await provider.GetSectionAsync("agent-1");
 
@@ -42,7 +45,7 @@ public sealed class PermissionRulesSectionProviderTests
             PermissionRuleSource.ProjectSettings, 10, false);
 
         var ruleProvider = CreateRuleProvider(PermissionRuleSource.ProjectSettings, rule);
-        var provider = new PermissionRulesSectionProvider(new[] { ruleProvider });
+        var provider = Sut(ruleProvider);
 
         var section = await provider.GetSectionAsync("agent-1");
 
@@ -60,7 +63,7 @@ public sealed class PermissionRulesSectionProviderTests
             PermissionRuleSource.ProjectSettings, 10, false);
 
         var ruleProvider = CreateRuleProvider(PermissionRuleSource.ProjectSettings, rule);
-        var provider = new PermissionRulesSectionProvider(new[] { ruleProvider });
+        var provider = Sut(ruleProvider);
 
         var section = await provider.GetSectionAsync("agent-1");
 
@@ -83,7 +86,7 @@ public sealed class PermissionRulesSectionProviderTests
             PermissionRuleSource.ProjectSettings, 10, false);
 
         var ruleProvider = CreateRuleProvider(PermissionRuleSource.ProjectSettings, askRule, denyRule);
-        var provider = new PermissionRulesSectionProvider(new[] { ruleProvider });
+        var provider = Sut(ruleProvider);
 
         var section = await provider.GetSectionAsync("agent-1");
 
@@ -101,7 +104,7 @@ public sealed class PermissionRulesSectionProviderTests
             PermissionRuleSource.ProjectSettings, 10, false);
 
         var ruleProvider = CreateRuleProvider(PermissionRuleSource.ProjectSettings, rule);
-        var provider = new PermissionRulesSectionProvider(new[] { ruleProvider });
+        var provider = Sut(ruleProvider);
 
         var section = await provider.GetSectionAsync("agent-1");
 
@@ -118,7 +121,7 @@ public sealed class PermissionRulesSectionProviderTests
             PermissionRuleSource.ProjectSettings, 10, false);
 
         var ruleProvider = CreateRuleProvider(PermissionRuleSource.ProjectSettings, rule);
-        var provider = new PermissionRulesSectionProvider(new[] { ruleProvider });
+        var provider = Sut(ruleProvider);
 
         var section = await provider.GetSectionAsync("agent-1");
 
@@ -134,7 +137,7 @@ public sealed class PermissionRulesSectionProviderTests
             PermissionRuleSource.ProjectSettings, 10, false);
 
         var ruleProvider = CreateRuleProvider(PermissionRuleSource.ProjectSettings, rule);
-        var provider = new PermissionRulesSectionProvider(new[] { ruleProvider });
+        var provider = Sut(ruleProvider);
 
         var section = await provider.GetSectionAsync("agent-1");
 
@@ -152,7 +155,7 @@ public sealed class PermissionRulesSectionProviderTests
             new ToolPermissionRule("tool2", null, PermissionBehaviorType.Deny,
                 PermissionRuleSource.AgentManifest, 20, false));
 
-        var sut = new PermissionRulesSectionProvider(new[] { provider1, provider2 });
+        var sut = Sut(provider1, provider2);
 
         var section = await sut.GetSectionAsync("agent-1");
 
@@ -164,10 +167,127 @@ public sealed class PermissionRulesSectionProviderTests
     [Fact]
     public void Constructor_NullProviders_Throws()
     {
-        var act = () => new PermissionRulesSectionProvider(null!);
+        var act = () => new PermissionRulesSectionProvider(null!, EmptyLookup());
 
         act.Should().Throw<ArgumentNullException>();
     }
+
+    [Fact]
+    public void Constructor_NullLookup_Throws()
+    {
+        var act = () => new PermissionRulesSectionProvider(Enumerable.Empty<IPermissionRuleProvider>(), null!);
+
+        act.Should().Throw<ArgumentNullException>();
+    }
+
+    // --- #652: the rule providers deliberately emit one rule per name-form for a first-party tool
+    // whose DI registration key disagrees with its published name, so enforcement covers it either
+    // way. Rendered verbatim that told the model two tools were restricted, one of them under a key
+    // it can never invoke. The summary resolves each pattern to its published name and groups on it.
+
+    [Fact]
+    public async Task GetSectionAsync_KeyAndPublishedNameRules_RenderOnceUnderThePublishedName()
+    {
+        var ruleProvider = CreateRuleProvider(
+            PermissionRuleSource.CapabilityEnvelope,
+            Deny("registered_key"),
+            Deny("self_reported_name"));
+
+        var section = await Sut(DivergentNameLookup("registered_key", "self_reported_name"), ruleProvider)
+            .GetSectionAsync("agent-1");
+
+        var denied = DeniedLines(section!.Content);
+        denied.Should().ContainSingle("the two name-forms are one tool from the agent's perspective");
+        denied[0].Should().Be("- self_reported_name", "the agent invokes by published name, never by DI key");
+    }
+
+    [Fact]
+    public async Task GetSectionAsync_SameToolRestrictedByTwoProviders_RendersOnce()
+    {
+        // Duplication this fix collapses that no creation-time tag on a rule would have caught: two
+        // independent providers each denying the same tool.
+        var first = CreateRuleProvider(PermissionRuleSource.ProjectSettings, Deny("bash"));
+        var second = CreateRuleProvider(PermissionRuleSource.PluginDeclaration, Deny("bash"));
+
+        var section = await Sut(first, second).GetSectionAsync("agent-1");
+
+        DeniedLines(section!.Content).Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task GetSectionAsync_GlobPatterns_ArePassedThroughUnchanged()
+    {
+        // A glob is not a registration key; it must survive resolution untouched, and two different
+        // globs must stay two lines.
+        var ruleProvider = CreateRuleProvider(
+            PermissionRuleSource.CapabilityEnvelope, Deny("*"), Deny("bash:*"));
+
+        var section = await Sut(ruleProvider).GetSectionAsync("agent-1");
+
+        DeniedLines(section!.Content).Should().BeEquivalentTo(["- *", "- bash:*"]);
+    }
+
+    [Fact]
+    public async Task GetSectionAsync_SameToolDifferentOperations_KeepsBothLines()
+    {
+        // Grouping must not swallow a genuine second restriction on the same tool.
+        var ruleProvider = CreateRuleProvider(
+            PermissionRuleSource.ProjectSettings,
+            new ToolPermissionRule("file_system", "read", PermissionBehaviorType.Deny,
+                PermissionRuleSource.ProjectSettings, 10),
+            new ToolPermissionRule("file_system", "write", PermissionBehaviorType.Deny,
+                PermissionRuleSource.ProjectSettings, 10));
+
+        var section = await Sut(ruleProvider).GetSectionAsync("agent-1");
+
+        DeniedLines(section!.Content).Should().HaveCount(2);
+    }
+
+    [Fact]
+    public async Task GetSectionAsync_SameToolAskedAndDenied_AppearsUnderBothHeadings()
+    {
+        // Grouping is within a behavior, never across it — a tool restricted both ways must still be
+        // reported both ways.
+        var ruleProvider = CreateRuleProvider(
+            PermissionRuleSource.ProjectSettings,
+            new ToolPermissionRule("file_system", null, PermissionBehaviorType.Ask,
+                PermissionRuleSource.ProjectSettings, 10),
+            Deny("file_system"));
+
+        var section = await Sut(ruleProvider).GetSectionAsync("agent-1");
+
+        section!.Content.Should().Contain("require approval before use");
+        DeniedLines(section.Content).Should().ContainSingle().Which.Should().Be("- file_system");
+    }
+
+    private static ToolPermissionRule Deny(string toolPattern) =>
+        new(toolPattern, null, PermissionBehaviorType.Deny, PermissionRuleSource.CapabilityEnvelope, 1);
+
+    /// <summary>The bullet lines under the "denied" heading, which is always the last section rendered.</summary>
+    private static List<string> DeniedLines(string content) =>
+        content[(content.IndexOf("denied:", StringComparison.Ordinal) + "denied:".Length)..]
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(l => l.StartsWith('-'))
+            .ToList();
+
+    /// <summary>A lookup that knows no first-party tools, so every pattern resolves to itself.</summary>
+    private static FirstPartyToolLookup EmptyLookup() =>
+        new(new ServiceCollection().BuildServiceProvider(), new HashSet<string>());
+
+    /// <summary>A lookup where one registered key reports a different published name.</summary>
+    private static FirstPartyToolLookup DivergentNameLookup(string key, string publishedName)
+    {
+        var services = new ServiceCollection();
+        services.AddKeyedSingleton<ITool>(key, (_, _) => Mock.Of<ITool>(t => t.Name == publishedName));
+        return new FirstPartyToolLookup(services.BuildServiceProvider(), new HashSet<string> { key });
+    }
+
+    private static PermissionRulesSectionProvider Sut(params IPermissionRuleProvider[] ruleProviders) =>
+        new(ruleProviders, EmptyLookup());
+
+    private static PermissionRulesSectionProvider Sut(
+        FirstPartyToolLookup lookup, params IPermissionRuleProvider[] ruleProviders) =>
+        new(ruleProviders, lookup);
 
     private static IPermissionRuleProvider CreateRuleProvider(
         PermissionRuleSource source,
