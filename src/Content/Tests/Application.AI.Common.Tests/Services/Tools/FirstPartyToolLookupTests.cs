@@ -81,6 +81,111 @@ public sealed class FirstPartyToolLookupTests
         constructionError.Should().BeNull();
     }
 
+    // --- #651: a successful published-name resolution is memoized for the process lifetime, so the
+    // permission-rule providers that call this on every tool-permission resolution stop paying a DI
+    // probe per name per call. The two NEGATIVE cases below are the safety half of that memo and matter
+    // more than the positive one: memoizing an unknown name would let a caller grow the dictionary
+    // without bound (MCP names embed a per-run bundle id), and memoizing a construction failure would
+    // permanently downgrade a security control on the strength of one transient fault.
+
+    /// <summary>
+    /// Builds a lookup whose tool records every member access, so a test can count reads of
+    /// <see cref="ITool.Name"/> — the observation that actually distinguishes a memo hit from a live
+    /// resolution. Counting how often the DI factory runs does NOT: the tool is a keyed SINGLETON, so
+    /// the container builds it once whether or not this type memoizes anything, and a test asserting
+    /// "constructed once" passes identically with the memo deleted (caught by mutation-testing these
+    /// very tests — an unexpected pass).
+    /// </summary>
+    private static (FirstPartyToolLookup Lookup, Mock<ITool> Tool) LookupWithRecordingTool(
+        string key, string publishedName)
+    {
+        var tool = new Mock<ITool>();
+        tool.Setup(t => t.Name).Returns(publishedName);
+        var services = new ServiceCollection();
+        services.AddKeyedSingleton<ITool>(key, (_, _) => tool.Object);
+
+        return (new FirstPartyToolLookup(services.BuildServiceProvider(), new HashSet<string> { key }), tool);
+    }
+
+    [Fact]
+    public void TryResolvePublishedName_RepeatedCalls_ReadsTheToolsNameOnlyOnce()
+    {
+        var (lookup, tool) = LookupWithRecordingTool("registered_key", "self_reported_name");
+
+        lookup.TryResolvePublishedName("registered_key", out var first, out _).Should().BeTrue();
+        var readsAfterFirstCall = tool.Invocations.Count;
+        lookup.TryResolvePublishedName("registered_key", out var second, out _).Should().BeTrue();
+        lookup.TryResolvePublishedName("registered_key", out var third, out _).Should().BeTrue();
+
+        readsAfterFirstCall.Should().BeGreaterThan(0, "the first call must actually resolve the name");
+        tool.Invocations.Count.Should().Be(readsAfterFirstCall,
+            "the mapping cannot change, so later calls must be served from the memo");
+        first.Should().Be("self_reported_name");
+        second.Should().Be(first);
+        third.Should().Be(first);
+    }
+
+    [Fact]
+    public void TryResolvePublishedName_CasingVariantOfAMemoizedKey_HitsTheSameEntry()
+    {
+        // The memo must share this type's own case-insensitive resolution semantics (#655) — otherwise
+        // every casing an operator happens to author gets its own entry and its own live resolution.
+        var (lookup, tool) = LookupWithRecordingTool("bash", "bash");
+
+        lookup.TryResolvePublishedName("bash", out _, out _).Should().BeTrue();
+        var readsAfterFirstCall = tool.Invocations.Count;
+        lookup.TryResolvePublishedName("BASH", out var published, out _).Should().BeTrue();
+
+        tool.Invocations.Count.Should().Be(readsAfterFirstCall,
+            "a casing variant of an already-memoized key must hit the same entry");
+        published.Should().Be("bash");
+    }
+
+    [Fact]
+    public void TryResolvePublishedName_NameOutsideBoundedSet_IsNotMemoized()
+    {
+        // Callers pass unbounded, caller-authored names here (an MCP tool name embeds a per-run bundle
+        // id). Memoizing the miss would reintroduce the unbounded process-lifetime growth the bounded
+        // key set exists to prevent, so a miss must stay a live lookup every time.
+        var services = new ServiceCollection();
+        var lookup = new FirstPartyToolLookup(services.BuildServiceProvider(), new HashSet<string>());
+
+        lookup.TryResolvePublishedName("mcp:run-123:tool", out var first, out _).Should().BeFalse();
+        lookup.TryResolvePublishedName("mcp:run-123:tool", out var second, out _).Should().BeFalse();
+
+        first.Should().Be("mcp:run-123:tool", "an unresolved name falls back to the key itself");
+        second.Should().Be(first);
+    }
+
+    [Fact]
+    public void TryResolvePublishedName_ConstructionFailure_IsNotMemoized_AndLaterSuccessResolves()
+    {
+        // A construction failure is the one genuinely transient outcome here. Caching it would leave the
+        // caller on key-only coverage — a permanently degraded security control — for the rest of the
+        // process, so the next call must retry and pick up a tool that can now be built.
+        var attempts = 0;
+        var services = new ServiceCollection();
+        services.AddKeyedSingleton<ITool>("flaky_tool", (_, _) =>
+        {
+            attempts++;
+            if (attempts == 1)
+                throw new InvalidOperationException("dependency not wired yet");
+            return Mock.Of<ITool>(t => t.Name == "flaky_published_name");
+        });
+        var lookup = new FirstPartyToolLookup(
+            services.BuildServiceProvider(), new HashSet<string> { "flaky_tool" });
+
+        lookup.TryResolvePublishedName("flaky_tool", out var failedName, out var constructionError)
+            .Should().BeFalse();
+        failedName.Should().Be("flaky_tool");
+        constructionError.Should().BeOfType<InvalidOperationException>();
+
+        lookup.TryResolvePublishedName("flaky_tool", out var retriedName, out var retryError)
+            .Should().BeTrue("the failure must not have been memoized");
+        retriedName.Should().Be("flaky_published_name");
+        retryError.Should().BeNull();
+    }
+
     [Fact]
     public void Constructor_TwoRegistrationKeysDifferOnlyByCase_Throws()
     {

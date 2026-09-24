@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Application.AI.Common.Interfaces.Tools;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -51,6 +52,32 @@ public sealed class FirstPartyToolLookup
 {
     private readonly IServiceProvider _serviceProvider;
     private readonly HashSet<string> _registeredFirstPartyToolKeys;
+
+    // #651: memoizes a SUCCESSFUL key -> published-name resolution for the process lifetime.
+    //
+    // Why no invalidation is needed — the mapping is immutable once observed. Every first-party ITool
+    // is registered AddKeyedSingleton (84 registrations, no keyed transient/scoped ITool exists), so DI
+    // hands back one instance per key for the life of the process, and every implementation's Name
+    // returns a compile-time constant or a hard-coded literal — nothing derives it from configuration
+    // that could hot-reload. A value that cannot change needs no version key, no ambient-scope key, and
+    // no expiry: this is why the memo belongs HERE and not in either permission-rule provider, each of
+    // which would otherwise need its own cache with its own separately-argued invalidation rule
+    // (PluginPermissionRuleProvider already carries one; EnvelopePermissionRuleProvider was about to
+    // grow a second).
+    //
+    // ONLY successes are memoized, and that is a safety property, not an optimization detail:
+    //   * A name OUTSIDE the bounded registered-key set must never be memoized. Callers pass
+    //     caller-authored, unbounded names here (MCP tool names embed a per-run bundle id), so
+    //     memoizing misses would reintroduce exactly the unbounded, process-lifetime memory growth
+    //     this type's class remarks exist to prevent. A miss costs one HashSet probe; leave it live.
+    //   * A CONSTRUCTION FAILURE must never be memoized either. It is the one genuinely transient
+    //     outcome here, and caching it would permanently downgrade a security control (the caller
+    //     falls back to key-only Deny/grant coverage) for the rest of the process on the strength of
+    //     one bad moment. Retrying costs a DI probe that a healthy tool answers from its singleton.
+    // Keyed case-insensitively to match this type's own resolution semantics (#655) — "BASH" and
+    // "bash" resolve to one tool, so they share one memo entry.
+    private readonly ConcurrentDictionary<string, string> _publishedNameByKey =
+        new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>Initializes a new instance of the <see cref="FirstPartyToolLookup"/> class.</summary>
     /// <param name="serviceProvider">Root service provider, for bounded keyed-DI lookup.</param>
@@ -209,19 +236,43 @@ public sealed class FirstPartyToolLookup
     /// first-party resolution is possible or needed) OR constructing it throws.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// #626 code-review: originally duplicated near-verbatim between <c>PluginPermissionRuleProvider</c>
     /// (#612) and <c>EnvelopePermissionRuleProvider</c> (#626) — exactly the anti-pattern this type's
     /// own class remarks say it exists to prevent (#387: "found duplicated — twice"). Deliberately pure
     /// (no logging): a construction failure is a caller-specific concern (each rule provider names a
     /// different kind of manifest entry in its own log message), so each caller still wraps this with
     /// its own one-line log-on-failure — only the resolve-or-fall-back-to-key logic itself is shared.
+    /// </para>
+    /// <para>
+    /// <strong>A successful resolution is memoized for the process lifetime (#651), so callers on a hot
+    /// path do not need a cache of their own.</strong> Both callers sit behind
+    /// <c>ThreePhasePermissionResolver.CollectRulesAsync</c>, which asks every rule provider for its
+    /// rules on <em>every</em> tool-permission resolution; before this, each provider paid a fresh DI
+    /// probe per granted/declared name per call and was pushed toward building its own cache with its
+    /// own invalidation rule to avoid it. The mapping this method returns cannot change once observed
+    /// (see <see cref="_publishedNameByKey"/>), so memoizing it here needs no invalidation at all and
+    /// removes the reason for those per-caller caches. A miss (unknown name) and a construction failure
+    /// are both deliberately NOT memoized — see that field's remarks for why each of those is a safety
+    /// requirement rather than an oversight.
+    /// </para>
     /// </remarks>
     public bool TryResolvePublishedName(string toolKey, out string publishedName, out Exception? constructionError)
     {
+        // #651: a hit skips the DI probe AND the caller's own per-call caching concerns entirely —
+        // see _publishedNameByKey's remarks for why this mapping can never go stale.
+        if (_publishedNameByKey.TryGetValue(toolKey, out var memoized))
+        {
+            publishedName = memoized;
+            constructionError = null;
+            return true;
+        }
+
         var tool = TryResolve(toolKey, out constructionError);
         if (tool is not null)
         {
             publishedName = tool.Name;
+            _publishedNameByKey[toolKey] = publishedName;
             return true;
         }
 
