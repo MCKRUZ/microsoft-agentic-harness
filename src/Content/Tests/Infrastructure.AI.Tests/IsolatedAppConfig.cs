@@ -36,8 +36,8 @@ internal static class IsolatedAppConfig
     /// <returns>The same instance, for chaining onto an object initializer.</returns>
     /// <remarks>
     /// <para>
-    /// Sets the three paths this assembly's registrations are known to write: the planner database, the
-    /// conversation database, and the graph data directory. It is <em>not</em> an exhaustive sweep of
+    /// Sets the paths this assembly's registrations are known to write: the planner database, the
+    /// conversation database, the schedule database, and the graph data directory. It is <em>not</em> an exhaustive sweep of
     /// every path in <see cref="AppConfig"/> — several others (audit receipt and drift audit paths,
     /// prompt-usage) resolve under the build output too but nothing here currently reaches them.
     /// <c>BuildOutputStaysCleanTests</c> is what catches it if that changes, which is why that guard
@@ -80,6 +80,7 @@ internal static class IsolatedAppConfig
         config.AI.Planner.DatabasePath = Path.Combine(slot, "planner.db");
         config.AI.Conversations.DatabasePath = Path.Combine(slot, "conversations.db");
         config.AI.Rag.GraphDatabase.DataDirectory = Path.Combine(slot, "graph");
+        config.AI.Schedules.DatabasePath = Path.Combine(slot, "schedules.db");
 
         return config;
     }

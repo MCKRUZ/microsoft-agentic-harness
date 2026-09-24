@@ -59,6 +59,29 @@ public static partial class DependencyInjection
     }
 
     /// <summary>
+    /// Registers the SQLite-backed <see cref="ScheduleDbContext"/> (#593), following the same
+    /// per-subsystem-database pattern as <see cref="RegisterPlannerDbContext"/> — see
+    /// <see cref="ScheduleDbContext"/>'s own remarks for why this is a separate database file
+    /// rather than a table on <see cref="PlannerDbContext"/>.
+    /// </summary>
+    private static void RegisterScheduleDbContext(IServiceCollection services, AppConfig appConfig)
+    {
+        var dbPath = appConfig.AI.Schedules.DatabasePath;
+        var dataDir = Path.GetDirectoryName(Path.Combine(AppContext.BaseDirectory, dbPath))!;
+        OwnerOnlyDirectoryHelper.Create(dataDir);
+        var connectionString = $"DataSource={Path.Combine(AppContext.BaseDirectory, dbPath)}";
+
+        services.AddDbContextFactory<ScheduleDbContext>(options => options
+            .UseSqlite(connectionString)
+            .AddInterceptors(new SqliteVersionInterceptor()));
+
+        // Same "resolving the store forces the schema into existence" lifecycle as the planner's
+        // own SchemaInitializer registration above — EfScheduleStore demands it as a plain
+        // constructor dependency (ValidateOnBuild-visible).
+        services.AddSingleton<SchemaInitializer<ScheduleDbContext>>();
+    }
+
+    /// <summary>
     /// Registers planner services: executor, validator, generator, state store, execution context,
     /// and keyed step executors for each <see cref="StepType"/>.
     /// </summary>
@@ -147,6 +170,19 @@ public static partial class DependencyInjection
         // executor still knows how to act on them — but nothing ever asks it to, so an approved gate
         // waits out the parked-run ceiling and fails.
         services.AddHostedService<ParkedRunResumeService>();
+
+        // Recurring-schedule seam (#593). The durable, EF-backed counterpart to the in-memory run
+        // substrate above — TryAddSingleton like the others, since it takes only a DbContextFactory
+        // and is safe to share. Registered unconditionally alongside the rest of the substrate for the
+        // same reason the dispatcher is: the CQRS handlers that depend on IScheduleStore are found by
+        // assembly scanning and exist in every host, so a conditional registration would fail
+        // ValidateOnBuild in whichever host omitted it.
+        services.TryAddSingleton<IScheduleStore, EfScheduleStore>();
+
+        // The tick service is passive until Enabled is set — see ScheduleDispatchBackgroundService's
+        // own loop — so registering it unconditionally costs nothing on hosts that never turn schedules
+        // on, and keeps a host that does turn it on from also needing a separate registration step.
+        services.AddHostedService<ScheduleDispatchBackgroundService>();
 
         services.AddScoped<IPlanValidator, PlanValidator>();
         services.AddScoped<IPlanGenerator, LlmPlanGeneratorService>();

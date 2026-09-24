@@ -113,6 +113,16 @@ public static partial class DependencyInjection
                 sp.GetRequiredService<IServiceScopeFactory>(),
                 sp.GetRequiredService<ILogger<DocumentIngestTool>>()));
 
+        // Manage-schedules tool (#593) — list/pause/resume/delete the caller's own recurring
+        // schedules. Creation is deliberately not covered here; see ManageSchedulesTool's own
+        // remarks for why. Ownership is resolved per invocation from IAmbientRequestScope.Current,
+        // the same pattern ToolResultFetchTool uses.
+        services.AddKeyedSingleton<ITool>(ManageSchedulesTool.ToolName, (sp, _) =>
+            new ManageSchedulesTool(
+                sp.GetRequiredService<Application.AI.Common.Interfaces.IAmbientRequestScope>(),
+                sp.GetRequiredService<IServiceScopeFactory>(),
+                sp.GetRequiredService<ILogger<ManageSchedulesTool>>()));
+
         // Echo tools — deterministic tools for E2E testing pipeline verification
         services.AddKeyedSingleton<ITool>(EchoLookupTool.ToolName, (_, _) => new EchoLookupTool());
         services.AddKeyedSingleton<ITool>(EchoCalculateTool.ToolName, (_, _) => new EchoCalculateTool());
