@@ -55,15 +55,23 @@ public sealed class FirstPartyToolLookup
 
     // #651: memoizes a SUCCESSFUL key -> published-name resolution for the process lifetime.
     //
-    // Why no invalidation is needed — the mapping is immutable once observed. Every first-party ITool
-    // is registered AddKeyedSingleton (84 registrations, no keyed transient/scoped ITool exists), so DI
-    // hands back one instance per key for the life of the process, and every implementation's Name
-    // returns a compile-time constant or a hard-coded literal — nothing derives it from configuration
-    // that could hot-reload. A value that cannot change needs no version key, no ambient-scope key, and
-    // no expiry: this is why the memo belongs HERE and not in either permission-rule provider, each of
-    // which would otherwise need its own cache with its own separately-argued invalidation rule
-    // (PluginPermissionRuleProvider already carries one; EnvelopePermissionRuleProvider was about to
-    // grow a second).
+    // Why no invalidation is needed — the mapping is immutable once observed. Two facts carry that,
+    // and both are stated as the negative/structural claims they are rather than as a count, because a
+    // count is the part a future maintainer will re-measure over a different scope and mistrust:
+    //   * NO AddKeyedScoped<ITool> or AddKeyedTransient<ITool> registration exists anywhere in the
+    //     repo — every first-party tool is a keyed SINGLETON, so DI hands back one instance per key
+    //     for the life of the process. (The tools' own registration doc, and #521's entry in
+    //     CLAUDE.md's Common Mistakes, both say a keyed tool must stay singleton even when it needs
+    //     per-request state, so this is an enforced convention rather than a coincidence of today's
+    //     registrations.)
+    //   * Every ITool.Name implementation is expression-bodied over a const or a string literal —
+    //     including the one worth suspecting, ConnectorToolAdapter.Name => _connector.ToolName, where
+    //     each connector hard-codes the literal. None is settable, init-set, or derived from
+    //     configuration that could hot-reload.
+    // A value that cannot change needs no version key, no ambient-scope key, and no expiry: this is why
+    // the memo belongs HERE and not in a permission-rule provider, which would need its own cache with
+    // its own separately-argued invalidation rule (PluginPermissionRuleProvider already carries one;
+    // EnvelopePermissionRuleProvider was about to grow a second, which is what #651 asked for).
     //
     // ONLY successes are memoized, and that is a safety property, not an optimization detail:
     //   * A name OUTSIDE the bounded registered-key set must never be memoized. Callers pass
