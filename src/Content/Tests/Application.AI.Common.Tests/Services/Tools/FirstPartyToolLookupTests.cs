@@ -142,19 +142,47 @@ public sealed class FirstPartyToolLookupTests
     }
 
     [Fact]
-    public void TryResolvePublishedName_NameOutsideBoundedSet_IsNotMemoized()
+    public void TryResolvePublishedName_NameOutsideBoundedSet_NeverBecomesAMemoHit()
     {
         // Callers pass unbounded, caller-authored names here (an MCP tool name embeds a per-run bundle
         // id). Memoizing the miss would reintroduce the unbounded process-lifetime growth the bounded
-        // key set exists to prevent, so a miss must stay a live lookup every time.
+        // key set exists to prevent.
+        //
+        // Scope of this test, stated honestly: it pins that a miss never starts reporting SUCCESS on a
+        // later call, which is what writing the fallback name into the memo dictionary would cause —
+        // the realistic regression, and the one mutation-testing this test actually reproduces. It
+        // does NOT prove the absence of some other negative-cache structure that keeps returning
+        // false; nothing observable from outside this type could. The memo dictionary's contents are
+        // private, so the invariant is carried by _publishedNameByKey's own remarks and by this
+        // behavioural floor together.
         var services = new ServiceCollection();
         var lookup = new FirstPartyToolLookup(services.BuildServiceProvider(), new HashSet<string>());
 
         lookup.TryResolvePublishedName("mcp:run-123:tool", out var first, out _).Should().BeFalse();
-        lookup.TryResolvePublishedName("mcp:run-123:tool", out var second, out _).Should().BeFalse();
+        lookup.TryResolvePublishedName("mcp:run-123:tool", out var second, out _)
+            .Should().BeFalse("a name outside the bounded set must never resolve, however often it is asked");
 
         first.Should().Be("mcp:run-123:tool", "an unresolved name falls back to the key itself");
         second.Should().Be(first);
+    }
+
+    [Fact]
+    public void TryResolvePublishedName_NullKey_ReturnsFalseInsteadOfThrowing()
+    {
+        // A null key is reachable from operator-authored config: PluginPermissionRuleProvider forwards
+        // every PluginDeclaration.DeniedTools entry unfiltered, and that list is bound from JSON where
+        // ["bash", null] yields a null element. ThreePhasePermissionResolver does not catch provider
+        // exceptions, so a throw here would take down permission resolution for every tool call in the
+        // host — which is what an unguarded ConcurrentDictionary memo probe (it throws on a null key)
+        // would have introduced.
+        var services = new ServiceCollection();
+        var lookup = new FirstPartyToolLookup(
+            services.BuildServiceProvider(), new HashSet<string> { "bash" });
+
+        var act = () => lookup.TryResolvePublishedName(null!, out _, out _);
+
+        act.Should().NotThrow("the documented contract is to return false, never to throw");
+        lookup.TryResolvePublishedName(null!, out _, out _).Should().BeFalse();
     }
 
     [Fact]

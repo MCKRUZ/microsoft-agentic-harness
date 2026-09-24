@@ -245,38 +245,60 @@ public sealed class FirstPartyToolLookup
     /// its own one-line log-on-failure — only the resolve-or-fall-back-to-key logic itself is shared.
     /// </para>
     /// <para>
-    /// <strong>A successful resolution is memoized for the process lifetime (#651), so callers on a hot
-    /// path do not need a cache of their own.</strong> Both callers sit behind
-    /// <c>ThreePhasePermissionResolver.CollectRulesAsync</c>, which asks every rule provider for its
-    /// rules on <em>every</em> tool-permission resolution; before this, each provider paid a fresh DI
-    /// probe per granted/declared name per call and was pushed toward building its own cache with its
-    /// own invalidation rule to avoid it. The mapping this method returns cannot change once observed
-    /// (see <see cref="_publishedNameByKey"/>), so memoizing it here needs no invalidation at all and
-    /// removes the reason for those per-caller caches. A miss (unknown name) and a construction failure
-    /// are both deliberately NOT memoized — see that field's remarks for why each of those is a safety
-    /// requirement rather than an oversight.
+    /// <strong>A successful resolution is memoized for the process lifetime (#651), so a caller on a hot
+    /// path does not need a cache of its own.</strong> The per-call cost lands on
+    /// <c>CapabilityEnvelopeGrantResolver</c>, which is reached both from
+    /// <c>EnvelopePermissionRuleProvider</c> (via <c>ThreePhasePermissionResolver.CollectRulesAsync</c>,
+    /// which asks every rule provider for its rules on <em>every</em> tool-permission resolution) and
+    /// from <c>ToolInvocationGovernor.EnvelopeGrantsToolWhenArmed</c>'s independent re-confirmation, and
+    /// which re-expanded every granted/declared name on each of those calls. That is what #651 was
+    /// filed against, and it is why the fix belongs here: the alternative was a second bespoke
+    /// per-provider cache with its own separately-argued invalidation rule. The other caller,
+    /// <c>PluginPermissionRuleProvider</c>, already avoids the repeat cost a different way — it caches
+    /// its whole rule list against registry version counters (#612), so it reaches this method only on
+    /// a recompute, and it benefits from the memo across those recomputes rather than per call. The
+    /// mapping returned here cannot change once observed (see <see cref="_publishedNameByKey"/>), so
+    /// memoizing it needs no invalidation at all. A miss (unknown name) and a construction failure are
+    /// both deliberately NOT memoized — see that field's remarks for why each is a safety requirement
+    /// rather than an oversight.
     /// </para>
     /// </remarks>
     public bool TryResolvePublishedName(string toolKey, out string publishedName, out Exception? constructionError)
     {
         // #651: a hit skips the DI probe AND the caller's own per-call caching concerns entirely —
         // see _publishedNameByKey's remarks for why this mapping can never go stale.
-        if (_publishedNameByKey.TryGetValue(toolKey, out var memoized))
+        //
+        // The null check is load-bearing, not defensive noise: ConcurrentDictionary.TryGetValue THROWS
+        // on a null key, whereas every pre-#651 path through this method reached the container inside
+        // TryResolve's catch-all and so honoured the documented "returns false" contract instead. A
+        // null key is reachable — PluginPermissionRuleProvider.EmitDeniedToolsRules forwards each
+        // DeniedTools entry unfiltered, and that list is operator-authored config bound from JSON
+        // (PluginDeclaration.DeniedTools), where ["bash", null] yields a null element that the
+        // nullable-reference annotation cannot prevent at runtime. Since ThreePhasePermissionResolver
+        // does not catch provider exceptions, letting it throw here would take down permission
+        // resolution for every tool call in the host. Skipping the memo for a null key leaves such a
+        // key on exactly its previous path, so this fixes the new crash without changing any existing
+        // behaviour (it still returns false, with the same construction error attached).
+        if (toolKey is not null && _publishedNameByKey.TryGetValue(toolKey, out var memoized))
         {
             publishedName = memoized;
             constructionError = null;
             return true;
         }
 
-        var tool = TryResolve(toolKey, out constructionError);
+        // toolKey! — the null-forgiving operator asserts nothing new here: a null key took this exact
+        // path before #651 too (the compiler only sees the possibility now because the memo probe above
+        // had to test for it). TryResolve's catch-all is what handles it, which is the behaviour the
+        // check above deliberately preserves rather than changing in a perf-motivated PR.
+        var tool = TryResolve(toolKey!, out constructionError);
         if (tool is not null)
         {
             publishedName = tool.Name;
-            _publishedNameByKey[toolKey] = publishedName;
+            _publishedNameByKey[toolKey!] = publishedName;
             return true;
         }
 
-        publishedName = toolKey;
+        publishedName = toolKey!;
         return false;
     }
 }
