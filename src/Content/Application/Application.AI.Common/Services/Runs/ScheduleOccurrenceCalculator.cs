@@ -125,7 +125,29 @@ public static class ScheduleOccurrenceCalculator
         var openingDate = local.TimeOfDay < windowStart ? local.Date : local.Date.AddDays(1);
         var openingLocal = DateTime.SpecifyKind(openingDate + windowStart, DateTimeKind.Unspecified);
 
-        return new DateTimeOffset(TimeZoneInfo.ConvertTimeToUtc(openingLocal, zone), TimeSpan.Zero);
+        return ConvertLocalToUtcSkippingDstGaps(openingLocal, zone);
+    }
+
+    /// <summary>
+    /// Converts a local wall-clock time to UTC, tolerating a DST "spring forward" transition that
+    /// makes <paramref name="local"/> not exist at all (e.g. 02:30 on the day a zone's clocks jump
+    /// from 02:00 to 03:00) — <see cref="TimeZoneInfo.ConvertTimeToUtc(DateTime, TimeZoneInfo)"/>
+    /// throws <see cref="ArgumentException"/> for exactly that input, which would otherwise reject a
+    /// schedule whose active-hours window happens to start inside a gap nobody chose deliberately: the
+    /// gap exists only because of the transition, not because the caller picked an invalid time.
+    /// </summary>
+    /// <remarks>
+    /// Nudging forward in whole-hour steps is sufficient (not exact) because the result only seeds
+    /// <see cref="ComputeNextOccurrence"/>'s next search iteration — landing a few minutes past the
+    /// window's nominal opening costs one extra loop pass, never an incorrect final answer. Real-world
+    /// DST gaps are at most a few hours; the bound below covers every zone in the IANA database.
+    /// </remarks>
+    private static DateTimeOffset ConvertLocalToUtcSkippingDstGaps(DateTime local, TimeZoneInfo zone)
+    {
+        for (var hoursSkipped = 0; hoursSkipped < 6 && zone.IsInvalidTime(local); hoursSkipped++)
+            local = local.AddHours(1);
+
+        return new DateTimeOffset(TimeZoneInfo.ConvertTimeToUtc(local, zone), TimeSpan.Zero);
     }
 
     /// <summary>

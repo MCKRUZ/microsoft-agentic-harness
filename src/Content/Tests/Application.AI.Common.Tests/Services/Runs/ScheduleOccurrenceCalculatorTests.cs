@@ -86,6 +86,24 @@ public sealed class ScheduleOccurrenceCalculatorTests
     }
 
     [Fact]
+    public void ComputeNextOccurrence_ActiveHoursStartFallsInsideDstSpringForwardGap_DoesNotThrow()
+    {
+        // 2027-03-14 is America/New_York's spring-forward date: local clocks jump from 02:00 straight
+        // to 03:00, so 02:30 never exists as a local wall-clock time. A window starting at 02:30
+        // forces the search to jump to exactly that nonexistent local instant when it advances to this
+        // day's opening — TimeZoneInfo.ConvertTimeToUtc throws ArgumentException for it unless the
+        // jump tolerates the gap.
+        var dayBefore = new DateTimeOffset(2027, 3, 13, 12, 0, 0, TimeSpan.FromHours(-5));
+
+        var act = () => ScheduleOccurrenceCalculator.ComputeNextOccurrence(
+            "* * * * *", "America/New_York", dayBefore,
+            activeHoursStart: TimeSpan.FromMinutes(150), // 02:30
+            activeHoursEnd: TimeSpan.FromHours(4));
+
+        act.Should().NotThrow();
+    }
+
+    [Fact]
     public void IsWithinActiveHours_InsideWindow_ReturnsTrue()
     {
         var insideWindow = new DateTimeOffset(2026, 9, 22, 12, 0, 0, TimeSpan.Zero);
