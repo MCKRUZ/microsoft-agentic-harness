@@ -40,6 +40,22 @@ namespace Domain.AI.Permissions;
 /// specificity. <see cref="PermissionBaselineTier.GrantBoundary"/> marks a rule as the edge of an
 /// authorisation grant, which no Default-tier baseline may widen past.
 /// </param>
+/// <param name="PublishedToolName">
+/// When set, the tool's self-reported published name — the name a caller actually invokes it by —
+/// for a rule that is one of several name-forms covering a single logical tool. Null (the default)
+/// for every ordinary rule, which stands alone.
+/// <para>
+/// <strong>Presentation only; never consulted when matching.</strong> A first-party tool's DI
+/// registration key can disagree with its published name, so a provider emits one rule per form to
+/// guarantee enforcement covers the tool whichever name is used (#612, #626). Matching still happens
+/// purely on <paramref name="ToolPattern"/>; this field exists so a consumer that <em>summarises</em>
+/// rules can tell that two entries are one tool and say so once, under the name the agent can
+/// actually call (#652). It is set at emission because only the emitting provider still knows the
+/// pairing — by the time a rule reaches a consumer, recovering it would mean resolving the tool
+/// again, which on the prompt path would construct the host's entire tool set as a side effect (the
+/// trade-off <c>PluginPermissionRuleProvider.EmitUnverifiedBoundaryFailClosedRules</c> documents).
+/// </para>
+/// </param>
 public sealed record ToolPermissionRule(
     string ToolPattern,
     string? OperationPattern,
@@ -48,4 +64,5 @@ public sealed record ToolPermissionRule(
     int Priority,
     bool IsBypassImmune = false,
     bool IsAuthoritativeBaseline = false,
-    PermissionBaselineTier BaselineTier = PermissionBaselineTier.Default);
+    PermissionBaselineTier BaselineTier = PermissionBaselineTier.Default,
+    string? PublishedToolName = null);
