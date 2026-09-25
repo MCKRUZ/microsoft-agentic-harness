@@ -29,8 +29,17 @@ namespace Presentation.Common.Tests.Extensions;
 /// can exercise the branch a real web host takes.
 /// </para>
 /// </remarks>
-public class Agent365ExporterWiringTests
+public class Agent365ExporterWiringTests : IDisposable
 {
+    // Enabling the exporter swaps the process-wide propagator, which would otherwise persist for every
+    // later test in the same run and could destabilise anything that depends on context propagation.
+    // Captured before each test and restored after, so the suite leaves global state as it found it.
+    private readonly OpenTelemetry.Context.Propagation.TextMapPropagator _originalPropagator =
+        OpenTelemetry.Context.Propagation.Propagators.DefaultTextMapPropagator;
+
+    /// <inheritdoc />
+    public void Dispose() => OpenTelemetry.Sdk.SetDefaultTextMapPropagator(_originalPropagator);
+
     private const string AgentAppId = "11111111-1111-1111-1111-111111111111";
     private const string TenantId = "22222222-2222-2222-2222-222222222222";
 

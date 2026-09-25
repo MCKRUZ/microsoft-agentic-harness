@@ -55,10 +55,15 @@ public sealed class Agent365ExporterConfigValidator : AbstractValidator<Agent365
                     "where they were created, so a wrong or missing tenant means every export is " +
                     "refused.");
 
-            // Optional, so only checked when supplied: an unset blueprint id simply means Agent 365
-            // cannot group this agent with others of its kind, which is a lost nicety rather than a
-            // failure. A malformed one is a typo worth reporting.
-            When(x => x.BlueprintId is not null, () =>
+            // Optional, so only checked when actually supplied: an unset blueprint id simply means
+            // Agent 365 cannot group this agent with others of its kind, which is a lost nicety rather
+            // than a failure. A malformed one is a typo worth reporting.
+            //
+            // Blank counts as absent, not as malformed. This repository is a template consumers clone,
+            // and an empty placeholder ("BlueprintId": "") left in copied settings expresses "not
+            // provided" — refusing to boot over it would be a trap rather than a useful check. Only a
+            // non-blank value is a claim about a real blueprint, and only that is worth validating.
+            When(x => !string.IsNullOrWhiteSpace(x.BlueprintId), () =>
             {
                 RuleFor(x => x.BlueprintId)
                     .Must(BeAGuid)
@@ -83,7 +88,9 @@ public sealed class Agent365ExporterConfigValidator : AbstractValidator<Agent365
                     $"Agents entry '{entry.Key}' must set AppId to the GUID appId of that agent's " +
                     "own Entra agent identity. Remove the entry to let the agent fall back to the " +
                     "host-level AgentAppId.")
-                .Must(entry => entry.Value?.BlueprintId is null || BeAGuid(entry.Value.BlueprintId))
+                // Blank counts as absent here too, for the same template reason as the host-level id.
+                .Must(entry => string.IsNullOrWhiteSpace(entry.Value?.BlueprintId)
+                    || BeAGuid(entry.Value!.BlueprintId))
                 .WithMessage((_, entry) =>
                     $"Agents entry '{entry.Key}' sets BlueprintId but it is not a GUID. Leave it " +
                     "unset if the blueprint appId is not known — an invalid value is not treated " +

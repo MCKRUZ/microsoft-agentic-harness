@@ -233,6 +233,26 @@ public class Agent365TelemetryAttributionTests
     }
 
     [Fact]
+    public void BlankBlueprintId_IsOmittedRatherThanPublishedEmpty()
+    {
+        // The validator treats a blank blueprint id as absent so a copied template placeholder does not
+        // refuse a boot. The publisher has to agree, or that same placeholder is published as an empty
+        // blueprint instead of being left out.
+        var attribution = Build(c =>
+        {
+            c.Enabled = true;
+            c.AgentAppId = HostAppId;
+            c.TenantId = TenantId;
+            c.BlueprintId = "";
+        });
+
+        using var scope = attribution.BeginTurn("researcher", "conv-1");
+
+        AllBaggage().Values.Should().NotContain("");
+        AllBaggage().Values.Should().Contain(HostAppId, "the agent identity is still published");
+    }
+
+    [Fact]
     public void BlankConversationId_IsOmittedRatherThanPublishedEmpty()
     {
         // Conversation id is the exporter's primary key for grouping a run's spans into a session.

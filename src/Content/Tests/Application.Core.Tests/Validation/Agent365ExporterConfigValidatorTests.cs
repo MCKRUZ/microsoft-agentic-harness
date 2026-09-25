@@ -129,6 +129,37 @@ public class Agent365ExporterConfigValidatorTests
         result.IsValid.Should().BeTrue();
     }
 
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task Validate_EnabledWithBlankBlueprintId_IsValid(string blueprintId)
+    {
+        // This repository is a template consumers clone, so a leftover empty placeholder
+        // ("BlueprintId": "") has to mean "not provided" rather than "malformed" — refusing a boot over
+        // it would be a trap. Only a non-blank value is a claim about a real blueprint.
+        var config = Valid();
+        config.BlueprintId = blueprintId;
+
+        var result = await _validator.ValidateAsync(config);
+
+        result.IsValid.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Validate_PerAgentOverrideWithBlankBlueprintId_IsValid()
+    {
+        var config = Valid();
+        config.Agents["researcher"] = new Agent365AgentIdentityConfig
+        {
+            AppId = OtherAppId,
+            BlueprintId = "",
+        };
+
+        var result = await _validator.ValidateAsync(config);
+
+        result.IsValid.Should().BeTrue();
+    }
+
     [Fact]
     public async Task Validate_EnabledWithMalformedBlueprintId_IsInvalid()
     {

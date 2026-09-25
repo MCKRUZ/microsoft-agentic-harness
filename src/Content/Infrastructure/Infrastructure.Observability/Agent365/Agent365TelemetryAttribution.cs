@@ -97,7 +97,10 @@ public sealed class Agent365TelemetryAttribution : IAgentTelemetryAttribution
             .AgentId(identity.Value.AppId)
             .AgentName(agentName);
 
-        if (identity.Value.BlueprintId is not null)
+        // Blank-checked, not null-checked, to match what the validator now accepts: it treats a blank
+        // blueprint id as absent so a copied template placeholder does not refuse a boot. A null check
+        // here would let that blank through and publish an empty blueprint rather than omitting it.
+        if (!string.IsNullOrWhiteSpace(identity.Value.BlueprintId))
         {
             builder = builder.AgentBlueprintId(identity.Value.BlueprintId);
         }
