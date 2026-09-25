@@ -41,3 +41,28 @@ public interface IAgentTelemetryAttribution
     /// </returns>
     IDisposable BeginTurn(string agentId, string conversationId);
 }
+
+/// <summary>
+/// The scope returned when a turn publishes no attribution — because no governance integration is
+/// active, or because the running agent has no identity configured.
+/// </summary>
+/// <remarks>
+/// A shared singleton rather than a new object per turn: <c>BeginTurn</c> is on the agent turn path
+/// and the overwhelmingly common case is that nothing is published, so that case must allocate
+/// nothing. Lives beside the interface so every implementation returns the same "nothing happened"
+/// scope instead of each carrying its own copy.
+/// </remarks>
+public sealed class NoAgentTelemetryAttributionScope : IDisposable
+{
+    /// <summary>The shared instance. Disposing it does nothing.</summary>
+    public static readonly NoAgentTelemetryAttributionScope Instance = new();
+
+    private NoAgentTelemetryAttributionScope()
+    {
+    }
+
+    /// <inheritdoc />
+    public void Dispose()
+    {
+    }
+}

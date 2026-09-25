@@ -24,9 +24,18 @@ namespace Infrastructure.Observability.Agent365;
 /// exporter concern.
 /// </para>
 /// <para>
-/// A turn whose agent has no configured identity publishes nothing and says so once per agent, rather
-/// than publishing the host default. Attributing one agent's activity to another agent's identity in
-/// a tenant's governance records is worse than leaving it unattributed.
+/// A turn whose agent has no configured identity publishes nothing rather than falling back to some
+/// other identity. Attributing one agent's activity to another agent's identity in a tenant's
+/// governance records is worse than leaving it unattributed.
+/// </para>
+/// <para>
+/// That branch should be unreachable in practice: <c>Agent365ExporterConfigValidator</c> is bound with
+/// <c>ValidateOnStart</c> and refuses a host whose <c>AgentAppId</c> is not a GUID while the exporter
+/// is enabled, so a booted host always has a host-level identity to fall back to. It is retained as
+/// defence in depth — the validator binds the config section on its own, while this reads the same
+/// values out of the <c>AppConfig</c> tree, so the guarantee is a consequence of both binding the same
+/// section rather than something the type system enforces. The warning is what makes the unreachable
+/// case visible if that ever stops being true.
 /// </para>
 /// </remarks>
 public sealed class Agent365TelemetryAttribution : IAgentTelemetryAttribution
@@ -63,15 +72,16 @@ public sealed class Agent365TelemetryAttribution : IAgentTelemetryAttribution
     public IDisposable BeginTurn(string agentId, string conversationId)
     {
         var config = _config;
+
         if (!config.Enabled)
         {
-            return NullScope.Instance;
+            return NoAgentTelemetryAttributionScope.Instance;
         }
 
         var identity = ResolveIdentity(config, agentId);
         if (identity is null)
         {
-            return NullScope.Instance;
+            return NoAgentTelemetryAttributionScope.Instance;
         }
 
         // The host-level AgentName names the host's default agent, so it must not be applied to an
@@ -184,19 +194,5 @@ public sealed class Agent365TelemetryAttribution : IAgentTelemetryAttribution
             + "Observability:Exporters:Agent365:AgentAppId, or add an entry for this agent under "
             + "Observability:Exporters:Agent365:Agents.",
             agentId);
-    }
-
-    /// <summary>A disposable that does nothing, for turns this attribution does not publish.</summary>
-    private sealed class NullScope : IDisposable
-    {
-        internal static readonly NullScope Instance = new();
-
-        private NullScope()
-        {
-        }
-
-        public void Dispose()
-        {
-        }
     }
 }
