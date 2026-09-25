@@ -50,6 +50,30 @@ public class Agent365TelemetryAttributionTests
     private static IReadOnlyDictionary<string, string> AllBaggage()
         => OpenTelemetry.Baggage.GetBaggage();
 
+    [Theory]
+    [InlineData("{11111111-1111-1111-1111-111111111111}")]
+    [InlineData("11111111-1111-1111-1111-111111111111 ")]
+    [InlineData("11111111111111111111111111111111")]
+    public void NonCanonicalIds_ArePublishedInCanonicalForm(string appId)
+    {
+        // The validator accepts any form Guid.TryParse does, and trims — so a braced id copied from the
+        // portal, or one with a trailing space, passes startup. Published verbatim, the service would
+        // find it did not match the authenticated caller and drop every span WITHOUT reporting an
+        // error, which is the exact failure the validator exists to prevent. What is checked and what
+        // is published have to be the same value.
+        var attribution = Build(c =>
+        {
+            c.Enabled = true;
+            c.AgentAppId = appId;
+            c.TenantId = TenantId;
+        });
+
+        using var scope = attribution.BeginTurn("researcher", "conv-1");
+
+        AllBaggage().Values.Should().Contain(HostAppId);
+        AllBaggage().Values.Should().NotContain(appId);
+    }
+
     [Fact]
     public void Disabled_PublishesNothing()
     {

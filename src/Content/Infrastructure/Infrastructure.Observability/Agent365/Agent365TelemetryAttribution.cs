@@ -96,8 +96,8 @@ public sealed class Agent365TelemetryAttribution : IAgentTelemetryAttribution
             : agentId;
 
         var builder = new BaggageBuilder()
-            .TenantId(config.TenantId)
-            .AgentId(identity.Value.AppId)
+            .TenantId(Canonical(config.TenantId))
+            .AgentId(Canonical(identity.Value.AppId))
             .AgentName(agentName);
 
         // Blank-checked, not null-checked, to match what the validator now accepts: it treats a blank
@@ -105,7 +105,7 @@ public sealed class Agent365TelemetryAttribution : IAgentTelemetryAttribution
         // here would let that blank through and publish an empty blueprint rather than omitting it.
         if (!string.IsNullOrWhiteSpace(identity.Value.BlueprintId))
         {
-            builder = builder.AgentBlueprintId(identity.Value.BlueprintId);
+            builder = builder.AgentBlueprintId(Canonical(identity.Value.BlueprintId));
         }
 
         // Conversation id is Agent 365's primary join key for grouping a run's spans into a session.
@@ -117,6 +117,21 @@ public sealed class Agent365TelemetryAttribution : IAgentTelemetryAttribution
 
         return builder.Build();
     }
+
+    /// <summary>
+    /// Renders an identifier in the canonical hyphenated GUID form the Agent 365 service expects.
+    /// </summary>
+    /// <remarks>
+    /// The validator accepts any form <see cref="Guid.TryParse(string, out Guid)"/> does and trims
+    /// surrounding whitespace, so a value can pass startup and still not be the form that goes on the
+    /// wire — a braced <c>{guid}</c> from a portal copy, or a trailing space from a copy-paste. The
+    /// service matches the agent id in the payload against the authenticated caller and reports no
+    /// error when it differs; it simply drops the spans, which is the failure the validator exists to
+    /// prevent. Normalising here makes the published value match what was actually checked rather than
+    /// making the validator stricter than the service.
+    /// </remarks>
+    private static string? Canonical(string? value)
+        => Guid.TryParse(value, out var parsed) ? parsed.ToString("D") : value;
 
     /// <summary>
     /// Selects the Entra agent identity for <paramref name="agentId"/>: its own override when one is

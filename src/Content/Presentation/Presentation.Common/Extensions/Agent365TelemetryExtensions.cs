@@ -126,11 +126,29 @@ public static class Agent365TelemetryExtensions
 
             options.TokenResolver = async (_, _) =>
             {
-                var token = await credential
-                    .GetTokenAsync(new TokenRequestContext([ObservabilityScope]), CancellationToken.None)
-                    .ConfigureAwait(false);
+                // Returning null omits the Authorization header, which the exporter treats as "skip this
+                // batch" and logs. Swallowing here rather than propagating is deliberate: this runs on
+                // the exporter's own background batch thread, where an escaping exception is an
+                // unobserved failure inside a third-party pipeline rather than something a caller can
+                // handle. Telemetry must never be able to destabilise the process that produces it.
+                //
+                // Worth knowing: the FIRST call is not necessarily fast. With no explicit credentials
+                // configured this resolves DefaultAzureCredential, whose first acquisition walks the
+                // credential chain — including managed-identity probe timeouts. Subsequent calls are
+                // served from Azure.Identity's in-process cache, which is what makes the per-batch call
+                // cheap thereafter.
+                try
+                {
+                    var token = await credential
+                        .GetTokenAsync(new TokenRequestContext([ObservabilityScope]), CancellationToken.None)
+                        .ConfigureAwait(false);
 
-                return token.Token;
+                    return token.Token;
+                }
+                catch (Exception)
+                {
+                    return null;
+                }
             };
 
             // The SDK defaults this to false, which routes to the delegated endpoint. The harness

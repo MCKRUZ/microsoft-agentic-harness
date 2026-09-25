@@ -25,10 +25,11 @@ namespace Domain.Common.Config.Observability;
 /// accepts requests and then discards the telemetry.
 /// </para>
 /// <para>
-/// <strong>This requires <c>AppConfig.AI.Identity.Enabled</c> as well.</strong> The exporter
-/// attributes every span to a resolved agent identity; with identity resolution off there is no
-/// identity to attribute to and the service drops every span. That combination is rejected at
-/// startup rather than left to fail silently at runtime.
+/// <strong>Independent of <c>AppConfig.AI.Identity</c>.</strong> The identity reported to Agent 365
+/// comes from this section alone — <see cref="AgentAppId"/> and <see cref="Agents"/> — and not from
+/// the harness's own agent-identity resolution. The two answer different questions: this one is the
+/// agent's registered identity in the tenant directory, that one is which credential the agent
+/// authenticates outbound calls with. Enabling either without the other is a valid configuration.
 /// </para>
 /// </remarks>
 public class Agent365ExporterConfig

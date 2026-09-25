@@ -27,6 +27,7 @@ public class RunOrchestratedTaskCommandHandler : IRequestHandler<RunOrchestrated
 	private readonly IServiceScopeFactory _scopeFactory;
 	private readonly IAgentExecutionContext _executionContext;
 	private readonly IToolCallAdmissionPipeline _admissionPipeline;
+	private readonly Application.AI.Common.Interfaces.Telemetry.IAgentTelemetryAttribution _attribution;
 	private readonly ILogger<RunOrchestratedTaskCommandHandler> _logger;
 
 	public RunOrchestratedTaskCommandHandler(
@@ -34,12 +35,14 @@ public class RunOrchestratedTaskCommandHandler : IRequestHandler<RunOrchestrated
 		IServiceScopeFactory scopeFactory,
 		IAgentExecutionContext executionContext,
 		IToolCallAdmissionPipeline admissionPipeline,
+		Application.AI.Common.Interfaces.Telemetry.IAgentTelemetryAttribution attribution,
 		ILogger<RunOrchestratedTaskCommandHandler> logger)
 	{
 		_agentFactory = agentFactory;
 		_scopeFactory = scopeFactory;
 		_executionContext = executionContext;
 		_admissionPipeline = admissionPipeline;
+		_attribution = attribution;
 		_logger = logger;
 	}
 
@@ -88,6 +91,15 @@ public class RunOrchestratedTaskCommandHandler : IRequestHandler<RunOrchestrated
 			// exactly the way AgentContextPropagationBehavior's does for an ordinary agent turn.
 			_executionContext.Initialize(
 				request.OrchestratorName, request.ConversationId, 0, callOnceScopeId: request.ConversationId);
+
+			// Same reason the Initialize above is hand-rolled: this command is not IAgentScopedRequest,
+			// so AgentContextPropagationBehavior — which is where external agent-governance attribution
+			// is normally published — never runs for it. Without this the orchestrator's own planning
+			// and synthesis calls carry no attribution and are dropped by the governance platform, so a
+			// tenant would see every sub-agent but not the orchestrator that drove them. Held for the
+			// rest of the method so both phases are covered.
+			using var attribution = _attribution.BeginTurn(
+				request.OrchestratorName, request.ConversationId);
 
 			await ReportProgress(request, "planning", request.OrchestratorName, "Decomposing task...");
 
