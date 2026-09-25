@@ -44,12 +44,12 @@ public static class DependencyInjection
         // Observability pipeline configurator — adds processors and exporters at Order 300
         services.AddSingleton<ITelemetryConfigurator, ObservabilityTelemetryConfigurator>();
 
-        // Agent 365 turn attribution. Registered unconditionally rather than behind the Enabled flag
-        // because the implementation itself re-reads the flag on every turn via IOptionsMonitor, so a
-        // hot config reload takes effect without a restart — and while the flag is off it returns a
-        // shared no-op scope and publishes nothing. Registered with AddSingleton (not TryAdd) so it
-        // wins over Application.AI.Common's no-op default regardless of which layer registers first:
-        // the last registration is the one GetRequiredService resolves.
+        // Agent 365 turn attribution. Registered unconditionally rather than behind the Enabled flag,
+        // because it reads that flag itself and returns a shared no-op scope when it is off — so a
+        // host that has not opted in pays nothing, and there is no second place for the flag to be
+        // consulted and get it wrong. Registered with AddSingleton (not TryAdd) so it wins over
+        // Application.AI.Common's no-op default regardless of which layer registers first: the last
+        // registration is the one GetRequiredService resolves.
         services.AddSingleton<Application.AI.Common.Interfaces.Telemetry.IAgentTelemetryAttribution,
             Agent365.Agent365TelemetryAttribution>();
 

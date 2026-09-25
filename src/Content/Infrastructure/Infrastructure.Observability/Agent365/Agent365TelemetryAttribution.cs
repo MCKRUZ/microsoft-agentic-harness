@@ -31,7 +31,14 @@ namespace Infrastructure.Observability.Agent365;
 /// </remarks>
 public sealed class Agent365TelemetryAttribution : IAgentTelemetryAttribution
 {
-    private readonly IOptionsMonitor<AppConfig> _config;
+    // Captured once rather than re-read per turn, deliberately. The exporter is wired into the
+    // OpenTelemetry pipeline at composition time and the startup validator runs once, so both are
+    // startup decisions. Re-reading the flag here would let the two diverge: switching Enabled on by
+    // a live config reload, in a host that was not wired at boot, would publish attribution for every
+    // turn while nothing exported it — and no error anywhere, which is precisely the silent failure
+    // the startup validator exists to prevent. One snapshot means one decision. It also closes the
+    // narrower case of a reload clearing TenantId while Enabled stays true.
+    private readonly Agent365ExporterConfig _config;
     private readonly ILogger<Agent365TelemetryAttribution> _logger;
 
     // Agents already warned about, so a misconfigured agent produces one line rather than one per
@@ -48,14 +55,14 @@ public sealed class Agent365TelemetryAttribution : IAgentTelemetryAttribution
     {
         ArgumentNullException.ThrowIfNull(config);
         ArgumentNullException.ThrowIfNull(logger);
-        _config = config;
+        _config = config.CurrentValue.Observability.Exporters.Agent365;
         _logger = logger;
     }
 
     /// <inheritdoc />
     public IDisposable BeginTurn(string agentId, string conversationId)
     {
-        var config = _config.CurrentValue.Observability.Exporters.Agent365;
+        var config = _config;
         if (!config.Enabled)
         {
             return NullScope.Instance;
@@ -67,10 +74,18 @@ public sealed class Agent365TelemetryAttribution : IAgentTelemetryAttribution
             return NullScope.Instance;
         }
 
+        // The host-level AgentName names the host's default agent, so it must not be applied to an
+        // agent reporting its own identity: doing so collapses every agent in a multi-agent host to
+        // one display name while their ids stay distinct, which is harder to read in the tenant's
+        // inventory than no custom name at all.
+        var agentName = identity.Value.IsHostDefault
+            ? config.AgentName ?? agentId
+            : agentId;
+
         var builder = new BaggageBuilder()
             .TenantId(config.TenantId)
             .AgentId(identity.Value.AppId)
-            .AgentName(config.AgentName ?? agentId);
+            .AgentName(agentName);
 
         if (identity.Value.BlueprintId is not null)
         {
@@ -96,19 +111,19 @@ public sealed class Agent365TelemetryAttribution : IAgentTelemetryAttribution
     /// inherited, because a blueprint identifies a <em>kind</em> of agent and an agent minted from a
     /// different blueprint would otherwise be filed under the wrong kind.
     /// </remarks>
-    private (string AppId, string? BlueprintId)? ResolveIdentity(
+    private (string AppId, string? BlueprintId, bool IsHostDefault)? ResolveIdentity(
         Agent365ExporterConfig config,
         string agentId)
     {
         var over = FindOverride(config, agentId);
         if (!string.IsNullOrWhiteSpace(over?.AppId))
         {
-            return (over.AppId, over.BlueprintId);
+            return (over.AppId, over.BlueprintId, false);
         }
 
         if (!string.IsNullOrWhiteSpace(config.AgentAppId))
         {
-            return (config.AgentAppId, config.BlueprintId);
+            return (config.AgentAppId, config.BlueprintId, true);
         }
 
         WarnOnce(agentId);

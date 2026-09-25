@@ -3,6 +3,7 @@ using Azure.Core;
 using Domain.Common.Config;
 using Microsoft.OpenTelemetry;
 using OpenTelemetry;
+using OpenTelemetry.Context.Propagation;
 
 namespace Presentation.Common.Extensions;
 
@@ -72,6 +73,28 @@ public static class Agent365TelemetryExtensions
         {
             return builder;
         }
+
+        // Stop OpenTelemetry baggage crossing the process boundary in either direction.
+        //
+        // OUTBOUND: the default propagator serialises baggage into a `baggage` HTTP header and the
+        // HTTP-client instrumentation attaches it to every outbound call, so the tenant id, agent
+        // app id, blueprint id and conversation id published for a turn would otherwise be sent to
+        // LLM providers, third-party MCP servers and web-fetch targets. None of those is a
+        // credential, but they identify the customer's tenant and its agents to parties that have no
+        // business receiving them, and enabling agent governance must not be the thing that starts
+        // leaking them.
+        //
+        // INBOUND: the same propagator extracts a caller-supplied `baggage` header into the ambient
+        // context, where the vendor's baggage-to-tags processor would stamp caller-chosen agent and
+        // tenant ids onto spans. The service validates the agent id against this host's token, so the
+        // ceiling is junk entries in governance records rather than impersonation — but there is no
+        // reason to accept it.
+        //
+        // Trace context (traceparent/tracestate) is unaffected, so distributed tracing across
+        // services keeps working; only baggage stops being propagated. Scoped to hosts that enable
+        // Agent 365 rather than applied globally, so a host that has not opted in keeps whatever
+        // propagation behaviour it has today.
+        Sdk.SetDefaultTextMapPropagator(new TraceContextPropagator());
 
         // Built once here rather than per export. Azure.Identity credentials cache the token
         // in-process and refresh shortly before expiry, so the per-batch GetTokenAsync below is

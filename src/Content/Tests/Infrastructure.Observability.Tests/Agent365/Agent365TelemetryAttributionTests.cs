@@ -196,6 +196,43 @@ public class Agent365TelemetryAttributionTests
     }
 
     [Fact]
+    public void HostLevelAgentName_AppliesToTheHostDefaultAgent()
+    {
+        var attribution = Build(c =>
+        {
+            c.Enabled = true;
+            c.AgentAppId = HostAppId;
+            c.TenantId = TenantId;
+            c.AgentName = "Primary Agent";
+        });
+
+        using var scope = attribution.BeginTurn("researcher", "conv-1");
+
+        AllBaggage().Values.Should().Contain("Primary Agent");
+    }
+
+    [Fact]
+    public void HostLevelAgentName_IsNotAppliedToAnAgentWithItsOwnIdentity()
+    {
+        // The host-level name names the host's default agent. Applying it to an agent reporting its
+        // own identity collapses every agent in a multi-agent host to one display name while their ids
+        // stay distinct — harder to read in the tenant's inventory than no custom name at all.
+        var attribution = Build(c =>
+        {
+            c.Enabled = true;
+            c.AgentAppId = HostAppId;
+            c.TenantId = TenantId;
+            c.AgentName = "Primary Agent";
+            c.Agents["researcher"] = new Agent365AgentIdentityConfig { AppId = OverrideAppId };
+        });
+
+        using var scope = attribution.BeginTurn("researcher", "conv-1");
+
+        AllBaggage().Values.Should().NotContain("Primary Agent");
+        AllBaggage().Values.Should().Contain("researcher", "the agent reports its own name instead");
+    }
+
+    [Fact]
     public void BlankConversationId_IsOmittedRatherThanPublishedEmpty()
     {
         // Conversation id is the exporter's primary key for grouping a run's spans into a session.

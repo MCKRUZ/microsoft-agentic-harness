@@ -109,6 +109,28 @@ public class Agent365ExporterWiringTests
             "the harness's own tracer provider must still be registered when Agent 365 is enabled");
     }
 
+    [Fact]
+    public void EnabledConfig_StopsPropagatingBaggageOutOfTheProcess()
+    {
+        // Attribution is published as OpenTelemetry baggage, and the default propagator serialises
+        // baggage into an HTTP header that the HTTP-client instrumentation attaches to every outbound
+        // call — so without this, enabling agent governance would send the customer's tenant id, agent
+        // app id, blueprint id and conversation id to LLM providers, third-party MCP servers and
+        // web-fetch targets. It also stops a caller-supplied baggage header being extracted and
+        // stamped onto spans as attacker-chosen agent attribution.
+        var services = BaseServices();
+
+        services.AddWebTelemetry(ConfigWithAgent365(enabled: true));
+
+        // Asserted on the trace-context fields surviving rather than on the concrete propagator type:
+        // what matters is that distributed tracing still works while baggage no longer crosses the
+        // boundary, and the fields are the observable contract.
+        var fields = OpenTelemetry.Context.Propagation.Propagators.DefaultTextMapPropagator.Fields;
+
+        fields.Should().Contain("traceparent", "distributed tracing must keep working");
+        fields.Should().NotContain("baggage", "baggage must not leave the process");
+    }
+
     // Matched by name rather than by CLR type on purpose: the vendor's Agent 365 service types are
     // internal to its assembly, so a typed reference will not compile. What matters for this suite is
     // the observable fact that enabling the feature adds Agent 365 services to the container and
