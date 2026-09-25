@@ -53,6 +53,13 @@ public static class DependencyInjection
         services.AddSingleton<Application.AI.Common.Interfaces.Telemetry.IAgentTelemetryAttribution,
             Agent365.Agent365TelemetryAttribution>();
 
+        // Refuses to boot a host that enables Agent 365 export where the exporter cannot be wired.
+        // Registered unconditionally and no-ops when the feature is off, because its whole purpose is
+        // to catch a host that turned the feature on — a registration gated on the same flag it is
+        // checking would be the thing most likely to be missing.
+        services.AddSingleton<Microsoft.Extensions.Hosting.IHostedService,
+            Agent365.Agent365StartupValidator>();
+
         // #457: the one ILocalLogRedactor implementation, closing the parity gap between the OTel
         // logging bridge's own redaction and every local ILoggerProvider sink. Application.Common's
         // ConfigureLogging resolves this optionally, so registering it here is what turns local-sink
