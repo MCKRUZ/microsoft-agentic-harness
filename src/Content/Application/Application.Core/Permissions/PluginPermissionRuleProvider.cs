@@ -2,6 +2,7 @@ using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Permissions;
 using Application.AI.Common.Interfaces.Plugins;
 using Application.AI.Common.Interfaces.Tools;
+using Application.AI.Common.Services.Governance;
 using Application.AI.Common.Services.Tools;
 using Domain.Common.Helpers;
 using Domain.AI.Governance;
@@ -352,8 +353,11 @@ public sealed class PluginPermissionRuleProvider : IPermissionRuleProvider
             && !string.Equals(publishedName, toolKey, StringComparison.OrdinalIgnoreCase);
 
         // #652: both rules record the published name they share, so a consumer summarising rules can
-        // report one logical tool once. Null when nothing diverged — an ordinary rule stands alone.
-        var groupingName = diverges ? publishedName : null;
+        // report one logical tool once. Routed through the shared rule rather than re-deriving
+        // `diverges ? published : null` here (/simplify finding): #652 was itself a mis-keyed
+        // grouping decision, and two independent definitions of "is this rule one of a pair" is the
+        // shape that lets a fix in one provider leave the defect standing in the other.
+        var groupingName = ToolNameForms.GroupingNameFor(diverges, publishedName);
 
         rules.Add(DenyRule(toolKey, groupingName));
 

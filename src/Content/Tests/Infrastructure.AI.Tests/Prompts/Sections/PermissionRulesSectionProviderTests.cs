@@ -339,21 +339,8 @@ public sealed class PermissionRulesSectionProviderTests
     }
 
     /// <summary>The bullet lines under the "require approval before use" heading.</summary>
-    private static List<string> ApprovalLines(string content)
-    {
-        const string heading = "require approval before use:";
-        var start = content.IndexOf(heading, StringComparison.Ordinal);
-        start.Should().BeGreaterThanOrEqualTo(0, "the approval heading must be present to have lines under it");
-
-        var rest = content[(start + heading.Length)..];
-        var end = rest.IndexOf("The following tools are denied:", StringComparison.Ordinal);
-        if (end >= 0)
-            rest = rest[..end];
-
-        return rest.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .Where(l => l.StartsWith('-'))
-            .ToList();
-    }
+    private static List<string> ApprovalLines(string content) =>
+        BulletsUnder(content, "require approval before use:", stopAt: DeniedHeading);
 
     private static ToolPermissionRule Deny(string toolPattern) =>
         new(toolPattern, null, PermissionBehaviorType.Deny, PermissionRuleSource.CapabilityEnvelope, 1);
@@ -366,23 +353,40 @@ public sealed class PermissionRulesSectionProviderTests
         new(toolPattern, null, PermissionBehaviorType.Deny, PermissionRuleSource.CapabilityEnvelope, 1,
             PublishedToolName: publishedToolName);
 
+    private const string DeniedHeading = "The following tools are denied:";
+
+    /// <summary>The bullet lines under the "denied" heading, which is always rendered last.</summary>
+    private static List<string> DeniedLines(string content) =>
+        BulletsUnder(content, DeniedHeading, stopAt: null);
+
     /// <summary>
-    /// The bullet lines under the "denied" heading, which is always the last section rendered.
+    /// The bullet lines between <paramref name="heading"/> and <paramref name="stopAt"/> (or the end
+    /// of the prompt when <paramref name="stopAt"/> is null).
     /// </summary>
     /// <remarks>
     /// Asserts the heading exists rather than trusting <see cref="string.IndexOf(string, StringComparison)"/>
-    /// (code-review finding): on a miss it returns -1, and the resulting slice silently started six
-    /// characters into the whole prompt, so this helper returned the <em>Ask</em> bullets. That made
+    /// (code-review finding): on a miss it returns -1, and the resulting slice silently started a few
+    /// characters into the whole prompt, so the helper returned the OTHER section's bullets. That made
     /// <c>GetSectionAsync_SameToolAskedAndDenied_AppearsUnderBothHeadings</c> pass under the exact
-    /// regression it guards — a vanished denied section read as a present one.
+    /// regression it guards — a vanished denied section read as a present one. Shared by both callers
+    /// so that hardening exists once (/simplify finding).
     /// </remarks>
-    private static List<string> DeniedLines(string content)
+    private static List<string> BulletsUnder(string content, string heading, string? stopAt)
     {
-        var heading = content.IndexOf("denied:", StringComparison.Ordinal);
-        heading.Should().BeGreaterThanOrEqualTo(0, "the denied heading must be present to have lines under it");
+        var start = content.IndexOf(heading, StringComparison.Ordinal);
+        start.Should().BeGreaterThanOrEqualTo(0,
+            "the '{0}' heading must be present to have lines under it", heading);
 
-        return content[(heading + "denied:".Length)..]
-            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+        var rest = content[(start + heading.Length)..];
+
+        if (stopAt is not null)
+        {
+            var end = rest.IndexOf(stopAt, StringComparison.Ordinal);
+            if (end >= 0)
+                rest = rest[..end];
+        }
+
+        return rest.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .Where(l => l.StartsWith('-'))
             .ToList();
     }

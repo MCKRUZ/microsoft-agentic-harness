@@ -128,59 +128,43 @@ public sealed class CapabilityEnvelopeGrantResolver
 
         foreach (var name in names)
         {
-            var resolved = TryResolvePublishedName(name, out var publishedName)
-                && !string.Equals(publishedName, name, StringComparison.OrdinalIgnoreCase);
+            var expanded = ExpandOne(name);
 
-            var forms = new List<string>(2);
-            if (seen.Add(name))
-                forms.Add(name);
-            if (resolved && seen.Add(publishedName))
-                forms.Add(publishedName);
+            var forms = new List<string>(expanded.Forms.Count);
+            foreach (var form in expanded.Forms)
+            {
+                if (seen.Add(form))
+                    forms.Add(form);
+            }
 
+            // Every form was already contributed by an earlier name: no rules to emit for it.
             if (forms.Count == 0)
                 continue;
 
-            // PublishedName is the name the agent actually invokes the tool by, which is what a
-            // summary should show; when nothing diverges it is simply the name itself. `resolved` is
-            // carried separately because it, not the surviving form count, is what makes a group
-            // divergent — global dedup can leave a divergent group holding a single form.
-            groups.Add(new ToolNameForms(resolved ? publishedName : name, forms, resolved));
+            groups.Add(expanded with { Forms = forms });
         }
 
         return groups;
     }
+
+    /// <summary>
+    /// The name-forms for a single name, with no cross-name deduplication — for a caller emitting
+    /// rules one declared/denied tool at a time, where routing a one-element collection through
+    /// <see cref="ExpandToNameForms"/> would allocate a list, a set and a result list per tool on a
+    /// path that runs for every tool-permission resolution (/simplify finding), and would return a
+    /// collection whose emptiness the caller then has to handle although it can never be empty.
+    /// </summary>
+    /// <param name="name">The declared, granted or denied name to expand.</param>
+    public ToolNameForms ExpandOne(string name)
+    {
+        var diverges = TryResolvePublishedName(name, out var publishedName)
+            && !string.Equals(publishedName, name, StringComparison.OrdinalIgnoreCase);
+
+        // PublishedName is the name the agent actually invokes the tool by, which is what a summary
+        // should show; when nothing diverges it is simply the name itself.
+        return diverges
+            ? new ToolNameForms(publishedName, [name, publishedName], Diverges: true)
+            : new ToolNameForms(name, [name], Diverges: false);
+    }
 }
 
-/// <summary>
-/// One logical tool's name-forms: every name a permission rule must cover for it, plus the published
-/// name a caller actually invokes it by.
-/// </summary>
-/// <param name="PublishedName">
-/// The tool's self-reported name, or the name itself when it names no first-party tool (an MCP tool,
-/// a glob) or when key and published name already agree.
-/// </param>
-/// <param name="Forms">
-/// The names to emit rules for — one entry normally, two when a first-party tool's DI registration
-/// key and published name disagree, and possibly one even then (see <paramref name="Diverges"/>).
-/// Never empty.
-/// </param>
-/// <param name="Diverges">
-/// Whether this name resolved to a first-party tool whose published name disagrees with it.
-/// </param>
-public sealed record ToolNameForms(string PublishedName, IReadOnlyList<string> Forms, bool Diverges)
-{
-    /// <summary>
-    /// The value to record as a rule's <c>PublishedToolName</c> for these forms: the published name
-    /// when this name is one of several covering a single tool, and null for an ordinary name that
-    /// needs no grouping.
-    /// </summary>
-    /// <remarks>
-    /// Keys off <see cref="Diverges"/>, never off <c>Forms.Count</c> (code-review finding): dedup is
-    /// global across the whole input, so a divergent name whose published form was already contributed
-    /// by an earlier entry arrives here holding a single form. Keying on the count left that rule
-    /// untagged, and the summary then printed the DI key as its own line — exactly the #652 defect,
-    /// surviving for any envelope that grants a tool under both of its names, or two keys that resolve
-    /// to one published name.
-    /// </remarks>
-    public string? GroupingName => Diverges ? PublishedName : null;
-}

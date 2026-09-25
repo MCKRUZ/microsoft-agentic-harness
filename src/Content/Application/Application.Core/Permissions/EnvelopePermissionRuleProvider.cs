@@ -140,10 +140,9 @@ public sealed class EnvelopePermissionRuleProvider : IPermissionRuleProvider
         // forms share — the summary in PermissionRulesSectionProvider then reports one line per
         // logical tool without having to resolve (and therefore construct) tools at prompt time.
         var grantedForms = _envelopeGrantResolver.ExpandToNameForms(ValidGrants(envelope));
-        var grantedNames = grantedForms.SelectMany(f => f.Forms).ToList();
 
         var rules = new List<ToolPermissionRule>();
-        AddDeclaredButUngrantedDenyRules(rules, agentId, grantedNames);
+        AddDeclaredButUngrantedDenyRules(rules, agentId, grantedForms);
         AddAutonomyCeilingBaselineRules(rules, envelope, grantedForms);
         AddClosingDenyRule(rules);
 
@@ -160,14 +159,19 @@ public sealed class EnvelopePermissionRuleProvider : IPermissionRuleProvider
     /// though the tool IS genuinely granted under the other form.
     /// </summary>
     private void AddDeclaredButUngrantedDenyRules(
-        List<ToolPermissionRule> rules, string agentId, IReadOnlyList<string> grantedNames)
+        List<ToolPermissionRule> rules, string agentId, IReadOnlyList<ToolNameForms> grantedForms)
     {
-        var granted = new HashSet<string>(grantedNames, StringComparer.OrdinalIgnoreCase);
+        var granted = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var grant in grantedForms)
+        {
+            foreach (var form in grant.Forms)
+                granted.Add(form);
+        }
 
         foreach (var declaredName in EnumerateDeclaredTools(agentId))
         {
-            var declared = _envelopeGrantResolver.ExpandToNameForms([declaredName]).SingleOrDefault();
-            if (declared is null || declared.Forms.Any(granted.Contains))
+            var declared = _envelopeGrantResolver.ExpandOne(declaredName);
+            if (declared.Forms.Any(granted.Contains))
                 continue;
 
             foreach (var form in declared.Forms)
