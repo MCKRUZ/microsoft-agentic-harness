@@ -233,6 +233,26 @@ public class Agent365TelemetryAttributionTests
     }
 
     [Fact]
+    public void BlankAgentName_FallsBackToTheAgentIdRatherThanPublishingEmpty()
+    {
+        // Same template-placeholder reasoning as the blueprint id: "AgentName": "" means "not
+        // provided", so it must fall back to the agent's own id instead of publishing an empty
+        // display name. This sat two lines from the blueprint guard and was missed when that was fixed.
+        var attribution = Build(c =>
+        {
+            c.Enabled = true;
+            c.AgentAppId = HostAppId;
+            c.TenantId = TenantId;
+            c.AgentName = "";
+        });
+
+        using var scope = attribution.BeginTurn("researcher", "conv-1");
+
+        AllBaggage().Values.Should().NotContain("");
+        AllBaggage().Values.Should().Contain("researcher");
+    }
+
+    [Fact]
     public void BlankBlueprintId_IsOmittedRatherThanPublishedEmpty()
     {
         // The validator treats a blank blueprint id as absent so a copied template placeholder does not

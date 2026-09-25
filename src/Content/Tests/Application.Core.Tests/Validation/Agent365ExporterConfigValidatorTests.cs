@@ -287,6 +287,35 @@ public class Agent365ExporterConfigValidatorTests
     }
 
     [Fact]
+    public async Task Validate_TwoOverridesDifferingOnlyByCase_IsInvalid()
+    {
+        // Both would match the same running agent, and which identity it reported would depend on
+        // enumeration order — arbitrary attribution in the tenant's governance records. There is no
+        // correct entry to prefer, so this is refused rather than tie-broken.
+        var config = Valid();
+        config.Agents["Planner"] = new Agent365AgentIdentityConfig { AppId = OtherAppId };
+        config.Agents["planner"] = new Agent365AgentIdentityConfig { AppId = AgentAppId };
+
+        var result = await _validator.ValidateAsync(config);
+
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.ErrorMessage.Contains("differ only by case"));
+    }
+
+    [Fact]
+    public async Task Validate_TwoDistinctOverrides_IsValid()
+    {
+        // Guards the rule above from over-reaching: genuinely different names must still be allowed.
+        var config = Valid();
+        config.Agents["planner"] = new Agent365AgentIdentityConfig { AppId = OtherAppId };
+        config.Agents["researcher"] = new Agent365AgentIdentityConfig { AppId = AgentAppId };
+
+        var result = await _validator.ValidateAsync(config);
+
+        result.IsValid.Should().BeTrue();
+    }
+
+    [Fact]
     public async Task Validate_SeveralOverrides_ReportsEveryBadEntryNotJustTheFirst()
     {
         // A host with two mistyped overrides should learn about both in one boot, rather than

@@ -88,8 +88,11 @@ public sealed class Agent365TelemetryAttribution : IAgentTelemetryAttribution
         // agent reporting its own identity: doing so collapses every agent in a multi-agent host to
         // one display name while their ids stay distinct, which is harder to read in the tenant's
         // inventory than no custom name at all.
-        var agentName = identity.Value.IsHostDefault
-            ? config.AgentName ?? agentId
+        // Blank-checked for the same reason as the blueprint id below: a copied template placeholder
+        // ("AgentName": "") means "not provided", and a null-coalesce would publish it as an empty
+        // display name instead of falling back to the agent's own id.
+        var agentName = identity.Value.IsHostDefault && !string.IsNullOrWhiteSpace(config.AgentName)
+            ? config.AgentName
             : agentId;
 
         var builder = new BaggageBuilder()

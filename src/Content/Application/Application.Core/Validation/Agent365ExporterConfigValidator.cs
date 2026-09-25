@@ -96,6 +96,21 @@ public sealed class Agent365ExporterConfigValidator : AbstractValidator<Agent365
                     "unset if the blueprint appId is not known — an invalid value is not treated " +
                     "as absent.");
 
+            // Two keys differing only by case would both match the same running agent, and which one
+            // won would depend on enumeration order — so the agent's identity in the tenant's
+            // governance records would be effectively arbitrary. Rejected at startup rather than
+            // resolved by a tie-break rule, because there is no correct answer to pick.
+            // Compared without trimming, matching the lookup exactly: it compares the configured key to
+            // the agent id as-is, so a key with stray whitespace is a key that never matches anything
+            // rather than a duplicate of one that does.
+            RuleFor(x => x.Agents)
+                .Must(agents => agents is null
+                    || agents.Keys.Distinct(StringComparer.OrdinalIgnoreCase).Count() == agents.Count)
+                .WithMessage(
+                    "Agents contains two entries whose names differ only by case. Agent names are "
+                    + "matched case-insensitively, so both would match the same agent and which "
+                    + "identity it reported would depend on ordering. Remove the duplicate.");
+
             When(x => x.EnableOfflineStorage, () =>
             {
                 RuleFor(x => x.OfflineStorageDirectory)
