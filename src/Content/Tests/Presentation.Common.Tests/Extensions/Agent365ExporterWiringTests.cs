@@ -29,6 +29,7 @@ namespace Presentation.Common.Tests.Extensions;
 /// can exercise the branch a real web host takes.
 /// </para>
 /// </remarks>
+[Collection(GlobalPropagatorCollection.Name)]
 public class Agent365ExporterWiringTests : IDisposable
 {
     // Enabling the exporter swaps the process-wide propagator, which would otherwise persist for every

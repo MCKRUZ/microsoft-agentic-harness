@@ -69,9 +69,15 @@ public class Agent365ExporterConfig
     public string? BlueprintId { get; set; }
 
     /// <summary>
-    /// Gets or sets the display name reported for this agent. Optional; falls back to the agent's
-    /// own name from the execution scope when unset.
+    /// Gets or sets the display name reported for the agent that uses the host-level identity above.
+    /// Optional; that agent falls back to its own id when this is unset or blank.
     /// </summary>
+    /// <remarks>
+    /// Applies <em>only</em> to the host-level default identity, not to every agent in the process. An
+    /// agent listed in <see cref="Agents"/> reports its own id as its name — applying one configured
+    /// name across a multi-agent host would collapse them all to a single display name in the tenant's
+    /// inventory while their ids stayed distinct.
+    /// </remarks>
     public string? AgentName { get; set; }
 
     /// <summary>

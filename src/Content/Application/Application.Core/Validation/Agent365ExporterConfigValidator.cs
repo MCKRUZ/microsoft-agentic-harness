@@ -103,6 +103,13 @@ public sealed class Agent365ExporterConfigValidator : AbstractValidator<Agent365
             // Compared without trimming, matching the lookup exactly: it compares the configured key to
             // the agent id as-is, so a key with stray whitespace is a key that never matches anything
             // rather than a duplicate of one that does.
+            //
+            // Reachability, stated rather than assumed: the JSON and environment-variable configuration
+            // providers key case-insensitively themselves, so two case-colliding keys in the same object
+            // fail at config load before the binder ever runs. This rule therefore guards
+            // programmatically-constructed config — which the composition tests and any host that builds
+            // AppConfig in code do use — not hand-edited settings files. Retained on that basis; it is
+            // not a claim that a settings file can trip it.
             RuleFor(x => x.Agents)
                 .Must(agents => agents is null
                     || agents.Keys.Distinct(StringComparer.OrdinalIgnoreCase).Count() == agents.Count)

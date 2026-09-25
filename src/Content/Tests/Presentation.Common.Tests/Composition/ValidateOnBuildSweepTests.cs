@@ -35,6 +35,7 @@ namespace Presentation.Common.Tests.Composition;
 /// configurations, closing the gap that #251's first fix left.
 /// </para>
 /// </remarks>
+[Collection(GlobalPropagatorCollection.Name)]
 public sealed class ValidateOnBuildSweepTests
 {
     /// <summary>

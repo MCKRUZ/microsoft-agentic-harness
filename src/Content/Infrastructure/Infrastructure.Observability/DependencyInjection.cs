@@ -57,8 +57,11 @@ public static class DependencyInjection
         // Registered unconditionally and no-ops when the feature is off, because its whole purpose is
         // to catch a host that turned the feature on — a registration gated on the same flag it is
         // checking would be the thing most likely to be missing.
-        services.AddSingleton<Microsoft.Extensions.Hosting.IHostedService,
-            Agent365.Agent365StartupValidator>();
+        // AddHostedService, matching the ~15 sibling registrations across the Infrastructure.AI DI
+        // partials. It uses TryAddEnumerable, so a composition that reaches this method twice registers
+        // the validator once — a plain AddSingleton would start it twice and duplicate both its log line
+        // and its throw path.
+        services.AddHostedService<Agent365.Agent365StartupValidator>();
 
         // #457: the one ILocalLogRedactor implementation, closing the parity gap between the OTel
         // logging bridge's own redaction and every local ILoggerProvider sink. Application.Common's

@@ -103,7 +103,28 @@ public static class Agent365TelemetryExtensions
         // outbound MCP calls, and it goes through the shared AzureCredentialFactory so the exporter
         // inherits the harness's existing credential hierarchy (explicit secret, then certificate,
         // then DefaultAzureCredential/managed identity) rather than introducing a second one.
-        var credential = AzureCredentialFactory.CreateTokenCredential(config.Auth);
+        // The tenant the token is acquired in must be the tenant reported in the telemetry. These are
+        // two separate settings — the credential section has its own TenantId — and nothing otherwise
+        // ties them together. Left blank (the documented recommended shape, where a managed identity
+        // federated to the blueprint needs no explicit credentials) DefaultAzureCredential acquires a
+        // token in whatever tenant the ambient credential defaults to: a developer's az-login tenant,
+        // or a managed identity in a different directory. The payload's tenant then disagrees with the
+        // token's, and Agent 365 drops those spans without reporting anything. Defaulting it here means
+        // the operator sets the tenant once and the two cannot silently diverge.
+        var auth = config.Auth;
+        if (string.IsNullOrWhiteSpace(auth.TenantId) && !string.IsNullOrWhiteSpace(config.TenantId))
+        {
+            auth = new Domain.Common.Config.Azure.EntraCredentialConfig
+            {
+                TenantId = config.TenantId,
+                ClientId = auth.ClientId,
+                ClientSecret = auth.ClientSecret,
+                CertificatePath = auth.CertificatePath,
+                ExcludeManagedIdentityCredential = auth.ExcludeManagedIdentityCredential,
+            };
+        }
+
+        var credential = AzureCredentialFactory.CreateTokenCredential(auth);
 
         return builder.UseMicrosoftOpenTelemetry(distro =>
         {

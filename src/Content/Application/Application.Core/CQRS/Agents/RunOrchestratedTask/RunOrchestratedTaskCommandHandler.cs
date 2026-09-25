@@ -60,6 +60,18 @@ public class RunOrchestratedTaskCommandHandler : IRequestHandler<RunOrchestrated
 			// previously never armed the loop guard at all, so it never needed the reset either.
 			_admissionPipeline.Reset();
 
+			// Opened before the orchestrator is built, not after. Agent construction loads skills,
+			// connects MCP clients and resolves tools — all of which emit spans, and all of which would
+			// carry no attribution and be dropped if this started later. Only the orchestrator name and
+			// conversation id are needed, and both are available here.
+			//
+			// This is published here rather than by AgentContextPropagationBehavior because this command
+			// is not IAgentScopedRequest, so the behavior never runs for it — the same reason the
+			// execution-context Initialize below is hand-rolled. Without it a tenant would see every
+			// sub-agent but not the orchestrator that drove them.
+			using var attribution = _attribution.BeginTurn(
+				request.OrchestratorName, request.ConversationId);
+
 			// Phase 1: Create orchestrator and get task decomposition
 			var agentCatalog = BuildAgentCatalog(request.AvailableAgents);
 			var orchestrator = await _agentFactory.CreateAgentFromSkillAsync(
@@ -91,15 +103,6 @@ public class RunOrchestratedTaskCommandHandler : IRequestHandler<RunOrchestrated
 			// exactly the way AgentContextPropagationBehavior's does for an ordinary agent turn.
 			_executionContext.Initialize(
 				request.OrchestratorName, request.ConversationId, 0, callOnceScopeId: request.ConversationId);
-
-			// Same reason the Initialize above is hand-rolled: this command is not IAgentScopedRequest,
-			// so AgentContextPropagationBehavior — which is where external agent-governance attribution
-			// is normally published — never runs for it. Without this the orchestrator's own planning
-			// and synthesis calls carry no attribution and are dropped by the governance platform, so a
-			// tenant would see every sub-agent but not the orchestrator that drove them. Held for the
-			// rest of the method so both phases are covered.
-			using var attribution = _attribution.BeginTurn(
-				request.OrchestratorName, request.ConversationId);
 
 			await ReportProgress(request, "planning", request.OrchestratorName, "Decomposing task...");
 

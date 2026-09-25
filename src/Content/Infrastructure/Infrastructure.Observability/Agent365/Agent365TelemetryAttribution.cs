@@ -84,6 +84,17 @@ public sealed class Agent365TelemetryAttribution : IAgentTelemetryAttribution
             return NoAgentTelemetryAttributionScope.Instance;
         }
 
+        // The tenant half gets the same treatment as the agent half, for the same reason: an attribution
+        // naming an agent but no tenant is dropped by the service just as surely as the reverse, so
+        // publishing a partial identity buys nothing and hides the misconfiguration. This guard was
+        // missing while every other value here was blank-checked — an unintended asymmetry, not a
+        // decision.
+        if (string.IsNullOrWhiteSpace(config.TenantId))
+        {
+            WarnOnce(agentId);
+            return NoAgentTelemetryAttributionScope.Instance;
+        }
+
         // The host-level AgentName names the host's default agent, so it must not be applied to an
         // agent reporting its own identity: doing so collapses every agent in a multi-agent host to
         // one display name while their ids stay distinct, which is harder to read in the tenant's
