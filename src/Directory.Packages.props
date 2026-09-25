@@ -124,6 +124,12 @@
          build that pairs with OpenTelemetry 1.18.0 (it constrains OpenTelemetry to
          [1.18.0, 2.0.0)). Keep this in lockstep with the OpenTelemetry version above. -->
     <PackageVersion Include="OpenTelemetry.Exporter.Prometheus.AspNetCore" Version="1.18.0-beta.1" />
+    <!-- Microsoft Agent 365 trace export. Only the targeted UseAgent365 entry point is used, which
+         adds the Agent 365 activity source, its baggage-to-tags processor and its exporter, and
+         nothing else — deliberately NOT UseMicrosoftOpenTelemetry, which also takes over Azure
+         Monitor, OTLP, Console and the infrastructure instrumentation this repo configures itself
+         through ITelemetryConfigurator. This package is what sets the OpenTelemetry 1.18.0 floor. -->
+    <PackageVersion Include="Microsoft.OpenTelemetry" Version="1.1.0" />
 
     <!-- Presentation layer -->
     <PackageVersion Include="AspNetCore.HealthChecks.ApplicationStatus" Version="9.0.0" />
