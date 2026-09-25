@@ -106,28 +106,18 @@ public sealed class CapabilityEnvelopeGrantResolver
 
     /// <summary>
     /// Expands <paramref name="names"/> to also include each name's resolved, self-reported published
-    /// name when it names a first-party tool by DI key and the two disagree — flattened and
-    /// deduplicated case-insensitively, preserving first-seen order.
+    /// name when it names a first-party tool by DI key and the two disagree — keeping each tool's
+    /// name-forms grouped, so a caller emitting one rule per form can record that those rules
+    /// describe a single logical tool (#652). That pairing is knowable only here; recovering it later
+    /// would mean resolving the tool again.
     /// </summary>
     /// <remarks>
-    /// Prefer <see cref="ExpandToNameForms"/> when the caller <em>emits</em> something per name: this
-    /// overload discards which forms belong to the same tool, and recovering that afterwards means
-    /// resolving the tool again (see <see cref="ToolNameForms"/>). This one remains for callers that
-    /// only need a flat membership set.
-    /// </remarks>
-    public IReadOnlyList<string> ExpandWithPublishedNameCoverage(IReadOnlyCollection<string> names) =>
-        ExpandToNameForms(names).SelectMany(f => f.Forms).ToList();
-
-    /// <summary>
-    /// As <see cref="ExpandWithPublishedNameCoverage"/>, but keeps each tool's name-forms grouped
-    /// under the published name they resolve to, so a caller emitting one rule per form can record
-    /// that the rules describe a single logical tool.
-    /// </summary>
-    /// <remarks>
-    /// Deduplication is global across the whole input and case-insensitive, exactly as the flat
-    /// overload's was: a form already contributed by an earlier name is dropped, and a name whose
-    /// every form was already contributed yields no group at all. So the set of forms returned here
-    /// is identical to what the flat overload produced — only the grouping is new.
+    /// Deduplication is global across the whole input and case-insensitive: a form already
+    /// contributed by an earlier name is dropped, and a name whose every form was already contributed
+    /// yields no group at all. The flattened result is therefore exactly the name list the earlier
+    /// flat <c>ExpandWithPublishedNameCoverage</c> produced — same order, same dedup — so rule
+    /// coverage is unchanged by the grouping; that method was removed once its last caller moved
+    /// here, rather than kept as an untested convenience.
     /// </remarks>
     public IReadOnlyList<ToolNameForms> ExpandToNameForms(IReadOnlyCollection<string> names)
     {
@@ -151,8 +141,10 @@ public sealed class CapabilityEnvelopeGrantResolver
                 continue;
 
             // PublishedName is the name the agent actually invokes the tool by, which is what a
-            // summary should show; when nothing diverges it is simply the name itself.
-            groups.Add(new ToolNameForms(resolved ? publishedName : name, forms));
+            // summary should show; when nothing diverges it is simply the name itself. `resolved` is
+            // carried separately because it, not the surviving form count, is what makes a group
+            // divergent — global dedup can leave a divergent group holding a single form.
+            groups.Add(new ToolNameForms(resolved ? publishedName : name, forms, resolved));
         }
 
         return groups;
@@ -169,14 +161,26 @@ public sealed class CapabilityEnvelopeGrantResolver
 /// </param>
 /// <param name="Forms">
 /// The names to emit rules for — one entry normally, two when a first-party tool's DI registration
-/// key and published name disagree. Never empty.
+/// key and published name disagree, and possibly one even then (see <paramref name="Diverges"/>).
+/// Never empty.
 /// </param>
-public sealed record ToolNameForms(string PublishedName, IReadOnlyList<string> Forms)
+/// <param name="Diverges">
+/// Whether this name resolved to a first-party tool whose published name disagrees with it.
+/// </param>
+public sealed record ToolNameForms(string PublishedName, IReadOnlyList<string> Forms, bool Diverges)
 {
     /// <summary>
     /// The value to record as a rule's <c>PublishedToolName</c> for these forms: the published name
-    /// when the forms are alternates for one tool, and null when this is an ordinary single-form name
-    /// that needs no grouping.
+    /// when this name is one of several covering a single tool, and null for an ordinary name that
+    /// needs no grouping.
     /// </summary>
-    public string? GroupingName => Forms.Count > 1 ? PublishedName : null;
+    /// <remarks>
+    /// Keys off <see cref="Diverges"/>, never off <c>Forms.Count</c> (code-review finding): dedup is
+    /// global across the whole input, so a divergent name whose published form was already contributed
+    /// by an earlier entry arrives here holding a single form. Keying on the count left that rule
+    /// untagged, and the summary then printed the DI key as its own line — exactly the #652 defect,
+    /// surviving for any envelope that grants a tool under both of its names, or two keys that resolve
+    /// to one published name.
+    /// </remarks>
+    public string? GroupingName => Diverges ? PublishedName : null;
 }

@@ -1,8 +1,16 @@
 using Application.AI.Common.Interfaces.Permissions;
+using Application.AI.Common.Interfaces.Tools;
+using Application.AI.Common.Services.Governance;
+using Application.AI.Common.Services.Tools;
+using Application.Core.Permissions;
+using Domain.AI.Bundles;
+using Domain.AI.Governance;
 using Domain.AI.Permissions;
 using Domain.AI.Prompts;
 using FluentAssertions;
 using Infrastructure.AI.Prompts.Sections;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using Xunit;
 
@@ -261,6 +269,90 @@ public sealed class PermissionRulesSectionProviderTests
 
         section!.Content.Should().Contain("require approval before use");
         DeniedLines(section.Content).Should().ContainSingle().Which.Should().Be("- file_system");
+    }
+
+    // --- End-to-end over the REAL EnvelopePermissionRuleProvider. Every test above hand-builds its
+    // rules, so none of them can tell whether a provider actually stamps the pairing: deleting
+    // `PublishedToolName:` from an emission site left the whole suite green with the defect fully
+    // restored (code-review finding). These drive the real provider into the real summary, so the
+    // stamping is covered by something that fails when it is gone.
+
+    /// <summary>
+    /// A real <see cref="EnvelopePermissionRuleProvider"/> over a real
+    /// <see cref="CapabilityEnvelopeGrantResolver"/>, with one first-party tool registered under
+    /// <paramref name="key"/> that reports <paramref name="publishedName"/> as its own name.
+    /// </summary>
+    private static IPermissionRuleProvider RealEnvelopeProvider(string key, string publishedName)
+    {
+        var services = new ServiceCollection();
+        services.AddKeyedSingleton<ITool>(key, (_, _) => Mock.Of<ITool>(t => t.Name == publishedName));
+        var lookup = new FirstPartyToolLookup(
+            services.BuildServiceProvider(), new HashSet<string> { key });
+
+        return new EnvelopePermissionRuleProvider(
+            NullLogger<EnvelopePermissionRuleProvider>.Instance,
+            new CapabilityEnvelopeGrantResolver(
+                lookup, NullLogger<CapabilityEnvelopeGrantResolver>.Instance));
+    }
+
+    [Fact]
+    public async Task GetSectionAsync_RealProvider_GrantByKey_SummarisesTheToolOnce()
+    {
+        var provider = RealEnvelopeProvider("registered_key", "self_reported_name");
+        var envelope = new CapabilityEnvelope
+        {
+            AllowedTools = ["registered_key"],
+            AutonomyCeiling = AutonomyLevel.Supervised,
+        };
+
+        using (CapabilityEnvelopeAccessor.Begin(envelope))
+        {
+            var section = await Sut(provider).GetSectionAsync("bundle");
+
+            ApprovalLines(section!.Content).Should().ContainSingle(
+                "the key and published forms of one granted tool must summarise once")
+                .Which.Should().Be("- self_reported_name");
+        }
+    }
+
+    [Fact]
+    public async Task GetSectionAsync_RealProvider_GrantedUnderBothNames_StillSummarisesOnce()
+    {
+        // The case the form-count heuristic got wrong: the published name is contributed by the first
+        // grant entry, so the divergent second entry survives dedup holding a single form. Tagging
+        // must key off divergence, not off how many forms survived.
+        var provider = RealEnvelopeProvider("registered_key", "self_reported_name");
+        var envelope = new CapabilityEnvelope
+        {
+            AllowedTools = ["self_reported_name", "registered_key"],
+            AutonomyCeiling = AutonomyLevel.Supervised,
+        };
+
+        using (CapabilityEnvelopeAccessor.Begin(envelope))
+        {
+            var section = await Sut(provider).GetSectionAsync("bundle");
+
+            ApprovalLines(section!.Content).Should().ContainSingle(
+                "granting a tool under both of its names still restricts one tool")
+                .Which.Should().Be("- self_reported_name");
+        }
+    }
+
+    /// <summary>The bullet lines under the "require approval before use" heading.</summary>
+    private static List<string> ApprovalLines(string content)
+    {
+        const string heading = "require approval before use:";
+        var start = content.IndexOf(heading, StringComparison.Ordinal);
+        start.Should().BeGreaterThanOrEqualTo(0, "the approval heading must be present to have lines under it");
+
+        var rest = content[(start + heading.Length)..];
+        var end = rest.IndexOf("The following tools are denied:", StringComparison.Ordinal);
+        if (end >= 0)
+            rest = rest[..end];
+
+        return rest.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(l => l.StartsWith('-'))
+            .ToList();
     }
 
     private static ToolPermissionRule Deny(string toolPattern) =>
