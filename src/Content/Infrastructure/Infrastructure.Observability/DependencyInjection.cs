@@ -44,6 +44,15 @@ public static class DependencyInjection
         // Observability pipeline configurator — adds processors and exporters at Order 300
         services.AddSingleton<ITelemetryConfigurator, ObservabilityTelemetryConfigurator>();
 
+        // Agent 365 turn attribution. Registered unconditionally rather than behind the Enabled flag
+        // because the implementation itself re-reads the flag on every turn via IOptionsMonitor, so a
+        // hot config reload takes effect without a restart — and while the flag is off it returns a
+        // shared no-op scope and publishes nothing. Registered with AddSingleton (not TryAdd) so it
+        // wins over Application.AI.Common's no-op default regardless of which layer registers first:
+        // the last registration is the one GetRequiredService resolves.
+        services.AddSingleton<Application.AI.Common.Interfaces.Telemetry.IAgentTelemetryAttribution,
+            Agent365.Agent365TelemetryAttribution>();
+
         // #457: the one ILocalLogRedactor implementation, closing the parity gap between the OTel
         // logging bridge's own redaction and every local ILoggerProvider sink. Application.Common's
         // ConfigureLogging resolves this optionally, so registering it here is what turns local-sink

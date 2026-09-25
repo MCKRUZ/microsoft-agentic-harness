@@ -70,6 +70,37 @@ public sealed class ValidateOnBuildSweepTests
         BuildAndValidate(configuration);
     }
 
+    /// <summary>
+    /// Agent 365-enabled configuration: the exporter's own services are registered by the vendor
+    /// distro only when the feature is on, so neither of the facts above ever constructs them.
+    /// Validates that the graph is still constructible with agent-activity export enabled.
+    /// </summary>
+    /// <remarks>
+    /// The ids are arbitrary but must be GUIDs: <c>Agent365ExporterConfigValidator</c> runs on start
+    /// and refuses a non-GUID agent or tenant id, so a placeholder string here would fail this test
+    /// for the wrong reason.
+    /// </remarks>
+    [Fact]
+    public void ProductionCompositionRoot_Agent365Enabled_BuildsWithValidateOnBuild()
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                { "AppConfig:Observability:Exporters:Agent365:Enabled", "true" },
+                {
+                    "AppConfig:Observability:Exporters:Agent365:AgentAppId",
+                    "11111111-1111-1111-1111-111111111111"
+                },
+                {
+                    "AppConfig:Observability:Exporters:Agent365:TenantId",
+                    "22222222-2222-2222-2222-222222222222"
+                },
+            })
+            .Build();
+
+        BuildAndValidate(configuration);
+    }
+
     private static void BuildAndValidate(IConfiguration configuration)
     {
         var services = new ServiceCollection();

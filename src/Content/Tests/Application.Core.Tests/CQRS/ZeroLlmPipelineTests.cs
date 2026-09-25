@@ -72,6 +72,11 @@ public sealed class ZeroLlmPipelineTests
         // scope must be established BEFORE AgentContextPropagationBehavior runs, since it is what
         // makes IAgentExecutionContext reachable from the singleton-lifetime ScriptedChatClientFactory.
         services.AddTransient(typeof(IPipelineBehavior<,>), typeof(AmbientRequestScopeBehavior<,>));
+        // AgentContextPropagationBehavior publishes turn attribution for external agent-governance
+        // platforms; the no-op is what a host without such an integration resolves.
+        services.AddSingleton<
+            Application.AI.Common.Interfaces.Telemetry.IAgentTelemetryAttribution,
+            Application.AI.Common.Services.Telemetry.NoOpAgentTelemetryAttribution>();
         services.AddTransient(typeof(IPipelineBehavior<,>), typeof(AgentContextPropagationBehavior<,>));
         services.AddScoped<IAgentExecutionContext, AppExecutionContext>();
         services.AddSingleton<IAmbientRequestScope, AmbientRequestScope>();
