@@ -96,8 +96,25 @@ public class Agent365ExporterConfig
     /// default identity rather than failing. That is the reason the name is echoed in the
     /// startup log: it is the only place a mistyped key is visible.
     /// </para>
+    /// <para>
+    /// <strong>Case-insensitivity is enforced by the setter, not by the default value's comparer.</strong>
+    /// Configuration binding assigns a dictionary of its own making, so a comparer set only on the
+    /// initializer is replaced during binding and the guarantee quietly disappears. Rebuilding whatever
+    /// is assigned closes that at the one point every writer passes through — binding, an object
+    /// initializer, or hand construction — for every reader, rather than relying on each reader
+    /// remembering to compare case-insensitively itself. Same shape, and the same reasoning, as
+    /// <c>SandboxConfig.ToolOverrides</c>.
+    /// </para>
     /// </remarks>
-    public Dictionary<string, Agent365AgentIdentityConfig> Agents { get; set; } = [];
+    public Dictionary<string, Agent365AgentIdentityConfig> Agents
+    {
+        get => _agents;
+        set => _agents = new Dictionary<string, Agent365AgentIdentityConfig>(
+            value, StringComparer.OrdinalIgnoreCase);
+    }
+
+    private Dictionary<string, Agent365AgentIdentityConfig> _agents =
+        new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
     /// Gets or sets the Entra credentials the exporter authenticates with when acquiring its

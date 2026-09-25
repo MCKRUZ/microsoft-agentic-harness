@@ -1,6 +1,7 @@
 using Application.AI.Common.Interfaces.Telemetry;
 using Domain.Common.Config;
 using Domain.Common.Config.Observability;
+using Domain.Common.Helpers;
 using Microsoft.Agents.A365.Observability.Runtime.Common;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -50,10 +51,10 @@ public sealed class Agent365TelemetryAttribution : IAgentTelemetryAttribution
     private readonly Agent365ExporterConfig _config;
     private readonly ILogger<Agent365TelemetryAttribution> _logger;
 
-    // Agents already warned about, so a misconfigured agent produces one line rather than one per
-    // turn forever. A rejected wildcard grant logging on every single tool call is a live defect in
-    // this repo already; this avoids repeating that shape on the turn path.
-    private readonly HashSet<string> _warnedAgents = new(StringComparer.OrdinalIgnoreCase);
+    // Set once the misconfiguration has been reported, so it produces one line rather than one per turn
+    // forever. A rejected wildcard grant logging on every single tool call is a live defect in this
+    // repo already; this avoids repeating that shape on the turn path.
+    private int _warned;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="Agent365TelemetryAttribution"/> class.
@@ -107,8 +108,8 @@ public sealed class Agent365TelemetryAttribution : IAgentTelemetryAttribution
             : agentId;
 
         var builder = new BaggageBuilder()
-            .TenantId(Canonical(config.TenantId))
-            .AgentId(Canonical(identity.Value.AppId))
+            .TenantId(GuidId.Canonicalize(config.TenantId))
+            .AgentId(GuidId.Canonicalize(identity.Value.AppId))
             .AgentName(agentName);
 
         // Blank-checked, not null-checked, to match what the validator now accepts: it treats a blank
@@ -116,7 +117,7 @@ public sealed class Agent365TelemetryAttribution : IAgentTelemetryAttribution
         // here would let that blank through and publish an empty blueprint rather than omitting it.
         if (!string.IsNullOrWhiteSpace(identity.Value.BlueprintId))
         {
-            builder = builder.AgentBlueprintId(Canonical(identity.Value.BlueprintId));
+            builder = builder.AgentBlueprintId(GuidId.Canonicalize(identity.Value.BlueprintId));
         }
 
         // Conversation id is Agent 365's primary join key for grouping a run's spans into a session.
@@ -128,21 +129,6 @@ public sealed class Agent365TelemetryAttribution : IAgentTelemetryAttribution
 
         return builder.Build();
     }
-
-    /// <summary>
-    /// Renders an identifier in the canonical hyphenated GUID form the Agent 365 service expects.
-    /// </summary>
-    /// <remarks>
-    /// The validator accepts any form <see cref="Guid.TryParse(string, out Guid)"/> does and trims
-    /// surrounding whitespace, so a value can pass startup and still not be the form that goes on the
-    /// wire — a braced <c>{guid}</c> from a portal copy, or a trailing space from a copy-paste. The
-    /// service matches the agent id in the payload against the authenticated caller and reports no
-    /// error when it differs; it simply drops the spans, which is the failure the validator exists to
-    /// prevent. Normalising here makes the published value match what was actually checked rather than
-    /// making the validator stricter than the service.
-    /// </remarks>
-    private static string? Canonical(string? value)
-        => Guid.TryParse(value, out var parsed) ? parsed.ToString("D") : value;
 
     /// <summary>
     /// Selects the Entra agent identity for <paramref name="agentId"/>: its own override when one is
@@ -173,51 +159,29 @@ public sealed class Agent365TelemetryAttribution : IAgentTelemetryAttribution
     }
 
     /// <summary>
-    /// Finds the override for <paramref name="agentId"/>, matching the configured key
-    /// case-insensitively.
+    /// Finds the override for <paramref name="agentId"/>, or null when the agent has none.
     /// </summary>
     /// <remarks>
-    /// The comparison is done here rather than by giving the dictionary an
-    /// <see cref="StringComparer.OrdinalIgnoreCase"/> comparer, because configuration binding
-    /// populates this property by assigning a dictionary of its own making — a comparer set on the
-    /// initializer does not survive binding, so relying on it would work in a unit test and fail
-    /// against real configuration. Keys are operator-typed agent names; matching them
-    /// case-sensitively would fall through to the host default silently, attributing the agent's
-    /// activity to the wrong identity.
+    /// One lookup, because <see cref="Agent365ExporterConfig.Agents"/> enforces a case-insensitive
+    /// comparer in its setter — the dictionary itself carries the matching rule, so this does not have
+    /// to re-implement it per read.
     /// </remarks>
     private static Agent365AgentIdentityConfig? FindOverride(
         Agent365ExporterConfig config,
         string agentId)
-    {
-        if (string.IsNullOrWhiteSpace(agentId) || config.Agents.Count == 0)
-        {
-            return null;
-        }
-
-        if (config.Agents.TryGetValue(agentId, out var exact))
-        {
-            return exact;
-        }
-
-        foreach (var (name, identity) in config.Agents)
-        {
-            if (string.Equals(name, agentId, StringComparison.OrdinalIgnoreCase))
-            {
-                return identity;
-            }
-        }
-
-        return null;
-    }
+        => !string.IsNullOrWhiteSpace(agentId) && config.Agents.TryGetValue(agentId, out var hit)
+            ? hit
+            : null;
 
     private void WarnOnce(string agentId)
     {
-        lock (_warnedAgents)
+        // One flag, not a set keyed by agent. Both conditions that reach here — no configured agent id,
+        // and a blank tenant — are host-wide, so no configuration produces this for one agent and not
+        // another. Keying per agent would turn a single host misconfiguration into one warning per
+        // distinct agent name, which is the opposite of what deduplicating it is for.
+        if (Interlocked.Exchange(ref _warned, 1) != 0)
         {
-            if (!_warnedAgents.Add(agentId ?? string.Empty))
-            {
-                return;
-            }
+            return;
         }
 
         _logger.LogWarning(

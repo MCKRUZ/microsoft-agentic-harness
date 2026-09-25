@@ -4,6 +4,7 @@ using FluentAssertions;
 using Infrastructure.Observability.Agent365;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using Moq;
 using Xunit;
 
 namespace Infrastructure.Observability.Tests.Agent365;
@@ -41,11 +42,9 @@ public class Agent365TelemetryAttributionTests
         configure(appConfig.Observability.Exporters.Agent365);
 
         return new Agent365TelemetryAttribution(
-            new StaticOptionsMonitor(appConfig),
+            Mock.Of<IOptionsMonitor<AppConfig>>(m => m.CurrentValue == appConfig),
             NullLogger<Agent365TelemetryAttribution>.Instance);
     }
-
-    private static string? Baggage(string key) => OpenTelemetry.Baggage.GetBaggage(key);
 
     private static IReadOnlyDictionary<string, string> AllBaggage()
         => OpenTelemetry.Baggage.GetBaggage();
@@ -332,23 +331,5 @@ public class Agent365TelemetryAttributionTests
         }
 
         AllBaggage().Should().BeEmpty("attribution must not outlive the turn that published it");
-    }
-
-    private sealed class StaticOptionsMonitor : IOptionsMonitor<AppConfig>
-    {
-        public StaticOptionsMonitor(AppConfig value) => CurrentValue = value;
-
-        public AppConfig CurrentValue { get; }
-
-        public AppConfig Get(string? name) => CurrentValue;
-
-        public IDisposable OnChange(Action<AppConfig, string?> listener) => new NoOp();
-
-        private sealed class NoOp : IDisposable
-        {
-            public void Dispose()
-            {
-            }
-        }
     }
 }

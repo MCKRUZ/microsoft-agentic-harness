@@ -59,10 +59,12 @@ public sealed class Agent365StartupValidator : IHostedService
         }
 
         var entryAssembly = Assembly.GetEntryAssembly()?.GetName().Name ?? "UnknownService";
-        var isWebTelemetryHost = observability.WebTelemetryProjects
-            .Contains(entryAssembly, StringComparer.OrdinalIgnoreCase);
 
-        if (!isWebTelemetryHost)
+        // The shared rule on ObservabilityConfig, not a second copy of it. This validator's whole
+        // premise is that its answer equals the one the telemetry composition takes; two independently
+        // maintained expressions would make that a coincidence, and a drifted copy would restore the
+        // silent failure this exists to prevent.
+        if (!observability.IsWebTelemetryHost(entryAssembly))
         {
             throw new InvalidOperationException(
                 $"Agent 365 export is enabled but this host ('{entryAssembly}') is not listed in "

@@ -4,6 +4,7 @@ using FluentAssertions;
 using Infrastructure.Observability.Agent365;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using Moq;
 using Xunit;
 
 namespace Infrastructure.Observability.Tests.Agent365;
@@ -36,7 +37,7 @@ public class Agent365StartupValidatorTests
         configure(appConfig);
 
         return new Agent365StartupValidator(
-            new StaticOptionsMonitor(appConfig),
+            Mock.Of<IOptionsMonitor<AppConfig>>(m => m.CurrentValue == appConfig),
             NullLogger<Agent365StartupValidator>.Instance);
     }
 
@@ -105,23 +106,5 @@ public class Agent365StartupValidatorTests
         var act = () => validator.StartAsync(CancellationToken.None);
 
         await act.Should().NotThrowAsync();
-    }
-
-    private sealed class StaticOptionsMonitor : IOptionsMonitor<AppConfig>
-    {
-        public StaticOptionsMonitor(AppConfig value) => CurrentValue = value;
-
-        public AppConfig CurrentValue { get; }
-
-        public AppConfig Get(string? name) => CurrentValue;
-
-        public IDisposable OnChange(Action<AppConfig, string?> listener) => new NoOp();
-
-        private sealed class NoOp : IDisposable
-        {
-            public void Dispose()
-            {
-            }
-        }
     }
 }

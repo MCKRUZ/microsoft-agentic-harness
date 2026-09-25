@@ -287,19 +287,18 @@ public class Agent365ExporterConfigValidatorTests
     }
 
     [Fact]
-    public async Task Validate_TwoOverridesDifferingOnlyByCase_IsInvalid()
+    public void CaseVariantOverrideKeys_CannotCoexist()
     {
-        // Both would match the same running agent, and which identity it reported would depend on
-        // enumeration order — arbitrary attribution in the tenant's governance records. There is no
-        // correct entry to prefer, so this is refused rather than tie-broken.
+        // No validator rule guards this any more, and none is needed: Agents enforces a
+        // case-insensitive comparer in its setter, so two keys differing only by case are the same key
+        // and cannot both be present. Making the state unrepresentable beats detecting it afterwards —
+        // previously both matched the same agent and which identity it reported depended on ordering.
         var config = Valid();
         config.Agents["Planner"] = new Agent365AgentIdentityConfig { AppId = OtherAppId };
         config.Agents["planner"] = new Agent365AgentIdentityConfig { AppId = AgentAppId };
 
-        var result = await _validator.ValidateAsync(config);
-
-        result.IsValid.Should().BeFalse();
-        result.Errors.Should().Contain(e => e.ErrorMessage.Contains("differ only by case"));
+        config.Agents.Should().HaveCount(1);
+        config.Agents["PLANNER"].AppId.Should().Be(AgentAppId, "the later assignment wins");
     }
 
     [Fact]

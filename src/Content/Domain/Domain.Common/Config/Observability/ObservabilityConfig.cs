@@ -97,4 +97,24 @@ public class ObservabilityConfig
     [
         "Infrastructure.AI.MCPServer"
     ];
+
+    /// <summary>
+    /// Whether a host whose entry assembly is <paramref name="entryAssemblyName"/> takes the
+    /// web-telemetry composition path rather than the standalone one.
+    /// </summary>
+    /// <remarks>
+    /// The rule lives next to the data it reads because more than one place needs the answer and they
+    /// must agree: the telemetry composition branches on it to decide which pipeline to build, and the
+    /// Agent 365 startup validator refuses to boot a host that cannot carry the exporter. Two
+    /// independently-written copies of one rule would let those diverge, and a drifted copy would either
+    /// refuse a host that does export or clear one that does not — the second being exactly the silent
+    /// failure the validator exists to prevent.
+    /// </remarks>
+    /// <param name="entryAssemblyName">
+    /// The entry assembly's simple name. A null or blank value never matches, which is the correct
+    /// answer: a host whose entry assembly cannot be identified is not one of the listed web hosts.
+    /// </param>
+    public bool IsWebTelemetryHost(string? entryAssemblyName)
+        => !string.IsNullOrWhiteSpace(entryAssemblyName)
+            && WebTelemetryProjects.Contains(entryAssemblyName, StringComparer.OrdinalIgnoreCase);
 }

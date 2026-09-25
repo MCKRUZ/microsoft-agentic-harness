@@ -70,8 +70,7 @@ public static class OpenTelemetryServiceCollectionExtensions
         services.AddSingleton(resourceBuilder);
 
         var entryAssemblyName = Assembly.GetEntryAssembly()?.GetName().Name ?? "UnknownService";
-        var isWebProject = appConfig.Observability.WebTelemetryProjects
-            .Contains(entryAssemblyName, StringComparer.OrdinalIgnoreCase);
+        var isWebProject = appConfig.Observability.IsWebTelemetryHost(entryAssemblyName);
 
         if (isWebProject)
             services.AddWebTelemetry(appConfig);
