@@ -24,8 +24,8 @@
     <PackageVersion Include="Microsoft.Extensions.Caching.Memory" Version="10.0.9" />
     <PackageVersion Include="Microsoft.Extensions.Logging" Version="10.0.9" />
     <PackageVersion Include="Microsoft.Extensions.Logging.Console" Version="10.0.9" />
-    <PackageVersion Include="Microsoft.Extensions.Options" Version="10.0.9" />
-    <PackageVersion Include="OpenTelemetry" Version="1.15.3" />
+    <PackageVersion Include="Microsoft.Extensions.Options" Version="10.0.10" />
+    <PackageVersion Include="OpenTelemetry" Version="1.18.0" />
 
     <!-- Application.AI.Common -->
     <PackageVersion Include="Azure.AI.Agents.Persistent" Version="1.0.0" />
@@ -118,9 +118,12 @@
     <!-- Infrastructure.Observability -->
     <PackageVersion Include="Npgsql" Version="10.0.3" />
     <PackageVersion Include="Npgsql.OpenTelemetry" Version="10.0.3" />
-    <PackageVersion Include="Azure.Monitor.OpenTelemetry.Exporter" Version="1.4.0" />
-    <PackageVersion Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.15.3" />
-    <PackageVersion Include="OpenTelemetry.Exporter.Prometheus.AspNetCore" Version="1.11.2-beta.1" />
+    <PackageVersion Include="Azure.Monitor.OpenTelemetry.Exporter" Version="1.9.0" />
+    <PackageVersion Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.18.0" />
+    <!-- The Prometheus exporter has no stable release at any version; 1.18.0-beta.1 is the
+         build that pairs with OpenTelemetry 1.18.0 (it constrains OpenTelemetry to
+         [1.18.0, 2.0.0)). Keep this in lockstep with the OpenTelemetry version above. -->
+    <PackageVersion Include="OpenTelemetry.Exporter.Prometheus.AspNetCore" Version="1.18.0-beta.1" />
 
     <!-- Presentation layer -->
     <PackageVersion Include="AspNetCore.HealthChecks.ApplicationStatus" Version="9.0.0" />
@@ -147,10 +150,10 @@
       System.Security.Cryptography.Xml to explain. Do not lower this below 4.14.2.
     -->
     <PackageVersion Include="Microsoft.Identity.Web" Version="4.14.2" />
-    <PackageVersion Include="OpenTelemetry.Extensions.Hosting" Version="1.15.3" />
-    <PackageVersion Include="OpenTelemetry.Instrumentation.AspNetCore" Version="1.15.2" />
-    <PackageVersion Include="OpenTelemetry.Instrumentation.Http" Version="1.15.1" />
-    <PackageVersion Include="OpenTelemetry.Instrumentation.Runtime" Version="1.15.1" />
+    <PackageVersion Include="OpenTelemetry.Extensions.Hosting" Version="1.18.0" />
+    <PackageVersion Include="OpenTelemetry.Instrumentation.AspNetCore" Version="1.18.0" />
+    <PackageVersion Include="OpenTelemetry.Instrumentation.Http" Version="1.18.0" />
+    <PackageVersion Include="OpenTelemetry.Instrumentation.Runtime" Version="1.18.0" />
 
     <!-- Presentation.ConsoleUI / Presentation.LoggerUI / Presentation.EvalRunner -->
     <PackageVersion Include="Spectre.Console" Version="0.55.2" />
