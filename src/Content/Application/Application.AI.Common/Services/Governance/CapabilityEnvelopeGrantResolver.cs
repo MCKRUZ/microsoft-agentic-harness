@@ -109,24 +109,74 @@ public sealed class CapabilityEnvelopeGrantResolver
     /// name when it names a first-party tool by DI key and the two disagree — flattened and
     /// deduplicated case-insensitively, preserving first-seen order.
     /// </summary>
-    public IReadOnlyList<string> ExpandWithPublishedNameCoverage(IReadOnlyCollection<string> names)
+    /// <remarks>
+    /// Prefer <see cref="ExpandToNameForms"/> when the caller <em>emits</em> something per name: this
+    /// overload discards which forms belong to the same tool, and recovering that afterwards means
+    /// resolving the tool again (see <see cref="ToolNameForms"/>). This one remains for callers that
+    /// only need a flat membership set.
+    /// </remarks>
+    public IReadOnlyList<string> ExpandWithPublishedNameCoverage(IReadOnlyCollection<string> names) =>
+        ExpandToNameForms(names).SelectMany(f => f.Forms).ToList();
+
+    /// <summary>
+    /// As <see cref="ExpandWithPublishedNameCoverage"/>, but keeps each tool's name-forms grouped
+    /// under the published name they resolve to, so a caller emitting one rule per form can record
+    /// that the rules describe a single logical tool.
+    /// </summary>
+    /// <remarks>
+    /// Deduplication is global across the whole input and case-insensitive, exactly as the flat
+    /// overload's was: a form already contributed by an earlier name is dropped, and a name whose
+    /// every form was already contributed yields no group at all. So the set of forms returned here
+    /// is identical to what the flat overload produced — only the grouping is new.
+    /// </remarks>
+    public IReadOnlyList<ToolNameForms> ExpandToNameForms(IReadOnlyCollection<string> names)
     {
         ArgumentNullException.ThrowIfNull(names);
 
-        var expanded = new List<string>(names.Count);
+        var groups = new List<ToolNameForms>(names.Count);
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var name in names)
         {
-            if (seen.Add(name))
-                expanded.Add(name);
+            var resolved = TryResolvePublishedName(name, out var publishedName)
+                && !string.Equals(publishedName, name, StringComparison.OrdinalIgnoreCase);
 
-            if (TryResolvePublishedName(name, out var publishedName)
-                && !string.Equals(publishedName, name, StringComparison.OrdinalIgnoreCase)
-                && seen.Add(publishedName))
-                expanded.Add(publishedName);
+            var forms = new List<string>(2);
+            if (seen.Add(name))
+                forms.Add(name);
+            if (resolved && seen.Add(publishedName))
+                forms.Add(publishedName);
+
+            if (forms.Count == 0)
+                continue;
+
+            // PublishedName is the name the agent actually invokes the tool by, which is what a
+            // summary should show; when nothing diverges it is simply the name itself.
+            groups.Add(new ToolNameForms(resolved ? publishedName : name, forms));
         }
 
-        return expanded;
+        return groups;
     }
+}
+
+/// <summary>
+/// One logical tool's name-forms: every name a permission rule must cover for it, plus the published
+/// name a caller actually invokes it by.
+/// </summary>
+/// <param name="PublishedName">
+/// The tool's self-reported name, or the name itself when it names no first-party tool (an MCP tool,
+/// a glob) or when key and published name already agree.
+/// </param>
+/// <param name="Forms">
+/// The names to emit rules for — one entry normally, two when a first-party tool's DI registration
+/// key and published name disagree. Never empty.
+/// </param>
+public sealed record ToolNameForms(string PublishedName, IReadOnlyList<string> Forms)
+{
+    /// <summary>
+    /// The value to record as a rule's <c>PublishedToolName</c> for these forms: the published name
+    /// when the forms are alternates for one tool, and null when this is an ordinary single-form name
+    /// that needs no grouping.
+    /// </summary>
+    public string? GroupingName => Forms.Count > 1 ? PublishedName : null;
 }

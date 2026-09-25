@@ -341,8 +341,6 @@ public sealed class PluginPermissionRuleProvider : IPermissionRuleProvider
     /// </summary>
     private void AddDenyRuleWithPublishedNameCoverage(List<ToolPermissionRule> rules, string toolKey)
     {
-        rules.Add(DenyRule(toolKey));
-
         // OrdinalIgnoreCase: matches the runtime permission resolver's actual invocation-time
         // consumer, GlobPatternMatcher.IsMatch (correctness-review advisory) — an ordinal
         // case-sensitive comparison here would emit a harmless-but-redundant second Deny rule for a
@@ -350,9 +348,17 @@ public sealed class PluginPermissionRuleProvider : IPermissionRuleProvider
         // resolves ANY casing of a registered key to its canonical form before probing DI — a separate
         // question from how the resolved PUBLISHED NAME compares to the caller's ORIGINAL key, which is
         // what this line's own comparison governs.)
-        if (TryResolvePublishedName(toolKey, out var publishedName)
-            && !string.Equals(publishedName, toolKey, StringComparison.OrdinalIgnoreCase))
-            rules.Add(DenyRule(publishedName));
+        var diverges = TryResolvePublishedName(toolKey, out var publishedName)
+            && !string.Equals(publishedName, toolKey, StringComparison.OrdinalIgnoreCase);
+
+        // #652: both rules record the published name they share, so a consumer summarising rules can
+        // report one logical tool once. Null when nothing diverged — an ordinary rule stands alone.
+        var groupingName = diverges ? publishedName : null;
+
+        rules.Add(DenyRule(toolKey, groupingName));
+
+        if (diverges)
+            rules.Add(DenyRule(publishedName, groupingName));
     }
 
     /// <summary>
@@ -405,13 +411,20 @@ public sealed class PluginPermissionRuleProvider : IPermissionRuleProvider
     /// A bypass-immune Deny rule for <paramref name="toolName"/> — the identical shape both the
     /// per-plugin <c>DeniedTools</c> loop and the unverified-boundary fail-closed response above need.
     /// </summary>
-    private static ToolPermissionRule DenyRule(string toolName) => new(
+    /// <param name="toolName">The name this rule matches on.</param>
+    /// <param name="publishedToolName">
+    /// #652: the published name shared by this rule and its sibling when <paramref name="toolName"/>
+    /// is one of two forms covering a single tool; null for a rule that stands alone, including every
+    /// rule from the unverified-boundary loop, which is deliberately key-only.
+    /// </param>
+    private static ToolPermissionRule DenyRule(string toolName, string? publishedToolName = null) => new(
         toolName,
         null,
         PermissionBehaviorType.Deny,
         PermissionRuleSource.PluginDeclaration,
         Priority: 1,
-        IsBypassImmune: true);
+        IsBypassImmune: true,
+        PublishedToolName: publishedToolName);
 
     /// <summary>
     /// Collects the distinct tool names declared by every skill attributed to

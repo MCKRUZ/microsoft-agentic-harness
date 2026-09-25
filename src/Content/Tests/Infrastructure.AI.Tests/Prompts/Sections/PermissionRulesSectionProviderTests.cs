@@ -1,11 +1,8 @@
 using Application.AI.Common.Interfaces.Permissions;
-using Application.AI.Common.Interfaces.Tools;
-using Application.AI.Common.Services.Tools;
 using Domain.AI.Permissions;
 using Domain.AI.Prompts;
 using FluentAssertions;
 using Infrastructure.AI.Prompts.Sections;
-using Microsoft.Extensions.DependencyInjection;
 using Moq;
 using Xunit;
 
@@ -167,15 +164,7 @@ public sealed class PermissionRulesSectionProviderTests
     [Fact]
     public void Constructor_NullProviders_Throws()
     {
-        var act = () => new PermissionRulesSectionProvider(null!, EmptyLookup());
-
-        act.Should().Throw<ArgumentNullException>();
-    }
-
-    [Fact]
-    public void Constructor_NullLookup_Throws()
-    {
-        var act = () => new PermissionRulesSectionProvider(Enumerable.Empty<IPermissionRuleProvider>(), null!);
+        var act = () => new PermissionRulesSectionProvider(null!);
 
         act.Should().Throw<ArgumentNullException>();
     }
@@ -183,22 +172,36 @@ public sealed class PermissionRulesSectionProviderTests
     // --- #652: the rule providers deliberately emit one rule per name-form for a first-party tool
     // whose DI registration key disagrees with its published name, so enforcement covers it either
     // way. Rendered verbatim that told the model two tools were restricted, one of them under a key
-    // it can never invoke. The summary resolves each pattern to its published name and groups on it.
+    // it can never invoke. Each rule of such a pair carries the published name they share, and the
+    // summary groups on it — deliberately WITHOUT resolving tools here, which on the prompt path
+    // would construct the host's entire tool set (see the type's remarks).
 
     [Fact]
     public async Task GetSectionAsync_KeyAndPublishedNameRules_RenderOnceUnderThePublishedName()
     {
         var ruleProvider = CreateRuleProvider(
             PermissionRuleSource.CapabilityEnvelope,
-            Deny("registered_key"),
-            Deny("self_reported_name"));
+            DenyPairedForm("registered_key", "self_reported_name"),
+            DenyPairedForm("self_reported_name", "self_reported_name"));
 
-        var section = await Sut(DivergentNameLookup("registered_key", "self_reported_name"), ruleProvider)
-            .GetSectionAsync("agent-1");
+        var section = await Sut(ruleProvider).GetSectionAsync("agent-1");
 
         var denied = DeniedLines(section!.Content);
         denied.Should().ContainSingle("the two name-forms are one tool from the agent's perspective");
         denied[0].Should().Be("- self_reported_name", "the agent invokes by published name, never by DI key");
+    }
+
+    [Fact]
+    public async Task GetSectionAsync_UntaggedKeyOnlyRule_RendersItsOwnPatternUnchanged()
+    {
+        // PluginPermissionRuleProvider's unverified-boundary fallback emits key-only rules with no
+        // pairing tag, precisely so this summary never claims a restriction under a name the resolver
+        // would not match. Such a rule must render as itself.
+        var ruleProvider = CreateRuleProvider(PermissionRuleSource.PluginDeclaration, Deny("registered_key"));
+
+        var section = await Sut(ruleProvider).GetSectionAsync("agent-1");
+
+        DeniedLines(section!.Content).Should().ContainSingle().Which.Should().Be("- registered_key");
     }
 
     [Fact]
@@ -263,31 +266,37 @@ public sealed class PermissionRulesSectionProviderTests
     private static ToolPermissionRule Deny(string toolPattern) =>
         new(toolPattern, null, PermissionBehaviorType.Deny, PermissionRuleSource.CapabilityEnvelope, 1);
 
-    /// <summary>The bullet lines under the "denied" heading, which is always the last section rendered.</summary>
-    private static List<string> DeniedLines(string content) =>
-        content[(content.IndexOf("denied:", StringComparison.Ordinal) + "denied:".Length)..]
+    /// <summary>
+    /// One form of a name-pair: a rule matching <paramref name="toolPattern"/> that records the
+    /// published name it shares with its sibling, exactly as the emitting providers stamp it.
+    /// </summary>
+    private static ToolPermissionRule DenyPairedForm(string toolPattern, string publishedToolName) =>
+        new(toolPattern, null, PermissionBehaviorType.Deny, PermissionRuleSource.CapabilityEnvelope, 1,
+            PublishedToolName: publishedToolName);
+
+    /// <summary>
+    /// The bullet lines under the "denied" heading, which is always the last section rendered.
+    /// </summary>
+    /// <remarks>
+    /// Asserts the heading exists rather than trusting <see cref="string.IndexOf(string, StringComparison)"/>
+    /// (code-review finding): on a miss it returns -1, and the resulting slice silently started six
+    /// characters into the whole prompt, so this helper returned the <em>Ask</em> bullets. That made
+    /// <c>GetSectionAsync_SameToolAskedAndDenied_AppearsUnderBothHeadings</c> pass under the exact
+    /// regression it guards — a vanished denied section read as a present one.
+    /// </remarks>
+    private static List<string> DeniedLines(string content)
+    {
+        var heading = content.IndexOf("denied:", StringComparison.Ordinal);
+        heading.Should().BeGreaterThanOrEqualTo(0, "the denied heading must be present to have lines under it");
+
+        return content[(heading + "denied:".Length)..]
             .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .Where(l => l.StartsWith('-'))
             .ToList();
-
-    /// <summary>A lookup that knows no first-party tools, so every pattern resolves to itself.</summary>
-    private static FirstPartyToolLookup EmptyLookup() =>
-        new(new ServiceCollection().BuildServiceProvider(), new HashSet<string>());
-
-    /// <summary>A lookup where one registered key reports a different published name.</summary>
-    private static FirstPartyToolLookup DivergentNameLookup(string key, string publishedName)
-    {
-        var services = new ServiceCollection();
-        services.AddKeyedSingleton<ITool>(key, (_, _) => Mock.Of<ITool>(t => t.Name == publishedName));
-        return new FirstPartyToolLookup(services.BuildServiceProvider(), new HashSet<string> { key });
     }
 
     private static PermissionRulesSectionProvider Sut(params IPermissionRuleProvider[] ruleProviders) =>
-        new(ruleProviders, EmptyLookup());
-
-    private static PermissionRulesSectionProvider Sut(
-        FirstPartyToolLookup lookup, params IPermissionRuleProvider[] ruleProviders) =>
-        new(ruleProviders, lookup);
+        new(ruleProviders);
 
     private static IPermissionRuleProvider CreateRuleProvider(
         PermissionRuleSource source,

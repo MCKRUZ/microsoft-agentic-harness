@@ -2,7 +2,6 @@ using System.Text;
 using Application.AI.Common.Helpers;
 using Application.AI.Common.Interfaces.Permissions;
 using Application.AI.Common.Interfaces.Prompts;
-using Application.AI.Common.Services.Tools;
 using Domain.AI.Permissions;
 using Domain.AI.Prompts;
 
@@ -24,37 +23,32 @@ namespace Infrastructure.AI.Prompts.Sections;
 /// <c>ThreePhasePermissionResolver.Matches</c> matches on the published name at invocation.
 /// </para>
 /// <para>
-/// So each rule's pattern is resolved back to its published name and the lines are grouped on that.
-/// Resolving here rather than tagging the rules at creation is deliberate: it collapses <em>every</em>
-/// source of duplication — including two independent providers restricting the same tool, which no
-/// creation-time tag would catch — and keeps the alternate-name concern out of
-/// <see cref="ToolPermissionRule"/>, which is shared by the whole permission system. It costs nothing
-/// per call: <see cref="FirstPartyToolLookup"/> memoizes a published name for the process lifetime
-/// (#651), and a name that is not a first-party key (a glob such as <c>*</c>, an MCP tool) resolves to
-/// itself without ever probing the container.
+/// Grouping therefore reads <see cref="ToolPermissionRule.PublishedToolName"/>, which the emitting
+/// provider stamps on both rules of such a pair. <strong>This provider deliberately does NOT resolve
+/// tool names itself.</strong> Doing so was tried and reverted: <c>PluginPermissionRuleProvider</c>'s
+/// unverified-boundary fallback emits one rule per <em>every</em> registered first-party tool, so
+/// resolving each rule's pattern here would construct the host's entire tool set as a side effect of
+/// composing a system prompt — the precise trade-off that method's own remarks record as deliberately
+/// refused, and the shape that broke host boot at #524. A name-form pairing is only knowable at
+/// emission anyway; recovering it later necessarily means resolving the tool again.
+/// </para>
+/// <para>
+/// Identical lines are also merged, which costs nothing and covers duplication the pairing tag cannot
+/// see — two independent providers restricting the same tool under the same name.
 /// </para>
 /// </remarks>
 public sealed class PermissionRulesSectionProvider : IPromptSectionProvider
 {
     private readonly IEnumerable<IPermissionRuleProvider> _ruleProviders;
-    private readonly FirstPartyToolLookup _firstPartyToolLookup;
 
     /// <summary>
     /// Initializes a new instance of <see cref="PermissionRulesSectionProvider"/>.
     /// </summary>
     /// <param name="ruleProviders">All registered permission rule providers.</param>
-    /// <param name="firstPartyToolLookup">
-    /// Resolves a rule's pattern to the tool's published name, so a tool covered under both its
-    /// registration key and its published name is summarised once — see this type's remarks.
-    /// </param>
-    public PermissionRulesSectionProvider(
-        IEnumerable<IPermissionRuleProvider> ruleProviders,
-        FirstPartyToolLookup firstPartyToolLookup)
+    public PermissionRulesSectionProvider(IEnumerable<IPermissionRuleProvider> ruleProviders)
     {
         ArgumentNullException.ThrowIfNull(ruleProviders);
-        ArgumentNullException.ThrowIfNull(firstPartyToolLookup);
         _ruleProviders = ruleProviders;
-        _firstPartyToolLookup = firstPartyToolLookup;
     }
 
     /// <inheritdoc />
@@ -87,7 +81,7 @@ public sealed class PermissionRulesSectionProvider : IPromptSectionProvider
             Content: content);
     }
 
-    private string FormatRules(List<ToolPermissionRule> rules)
+    private static string FormatRules(List<ToolPermissionRule> rules)
     {
         var builder = new StringBuilder();
         builder.AppendLine("# Permission Rules");
@@ -125,7 +119,7 @@ public sealed class PermissionRulesSectionProvider : IPromptSectionProvider
     /// both headings when different rules restrict different operations on it, and collapsing those
     /// would drop a restriction from the summary rather than tidy it.
     /// </remarks>
-    private List<string> SummaryLines(List<ToolPermissionRule> rules, PermissionBehaviorType behavior)
+    private static List<string> SummaryLines(List<ToolPermissionRule> rules, PermissionBehaviorType behavior)
     {
         var lines = new List<string>();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -135,7 +129,10 @@ public sealed class PermissionRulesSectionProvider : IPromptSectionProvider
             if (rule.Behavior != behavior)
                 continue;
 
-            var toolName = PublishedName(rule.ToolPattern);
+            // The published name when this rule is one form of a name-pair, else the pattern itself —
+            // which is the right answer for a glob (*, bash:*), an MCP tool, and the ordinary case
+            // where a tool's key and published name already agree.
+            var toolName = rule.PublishedToolName ?? rule.ToolPattern;
             var operation = rule.OperationPattern is not null ? $" (operation: {rule.OperationPattern})" : "";
             var line = $"{toolName}{operation}";
 
@@ -145,15 +142,4 @@ public sealed class PermissionRulesSectionProvider : IPromptSectionProvider
 
         return lines;
     }
-
-    /// <summary>
-    /// <paramref name="toolPattern"/>'s published name when it names a first-party tool whose
-    /// registration key differs, and otherwise the pattern unchanged — which is the answer for a glob
-    /// (<c>*</c>, <c>bash:*</c>), an MCP tool name, and the ordinary case where key and published name
-    /// already agree.
-    /// </summary>
-    private string PublishedName(string toolPattern) =>
-        _firstPartyToolLookup.TryResolvePublishedName(toolPattern, out var publishedName, out _)
-            ? publishedName
-            : toolPattern;
 }

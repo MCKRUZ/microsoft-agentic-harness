@@ -136,11 +136,15 @@ public sealed class EnvelopePermissionRuleProvider : IPermissionRuleProvider
         // compares against the published name), so the tool falls through to the closing Deny despite
         // being "granted" in config — a real functional defect masked as fail-closed-by-accident (see
         // this type's remarks on the closing Deny).
-        var grantedNames = _envelopeGrantResolver.ExpandWithPublishedNameCoverage(ValidGrants(envelope));
+        // #652: grouped rather than flattened, so each emitted rule can record the published name its
+        // forms share — the summary in PermissionRulesSectionProvider then reports one line per
+        // logical tool without having to resolve (and therefore construct) tools at prompt time.
+        var grantedForms = _envelopeGrantResolver.ExpandToNameForms(ValidGrants(envelope));
+        var grantedNames = grantedForms.SelectMany(f => f.Forms).ToList();
 
         var rules = new List<ToolPermissionRule>();
         AddDeclaredButUngrantedDenyRules(rules, agentId, grantedNames);
-        AddAutonomyCeilingBaselineRules(rules, envelope, grantedNames);
+        AddAutonomyCeilingBaselineRules(rules, envelope, grantedForms);
         AddClosingDenyRule(rules);
 
         return Task.FromResult<IReadOnlyList<ToolPermissionRule>>(rules);
@@ -162,11 +166,11 @@ public sealed class EnvelopePermissionRuleProvider : IPermissionRuleProvider
 
         foreach (var declaredName in EnumerateDeclaredTools(agentId))
         {
-            var declaredForms = _envelopeGrantResolver.ExpandWithPublishedNameCoverage([declaredName]);
-            if (declaredForms.Any(granted.Contains))
+            var declared = _envelopeGrantResolver.ExpandToNameForms([declaredName]).SingleOrDefault();
+            if (declared is null || declared.Forms.Any(granted.Contains))
                 continue;
 
-            foreach (var form in declaredForms)
+            foreach (var form in declared.Forms)
             {
                 rules.Add(new ToolPermissionRule(
                     form,
@@ -174,7 +178,8 @@ public sealed class EnvelopePermissionRuleProvider : IPermissionRuleProvider
                     PermissionBehaviorType.Deny,
                     PermissionRuleSource.CapabilityEnvelope,
                     Priority: DenyPriority,
-                    IsBypassImmune: true));
+                    IsBypassImmune: true,
+                    PublishedToolName: declared.GroupingName));
             }
         }
     }
@@ -189,20 +194,24 @@ public sealed class EnvelopePermissionRuleProvider : IPermissionRuleProvider
     /// CapabilityEnvelope.AutonomyCeiling; wiring the ceiling into live approval is a follow-up.
     /// </summary>
     private static void AddAutonomyCeilingBaselineRules(
-        List<ToolPermissionRule> rules, CapabilityEnvelope envelope, IReadOnlyList<string> grantedNames)
+        List<ToolPermissionRule> rules, CapabilityEnvelope envelope, IReadOnlyList<ToolNameForms> grantedForms)
     {
         var ceilingBehavior = envelope.AutonomyCeiling.ToDefaultPermissionBehavior();
 
-        foreach (var toolName in grantedNames)
+        foreach (var granted in grantedForms)
         {
-            rules.Add(new ToolPermissionRule(
-                toolName,
-                null,
-                ceilingBehavior,
-                PermissionRuleSource.CapabilityEnvelope,
-                Priority: BaselinePriority,
-                IsAuthoritativeBaseline: true,
-                BaselineTier: PermissionBaselineTier.GrantBoundary));
+            foreach (var toolName in granted.Forms)
+            {
+                rules.Add(new ToolPermissionRule(
+                    toolName,
+                    null,
+                    ceilingBehavior,
+                    PermissionRuleSource.CapabilityEnvelope,
+                    Priority: BaselinePriority,
+                    IsAuthoritativeBaseline: true,
+                    BaselineTier: PermissionBaselineTier.GrantBoundary,
+                    PublishedToolName: granted.GroupingName));
+            }
         }
     }
 

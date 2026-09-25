@@ -2,7 +2,6 @@ using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Context;
 using Application.AI.Common.Interfaces.Prompts;
 using Application.AI.Common.Services.Agent;
-using Application.AI.Common.Services.Tools;
 using FluentAssertions;
 using Infrastructure.AI.Prompts;
 using Microsoft.Extensions.DependencyInjection;
@@ -30,12 +29,6 @@ public sealed class PromptComposerScopeIsolationTests
         // Production lifetime (Application.AI.Common.DependencyInjection): scoped ambient context.
         services.AddScoped<IAgentExecutionContext, AgentExecutionContext>();
         services.AddSingleton(Mock.Of<IContextBudgetTracker>());
-
-        // Also from Application.AI.Common.DependencyInjection: PermissionRulesSectionProvider resolves
-        // a rule's pattern to the tool's published name so one tool is summarised once (#652). Empty key
-        // set — this graph registers no first-party tools, so every pattern resolves to itself.
-        services.AddSingleton(new FirstPartyToolLookup(
-            new ServiceCollection().BuildServiceProvider(), new HashSet<string>()));
 
         // Production prompt composition registrations under test.
         services.AddSystemPromptComposition();
