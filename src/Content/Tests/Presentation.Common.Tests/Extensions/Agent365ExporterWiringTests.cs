@@ -120,17 +120,19 @@ public class Agent365ExporterWiringTests : IDisposable
     }
 
     [Fact]
-    public void EnabledConfig_StopsPropagatingBaggageOutOfTheProcess()
+    public void DefaultConfig_StopsPropagatingBaggageOutOfTheProcess()
     {
-        // Attribution is published as OpenTelemetry baggage, and the default propagator serialises
-        // baggage into an HTTP header that the HTTP-client instrumentation attaches to every outbound
-        // call — so without this, enabling agent governance would send the customer's tenant id, agent
-        // app id, blueprint id and conversation id to LLM providers, third-party MCP servers and
-        // web-fetch targets. It also stops a caller-supplied baggage header being extracted and
-        // stamped onto spans as attacker-chosen agent attribution.
+        // #738: this is now a host-wide egress policy applied in AddOpenTelemetry, not a side effect
+        // of enabling Agent 365 — so it is proved here with Agent 365 untouched, through the same
+        // public entry point every host calls. Attribution rides OpenTelemetry baggage, and the
+        // default propagator serialises baggage into an HTTP header that the HTTP-client
+        // instrumentation attaches to every outbound call — so without this, ANY host that starts
+        // using baggage (Agent 365 or otherwise) would send it to LLM providers, third-party MCP
+        // servers and web-fetch targets. It also stops a caller-supplied baggage header being
+        // extracted and stamped onto spans as attacker-chosen attribution.
         var services = BaseServices();
 
-        services.AddWebTelemetry(ConfigWithAgent365(enabled: true));
+        services.AddOpenTelemetry(new AppConfig());
 
         // Asserted on the trace-context fields surviving rather than on the concrete propagator type:
         // what matters is that distributed tracing still works while baggage no longer crosses the
@@ -138,7 +140,30 @@ public class Agent365ExporterWiringTests : IDisposable
         var fields = OpenTelemetry.Context.Propagation.Propagators.DefaultTextMapPropagator.Fields;
 
         fields.Should().Contain("traceparent", "distributed tracing must keep working");
-        fields.Should().NotContain("baggage", "baggage must not leave the process");
+        fields.Should().NotContain("baggage", "baggage must not leave the process by default");
+    }
+
+    [Fact]
+    public void PropagateBaggageTrue_RestoresBaggagePropagation_EvenWithAgent365Enabled()
+    {
+        // The explicit opt-back-in: a host with a deliberate, reviewed reason to use cross-process
+        // baggage can still have it, and enabling Agent 365 alongside that choice must not silently
+        // re-suppress it — PropagateBaggage is the one flag that decides this, independent of any
+        // exporter. Routed through the real public entry point with the test host added to
+        // WebTelemetryProjects (matching ValidateOnBuildSweepTests' own approach) so the Agent 365
+        // wiring this test names is actually reached, not merely configured.
+        var entryAssembly = System.Reflection.Assembly.GetEntryAssembly()?.GetName().Name
+            ?? "UnknownService";
+        var config = ConfigWithAgent365(enabled: true);
+        config.Observability.PropagateBaggage = true;
+        config.Observability.WebTelemetryProjects.Add(entryAssembly);
+        var services = BaseServices();
+
+        services.AddOpenTelemetry(config);
+
+        services.Should().Contain(d => IsAgent365Service(d), "the Agent 365 wiring must actually run");
+        var fields = OpenTelemetry.Context.Propagation.Propagators.DefaultTextMapPropagator.Fields;
+        fields.Should().Contain("baggage", "an explicit opt-in must be honoured");
     }
 
     // Matched by name rather than by CLR type on purpose: the vendor's Agent 365 service types are

@@ -1,4 +1,5 @@
 using Domain.Common.Config;
+using FluentAssertions;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Presentation.Common.Extensions;
@@ -36,8 +37,20 @@ namespace Presentation.Common.Tests.Composition;
 /// </para>
 /// </remarks>
 [Collection(GlobalPropagatorCollection.Name)]
-public sealed class ValidateOnBuildSweepTests
+public sealed class ValidateOnBuildSweepTests : IDisposable
 {
+    // Every fact in this class builds a real composition root, and AddOpenTelemetry unconditionally
+    // sets the process-global default propagator as part of that (#738) — not only the Agent
+    // 365-enabled fact, which is the only one this used to guard. Captured once per test instance
+    // (xUnit creates a fresh instance per [Fact]) and restored in Dispose, or this class leaks a
+    // process-global mutation into whatever test — in this collection or, once test-process
+    // scheduling reorders across the assembly, another — runs next.
+    private readonly OpenTelemetry.Context.Propagation.TextMapPropagator _originalPropagator =
+        OpenTelemetry.Context.Propagation.Propagators.DefaultTextMapPropagator;
+
+    /// <inheritdoc />
+    public void Dispose() => OpenTelemetry.Sdk.SetDefaultTextMapPropagator(_originalPropagator);
+
     /// <summary>
     /// All-features-off baseline: the default, all-features-off registration set every host
     /// shares before its host-specific overrides. This is the baseline that must always
@@ -50,7 +63,7 @@ public sealed class ValidateOnBuildSweepTests
             .AddInMemoryCollection(new Dictionary<string, string?>())
             .Build();
 
-        BuildAndValidate(configuration);
+        using var provider = BuildAndValidate(configuration);
     }
 
     /// <summary>
@@ -68,7 +81,7 @@ public sealed class ValidateOnBuildSweepTests
             })
             .Build();
 
-        BuildAndValidate(configuration);
+        using var provider = BuildAndValidate(configuration);
     }
 
     /// <summary>
@@ -89,16 +102,22 @@ public sealed class ValidateOnBuildSweepTests
     /// standalone path, never reaches the Agent 365 wiring, and the vendor pipeline this test exists to
     /// construct is never built. The first version of this test omitted it and passed vacuously.
     /// </para>
+    /// <para>
+    /// <strong>Non-vacuity proof, second version (#738).</strong> The first version used "baggage
+    /// absent from the default propagator" as its evidence that composition reached the Agent 365
+    /// wiring — that stopped being valid the moment baggage suppression became a host-wide policy
+    /// applied in <c>AddOpenTelemetry</c> regardless of Agent 365, which would have made this test pass
+    /// vacuously again on the standalone path, the exact failure shape its own first paragraph warns
+    /// about. The replacement resolves <c>IAgentTelemetryAttribution</c> from the built container and
+    /// asserts its concrete type — a signal only the Agent 365 wiring, not the benign no-op default
+    /// every host gets, can produce.
+    /// </para>
     /// </remarks>
     [Fact]
     public void ProductionCompositionRoot_Agent365Enabled_BuildsWithValidateOnBuild()
     {
         var entryAssembly = System.Reflection.Assembly.GetEntryAssembly()?.GetName().Name
             ?? "UnknownService";
-
-        // Enabling the exporter swaps the process-wide propagator, so it is captured and restored —
-        // otherwise this test changes context propagation for every later test in the assembly.
-        var originalPropagator = OpenTelemetry.Context.Propagation.Propagators.DefaultTextMapPropagator;
 
         var configuration = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
@@ -116,26 +135,22 @@ public sealed class ValidateOnBuildSweepTests
             })
             .Build();
 
-        try
-        {
-            BuildAndValidate(configuration);
+        using var provider = BuildAndValidate(configuration);
 
-            // Proves this test is not vacuous. Swapping the propagator is a side effect only the
-            // Agent 365 wiring performs, so observing it is evidence the composition actually reached
-            // that wiring and built the vendor pipeline — rather than silently taking the standalone
-            // telemetry path and validating a graph with no Agent 365 services in it, which is exactly
-            // what the first version of this test did.
-            var fields = OpenTelemetry.Context.Propagation.Propagators.DefaultTextMapPropagator.Fields;
-            Assert.NotNull(fields);
-            Assert.DoesNotContain("baggage", fields);
-        }
-        finally
-        {
-            OpenTelemetry.Sdk.SetDefaultTextMapPropagator(originalPropagator);
-        }
+        var attribution = provider.GetRequiredService<
+            Application.AI.Common.Interfaces.Telemetry.IAgentTelemetryAttribution>();
+
+        attribution.Should().BeOfType<Infrastructure.Observability.Agent365.Agent365TelemetryAttribution>(
+            "enabling Agent 365 must wire its own attribution implementation, not merely leave every "
+            + "host's benign no-op default in place");
     }
 
-    private static void BuildAndValidate(IConfiguration configuration)
+    /// <summary>
+    /// Builds and validates the composition root, returning the built provider so a caller can inspect
+    /// what actually got wired — see <see cref="ProductionCompositionRoot_Agent365Enabled_BuildsWithValidateOnBuild"/>.
+    /// The caller owns disposal.
+    /// </summary>
+    private static ServiceProvider BuildAndValidate(IConfiguration configuration)
     {
         var services = new ServiceCollection();
         services.AddLogging();
@@ -146,9 +161,10 @@ public sealed class ValidateOnBuildSweepTests
         // ValidateOnBuild eagerly constructs every non-open-generic descriptor and throws an
         // AggregateException listing ALL that cannot be built. ValidateScopes is kept on to
         // match the production hosts (captive-dependency guard, audit item H2's sibling).
+        ServiceProvider? provider = null;
         var exception = Record.Exception(() =>
         {
-            using var provider = services.BuildServiceProvider(new ServiceProviderOptions
+            provider = services.BuildServiceProvider(new ServiceProviderOptions
             {
                 ValidateOnBuild = true,
                 ValidateScopes = true,
@@ -156,5 +172,6 @@ public sealed class ValidateOnBuildSweepTests
         });
 
         Assert.Null(exception);
+        return provider!;
     }
 }

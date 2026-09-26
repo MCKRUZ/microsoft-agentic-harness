@@ -249,6 +249,28 @@ docker run -d --name jaeger \
                     <div class="callout callout-info">
                         <span class="callout-icon">i</span>
                         <div class="callout-body">
+                            <div class="callout-title">This host does not propagate baggage across its boundary, by default</div>
+                            <p style="margin: 0">
+                                Agent 365 attribution rides OpenTelemetry <code>Baggage</code> (tenant id, agent id,
+                                blueprint id, conversation id), and a propagator that also carries baggage would
+                                serialise that onto every outbound HTTP call and accept a caller-supplied version on
+                                every inbound one — so the harness installs a trace-context-only propagator whenever
+                                <code>Observability:PropagateBaggage</code> is <code>false</code> (the default),
+                                unconditionally, for <strong>every host</strong>, not only ones that enable Agent 365.
+                                Enabling Agent 365 no longer changes this behaviour itself; it depends on the same
+                                host-wide policy every other feature does. Set the flag to <code>true</code> only if
+                                this host has a deliberate, reviewed reason to use cross-process baggage — the harness
+                                then installs the standard trace-context-plus-baggage propagator explicitly, rather than
+                                leaving it to whatever happened to be ambient, so the two settings are both a real,
+                                deterministic choice rather than one being "off" and the other "whatever's there". A
+                                startup check refuses to boot a host with Agent 365 enabled if something re-registers a
+                                composite propagator afterwards.
+                            </p>
+                        </div>
+                    </div>
+                    <div class="callout callout-info">
+                        <span class="callout-icon">i</span>
+                        <div class="callout-body">
                             <div class="callout-title">Offline storage is off here, unlike the SDK default</div>
                             <p style="margin: 0">
                                 Microsoft's exporter persists undeliverable spans to <code>LOCALAPPDATA</code> or
@@ -258,7 +280,10 @@ docker run -d --name jaeger \
                                 compounds too: while a tenant is unlicensed or unconsented <em>every</em> export fails,
                                 so <em>everything</em> would be written to disk rather than an occasional retry batch.
                                 Set <code>EnableOfflineStorage</code> plus an
-                                <code>OfflineStorageDirectory</code> you control (owner-only permissions) to opt in.
+                                <code>OfflineStorageDirectory</code> you control to opt in — the harness creates that
+                                directory and enforces owner-only permissions on it itself (POSIX; a no-op on Windows,
+                                left to its inherited ACL) and refuses to boot if it cannot confirm the directory is
+                                secured, rather than merely documenting the requirement.
                             </p>
                         </div>
                     </div>

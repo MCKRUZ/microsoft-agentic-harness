@@ -321,6 +321,63 @@ public class Agent365TelemetryAttributionTests
     }
 
     [Fact]
+    public void OverLengthHostLevelAgentName_IsTruncatedBeforePublishing()
+    {
+        // #738: nothing upstream bounds a configured or caller-supplied name's length, so an
+        // absurdly long string would otherwise be stamped verbatim into the tenant's inventory.
+        var overLength = new string('a', 500);
+        var attribution = Build(c =>
+        {
+            c.Enabled = true;
+            c.AgentAppId = HostAppId;
+            c.TenantId = TenantId;
+            c.AgentName = overLength;
+        });
+
+        using var scope = attribution.BeginTurn("researcher", "conv-1");
+
+        AllBaggage().Values.Should().NotContain(overLength);
+        AllBaggage().Values.Should().Contain(name => name.Length == 200 && overLength.StartsWith(name));
+    }
+
+    [Fact]
+    public void OverLengthCallerSuppliedAgentId_IsTruncatedBeforePublishing()
+    {
+        // Same bound applies on the fallback-to-agentId path, not only the configured-name path —
+        // an agent id this long could only have arrived from an unvalidated caller.
+        var overLengthAgentId = new string('b', 500);
+        var attribution = Build(c =>
+        {
+            c.Enabled = true;
+            c.AgentAppId = HostAppId;
+            c.TenantId = TenantId;
+        });
+
+        using var scope = attribution.BeginTurn(overLengthAgentId, "conv-1");
+
+        AllBaggage().Values.Should().NotContain(overLengthAgentId);
+        AllBaggage().Values.Should()
+            .Contain(name => name.Length == 200 && overLengthAgentId.StartsWith(name));
+    }
+
+    [Fact]
+    public void AgentNameAtExactlyTheBound_IsNotTruncated()
+    {
+        var exactlyAtBound = new string('c', 200);
+        var attribution = Build(c =>
+        {
+            c.Enabled = true;
+            c.AgentAppId = HostAppId;
+            c.TenantId = TenantId;
+            c.AgentName = exactlyAtBound;
+        });
+
+        using var scope = attribution.BeginTurn("researcher", "conv-1");
+
+        AllBaggage().Values.Should().Contain(exactlyAtBound);
+    }
+
+    [Fact]
     public void BlankAgentName_FallsBackToTheAgentIdRatherThanPublishingEmpty()
     {
         // Same template-placeholder reasoning as the blueprint id: "AgentName": "" means "not

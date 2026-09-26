@@ -41,6 +41,14 @@ namespace Infrastructure.Observability.Agent365;
 /// </remarks>
 public sealed class Agent365TelemetryAttribution : IAgentTelemetryAttribution
 {
+    // Matches this repo's existing HasMaxLength(200) convention for a display-facing name (see
+    // ConversationDbContext). Nothing upstream of BeginTurn bounds the agent id a caller supplies —
+    // it can reach here straight from an HTTP request body — so without this an arbitrarily long
+    // string gets stamped into a customer tenant's Agent 365 inventory as this agent's display name
+    // (#738). Truncated rather than rejected: a display name that's too long is a hygiene problem
+    // for the tenant's records, not a reason to drop the turn's attribution entirely.
+    private const int MaxAgentNameLength = 200;
+
     // Captured once rather than re-read per turn, deliberately. The exporter is wired into the
     // OpenTelemetry pipeline at composition time and the startup validator runs once, so both are
     // startup decisions. Re-reading the flag here would let the two diverge: switching Enabled on by
@@ -168,6 +176,14 @@ public sealed class Agent365TelemetryAttribution : IAgentTelemetryAttribution
         var agentName = isHostDefault && !string.IsNullOrWhiteSpace(config.AgentName)
             ? config.AgentName
             : agentId;
+
+        // Bounded regardless of source (#738) — an operator-configured AgentName is trusted more than
+        // a caller-supplied agentId, but an absurdly long string is equally worth truncating in either
+        // case, and treating them differently here would be a distinction with no security benefit.
+        if (agentName.Length > MaxAgentNameLength)
+        {
+            agentName = agentName[..MaxAgentNameLength];
+        }
 
         var builder = new BaggageBuilder()
             .TenantId(_canonicalTenantId)

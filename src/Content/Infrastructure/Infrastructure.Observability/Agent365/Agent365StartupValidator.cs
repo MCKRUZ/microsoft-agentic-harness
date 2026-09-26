@@ -1,4 +1,5 @@
 using System.Reflection;
+using Application.Common.Interfaces.Common;
 using Domain.Common.Config;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -35,16 +36,20 @@ public sealed class Agent365StartupValidator : IHostedService
 {
     private readonly IOptionsMonitor<AppConfig> _config;
     private readonly ILogger<Agent365StartupValidator> _logger;
+    private readonly IOwnerOnlyDirectoryCreator _directoryCreator;
 
     /// <summary>Initializes a new instance of the <see cref="Agent365StartupValidator"/> class.</summary>
     public Agent365StartupValidator(
         IOptionsMonitor<AppConfig> config,
-        ILogger<Agent365StartupValidator> logger)
+        ILogger<Agent365StartupValidator> logger,
+        IOwnerOnlyDirectoryCreator directoryCreator)
     {
         ArgumentNullException.ThrowIfNull(config);
         ArgumentNullException.ThrowIfNull(logger);
+        ArgumentNullException.ThrowIfNull(directoryCreator);
         _config = config;
         _logger = logger;
+        _directoryCreator = directoryCreator;
     }
 
     /// <inheritdoc />
@@ -73,6 +78,56 @@ public sealed class Agent365StartupValidator : IHostedService
                 + "would never be wired and no agent activity would reach the tenant's control plane — "
                 + $"silently. Add '{entryAssembly}' to Observability:WebTelemetryProjects, or set "
                 + "Observability:Exporters:Agent365:Enabled to false for this host.");
+        }
+
+        // Re-assert the baggage-egress policy (#738) rather than trust that AddOpenTelemetry's earlier
+        // application of it still holds. Both run during composition, but this validator's whole point
+        // is refusing to trust an assumption a later step could quietly invalidate: any code that runs
+        // after AddOpenTelemetry — a consumer's own Startup/Program code, a library that calls
+        // Sdk.SetDefaultTextMapPropagator with a composite propagator of its own — re-enables the exact
+        // egress ObservabilityConfig.PropagateBaggage exists to close, and does so silently; nothing
+        // downstream would notice, because a working propagator that happens to leak more is not an
+        // error to anything that isn't specifically checking. Checking here, at the last point before
+        // this host starts serving traffic, is what turns that silent regression into a boot refusal.
+        var propagatedFields = OpenTelemetry.Context.Propagation.Propagators.DefaultTextMapPropagator.Fields;
+        if (propagatedFields?.Contains("baggage") == true)
+        {
+            throw new InvalidOperationException(
+                "Agent 365 export is enabled, but the process's default text-map propagator carries "
+                + "baggage — meaning tenant, agent, blueprint and conversation ids published for a turn "
+                + "would cross this host's process boundary on outbound HTTP calls, and a caller-supplied "
+                + "baggage header would be accepted as attacker-chosen attribution on inbound ones. "
+                + "AddOpenTelemetry sets a trace-context-only propagator when "
+                + "Observability:PropagateBaggage is false (the default); something registered afterwards "
+                + "changed it. Remove whatever re-registers the propagator, or set "
+                + "Observability:PropagateBaggage explicitly if this host has a deliberate, reviewed "
+                + "reason to propagate baggage.");
+        }
+
+        // Force owner-only permissions on the offline-storage directory (#738) rather than merely
+        // document the requirement. The vendor SDK creates this directory itself and chooses its own
+        // mode; our own code never touched it before this. Failure refuses boot rather than silently
+        // proceeding with a directory this process cannot confirm is owner-only, because the content
+        // spilled there can include prompts and tool arguments — a consumer who set
+        // EnableOfflineStorage=true asked for it to exist, and existing it insecurely is worse than not
+        // booting. A no-op on Windows, left to its inherited ACL — see IOwnerOnlyDirectoryCreator.
+        if (config.EnableOfflineStorage)
+        {
+            try
+            {
+                _directoryCreator.Create(config.OfflineStorageDirectory!, _logger);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                throw new InvalidOperationException(
+                    "Agent 365 offline storage is enabled "
+                    + $"(Observability:Exporters:Agent365:OfflineStorageDirectory = "
+                    + $"'{config.OfflineStorageDirectory}') but the directory could not be created or "
+                    + "confirmed as owner-only. This directory can hold prompts and tool arguments spilled "
+                    + "from failed exports, so the harness refuses to proceed with a directory it cannot "
+                    + "secure. See the inner exception for the specific path and cause.",
+                    ex);
+            }
         }
 
         _logger.LogInformation(

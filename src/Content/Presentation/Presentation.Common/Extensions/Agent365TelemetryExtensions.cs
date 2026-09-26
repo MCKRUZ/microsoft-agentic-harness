@@ -3,7 +3,6 @@ using Azure.Core;
 using Domain.Common.Config;
 using Microsoft.OpenTelemetry;
 using OpenTelemetry;
-using OpenTelemetry.Context.Propagation;
 
 namespace Presentation.Common.Extensions;
 
@@ -74,27 +73,17 @@ public static class Agent365TelemetryExtensions
             return builder;
         }
 
-        // Stop OpenTelemetry baggage crossing the process boundary in either direction.
-        //
-        // OUTBOUND: the default propagator serialises baggage into a `baggage` HTTP header and the
-        // HTTP-client instrumentation attaches it to every outbound call, so the tenant id, agent
-        // app id, blueprint id and conversation id published for a turn would otherwise be sent to
-        // LLM providers, third-party MCP servers and web-fetch targets. None of those is a
-        // credential, but they identify the customer's tenant and its agents to parties that have no
-        // business receiving them, and enabling agent governance must not be the thing that starts
-        // leaking them.
-        //
-        // INBOUND: the same propagator extracts a caller-supplied `baggage` header into the ambient
-        // context, where the vendor's baggage-to-tags processor would stamp caller-chosen agent and
-        // tenant ids onto spans. The service validates the agent id against this host's token, so the
-        // ceiling is junk entries in governance records rather than impersonation — but there is no
-        // reason to accept it.
-        //
-        // Trace context (traceparent/tracestate) is unaffected, so distributed tracing across
-        // services keeps working; only baggage stops being propagated. Scoped to hosts that enable
-        // Agent 365 rather than applied globally, so a host that has not opted in keeps whatever
-        // propagation behaviour it has today.
-        Sdk.SetDefaultTextMapPropagator(new TraceContextPropagator());
+        // This method DEPENDS ON the host's baggage-egress policy rather than owning it (#738).
+        // Agent 365 attribution rides OpenTelemetry baggage (tenant id, agent app id, blueprint id,
+        // conversation id, published per turn), and a propagator that also carries baggage would
+        // otherwise serialise that onto every outbound HTTP call and accept a caller-supplied version
+        // on every inbound one. That protection used to live here, as an unnamed side effect gated on this
+        // exporter's own Enabled flag — which meant a host running some other integration that also
+        // touches baggage got no protection at all, and an operator had no flag to check. It is now
+        // ObservabilityConfig.PropagateBaggage, applied once in AddOpenTelemetry for every host
+        // shape, default false, so the same protection covers any future baggage use, not just this
+        // one. Agent365StartupValidator re-asserts it at boot when this exporter is enabled, in case
+        // something else in the composition re-registers a composite propagator afterwards.
 
         // Built once here rather than per export. Azure.Identity credentials cache the token
         // in-process and refresh shortly before expiry, so the per-batch GetTokenAsync below is

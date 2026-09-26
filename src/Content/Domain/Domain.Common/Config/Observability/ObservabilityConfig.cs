@@ -18,6 +18,7 @@ namespace Domain.Common.Config.Observability;
 /// ├── PiiFiltering    — Attribute scrubbing rules (delete, hash)
 /// ├── RateLimiting    — Span throughput throttling
 /// ├── Exporters       — Multi-backend export targets (OTLP, Azure Monitor, Prometheus)
+/// ├── Logs            — ILogger → OTel bridge, PII scrub, export level
 /// ├── LlmPricing      — Per-model token pricing for cost estimation
 /// ├── BudgetTracking  — Cost budget thresholds and alerting state machine
 /// └── Slo             — Service Level Objective targets and evaluation
@@ -86,6 +87,32 @@ public class ObservabilityConfig
     /// <value>Default: <c>false</c>. Must be explicitly opted into — never enable in production
     /// unless PII filtering and data retention policies are in place.</value>
     public bool EnableSensitiveTelemetry { get; set; }
+
+    /// <summary>
+    /// Gets or sets whether OpenTelemetry <c>Baggage</c> is allowed to cross this process's own
+    /// boundaries — injected into outbound HTTP headers and extracted from inbound ones. Controls
+    /// which default propagator <c>AddOpenTelemetry</c> installs via
+    /// <c>Sdk.SetDefaultTextMapPropagator</c>: trace-context-only when <c>false</c>, or the standard
+    /// trace-context-plus-baggage composite when <c>true</c>.
+    /// </summary>
+    /// <remarks>
+    /// This is a host-wide egress policy, not an Agent 365 concern — it exists because baggage is
+    /// how identity attribution rides an agent turn (tenant, agent and conversation ids), and a
+    /// composite propagator that also carries baggage would serialise those values onto every
+    /// outbound request and accept them from every inbound one. <c>AddOpenTelemetry</c> sets one of
+    /// the two propagators explicitly rather than merely suppressing the swap when this is
+    /// <c>true</c> — measured, not assumed: the untouched OpenTelemetry default before any host code
+    /// runs is <c>NoopTextMapPropagator</c>, which propagates nothing at all, not even trace
+    /// context, so leaving this flag's "on" case as a no-op would have made an opted-in host's
+    /// propagation behaviour depend on whatever happened to run before it. Named and applied once,
+    /// unconditionally, in <c>AddOpenTelemetry</c> — not as a side effect of enabling one exporter —
+    /// so a consumer who adds their own baggage usage still gets this protection, and an operator has
+    /// one flag to check rather than an implication buried in an unrelated feature's wiring (#738).
+    /// </remarks>
+    /// <value>Default: <c>false</c>. Set <c>true</c> only when this host's own baggage usage is a
+    /// deliberate, reviewed choice — enabling it re-opens the egress this flag exists to close.
+    /// </value>
+    public bool PropagateBaggage { get; set; }
 
     /// <summary>
     /// Gets or sets the list of project assembly names that should use

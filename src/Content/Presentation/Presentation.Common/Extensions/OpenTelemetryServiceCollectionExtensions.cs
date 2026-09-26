@@ -42,9 +42,11 @@ public static class OpenTelemetryServiceCollectionExtensions
 {
     /// <summary>
     /// Configures the OpenTelemetry pipeline for the application. Enables Semantic Kernel,
-    /// Azure SDK, and GenAI content recording via AppContext switches, then delegates to
-    /// either <see cref="AddWebTelemetry"/> or <see cref="AddDesktopTelemetry"/> based
-    /// on whether the entry assembly appears in <c>appConfig.Observability.WebTelemetryProjects</c>.
+    /// Azure SDK, and GenAI content recording via AppContext switches, applies the host's
+    /// baggage-egress policy (see <see cref="ObservabilityConfig.PropagateBaggage"/>), then
+    /// delegates to either <see cref="AddWebTelemetry"/> or <see cref="AddDesktopTelemetry"/>
+    /// based on whether the entry assembly appears in
+    /// <c>appConfig.Observability.WebTelemetryProjects</c>.
     /// </summary>
     /// <param name="services">The service collection to configure.</param>
     /// <param name="appConfig">
@@ -64,6 +66,29 @@ public static class OpenTelemetryServiceCollectionExtensions
         AppContext.SetSwitch(
             "Microsoft.SemanticKernel.Experimental.GenAI.EnableOTelDiagnosticsSensitive",
             appConfig.Observability.EnableSensitiveTelemetry);
+
+        // Baggage egress policy (#738). Named and applied here — once, unconditionally, for both
+        // host shapes — rather than as a side effect of enabling one exporter. A propagator that
+        // also carries Baggage would serialise whatever this process's baggage holds (identity
+        // attribution, once an agent turn is underway) onto every outbound request and accept it
+        // from every inbound one. Trace-context-only is the default; a host that has a deliberate,
+        // reviewed reason to use cross-process baggage sets PropagateBaggage to opt back in.
+        //
+        // Both branches set explicitly, rather than treating "true" as merely skipping the
+        // suppression below. Measured directly: the untouched default before ANY host code runs is
+        // OpenTelemetry.Context.Propagation.NoopTextMapPropagator, which propagates nothing at
+        // all — not baggage, not even trace context. Nothing else in this codebase, or in the
+        // hosting integration this method builds on, ever establishes the standard composite
+        // propagator; only this method does. So "just don't suppress it" would have left a host
+        // that opted IN to baggage propagation with no propagation whatsoever unless something
+        // upstream happened to have already set one — an ambient-state dependency, not a policy.
+        Sdk.SetDefaultTextMapPropagator(appConfig.Observability.PropagateBaggage
+            ? new OpenTelemetry.Context.Propagation.CompositeTextMapPropagator(
+            [
+                new OpenTelemetry.Context.Propagation.TraceContextPropagator(),
+                new OpenTelemetry.Context.Propagation.BaggagePropagator(),
+            ])
+            : new OpenTelemetry.Context.Propagation.TraceContextPropagator());
 
         // Register the shared resource builder as a singleton for consistent attributes
         var resourceBuilder = CreateResourceBuilder(appConfig);
