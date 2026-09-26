@@ -1,5 +1,6 @@
 using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Telemetry;
+using Application.AI.Common.Services.Telemetry;
 using Domain.AI.Identity;
 
 namespace Application.AI.Common.Services.Agent;
@@ -59,13 +60,30 @@ public sealed class AgentExecutionContext : IAgentExecutionContext, IDisposable
     private string? _observedToolResultScopeId;
 
     /// <summary>
+    /// Initializes a new instance of the <see cref="AgentExecutionContext"/> class with no attribution
+    /// integration.
+    /// </summary>
+    /// <remarks>
+    /// For a caller that only needs identity/turn-tracking and has no reason to care about external
+    /// governance attribution — chiefly direct construction in tests. Delegates to the benign
+    /// <see cref="NoOpAgentTelemetryAttribution"/> singleton rather than leaving <c>_attribution</c>
+    /// nullable, so <see cref="Initialize"/> never has to branch on whether one was supplied.
+    /// </remarks>
+    public AgentExecutionContext() : this(NoOpAgentTelemetryAttribution.Instance)
+    {
+    }
+
+    /// <summary>
     /// Initializes a new instance of the <see cref="AgentExecutionContext"/> class.
     /// </summary>
     /// <param name="attribution">
-    /// Publishes the turn's identity to an external agent-governance platform. Required rather than
-    /// optional: an absent one would restore exactly the silent, per-call-site omission this dependency
-    /// exists to make impossible. Hosts that have opted into no such integration get the benign no-op
-    /// default registered by <c>AddApplicationAiCommonDependencies</c>, which publishes nothing.
+    /// Publishes the turn's identity to an external agent-governance platform. Non-null by contract:
+    /// a caller that has none should use the parameterless constructor rather than pass a null here, so
+    /// this type never silently degrades an intended integration into no attribution at all. Production
+    /// resolves this constructor through DI, where <c>AddApplicationAiCommonDependencies</c> registers
+    /// the same no-op as the unconditional default — so a host that has not opted into an integration
+    /// still reaches this constructor, not the parameterless one; the parameterless one exists purely
+    /// for callers outside DI.
     /// </param>
     public AgentExecutionContext(IAgentTelemetryAttribution attribution)
     {
@@ -149,12 +167,18 @@ public sealed class AgentExecutionContext : IAgentExecutionContext, IDisposable
             CallOnceScopeId = callOnceScopeId;
             _initialized = true;
 
-            // Inside the lock because the release-then-publish-then-assign triple has to be atomic: two
-            // concurrent initializes outside it could both publish and leave one scope with no reference
-            // to release it. Not for the benefit of any reader — nothing else reads _attributionScope.
-            // Safe to hold across, and cheap: neither call re-enters this type, and the work is a
-            // dictionary lookup plus an ambient-context write (with a once-per-process warning log on a
-            // misconfigured host).
+            // Deliberately inside the lock, unlike Dispose's release — considered and rejected splitting
+            // it out (correctness-review advisory during #737's fix-up pass). BeginTurn IS a public
+            // extensibility point and a slow implementation would hold _gate longer than the read-only
+            // properties below would like. But release-then-publish-then-assign has to be atomic against
+            // a second Initialize on the same instance with the SAME agent/conversation (a legitimate,
+            // tested case — turn 2 of a multi-turn conversation): splitting the critical section lets two
+            // such calls interleave their BeginTurn/assign halves and overwrite each other's scope without
+            // releasing it, a genuine leak in exchange for an unmeasured, currently-hypothetical win — no
+            // shipped implementation of IAgentTelemetryAttribution does anything slower than a dictionary
+            // lookup and a Baggage write. If a real implementation is ever measured to be slow here, the
+            // fix is to make ITS OWN wrapped work fast or cached (see Agent365TelemetryAttribution's
+            // per-agent identity cache, added for exactly this), not to loosen this lock.
             //
             // Republished on EVERY call, not only the first, even though the two values it carries
             // cannot have changed (the guard above rejects any change to agent or conversation).

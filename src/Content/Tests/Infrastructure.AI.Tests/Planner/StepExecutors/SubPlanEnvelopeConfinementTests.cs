@@ -169,9 +169,6 @@ public sealed class SubPlanEnvelopeConfinementTests
         services.AddSingleton(typeof(Microsoft.Extensions.Logging.ILogger<>), typeof(NullLogger<>));
         services.AddSingleton(decisions);
         services.AddSingleton(envelopeGrantResolver);
-        services.AddSingleton<
-            Application.AI.Common.Interfaces.Telemetry.IAgentTelemetryAttribution,
-            Application.AI.Common.Services.Telemetry.NoOpAgentTelemetryAttribution>();
         services.AddScoped<IAgentExecutionContext, AgentExecutionContext>();
         services.AddSingleton<IToolPermissionService>(new ThreePhasePermissionResolver(
             [new EnvelopePermissionRuleProvider(NullLogger<EnvelopePermissionRuleProvider>.Instance, envelopeGrantResolver)],

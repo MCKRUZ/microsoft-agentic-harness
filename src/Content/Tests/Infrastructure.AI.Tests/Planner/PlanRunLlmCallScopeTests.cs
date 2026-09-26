@@ -143,9 +143,6 @@ public sealed class PlanRunLlmCallScopeTests
         services.AddSingleton(typeof(Microsoft.Extensions.Logging.ILogger<>), typeof(NullLogger<>));
 
         // The real scoped context — the whole point of this suite.
-        services.AddSingleton<
-            Application.AI.Common.Interfaces.Telemetry.IAgentTelemetryAttribution,
-            Application.AI.Common.Services.Telemetry.NoOpAgentTelemetryAttribution>();
         services.AddScoped<IAgentExecutionContext, AgentExecutionContext>();
 
         // Reproduces AgentContextPropagationBehavior for the nested agent-turn request: bind the

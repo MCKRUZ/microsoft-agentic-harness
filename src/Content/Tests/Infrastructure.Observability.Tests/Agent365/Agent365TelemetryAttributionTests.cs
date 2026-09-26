@@ -33,6 +33,7 @@ public class Agent365TelemetryAttributionTests
     private const string HostBlueprint = "33333333-3333-3333-3333-333333333333";
     private const string OverrideAppId = "44444444-4444-4444-4444-444444444444";
     private const string OverrideBlueprint = "55555555-5555-5555-5555-555555555555";
+    private const string SecondOverrideAppId = "66666666-6666-6666-6666-666666666666";
 
     private static Agent365TelemetryAttribution Build(Action<Agent365ExporterConfig> configure)
     {
@@ -139,6 +140,39 @@ public class Agent365TelemetryAttributionTests
             HostAppId,
             "an agent with its own identity must not also report the host default, or the tenant's "
             + "inventory attributes its activity to the wrong agent");
+    }
+
+    [Fact]
+    public void RepeatedCallsForDifferentAgents_NeverCrossAttributeAfterTheFirstCallCachesEach()
+    {
+        // Resolved identity is cached per agent id (a hot-path optimisation once #737 put BeginTurn on
+        // every tool call, not just once per MediatR turn). This is the test a wrong cache key would
+        // fail: interleaved, repeated calls for two agents with DIFFERENT identities, past the point
+        // where both are already cached, must still each report their own — never the other's, and
+        // never the host default neither one uses.
+        var attribution = Build(c =>
+        {
+            c.Enabled = true;
+            c.AgentAppId = HostAppId;
+            c.TenantId = TenantId;
+            c.Agents["researcher"] = new Agent365AgentIdentityConfig { AppId = OverrideAppId };
+            c.Agents["summariser"] = new Agent365AgentIdentityConfig { AppId = SecondOverrideAppId };
+        });
+
+        for (var i = 0; i < 3; i++)
+        {
+            using (attribution.BeginTurn("researcher", $"conv-{i}"))
+            {
+                AllBaggage().Values.Should().Contain(OverrideAppId);
+                AllBaggage().Values.Should().NotContain(SecondOverrideAppId);
+            }
+
+            using (attribution.BeginTurn("summariser", $"conv-{i}"))
+            {
+                AllBaggage().Values.Should().Contain(SecondOverrideAppId);
+                AllBaggage().Values.Should().NotContain(OverrideAppId);
+            }
+        }
     }
 
     [Fact]

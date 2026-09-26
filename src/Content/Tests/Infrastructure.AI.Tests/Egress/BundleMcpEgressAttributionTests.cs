@@ -133,9 +133,6 @@ public sealed class BundleMcpEgressAttributionTests
         var policy = new DefaultEgressPolicy(allowlist, NullLogger<DefaultEgressPolicy>.Instance, TimeProvider.System);
         var ambientScope = new AmbientRequestScope();
         var rootServices = new ServiceCollection()
-            .AddSingleton<
-                Application.AI.Common.Interfaces.Telemetry.IAgentTelemetryAttribution,
-                Application.AI.Common.Services.Telemetry.NoOpAgentTelemetryAttribution>()
             .AddScoped<IAgentExecutionContext, AgentExecutionContext>()
             .AddSingleton<IEgressPolicy>(policy)
             .AddSingleton<IEgressPolicyResolver>(new DefaultEgressPolicyResolver(policy))

@@ -37,8 +37,7 @@ public class RunOrchestratedTaskCommandHandlerTests
         _handler = new RunOrchestratedTaskCommandHandler(
             _agentFactory.Object,
             _scopeFactory.Object,
-            new Application.AI.Common.Services.Agent.AgentExecutionContext(
-                new Application.AI.Common.Services.Telemetry.NoOpAgentTelemetryAttribution()),
+            new Application.AI.Common.Services.Agent.AgentExecutionContext(),
             Mock.Of<Application.AI.Common.Interfaces.Governance.IToolCallAdmissionPipeline>(
                 p => p.GetTrace() == Domain.AI.Governance.GovernanceTrace.Empty),
             NullLogger<RunOrchestratedTaskCommandHandler>.Instance);

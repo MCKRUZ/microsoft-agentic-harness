@@ -1,7 +1,6 @@
 using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.MediatR;
 using Application.AI.Common.MediatRBehaviors;
-using Application.AI.Common.Services.Telemetry;
 using Application.AI.Common.Services.Agent;
 using FluentAssertions;
 using MediatR;
@@ -103,7 +102,7 @@ public class AgentContextPropagationBehaviorTests
     {
         // Arrange — real AgentExecutionContext: same agent + same conversation
         // should allow re-init (updates turn number for multi-turn conversations).
-        var realContext = new AgentExecutionContext(new NoOpAgentTelemetryAttribution());
+        var realContext = new AgentExecutionContext();
         var outerBehavior = new AgentContextPropagationBehavior<AgentScopedTestRequest, string>(
             realContext,
             NullLogger<AgentContextPropagationBehavior<AgentScopedTestRequest, string>>.Instance);
@@ -132,7 +131,7 @@ public class AgentContextPropagationBehaviorTests
     public async Task Handle_NestedAgentScopedRequests_DifferentConversation_ThrowsScopeConflict()
     {
         // Arrange — different conversation ID in nested request = scope leak
-        var realContext = new AgentExecutionContext(new NoOpAgentTelemetryAttribution());
+        var realContext = new AgentExecutionContext();
         var outerBehavior = new AgentContextPropagationBehavior<AgentScopedTestRequest, string>(
             realContext,
             NullLogger<AgentContextPropagationBehavior<AgentScopedTestRequest, string>>.Instance);
@@ -163,7 +162,7 @@ public class AgentContextPropagationBehaviorTests
         // Arrange — after the fix, RunConversationCommand no longer implements
         // IAgentScopedRequest. Only ExecuteAgentTurnCommand does, so Initialize
         // is called exactly once per scope.
-        var realContext = new AgentExecutionContext(new NoOpAgentTelemetryAttribution());
+        var realContext = new AgentExecutionContext();
         var outerBehavior = new AgentContextPropagationBehavior<NonAgentRequest, string>(
             realContext,
             NullLogger<AgentContextPropagationBehavior<NonAgentRequest, string>>.Instance);

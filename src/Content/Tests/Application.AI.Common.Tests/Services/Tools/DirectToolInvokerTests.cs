@@ -835,9 +835,6 @@ public sealed class DirectToolInvokerTests
         DirectToolInvocationRequest request, ExecutableTool tool, CancellationToken cancellationToken = default)
     {
         var services = new ServiceCollection();
-        services.AddSingleton<
-            Application.AI.Common.Interfaces.Telemetry.IAgentTelemetryAttribution,
-            Application.AI.Common.Services.Telemetry.NoOpAgentTelemetryAttribution>();
         services.AddScoped<IAgentExecutionContext, AgentExecutionContext>();
         services.AddScoped<IToolInvocationGovernor>(sp =>
             new RecordingGovernor(sp.GetRequiredService<IAgentExecutionContext>(), _governor));

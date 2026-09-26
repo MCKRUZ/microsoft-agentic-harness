@@ -33,9 +33,6 @@ public sealed class PlanRunExecutorTests
         // scope, so the test observes exactly what production step executors would observe.
         var services = new ServiceCollection();
         services.AddSingleton(_capture);
-        services.AddSingleton<
-            Application.AI.Common.Interfaces.Telemetry.IAgentTelemetryAttribution,
-            Application.AI.Common.Services.Telemetry.NoOpAgentTelemetryAttribution>();
         services.AddScoped<IAgentExecutionContext, AgentExecutionContext>();
         services.AddScoped<IPlanExecutor, CapturingPlanExecutor>();
         var provider = services.BuildServiceProvider();

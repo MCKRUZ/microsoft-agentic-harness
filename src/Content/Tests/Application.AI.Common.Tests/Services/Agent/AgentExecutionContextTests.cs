@@ -1,7 +1,6 @@
 using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Telemetry;
 using Application.AI.Common.Services.Agent;
-using Application.AI.Common.Services.Telemetry;
 using Domain.AI.Identity;
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
@@ -18,11 +17,12 @@ public class AgentExecutionContextTests
 {
     /// <summary>
     /// A context wired to the benign no-op attribution — the shape every host that has not opted into
-    /// an agent-governance integration gets. Used wherever a test is about the context's own state
-    /// rather than about attribution.
+    /// an agent-governance integration gets, and what the parameterless constructor itself now builds.
+    /// Named rather than calling <c>new AgentExecutionContext()</c> directly at each of this file's many
+    /// call sites, so a reader sees "this test isn't about attribution" without following the
+    /// constructor.
     /// </summary>
-    private static AgentExecutionContext NewContext()
-        => new(new NoOpAgentTelemetryAttribution());
+    private static AgentExecutionContext NewContext() => new();
 
     [Fact]
     public void NewContext_AllPropertiesAreNull()
@@ -414,7 +414,6 @@ public class AgentExecutionContextTests
         // Reproduces the bug: a single scope hands back the same scoped instance, so the
         // second turn's Initialize collides with the first turn's binding.
         using var provider = new ServiceCollection()
-            .AddSingleton<IAgentTelemetryAttribution, NoOpAgentTelemetryAttribution>()
             .AddScoped<IAgentExecutionContext, AgentExecutionContext>()
             .BuildServiceProvider();
 
@@ -433,7 +432,6 @@ public class AgentExecutionContextTests
     {
         // Proves the fix: a new scope per turn yields a fresh, unbound context each time.
         using var provider = new ServiceCollection()
-            .AddSingleton<IAgentTelemetryAttribution, NoOpAgentTelemetryAttribution>()
             .AddScoped<IAgentExecutionContext, AgentExecutionContext>()
             .BuildServiceProvider();
 
