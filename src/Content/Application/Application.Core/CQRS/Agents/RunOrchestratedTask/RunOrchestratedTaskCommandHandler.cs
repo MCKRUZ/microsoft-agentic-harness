@@ -72,8 +72,15 @@ public class RunOrchestratedTaskCommandHandler : IRequestHandler<RunOrchestrated
 			// DirectToolInvoker or a plan run, this handler's ConversationId is neither a fresh
 			// per-call value nor shared across unrelated runs; it identifies this orchestration
 			// exactly the way AgentContextPropagationBehavior's does for an ordinary agent turn.
+			// Turn 1, not 0. The planning call IS this orchestrator's first turn — the handler's own
+			// counter below says so ("totalTurns = 1; // Planning turn"). It passed 0 while this ran
+			// after agent construction, where the number was unobservable: the prompt is composed during
+			// construction and its session-state section omits the line entirely when no turn is set. Now
+			// that the context is bound first, 0 would be rendered into the orchestrator's system prompt
+			// as "Current turn: 0" — a counter the model reads as wrong rather than absent, since every
+			// other agent starts at 1.
 			_executionContext.Initialize(
-				request.OrchestratorName, request.ConversationId, 0, callOnceScopeId: request.ConversationId);
+				request.OrchestratorName, request.ConversationId, 1, callOnceScopeId: request.ConversationId);
 
 			// Phase 1: Create orchestrator and get task decomposition
 			var agentCatalog = BuildAgentCatalog(request.AvailableAgents);

@@ -37,11 +37,9 @@ public sealed class AgentExecutionContext : IAgentExecutionContext, IDisposable
     private readonly IAgentTelemetryAttribution _attribution;
     private bool _initialized;
 
-    // The turn's published attribution, held for this object's whole lifetime so it stays in effect
-    // while the turn's spans are created. Null until the first Initialize; non-null exactly once
-    // thereafter — a re-initialize for a later turn cannot change either value the attribution is
-    // built from, because Initialize's own scope-leak guard rejects a different agent or conversation
-    // outright, so re-publishing would replace the scope with an identical one and leak the first.
+    // The current turn's published attribution, held so it stays in effect while that turn's spans are
+    // created. Null until the first Initialize, then replaced on each subsequent one — see Initialize
+    // for why a later turn must republish rather than inherit.
     private IDisposable? _attributionScope;
     private bool _disposed;
 
@@ -151,19 +149,36 @@ public sealed class AgentExecutionContext : IAgentExecutionContext, IDisposable
             CallOnceScopeId = callOnceScopeId;
             _initialized = true;
 
-            // Published here, inside the same lock that establishes the values, so no reader can ever
-            // observe an initialized context whose attribution has not been published yet.
+            // Inside the lock because the release-then-publish-then-assign triple has to be atomic: two
+            // concurrent initializes outside it could both publish and leave one scope with no reference
+            // to release it. Not for the benefit of any reader — nothing else reads _attributionScope.
+            // Safe to hold across, and cheap: neither call re-enters this type, and the work is a
+            // dictionary lookup plus an ambient-context write (with a once-per-process warning log on a
+            // misconfigured host).
             //
-            // Published once, on the first Initialize only. A later call is either rejected by the
-            // guard above or differs from this one solely in turn number, which the attribution does
-            // not carry — so re-publishing could only replace the live scope with an identical one
-            // while leaking the first.
+            // Republished on EVERY call, not only the first, even though the two values it carries
+            // cannot have changed (the guard above rejects any change to agent or conversation).
+            // Attribution is ambient to the async flow that publishes it, and one DI scope serves
+            // several turns — a conversation dispatches each turn as a sibling send within the scope it
+            // owns, calling this once per turn. Publishing only on the first turn leaves every later
+            // turn depending on the first turn's values still being reachable from a sibling flow,
+            // which holds or not according to where awaits happen to fall between the dispatch and the
+            // publish. Turns 2+ then export spans with no agent id, which a governance platform
+            // discards WITHOUT reporting an error — a conversation would appear in the tenant's records
+            // with its first turn only. See MultiTurnAttributionTests, which measures this against the
+            // real SDK; the first cut of #737 published once and the correctness gate caught it.
             //
-            // Not published at all once disposed. Nothing reaches a disposed scoped service today, but
+            // The previous turn's scope is released first, so exactly one is ever live and the count
+            // does not grow with conversation length.
+            //
+            // Nothing is published once disposed. Nothing reaches a disposed scoped service today, but
             // publishing there would create a scope with nothing left to release it — the one shape of
             // leak this design would otherwise introduce.
             if (!_disposed)
-                _attributionScope ??= _attribution.BeginTurn(agentId, conversationId);
+            {
+                _attributionScope?.Dispose();
+                _attributionScope = _attribution.BeginTurn(agentId, conversationId);
+            }
         }
     }
 
@@ -173,10 +188,21 @@ public sealed class AgentExecutionContext : IAgentExecutionContext, IDisposable
     /// <remarks>
     /// <para>
     /// Called by the DI container when the scope owning this instance is disposed — which is what makes
-    /// attribution automatic rather than a per-call-site ritual. Every path that initializes a context
-    /// does so inside a scope it owns and disposes (the four non-MediatR sites each create one
-    /// explicitly; the MediatR path runs in the request scope the host disposes), so there is no path
-    /// that publishes attribution and never releases it.
+    /// attribution automatic rather than a per-call-site ritual. Three of the five initializing paths
+    /// create that scope themselves and dispose it in the same method
+    /// (<c>DirectToolInvoker</c>, <c>PlanRunExecutor</c>, <c>SubPlanStepExecutor</c>); the other two
+    /// (<c>AgentContextPropagationBehavior</c> and <c>RunOrchestratedTaskCommandHandler</c>) are handed
+    /// the ambient request-scoped context and rely on whoever opened that request scope to dispose it,
+    /// which every dispatcher does. So no path publishes attribution without something releasing it.
+    /// </para>
+    /// <para>
+    /// The release is not guaranteed to run on the flow that published, and it does not need to.
+    /// Attribution is ambient per async flow: where the publish created that ambient state itself, it
+    /// dies with the turn's own flow regardless; where it mutated ambient state an enclosing flow already
+    /// owned, that state is shared, so releasing it from anywhere still clears it. The observable cost is
+    /// that attribution can outlast the turn by the remainder of the request — same agent and tenant, so
+    /// an accuracy cost rather than a disclosure one. Pinned by
+    /// <c>AttributionOutlivesTheTurnButNotTheScope</c>.
     /// </para>
     /// <para>
     /// Idempotent. A caller that disposes this directly as well as letting the container dispose it

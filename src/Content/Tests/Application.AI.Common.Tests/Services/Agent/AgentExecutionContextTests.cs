@@ -521,19 +521,22 @@ public class AgentExecutionContextTests
     }
 
     [Fact]
-    public void ReInitializeForALaterTurn_DoesNotPublishASecondTime()
+    public void ReInitializeForALaterTurn_RepublishesAndReleasesThePreviousTurn()
     {
-        // Re-initialization is allowed within one scope to bump the turn number, and the scope-leak
-        // guard rejects any change to agent or conversation — the only two values attribution carries.
-        // So a second publish could only replace the live scope with an identical one while leaking the
-        // first, which never gets released.
+        // Republishing looks redundant — the scope-leak guard rejects any change to agent or
+        // conversation, the only two values attribution carries — but it is not. Attribution is ambient
+        // to the async flow that publishes it, and one DI scope serves several turns, so a later turn
+        // that inherited nothing would export unattributed. MultiTurnAttributionTests measures that
+        // against the real SDK; this pins the publish/release accounting that makes it work.
         var attribution = new RecordingAttribution();
         using var context = new AgentExecutionContext(attribution);
 
         context.Initialize("planner", "conv-1", 1);
         context.Initialize("planner", "conv-1", 2);
 
-        attribution.Turns.Should().HaveCount(1);
+        attribution.Turns.Should().HaveCount(2, "each turn publishes on its own flow");
+        attribution.Released.Should().Be(
+            1, "the previous turn's scope is released so exactly one is ever live");
     }
 
     [Fact]

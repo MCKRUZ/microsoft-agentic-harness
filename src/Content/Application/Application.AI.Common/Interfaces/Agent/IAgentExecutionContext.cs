@@ -115,9 +115,12 @@ public interface IAgentExecutionContext
     /// <remarks>
     /// <para>
     /// <strong>This also publishes the turn's external governance attribution</strong>
-    /// (<see cref="Application.AI.Common.Interfaces.Telemetry.IAgentTelemetryAttribution"/>), which
-    /// stays in effect until the DI scope owning this context is disposed. Callers do not — and must
-    /// not — publish it themselves.
+    /// (<see cref="Application.AI.Common.Interfaces.Telemetry.IAgentTelemetryAttribution"/>), on every
+    /// call, for the turn that call begins. It stays in effect until the next call or until the DI scope
+    /// owning this context is disposed, whichever comes first. Callers do not — and must not — publish
+    /// it themselves. Calling this once per turn is therefore required rather than merely permitted:
+    /// attribution is ambient to the async flow that publishes it, so a second turn in the same scope
+    /// that skipped this would export unattributed.
     /// </para>
     /// <para>
     /// That binding is deliberate. Attribution used to be a second call a caller made next to this one,

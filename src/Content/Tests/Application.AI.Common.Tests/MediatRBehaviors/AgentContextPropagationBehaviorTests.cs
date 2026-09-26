@@ -115,7 +115,7 @@ public class AgentContextPropagationBehaviorTests
             {
                 var innerBehavior = new AgentContextPropagationBehavior<AgentScopedTestRequest, string>(
                     realContext,
-                            NullLogger<AgentContextPropagationBehavior<AgentScopedTestRequest, string>>.Instance);
+                    NullLogger<AgentContextPropagationBehavior<AgentScopedTestRequest, string>>.Instance);
                 return await innerBehavior.Handle(
                     new AgentScopedTestRequest("agent-1", "conv-1", 1),
                     () => Task.FromResult("inner"),
@@ -144,7 +144,7 @@ public class AgentContextPropagationBehaviorTests
             {
                 var innerBehavior = new AgentContextPropagationBehavior<AgentScopedTestRequest, string>(
                     realContext,
-                            NullLogger<AgentContextPropagationBehavior<AgentScopedTestRequest, string>>.Instance);
+                    NullLogger<AgentContextPropagationBehavior<AgentScopedTestRequest, string>>.Instance);
                 return await innerBehavior.Handle(
                     new AgentScopedTestRequest("agent-1", "conv-2", 1),
                     () => Task.FromResult("inner"),
@@ -175,7 +175,7 @@ public class AgentContextPropagationBehaviorTests
             {
                 var innerBehavior = new AgentContextPropagationBehavior<AgentScopedTestRequest, string>(
                     realContext,
-                            NullLogger<AgentContextPropagationBehavior<AgentScopedTestRequest, string>>.Instance);
+                    NullLogger<AgentContextPropagationBehavior<AgentScopedTestRequest, string>>.Instance);
                 return await innerBehavior.Handle(
                     new AgentScopedTestRequest("agent-1", "conv-1", 1),
                     () => Task.FromResult("success"),

@@ -57,15 +57,17 @@ public sealed class AttributionIsPublishedByTheExecutionContextOnlyTests
             + "attribution automatic at every call site instead of a per-site ritual (#737)."),
     ];
 
+    /// <summary>
+    /// The one file that must <em>keep</em> calling it. A guard that only forbids other callers passes
+    /// happily when the publish is deleted from the single caller — which is the unguarded state itself.
+    /// </summary>
+    private const string ThePublisher =
+        "Application/Application.AI.Common/Services/Agent/AgentExecutionContext.cs";
+
     [Fact]
     public void BeginTurn_IsCalledOnlyByTheExecutionContext()
     {
-        var sources = SourceScan.ReadProductionSources(
-            Path.Combine(RepoRoot.Path, "src", "Content"));
-
-        // A vacuous architecture test is worse than none, because it reads as protection.
-        sources.Should().HaveCountGreaterThan(200,
-            "the scan must cover the production tree; a near-empty scan means the root lookup broke");
+        var sources = ReadProductionSources();
 
         var violations = sources
             .Where(s => s.Code.Contains(Member, StringComparison.Ordinal))
@@ -97,6 +99,31 @@ public sealed class AttributionIsPublishedByTheExecutionContextOnlyTests
     }
 
     /// <summary>
+    /// The other direction: the execution context must still publish. Without this, deleting the one
+    /// call the design depends on leaves the guard above reporting zero violations — a green test
+    /// certifying the exact unguarded state it exists to prevent.
+    /// </summary>
+    [Fact]
+    public void TheExecutionContext_StillPublishesAttribution()
+    {
+        var matches = ReadProductionSources()
+            .Where(s =>
+                s.Path.Replace(Path.DirectorySeparatorChar, '/')
+                    .EndsWith("/" + ThePublisher, StringComparison.Ordinal))
+            .ToList();
+
+        matches.Should().ContainSingle(
+            $"{ThePublisher} is where turn attribution is published; if it moved, update ThePublisher "
+            + "and the matching entry in Exemptions");
+
+        matches[0].Code.Should().Contain(
+            Member,
+            $"every call site's attribution depends on this one call. Without it, the guard above passes "
+            + "while no turn is attributed at all — spans a governance platform discards with no error "
+            + "reported (#737)");
+    }
+
+    /// <summary>
     /// The guard is only meaningful if the member it names still exists — a rename would otherwise
     /// leave it scanning for a string nothing produces and passing forever.
     /// </summary>
@@ -108,5 +135,42 @@ public sealed class AttributionIsPublishedByTheExecutionContextOnlyTests
             .Should().NotBeNull(
                 $"this guard scans for the literal \"{Member}\"; if the method is renamed the scan " +
                 "silently protects nothing, so rename it here too");
+    }
+
+    /// <summary>
+    /// Every exemption must still name a real file. A stale entry silently widens the guard: the path it
+    /// names can never match, but a file later added at that path inherits a permission nobody granted
+    /// it.
+    /// </summary>
+    [Fact]
+    public void EveryExemption_NamesAFileThatExists()
+    {
+        var paths = ReadProductionSources()
+            .Select(s => s.Path.Replace(Path.DirectorySeparatorChar, '/'))
+            .ToList();
+
+        var stale = Exemptions
+            .Where(e => !paths.Any(p => p.EndsWith("/" + e.RelativePath, StringComparison.Ordinal)))
+            .Select(e => e.RelativePath)
+            .ToList();
+
+        stale.Should().BeEmpty(
+            "an exemption for a file that no longer exists is a permission waiting to be inherited by "
+            + "whatever is created at that path next");
+    }
+
+    private static IReadOnlyList<(string Path, string Code)> ReadProductionSources()
+    {
+        var sources = SourceScan.ReadProductionSources(
+            Path.Combine(RepoRoot.Path, "src", "Content"));
+
+        // A vacuous architecture test is worse than none, because it reads as protection. The floor is
+        // set close to the tree's real size rather than at a token value: a scan narrowed by most of the
+        // repository would still clear a low bar while protecting almost nothing.
+        sources.Should().HaveCountGreaterThan(2000,
+            "the scan must cover the production tree; a much smaller scan means the root lookup or the "
+            + "filter broke, and every assertion built on it is then meaningless");
+
+        return sources;
     }
 }
