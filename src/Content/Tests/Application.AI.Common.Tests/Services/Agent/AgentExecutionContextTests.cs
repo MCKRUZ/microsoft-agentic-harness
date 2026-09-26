@@ -1,4 +1,5 @@
 using Application.AI.Common.Interfaces.Agent;
+using Application.AI.Common.Interfaces.Telemetry;
 using Application.AI.Common.Services.Agent;
 using Domain.AI.Identity;
 using FluentAssertions;
@@ -9,14 +10,24 @@ namespace Application.AI.Common.Tests.Services.Agent;
 
 /// <summary>
 /// Tests for <see cref="AgentExecutionContext"/> covering initialization,
-/// re-initialization rules, and scope conflict detection.
+/// re-initialization rules, scope conflict detection, and the external governance attribution it
+/// publishes for the turn.
 /// </summary>
 public class AgentExecutionContextTests
 {
+    /// <summary>
+    /// A context wired to the benign no-op attribution — the shape every host that has not opted into
+    /// an agent-governance integration gets, and what the parameterless constructor itself now builds.
+    /// Named rather than calling <c>new AgentExecutionContext()</c> directly at each of this file's many
+    /// call sites, so a reader sees "this test isn't about attribution" without following the
+    /// constructor.
+    /// </summary>
+    private static AgentExecutionContext NewContext() => new();
+
     [Fact]
     public void NewContext_AllPropertiesAreNull()
     {
-        var context = new AgentExecutionContext();
+        var context = NewContext();
 
         context.AgentId.Should().BeNull();
         context.ConversationId.Should().BeNull();
@@ -26,7 +37,7 @@ public class AgentExecutionContextTests
     [Fact]
     public void Initialize_SetsAllProperties()
     {
-        var context = new AgentExecutionContext();
+        var context = NewContext();
 
         context.Initialize("planner", "conv-1", 1);
 
@@ -38,7 +49,7 @@ public class AgentExecutionContextTests
     [Fact]
     public void Initialize_SameAgentAndConversation_UpdatesTurnNumber()
     {
-        var context = new AgentExecutionContext();
+        var context = NewContext();
         context.Initialize("planner", "conv-1", 1);
 
         context.Initialize("planner", "conv-1", 2);
@@ -49,7 +60,7 @@ public class AgentExecutionContextTests
     [Fact]
     public void Initialize_DifferentAgent_ThrowsInvalidOperation()
     {
-        var context = new AgentExecutionContext();
+        var context = NewContext();
         context.Initialize("planner", "conv-1", 1);
 
         var act = () => context.Initialize("reviewer", "conv-1", 1);
@@ -63,7 +74,7 @@ public class AgentExecutionContextTests
     [Fact]
     public void Initialize_DifferentConversation_ThrowsInvalidOperation()
     {
-        var context = new AgentExecutionContext();
+        var context = NewContext();
         context.Initialize("planner", "conv-1", 1);
 
         var act = () => context.Initialize("planner", "conv-2", 1);
@@ -77,7 +88,7 @@ public class AgentExecutionContextTests
     [Fact]
     public void Initialize_DifferentAgentAndConversation_ThrowsInvalidOperation()
     {
-        var context = new AgentExecutionContext();
+        var context = NewContext();
         context.Initialize("planner", "conv-1", 1);
 
         var act = () => context.Initialize("reviewer", "conv-2", 1);
@@ -88,7 +99,7 @@ public class AgentExecutionContextTests
     [Fact]
     public void Initialize_MultipleTurns_TracksLatestTurn()
     {
-        var context = new AgentExecutionContext();
+        var context = NewContext();
         context.Initialize("planner", "conv-1", 1);
         context.Initialize("planner", "conv-1", 2);
         context.Initialize("planner", "conv-1", 5);
@@ -101,7 +112,7 @@ public class AgentExecutionContextTests
     [Fact]
     public void NewContext_AgentIdentity_IsNull()
     {
-        var context = new AgentExecutionContext();
+        var context = NewContext();
 
         context.AgentIdentity.Should().BeNull();
     }
@@ -109,7 +120,7 @@ public class AgentExecutionContextTests
     [Fact]
     public void SetIdentity_StoresIdentity()
     {
-        var context = new AgentExecutionContext();
+        var context = NewContext();
         var identity = new AgentIdentity
         {
             Id = "planner",
@@ -124,7 +135,7 @@ public class AgentExecutionContextTests
     [Fact]
     public void SetIdentity_NullIdentity_ThrowsArgumentNull()
     {
-        var context = new AgentExecutionContext();
+        var context = NewContext();
 
         var act = () => context.SetIdentity(null!);
 
@@ -134,7 +145,7 @@ public class AgentExecutionContextTests
     [Fact]
     public void SetIdentity_SameValueTwice_IsIdempotent()
     {
-        var context = new AgentExecutionContext();
+        var context = NewContext();
         var first = new AgentIdentity
         {
             Id = "planner",
@@ -158,7 +169,7 @@ public class AgentExecutionContextTests
     [Fact]
     public void SetIdentity_DifferentId_ThrowsInvalidOperation()
     {
-        var context = new AgentExecutionContext();
+        var context = NewContext();
         context.SetIdentity(new AgentIdentity { Id = "planner", Kind = AgentIdentityKind.ManagedIdentity });
 
         var act = () => context.SetIdentity(new AgentIdentity { Id = "reviewer", Kind = AgentIdentityKind.ManagedIdentity });
@@ -172,7 +183,7 @@ public class AgentExecutionContextTests
     [Fact]
     public void SetIdentity_DifferentKind_ThrowsInvalidOperation()
     {
-        var context = new AgentExecutionContext();
+        var context = NewContext();
         context.SetIdentity(new AgentIdentity { Id = "planner", Kind = AgentIdentityKind.ManagedIdentity });
 
         var act = () => context.SetIdentity(new AgentIdentity { Id = "planner", Kind = AgentIdentityKind.FederatedCredential });
@@ -184,7 +195,7 @@ public class AgentExecutionContextTests
     [Fact]
     public void SetIdentity_DifferentTenant_ThrowsInvalidOperation()
     {
-        var context = new AgentExecutionContext();
+        var context = NewContext();
         context.SetIdentity(new AgentIdentity
         {
             Id = "planner",
@@ -205,7 +216,7 @@ public class AgentExecutionContextTests
     [Fact]
     public void SetIdentity_DoesNotAffectAgentOrConversation()
     {
-        var context = new AgentExecutionContext();
+        var context = NewContext();
         context.Initialize("planner", "conv-1", 1);
 
         context.SetIdentity(new AgentIdentity { Id = "planner", Kind = AgentIdentityKind.ManagedIdentity });
@@ -218,7 +229,7 @@ public class AgentExecutionContextTests
     [Fact]
     public void Initialize_AfterSetIdentity_PreservesIdentity()
     {
-        var context = new AgentExecutionContext();
+        var context = NewContext();
         var identity = new AgentIdentity { Id = "planner", Kind = AgentIdentityKind.ManagedIdentity };
 
         context.SetIdentity(identity);
@@ -237,7 +248,7 @@ public class AgentExecutionContextTests
         // threads can observe _initialized = false, all pass the conflict check, and last
         // writer wins silently. With the lock, one thread succeeds; the rest throw.
         const int threadCount = 32;
-        var context = new AgentExecutionContext();
+        var context = NewContext();
         var exceptions = new System.Collections.Concurrent.ConcurrentBag<Exception?>();
         var ready = new ManualResetEventSlim(false);
 
@@ -269,7 +280,7 @@ public class AgentExecutionContextTests
     public void SetIdentity_Concurrent_DifferentIdentities_ExactlyOneSucceeds()
     {
         const int threadCount = 32;
-        var context = new AgentExecutionContext();
+        var context = NewContext();
         var exceptions = new System.Collections.Concurrent.ConcurrentBag<Exception?>();
         var ready = new ManualResetEventSlim(false);
 
@@ -308,7 +319,7 @@ public class AgentExecutionContextTests
         // Idempotent re-set with a value-equal identity must not throw under contention.
         // The early-return path inside the lock is the contract; this proves it.
         const int threadCount = 32;
-        var context = new AgentExecutionContext();
+        var context = NewContext();
         var identityTemplate = new AgentIdentity
         {
             Id = "shared-agent",
@@ -353,7 +364,7 @@ public class AgentExecutionContextTests
     [Fact]
     public void ToolResultScopeId_ReadTwiceWithNoInitializeBetween_ReturnsTheSameValue()
     {
-        var context = new AgentExecutionContext();
+        var context = NewContext();
 
         var first = context.ToolResultScopeId;
         var second = context.ToolResultScopeId;
@@ -367,7 +378,7 @@ public class AgentExecutionContextTests
         // The fallback GUID is what ToolResultScopeId already resolved to; Initialize with no
         // call-once scope reproduces exactly that value, so this is the one realistic case
         // where reading early does not conflict with what Initialize later supplies.
-        var context = new AgentExecutionContext();
+        var context = NewContext();
 
         var beforeInitialize = context.ToolResultScopeId;
         context.Initialize("planner", "conv-1", 1);
@@ -382,7 +393,7 @@ public class AgentExecutionContextTests
         // Reading before Initialize observes the fallback GUID; supplying a real call-once
         // scope afterward would silently change what ToolResultScopeId means to that reader,
         // orphaning anything already spilled under the fallback. Must fail loudly instead.
-        var context = new AgentExecutionContext();
+        var context = NewContext();
         _ = context.ToolResultScopeId;
 
         var act = () => context.Initialize("planner", "conv-1", 1, callOnceScopeId: "conv-1");
@@ -436,5 +447,212 @@ public class AgentExecutionContextTests
 
         act.Should().NotThrow();
         secondTurn.ConversationId.Should().Be("conv-2");
+    }
+
+    // --- External governance attribution (#737) -----------------------------------
+    //
+    // Attribution used to be a second call each site made next to Initialize, and three of the five
+    // sites that establish an execution context never made it — so plan runs, sub-plans and direct
+    // tool invocations exported spans with no agent identity, which a governance platform discards
+    // WITHOUT reporting an error. These tests pin the property that replaced the convention: you
+    // cannot initialize a context without publishing attribution, and you cannot publish it without
+    // something releasing it.
+
+    [Fact]
+    public void Initialize_PublishesAttributionForTheTurn()
+    {
+        var attribution = new RecordingAttribution();
+        using var context = new AgentExecutionContext(attribution);
+
+        context.Initialize("planner", "conv-1", 1);
+
+        // Asserted by value, not merely by count: a governance platform matches the published agent
+        // against the authenticated caller, so publishing the wrong id fails as surely as publishing
+        // none. This is the assertion that fails if the publish is deleted from Initialize.
+        attribution.Turns.Should().ContainSingle()
+            .Which.Should().Be(("planner", "conv-1"));
+    }
+
+    [Fact]
+    public void NewContext_NeverInitialized_PublishesNothing()
+    {
+        // A scope resolved for a non-agent request must not attribute anything to an agent.
+        var attribution = new RecordingAttribution();
+        using var context = new AgentExecutionContext(attribution);
+
+        attribution.Turns.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Dispose_ReleasesTheAttribution()
+    {
+        // This is what makes the binding safe at every call site rather than only the ones that
+        // remembered a using. The container disposes the scoped context when the scope ends, so
+        // release needs no cooperation from the caller.
+        var attribution = new RecordingAttribution();
+        var context = new AgentExecutionContext(attribution);
+        context.Initialize("planner", "conv-1", 1);
+
+        attribution.Released.Should().Be(0, "the turn is still running");
+
+        context.Dispose();
+
+        attribution.Released.Should().Be(1);
+    }
+
+    [Fact]
+    public void Dispose_CalledTwice_ReleasesTheAttributionOnce()
+    {
+        // A caller may dispose this directly AND let the container dispose it. Releasing twice would
+        // restore the enclosing turn's baggage a second time, unpublishing attribution that a still
+        // running outer turn depends on. Dispose takes the scope and clears the field in one locked
+        // step, so the second call finds nothing to release — this pins that, since the obvious
+        // alternative (an early-return flag) reads as the mechanism and is not one.
+        var attribution = new RecordingAttribution();
+        var context = new AgentExecutionContext(attribution);
+        context.Initialize("planner", "conv-1", 1);
+
+        context.Dispose();
+        context.Dispose();
+
+        attribution.Released.Should().Be(1);
+    }
+
+    [Fact]
+    public void ReInitializeForALaterTurn_RepublishesAndReleasesThePreviousTurn()
+    {
+        // Republishing looks redundant — the scope-leak guard rejects any change to agent or
+        // conversation, the only two values attribution carries — but it is not. Attribution is ambient
+        // to the async flow that publishes it, and one DI scope serves several turns, so a later turn
+        // that inherited nothing would export unattributed. MultiTurnAttributionTests measures that
+        // against the real SDK; this pins the publish/release accounting that makes it work.
+        var attribution = new RecordingAttribution();
+        using var context = new AgentExecutionContext(attribution);
+
+        context.Initialize("planner", "conv-1", 1);
+        context.Initialize("planner", "conv-1", 2);
+
+        attribution.Turns.Should().HaveCount(2, "each turn publishes on its own flow");
+        attribution.Released.Should().Be(
+            1, "the previous turn's scope is released so exactly one is ever live");
+    }
+
+    [Fact]
+    public void ReInitializeWhereBeginTurnThrows_DoesNotDoubleReleaseThePreviousScope()
+    {
+        // Security review: BeginTurn is a public extensibility point that can throw (a host's
+        // implementation rejects a malformed value, or fails a call to a governance service). Between
+        // disposing the previous turn's scope and assigning the new one, a throw must not leave
+        // _attributionScope still referencing the just-disposed scope — the eventual container Dispose
+        // would release it a SECOND time, restoring a stale baggage snapshot over whatever the flow's
+        // current attribution is.
+        var attribution = new ThrowsOnSecondCallAttribution();
+        using var context = new AgentExecutionContext(attribution);
+
+        context.Initialize("planner", "conv-1", 1);
+
+        var act = () => context.Initialize("planner", "conv-1", 2);
+        act.Should().Throw<InvalidOperationException>().WithMessage("*boom*");
+
+        context.Dispose();
+
+        attribution.FirstScope.Released.Should().Be(
+            1, "the previous scope must be released exactly once even though the republish that " +
+               "should have replaced it threw");
+    }
+
+    [Fact]
+    public void Initialize_AfterDispose_PublishesNothing()
+    {
+        // Nothing reaches a disposed scoped service today, but publishing here would create a scope
+        // with nothing left to release it — the one leak this design could otherwise introduce.
+        var attribution = new RecordingAttribution();
+        var context = new AgentExecutionContext(attribution);
+        context.Dispose();
+
+        context.Initialize("planner", "conv-1", 1);
+
+        attribution.Turns.Should().BeEmpty();
+        attribution.Released.Should().Be(0);
+    }
+
+    [Fact]
+    public void ScopeDisposal_ReleasesTheAttribution_WithoutTheCallerDoingAnything()
+    {
+        // The whole point, proven through the real container rather than a direct Dispose call: a call
+        // site that only ever calls Initialize still gets its attribution released, because the context
+        // is registered scoped and the container owns its lifetime. Every path that initializes a
+        // context runs inside a scope that is disposed — the four non-MediatR sites create one
+        // explicitly, the MediatR path runs in the request scope the host disposes.
+        var attribution = new RecordingAttribution();
+        using var provider = new ServiceCollection()
+            .AddSingleton<IAgentTelemetryAttribution>(attribution)
+            .AddScoped<IAgentExecutionContext, AgentExecutionContext>()
+            .BuildServiceProvider();
+
+        using (var scope = provider.CreateScope())
+        {
+            scope.ServiceProvider.GetRequiredService<IAgentExecutionContext>()
+                .Initialize("planner", "conv-1", 1);
+
+            attribution.Turns.Should().ContainSingle();
+            attribution.Released.Should().Be(0);
+        }
+
+        attribution.Released.Should().Be(1, "the container disposes the scoped context with the scope");
+    }
+
+    /// <summary>
+    /// Records what was published and how many scopes were released, so a test can tell "published
+    /// nothing" apart from "published and immediately released".
+    /// </summary>
+    private sealed class RecordingAttribution : IAgentTelemetryAttribution
+    {
+        private readonly List<(string AgentId, string ConversationId)> _turns = [];
+
+        public IReadOnlyList<(string AgentId, string ConversationId)> Turns => _turns;
+
+        public int Released { get; private set; }
+
+        public IDisposable BeginTurn(string agentId, string conversationId)
+        {
+            _turns.Add((agentId, conversationId));
+            return new Release(this);
+        }
+
+        private sealed class Release : IDisposable
+        {
+            private readonly RecordingAttribution _owner;
+
+            public Release(RecordingAttribution owner) => _owner = owner;
+
+            public void Dispose() => _owner.Released++;
+        }
+    }
+
+    /// <summary>
+    /// Publishes a real, dispose-counting scope on its first call and throws on every call after that —
+    /// simulating a host's <see cref="IAgentTelemetryAttribution"/> rejecting a re-initialize.
+    /// </summary>
+    private sealed class ThrowsOnSecondCallAttribution : IAgentTelemetryAttribution
+    {
+        private int _calls;
+
+        public CountingScope FirstScope { get; } = new();
+
+        public IDisposable BeginTurn(string agentId, string conversationId)
+        {
+            if (Interlocked.Increment(ref _calls) > 1)
+                throw new InvalidOperationException("boom");
+
+            return FirstScope;
+        }
+
+        public sealed class CountingScope : IDisposable
+        {
+            public int Released { get; private set; }
+
+            public void Dispose() => Released++;
+        }
     }
 }

@@ -13,6 +13,13 @@ namespace Application.AI.Common.Services.Telemetry;
 /// </remarks>
 public sealed class NoOpAgentTelemetryAttribution : IAgentTelemetryAttribution
 {
+    /// <summary>
+    /// The shared instance. Stateless, so one instance serves every caller — used by
+    /// <c>AgentExecutionContext</c>'s parameterless constructor for a direct construction site (chiefly
+    /// tests) that has no reason to care about attribution at all.
+    /// </summary>
+    public static readonly NoOpAgentTelemetryAttribution Instance = new();
+
     /// <inheritdoc />
     public IDisposable BeginTurn(string agentId, string conversationId)
         => NoAgentTelemetryAttributionScope.Instance;

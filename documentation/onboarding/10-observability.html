@@ -195,6 +195,18 @@ docker run -d --name jaeger \
                     </p>
 
                     <p>
+                        <strong>What gets reported.</strong> Every execution path that establishes an agent context —
+                        an ordinary agent turn, an orchestrated task, a plan run, a sub-plan, and a directly invoked
+                        tool — reports under the right identity, and you do not have to do anything per path to make
+                        that true. Identity is published by the act of establishing the context itself and released
+                        when that context's scope ends, so a path cannot establish one and omit the attribution. That
+                        used to be a separate call each path made, and three of five paths did not make it: their
+                        spans reached the service carrying no agent identity, which Agent 365 discards <em>without
+                        reporting an error</em>, so those categories of activity were simply absent from the tenant's
+                        records with nothing to indicate it.
+                    </p>
+
+                    <p>
                         <strong>What you have to do outside the harness.</strong>
                         Registration is a <strong>provisioning</strong> step, not a runtime one — it creates Entra
                         directory objects, needs a Global Administrator, and needs a named human <em>sponsor</em>

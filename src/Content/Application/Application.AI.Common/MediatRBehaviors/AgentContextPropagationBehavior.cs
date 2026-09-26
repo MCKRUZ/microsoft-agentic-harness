@@ -1,6 +1,5 @@
 using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.MediatR;
-using Application.AI.Common.Interfaces.Telemetry;
 using Domain.Common.Logging;
 using MediatR;
 using Microsoft.Extensions.Logging;
@@ -21,7 +20,6 @@ public sealed class AgentContextPropagationBehavior<TRequest, TResponse>
     : IPipelineBehavior<TRequest, TResponse> where TRequest : notnull
 {
     private readonly IAgentExecutionContext _executionContext;
-    private readonly IAgentTelemetryAttribution _attribution;
     private readonly ILogger<AgentContextPropagationBehavior<TRequest, TResponse>> _logger;
 
     /// <summary>
@@ -29,11 +27,9 @@ public sealed class AgentContextPropagationBehavior<TRequest, TResponse>
     /// </summary>
     public AgentContextPropagationBehavior(
         IAgentExecutionContext executionContext,
-        IAgentTelemetryAttribution attribution,
         ILogger<AgentContextPropagationBehavior<TRequest, TResponse>> logger)
     {
         _executionContext = executionContext;
-        _attribution = attribution;
         _logger = logger;
     }
 
@@ -46,6 +42,8 @@ public sealed class AgentContextPropagationBehavior<TRequest, TResponse>
         if (request is not IAgentScopedRequest agentRequest)
             return await next();
 
+        // This also publishes the turn's external governance attribution, which stays in effect for the
+        // life of the request scope — see Initialize's remarks. Nothing to do here beyond calling it.
         _executionContext.Initialize(
             agentRequest.AgentId,
             agentRequest.ConversationId,
@@ -53,14 +51,6 @@ public sealed class AgentContextPropagationBehavior<TRequest, TResponse>
             // The durable conversation IS the right call-once scope for an agent turn — this is
             // the one caller where ConversationId already means exactly what CallOnceScopeId needs.
             callOnceScopeId: agentRequest.ConversationId);
-
-        // Publishes the running agent's external governance identity for the whole turn. Must wrap
-        // next(): the values have to be in effect while the turn's spans are created, because an
-        // exporter reading them later runs on a background thread where ambient context is empty.
-        // A no-op unless a host has opted into an agent-governance integration.
-        using var attribution = _attribution.BeginTurn(
-            agentRequest.AgentId,
-            agentRequest.ConversationId);
 
         using (_logger.BeginScope(new ExecutionScope(
             ExecutorId: agentRequest.AgentId,

@@ -33,6 +33,7 @@ public class Agent365TelemetryAttributionTests
     private const string HostBlueprint = "33333333-3333-3333-3333-333333333333";
     private const string OverrideAppId = "44444444-4444-4444-4444-444444444444";
     private const string OverrideBlueprint = "55555555-5555-5555-5555-555555555555";
+    private const string SecondOverrideAppId = "66666666-6666-6666-6666-666666666666";
 
     private static Agent365TelemetryAttribution Build(Action<Agent365ExporterConfig> configure)
     {
@@ -139,6 +140,70 @@ public class Agent365TelemetryAttributionTests
             HostAppId,
             "an agent with its own identity must not also report the host default, or the tenant's "
             + "inventory attributes its activity to the wrong agent");
+    }
+
+    [Fact]
+    public void RepeatedCallsForDifferentAgents_NeverCrossAttribute()
+    {
+        // Identity is resolved from two dictionaries precomputed once from config at construction (see
+        // Agent365TelemetryAttribution's own remarks — an earlier cut resolved and cached per agent id
+        // from caller input instead, which security review found let a caller grow that cache without
+        // bound and could serve one caller's display-name spelling to another). Precomputing from config
+        // alone removes that surface structurally, but the functional guarantee still needs pinning:
+        // interleaved, repeated calls for two DIFFERENT agents must always report their own identity,
+        // never the other's and never the host default neither one uses.
+        var attribution = Build(c =>
+        {
+            c.Enabled = true;
+            c.AgentAppId = HostAppId;
+            c.TenantId = TenantId;
+            c.Agents["researcher"] = new Agent365AgentIdentityConfig { AppId = OverrideAppId };
+            c.Agents["summariser"] = new Agent365AgentIdentityConfig { AppId = SecondOverrideAppId };
+        });
+
+        for (var i = 0; i < 3; i++)
+        {
+            using (attribution.BeginTurn("researcher", $"conv-{i}"))
+            {
+                AllBaggage().Values.Should().Contain(OverrideAppId);
+                AllBaggage().Values.Should().NotContain(SecondOverrideAppId);
+            }
+
+            using (attribution.BeginTurn("summariser", $"conv-{i}"))
+            {
+                AllBaggage().Values.Should().Contain(SecondOverrideAppId);
+                AllBaggage().Values.Should().NotContain(OverrideAppId);
+            }
+        }
+    }
+
+    [Fact]
+    public void ADifferentSpellingOfAnOverriddenAgentsCasing_ReportsThatAgentsOwnSpellingNotTheEarlierCallers()
+    {
+        // Security review on #737's first cut: display name used to be cached alongside the resolved
+        // identity, keyed by whichever caller asked first — so a caller who spelled "Researcher" as
+        // "RESEARCHER" (accepted, because Agents matches case-insensitively) would have THAT casing
+        // served to every later, distinct caller of the same agent, corrupting the tenant's own
+        // governance record for everyone else. The display name is now resolved from each call's own
+        // agentId every time, never from an earlier caller's — this is the test that distinguishes the
+        // two: it fails if the name is ever cached instead of resolved per call.
+        var attribution = Build(c =>
+        {
+            c.Enabled = true;
+            c.AgentAppId = HostAppId;
+            c.TenantId = TenantId;
+        });
+
+        using (attribution.BeginTurn("RESEARCHER", "conv-1"))
+        {
+        }
+
+        using (attribution.BeginTurn("researcher", "conv-2"))
+        {
+            AllBaggage().Values.Should().Contain(
+                "researcher", "this call's own spelling must be reported, not an earlier caller's");
+            AllBaggage().Values.Should().NotContain("RESEARCHER");
+        }
     }
 
     [Fact]
@@ -311,6 +376,50 @@ public class Agent365TelemetryAttributionTests
 
         AllBaggage().Values.Should().NotContain("   ");
         AllBaggage().Values.Should().Contain(HostAppId, "the agent identity is still published");
+    }
+
+    [Fact]
+    public void ANestedTurn_ReplacesTheOuterTurnsAttributionAndRestoresItOnDisposal()
+    {
+        // Answers the open question left by #736's review, empirically against the real SDK rather than
+        // from its prose: when an orchestrator's turn spawns a sub-agent turn, does the child's
+        // attribution merge with the parent's or replace it?
+        //
+        // It REPLACES, and disposal restores the parent's — which is the behaviour the harness needs.
+        // Merging would be the harmful answer: a child span carrying both agents' ids would be
+        // attributed to whichever the service happened to read, so a sub-agent's activity could be filed
+        // against the orchestrator's identity in the tenant's records. Replacement means each turn's
+        // spans name exactly the agent that produced them.
+        //
+        // This is also why the parent scope must outlive the child. AgentExecutionContext holds its
+        // scope for the life of its DI scope, and a sub-agent runs in a child scope disposed first, so
+        // the nesting is correctly ordered by construction.
+        var attribution = Build(c =>
+        {
+            c.Enabled = true;
+            c.AgentAppId = HostAppId;
+            c.TenantId = TenantId;
+            c.Agents["researcher"] = new Agent365AgentIdentityConfig { AppId = OverrideAppId };
+        });
+
+        using (attribution.BeginTurn("orchestrator", "conv-1"))
+        {
+            AllBaggage().Values.Should().Contain(HostAppId);
+
+            using (attribution.BeginTurn("researcher", "conv-1"))
+            {
+                AllBaggage().Values.Should().Contain(OverrideAppId);
+                AllBaggage().Values.Should().NotContain(
+                    HostAppId,
+                    "the sub-agent's turn must report only its own identity, or the tenant cannot tell "
+                    + "which agent produced the span");
+            }
+
+            AllBaggage().Values.Should().Contain(
+                HostAppId, "the orchestrator's own turn is still running and must stay attributed");
+        }
+
+        AllBaggage().Should().BeEmpty();
     }
 
     [Fact]
