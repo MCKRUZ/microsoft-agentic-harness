@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using Application.AI.Common.Interfaces.Telemetry;
 using Domain.Common.Config;
 using Domain.Common.Config.Observability;
@@ -57,29 +56,32 @@ public sealed class Agent365TelemetryAttribution : IAgentTelemetryAttribution
     // repo already; this avoids repeating that shape on the turn path.
     private int _warned;
 
-    // BeginTurn is now on the hot path for every turn AND every direct tool invocation/plan step/sub-plan
-    // step (#737 moved publication into AgentExecutionContext.Initialize, which those three previously
-    // never called into at all). Resolving an agent's identity is a pure function of agentId and this
-    // instance's own immutable config snapshot, so it is cached per agent id the first time it is asked
-    // for rather than redone — a dictionary lookup plus up to three Guid.TryParse/ToString round-trips —
-    // on every single call. Direct tool invocations mint a fresh conversation id per call (see
-    // DirectToolInvoker.Arming.cs), so without this cache the same agent's identity would be recomputed
-    // from scratch on literally every tool call it makes. Caching a "no identity configured" result too
-    // is correct, not merely harmless: WarnOnce already fires at most once regardless, so skipping the
-    // recomputation changes no observable behaviour.
-    //
-    // Case-insensitive comparer to match Agent365ExporterConfig.Agents, which the resolution this caches
-    // matches against case-insensitively (its setter enforces the comparer). Found by the re-review pass
-    // on #737: the default ordinal comparer would cache "Researcher" and "researcher" as two entries
-    // resolving to the identical, correct identity — not a correctness bug, but wasted recomputation and
-    // unbounded growth for a caller whose casing varies, defeating the point of caching.
-    private readonly ConcurrentDictionary<string, ResolvedIdentity?> _identityCache =
-        new(StringComparer.OrdinalIgnoreCase);
-
     // The tenant id is host-level, not per-agent, and is exactly as immutable as _config — recomputed
     // per call for no reason. Null when the config makes tenant attribution impossible (blank), which
     // BeginTurn treats identically to today's inline check.
     private readonly string? _canonicalTenantId;
+
+    // BeginTurn is on the hot path for every turn AND every direct tool invocation/plan step/sub-plan step
+    // (#737 moved publication into AgentExecutionContext.Initialize, which those three previously never
+    // called into at all). Every value an agent's identity resolves to is a pure function of THIS host's
+    // own config, so the first cut of this precompute cached the resolution keyed by the caller-supplied
+    // agentId instead — found by security review to be a real problem, not a style one: an authenticated
+    // caller (or any caller, on a host running without auth) can create a conversation under a fresh,
+    // never-before-seen agent name per call, and each one left a permanent, never-evicted cache entry in
+    // this process-lifetime singleton — an unbounded memory-growth surface with no cap and no metric. It
+    // also cached each agent's DISPLAY NAME keyed by whichever caller happened to ask first, so a caller
+    // who spelled a real agent's id in a different casing (accepted, because Agents matches
+    // case-insensitively) would have that casing served to every later, legitimate caller of the same
+    // agent — a cross-caller integrity bug in the tenant's own governance record, the one thing this
+    // whole file exists to keep accurate.
+    //
+    // Correct fix: precompute from config alone, not from anything a caller supplies. The size of these
+    // two fields is bounded by how many agents THIS HOST configured, never by how many distinct agent ids
+    // a caller has asked about. The display name is deliberately NOT stored here — it depends on the
+    // CALLING agentId's own spelling (see BeginTurn), which is exactly the value that must not be cached
+    // across callers.
+    private readonly ResolvedIdentity? _hostDefault;
+    private readonly Dictionary<string, ResolvedIdentity> _overrides;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="Agent365TelemetryAttribution"/> class.
@@ -98,7 +100,32 @@ public sealed class Agent365TelemetryAttribution : IAgentTelemetryAttribution
         _canonicalTenantId = string.IsNullOrWhiteSpace(_config.TenantId)
             ? null
             : GuidId.Canonicalize(_config.TenantId);
+
+        _hostDefault = string.IsNullOrWhiteSpace(_config.AgentAppId)
+            ? null
+            : new ResolvedIdentity(
+                GuidId.Canonicalize(_config.AgentAppId)!,
+                CanonicalizeBlueprint(_config.BlueprintId));
+
+        // Same comparer Agents itself enforces in its setter — one lookup here has to agree with the one
+        // FindOverride used to do, or an agent id that matched there would silently stop matching here.
+        _overrides = new Dictionary<string, ResolvedIdentity>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (name, entry) in _config.Agents)
+        {
+            if (!string.IsNullOrWhiteSpace(entry.AppId))
+            {
+                _overrides[name] = new ResolvedIdentity(
+                    GuidId.Canonicalize(entry.AppId)!,
+                    CanonicalizeBlueprint(entry.BlueprintId));
+            }
+        }
     }
+
+    // Blank-checked, not null-checked, to match what the validator accepts: it treats a blank blueprint id
+    // as absent so a copied template placeholder does not refuse a boot. A null check here would let that
+    // blank through and publish an empty blueprint rather than omitting it.
+    private static string? CanonicalizeBlueprint(string? blueprintId)
+        => string.IsNullOrWhiteSpace(blueprintId) ? null : GuidId.Canonicalize(blueprintId);
 
     /// <inheritdoc />
     public IDisposable BeginTurn(string agentId, string conversationId)
@@ -110,9 +137,10 @@ public sealed class Agent365TelemetryAttribution : IAgentTelemetryAttribution
             return NoAgentTelemetryAttributionScope.Instance;
         }
 
-        var identity = ResolveIdentity(config, agentId);
+        var identity = ResolveIdentity(agentId, out var isHostDefault);
         if (identity is null)
         {
+            WarnOnce(agentId);
             return NoAgentTelemetryAttributionScope.Instance;
         }
 
@@ -127,10 +155,24 @@ public sealed class Agent365TelemetryAttribution : IAgentTelemetryAttribution
             return NoAgentTelemetryAttributionScope.Instance;
         }
 
+        // The host-level AgentName names the host's default agent, so it must not be applied to an agent
+        // reporting its own identity: doing so collapses every agent in a multi-agent host to one display
+        // name while their ids stay distinct, which is harder to read in the tenant's inventory than no
+        // custom name at all. Blank-checked for the same reason as the blueprint id: a copied template
+        // placeholder ("AgentName": "") means "not provided".
+        //
+        // Resolved from THIS call's own agentId every time, deliberately never cached: caching it against
+        // whichever caller asked first would serve that caller's exact casing to every later, distinct
+        // caller of the same agent — a cross-caller integrity bug in the tenant's own governance record,
+        // found by security review on the first cut of this cache.
+        var agentName = isHostDefault && !string.IsNullOrWhiteSpace(config.AgentName)
+            ? config.AgentName
+            : agentId;
+
         var builder = new BaggageBuilder()
             .TenantId(_canonicalTenantId)
             .AgentId(identity.Value.CanonicalAppId)
-            .AgentName(identity.Value.AgentName);
+            .AgentName(agentName);
 
         if (identity.Value.CanonicalBlueprintId is not null)
         {
@@ -148,92 +190,32 @@ public sealed class Agent365TelemetryAttribution : IAgentTelemetryAttribution
     }
 
     /// <summary>
-    /// The fully-resolved, ready-to-publish form of an agent's identity: canonical GUIDs and the display
-    /// name already picked. Cached per agent id — see <see cref="_identityCache"/> — so nothing in here
-    /// is recomputed on a repeat call for the same agent.
+    /// The canonicalized form of one configured identity: a blueprint's kind aside, everything Agent 365
+    /// needs to attribute a span to it. Precomputed once from config, never from a caller's input — see
+    /// <see cref="_hostDefault"/> and <see cref="_overrides"/> for why.
     /// </summary>
-    private readonly record struct ResolvedIdentity(
-        string CanonicalAppId, string? CanonicalBlueprintId, string AgentName);
+    private readonly record struct ResolvedIdentity(string CanonicalAppId, string? CanonicalBlueprintId);
 
     /// <summary>
     /// Selects the Entra agent identity for <paramref name="agentId"/> — its own override when one is
-    /// configured, otherwise the host-level default — caching the resolved, canonicalized form.
+    /// configured, otherwise the host-level default.
     /// </summary>
     /// <remarks>
     /// An override supplies its own blueprint or none — the host-level blueprint is deliberately not
     /// inherited, because a blueprint identifies a <em>kind</em> of agent and an agent minted from a
     /// different blueprint would otherwise be filed under the wrong kind.
     /// </remarks>
-    private ResolvedIdentity? ResolveIdentity(Agent365ExporterConfig config, string agentId)
+    private ResolvedIdentity? ResolveIdentity(string agentId, out bool isHostDefault)
     {
-        if (_identityCache.TryGetValue(agentId, out var cached))
+        if (!string.IsNullOrWhiteSpace(agentId) && _overrides.TryGetValue(agentId, out var over))
         {
-            return cached;
+            isHostDefault = false;
+            return over;
         }
 
-        var resolved = ResolveUncached(config, agentId);
-
-        // Non-factory GetOrAdd: two concurrent first-calls for the same never-before-seen agent id may
-        // both compute this (a pure function of agentId and the immutable config snapshot, so recomputing
-        // is wasted work, never a correctness problem) and race harmlessly on which result is stored.
-        return _identityCache.GetOrAdd(agentId, resolved);
+        isHostDefault = true;
+        return _hostDefault;
     }
-
-    private ResolvedIdentity? ResolveUncached(Agent365ExporterConfig config, string agentId)
-    {
-        var over = FindOverride(config, agentId);
-        if (!string.IsNullOrWhiteSpace(over?.AppId))
-        {
-            return Build(over.AppId, over.BlueprintId, isHostDefault: false);
-        }
-
-        if (!string.IsNullOrWhiteSpace(config.AgentAppId))
-        {
-            return Build(config.AgentAppId, config.BlueprintId, isHostDefault: true);
-        }
-
-        WarnOnce(agentId);
-        return null;
-
-        ResolvedIdentity Build(string appId, string? blueprintId, bool isHostDefault)
-        {
-            // The host-level AgentName names the host's default agent, so it must not be applied to an
-            // agent reporting its own identity: doing so collapses every agent in a multi-agent host to
-            // one display name while their ids stay distinct, which is harder to read in the tenant's
-            // inventory than no custom name at all.
-            // Blank-checked for the same reason as the blueprint id below: a copied template placeholder
-            // ("AgentName": "") means "not provided", and a null-coalesce would publish it as an empty
-            // display name instead of falling back to the agent's own id.
-            var agentName = isHostDefault && !string.IsNullOrWhiteSpace(config.AgentName)
-                ? config.AgentName
-                : agentId;
-
-            // Blank-checked, not null-checked, to match what the validator accepts: it treats a blank
-            // blueprint id as absent so a copied template placeholder does not refuse a boot. A null
-            // check here would let that blank through and publish an empty blueprint rather than
-            // omitting it.
-            var canonicalBlueprintId = string.IsNullOrWhiteSpace(blueprintId)
-                ? null
-                : GuidId.Canonicalize(blueprintId);
-
-            return new ResolvedIdentity(GuidId.Canonicalize(appId)!, canonicalBlueprintId, agentName);
-        }
-    }
-
-    /// <summary>
-    /// Finds the override for <paramref name="agentId"/>, or null when the agent has none.
-    /// </summary>
-    /// <remarks>
-    /// One lookup, because <see cref="Agent365ExporterConfig.Agents"/> enforces a case-insensitive
-    /// comparer in its setter — the dictionary itself carries the matching rule, so this does not have
-    /// to re-implement it per read.
-    /// </remarks>
-    private static Agent365AgentIdentityConfig? FindOverride(
-        Agent365ExporterConfig config,
-        string agentId)
-        => !string.IsNullOrWhiteSpace(agentId) && config.Agents.TryGetValue(agentId, out var hit)
-            ? hit
-            : null;
 
     private void WarnOnce(string agentId)
     {

@@ -1,4 +1,3 @@
-using System.Reflection;
 using Domain.Common.Config;
 using Domain.Common.Config.Observability;
 using FluentAssertions;
@@ -144,13 +143,15 @@ public class Agent365TelemetryAttributionTests
     }
 
     [Fact]
-    public void RepeatedCallsForDifferentAgents_NeverCrossAttributeAfterTheFirstCallCachesEach()
+    public void RepeatedCallsForDifferentAgents_NeverCrossAttribute()
     {
-        // Resolved identity is cached per agent id (a hot-path optimisation once #737 put BeginTurn on
-        // every tool call, not just once per MediatR turn). This is the test a wrong cache key would
-        // fail: interleaved, repeated calls for two agents with DIFFERENT identities, past the point
-        // where both are already cached, must still each report their own — never the other's, and
-        // never the host default neither one uses.
+        // Identity is resolved from two dictionaries precomputed once from config at construction (see
+        // Agent365TelemetryAttribution's own remarks — an earlier cut resolved and cached per agent id
+        // from caller input instead, which security review found let a caller grow that cache without
+        // bound and could serve one caller's display-name spelling to another). Precomputing from config
+        // alone removes that surface structurally, but the functional guarantee still needs pinning:
+        // interleaved, repeated calls for two DIFFERENT agents must always report their own identity,
+        // never the other's and never the host default neither one uses.
         var attribution = Build(c =>
         {
             c.Enabled = true;
@@ -177,38 +178,32 @@ public class Agent365TelemetryAttributionTests
     }
 
     [Fact]
-    public void DifferentCasingOfTheSameAgentId_SharesOneCacheEntry()
+    public void ADifferentSpellingOfAnOverriddenAgentsCasing_ReportsThatAgentsOwnSpellingNotTheEarlierCallers()
     {
-        // Found by the correctness-review re-pass on #737: the identity cache must match
-        // Agent365ExporterConfig.Agents' own case-insensitivity, or "Researcher" and "researcher" would
-        // occupy two entries instead of one. Both entries would still resolve to the same, correct
-        // identity — this is wasted recomputation and unbounded growth, not a wrong answer — so a test
-        // asserting only the published baggage would pass whether or not the fix is present (checked by
-        // mutation-testing this exact test against a case-sensitive comparer). Reflection is the only
-        // way to observe the difference from outside the class.
+        // Security review on #737's first cut: display name used to be cached alongside the resolved
+        // identity, keyed by whichever caller asked first — so a caller who spelled "Researcher" as
+        // "RESEARCHER" (accepted, because Agents matches case-insensitively) would have THAT casing
+        // served to every later, distinct caller of the same agent, corrupting the tenant's own
+        // governance record for everyone else. The display name is now resolved from each call's own
+        // agentId every time, never from an earlier caller's — this is the test that distinguishes the
+        // two: it fails if the name is ever cached instead of resolved per call.
         var attribution = Build(c =>
         {
             c.Enabled = true;
             c.AgentAppId = HostAppId;
             c.TenantId = TenantId;
-            c.Agents["Researcher"] = new Agent365AgentIdentityConfig { AppId = OverrideAppId };
         });
 
-        using (attribution.BeginTurn("researcher", "conv-1"))
+        using (attribution.BeginTurn("RESEARCHER", "conv-1"))
         {
         }
 
-        using (attribution.BeginTurn("RESEARCHER", "conv-2"))
+        using (attribution.BeginTurn("researcher", "conv-2"))
         {
+            AllBaggage().Values.Should().Contain(
+                "researcher", "this call's own spelling must be reported, not an earlier caller's");
+            AllBaggage().Values.Should().NotContain("RESEARCHER");
         }
-
-        var cache = typeof(Agent365TelemetryAttribution)
-            .GetField("_identityCache", BindingFlags.NonPublic | BindingFlags.Instance)!
-            .GetValue(attribution)!;
-        var count = (int)cache.GetType().GetProperty("Count")!.GetValue(cache)!;
-
-        count.Should().Be(1, "two castings of the same agent id must share one cache entry, matching " +
-            "Agents' own case-insensitive matching");
     }
 
     [Fact]

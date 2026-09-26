@@ -538,6 +538,30 @@ public class AgentExecutionContextTests
     }
 
     [Fact]
+    public void ReInitializeWhereBeginTurnThrows_DoesNotDoubleReleaseThePreviousScope()
+    {
+        // Security review: BeginTurn is a public extensibility point that can throw (a host's
+        // implementation rejects a malformed value, or fails a call to a governance service). Between
+        // disposing the previous turn's scope and assigning the new one, a throw must not leave
+        // _attributionScope still referencing the just-disposed scope — the eventual container Dispose
+        // would release it a SECOND time, restoring a stale baggage snapshot over whatever the flow's
+        // current attribution is.
+        var attribution = new ThrowsOnSecondCallAttribution();
+        using var context = new AgentExecutionContext(attribution);
+
+        context.Initialize("planner", "conv-1", 1);
+
+        var act = () => context.Initialize("planner", "conv-1", 2);
+        act.Should().Throw<InvalidOperationException>().WithMessage("*boom*");
+
+        context.Dispose();
+
+        attribution.FirstScope.Released.Should().Be(
+            1, "the previous scope must be released exactly once even though the republish that " +
+               "should have replaced it threw");
+    }
+
+    [Fact]
     public void Initialize_AfterDispose_PublishesNothing()
     {
         // Nothing reaches a disposed scoped service today, but publishing here would create a scope
@@ -603,6 +627,32 @@ public class AgentExecutionContextTests
             public Release(RecordingAttribution owner) => _owner = owner;
 
             public void Dispose() => _owner.Released++;
+        }
+    }
+
+    /// <summary>
+    /// Publishes a real, dispose-counting scope on its first call and throws on every call after that —
+    /// simulating a host's <see cref="IAgentTelemetryAttribution"/> rejecting a re-initialize.
+    /// </summary>
+    private sealed class ThrowsOnSecondCallAttribution : IAgentTelemetryAttribution
+    {
+        private int _calls;
+
+        public CountingScope FirstScope { get; } = new();
+
+        public IDisposable BeginTurn(string agentId, string conversationId)
+        {
+            if (Interlocked.Increment(ref _calls) > 1)
+                throw new InvalidOperationException("boom");
+
+            return FirstScope;
+        }
+
+        public sealed class CountingScope : IDisposable
+        {
+            public int Released { get; private set; }
+
+            public void Dispose() => Released++;
         }
     }
 }

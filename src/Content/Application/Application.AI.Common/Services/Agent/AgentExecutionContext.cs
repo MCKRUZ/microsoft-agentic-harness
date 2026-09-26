@@ -201,6 +201,15 @@ public sealed class AgentExecutionContext : IAgentExecutionContext, IDisposable
             if (!_disposed)
             {
                 _attributionScope?.Dispose();
+
+                // Nulled before the call, not just reassigned after it. BeginTurn is a public
+                // extensibility point and a host's implementation can throw (a rejected malformed
+                // conversation id, a future implementation that calls out and fails). Without this line,
+                // a throw here would leave _attributionScope still referencing the scope just disposed
+                // above — and the eventual container Dispose would release that same scope a second
+                // time, restoring a stale baggage snapshot over whatever the flow's current attribution
+                // is. Found by security review.
+                _attributionScope = null;
                 _attributionScope = _attribution.BeginTurn(agentId, conversationId);
             }
         }
