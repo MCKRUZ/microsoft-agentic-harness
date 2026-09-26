@@ -74,16 +74,20 @@ public static class Agent365TelemetryExtensions
         }
 
         // This method DEPENDS ON the host's baggage-egress policy rather than owning it (#738).
-        // Agent 365 attribution rides OpenTelemetry baggage (tenant id, agent app id, blueprint id,
-        // conversation id, published per turn), and a propagator that also carries baggage would
-        // otherwise serialise that onto every outbound HTTP call and accept a caller-supplied version
-        // on every inbound one. That protection used to live here, as an unnamed side effect gated on this
-        // exporter's own Enabled flag — which meant a host running some other integration that also
-        // touches baggage got no protection at all, and an operator had no flag to check. It is now
-        // ObservabilityConfig.PropagateBaggage, applied once in AddOpenTelemetry for every host
-        // shape, default false, so the same protection covers any future baggage use, not just this
-        // one. Agent365StartupValidator re-asserts it at boot when this exporter is enabled, in case
-        // something else in the composition re-registers a composite propagator afterwards.
+        // Agent 365 attribution rides baggage — originally believed to be OpenTelemetry's own Baggage
+        // API only, until a security review found the harness's own identity attribution (tenant id,
+        // agent app id, blueprint id, conversation id) actually rides System.Diagnostics.Activity's
+        // separate baggage store, which no OpenTelemetry component touches. A propagator that carries
+        // either would serialise that onto every outbound HTTP call and accept a caller-supplied
+        // version on every inbound one. That protection used to live here, as an unnamed side effect
+        // gated on this exporter's own Enabled flag — which meant a host running some other integration
+        // that also touches baggage got no protection at all, and an operator had no flag to check. It
+        // is now ObservabilityConfig.PropagateBaggage, applied once in AddOpenTelemetry for every host
+        // shape and BOTH baggage stores, default false, so the same protection covers any future
+        // baggage use, not just this one. BaggageEgressStartupValidator — a standalone validator,
+        // registered unconditionally and gated only on PropagateBaggage itself, not on this exporter's
+        // Enabled flag — re-asserts both propagators at boot in case something else in the composition
+        // re-registers baggage-carrying propagation afterwards.
 
         // Built once here rather than per export. Azure.Identity credentials cache the token
         // in-process and refresh shortly before expiry, so the per-batch GetTokenAsync below is

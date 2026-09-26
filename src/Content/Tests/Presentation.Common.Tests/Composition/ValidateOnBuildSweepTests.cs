@@ -40,16 +40,24 @@ namespace Presentation.Common.Tests.Composition;
 public sealed class ValidateOnBuildSweepTests : IDisposable
 {
     // Every fact in this class builds a real composition root, and AddOpenTelemetry unconditionally
-    // sets the process-global default propagator as part of that (#738) — not only the Agent
-    // 365-enabled fact, which is the only one this used to guard. Captured once per test instance
-    // (xUnit creates a fresh instance per [Fact]) and restored in Dispose, or this class leaks a
-    // process-global mutation into whatever test — in this collection or, once test-process
-    // scheduling reorders across the assembly, another — runs next.
+    // sets BOTH process-global default propagators as part of that (#738: the OpenTelemetry one AND
+    // System.Diagnostics.DistributedContextPropagator.Current) — not only the Agent 365-enabled fact,
+    // which is the only one this used to guard. Captured once per test instance (xUnit creates a
+    // fresh instance per [Fact]) and restored in Dispose, or this class leaks a process-global
+    // mutation into whatever test — in this collection or, once test-process scheduling reorders
+    // across the assembly, another — runs next.
     private readonly OpenTelemetry.Context.Propagation.TextMapPropagator _originalPropagator =
         OpenTelemetry.Context.Propagation.Propagators.DefaultTextMapPropagator;
 
+    private readonly System.Diagnostics.DistributedContextPropagator _originalActivityPropagator =
+        System.Diagnostics.DistributedContextPropagator.Current;
+
     /// <inheritdoc />
-    public void Dispose() => OpenTelemetry.Sdk.SetDefaultTextMapPropagator(_originalPropagator);
+    public void Dispose()
+    {
+        OpenTelemetry.Sdk.SetDefaultTextMapPropagator(_originalPropagator);
+        System.Diagnostics.DistributedContextPropagator.Current = _originalActivityPropagator;
+    }
 
     /// <summary>
     /// All-features-off baseline: the default, all-features-off registration set every host
