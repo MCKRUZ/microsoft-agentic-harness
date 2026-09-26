@@ -1,3 +1,4 @@
+using System.Reflection;
 using Domain.Common.Config;
 using Domain.Common.Config.Observability;
 using FluentAssertions;
@@ -173,6 +174,41 @@ public class Agent365TelemetryAttributionTests
                 AllBaggage().Values.Should().NotContain(OverrideAppId);
             }
         }
+    }
+
+    [Fact]
+    public void DifferentCasingOfTheSameAgentId_SharesOneCacheEntry()
+    {
+        // Found by the correctness-review re-pass on #737: the identity cache must match
+        // Agent365ExporterConfig.Agents' own case-insensitivity, or "Researcher" and "researcher" would
+        // occupy two entries instead of one. Both entries would still resolve to the same, correct
+        // identity — this is wasted recomputation and unbounded growth, not a wrong answer — so a test
+        // asserting only the published baggage would pass whether or not the fix is present (checked by
+        // mutation-testing this exact test against a case-sensitive comparer). Reflection is the only
+        // way to observe the difference from outside the class.
+        var attribution = Build(c =>
+        {
+            c.Enabled = true;
+            c.AgentAppId = HostAppId;
+            c.TenantId = TenantId;
+            c.Agents["Researcher"] = new Agent365AgentIdentityConfig { AppId = OverrideAppId };
+        });
+
+        using (attribution.BeginTurn("researcher", "conv-1"))
+        {
+        }
+
+        using (attribution.BeginTurn("RESEARCHER", "conv-2"))
+        {
+        }
+
+        var cache = typeof(Agent365TelemetryAttribution)
+            .GetField("_identityCache", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .GetValue(attribution)!;
+        var count = (int)cache.GetType().GetProperty("Count")!.GetValue(cache)!;
+
+        count.Should().Be(1, "two castings of the same agent id must share one cache entry, matching " +
+            "Agents' own case-insensitive matching");
     }
 
     [Fact]

@@ -67,7 +67,14 @@ public sealed class Agent365TelemetryAttribution : IAgentTelemetryAttribution
     // from scratch on literally every tool call it makes. Caching a "no identity configured" result too
     // is correct, not merely harmless: WarnOnce already fires at most once regardless, so skipping the
     // recomputation changes no observable behaviour.
-    private readonly ConcurrentDictionary<string, ResolvedIdentity?> _identityCache = new();
+    //
+    // Case-insensitive comparer to match Agent365ExporterConfig.Agents, which the resolution this caches
+    // matches against case-insensitively (its setter enforces the comparer). Found by the re-review pass
+    // on #737: the default ordinal comparer would cache "Researcher" and "researcher" as two entries
+    // resolving to the identical, correct identity — not a correctness bug, but wasted recomputation and
+    // unbounded growth for a caller whose casing varies, defeating the point of caching.
+    private readonly ConcurrentDictionary<string, ResolvedIdentity?> _identityCache =
+        new(StringComparer.OrdinalIgnoreCase);
 
     // The tenant id is host-level, not per-agent, and is exactly as immutable as _config — recomputed
     // per call for no reason. Null when the config makes tenant attribution impossible (blank), which
