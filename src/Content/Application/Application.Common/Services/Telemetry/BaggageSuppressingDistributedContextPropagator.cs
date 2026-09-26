@@ -1,7 +1,7 @@
 using Domain.Common.Config.Observability;
 using System.Diagnostics;
 
-namespace Application.AI.Common.Services.Telemetry;
+namespace Application.Common.Services.Telemetry;
 
 /// <summary>
 /// A <see cref="DistributedContextPropagator"/> that carries trace context (<c>traceparent</c>/
@@ -38,16 +38,18 @@ namespace Application.AI.Common.Services.Telemetry;
 /// <c>TraceContextPropagator</c> returns for its half of this policy.
 /// </para>
 /// <para>
-/// Lives here, in <c>Application.AI.Common</c>, rather than in <c>Presentation.Common</c> (where it
-/// was first written) or <c>Infrastructure.Observability</c> (where a first relocation moved it,
-/// reasoning by co-location with its sibling <c>BaggageEgressStartupValidator</c>): this repo's own
-/// <c>clean-architecture.md</c> "File Placement Rule" litmus test is "does the code still compile with
-/// only Domain references?" — this type's only dependency is the BCL's own <c>System.Diagnostics</c>
-/// plus a <c>Domain.Common.Config.Observability</c> reference used solely in these doc comments, so it
-/// qualifies for Application even more clearly than the rule's own Microsoft.Extensions.*-only
-/// threshold. Found by a second code-review round on #738's own review: the Infrastructure placement
-/// was justified by a doc-comment claim about what <c>clean-architecture.md</c> says that the actual
-/// rule file does not support. Only the composition-root registration call in
+/// Lives here, in <c>Application.Common</c>, after THREE placements: first written in
+/// <c>Presentation.Common</c>, moved to <c>Infrastructure.Observability</c> for co-location with its
+/// sibling <c>BaggageEgressStartupValidator</c>, then moved to <c>Application.AI.Common</c> when a
+/// code-review round found that Infrastructure placement's own justification misstated what this
+/// repo's <c>clean-architecture.md</c> litmus test actually says. A THIRD altitude pass found
+/// <c>Application.AI.Common</c> was still wrong: this type has zero AI-agent semantics — it is generic
+/// ASP.NET Core/HttpClient distributed-tracing baggage suppression, and every one of that project's
+/// other 100+ files is scoped to AI-agent-specific concerns. <c>Application.Common</c> already hosts
+/// this repo's non-AI telemetry seam (<c>Interfaces/Telemetry/ITelemetryConfigurator</c>) and has its
+/// own <c>Services/</c> folder for concrete, non-AI service implementations — the actual correct home
+/// by subject matter, not merely by "which project reference direction compiles." Only the
+/// composition-root registration call in
 /// <c>OpenTelemetryServiceCollectionExtensions.AddOpenTelemetry</c> (Presentation.Common) is
 /// legitimately Presentation work; <c>BaggageEgressStartupValidator</c> (Infrastructure.Observability)
 /// re-checks this type's effect via <see cref="DistributedContextPropagator.Current"/>'s

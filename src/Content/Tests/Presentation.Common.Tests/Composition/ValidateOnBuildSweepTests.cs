@@ -64,6 +64,13 @@ public sealed class ValidateOnBuildSweepTests : IDisposable
     /// shares before its host-specific overrides. This is the baseline that must always
     /// be constructible.
     /// </summary>
+    /// <remarks>
+    /// Also the negative control for <see cref="ProductionCompositionRoot_Agent365Enabled_BuildsWithValidateOnBuild"/>'s
+    /// non-vacuity proof: this composition includes every unconditionally-registered default this
+    /// repo's own DI modules provide (including <c>Agent365TelemetryAttribution</c>) with Agent 365
+    /// itself untouched, so asserting no <see cref="Agent365ServiceMatcher"/> match here is what
+    /// actually proves that check discriminates rather than passing in both configurations.
+    /// </remarks>
     [Fact]
     public void ProductionCompositionRoot_AllFeaturesOff_BuildsWithValidateOnBuild()
     {
@@ -71,7 +78,13 @@ public sealed class ValidateOnBuildSweepTests : IDisposable
             .AddInMemoryCollection(new Dictionary<string, string?>())
             .Build();
 
-        using var provider = BuildAndValidate(configuration).Provider;
+        var (provider, services) = BuildAndValidate(configuration);
+        using var _ = provider;
+
+        services.Should().NotContain(
+            d => Agent365ServiceMatcher.IsAgent365Service(d),
+            "a host with Agent 365 disabled must register none of the vendor's own services, even "
+            + "though this repo's own always-on defaults (Agent365TelemetryAttribution) are present");
     }
 
     /// <summary>
@@ -111,18 +124,20 @@ public sealed class ValidateOnBuildSweepTests : IDisposable
     /// construct is never built. The first version of this test omitted it and passed vacuously.
     /// </para>
     /// <para>
-    /// <strong>Non-vacuity proof, third version (#738's own code-review round 2).</strong> The first
-    /// version used "baggage absent from the default propagator" — invalidated the moment baggage
-    /// suppression became a host-wide policy applied in <c>AddOpenTelemetry</c> regardless of Agent 365.
-    /// The second version resolved <c>IAgentTelemetryAttribution</c> and asserted its concrete type —
-    /// also vacuous, found by the SAME review round: <c>Infrastructure.Observability</c>'s own
-    /// <c>DependencyInjection.cs</c> registers <c>Agent365TelemetryAttribution</c> with a plain,
-    /// unconditional <c>AddSingleton</c>, independent of <c>Agent365:Enabled</c> — so that assertion
-    /// would have passed identically with Agent 365 entirely disabled. This version instead checks the
-    /// raw <c>IServiceCollection</c> for a descriptor whose type name contains "Agent365" (the same
-    /// technique <c>Agent365ExporterWiringTests.IsAgent365Service</c> uses) — a signal only the vendor's
-    /// own conditionally-registered pipeline, not anything this repo's own DI modules register
-    /// unconditionally, can produce.
+    /// <strong>Non-vacuity proof, fourth version (a third code-review/altitude pass on #738).</strong>
+    /// The first version used "baggage absent from the default propagator" — invalidated the moment
+    /// baggage suppression became a host-wide policy applied in <c>AddOpenTelemetry</c> regardless of
+    /// Agent 365. The second resolved <c>IAgentTelemetryAttribution</c> and asserted its concrete
+    /// type — also vacuous: <c>Infrastructure.Observability</c>'s own <c>DependencyInjection.cs</c>
+    /// registers <c>Agent365TelemetryAttribution</c> unconditionally. The third checked the raw
+    /// <c>IServiceCollection</c> for a descriptor whose type name contains the bare substring
+    /// "Agent365" — STILL vacuous, one level down: that same always-registered
+    /// <c>Agent365TelemetryAttribution</c> lives in namespace <c>Infrastructure.Observability.Agent365</c>,
+    /// which also contains the substring "Agent365", so the check passed identically whether or not
+    /// Agent 365 export was enabled. This version uses <see cref="Agent365ServiceMatcher"/>, which
+    /// matches only the vendor's own <c>Microsoft.Agents.A365.*</c> namespace prefix — empirically
+    /// confirmed (not assumed) against the pinned <c>Microsoft.OpenTelemetry</c> package's actual
+    /// exported types, a signal this repo's own always-on defaults cannot produce.
     /// </para>
     /// </remarks>
     [Fact]
@@ -151,19 +166,10 @@ public sealed class ValidateOnBuildSweepTests : IDisposable
         using var _ = provider;
 
         services.Should().Contain(
-            d => IsAgent365Service(d),
+            d => Agent365ServiceMatcher.IsAgent365Service(d),
             "enabling Agent 365 must compose the vendor's own Agent 365 pipeline — a signal this repo's "
             + "own unconditionally-registered defaults cannot produce");
     }
-
-    // Matched by name rather than by CLR type on purpose: the vendor's Agent 365 service types are
-    // internal to its assembly, so a typed reference will not compile — mirrors
-    // Agent365ExporterWiringTests.IsAgent365Service exactly. A method call rather than an inlined
-    // null-conditional expression, because FluentAssertions' Contain(Expression&lt;Func&lt;T, bool&gt;&gt;)
-    // overload cannot capture a `?.` operator in an expression tree.
-    private static bool IsAgent365Service(ServiceDescriptor descriptor)
-        => (descriptor.ServiceType.FullName ?? string.Empty).Contains("Agent365", StringComparison.Ordinal)
-            || (descriptor.ImplementationType?.FullName ?? string.Empty).Contains("Agent365", StringComparison.Ordinal);
 
     /// <summary>
     /// Builds and validates the composition root, returning the built provider AND the registration

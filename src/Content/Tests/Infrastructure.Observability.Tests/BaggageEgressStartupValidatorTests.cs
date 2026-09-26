@@ -1,4 +1,4 @@
-using Application.AI.Common.Services.Telemetry;
+using Application.Common.Services.Telemetry;
 using Domain.Common.Config;
 using FluentAssertions;
 using Microsoft.Extensions.Logging;

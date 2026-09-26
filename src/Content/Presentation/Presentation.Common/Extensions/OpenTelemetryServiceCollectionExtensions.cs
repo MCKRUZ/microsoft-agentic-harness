@@ -3,7 +3,7 @@ using Application.Common.Interfaces.Telemetry;
 using Domain.AI.Telemetry.Redaction;
 using Domain.Common.Config;
 using Domain.Common.Config.Observability;
-using Application.AI.Common.Services.Telemetry;
+using Application.Common.Services.Telemetry;
 using Domain.Common.Telemetry;
 using Infrastructure.Observability.Processors;
 using Microsoft.Extensions.DependencyInjection;
