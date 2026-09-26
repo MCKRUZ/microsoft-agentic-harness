@@ -165,6 +165,15 @@ public static class DependencyInjection
         // hand-rolling it.
         services.AddToolCallAdmissionChain();
 
+        // Turn attribution for external agent-governance platforms. TryAdd, so a host that has wired a
+        // real integration (Infrastructure.Observability registers the Agent 365 one) keeps it
+        // regardless of which layer registers first, and a host that has not gets a benign no-op
+        // rather than a missing service. The turn boundary resolves this unconditionally, so a
+        // registration must always exist.
+        services.TryAddSingleton<
+            Interfaces.Telemetry.IAgentTelemetryAttribution,
+            Services.Telemetry.NoOpAgentTelemetryAttribution>();
+
         // AI telemetry configurator — registers AI SDK OTel sources and processors
         services.AddSingleton<ITelemetryConfigurator, AiTelemetryConfigurator>();
 

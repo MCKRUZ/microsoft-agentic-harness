@@ -1016,8 +1016,11 @@
                             <tr>
                                 <td><code>Exporters</code></td>
                                 <td>
-                                    Sub-config for each destination — Jaeger / OTLP, Prometheus, Azure Monitor. Each
-                                    has its own <code>Enabled</code> flag and endpoint.
+                                    Sub-config for each destination — Jaeger / OTLP, Prometheus, Azure Monitor, and
+                                    the opt-in Microsoft Agent 365 exporter (<code>Agent365</code>, off by default;
+                                    see <a href="10-observability.html">Observability &amp; Safety</a>). Each has its
+                                    own <code>Enabled</code> flag; the network exporters also take an endpoint, while
+                                    Agent 365 discovers its own from the tenant.
                                 </td>
                             </tr>
                             <tr>

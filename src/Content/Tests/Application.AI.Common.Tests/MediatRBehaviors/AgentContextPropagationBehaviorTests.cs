@@ -1,6 +1,7 @@
 using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.MediatR;
 using Application.AI.Common.MediatRBehaviors;
+using Application.AI.Common.Services.Telemetry;
 using Application.AI.Common.Services.Agent;
 using FluentAssertions;
 using MediatR;
@@ -94,6 +95,7 @@ public class AgentContextPropagationBehaviorTests
     {
         return new AgentContextPropagationBehavior<TRequest, TResponse>(
             _executionContext.Object,
+            new NoOpAgentTelemetryAttribution(),
             NullLogger<AgentContextPropagationBehavior<TRequest, TResponse>>.Instance);
     }
 
@@ -105,6 +107,7 @@ public class AgentContextPropagationBehaviorTests
         var realContext = new AgentExecutionContext();
         var outerBehavior = new AgentContextPropagationBehavior<AgentScopedTestRequest, string>(
             realContext,
+            new NoOpAgentTelemetryAttribution(),
             NullLogger<AgentContextPropagationBehavior<AgentScopedTestRequest, string>>.Instance);
 
         // Act — outer initializes at turn 0, inner re-initializes at turn 1 (same agent/conv)
@@ -114,6 +117,7 @@ public class AgentContextPropagationBehaviorTests
             {
                 var innerBehavior = new AgentContextPropagationBehavior<AgentScopedTestRequest, string>(
                     realContext,
+                    new NoOpAgentTelemetryAttribution(),
                     NullLogger<AgentContextPropagationBehavior<AgentScopedTestRequest, string>>.Instance);
                 return await innerBehavior.Handle(
                     new AgentScopedTestRequest("agent-1", "conv-1", 1),
@@ -134,6 +138,7 @@ public class AgentContextPropagationBehaviorTests
         var realContext = new AgentExecutionContext();
         var outerBehavior = new AgentContextPropagationBehavior<AgentScopedTestRequest, string>(
             realContext,
+            new NoOpAgentTelemetryAttribution(),
             NullLogger<AgentContextPropagationBehavior<AgentScopedTestRequest, string>>.Instance);
 
         // Act — outer initializes conv-1, inner tries conv-2 → scope conflict
@@ -143,6 +148,7 @@ public class AgentContextPropagationBehaviorTests
             {
                 var innerBehavior = new AgentContextPropagationBehavior<AgentScopedTestRequest, string>(
                     realContext,
+                    new NoOpAgentTelemetryAttribution(),
                     NullLogger<AgentContextPropagationBehavior<AgentScopedTestRequest, string>>.Instance);
                 return await innerBehavior.Handle(
                     new AgentScopedTestRequest("agent-1", "conv-2", 1),
@@ -165,6 +171,7 @@ public class AgentContextPropagationBehaviorTests
         var realContext = new AgentExecutionContext();
         var outerBehavior = new AgentContextPropagationBehavior<NonAgentRequest, string>(
             realContext,
+            new NoOpAgentTelemetryAttribution(),
             NullLogger<AgentContextPropagationBehavior<NonAgentRequest, string>>.Instance);
 
         // Act — outer passes through (not IAgentScopedRequest), inner initializes once
@@ -174,6 +181,7 @@ public class AgentContextPropagationBehaviorTests
             {
                 var innerBehavior = new AgentContextPropagationBehavior<AgentScopedTestRequest, string>(
                     realContext,
+                    new NoOpAgentTelemetryAttribution(),
                     NullLogger<AgentContextPropagationBehavior<AgentScopedTestRequest, string>>.Instance);
                 return await innerBehavior.Handle(
                     new AgentScopedTestRequest("agent-1", "conv-1", 1),

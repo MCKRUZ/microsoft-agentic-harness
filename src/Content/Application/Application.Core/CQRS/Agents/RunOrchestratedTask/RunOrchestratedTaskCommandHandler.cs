@@ -27,6 +27,7 @@ public class RunOrchestratedTaskCommandHandler : IRequestHandler<RunOrchestrated
 	private readonly IServiceScopeFactory _scopeFactory;
 	private readonly IAgentExecutionContext _executionContext;
 	private readonly IToolCallAdmissionPipeline _admissionPipeline;
+	private readonly Application.AI.Common.Interfaces.Telemetry.IAgentTelemetryAttribution _attribution;
 	private readonly ILogger<RunOrchestratedTaskCommandHandler> _logger;
 
 	public RunOrchestratedTaskCommandHandler(
@@ -34,12 +35,14 @@ public class RunOrchestratedTaskCommandHandler : IRequestHandler<RunOrchestrated
 		IServiceScopeFactory scopeFactory,
 		IAgentExecutionContext executionContext,
 		IToolCallAdmissionPipeline admissionPipeline,
+		Application.AI.Common.Interfaces.Telemetry.IAgentTelemetryAttribution attribution,
 		ILogger<RunOrchestratedTaskCommandHandler> logger)
 	{
 		_agentFactory = agentFactory;
 		_scopeFactory = scopeFactory;
 		_executionContext = executionContext;
 		_admissionPipeline = admissionPipeline;
+		_attribution = attribution;
 		_logger = logger;
 	}
 
@@ -56,6 +59,18 @@ public class RunOrchestratedTaskCommandHandler : IRequestHandler<RunOrchestrated
 			// conversation — and can be halted by the loop guard for calls it never made. This handler
 			// previously never armed the loop guard at all, so it never needed the reset either.
 			_admissionPipeline.Reset();
+
+			// Opened before the orchestrator is built, not after. Agent construction loads skills,
+			// connects MCP clients and resolves tools — all of which emit spans, and all of which would
+			// carry no attribution and be dropped if this started later. Only the orchestrator name and
+			// conversation id are needed, and both are available here.
+			//
+			// This is published here rather than by AgentContextPropagationBehavior because this command
+			// is not IAgentScopedRequest, so the behavior never runs for it — the same reason the
+			// execution-context Initialize below is hand-rolled. Without it a tenant would see every
+			// sub-agent but not the orchestrator that drove them.
+			using var attribution = _attribution.BeginTurn(
+				request.OrchestratorName, request.ConversationId);
 
 			// Phase 1: Create orchestrator and get task decomposition
 			var agentCatalog = BuildAgentCatalog(request.AvailableAgents);

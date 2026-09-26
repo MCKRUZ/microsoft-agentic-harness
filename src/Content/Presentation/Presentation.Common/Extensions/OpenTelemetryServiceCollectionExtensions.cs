@@ -70,8 +70,7 @@ public static class OpenTelemetryServiceCollectionExtensions
         services.AddSingleton(resourceBuilder);
 
         var entryAssemblyName = Assembly.GetEntryAssembly()?.GetName().Name ?? "UnknownService";
-        var isWebProject = appConfig.Observability.WebTelemetryProjects
-            .Contains(entryAssemblyName, StringComparer.OrdinalIgnoreCase);
+        var isWebProject = appConfig.Observability.IsWebTelemetryHost(entryAssemblyName);
 
         if (isWebProject)
             services.AddWebTelemetry(appConfig);
@@ -129,6 +128,10 @@ public static class OpenTelemetryServiceCollectionExtensions
             });
 
         services.AddOpenTelemetry()
+            // Agent 365 trace export. No-op unless Observability:Exporters:Agent365:Enabled is set,
+            // and narrowed to that single target so it cannot duplicate the exporters and
+            // instrumentation the ITelemetryConfigurator chain below already registers.
+            .AddAgent365Exporter(appConfig)
             .WithTracing(builder =>
             {
                 // Base instrumentation + exporters configured pre-build
@@ -354,8 +357,15 @@ public static class OpenTelemetryServiceCollectionExtensions
     /// Configures the base tracer provider with the harness activity source,
     /// always-on sampling, and ASP.NET Core + HTTP client instrumentation.
     /// The <see cref="ResourceBuilder"/> is resolved from DI via
-    /// <see cref="TracerProviderBuilderExtensions.ConfigureResource"/>.
+    /// <c>TracerProviderBuilderExtensions.ConfigureResource</c>.
     /// </summary>
+    /// <remarks>
+    /// Deliberately plain text rather than a <c>cref</c>. Adding the Microsoft OpenTelemetry distro
+    /// package put a second set of tracer-provider builder extensions in scope, after which neither
+    /// the short nor the fully-qualified <c>cref</c> to <c>ConfigureResource</c> resolves and the
+    /// documentation build fails with CS1574. The referenced method is unchanged; only the ability to
+    /// link to it is.
+    /// </remarks>
     private static void ConfigureTracerProviderBuilder(TracerProviderBuilder builder, AppConfig appConfig)
     {
         builder

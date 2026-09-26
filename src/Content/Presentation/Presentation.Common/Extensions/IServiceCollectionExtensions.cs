@@ -338,6 +338,18 @@ public static class IServiceCollectionExtensions
             .ValidateFluentValidation<RemoteMemoryConfig, RemoteMemoryConfigValidator>()
             .ValidateOnStart();
 
+        // Agent 365 trace export (agent identity ids, S2S endpoint choice, offline store-and-forward).
+        // Rules are conditional on Enabled and the class defaults satisfy them, so hosts that omit the
+        // section keep booting. Failing closed matters unusually much here: every mistake this
+        // validator catches is otherwise SILENT. A non-GUID agent id does not error — the agent simply
+        // never appears, or appears unidentified, in the tenant's dashboards; and opting into offline
+        // storage without naming a directory would inherit the SDK's per-user temp path for spans that
+        // can carry prompts and tool arguments.
+        services.AddOptions<Agent365ExporterConfig>()
+            .Bind(configuration.GetSection("AppConfig:Observability:Exporters:Agent365"))
+            .ValidateFluentValidation<Agent365ExporterConfig, Agent365ExporterConfigValidator>()
+            .ValidateOnStart();
+
         return services;
     }
 

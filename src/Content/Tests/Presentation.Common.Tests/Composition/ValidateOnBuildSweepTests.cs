@@ -35,6 +35,7 @@ namespace Presentation.Common.Tests.Composition;
 /// configurations, closing the gap that #251's first fix left.
 /// </para>
 /// </remarks>
+[Collection(GlobalPropagatorCollection.Name)]
 public sealed class ValidateOnBuildSweepTests
 {
     /// <summary>
@@ -68,6 +69,70 @@ public sealed class ValidateOnBuildSweepTests
             .Build();
 
         BuildAndValidate(configuration);
+    }
+
+    /// <summary>
+    /// Agent 365-enabled configuration: the exporter's own services are registered by the vendor
+    /// distro only when the feature is on, so neither of the facts above ever constructs them.
+    /// Validates that the graph is still constructible with agent-activity export enabled.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The ids are arbitrary but must be GUIDs: <c>Agent365ExporterConfigValidator</c> runs on start
+    /// and refuses a non-GUID agent or tenant id, so a placeholder string here would fail this test
+    /// for the wrong reason.
+    /// </para>
+    /// <para>
+    /// <strong>The <c>WebTelemetryProjects</c> entry is what makes this test do anything.</strong>
+    /// <c>AddOpenTelemetry</c> branches on whether the entry assembly is listed there, and in a test
+    /// process the entry assembly is the test host — so without this the composition takes the
+    /// standalone path, never reaches the Agent 365 wiring, and the vendor pipeline this test exists to
+    /// construct is never built. The first version of this test omitted it and passed vacuously.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void ProductionCompositionRoot_Agent365Enabled_BuildsWithValidateOnBuild()
+    {
+        var entryAssembly = System.Reflection.Assembly.GetEntryAssembly()?.GetName().Name
+            ?? "UnknownService";
+
+        // Enabling the exporter swaps the process-wide propagator, so it is captured and restored —
+        // otherwise this test changes context propagation for every later test in the assembly.
+        var originalPropagator = OpenTelemetry.Context.Propagation.Propagators.DefaultTextMapPropagator;
+
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                { "AppConfig:Observability:WebTelemetryProjects:0", entryAssembly },
+                { "AppConfig:Observability:Exporters:Agent365:Enabled", "true" },
+                {
+                    "AppConfig:Observability:Exporters:Agent365:AgentAppId",
+                    "11111111-1111-1111-1111-111111111111"
+                },
+                {
+                    "AppConfig:Observability:Exporters:Agent365:TenantId",
+                    "22222222-2222-2222-2222-222222222222"
+                },
+            })
+            .Build();
+
+        try
+        {
+            BuildAndValidate(configuration);
+
+            // Proves this test is not vacuous. Swapping the propagator is a side effect only the
+            // Agent 365 wiring performs, so observing it is evidence the composition actually reached
+            // that wiring and built the vendor pipeline — rather than silently taking the standalone
+            // telemetry path and validating a graph with no Agent 365 services in it, which is exactly
+            // what the first version of this test did.
+            var fields = OpenTelemetry.Context.Propagation.Propagators.DefaultTextMapPropagator.Fields;
+            Assert.NotNull(fields);
+            Assert.DoesNotContain("baggage", fields);
+        }
+        finally
+        {
+            OpenTelemetry.Sdk.SetDefaultTextMapPropagator(originalPropagator);
+        }
     }
 
     private static void BuildAndValidate(IConfiguration configuration)

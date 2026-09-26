@@ -735,6 +735,83 @@
                         </div>
                     </div>
 
+                    <h2 id="agent-365-identity">Agent identity in the tenant directory (Microsoft Agent 365)</h2>
+                    <p>
+                        Everything above concerns identities the harness <em>consumes</em>. This section is about the
+                        agent having an identity of its own in the organisation's directory. Without one, an agent is a
+                        non-human actor the tenant cannot see, govern with Conditional Access, or attest to — what
+                        Microsoft calls a <strong>shadow agent</strong>. The harness's optional
+                        <strong>Microsoft Agent 365</strong> integration gives each agent a first-class Microsoft Entra
+                        <em>agent identity</em> and reports its activity to Defender, Purview and the Microsoft 365
+                        admin center. It is off by default.
+                    </p>
+                    <p>
+                        <strong>Three directory objects, and only two matter here.</strong> A
+                        <strong>blueprint</strong> is a template describing a <em>kind</em> of agent; it holds the
+                        credentials, the inheritable permissions and the verified publisher. An
+                        <strong>agent identity</strong> is what one individual agent runs as, with its own object id
+                        and permission assignments. One blueprint can mint many identities. A third object — the
+                        agent's own user account, giving it a mailbox and Teams presence — is Frontier-preview only and
+                        out of scope for the harness.
+                    </p>
+                    <p>
+                        <strong>A blueprint is a credential boundary.</strong> Credentials live on the blueprint, not
+                        on the identity, so every agent minted from a blueprint shares them. That is the security-
+                        relevant consequence: group only agents that may safely share credentials and baseline
+                        permissions onto one blueprint. The upside is that an administrator can apply a Conditional
+                        Access policy, revoke a grant, or disable every agent of that kind in a single operation.
+                    </p>
+                    <p>
+                        The blueprint's supported credential types — federated identity credentials, certificates and
+                        keys, client secrets, and federation to an Azure managed identity — are exactly the hierarchy
+                        the harness already uses elsewhere, so the exporter resolves its token through the same
+                        <code>AzureCredentialFactory</code> path as every other Entra integration rather than
+                        introducing a second one. For an agent hosted on Azure, federating the blueprint to a managed
+                        identity means no stored secret at all, which is the recommended shape.
+                    </p>
+                    <p>
+                        <strong>Every agent identity and blueprint requires a sponsor</strong> — the named human
+                        accountable for that agent's purpose and lifecycle. Sponsors are who attestation reviews ask
+                        about retention, and who a security team contacts during an incident. Sign-in and audit logs
+                        distinguish the blueprint, the agent identity and (where present) the agent's user account, so
+                        a reviewer can tell the credential source from the acting identity from the token subject.
+                    </p>
+                    <p>
+                        <strong>Execution mode decides who the agent acts as.</strong> Service-to-service means it acts
+                        as itself using application permissions — the mode for scheduled and unattended work, and the
+                        one the harness's exporter uses. On-behalf-of means it acts for a signed-in human using
+                        delegated permissions, where the user is the token subject and the agent is the actor.
+                        Declaring a permission on a blueprint does <em>not</em> grant it; an administrator must consent.
+                    </p>
+                    <div class="callout callout-warn">
+                        <span class="callout-icon">!</span>
+                        <div class="callout-body">
+                            <div class="callout-title">Registration is deliberately not automated</div>
+                            <p style="margin: 0">
+                                Creating a blueprint and its identities writes to the Entra directory, requires a
+                                Global Administrator, and requires naming a sponsor. A running agent must never hold
+                                those privileges, so the harness does none of it: it authenticates <em>as</em> an
+                                already-provisioned identity and emits telemetry under it. Provisioning is an operator
+                                step, performed with Microsoft's own CLI and skills. Setup steps and the two failure
+                                modes that look like success are in
+                                <a href="../10-observability.html">Onboarding chapter 10</a>.
+                            </p>
+                        </div>
+                    </div>
+                    <div class="callout callout-info">
+                        <span class="callout-icon">i</span>
+                        <div class="callout-body">
+                            <div class="callout-title">This complements the harness's own gates; it does not replace them</div>
+                            <p style="margin: 0">
+                                Agent 365 export is read-only — it publishes what the agent did. It does not currently
+                                take instructions back from Defender or Purview, so nothing here can override the
+                                harness's tool permissions, capability envelopes or autonomy tiers. Reconciling the two
+                                authorities, should enforcement features be adopted later, is deliberately left as a
+                                separate design decision rather than assumed.
+                            </p>
+                        </div>
+                    </div>
+
                     <h2 id="what-this-covers">What this layer does and doesn't cover</h2>
                     <p>
                         Identity is layer 1, and its job is narrow on purpose: it proves <em>who</em> is calling and

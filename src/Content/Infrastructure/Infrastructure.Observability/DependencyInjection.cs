@@ -44,6 +44,25 @@ public static class DependencyInjection
         // Observability pipeline configurator — adds processors and exporters at Order 300
         services.AddSingleton<ITelemetryConfigurator, ObservabilityTelemetryConfigurator>();
 
+        // Agent 365 turn attribution. Registered unconditionally rather than behind the Enabled flag,
+        // because it reads that flag itself and returns a shared no-op scope when it is off — so a
+        // host that has not opted in pays nothing, and there is no second place for the flag to be
+        // consulted and get it wrong. Registered with AddSingleton (not TryAdd) so it wins over
+        // Application.AI.Common's no-op default regardless of which layer registers first: the last
+        // registration is the one GetRequiredService resolves.
+        services.AddSingleton<Application.AI.Common.Interfaces.Telemetry.IAgentTelemetryAttribution,
+            Agent365.Agent365TelemetryAttribution>();
+
+        // Refuses to boot a host that enables Agent 365 export where the exporter cannot be wired.
+        // Registered unconditionally and no-ops when the feature is off, because its whole purpose is
+        // to catch a host that turned the feature on — a registration gated on the same flag it is
+        // checking would be the thing most likely to be missing.
+        // AddHostedService, matching the ~15 sibling registrations across the Infrastructure.AI DI
+        // partials. It uses TryAddEnumerable, so a composition that reaches this method twice registers
+        // the validator once — a plain AddSingleton would start it twice and duplicate both its log line
+        // and its throw path.
+        services.AddHostedService<Agent365.Agent365StartupValidator>();
+
         // #457: the one ILocalLogRedactor implementation, closing the parity gap between the OTel
         // logging bridge's own redaction and every local ILoggerProvider sink. Application.Common's
         // ConfigureLogging resolves this optionally, so registering it here is what turns local-sink
