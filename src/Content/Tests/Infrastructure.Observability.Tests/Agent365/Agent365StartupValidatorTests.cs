@@ -3,7 +3,6 @@ using Application.Common.Interfaces.Common;
 using Domain.Common.Config;
 using FluentAssertions;
 using Infrastructure.Observability.Agent365;
-using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Moq;
@@ -46,28 +45,16 @@ public class Agent365StartupValidatorTests
 
     private static Agent365StartupValidator Build(
         Action<AppConfig> configure,
-        IOwnerOnlyDirectoryCreator? directoryCreator = null,
-        ILogger<Agent365StartupValidator>? logger = null)
+        IOwnerOnlyDirectoryCreator? directoryCreator = null)
     {
         var appConfig = new AppConfig();
         configure(appConfig);
 
         return new Agent365StartupValidator(
             Mock.Of<IOptionsMonitor<AppConfig>>(m => m.CurrentValue == appConfig),
-            logger ?? NullLogger<Agent365StartupValidator>.Instance,
+            NullLogger<Agent365StartupValidator>.Instance,
             directoryCreator ?? Mock.Of<IOwnerOnlyDirectoryCreator>());
     }
-
-    /// <summary>Verifies a warning was logged, regardless of the exact message-template arguments.</summary>
-    private static void VerifyWarningLogged(Mock<ILogger<Agent365StartupValidator>> logger, Times times)
-        => logger.Verify(
-            l => l.Log(
-                LogLevel.Warning,
-                It.IsAny<EventId>(),
-                It.Is<It.IsAnyType>((v, t) => true),
-                null,
-                It.IsAny<Func<It.IsAnyType, Exception?, string>>()),
-            times);
 
     private static void ConfigureListedAndEnabled(AppConfig c)
     {
@@ -226,42 +213,5 @@ public class Agent365StartupValidatorTests
         directoryCreator.Verify(
             d => d.Create(It.IsAny<string>(), It.IsAny<Microsoft.Extensions.Logging.ILogger?>()),
             Times.Never);
-    }
-
-    // --- Baggage-egress cross-check (#738 security review) ------------------------
-
-    [Fact]
-    public async Task PropagateBaggageTrueWithAgent365Enabled_LogsAWarning()
-    {
-        // A security review of #738 found this combination was silently allowed after this diff —
-        // before it, enabling Agent 365 made baggage egress structurally impossible; PropagateBaggage
-        // now re-opens it for any host that sets it, with no signal that Agent 365 attribution is now
-        // riding along. Not a boot refusal (the operator did ask for baggage propagation) — a warning,
-        // so the combination can't go quiet again.
-        var logger = new Mock<ILogger<Agent365StartupValidator>>();
-        var validator = Build(
-            c =>
-            {
-                ConfigureListedAndEnabled(c);
-                c.Observability.PropagateBaggage = true;
-            },
-            logger: logger.Object);
-
-        await validator.StartAsync(CancellationToken.None);
-
-        VerifyWarningLogged(logger, Times.Once());
-    }
-
-    [Fact]
-    public async Task PropagateBaggageFalseWithAgent365Enabled_LogsNoWarning()
-    {
-        // The steady state — nothing to warn about when the two settings are not in the risky
-        // combination.
-        var logger = new Mock<ILogger<Agent365StartupValidator>>();
-        var validator = Build(ConfigureListedAndEnabled, logger: logger.Object);
-
-        await validator.StartAsync(CancellationToken.None);
-
-        VerifyWarningLogged(logger, Times.Never());
     }
 }

@@ -65,7 +65,6 @@ public sealed class Agent365StartupValidator : IHostedService
         }
 
         ValidateWebTelemetryHost(observability);
-        WarnIfBaggageEgressReopened(observability, config);
         EnforceOfflineStorageDirectory(config);
         LogEnabled(config);
 
@@ -99,45 +98,6 @@ public sealed class Agent365StartupValidator : IHostedService
                 + $"silently. Add '{entryAssembly}' to Observability:WebTelemetryProjects, or set "
                 + "Observability:Exporters:Agent365:Enabled to false for this host.");
         }
-    }
-
-    /// <summary>
-    /// Warns — does not refuse to boot — when this host has deliberately opted into both Agent 365
-    /// export and cross-process baggage propagation together.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// The baggage-egress re-assertion that used to live here moved to its own
-    /// <c>BaggageEgressStartupValidator</c> (#738's altitude pass). That policy is host-wide, not an
-    /// Agent-365 concern — nesting the check behind this validator's Agent-365-specific early return
-    /// meant a host with Agent 365 disabled got none of the protection its own doc comment promises.
-    /// See that validator's remarks for the reasoning; it is registered unconditionally, gated only on
-    /// the policy flag itself.
-    /// </para>
-    /// <para>
-    /// The one combination that policy's re-assertion cannot see: a host that DELIBERATELY set
-    /// <c>PropagateBaggage</c> to <c>true</c> (so <c>BaggageEgressStartupValidator</c> has nothing to
-    /// assert) while also running Agent 365 — which silently re-opens the exact egress this feature's
-    /// baggage suppression used to make structurally impossible. Not a boot refusal (the operator did
-    /// ask for baggage propagation), but silent is the wrong default for a combination this much worse
-    /// than either setting alone — a security review of #738 flagged the silence itself.
-    /// </para>
-    /// </remarks>
-    private void WarnIfBaggageEgressReopened(ObservabilityConfig observability, Agent365ExporterConfig config)
-    {
-        if (!observability.PropagateBaggage)
-        {
-            return;
-        }
-
-        _logger.LogWarning(
-            "Agent 365 export and Observability:PropagateBaggage are BOTH enabled. Agent 365 "
-            + "attribution (tenant {TenantId}, agent {AgentAppId}, blueprint and conversation ids) "
-            + "rides baggage, so it will now be serialised onto every outbound HTTP call this host "
-            + "makes — LLM providers, third-party MCP servers, web-fetch targets. Set "
-            + "PropagateBaggage to false unless this egress is a reviewed, intended choice.",
-            config.TenantId,
-            config.AgentAppId);
     }
 
     /// <summary>

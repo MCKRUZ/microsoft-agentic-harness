@@ -1,10 +1,11 @@
 using Domain.Common.Config;
 using FluentAssertions;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Moq;
 using OpenTelemetry;
 using OpenTelemetry.Context.Propagation;
-using System.Diagnostics;
 using Xunit;
 
 namespace Infrastructure.Observability.Tests;
@@ -40,7 +41,11 @@ public class BaggageEgressStartupValidatorTests : IDisposable
     public BaggageEgressStartupValidatorTests()
     {
         Sdk.SetDefaultTextMapPropagator(new TraceContextPropagator());
-        System.Diagnostics.DistributedContextPropagator.Current = new TraceContextOnlyActivityPropagator();
+
+        // The real propagator, not a hand-rolled stand-in — it now lives in this same project (moved
+        // out of Presentation.Common by #738's second altitude pass), so there is no assembly-boundary
+        // reason left to reimplement its "trace-context-only" baseline here.
+        System.Diagnostics.DistributedContextPropagator.Current = new BaggageSuppressingDistributedContextPropagator();
     }
 
     /// <summary>Restores the process-global propagators so a later test never observes this one's swap.</summary>
@@ -58,46 +63,28 @@ public class BaggageEgressStartupValidatorTests : IDisposable
         System.Diagnostics.DistributedContextPropagator.Current =
             System.Diagnostics.DistributedContextPropagator.CreateDefaultPropagator();
 
-    /// <summary>
-    /// A minimal trace-context-only baseline for this suite's constructor. Not the real
-    /// <c>BaggageSuppressingDistributedContextPropagator</c> (that type is internal to
-    /// Presentation.Common, a different assembly) — just enough to guarantee <c>Fields</c> excludes
-    /// "baggage", which is all this validator's check inspects. Measured, not assumed: the BCL's own
-    /// <c>DistributedContextPropagator.CreateNoOutputPropagator()</c> was tried first and its
-    /// <c>Fields</c> turned out to still list "baggage" despite injecting/extracting nothing.
-    /// </summary>
-    private sealed class TraceContextOnlyActivityPropagator : System.Diagnostics.DistributedContextPropagator
-    {
-        public override IReadOnlyCollection<string> Fields { get; } = ["traceparent", "tracestate"];
-
-        public override void Inject(Activity? activity, object? carrier, PropagatorSetterCallback? setter)
-        {
-        }
-
-        public override void ExtractTraceIdAndState(
-            object? carrier,
-            PropagatorGetterCallback? getter,
-            out string? traceId,
-            out string? traceState)
-        {
-            traceId = null;
-            traceState = null;
-        }
-
-        public override IEnumerable<KeyValuePair<string, string?>>? ExtractBaggage(
-            object? carrier,
-            PropagatorGetterCallback? getter)
-            => null;
-    }
-
-    private static BaggageEgressStartupValidator Build(Action<AppConfig>? configure = null)
+    private static BaggageEgressStartupValidator Build(
+        Action<AppConfig>? configure = null,
+        ILogger<BaggageEgressStartupValidator>? logger = null)
     {
         var appConfig = new AppConfig();
         configure?.Invoke(appConfig);
 
         return new BaggageEgressStartupValidator(
-            Mock.Of<IOptionsMonitor<AppConfig>>(m => m.CurrentValue == appConfig));
+            Mock.Of<IOptionsMonitor<AppConfig>>(m => m.CurrentValue == appConfig),
+            logger ?? NullLogger<BaggageEgressStartupValidator>.Instance);
     }
+
+    /// <summary>Verifies a warning was logged, regardless of the exact message-template arguments.</summary>
+    private static void VerifyWarningLogged(Mock<ILogger<BaggageEgressStartupValidator>> logger, Times times)
+        => logger.Verify(
+            l => l.Log(
+                LogLevel.Warning,
+                It.IsAny<EventId>(),
+                It.Is<It.IsAnyType>((v, t) => true),
+                null,
+                It.IsAny<Func<It.IsAnyType, Exception?, string>>()),
+            times);
 
     [Fact]
     public async Task DefaultConfig_WithTraceContextOnlyPropagator_DoesNotThrow()
@@ -173,5 +160,55 @@ public class BaggageEgressStartupValidatorTests : IDisposable
         var act = () => validator.StartAsync(CancellationToken.None);
 
         await act.Should().NotThrowAsync();
+    }
+
+    // --- The opted-in warning (moved here from Agent365StartupValidator by #738's second altitude pass) --
+
+    [Fact]
+    public async Task PropagateBaggageTrue_LogsAWarning_EvenWithNoAgent365Config()
+    {
+        // The general case this warning exists for: this harness's own identity attribution
+        // (AgUiRunHandler, ConversationOrchestrator, ExecuteAgentTurnCommandHandler) writes to Activity
+        // baggage with zero Agent 365 dependency, so the warning must fire on the flag alone — nesting
+        // it behind Agent 365's own Enabled flag (the earlier cut) left every non-Agent-365 host silent.
+        var logger = new Mock<ILogger<BaggageEgressStartupValidator>>();
+        var validator = Build(c => c.Observability.PropagateBaggage = true, logger.Object);
+
+        await validator.StartAsync(CancellationToken.None);
+
+        VerifyWarningLogged(logger, Times.Once());
+    }
+
+    [Fact]
+    public async Task PropagateBaggageTrueWithAgent365Enabled_LogsAWarningNamingTenantAndAgent()
+    {
+        // The additive case: Agent 365's own attribution rides the same egress, so the warning names it
+        // specifically when that exporter is also enabled — but Agent 365 is a detail, not the gate.
+        var logger = new Mock<ILogger<BaggageEgressStartupValidator>>();
+        var validator = Build(
+            c =>
+            {
+                c.Observability.PropagateBaggage = true;
+                c.Observability.Exporters.Agent365.Enabled = true;
+                c.Observability.Exporters.Agent365.AgentAppId = "11111111-1111-1111-1111-111111111111";
+                c.Observability.Exporters.Agent365.TenantId = "22222222-2222-2222-2222-222222222222";
+            },
+            logger.Object);
+
+        await validator.StartAsync(CancellationToken.None);
+
+        VerifyWarningLogged(logger, Times.Once());
+    }
+
+    [Fact]
+    public async Task PropagateBaggageFalse_LogsNoWarning()
+    {
+        // The steady state — nothing to warn about when baggage is suppressed as expected.
+        var logger = new Mock<ILogger<BaggageEgressStartupValidator>>();
+        var validator = Build(logger: logger.Object);
+
+        await validator.StartAsync(CancellationToken.None);
+
+        VerifyWarningLogged(logger, Times.Never());
     }
 }

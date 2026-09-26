@@ -4,6 +4,7 @@ using Domain.AI.Telemetry.Redaction;
 using Domain.Common.Config;
 using Domain.Common.Config.Observability;
 using Domain.Common.Telemetry;
+using Infrastructure.Observability;
 using Infrastructure.Observability.Processors;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;

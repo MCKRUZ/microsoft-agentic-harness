@@ -104,6 +104,13 @@ public sealed class Agent365TelemetryAttribution : IAgentTelemetryAttribution
     private readonly ResolvedIdentity? _hostDefault;
     private readonly Dictionary<string, ResolvedIdentity> _overrides;
 
+    // config.AgentName is exactly as construction-time-invariant as _canonicalTenantId and _hostDefault —
+    // precomputed here for the same reason: BeginTurn's hot-path discipline (see the class remark above
+    // this field) applies equally to this value, which the first cut of #738's bound left recomputing on
+    // every call. Only bounded once, never re-truncated per turn; null when AgentName is not configured,
+    // matching the blank-check BeginTurn already applies before using it.
+    private readonly string? _boundedConfiguredAgentName;
+
     /// <summary>
     /// Initializes a new instance of the <see cref="Agent365TelemetryAttribution"/> class.
     /// </summary>
@@ -127,6 +134,10 @@ public sealed class Agent365TelemetryAttribution : IAgentTelemetryAttribution
             : new ResolvedIdentity(
                 GuidId.Canonicalize(_config.AgentAppId)!,
                 CanonicalizeBlueprint(_config.BlueprintId));
+
+        _boundedConfiguredAgentName = string.IsNullOrWhiteSpace(_config.AgentName)
+            ? null
+            : Bound(_config.AgentName);
 
         // Same comparer Agents itself enforces in its setter — one lookup here has to agree with the one
         // FindOverride used to do, or an agent id that matched there would silently stop matching here.
@@ -189,10 +200,12 @@ public sealed class Agent365TelemetryAttribution : IAgentTelemetryAttribution
         // Bounded regardless of source (#738) — an operator-configured AgentName is trusted more than
         // a caller-supplied agentId, but an absurdly long string is equally worth truncating in either
         // case, and treating them differently here would be a distinction with no security benefit.
-        var agentName = Bound(
-            isHostDefault && !string.IsNullOrWhiteSpace(config.AgentName)
-                ? config.AgentName
-                : agentId);
+        // The configured-name branch reads the precomputed _boundedConfiguredAgentName rather than
+        // re-bounding config.AgentName on every call — only the agentId fallback varies per caller and
+        // still needs a fresh Bound() call.
+        var agentName = isHostDefault && _boundedConfiguredAgentName is not null
+            ? _boundedConfiguredAgentName
+            : Bound(agentId);
 
         var builder = new BaggageBuilder()
             .TenantId(_canonicalTenantId)

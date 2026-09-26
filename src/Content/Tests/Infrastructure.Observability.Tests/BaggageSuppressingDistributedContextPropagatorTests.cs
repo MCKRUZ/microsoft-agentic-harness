@@ -1,9 +1,8 @@
 using System.Diagnostics;
 using FluentAssertions;
-using Presentation.Common.Extensions;
 using Xunit;
 
-namespace Presentation.Common.Tests.Extensions;
+namespace Infrastructure.Observability.Tests;
 
 /// <summary>
 /// Tests for <see cref="BaggageSuppressingDistributedContextPropagator"/>, which suppresses the

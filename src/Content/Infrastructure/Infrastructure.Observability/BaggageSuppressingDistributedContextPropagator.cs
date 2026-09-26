@@ -1,7 +1,7 @@
 using Domain.Common.Config.Observability;
 using System.Diagnostics;
 
-namespace Presentation.Common.Extensions;
+namespace Infrastructure.Observability;
 
 /// <summary>
 /// A <see cref="DistributedContextPropagator"/> that carries trace context (<c>traceparent</c>/
@@ -38,16 +38,42 @@ namespace Presentation.Common.Extensions;
 /// <c>TraceContextPropagator</c> returns for its half of this policy.
 /// </para>
 /// <para>
+/// Public, and living in <c>Infrastructure.Observability</c> rather than <c>Presentation.Common</c>
+/// (where it was first written, alongside its only initial caller): its only real dependency is the
+/// BCL's own <c>System.Diagnostics</c>, not anything Presentation-specific, and this repo's own
+/// <c>clean-architecture.md</c> places a type with that dependency shape in Infrastructure — beside its
+/// sibling <see cref="BaggageEgressStartupValidator"/>, which already cross-references it. Found by a
+/// second altitude pass on #738's own review. Only the composition-root registration call in
+/// <c>OpenTelemetryServiceCollectionExtensions.AddOpenTelemetry</c> is legitimately Presentation work.
+/// </para>
+/// <para>
 /// Field-name detection has the same limit as the OpenTelemetry-side check this type parallels:
 /// it recognises the runtime's own <c>baggage</c>/<c>Correlation-Context</c> header names, not a
 /// differently-named baggage-carrying propagator a consumer might register (a Jaeger-style
-/// <c>uberctx-*</c> propagator, for example) — see <see cref="Infrastructure.Observability.BaggageEgressStartupValidator"/>'s
-/// own remarks for the equivalent OTel-side caveat.
+/// <c>uberctx-*</c> propagator, for example) — see <see cref="BaggageEgressStartupValidator"/>'s own
+/// remarks for the equivalent OTel-side caveat.
 /// </para>
 /// </remarks>
-internal sealed class BaggageSuppressingDistributedContextPropagator : DistributedContextPropagator
+public sealed class BaggageSuppressingDistributedContextPropagator : DistributedContextPropagator
 {
     private static readonly string[] SuppressedFieldNames = ["baggage", "Correlation-Context"];
+
+    // A static, no-capture delegate — allocated once per process, not once per Inject call. Unpacks the
+    // per-call carrier/setter pair from the InjectState the real propagator is handed as its own
+    // "carrier" argument, so the only per-call allocation left is that one small state object, not a
+    // closure-plus-delegate pair. DistributedContextPropagator.Current.Inject runs on every outbound
+    // HttpClient call once this propagator is installed, so this is a genuine hot path — found by
+    // #738's own efficiency review.
+    private static readonly PropagatorSetterCallback FilteringSetter = (state, key, value) =>
+    {
+        if (Array.IndexOf(SuppressedFieldNames, key) >= 0)
+        {
+            return;
+        }
+
+        var injectState = (InjectState)state!;
+        injectState.Setter(injectState.Carrier, key, value);
+    };
 
     private readonly DistributedContextPropagator _inner = CreateDefaultPropagator();
 
@@ -62,15 +88,7 @@ internal sealed class BaggageSuppressingDistributedContextPropagator : Distribut
             return;
         }
 
-        _inner.Inject(activity, carrier, (innerCarrier, key, value) =>
-        {
-            if (Array.IndexOf(SuppressedFieldNames, key) >= 0)
-            {
-                return;
-            }
-
-            setter(innerCarrier, key, value);
-        });
+        _inner.Inject(activity, new InjectState(carrier, setter), FilteringSetter);
     }
 
     /// <inheritdoc />
@@ -86,4 +104,12 @@ internal sealed class BaggageSuppressingDistributedContextPropagator : Distribut
         object? carrier,
         PropagatorGetterCallback? getter)
         => null;
+
+    /// <summary>Carries one <see cref="Inject"/> call's real carrier and setter through <see cref="_inner"/>.</summary>
+    private sealed class InjectState(object? carrier, PropagatorSetterCallback setter)
+    {
+        public object? Carrier { get; } = carrier;
+
+        public PropagatorSetterCallback Setter { get; } = setter;
+    }
 }
