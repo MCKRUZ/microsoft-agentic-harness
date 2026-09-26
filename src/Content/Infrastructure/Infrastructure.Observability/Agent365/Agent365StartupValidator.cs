@@ -138,7 +138,8 @@ public sealed class Agent365StartupValidator : IHostedService
         {
             _directoryCreator.Create(config.OfflineStorageDirectory, _logger);
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        catch (Exception ex) when (
+            ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
         {
             throw new InvalidOperationException(
                 "Agent 365 offline storage is enabled "

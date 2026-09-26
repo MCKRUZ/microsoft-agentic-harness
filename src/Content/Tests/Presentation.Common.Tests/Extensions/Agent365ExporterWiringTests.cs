@@ -172,6 +172,31 @@ public class Agent365ExporterWiringTests : IDisposable
     }
 
     [Fact]
+    public void EnabledConfig_StillSuppressesBaggage_WithPropagateBaggageDefaultFalse()
+    {
+        // A second code-review round on #738 found no test exercised this exact combination through the
+        // real composition path: Agent 365 enabled AND PropagateBaggage left at its default (false).
+        // The two DefaultConfig_* tests above prove suppression with Agent 365 untouched;
+        // PropagateBaggageTrue_RestoresBaggagePropagation_EvenWithAgent365Enabled proves the opt-in with
+        // Agent 365 enabled. Neither proves the one combination this whole feature exists to secure:
+        // Agent 365's own tenant/agent/blueprint/conversation ids, suppressed, while the exporter that
+        // publishes them is actually wired and running.
+        var entryAssembly = System.Reflection.Assembly.GetEntryAssembly()?.GetName().Name
+            ?? "UnknownService";
+        var config = ConfigWithAgent365(enabled: true);
+        config.Observability.WebTelemetryProjects.Add(entryAssembly);
+        var services = BaseServices();
+
+        services.AddOpenTelemetry(config);
+
+        services.Should().Contain(d => IsAgent365Service(d), "the Agent 365 wiring must actually run");
+        var fields = OpenTelemetry.Context.Propagation.Propagators.DefaultTextMapPropagator.Fields;
+        fields.Should().NotContain("baggage", "OTel baggage must not leave the process by default");
+        var activityFields = System.Diagnostics.DistributedContextPropagator.Current.Fields;
+        activityFields.Should().NotContain("baggage", "Activity baggage must not leave the process by default");
+    }
+
+    [Fact]
     public void PropagateBaggageTrue_RestoresBaggagePropagation_EvenWithAgent365Enabled()
     {
         // The explicit opt-back-in: a host with a deliberate, reviewed reason to use cross-process

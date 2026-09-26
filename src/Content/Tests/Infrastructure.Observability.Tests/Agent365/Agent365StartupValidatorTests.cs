@@ -189,6 +189,36 @@ public class Agent365StartupValidatorTests
     }
 
     [Fact]
+    public async Task OfflineStorageDirectoryPathIsMalformed_AlsoThrowsNamingTheDirectory()
+    {
+        // A code-review round on #738 found the original catch clause listed only IOException and
+        // UnauthorizedAccessException — but Directory.CreateDirectory can also throw ArgumentException
+        // (invalid characters, reserved device names) or NotSupportedException (a colon mid-path on
+        // Windows) for a malformed operator-supplied path. Without this, those exceptions would escape
+        // as an opaque crash instead of the same clear boot refusal every other misconfiguration here
+        // produces. ArgumentException stands in for that whole class in this test.
+        var directoryCreator = new Mock<IOwnerOnlyDirectoryCreator>();
+        directoryCreator
+            .Setup(d => d.Create(It.IsAny<string>(), It.IsAny<Microsoft.Extensions.Logging.ILogger?>()))
+            .Throws(new ArgumentException("illegal characters in path"));
+
+        var validator = Build(
+            c =>
+            {
+                ConfigureListedAndEnabled(c);
+                c.Observability.Exporters.Agent365.EnableOfflineStorage = true;
+                c.Observability.Exporters.Agent365.OfflineStorageDirectory = "/var/spool/agent365";
+            },
+            directoryCreator.Object);
+
+        var act = () => validator.StartAsync(CancellationToken.None);
+
+        var thrown = await act.Should().ThrowAsync<InvalidOperationException>();
+        thrown.And.Message.Should().Contain("/var/spool/agent365");
+        thrown.And.InnerException.Should().BeOfType<ArgumentException>();
+    }
+
+    [Fact]
     public async Task OfflineStorageEnabledWithBlankDirectory_ThrowsBeforeCallingTheDirectoryCreator()
     {
         // Defense in depth against Agent365ExporterConfigValidator going unbound — this repo has a

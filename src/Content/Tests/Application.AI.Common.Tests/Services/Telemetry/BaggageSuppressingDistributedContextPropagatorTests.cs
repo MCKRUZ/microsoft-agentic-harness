@@ -1,8 +1,9 @@
 using System.Diagnostics;
+using Application.AI.Common.Services.Telemetry;
 using FluentAssertions;
 using Xunit;
 
-namespace Infrastructure.Observability.Tests;
+namespace Application.AI.Common.Tests.Services.Telemetry;
 
 /// <summary>
 /// Tests for <see cref="BaggageSuppressingDistributedContextPropagator"/>, which suppresses the

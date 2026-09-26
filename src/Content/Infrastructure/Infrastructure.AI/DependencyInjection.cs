@@ -103,10 +103,14 @@ public static partial class DependencyInjection
 
         // Owner-only directory creation — the internal OwnerOnlyDirectoryHelper's public DI-facing
         // seam for callers outside this assembly (Application.Core, Application.Common,
-        // Infrastructure.AI.RAG), which cannot see it directly (#671, #672, #673). No constructor
-        // dependencies (see the interface's own remarks on why), so this can never participate in an
-        // ILoggerFactory construction cycle regardless of what resolves it.
-        services.AddSingleton<IOwnerOnlyDirectoryCreator, Helpers.OwnerOnlyDirectoryCreator>();
+        // Infrastructure.AI.RAG, Infrastructure.Observability), which cannot see it directly (#671,
+        // #672, #673, #738). No constructor dependencies (see the interface's own remarks on why), so
+        // this can never participate in an ILoggerFactory construction cycle regardless of what
+        // resolves it. TryAdd, not Add: Infrastructure.Observability's own DI module also registers
+        // this interface (also via TryAdd) so either module can be wired first — a code review on #738
+        // found a plain Add here made that safety one-directional rather than order-independent, since
+        // whichever module ran second would add a redundant second descriptor instead of no-op'ing.
+        services.TryAddSingleton<IOwnerOnlyDirectoryCreator, Helpers.OwnerOnlyDirectoryCreator>();
 
         // Secret redaction — applied at all persistence boundaries (traces, snapshots, manifests)
         services.AddSingleton<ISecretRedactor, PatternSecretRedactor>();

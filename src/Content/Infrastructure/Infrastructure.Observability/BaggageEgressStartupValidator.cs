@@ -108,15 +108,26 @@ public sealed class BaggageEgressStartupValidator : IHostedService
 
     /// <summary>
     /// Throws naming <paramref name="propagatorLabel"/> when <paramref name="fields"/> — that
-    /// propagator's own declared field names — includes "baggage".
+    /// propagator's own declared field names — includes "baggage" or its legacy "Correlation-Context"
+    /// alias.
     /// </summary>
+    /// <remarks>
+    /// Both names are checked, matching <c>BaggageSuppressingDistributedContextPropagator</c>'s own
+    /// <c>SuppressedFieldNames</c> — that type treats both as equally sensitive and suppresses both, so
+    /// this re-assertion must recognise both too. A propagator whose <c>Fields</c> carried
+    /// "Correlation-Context" without the literal string "baggage" would otherwise pass this check while
+    /// still egressing identity via that legacy header. The pinned runtime's own W3C propagator always
+    /// bundles both names together, so this gap does not fire against today's default — but the check
+    /// should not depend on that coincidence.
+    /// </remarks>
     private static void AssertPropagatorDoesNotCarryBaggage(
         string propagatorLabel,
         IEnumerable<string>? fields,
         string leakDetail,
         string setterDescription)
     {
-        if (fields?.Contains("baggage") != true)
+        if (fields is null
+            || (!fields.Contains("baggage") && !fields.Contains("Correlation-Context")))
         {
             return;
         }

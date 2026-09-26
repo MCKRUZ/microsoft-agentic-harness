@@ -1,3 +1,4 @@
+using Application.AI.Common.Services.Telemetry;
 using Domain.Common.Config;
 using FluentAssertions;
 using Microsoft.Extensions.Logging;
@@ -6,6 +7,7 @@ using Microsoft.Extensions.Options;
 using Moq;
 using OpenTelemetry;
 using OpenTelemetry.Context.Propagation;
+using System.Diagnostics;
 using Xunit;
 
 namespace Infrastructure.Observability.Tests;
@@ -42,9 +44,10 @@ public class BaggageEgressStartupValidatorTests : IDisposable
     {
         Sdk.SetDefaultTextMapPropagator(new TraceContextPropagator());
 
-        // The real propagator, not a hand-rolled stand-in — it now lives in this same project (moved
-        // out of Presentation.Common by #738's second altitude pass), so there is no assembly-boundary
-        // reason left to reimplement its "trace-context-only" baseline here.
+        // The real propagator, not a hand-rolled stand-in — Infrastructure depending on Application is
+        // the normal direction (BaggageSuppressingDistributedContextPropagator lives in
+        // Application.AI.Common after #738's second code-review round moved it there), so there is no
+        // assembly-boundary reason to reimplement its "trace-context-only" baseline here.
         System.Diagnostics.DistributedContextPropagator.Current = new BaggageSuppressingDistributedContextPropagator();
     }
 
@@ -160,6 +163,49 @@ public class BaggageEgressStartupValidatorTests : IDisposable
         var act = () => validator.StartAsync(CancellationToken.None);
 
         await act.Should().NotThrowAsync();
+    }
+
+    [Fact]
+    public async Task DefaultConfig_WithAPropagatorCarryingOnlyTheLegacyCorrelationContextAlias_ThrowsNamingTheCause()
+    {
+        // A second code-review round on #738 found the field-name check recognised "baggage" but not
+        // its legacy "Correlation-Context" alias — even though the propagator this class suppresses
+        // treats both as equally sensitive. A propagator whose Fields carry ONLY the legacy name (no
+        // literal "baggage") would otherwise pass this check while still egressing identity via that
+        // header. Proved here with a minimal propagator that reports only the legacy name.
+        System.Diagnostics.DistributedContextPropagator.Current = new CorrelationContextOnlyPropagator();
+
+        var validator = Build();
+
+        var act = () => validator.StartAsync(CancellationToken.None);
+
+        var thrown = await act.Should().ThrowAsync<InvalidOperationException>();
+        thrown.And.Message.Should().Contain("PropagateBaggage");
+    }
+
+    /// <summary>A propagator whose Fields report only "Correlation-Context", never the literal "baggage".</summary>
+    private sealed class CorrelationContextOnlyPropagator : System.Diagnostics.DistributedContextPropagator
+    {
+        public override IReadOnlyCollection<string> Fields { get; } = ["traceparent", "Correlation-Context"];
+
+        public override void Inject(Activity? activity, object? carrier, PropagatorSetterCallback? setter)
+        {
+        }
+
+        public override void ExtractTraceIdAndState(
+            object? carrier,
+            PropagatorGetterCallback? getter,
+            out string? traceId,
+            out string? traceState)
+        {
+            traceId = null;
+            traceState = null;
+        }
+
+        public override IEnumerable<KeyValuePair<string, string?>>? ExtractBaggage(
+            object? carrier,
+            PropagatorGetterCallback? getter)
+            => null;
     }
 
     // --- The opted-in warning (moved here from Agent365StartupValidator by #738's second altitude pass) --

@@ -71,7 +71,7 @@ public sealed class ValidateOnBuildSweepTests : IDisposable
             .AddInMemoryCollection(new Dictionary<string, string?>())
             .Build();
 
-        using var provider = BuildAndValidate(configuration);
+        using var provider = BuildAndValidate(configuration).Provider;
     }
 
     /// <summary>
@@ -89,7 +89,7 @@ public sealed class ValidateOnBuildSweepTests : IDisposable
             })
             .Build();
 
-        using var provider = BuildAndValidate(configuration);
+        using var provider = BuildAndValidate(configuration).Provider;
     }
 
     /// <summary>
@@ -111,14 +111,18 @@ public sealed class ValidateOnBuildSweepTests : IDisposable
     /// construct is never built. The first version of this test omitted it and passed vacuously.
     /// </para>
     /// <para>
-    /// <strong>Non-vacuity proof, second version (#738).</strong> The first version used "baggage
-    /// absent from the default propagator" as its evidence that composition reached the Agent 365
-    /// wiring — that stopped being valid the moment baggage suppression became a host-wide policy
-    /// applied in <c>AddOpenTelemetry</c> regardless of Agent 365, which would have made this test pass
-    /// vacuously again on the standalone path, the exact failure shape its own first paragraph warns
-    /// about. The replacement resolves <c>IAgentTelemetryAttribution</c> from the built container and
-    /// asserts its concrete type — a signal only the Agent 365 wiring, not the benign no-op default
-    /// every host gets, can produce.
+    /// <strong>Non-vacuity proof, third version (#738's own code-review round 2).</strong> The first
+    /// version used "baggage absent from the default propagator" — invalidated the moment baggage
+    /// suppression became a host-wide policy applied in <c>AddOpenTelemetry</c> regardless of Agent 365.
+    /// The second version resolved <c>IAgentTelemetryAttribution</c> and asserted its concrete type —
+    /// also vacuous, found by the SAME review round: <c>Infrastructure.Observability</c>'s own
+    /// <c>DependencyInjection.cs</c> registers <c>Agent365TelemetryAttribution</c> with a plain,
+    /// unconditional <c>AddSingleton</c>, independent of <c>Agent365:Enabled</c> — so that assertion
+    /// would have passed identically with Agent 365 entirely disabled. This version instead checks the
+    /// raw <c>IServiceCollection</c> for a descriptor whose type name contains "Agent365" (the same
+    /// technique <c>Agent365ExporterWiringTests.IsAgent365Service</c> uses) — a signal only the vendor's
+    /// own conditionally-registered pipeline, not anything this repo's own DI modules register
+    /// unconditionally, can produce.
     /// </para>
     /// </remarks>
     [Fact]
@@ -143,22 +147,32 @@ public sealed class ValidateOnBuildSweepTests : IDisposable
             })
             .Build();
 
-        using var provider = BuildAndValidate(configuration);
+        var (provider, services) = BuildAndValidate(configuration);
+        using var _ = provider;
 
-        var attribution = provider.GetRequiredService<
-            Application.AI.Common.Interfaces.Telemetry.IAgentTelemetryAttribution>();
-
-        attribution.Should().BeOfType<Infrastructure.Observability.Agent365.Agent365TelemetryAttribution>(
-            "enabling Agent 365 must wire its own attribution implementation, not merely leave every "
-            + "host's benign no-op default in place");
+        services.Should().Contain(
+            d => IsAgent365Service(d),
+            "enabling Agent 365 must compose the vendor's own Agent 365 pipeline — a signal this repo's "
+            + "own unconditionally-registered defaults cannot produce");
     }
 
+    // Matched by name rather than by CLR type on purpose: the vendor's Agent 365 service types are
+    // internal to its assembly, so a typed reference will not compile — mirrors
+    // Agent365ExporterWiringTests.IsAgent365Service exactly. A method call rather than an inlined
+    // null-conditional expression, because FluentAssertions' Contain(Expression&lt;Func&lt;T, bool&gt;&gt;)
+    // overload cannot capture a `?.` operator in an expression tree.
+    private static bool IsAgent365Service(ServiceDescriptor descriptor)
+        => (descriptor.ServiceType.FullName ?? string.Empty).Contains("Agent365", StringComparison.Ordinal)
+            || (descriptor.ImplementationType?.FullName ?? string.Empty).Contains("Agent365", StringComparison.Ordinal);
+
     /// <summary>
-    /// Builds and validates the composition root, returning the built provider so a caller can inspect
-    /// what actually got wired — see <see cref="ProductionCompositionRoot_Agent365Enabled_BuildsWithValidateOnBuild"/>.
-    /// The caller owns disposal.
+    /// Builds and validates the composition root, returning the built provider AND the registration
+    /// set that produced it — the latter lets a caller inspect what actually got wired (see
+    /// <see cref="ProductionCompositionRoot_Agent365Enabled_BuildsWithValidateOnBuild"/>) without
+    /// re-registering everything a second time. The caller owns the provider's disposal.
     /// </summary>
-    private static ServiceProvider BuildAndValidate(IConfiguration configuration)
+    private static (ServiceProvider Provider, IServiceCollection Services) BuildAndValidate(
+        IConfiguration configuration)
     {
         var services = new ServiceCollection();
         services.AddLogging();
@@ -180,6 +194,6 @@ public sealed class ValidateOnBuildSweepTests : IDisposable
         });
 
         Assert.Null(exception);
-        return provider!;
+        return (provider!, services);
     }
 }

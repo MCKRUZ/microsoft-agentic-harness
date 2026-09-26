@@ -1,7 +1,7 @@
 using Domain.Common.Config.Observability;
 using System.Diagnostics;
 
-namespace Infrastructure.Observability;
+namespace Application.AI.Common.Services.Telemetry;
 
 /// <summary>
 /// A <see cref="DistributedContextPropagator"/> that carries trace context (<c>traceparent</c>/
@@ -10,12 +10,12 @@ namespace Infrastructure.Observability;
 /// <remarks>
 /// <para>
 /// <see cref="ObservabilityConfig.PropagateBaggage"/> (#738) was originally implemented by setting
-/// only <see cref="OpenTelemetry.Sdk.SetDefaultTextMapPropagator"/> — but that governs a different
+/// only <c>OpenTelemetry.Sdk.SetDefaultTextMapPropagator</c> — but that governs a different
 /// baggage store than the one this harness actually writes identity into. OpenTelemetry's own
 /// <c>Baggage</c> API (what <c>BaggageBuilder</c> writes) and <see cref="Activity.Baggage"/> (what
 /// <c>AddBaggage</c> writes — see <c>AgUiRunHandler</c>, <c>ConversationOrchestrator</c>,
 /// <c>ExecuteAgentTurnCommandHandler</c>, <c>AgentExecutionContextFactory</c>) are separate stores
-/// with separate propagators: the first is <see cref="OpenTelemetry.Context.Propagation.Propagators.DefaultTextMapPropagator"/>,
+/// with separate propagators: the first is <c>OpenTelemetry.Context.Propagation.Propagators.DefaultTextMapPropagator</c>,
 /// the second is <see cref="DistributedContextPropagator.Current"/>. Every user id and conversation
 /// id this harness publishes rides the second one. Measured against the pinned runtime
 /// (.NET 10.0.12): the default <see cref="DistributedContextPropagator.Current"/> is
@@ -38,20 +38,27 @@ namespace Infrastructure.Observability;
 /// <c>TraceContextPropagator</c> returns for its half of this policy.
 /// </para>
 /// <para>
-/// Public, and living in <c>Infrastructure.Observability</c> rather than <c>Presentation.Common</c>
-/// (where it was first written, alongside its only initial caller): its only real dependency is the
-/// BCL's own <c>System.Diagnostics</c>, not anything Presentation-specific, and this repo's own
-/// <c>clean-architecture.md</c> places a type with that dependency shape in Infrastructure — beside its
-/// sibling <see cref="BaggageEgressStartupValidator"/>, which already cross-references it. Found by a
-/// second altitude pass on #738's own review. Only the composition-root registration call in
-/// <c>OpenTelemetryServiceCollectionExtensions.AddOpenTelemetry</c> is legitimately Presentation work.
+/// Lives here, in <c>Application.AI.Common</c>, rather than in <c>Presentation.Common</c> (where it
+/// was first written) or <c>Infrastructure.Observability</c> (where a first relocation moved it,
+/// reasoning by co-location with its sibling <c>BaggageEgressStartupValidator</c>): this repo's own
+/// <c>clean-architecture.md</c> "File Placement Rule" litmus test is "does the code still compile with
+/// only Domain references?" — this type's only dependency is the BCL's own <c>System.Diagnostics</c>
+/// plus a <c>Domain.Common.Config.Observability</c> reference used solely in these doc comments, so it
+/// qualifies for Application even more clearly than the rule's own Microsoft.Extensions.*-only
+/// threshold. Found by a second code-review round on #738's own review: the Infrastructure placement
+/// was justified by a doc-comment claim about what <c>clean-architecture.md</c> says that the actual
+/// rule file does not support. Only the composition-root registration call in
+/// <c>OpenTelemetryServiceCollectionExtensions.AddOpenTelemetry</c> (Presentation.Common) is
+/// legitimately Presentation work; <c>BaggageEgressStartupValidator</c> (Infrastructure.Observability)
+/// re-checks this type's effect via <see cref="DistributedContextPropagator.Current"/>'s
+/// <c>Fields</c> without ever referencing this type directly.
 /// </para>
 /// <para>
 /// Field-name detection has the same limit as the OpenTelemetry-side check this type parallels:
 /// it recognises the runtime's own <c>baggage</c>/<c>Correlation-Context</c> header names, not a
 /// differently-named baggage-carrying propagator a consumer might register (a Jaeger-style
-/// <c>uberctx-*</c> propagator, for example) — see <see cref="BaggageEgressStartupValidator"/>'s own
-/// remarks for the equivalent OTel-side caveat.
+/// <c>uberctx-*</c> propagator, for example) — see <c>Infrastructure.Observability.BaggageEgressStartupValidator</c>'s
+/// own remarks for the equivalent OTel-side caveat.
 /// </para>
 /// </remarks>
 public sealed class BaggageSuppressingDistributedContextPropagator : DistributedContextPropagator
