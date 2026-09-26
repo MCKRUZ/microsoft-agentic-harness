@@ -7,6 +7,7 @@ using Application.Common.Services.Telemetry;
 using Domain.Common.Telemetry;
 using Infrastructure.Observability.Processors;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
 using OpenTelemetry;
 using OpenTelemetry.Context.Propagation;
@@ -98,6 +99,24 @@ public static class OpenTelemetryServiceCollectionExtensions
         DistributedContextPropagator.Current = appConfig.Observability.PropagateBaggage
             ? DistributedContextPropagator.CreateDefaultPropagator()
             : new BaggageSuppressingDistributedContextPropagator();
+
+        // Setting the static property above is NOT sufficient on a web host. ASP.NET Core's own
+        // hosting bootstrap (GenericWebHostBuilder, inside WebApplication.CreateBuilder — which runs
+        // BEFORE this method, since AddOpenTelemetry is called on builder.Services afterwards) already
+        // captured whatever DistributedContextPropagator.Current was AT THAT EARLIER MOMENT into its
+        // own DI container as a singleton (confirmed against the pinned ASP.NET Core source:
+        // GenericWebHostBuilder.cs calls services.TryAddSingleton(DistributedContextPropagator.Current)).
+        // Its request pipeline (HostingApplicationDiagnostics) takes that DI-resolved instance as a
+        // CONSTRUCTOR parameter and uses it to extract baggage from every INBOUND request — it never
+        // re-reads the static property per request. So the assignment above only affects OUTBOUND
+        // HttpClient calls (SocketsHttpHandler reads Current lazily when a handler is built); a host's
+        // stale, pre-swap propagator stayed wired for inbound header parsing regardless of this flag's
+        // value, and BaggageEgressStartupValidator's Current-only check passed while that stayed true.
+        // Found by CI's independent correctness-review and security-review gates, both citing the same
+        // root cause. Replacing the DI registration explicitly closes the inbound gap for every host
+        // shape — a desktop host has no pre-existing registration to replace, so this is a harmless
+        // no-op there, just an explicit one instead of an implicit absence.
+        services.Replace(ServiceDescriptor.Singleton(DistributedContextPropagator.Current));
 
         // Register the shared resource builder as a singleton for consistent attributes
         var resourceBuilder = CreateResourceBuilder(appConfig);

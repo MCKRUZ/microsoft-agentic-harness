@@ -68,14 +68,19 @@ public class BaggageEgressStartupValidatorTests : IDisposable
 
     private static BaggageEgressStartupValidator Build(
         Action<AppConfig>? configure = null,
-        ILogger<BaggageEgressStartupValidator>? logger = null)
+        ILogger<BaggageEgressStartupValidator>? logger = null,
+        System.Diagnostics.DistributedContextPropagator? resolvedPropagator = null)
     {
         var appConfig = new AppConfig();
         configure?.Invoke(appConfig);
 
         return new BaggageEgressStartupValidator(
             Mock.Of<IOptionsMonitor<AppConfig>>(m => m.CurrentValue == appConfig),
-            logger ?? NullLogger<BaggageEgressStartupValidator>.Instance);
+            logger ?? NullLogger<BaggageEgressStartupValidator>.Instance,
+            // Defaults to whatever Current is right now, matching what production keeps in sync via
+            // AddOpenTelemetry's DI Replace() call — a test that wants to prove the DI-resolved check
+            // is genuinely independent of Current passes a deliberately different instance.
+            resolvedPropagator ?? System.Diagnostics.DistributedContextPropagator.Current);
     }
 
     /// <summary>
@@ -157,6 +162,24 @@ public class BaggageEgressStartupValidatorTests : IDisposable
         var thrown = await act.Should().ThrowAsync<InvalidOperationException>();
         thrown.And.Message.Should().Contain("baggage");
         thrown.And.Message.Should().Contain("PropagateBaggage");
+    }
+
+    [Fact]
+    public async Task DefaultConfig_WithOnlyTheDiResolvedPropagatorCarryingBaggage_ThrowsNamingTheCause()
+    {
+        // CI's correctness-review and security-review gates found that DistributedContextPropagator.Current
+        // and the instance ASP.NET Core actually resolves from DI can drift on a web host — the static
+        // property alone was not what the inbound request pipeline used. This proves the two checks are
+        // genuinely independent, not the same check labelled twice: Current stays trace-context-only
+        // (the constructor baseline) while the DI-resolved instance is deliberately different and does
+        // carry baggage — the validator must still refuse to boot.
+        var validator = Build(resolvedPropagator: System.Diagnostics.DistributedContextPropagator.CreateDefaultPropagator());
+
+        var act = () => validator.StartAsync(CancellationToken.None);
+
+        var thrown = await act.Should().ThrowAsync<InvalidOperationException>();
+        thrown.And.Message.Should().Contain("baggage");
+        thrown.And.Message.Should().Contain("resolved from DI");
     }
 
     [Fact]

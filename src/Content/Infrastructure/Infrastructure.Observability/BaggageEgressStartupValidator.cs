@@ -46,6 +46,18 @@ namespace Infrastructure.Observability;
 /// would not be caught by either check.
 /// </para>
 /// <para>
+/// The <c>Activity</c> half is checked TWICE — <see cref="DistributedContextPropagator.Current"/> and
+/// separately the instance resolved from DI (<see cref="_resolvedPropagator"/>) — because CI's
+/// correctness-review and security-review gates independently found they can drift. ASP.NET Core's own
+/// hosting bootstrap (<c>GenericWebHostBuilder</c>, inside <c>WebApplication.CreateBuilder</c>) captures
+/// whatever <c>Current</c> was at that moment into its DI container as a singleton, BEFORE
+/// <c>AddOpenTelemetry</c> ever runs — and its request pipeline resolves that DI singleton, not a fresh
+/// read of the static property, to extract baggage from every inbound request. Checking only
+/// <c>Current</c> would pass even on a host whose actual inbound-parsing propagator still carried
+/// baggage. <c>AddOpenTelemetry</c> now explicitly replaces the DI registration to match, so both checks
+/// here should always agree — but only because both are hard-checked, not assumed to stay in sync.
+/// </para>
+/// <para>
 /// The opted-in ("PropagateBaggage: true") case is not a boot refusal — the operator asked for this —
 /// but it is not silent either. This host's own identity attribution (conversation and user ids, via
 /// <c>Activity.AddBaggage</c> call sites that have no Agent 365 dependency at all) now egresses on
@@ -61,16 +73,31 @@ public sealed class BaggageEgressStartupValidator : IHostedService
 {
     private readonly IOptionsMonitor<AppConfig> _config;
     private readonly ILogger<BaggageEgressStartupValidator> _logger;
+    private readonly DistributedContextPropagator _resolvedPropagator;
 
     /// <summary>Initializes a new instance of the <see cref="BaggageEgressStartupValidator"/> class.</summary>
+    /// <param name="resolvedPropagator">
+    /// The <see cref="DistributedContextPropagator"/> resolved from DI — <c>AddOpenTelemetry</c>
+    /// explicitly registers this via <c>services.Replace(ServiceDescriptor.Singleton(...))</c>
+    /// specifically so this parameter and <see cref="DistributedContextPropagator.Current"/> are the
+    /// same instance. Checked separately from <c>Current</c> because they can drift: ASP.NET Core's own
+    /// hosting bootstrap captures whatever <c>Current</c> was into its DI container BEFORE
+    /// <c>AddOpenTelemetry</c> ever runs, and its request pipeline resolves THAT DI singleton — not a
+    /// fresh read of the static property — to extract baggage from inbound requests. A check that only
+    /// inspected <c>Current</c> would pass even if something else replaced the DI registration
+    /// afterwards without touching the static property.
+    /// </param>
     public BaggageEgressStartupValidator(
         IOptionsMonitor<AppConfig> config,
-        ILogger<BaggageEgressStartupValidator> logger)
+        ILogger<BaggageEgressStartupValidator> logger,
+        DistributedContextPropagator resolvedPropagator)
     {
         ArgumentNullException.ThrowIfNull(config);
         ArgumentNullException.ThrowIfNull(logger);
+        ArgumentNullException.ThrowIfNull(resolvedPropagator);
         _config = config;
         _logger = logger;
+        _resolvedPropagator = resolvedPropagator;
     }
 
     /// <inheritdoc />
@@ -94,11 +121,23 @@ public sealed class BaggageEgressStartupValidator : IHostedService
             "AddOpenTelemetry sets a trace-context-only propagator");
 
         AssertPropagatorDoesNotCarryBaggage(
-            "System.Diagnostics.Activity",
+            "System.Diagnostics.Activity (process-global Current)",
             DistributedContextPropagator.Current.Fields,
             "any ambient identity attribution (tenant, agent, blueprint and conversation ids, if this "
             + "host runs Agent 365)",
             "AddOpenTelemetry sets DistributedContextPropagator.Current to a trace-context-only propagator");
+
+        // Distinct from the check above: on a web host, ASP.NET Core's inbound request pipeline
+        // resolves DistributedContextPropagator from DI, not from the static Current property — a
+        // stale DI registration would extract a caller-supplied baggage header on every incoming
+        // request while this check above still passed. Found by CI's correctness-review and
+        // security-review gates.
+        AssertPropagatorDoesNotCarryBaggage(
+            "System.Diagnostics.Activity (resolved from DI — what ASP.NET Core's inbound request "
+            + "pipeline actually uses)",
+            _resolvedPropagator.Fields,
+            "a caller-supplied baggage header on every inbound request",
+            "AddOpenTelemetry registers a trace-context-only propagator into DI");
 
         return Task.CompletedTask;
     }
