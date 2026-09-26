@@ -114,8 +114,12 @@ public static class OpenTelemetryServiceCollectionExtensions
         // value, and BaggageEgressStartupValidator's Current-only check passed while that stayed true.
         // Found by CI's independent correctness-review and security-review gates, both citing the same
         // root cause. Replacing the DI registration explicitly closes the inbound gap for every host
-        // shape — a desktop host has no pre-existing registration to replace, so this is a harmless
-        // no-op there, just an explicit one instead of an implicit absence.
+        // whose ASP.NET Core container is built FROM the IServiceCollection this method configures — a
+        // desktop host has no pre-existing registration to replace, so this is a harmless no-op there.
+        // Presentation.FoundryHost is the one exception: AgentHost.CreateBuilder builds its OWN,
+        // separate DI container that never sees this services collection at all, so this line cannot
+        // reach it — see the matching, explicit Replace() call in that host's own Program.cs, added for
+        // the same reason and found by the same code-review round.
         services.Replace(ServiceDescriptor.Singleton(DistributedContextPropagator.Current));
 
         // Register the shared resource builder as a singleton for consistent attributes

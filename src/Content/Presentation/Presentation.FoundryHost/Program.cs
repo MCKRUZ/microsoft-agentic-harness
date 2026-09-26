@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Governance;
@@ -7,6 +8,7 @@ using Domain.AI.Skills;
 using Microsoft.Agents.AI;
 using Microsoft.Agents.AI.Foundry.Hosting;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 using Presentation.Common.Extensions;
 
@@ -111,6 +113,19 @@ public static class Program
             var builder = AgentHost.CreateBuilder(args);
             builder.Services.AddFoundryResponses(agent);
             builder.RegisterProtocol("responses", endpoints => endpoints.MapFoundryResponses());
+
+            // AgentHost.CreateBuilder builds its OWN, separate DI container — the comment above
+            // provider's construction already establishes this is deliberate. That means ASP.NET
+            // Core's own hosting bootstrap (inside AgentHost.CreateBuilder, before this line) captures
+            // whatever DistributedContextPropagator.Current is INTO THIS CONTAINER as its own
+            // singleton, the same mechanism CI's correctness-review and security-review gates found
+            // left the harness's main composition root's inbound requests unprotected — except here,
+            // GetServices(...) on line 57 above already ran AddOpenTelemetry and set Current correctly
+            // BEFORE this container's own bootstrap captured it, so this container gets the right
+            // value by construction order, not by coincidence. Asserted explicitly rather than relied
+            // upon implicitly: a code-review round on #738 found the implicit version indistinguishable
+            // from luck, since nothing here checked or enforced it.
+            builder.Services.Replace(ServiceDescriptor.Singleton(DistributedContextPropagator.Current));
 
             var app = builder.Build();
 
