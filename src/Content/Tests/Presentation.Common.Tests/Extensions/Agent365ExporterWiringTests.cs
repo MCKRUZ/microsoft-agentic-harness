@@ -35,11 +35,20 @@ public class Agent365ExporterWiringTests : IDisposable
     // Enabling the exporter swaps the process-wide propagator, which would otherwise persist for every
     // later test in the same run and could destabilise anything that depends on context propagation.
     // Captured before each test and restored after, so the suite leaves global state as it found it.
+    // AddOpenTelemetry now mutates BOTH baggage-store propagators (#738's security-review fix), so
+    // both are captured and restored.
     private readonly OpenTelemetry.Context.Propagation.TextMapPropagator _originalPropagator =
         OpenTelemetry.Context.Propagation.Propagators.DefaultTextMapPropagator;
 
+    private readonly System.Diagnostics.DistributedContextPropagator _originalActivityPropagator =
+        System.Diagnostics.DistributedContextPropagator.Current;
+
     /// <inheritdoc />
-    public void Dispose() => OpenTelemetry.Sdk.SetDefaultTextMapPropagator(_originalPropagator);
+    public void Dispose()
+    {
+        OpenTelemetry.Sdk.SetDefaultTextMapPropagator(_originalPropagator);
+        System.Diagnostics.DistributedContextPropagator.Current = _originalActivityPropagator;
+    }
 
     private const string AgentAppId = "11111111-1111-1111-1111-111111111111";
     private const string TenantId = "22222222-2222-2222-2222-222222222222";
@@ -144,6 +153,25 @@ public class Agent365ExporterWiringTests : IDisposable
     }
 
     [Fact]
+    public void DefaultConfig_StopsPropagatingActivityBaggageOutOfTheProcess()
+    {
+        // A security review of #738 found the ORIGINAL implementation suppressed only the OTel
+        // Baggage store — leaving System.Diagnostics.Activity.Baggage, the store this harness's own
+        // identity attribution (AgUiRunHandler, ConversationOrchestrator, ExecuteAgentTurnCommandHandler,
+        // AgentExecutionContextFactory) actually writes into via Activity.AddBaggage, completely
+        // unguarded. This proves the fix: DistributedContextPropagator.Current must also suppress
+        // baggage by default.
+        var services = BaseServices();
+
+        services.AddOpenTelemetry(new AppConfig());
+
+        var fields = System.Diagnostics.DistributedContextPropagator.Current.Fields;
+
+        fields.Should().Contain("traceparent", "distributed tracing must keep working");
+        fields.Should().NotContain("baggage", "Activity baggage must not leave the process by default");
+    }
+
+    [Fact]
     public void PropagateBaggageTrue_RestoresBaggagePropagation_EvenWithAgent365Enabled()
     {
         // The explicit opt-back-in: a host with a deliberate, reviewed reason to use cross-process
@@ -164,6 +192,8 @@ public class Agent365ExporterWiringTests : IDisposable
         services.Should().Contain(d => IsAgent365Service(d), "the Agent 365 wiring must actually run");
         var fields = OpenTelemetry.Context.Propagation.Propagators.DefaultTextMapPropagator.Fields;
         fields.Should().Contain("baggage", "an explicit opt-in must be honoured");
+        var activityFields = System.Diagnostics.DistributedContextPropagator.Current.Fields;
+        activityFields.Should().Contain("baggage", "the opt-in must apply to Activity baggage too");
     }
 
     // Matched by name rather than by CLR type on purpose: the vendor's Agent 365 service types are

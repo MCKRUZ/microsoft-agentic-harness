@@ -87,6 +87,24 @@ public sealed class Agent365StartupValidator : IHostedService
         // comment promises. See that validator's remarks for the reasoning; it is registered
         // unconditionally, gated only on the policy flag itself.
 
+        // The one combination that policy's re-assertion cannot see: a host that DELIBERATELY set
+        // PropagateBaggage=true (so BaggageEgressStartupValidator has nothing to assert) while also
+        // running Agent 365 — which now silently re-opens the exact egress this feature's baggage
+        // suppression used to make structurally impossible. Not a boot refusal (the operator did
+        // ask for baggage propagation), but silent is the wrong default for a combination this much
+        // worse than either setting alone — a security review of #738 flagged the silence itself.
+        if (observability.PropagateBaggage)
+        {
+            _logger.LogWarning(
+                "Agent 365 export and Observability:PropagateBaggage are BOTH enabled. Agent 365 "
+                + "attribution (tenant {TenantId}, agent {AgentAppId}, blueprint and conversation ids) "
+                + "rides baggage, so it will now be serialised onto every outbound HTTP call this host "
+                + "makes — LLM providers, third-party MCP servers, web-fetch targets. Set "
+                + "PropagateBaggage to false unless this egress is a reviewed, intended choice.",
+                config.TenantId,
+                config.AgentAppId);
+        }
+
         // Force owner-only permissions on the offline-storage directory (#738) rather than merely
         // document the requirement. The vendor SDK creates this directory itself and chooses its own
         // mode; our own code never touched it before this. Failure refuses boot rather than silently
@@ -96,9 +114,24 @@ public sealed class Agent365StartupValidator : IHostedService
         // booting. A no-op on Windows, left to its inherited ACL — see IOwnerOnlyDirectoryCreator.
         if (config.EnableOfflineStorage)
         {
+            // Agent365ExporterConfigValidator enforces OfflineStorageDirectory as non-empty when
+            // EnableOfflineStorage is true — but this repo has a documented, repeated failure mode of a
+            // config validator silently going unbound (CLAUDE.md's "shipping a control that nothing
+            // invokes" entry lists six prior instances). If that ever happens here, this check turns an
+            // opaque path-parsing exception into the same clear boot refusal every other Agent 365
+            // misconfiguration produces, rather than depending on a second validator actually having run.
+            if (string.IsNullOrWhiteSpace(config.OfflineStorageDirectory))
+            {
+                throw new InvalidOperationException(
+                    "Agent 365 offline storage is enabled "
+                    + "(Observability:Exporters:Agent365:EnableOfflineStorage = true) but "
+                    + "Observability:Exporters:Agent365:OfflineStorageDirectory is blank. Set it to a "
+                    + "directory this process can secure as owner-only, or disable offline storage.");
+            }
+
             try
             {
-                _directoryCreator.Create(config.OfflineStorageDirectory!, _logger);
+                _directoryCreator.Create(config.OfflineStorageDirectory, _logger);
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {

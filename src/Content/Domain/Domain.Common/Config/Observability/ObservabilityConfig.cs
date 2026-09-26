@@ -89,28 +89,38 @@ public class ObservabilityConfig
     public bool EnableSensitiveTelemetry { get; set; }
 
     /// <summary>
-    /// Gets or sets whether OpenTelemetry <c>Baggage</c> is allowed to cross this process's own
-    /// boundaries — injected into outbound HTTP headers and extracted from inbound ones. Controls
-    /// which default propagator <c>AddOpenTelemetry</c> installs via
-    /// <c>Sdk.SetDefaultTextMapPropagator</c>: trace-context-only when <c>false</c>, or the standard
-    /// trace-context-plus-baggage composite when <c>true</c>.
+    /// Gets or sets whether baggage is allowed to cross this process's own boundaries — injected into
+    /// outbound HTTP headers and extracted from inbound ones. Governs BOTH of the two independent
+    /// baggage stores .NET/OpenTelemetry expose: OpenTelemetry's own <c>Baggage</c> API (via
+    /// <c>Sdk.SetDefaultTextMapPropagator</c>) and <see cref="System.Diagnostics.Activity.Baggage"/>
+    /// (via <see cref="System.Diagnostics.DistributedContextPropagator.Current"/>) — the store this
+    /// harness's own identity attribution (user id, conversation id) actually rides via
+    /// <c>Activity.AddBaggage</c>. Trace-context-only on both when <c>false</c>; the standard
+    /// trace-context-plus-baggage behaviour on both when <c>true</c>.
     /// </summary>
     /// <remarks>
     /// This is a host-wide egress policy, not an Agent 365 concern — it exists because baggage is
     /// how identity attribution rides an agent turn (tenant, agent and conversation ids), and a
     /// composite propagator that also carries baggage would serialise those values onto every
-    /// outbound request and accept them from every inbound one. <c>AddOpenTelemetry</c> sets one of
-    /// the two propagators explicitly rather than merely suppressing the swap when this is
-    /// <c>true</c> — measured, not assumed: the untouched OpenTelemetry default before any host code
-    /// runs is <c>NoopTextMapPropagator</c>, which propagates nothing at all, not even trace
-    /// context, so leaving this flag's "on" case as a no-op would have made an opted-in host's
-    /// propagation behaviour depend on whatever happened to run before it. Named and applied once,
+    /// outbound request and accept them from every inbound one. A first implementation of this flag
+    /// governed only the OpenTelemetry store; a security review found that left the store this
+    /// harness actually writes identity into (<c>Activity.Baggage</c>) completely unguarded, since no
+    /// OpenTelemetry component reads or writes <c>DistributedContextPropagator.Current</c>. Both
+    /// propagators are set explicitly on both branches rather than merely suppressing the swap when
+    /// this is <c>true</c> — measured, not assumed: the untouched OpenTelemetry default before any
+    /// host code runs is <c>NoopTextMapPropagator</c>, which propagates nothing at all, not even trace
+    /// context, so leaving either "on" case as a no-op would have made an opted-in host's propagation
+    /// behaviour depend on whatever happened to run before it. Named and applied once,
     /// unconditionally, in <c>AddOpenTelemetry</c> — not as a side effect of enabling one exporter —
     /// so a consumer who adds their own baggage usage still gets this protection, and an operator has
     /// one flag to check rather than an implication buried in an unrelated feature's wiring (#738).
+    /// Startup-only: both propagators are set once at composition, so a configuration reload does not
+    /// change either installed propagator — flipping this flag requires a restart to take effect.
     /// </remarks>
     /// <value>Default: <c>false</c>. Set <c>true</c> only when this host's own baggage usage is a
-    /// deliberate, reviewed choice — enabling it re-opens the egress this flag exists to close.
+    /// deliberate, reviewed choice — enabling it re-opens the egress this flag exists to close,
+    /// including (if Agent 365 is also enabled) tenant, agent, blueprint and conversation id egress —
+    /// see the warning <c>Agent365StartupValidator</c> logs when both are enabled together.
     /// </value>
     public bool PropagateBaggage { get; set; }
 

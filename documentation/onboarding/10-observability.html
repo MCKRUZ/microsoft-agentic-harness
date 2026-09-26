@@ -251,20 +251,25 @@ docker run -d --name jaeger \
                         <div class="callout-body">
                             <div class="callout-title">This host does not propagate baggage across its boundary, by default</div>
                             <p style="margin: 0">
-                                Agent 365 attribution rides OpenTelemetry <code>Baggage</code> (tenant id, agent id,
-                                blueprint id, conversation id), and a propagator that also carries baggage would
-                                serialise that onto every outbound HTTP call and accept a caller-supplied version on
-                                every inbound one — so the harness installs a trace-context-only propagator whenever
-                                <code>Observability:PropagateBaggage</code> is <code>false</code> (the default),
-                                unconditionally, for <strong>every host</strong>, not only ones that enable Agent 365.
-                                Enabling Agent 365 no longer changes this behaviour itself; it depends on the same
-                                host-wide policy every other feature does. Set the flag to <code>true</code> only if
-                                this host has a deliberate, reviewed reason to use cross-process baggage — the harness
-                                then installs the standard trace-context-plus-baggage propagator explicitly, rather than
-                                leaving it to whatever happened to be ambient, so the two settings are both a real,
-                                deterministic choice rather than one being "off" and the other "whatever's there". A
-                                startup check refuses to boot a host with Agent 365 enabled if something re-registers a
-                                composite propagator afterwards.
+                                There are <strong>two independent baggage stores</strong> in .NET/OpenTelemetry, each
+                                with its own propagator — and this harness's own identity attribution (user id,
+                                conversation id, and Agent 365's tenant/agent/blueprint ids) rides the one most
+                                developers don't think to check: <code>System.Diagnostics.Activity.Baggage</code>, not
+                                OpenTelemetry's own <code>Baggage</code> API. A propagator that carries either would
+                                serialise that data onto every outbound HTTP call and accept a caller-supplied version
+                                on every inbound one — so <code>Observability:PropagateBaggage</code> governs
+                                <strong>both</strong> stores together, installing a trace-context-only propagator on
+                                each whenever it is <code>false</code> (the default), unconditionally, for
+                                <strong>every host</strong>, not only ones that enable Agent 365. Enabling Agent 365 no
+                                longer changes this behaviour itself; it depends on the same host-wide policy every
+                                other feature does. Set the flag to <code>true</code> only if this host has a
+                                deliberate, reviewed reason to use cross-process baggage — the harness then installs
+                                the standard trace-context-plus-baggage propagator explicitly on both stores, rather
+                                than leaving it to whatever happened to be ambient. A startup check re-asserts both
+                                propagators unconditionally (independent of whether Agent 365 is enabled) and refuses
+                                to boot if something re-registers baggage-carrying propagation afterwards; if Agent 365
+                                is also enabled while this flag is <code>true</code>, the harness logs a warning naming
+                                the egress, since that combination is materially riskier than either setting alone.
                             </p>
                         </div>
                     </div>

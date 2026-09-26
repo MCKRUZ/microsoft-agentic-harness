@@ -87,6 +87,17 @@ public static class OpenTelemetryServiceCollectionExtensions
             ? new CompositeTextMapPropagator([new TraceContextPropagator(), new BaggagePropagator()])
             : new TraceContextPropagator());
 
+        // This process has a SECOND, independent baggage store — System.Diagnostics.Activity.Baggage,
+        // governed by DistributedContextPropagator.Current, not by anything OpenTelemetry owns. It is
+        // the one this harness actually writes identity into (AgUiRunHandler, ConversationOrchestrator,
+        // ExecuteAgentTurnCommandHandler, AgentExecutionContextFactory all call Activity.AddBaggage).
+        // Setting only the OTel propagator above left that leak fully open regardless of this flag's
+        // value — no OTel component ever touches DistributedContextPropagator. Same policy, same flag,
+        // the store this harness's own identity attribution actually rides.
+        DistributedContextPropagator.Current = appConfig.Observability.PropagateBaggage
+            ? DistributedContextPropagator.CreateDefaultPropagator()
+            : new BaggageSuppressingDistributedContextPropagator();
+
         // Register the shared resource builder as a singleton for consistent attributes
         var resourceBuilder = CreateResourceBuilder(appConfig);
         services.AddSingleton(resourceBuilder);

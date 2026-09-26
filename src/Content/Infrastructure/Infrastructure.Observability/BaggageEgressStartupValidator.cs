@@ -1,6 +1,7 @@
 using Domain.Common.Config;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
+using System.Diagnostics;
 using OpenTelemetry.Context.Propagation;
 
 namespace Infrastructure.Observability;
@@ -29,6 +30,18 @@ namespace Infrastructure.Observability;
 /// happens to leak more is not an error to anything not specifically checking. This is that check,
 /// run once, at the last point before the host starts serving traffic.
 /// </para>
+/// <para>
+/// There are TWO independent baggage stores, each with its own propagator, and this validator checks
+/// both: OpenTelemetry's own <c>Baggage</c> API (governed by
+/// <see cref="Propagators.DefaultTextMapPropagator"/>) and <see cref="Activity.Baggage"/> (governed by
+/// <see cref="DistributedContextPropagator.Current"/>) — the one this harness's own identity
+/// attribution (user id, conversation id) actually rides via <c>Activity.AddBaggage</c>. A security
+/// review of #738 found the original implementation checked only the first, leaving the store this
+/// harness actually uses completely unguarded. Detection is a field-name match against each
+/// propagator's own known baggage-carrying field names, so a differently-named baggage-carrying
+/// propagator a consumer might register (a Jaeger-style <c>uberctx-*</c> propagator, for example)
+/// would not be caught by either check.
+/// </para>
 /// </remarks>
 public sealed class BaggageEgressStartupValidator : IHostedService
 {
@@ -46,25 +59,41 @@ public sealed class BaggageEgressStartupValidator : IHostedService
     {
         var observability = _config.CurrentValue.Observability;
 
-        // Baggage present in the propagator is exactly correct, not a regression, when the operator
-        // explicitly opted into cross-process baggage — this validator has nothing to assert in that
-        // case.
+        // Baggage present in either propagator is exactly correct, not a regression, when the
+        // operator explicitly opted into cross-process baggage — this validator has nothing to
+        // assert in that case.
         if (observability.PropagateBaggage)
         {
             return Task.CompletedTask;
         }
 
-        var propagatedFields = Propagators.DefaultTextMapPropagator.Fields;
-        if (propagatedFields?.Contains("baggage") == true)
+        var otelPropagatedFields = Propagators.DefaultTextMapPropagator.Fields;
+        if (otelPropagatedFields?.Contains("baggage") == true)
         {
             throw new InvalidOperationException(
                 "This host's baggage-egress policy expects baggage suppressed "
-                + "(Observability:PropagateBaggage is false), but the process's default text-map "
-                + "propagator carries baggage — meaning any ambient baggage (tenant, agent, blueprint "
-                + "and conversation ids, if this host runs Agent 365) would cross this host's process "
-                + "boundary on outbound HTTP calls, and a caller-supplied baggage header would be "
-                + "accepted as attacker-chosen attribution on inbound ones. AddOpenTelemetry sets a "
-                + "trace-context-only propagator when this flag is false; something registered "
+                + "(Observability:PropagateBaggage is false), but the process's default OpenTelemetry "
+                + "text-map propagator carries baggage — meaning any ambient OpenTelemetry baggage "
+                + "would cross this host's process boundary on outbound HTTP calls, and a "
+                + "caller-supplied baggage header would be accepted as attacker-chosen attribution on "
+                + "inbound ones. AddOpenTelemetry sets a trace-context-only propagator when this flag "
+                + "is false; something registered afterwards changed it. Remove whatever re-registers "
+                + "the propagator, or set Observability:PropagateBaggage to true if this host has a "
+                + "deliberate, reviewed reason to propagate baggage.");
+        }
+
+        var activityPropagatedFields = DistributedContextPropagator.Current.Fields;
+        if (activityPropagatedFields?.Contains("baggage") == true)
+        {
+            throw new InvalidOperationException(
+                "This host's baggage-egress policy expects baggage suppressed "
+                + "(Observability:PropagateBaggage is false), but the process's default "
+                + "System.Diagnostics.Activity propagator carries baggage — meaning any ambient "
+                + "identity attribution (tenant, agent, blueprint and conversation ids, if this host "
+                + "runs Agent 365) would cross this host's process boundary on outbound HTTP calls, "
+                + "and a caller-supplied baggage header would be accepted as attacker-chosen "
+                + "attribution on inbound ones. AddOpenTelemetry sets DistributedContextPropagator.Current "
+                + "to a trace-context-only propagator when this flag is false; something registered "
                 + "afterwards changed it. Remove whatever re-registers the propagator, or set "
                 + "Observability:PropagateBaggage to true if this host has a deliberate, reviewed "
                 + "reason to propagate baggage.");
