@@ -116,9 +116,11 @@ public sealed class BaggageEgressStartupValidator : IHostedService
     /// <c>SuppressedFieldNames</c> — that type treats both as equally sensitive and suppresses both, so
     /// this re-assertion must recognise both too. A propagator whose <c>Fields</c> carried
     /// "Correlation-Context" without the literal string "baggage" would otherwise pass this check while
-    /// still egressing identity via that legacy header. The pinned runtime's own W3C propagator always
-    /// bundles both names together, so this gap does not fire against today's default — but the check
-    /// should not depend on that coincidence.
+    /// still egressing identity via that legacy header. Matched case-insensitively for the same reason
+    /// that type's own suppression filter is: HTTP header names are case-insensitive by spec, and this
+    /// is a security boundary re-checking a type this codebase does not own — a security review of
+    /// #738 found the original ordinal match depended on an undocumented casing detail of the pinned
+    /// runtime's W3C propagator (measured lowercase, but not guaranteed).
     /// </remarks>
     private static void AssertPropagatorDoesNotCarryBaggage(
         string propagatorLabel,
@@ -127,7 +129,8 @@ public sealed class BaggageEgressStartupValidator : IHostedService
         string setterDescription)
     {
         if (fields is null
-            || (!fields.Contains("baggage") && !fields.Contains("Correlation-Context")))
+            || (!fields.Contains("baggage", StringComparer.OrdinalIgnoreCase)
+                && !fields.Contains("Correlation-Context", StringComparer.OrdinalIgnoreCase)))
         {
             return;
         }

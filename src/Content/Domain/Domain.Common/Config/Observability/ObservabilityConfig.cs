@@ -118,9 +118,10 @@ public class ObservabilityConfig
     /// change either installed propagator — flipping this flag requires a restart to take effect.
     /// </remarks>
     /// <value>Default: <c>false</c>. Set <c>true</c> only when this host's own baggage usage is a
-    /// deliberate, reviewed choice — enabling it re-opens the egress this flag exists to close,
-    /// including (if Agent 365 is also enabled) tenant, agent, blueprint and conversation id egress —
-    /// see the warning <c>Agent365StartupValidator</c> logs when both are enabled together.
+    /// deliberate, reviewed choice — enabling it re-opens the egress this flag exists to close. A
+    /// warning fires whenever this flag is enabled (see <c>BaggageEgressStartupValidator</c>), naming
+    /// Agent 365's own tenant, agent, blueprint and conversation id egress as an additive detail when
+    /// that exporter also happens to be enabled.
     /// </value>
     public bool PropagateBaggage { get; set; }
 

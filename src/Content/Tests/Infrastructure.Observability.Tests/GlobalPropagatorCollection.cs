@@ -9,8 +9,7 @@ namespace Infrastructure.Observability.Tests;
 /// <remarks>
 /// <para>
 /// The propagator is a single process-global value, and xUnit runs collections in parallel.
-/// <see cref="Infrastructure.Observability.Agent365.Agent365StartupValidator"/> reads it to re-assert
-/// the baggage-egress policy
+/// <see cref="BaggageEgressStartupValidator"/> reads it to re-assert the baggage-egress policy
 /// (#738) — a test that sets a composite propagator to prove the throw path, run in parallel with any
 /// other test, can leak that composite propagator into a sibling asserting on the trace-context-only
 /// default, or vice versa. Both directions produce intermittent failures that read as product defects

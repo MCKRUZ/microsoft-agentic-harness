@@ -65,7 +65,13 @@ namespace Application.Common.Services.Telemetry;
 /// </remarks>
 public sealed class BaggageSuppressingDistributedContextPropagator : DistributedContextPropagator
 {
-    private static readonly string[] SuppressedFieldNames = ["baggage", "Correlation-Context"];
+    // Case-insensitive: HTTP header names are case-insensitive by spec, and this set is the security
+    // boundary — a propagator emitting "Baggage" instead of "baggage" would be spec-legal and would
+    // walk straight through an ordinal comparison. Not live against the pinned runtime's W3CPropagator
+    // (measured: it emits lowercase), but the filter should not depend on a casing detail of a type
+    // this codebase doesn't own — found by a security review of #738.
+    private static readonly HashSet<string> SuppressedFieldNames =
+        new(StringComparer.OrdinalIgnoreCase) { "baggage", "Correlation-Context" };
 
     // A static, no-capture delegate — allocated once per process, not once per Inject call. Unpacks the
     // per-call carrier/setter pair from the InjectState the real propagator is handed as its own
@@ -75,7 +81,7 @@ public sealed class BaggageSuppressingDistributedContextPropagator : Distributed
     // #738's own efficiency review.
     private static readonly PropagatorSetterCallback FilteringSetter = (state, key, value) =>
     {
-        if (Array.IndexOf(SuppressedFieldNames, key) >= 0)
+        if (SuppressedFieldNames.Contains(key))
         {
             return;
         }

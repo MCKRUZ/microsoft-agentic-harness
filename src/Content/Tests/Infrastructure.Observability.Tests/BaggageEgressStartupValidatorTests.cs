@@ -46,8 +46,8 @@ public class BaggageEgressStartupValidatorTests : IDisposable
 
         // The real propagator, not a hand-rolled stand-in — Infrastructure depending on Application is
         // the normal direction (BaggageSuppressingDistributedContextPropagator lives in
-        // Application.AI.Common after #738's second code-review round moved it there), so there is no
-        // assembly-boundary reason to reimplement its "trace-context-only" baseline here.
+        // Application.Common, its third and final placement this PR), so there is no assembly-boundary
+        // reason to reimplement its "trace-context-only" baseline here.
         System.Diagnostics.DistributedContextPropagator.Current = new BaggageSuppressingDistributedContextPropagator();
     }
 
@@ -78,13 +78,21 @@ public class BaggageEgressStartupValidatorTests : IDisposable
             logger ?? NullLogger<BaggageEgressStartupValidator>.Instance);
     }
 
-    /// <summary>Verifies a warning was logged, regardless of the exact message-template arguments.</summary>
-    private static void VerifyWarningLogged(Mock<ILogger<BaggageEgressStartupValidator>> logger, Times times)
+    /// <summary>
+    /// Verifies a warning was logged. With <paramref name="contains"/> omitted, matches any warning at
+    /// all — too loose to distinguish the general warning from the Agent-365-additive one, which is
+    /// exactly why every call site below now passes it. A security review of #738 found the omitted
+    /// form let a test named "...LogsAWarningNamingTenantAndAgent" pass with the entire Agent-365
+    /// branch deleted (mutation-proven): the assertion never actually inspected the rendered message.
+    /// </summary>
+    private static void VerifyWarningLogged(
+        Mock<ILogger<BaggageEgressStartupValidator>> logger, Times times, string? contains = null)
         => logger.Verify(
             l => l.Log(
                 LogLevel.Warning,
                 It.IsAny<EventId>(),
-                It.Is<It.IsAnyType>((v, t) => true),
+                It.Is<It.IsAnyType>((v, t) =>
+                    contains == null || (v!.ToString() ?? string.Empty).Contains(contains, StringComparison.Ordinal)),
                 null,
                 It.IsAny<Func<It.IsAnyType, Exception?, string>>()),
             times);
@@ -223,6 +231,10 @@ public class BaggageEgressStartupValidatorTests : IDisposable
         await validator.StartAsync(CancellationToken.None);
 
         VerifyWarningLogged(logger, Times.Once());
+        // Pins this test to the GENERAL branch specifically — a security review found the untargeted
+        // assertion above let this test pass with the Agent-365-additive branch's condition mutated to
+        // dead code (mutation-proven), since it never inspected the rendered message.
+        VerifyWarningLogged(logger, Times.Never(), "Agent 365 export is ALSO enabled");
     }
 
     [Fact]
@@ -243,7 +255,9 @@ public class BaggageEgressStartupValidatorTests : IDisposable
 
         await validator.StartAsync(CancellationToken.None);
 
-        VerifyWarningLogged(logger, Times.Once());
+        // Asserts on the actual rendered message, not just "a warning fired" — a security review found
+        // the untargeted form let this test pass with the entire Agent-365 branch deleted.
+        VerifyWarningLogged(logger, Times.Once(), "Agent 365 export is ALSO enabled");
     }
 
     [Fact]
