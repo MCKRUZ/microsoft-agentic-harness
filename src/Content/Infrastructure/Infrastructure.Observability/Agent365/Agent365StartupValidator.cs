@@ -89,19 +89,28 @@ public sealed class Agent365StartupValidator : IHostedService
         // downstream would notice, because a working propagator that happens to leak more is not an
         // error to anything that isn't specifically checking. Checking here, at the last point before
         // this host starts serving traffic, is what turns that silent regression into a boot refusal.
-        var propagatedFields = OpenTelemetry.Context.Propagation.Propagators.DefaultTextMapPropagator.Fields;
-        if (propagatedFields?.Contains("baggage") == true)
+        //
+        // Gated on !observability.PropagateBaggage — found by code review. Baggage present in the
+        // propagator is exactly correct, not a regression, when the operator explicitly opted into
+        // cross-process baggage: without this gate, a host that set PropagateBaggage=true (the
+        // documented, tested opt-in) could never boot with Agent 365 enabled at the same time, because
+        // AddOpenTelemetry had done precisely what it was configured to do.
+        if (!observability.PropagateBaggage)
         {
-            throw new InvalidOperationException(
-                "Agent 365 export is enabled, but the process's default text-map propagator carries "
-                + "baggage — meaning tenant, agent, blueprint and conversation ids published for a turn "
-                + "would cross this host's process boundary on outbound HTTP calls, and a caller-supplied "
-                + "baggage header would be accepted as attacker-chosen attribution on inbound ones. "
-                + "AddOpenTelemetry sets a trace-context-only propagator when "
-                + "Observability:PropagateBaggage is false (the default); something registered afterwards "
-                + "changed it. Remove whatever re-registers the propagator, or set "
-                + "Observability:PropagateBaggage explicitly if this host has a deliberate, reviewed "
-                + "reason to propagate baggage.");
+            var propagatedFields = OpenTelemetry.Context.Propagation.Propagators.DefaultTextMapPropagator.Fields;
+            if (propagatedFields?.Contains("baggage") == true)
+            {
+                throw new InvalidOperationException(
+                    "Agent 365 export is enabled, but the process's default text-map propagator carries "
+                    + "baggage — meaning tenant, agent, blueprint and conversation ids published for a "
+                    + "turn would cross this host's process boundary on outbound HTTP calls, and a "
+                    + "caller-supplied baggage header would be accepted as attacker-chosen attribution on "
+                    + "inbound ones. AddOpenTelemetry sets a trace-context-only propagator when "
+                    + "Observability:PropagateBaggage is false (as configured here); something registered "
+                    + "afterwards changed it. Remove whatever re-registers the propagator, or set "
+                    + "Observability:PropagateBaggage to true if this host has a deliberate, reviewed "
+                    + "reason to propagate baggage.");
+            }
         }
 
         // Force owner-only permissions on the offline-storage directory (#738) rather than merely

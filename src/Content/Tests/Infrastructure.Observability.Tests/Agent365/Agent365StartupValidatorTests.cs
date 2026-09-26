@@ -173,6 +173,31 @@ public class Agent365StartupValidatorTests : IDisposable
     }
 
     [Fact]
+    public async Task EnabledWithPropagateBaggageTrue_AndACompositePropagator_DoesNotThrow()
+    {
+        // Found by code review: without gating the throw on PropagateBaggage, this exact combination —
+        // the documented, tested opt-in to cross-process baggage, together with Agent 365 — could never
+        // boot. A composite propagator here is not a regression to catch; it is precisely what
+        // AddOpenTelemetry was configured to install.
+        OpenTelemetry.Sdk.SetDefaultTextMapPropagator(
+            new OpenTelemetry.Context.Propagation.CompositeTextMapPropagator(
+            [
+                new OpenTelemetry.Context.Propagation.TraceContextPropagator(),
+                new OpenTelemetry.Context.Propagation.BaggagePropagator(),
+            ]));
+
+        var validator = Build(c =>
+        {
+            ConfigureListedAndEnabled(c);
+            c.Observability.PropagateBaggage = true;
+        });
+
+        var act = () => validator.StartAsync(CancellationToken.None);
+
+        await act.Should().NotThrowAsync();
+    }
+
+    [Fact]
     public async Task DisabledWithACompositePropagatorCarryingBaggage_DoesNotThrow()
     {
         // The re-assertion is scoped to hosts that enabled Agent 365 — a host that has not opted in
