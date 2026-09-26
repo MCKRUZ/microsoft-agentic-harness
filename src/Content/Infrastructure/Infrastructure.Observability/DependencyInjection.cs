@@ -76,6 +76,12 @@ public static class DependencyInjection
         // and its throw path.
         services.AddHostedService<Agent365.Agent365StartupValidator>();
 
+        // Re-asserts the host-wide baggage-egress policy at boot (#738). Registered unconditionally,
+        // gated only on ObservabilityConfig.PropagateBaggage itself — every host this policy protects,
+        // not only ones that also enable Agent 365. See its own remarks for why this moved out of
+        // Agent365StartupValidator.
+        services.AddHostedService<BaggageEgressStartupValidator>();
+
         // #457: the one ILocalLogRedactor implementation, closing the parity gap between the OTel
         // logging bridge's own redaction and every local ILoggerProvider sink. Application.Common's
         // ConfigureLogging resolves this optionally, so registering it here is what turns local-sink

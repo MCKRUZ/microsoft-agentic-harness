@@ -12,35 +12,29 @@ namespace Infrastructure.Observability.Tests.Agent365;
 
 /// <summary>
 /// Tests for <see cref="Agent365StartupValidator"/>, which refuses to boot a host that has enabled
-/// Agent 365 export somewhere the exporter cannot actually be wired, whose baggage-egress policy has
-/// been undone since composition, or whose offline-storage directory cannot be secured.
+/// Agent 365 export somewhere the exporter cannot actually be wired, or whose offline-storage
+/// directory cannot be secured.
 /// </summary>
 /// <remarks>
+/// <para>
 /// The failure this guards is silent by nature: on a host that is not on the web-telemetry path the
 /// exporter is simply never attached, so the feature costs its overhead and exports nothing, with no
 /// error to follow. The symptom — an agent that never appears in the tenant's inventory — is identical
 /// to a licensing or consent problem, which sends whoever debugs it somewhere else entirely.
+/// </para>
+/// <para>
+/// The baggage-egress re-assertion this class used to test lives in its own
+/// <c>BaggageEgressStartupValidator</c> now (see <c>BaggageEgressStartupValidatorTests</c>) — nesting it
+/// behind this validator's Agent-365-specific early return meant a host with Agent 365 disabled got
+/// none of that host-wide policy's protection (#738's altitude pass). This class no longer touches the
+/// process-global propagator at all, and needs neither <c>GlobalPropagatorCollection</c> nor
+/// baseline/restore scaffolding as a result.
+/// </para>
 /// </remarks>
-[Collection(GlobalPropagatorCollection.Name)]
-public class Agent365StartupValidatorTests : IDisposable
+public class Agent365StartupValidatorTests
 {
     private const string AgentAppId = "11111111-1111-1111-1111-111111111111";
     private const string TenantId = "22222222-2222-2222-2222-222222222222";
-
-    private readonly OpenTelemetry.Context.Propagation.TextMapPropagator _originalPropagator =
-        OpenTelemetry.Context.Propagation.Propagators.DefaultTextMapPropagator;
-
-    /// <summary>
-    /// Establishes the baseline every test in this class implicitly relies on: a trace-context-only
-    /// propagator, matching what real composition already did before this validator ever runs (#738's
-    /// re-assertion is a defence-in-depth check on top of AddOpenTelemetry, not a substitute for it).
-    /// Captured <em>after</em> <see cref="_originalPropagator"/>, so <see cref="Dispose"/> still restores
-    /// whatever this class found the propagator to be, not this baseline. Individual tests for the
-    /// re-assertion itself override this baseline deliberately, to exercise the case it exists to catch.
-    /// </summary>
-    public Agent365StartupValidatorTests() =>
-        OpenTelemetry.Sdk.SetDefaultTextMapPropagator(
-            new OpenTelemetry.Context.Propagation.TraceContextPropagator());
 
     /// <summary>
     /// The entry assembly of the running test host. The validator branches on exactly this value, so a
@@ -69,10 +63,6 @@ public class Agent365StartupValidatorTests : IDisposable
         c.Observability.Exporters.Agent365.AgentAppId = AgentAppId;
         c.Observability.Exporters.Agent365.TenantId = TenantId;
     }
-
-    /// <summary>Restores the process-global propagator so a later test never observes this one's swap.</summary>
-    public void Dispose() =>
-        OpenTelemetry.Sdk.SetDefaultTextMapPropagator(_originalPropagator);
 
     [Fact]
     public async Task Disabled_DoesNotThrowEvenOnANonWebTelemetryHost()
@@ -135,95 +125,11 @@ public class Agent365StartupValidatorTests : IDisposable
         await act.Should().NotThrowAsync();
     }
 
-    // --- Baggage-egress re-assertion (#738) ----------------------------------------
-
-    [Fact]
-    public async Task EnabledWithTraceContextOnlyPropagator_DoesNotThrow()
-    {
-        // The expected steady state, already established by this class's own constructor — restated
-        // explicitly here as its own test rather than left implicit in every other test's baseline.
-        var validator = Build(ConfigureListedAndEnabled);
-
-        var act = () => validator.StartAsync(CancellationToken.None);
-
-        await act.Should().NotThrowAsync();
-    }
-
-    [Fact]
-    public async Task EnabledWithACompositePropagatorCarryingBaggage_ThrowsNamingTheCause()
-    {
-        // Simulates something that ran after AddOpenTelemetry re-registering a composite propagator —
-        // a consumer's own Startup code, or a library that calls SetDefaultTextMapPropagator itself.
-        // This is the regression the re-assertion exists to catch: without it, this host would boot
-        // successfully while silently leaking tenant/agent/conversation ids on every outbound call.
-        OpenTelemetry.Sdk.SetDefaultTextMapPropagator(
-            new OpenTelemetry.Context.Propagation.CompositeTextMapPropagator(
-            [
-                new OpenTelemetry.Context.Propagation.TraceContextPropagator(),
-                new OpenTelemetry.Context.Propagation.BaggagePropagator(),
-            ]));
-
-        var validator = Build(ConfigureListedAndEnabled);
-
-        var act = () => validator.StartAsync(CancellationToken.None);
-
-        var thrown = await act.Should().ThrowAsync<InvalidOperationException>();
-        thrown.And.Message.Should().Contain("baggage");
-        thrown.And.Message.Should().Contain("PropagateBaggage");
-    }
-
-    [Fact]
-    public async Task EnabledWithPropagateBaggageTrue_AndACompositePropagator_DoesNotThrow()
-    {
-        // Found by code review: without gating the throw on PropagateBaggage, this exact combination —
-        // the documented, tested opt-in to cross-process baggage, together with Agent 365 — could never
-        // boot. A composite propagator here is not a regression to catch; it is precisely what
-        // AddOpenTelemetry was configured to install.
-        OpenTelemetry.Sdk.SetDefaultTextMapPropagator(
-            new OpenTelemetry.Context.Propagation.CompositeTextMapPropagator(
-            [
-                new OpenTelemetry.Context.Propagation.TraceContextPropagator(),
-                new OpenTelemetry.Context.Propagation.BaggagePropagator(),
-            ]));
-
-        var validator = Build(c =>
-        {
-            ConfigureListedAndEnabled(c);
-            c.Observability.PropagateBaggage = true;
-        });
-
-        var act = () => validator.StartAsync(CancellationToken.None);
-
-        await act.Should().NotThrowAsync();
-    }
-
-    [Fact]
-    public async Task DisabledWithACompositePropagatorCarryingBaggage_DoesNotThrow()
-    {
-        // The re-assertion is scoped to hosts that enabled Agent 365 — a host that has not opted in
-        // has made no claim about baggage egress for this validator to hold it to.
-        OpenTelemetry.Sdk.SetDefaultTextMapPropagator(
-            new OpenTelemetry.Context.Propagation.CompositeTextMapPropagator(
-            [
-                new OpenTelemetry.Context.Propagation.TraceContextPropagator(),
-                new OpenTelemetry.Context.Propagation.BaggagePropagator(),
-            ]));
-
-        var validator = Build(c => c.Observability.Exporters.Agent365.Enabled = false);
-
-        var act = () => validator.StartAsync(CancellationToken.None);
-
-        await act.Should().NotThrowAsync();
-    }
-
     // --- Offline-storage directory enforcement (#738) ------------------------------
 
     [Fact]
     public async Task OfflineStorageEnabled_CreatesTheDirectoryOwnerOnly()
     {
-        OpenTelemetry.Sdk.SetDefaultTextMapPropagator(
-            new OpenTelemetry.Context.Propagation.TraceContextPropagator());
-
         var directoryCreator = new Mock<IOwnerOnlyDirectoryCreator>();
         var validator = Build(
             c =>
@@ -244,9 +150,6 @@ public class Agent365StartupValidatorTests : IDisposable
     [Fact]
     public async Task OfflineStorageDisabled_NeverCallsTheDirectoryCreator()
     {
-        OpenTelemetry.Sdk.SetDefaultTextMapPropagator(
-            new OpenTelemetry.Context.Propagation.TraceContextPropagator());
-
         var directoryCreator = new Mock<IOwnerOnlyDirectoryCreator>();
         var validator = Build(ConfigureListedAndEnabled, directoryCreator.Object);
 
@@ -264,9 +167,6 @@ public class Agent365StartupValidatorTests : IDisposable
         // (a bind-mounted volume owned by a different user, for example). This host asked for offline
         // storage, and content that can include prompts and tool arguments must not land in a
         // directory this process cannot secure — so the harness refuses to boot rather than proceed.
-        OpenTelemetry.Sdk.SetDefaultTextMapPropagator(
-            new OpenTelemetry.Context.Propagation.TraceContextPropagator());
-
         var directoryCreator = new Mock<IOwnerOnlyDirectoryCreator>();
         directoryCreator
             .Setup(d => d.Create(It.IsAny<string>(), It.IsAny<Microsoft.Extensions.Logging.ILogger?>()))

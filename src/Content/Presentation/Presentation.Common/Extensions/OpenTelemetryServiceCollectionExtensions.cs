@@ -8,6 +8,7 @@ using Infrastructure.Observability.Processors;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using OpenTelemetry;
+using OpenTelemetry.Context.Propagation;
 using OpenTelemetry.Exporter;
 using OpenTelemetry.Instrumentation.AspNetCore;
 using OpenTelemetry.Instrumentation.Http;
@@ -76,19 +77,15 @@ public static class OpenTelemetryServiceCollectionExtensions
         //
         // Both branches set explicitly, rather than treating "true" as merely skipping the
         // suppression below. Measured directly: the untouched default before ANY host code runs is
-        // OpenTelemetry.Context.Propagation.NoopTextMapPropagator, which propagates nothing at
-        // all — not baggage, not even trace context. Nothing else in this codebase, or in the
-        // hosting integration this method builds on, ever establishes the standard composite
-        // propagator; only this method does. So "just don't suppress it" would have left a host
-        // that opted IN to baggage propagation with no propagation whatsoever unless something
-        // upstream happened to have already set one — an ambient-state dependency, not a policy.
+        // NoopTextMapPropagator, which propagates nothing at all — not baggage, not even trace
+        // context. Nothing else in this codebase, or in the hosting integration this method builds
+        // on, ever establishes the standard composite propagator; only this method does. So "just
+        // don't suppress it" would have left a host that opted IN to baggage propagation with no
+        // propagation whatsoever unless something upstream happened to have already set one — an
+        // ambient-state dependency, not a policy.
         Sdk.SetDefaultTextMapPropagator(appConfig.Observability.PropagateBaggage
-            ? new OpenTelemetry.Context.Propagation.CompositeTextMapPropagator(
-            [
-                new OpenTelemetry.Context.Propagation.TraceContextPropagator(),
-                new OpenTelemetry.Context.Propagation.BaggagePropagator(),
-            ])
-            : new OpenTelemetry.Context.Propagation.TraceContextPropagator());
+            ? new CompositeTextMapPropagator([new TraceContextPropagator(), new BaggagePropagator()])
+            : new TraceContextPropagator());
 
         // Register the shared resource builder as a singleton for consistent attributes
         var resourceBuilder = CreateResourceBuilder(appConfig);

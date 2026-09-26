@@ -1,4 +1,5 @@
 using Application.AI.Common.Interfaces.Telemetry;
+using Application.AI.Common.Services.Governance;
 using Domain.Common.Config;
 using Domain.Common.Config.Observability;
 using Domain.Common.Helpers;
@@ -42,12 +43,24 @@ namespace Infrastructure.Observability.Agent365;
 public sealed class Agent365TelemetryAttribution : IAgentTelemetryAttribution
 {
     // Matches this repo's existing HasMaxLength(200) convention for a display-facing name (see
-    // ConversationDbContext). Nothing upstream of BeginTurn bounds the agent id a caller supplies —
-    // it can reach here straight from an HTTP request body — so without this an arbitrarily long
-    // string gets stamped into a customer tenant's Agent 365 inventory as this agent's display name
-    // (#738). Truncated rather than rejected: a display name that's too long is a hygiene problem
-    // for the tenant's records, not a reason to drop the turn's attribution entirely.
-    private const int MaxAgentNameLength = 200;
+    // ConversationDbContext). Nothing upstream of BeginTurn bounds either agentId or conversationId — a
+    // caller supplies both straight from an HTTP request body — so without this an arbitrarily long
+    // string gets stamped into a customer tenant's Agent 365 inventory, as either this agent's display
+    // name or its join key (#738). Applied to every caller-influenced string this class hands to
+    // BaggageBuilder, not only the one the issue happened to name — altitude finding on #738's own
+    // review: a bound applied to just agentName left conversationId, which travels the identical
+    // unvalidated path, exposed to the same failure. Truncated rather than rejected: an over-length
+    // value is a hygiene problem for the tenant's records, not a reason to drop attribution entirely.
+    private const int MaxBoundedValueLength = 200;
+
+    /// <summary>
+    /// Caps a caller-influenced value at <see cref="MaxBoundedValueLength"/> before it reaches
+    /// <c>BaggageBuilder</c>. Delegates to <see cref="BoundedText"/> rather than a hand-rolled slice —
+    /// the earlier cut used a bare <c>[..ceiling]</c>, which can split a UTF-16 surrogate pair into an
+    /// ill-formed string; <see cref="BoundedText"/> exists specifically because that shape had already
+    /// been reimplemented, with that exact gap, three times elsewhere in this repo.
+    /// </summary>
+    private static string Bound(string value) => BoundedText.Cap(value, MaxBoundedValueLength, "").Text;
 
     // Captured once rather than re-read per turn, deliberately. The exporter is wired into the
     // OpenTelemetry pipeline at composition time and the startup validator runs once, so both are
@@ -173,17 +186,13 @@ public sealed class Agent365TelemetryAttribution : IAgentTelemetryAttribution
         // whichever caller asked first would serve that caller's exact casing to every later, distinct
         // caller of the same agent — a cross-caller integrity bug in the tenant's own governance record,
         // found by security review on the first cut of this cache.
-        var agentName = isHostDefault && !string.IsNullOrWhiteSpace(config.AgentName)
-            ? config.AgentName
-            : agentId;
-
         // Bounded regardless of source (#738) — an operator-configured AgentName is trusted more than
         // a caller-supplied agentId, but an absurdly long string is equally worth truncating in either
         // case, and treating them differently here would be a distinction with no security benefit.
-        if (agentName.Length > MaxAgentNameLength)
-        {
-            agentName = agentName[..MaxAgentNameLength];
-        }
+        var agentName = Bound(
+            isHostDefault && !string.IsNullOrWhiteSpace(config.AgentName)
+                ? config.AgentName
+                : agentId);
 
         var builder = new BaggageBuilder()
             .TenantId(_canonicalTenantId)
@@ -196,10 +205,11 @@ public sealed class Agent365TelemetryAttribution : IAgentTelemetryAttribution
         }
 
         // Conversation id is Agent 365's primary join key for grouping a run's spans into a session.
-        // Guarded because an empty value would publish an empty join key rather than omitting it.
+        // Guarded because an empty value would publish an empty join key rather than omitting it. Bounded
+        // for the same reason as agentName above — it travels the identical unvalidated caller path.
         if (!string.IsNullOrWhiteSpace(conversationId))
         {
-            builder = builder.ConversationId(conversationId);
+            builder = builder.ConversationId(Bound(conversationId));
         }
 
         return builder.Build();

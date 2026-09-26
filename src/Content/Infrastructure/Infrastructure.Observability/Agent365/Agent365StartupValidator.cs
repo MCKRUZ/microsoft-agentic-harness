@@ -80,38 +80,12 @@ public sealed class Agent365StartupValidator : IHostedService
                 + "Observability:Exporters:Agent365:Enabled to false for this host.");
         }
 
-        // Re-assert the baggage-egress policy (#738) rather than trust that AddOpenTelemetry's earlier
-        // application of it still holds. Both run during composition, but this validator's whole point
-        // is refusing to trust an assumption a later step could quietly invalidate: any code that runs
-        // after AddOpenTelemetry — a consumer's own Startup/Program code, a library that calls
-        // Sdk.SetDefaultTextMapPropagator with a composite propagator of its own — re-enables the exact
-        // egress ObservabilityConfig.PropagateBaggage exists to close, and does so silently; nothing
-        // downstream would notice, because a working propagator that happens to leak more is not an
-        // error to anything that isn't specifically checking. Checking here, at the last point before
-        // this host starts serving traffic, is what turns that silent regression into a boot refusal.
-        //
-        // Gated on !observability.PropagateBaggage — found by code review. Baggage present in the
-        // propagator is exactly correct, not a regression, when the operator explicitly opted into
-        // cross-process baggage: without this gate, a host that set PropagateBaggage=true (the
-        // documented, tested opt-in) could never boot with Agent 365 enabled at the same time, because
-        // AddOpenTelemetry had done precisely what it was configured to do.
-        if (!observability.PropagateBaggage)
-        {
-            var propagatedFields = OpenTelemetry.Context.Propagation.Propagators.DefaultTextMapPropagator.Fields;
-            if (propagatedFields?.Contains("baggage") == true)
-            {
-                throw new InvalidOperationException(
-                    "Agent 365 export is enabled, but the process's default text-map propagator carries "
-                    + "baggage — meaning tenant, agent, blueprint and conversation ids published for a "
-                    + "turn would cross this host's process boundary on outbound HTTP calls, and a "
-                    + "caller-supplied baggage header would be accepted as attacker-chosen attribution on "
-                    + "inbound ones. AddOpenTelemetry sets a trace-context-only propagator when "
-                    + "Observability:PropagateBaggage is false (as configured here); something registered "
-                    + "afterwards changed it. Remove whatever re-registers the propagator, or set "
-                    + "Observability:PropagateBaggage to true if this host has a deliberate, reviewed "
-                    + "reason to propagate baggage.");
-            }
-        }
+        // The baggage-egress re-assertion that used to live here moved to its own
+        // BaggageEgressStartupValidator (#738's altitude pass). That policy is host-wide, not an
+        // Agent-365 concern — nesting the check behind this validator's Agent-365-specific early
+        // return above meant a host with Agent 365 disabled got none of the protection its own doc
+        // comment promises. See that validator's remarks for the reasoning; it is registered
+        // unconditionally, gated only on the policy flag itself.
 
         // Force owner-only permissions on the offline-storage directory (#738) rather than merely
         // document the requirement. The vendor SDK creates this directory itself and chooses its own
