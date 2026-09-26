@@ -57,7 +57,7 @@ internal static class A2ATestHelpers
 
     public static IAgentExecutionContext MakeExecutionContext(string callerAgentId)
     {
-        var ctx = new AgentExecutionContext();
+        var ctx = new AgentExecutionContext(new Application.AI.Common.Services.Telemetry.NoOpAgentTelemetryAttribution());
         ctx.SetIdentity(new AgentIdentity { Id = callerAgentId, Kind = AgentIdentityKind.Development });
         return ctx;
     }
@@ -90,7 +90,7 @@ internal static class A2ATestHelpers
         AppConfig? appConfig = null,
         string? calleeSkill = null)
     {
-        var ctx = new AgentExecutionContext();
+        var ctx = new AgentExecutionContext(new Application.AI.Common.Services.Telemetry.NoOpAgentTelemetryAttribution());
         var executionContext = (IAgentExecutionContext)ctx;
         var authProvider = new InProcessA2AAuthenticationProvider(executionContext);
         var spanEmitter = new A2ASpanEmitter();

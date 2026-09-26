@@ -35,7 +35,7 @@ public sealed class ScriptedChatClientFactoryTests
     /// </summary>
     private static (ScriptedChatClientFactory Factory, ChatInvocationLog Log, IDisposable ScopeToken) CreateForAgent(string agentId)
     {
-        var context = new AgentExecutionContext();
+        var context = new AgentExecutionContext(new Application.AI.Common.Services.Telemetry.NoOpAgentTelemetryAttribution());
         context.Initialize(agentId, conversationId: "conv-1", turnNumber: 1);
 
         var services = new ServiceCollection();
@@ -190,7 +190,7 @@ public sealed class ScriptedChatClientFactoryTests
     private static (ScriptedChatClientFactory Factory, ChatInvocationLog Log, IDisposable ScopeToken) CreateForAgentSharingLog(
         string agentId, ChatInvocationLog log)
     {
-        var context = new AgentExecutionContext();
+        var context = new AgentExecutionContext(new Application.AI.Common.Services.Telemetry.NoOpAgentTelemetryAttribution());
         context.Initialize(agentId, conversationId: "conv-1", turnNumber: 1);
         var services = new ServiceCollection();
         services.AddSingleton<IAgentExecutionContext>(context);

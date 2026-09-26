@@ -49,7 +49,7 @@ public class AgentIdentityResolutionBehaviorTests
     [Fact]
     public async Task Handle_NonAgentScopedRequest_PassesThrough()
     {
-        var execContext = new AgentExecutionContext();
+        var execContext = new AgentExecutionContext(new Application.AI.Common.Services.Telemetry.NoOpAgentTelemetryAttribution());
         var resolver = new Mock<IAgentIdentityResolver>(MockBehavior.Strict);
         var behavior = Build<NonAgentRequest, string>(
             execContext,
@@ -69,7 +69,7 @@ public class AgentIdentityResolutionBehaviorTests
     [Fact]
     public async Task Handle_IdentityDisabled_PassesThroughWithoutResolverCall()
     {
-        var execContext = new AgentExecutionContext();
+        var execContext = new AgentExecutionContext(new Application.AI.Common.Services.Telemetry.NoOpAgentTelemetryAttribution());
         var resolver = new Mock<IAgentIdentityResolver>(MockBehavior.Strict);
         var behavior = Build<AgentScopedTestRequest, string>(
             execContext,
@@ -89,7 +89,7 @@ public class AgentIdentityResolutionBehaviorTests
     [Fact]
     public async Task Handle_IdentityEnabled_NoResolverRegistered_ThrowsInvalidOperation()
     {
-        var execContext = new AgentExecutionContext();
+        var execContext = new AgentExecutionContext(new Application.AI.Common.Services.Telemetry.NoOpAgentTelemetryAttribution());
         var behavior = Build<AgentScopedTestRequest, string>(
             execContext,
             BuildConfig(new AgentIdentityConfig { Enabled = true, DefaultAudience = "api://x" }),
@@ -118,7 +118,7 @@ public class AgentIdentityResolutionBehaviorTests
             .Setup(r => r.ResolveAsync(It.IsAny<CredentialContext>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(Result<AgentIdentity>.Success(resolvedIdentity));
 
-        var execContext = new AgentExecutionContext();
+        var execContext = new AgentExecutionContext(new Application.AI.Common.Services.Telemetry.NoOpAgentTelemetryAttribution());
         var behavior = Build<AgentScopedTestRequest, string>(
             execContext,
             BuildConfig(new AgentIdentityConfig { Enabled = true, DefaultAudience = "api://x" }),
@@ -140,7 +140,7 @@ public class AgentIdentityResolutionBehaviorTests
             .Setup(r => r.ResolveAsync(It.IsAny<CredentialContext>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(Result<AgentIdentity>.Fail("agent_identity.no_provider_succeeded"));
 
-        var execContext = new AgentExecutionContext();
+        var execContext = new AgentExecutionContext(new Application.AI.Common.Services.Telemetry.NoOpAgentTelemetryAttribution());
         var behavior = Build<AgentScopedTestRequest, string>(
             execContext,
             BuildConfig(new AgentIdentityConfig { Enabled = true, DefaultAudience = "api://x" }),
@@ -169,7 +169,7 @@ public class AgentIdentityResolutionBehaviorTests
             Id = "planner",
             Kind = AgentIdentityKind.ManagedIdentity
         };
-        var execContext = new AgentExecutionContext();
+        var execContext = new AgentExecutionContext(new Application.AI.Common.Services.Telemetry.NoOpAgentTelemetryAttribution());
         execContext.SetIdentity(existingIdentity);
 
         var resolver = new Mock<IAgentIdentityResolver>(MockBehavior.Strict);
@@ -201,7 +201,7 @@ public class AgentIdentityResolutionBehaviorTests
                 Kind = AgentIdentityKind.ManagedIdentity
             }));
 
-        var execContext = new AgentExecutionContext();
+        var execContext = new AgentExecutionContext(new Application.AI.Common.Services.Telemetry.NoOpAgentTelemetryAttribution());
         var behavior = Build<AgentScopedTestRequest, string>(
             execContext,
             BuildConfig(new AgentIdentityConfig
@@ -236,7 +236,7 @@ public class AgentIdentityResolutionBehaviorTests
                 Kind = AgentIdentityKind.ManagedIdentity
             }));
 
-        var execContext = new AgentExecutionContext();
+        var execContext = new AgentExecutionContext(new Application.AI.Common.Services.Telemetry.NoOpAgentTelemetryAttribution());
         var behavior = Build<AgentScopedTestRequest, string>(
             execContext,
             BuildConfig(new AgentIdentityConfig { Enabled = true, DefaultAudience = "api://x" }),

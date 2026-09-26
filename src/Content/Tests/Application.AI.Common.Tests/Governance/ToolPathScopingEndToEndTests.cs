@@ -269,6 +269,9 @@ public sealed class ToolPathScopingEndToEndTests
 
         var services = new ServiceCollection();
         services.AddKeyedSingleton<ITool>("file_system", tool);
+        services.AddSingleton<
+            Application.AI.Common.Interfaces.Telemetry.IAgentTelemetryAttribution,
+            Application.AI.Common.Services.Telemetry.NoOpAgentTelemetryAttribution>();
         services.AddScoped<IAgentExecutionContext, AgentExecutionContext>();
         services.AddScoped<IToolCallAdmissionPipeline>(sp =>
         {
@@ -316,6 +319,9 @@ public sealed class ToolPathScopingEndToEndTests
 
         var services = new ServiceCollection();
         services.AddKeyedSingleton<ITool>("file_system", tool);
+        services.AddSingleton<
+            Application.AI.Common.Interfaces.Telemetry.IAgentTelemetryAttribution,
+            Application.AI.Common.Services.Telemetry.NoOpAgentTelemetryAttribution>();
         services.AddScoped<IAgentExecutionContext, AgentExecutionContext>();
         services.AddScoped<IToolCallAdmissionPipeline>(sp =>
         {
@@ -756,6 +762,9 @@ public sealed class ToolPathScopingEndToEndTests
 
         var services = new ServiceCollection();
         services.AddKeyedSingleton<ITool>(PartiallyDeclaredTool.Name_, tool);
+        services.AddSingleton<
+            Application.AI.Common.Interfaces.Telemetry.IAgentTelemetryAttribution,
+            Application.AI.Common.Services.Telemetry.NoOpAgentTelemetryAttribution>();
         services.AddScoped<IAgentExecutionContext, AgentExecutionContext>();
         services.AddScoped<IToolCallAdmissionPipeline>(sp =>
         {

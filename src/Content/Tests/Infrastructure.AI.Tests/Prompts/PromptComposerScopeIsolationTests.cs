@@ -27,6 +27,9 @@ public sealed class PromptComposerScopeIsolationTests
         services.AddLogging();
 
         // Production lifetime (Application.AI.Common.DependencyInjection): scoped ambient context.
+        services.AddSingleton<
+            Application.AI.Common.Interfaces.Telemetry.IAgentTelemetryAttribution,
+            Application.AI.Common.Services.Telemetry.NoOpAgentTelemetryAttribution>();
         services.AddScoped<IAgentExecutionContext, AgentExecutionContext>();
         services.AddSingleton(Mock.Of<IContextBudgetTracker>());
 

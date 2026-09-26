@@ -82,6 +82,9 @@ public sealed class AgentExecutionContextFactoryPromptComposerTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
+        services.AddSingleton<
+            Application.AI.Common.Interfaces.Telemetry.IAgentTelemetryAttribution,
+            Application.AI.Common.Services.Telemetry.NoOpAgentTelemetryAttribution>();
         services.AddScoped<IAgentExecutionContext, AgentExecutionContext>();
         services.AddSingleton(Mock.Of<IContextBudgetTracker>());
         services.AddSingleton<IAmbientRequestScope, AmbientRequestScope>();

@@ -314,6 +314,50 @@ public class Agent365TelemetryAttributionTests
     }
 
     [Fact]
+    public void ANestedTurn_ReplacesTheOuterTurnsAttributionAndRestoresItOnDisposal()
+    {
+        // Answers the open question left by #736's review, empirically against the real SDK rather than
+        // from its prose: when an orchestrator's turn spawns a sub-agent turn, does the child's
+        // attribution merge with the parent's or replace it?
+        //
+        // It REPLACES, and disposal restores the parent's — which is the behaviour the harness needs.
+        // Merging would be the harmful answer: a child span carrying both agents' ids would be
+        // attributed to whichever the service happened to read, so a sub-agent's activity could be filed
+        // against the orchestrator's identity in the tenant's records. Replacement means each turn's
+        // spans name exactly the agent that produced them.
+        //
+        // This is also why the parent scope must outlive the child. AgentExecutionContext holds its
+        // scope for the life of its DI scope, and a sub-agent runs in a child scope disposed first, so
+        // the nesting is correctly ordered by construction.
+        var attribution = Build(c =>
+        {
+            c.Enabled = true;
+            c.AgentAppId = HostAppId;
+            c.TenantId = TenantId;
+            c.Agents["researcher"] = new Agent365AgentIdentityConfig { AppId = OverrideAppId };
+        });
+
+        using (attribution.BeginTurn("orchestrator", "conv-1"))
+        {
+            AllBaggage().Values.Should().Contain(HostAppId);
+
+            using (attribution.BeginTurn("researcher", "conv-1"))
+            {
+                AllBaggage().Values.Should().Contain(OverrideAppId);
+                AllBaggage().Values.Should().NotContain(
+                    HostAppId,
+                    "the sub-agent's turn must report only its own identity, or the tenant cannot tell "
+                    + "which agent produced the span");
+            }
+
+            AllBaggage().Values.Should().Contain(
+                HostAppId, "the orchestrator's own turn is still running and must stay attributed");
+        }
+
+        AllBaggage().Should().BeEmpty();
+    }
+
+    [Fact]
     public void DisposingTheScope_RemovesTheAttribution()
     {
         // The scope must not leak past the turn. A long-lived worker that kept one turn's attribution

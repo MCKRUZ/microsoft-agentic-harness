@@ -27,7 +27,6 @@ public class RunOrchestratedTaskCommandHandler : IRequestHandler<RunOrchestrated
 	private readonly IServiceScopeFactory _scopeFactory;
 	private readonly IAgentExecutionContext _executionContext;
 	private readonly IToolCallAdmissionPipeline _admissionPipeline;
-	private readonly Application.AI.Common.Interfaces.Telemetry.IAgentTelemetryAttribution _attribution;
 	private readonly ILogger<RunOrchestratedTaskCommandHandler> _logger;
 
 	public RunOrchestratedTaskCommandHandler(
@@ -35,14 +34,12 @@ public class RunOrchestratedTaskCommandHandler : IRequestHandler<RunOrchestrated
 		IServiceScopeFactory scopeFactory,
 		IAgentExecutionContext executionContext,
 		IToolCallAdmissionPipeline admissionPipeline,
-		Application.AI.Common.Interfaces.Telemetry.IAgentTelemetryAttribution attribution,
 		ILogger<RunOrchestratedTaskCommandHandler> logger)
 	{
 		_agentFactory = agentFactory;
 		_scopeFactory = scopeFactory;
 		_executionContext = executionContext;
 		_admissionPipeline = admissionPipeline;
-		_attribution = attribution;
 		_logger = logger;
 	}
 
@@ -60,17 +57,23 @@ public class RunOrchestratedTaskCommandHandler : IRequestHandler<RunOrchestrated
 			// previously never armed the loop guard at all, so it never needed the reset either.
 			_admissionPipeline.Reset();
 
-			// Opened before the orchestrator is built, not after. Agent construction loads skills,
-			// connects MCP clients and resolves tools — all of which emit spans, and all of which would
-			// carry no attribution and be dropped if this started later. Only the orchestrator name and
-			// conversation id are needed, and both are available here.
+			// Initialized before the orchestrator is built, not after. This both governs the
+			// orchestrator's own tool calls and publishes its external governance attribution (see
+			// IAgentExecutionContext.Initialize), and agent construction loads skills, connects MCP
+			// clients and resolves tools — all of which emit spans that would carry no attribution, and
+			// be silently discarded by a governance platform, if this ran later. Only the orchestrator
+			// name and conversation id are needed, and both are available here.
 			//
-			// This is published here rather than by AgentContextPropagationBehavior because this command
-			// is not IAgentScopedRequest, so the behavior never runs for it — the same reason the
-			// execution-context Initialize below is hand-rolled. Without it a tenant would see every
-			// sub-agent but not the orchestrator that drove them.
-			using var attribution = _attribution.BeginTurn(
-				request.OrchestratorName, request.ConversationId);
+			// Hand-rolled rather than left to AgentContextPropagationBehavior because this command is
+			// not IAgentScopedRequest, so the behavior never runs for it. Without this a tenant would
+			// see every sub-agent but not the orchestrator that drove them.
+			//
+			// The orchestrator's own conversation id is the right call-once scope here — unlike
+			// DirectToolInvoker or a plan run, this handler's ConversationId is neither a fresh
+			// per-call value nor shared across unrelated runs; it identifies this orchestration
+			// exactly the way AgentContextPropagationBehavior's does for an ordinary agent turn.
+			_executionContext.Initialize(
+				request.OrchestratorName, request.ConversationId, 0, callOnceScopeId: request.ConversationId);
 
 			// Phase 1: Create orchestrator and get task decomposition
 			var agentCatalog = BuildAgentCatalog(request.AvailableAgents);
@@ -91,18 +94,6 @@ public class RunOrchestratedTaskCommandHandler : IRequestHandler<RunOrchestrated
 						"""
 				},
 				cancellationToken);
-
-			// Govern the orchestrator's OWN tool calls (planning + synthesis). This command is not
-			// IAgentScopedRequest, so the pipeline doesn't initialize the execution context — set the
-			// orchestrator identity here so the governor can resolve it. Sub-agent delegation runs in
-			// its own child scope and governs itself per turn.
-			//
-			// The orchestrator's own conversation id is the right call-once scope here — unlike
-			// DirectToolInvoker or a plan run, this handler's ConversationId is neither a fresh
-			// per-call value nor shared across unrelated runs; it identifies this orchestration
-			// exactly the way AgentContextPropagationBehavior's does for an ordinary agent turn.
-			_executionContext.Initialize(
-				request.OrchestratorName, request.ConversationId, 0, callOnceScopeId: request.ConversationId);
 
 			await ReportProgress(request, "planning", request.OrchestratorName, "Decomposing task...");
 

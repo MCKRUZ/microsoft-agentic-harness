@@ -37,7 +37,7 @@ public sealed class A2AIdentityPropagatorKindParsingTests
 {
     private static (A2AIdentityPropagator Propagator, IAgentExecutionContext Context) Build()
     {
-        var context = new AgentExecutionContext();
+        var context = new AgentExecutionContext(new Application.AI.Common.Services.Telemetry.NoOpAgentTelemetryAttribution());
         return (new A2AIdentityPropagator(context), context);
     }
 

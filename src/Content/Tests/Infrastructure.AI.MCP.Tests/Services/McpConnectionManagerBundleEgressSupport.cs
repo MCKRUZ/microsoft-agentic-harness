@@ -92,6 +92,9 @@ internal static class McpConnectionManagerBundleEgressSupport
     private static IServiceProvider BuildRootServices(IAmbientRequestScope ambientScope, Action<IServiceCollection>? extra = null)
     {
         var services = new ServiceCollection();
+        services.AddSingleton<
+            Application.AI.Common.Interfaces.Telemetry.IAgentTelemetryAttribution,
+            Application.AI.Common.Services.Telemetry.NoOpAgentTelemetryAttribution>();
         services.AddScoped<IAgentExecutionContext, AgentExecutionContext>();
         services.AddSingleton(ambientScope);
         services.AddSingleton<IEgressAuditWriter>(new NoOpEgressAuditWriter());

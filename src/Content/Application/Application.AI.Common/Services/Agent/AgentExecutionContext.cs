@@ -1,4 +1,5 @@
 using Application.AI.Common.Interfaces.Agent;
+using Application.AI.Common.Interfaces.Telemetry;
 using Domain.AI.Identity;
 
 namespace Application.AI.Common.Services.Agent;
@@ -9,10 +10,22 @@ namespace Application.AI.Common.Services.Agent;
 /// and consumed by downstream behaviors, handlers, and services.
 /// </summary>
 /// <remarks>
+/// <para>
 /// Registered as <c>Scoped</c> in DI — each MediatR request scope gets its own instance.
 /// Properties remain <c>null</c> for non-agent requests.
+/// </para>
+/// <para>
+/// <strong>This type also publishes the turn's external governance attribution</strong>
+/// (<see cref="IAgentTelemetryAttribution"/>), on <see cref="Initialize"/>, released when the DI scope
+/// that owns this instance is disposed. That is deliberate rather than incidental: publishing "which
+/// agent, in which conversation" to an external control plane is a direct consequence of holding those
+/// values, and tying the publication to this object's lifetime is what makes it impossible for a call
+/// site to establish the context and forget the attribution. It previously sat next to
+/// <see cref="Initialize"/> as a separate per-site ritual and was missed at three of five call sites —
+/// see <see cref="Initialize"/>'s remarks (#737).
+/// </para>
 /// </remarks>
-public sealed class AgentExecutionContext : IAgentExecutionContext
+public sealed class AgentExecutionContext : IAgentExecutionContext, IDisposable
 {
     // Single gate for both Initialize and SetIdentity so the interface's
     // documented thread-safety contract holds: "multiple concurrent agent
@@ -21,7 +34,16 @@ public sealed class AgentExecutionContext : IAgentExecutionContext
     // window in which two writers with different values both pass the check
     // and the last writer silently wins.
     private readonly object _gate = new();
+    private readonly IAgentTelemetryAttribution _attribution;
     private bool _initialized;
+
+    // The turn's published attribution, held for this object's whole lifetime so it stays in effect
+    // while the turn's spans are created. Null until the first Initialize; non-null exactly once
+    // thereafter — a re-initialize for a later turn cannot change either value the attribution is
+    // built from, because Initialize's own scope-leak guard rejects a different agent or conversation
+    // outright, so re-publishing would replace the scope with an identical one and leak the first.
+    private IDisposable? _attributionScope;
+    private bool _disposed;
 
     // Computed once, at construction — before Initialize is ever called, and independent of
     // whatever it's later called with. This scope must exist and be stable even for a caller
@@ -37,6 +59,21 @@ public sealed class AgentExecutionContext : IAgentExecutionContext
     // Not reachable today (every Initialize call site runs before any tool call), but nothing
     // enforced that ordering; this makes the guarantee explicit instead of incidental.
     private string? _observedToolResultScopeId;
+
+    /// <summary>
+    /// Initializes a new instance of the <see cref="AgentExecutionContext"/> class.
+    /// </summary>
+    /// <param name="attribution">
+    /// Publishes the turn's identity to an external agent-governance platform. Required rather than
+    /// optional: an absent one would restore exactly the silent, per-call-site omission this dependency
+    /// exists to make impossible. Hosts that have opted into no such integration get the benign no-op
+    /// default registered by <c>AddApplicationAiCommonDependencies</c>, which publishes nothing.
+    /// </param>
+    public AgentExecutionContext(IAgentTelemetryAttribution attribution)
+    {
+        ArgumentNullException.ThrowIfNull(attribution);
+        _attribution = attribution;
+    }
 
     /// <inheritdoc />
     public string? AgentId { get; private set; }
@@ -113,7 +150,57 @@ public sealed class AgentExecutionContext : IAgentExecutionContext
             TurnNumber = turnNumber;
             CallOnceScopeId = callOnceScopeId;
             _initialized = true;
+
+            // Published here, inside the same lock that establishes the values, so no reader can ever
+            // observe an initialized context whose attribution has not been published yet.
+            //
+            // Published once, on the first Initialize only. A later call is either rejected by the
+            // guard above or differs from this one solely in turn number, which the attribution does
+            // not carry — so re-publishing could only replace the live scope with an identical one
+            // while leaking the first.
+            //
+            // Not published at all once disposed. Nothing reaches a disposed scoped service today, but
+            // publishing there would create a scope with nothing left to release it — the one shape of
+            // leak this design would otherwise introduce.
+            if (!_disposed)
+                _attributionScope ??= _attribution.BeginTurn(agentId, conversationId);
         }
+    }
+
+    /// <summary>
+    /// Releases the turn's external governance attribution.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Called by the DI container when the scope owning this instance is disposed — which is what makes
+    /// attribution automatic rather than a per-call-site ritual. Every path that initializes a context
+    /// does so inside a scope it owns and disposes (the four non-MediatR sites each create one
+    /// explicitly; the MediatR path runs in the request scope the host disposes), so there is no path
+    /// that publishes attribution and never releases it.
+    /// </para>
+    /// <para>
+    /// Idempotent. A caller that disposes this directly as well as letting the container dispose it
+    /// must not release the underlying scope twice.
+    /// </para>
+    /// </remarks>
+    public void Dispose()
+    {
+        IDisposable? scope;
+
+        lock (_gate)
+        {
+            // Taking the scope and clearing the field in one locked step is what makes this idempotent:
+            // a second call — or a concurrent one — finds null and releases nothing. An additional
+            // "already disposed, return early" check would be dead weight; mutation-testing this method
+            // confirmed removing such a check changed no behaviour.
+            _disposed = true;
+            scope = _attributionScope;
+            _attributionScope = null;
+        }
+
+        // Disposed outside the lock: releasing the scope is another component's code, and holding this
+        // type's gate across a call into it would make the lock's span depend on that component.
+        scope?.Dispose();
     }
 
     /// <inheritdoc />
