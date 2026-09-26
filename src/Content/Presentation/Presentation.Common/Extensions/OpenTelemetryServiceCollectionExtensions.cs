@@ -120,7 +120,18 @@ public static class OpenTelemetryServiceCollectionExtensions
         // separate DI container that never sees this services collection at all, so this line cannot
         // reach it — see the matching, explicit Replace() call in that host's own Program.cs, added for
         // the same reason and found by the same code-review round.
-        services.Replace(ServiceDescriptor.Singleton(DistributedContextPropagator.Current));
+        //
+        // The explicit <DistributedContextPropagator> type argument is load-bearing, not decoration:
+        // ServiceDescriptor.Singleton(TService instance) infers TService from the ARGUMENT
+        // EXPRESSION'S STATIC TYPE, which is this abstract base type only because
+        // DistributedContextPropagator.Current is declared as one. A security review measured the
+        // failure mode directly: rewriting this as `var p = new BaggageSuppressingDistributedContextPropagator(); services.Replace(ServiceDescriptor.Singleton(p));`
+        // — a completely natural-looking edit — infers the DERIVED type instead, so Replace matches
+        // nothing, silently degrades into Add, and leaves ASP.NET Core's original, baggage-carrying
+        // propagator as the first (and still resolved) registration. Pinning the type argument removes
+        // that fragility regardless of how the instance is later constructed.
+        services.Replace(
+            ServiceDescriptor.Singleton<DistributedContextPropagator>(DistributedContextPropagator.Current));
 
         // Register the shared resource builder as a singleton for consistent attributes
         var resourceBuilder = CreateResourceBuilder(appConfig);

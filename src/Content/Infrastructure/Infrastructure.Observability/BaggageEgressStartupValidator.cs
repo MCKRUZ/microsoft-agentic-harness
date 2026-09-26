@@ -151,6 +151,7 @@ public sealed class BaggageEgressStartupValidator : IHostedService
     /// alias.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Both names are checked, matching <c>BaggageSuppressingDistributedContextPropagator</c>'s own
     /// <c>SuppressedFieldNames</c> — that type treats both as equally sensitive and suppresses both, so
     /// this re-assertion must recognise both too. A propagator whose <c>Fields</c> carried
@@ -160,8 +161,17 @@ public sealed class BaggageEgressStartupValidator : IHostedService
     /// is a security boundary re-checking a type this codebase does not own — a security review of
     /// #738 found the original ordinal match depended on an undocumented casing detail of the pinned
     /// runtime's W3C propagator (measured lowercase, but not guaranteed).
+    /// </para>
+    /// <para>
+    /// <c>public</c>, not <c>private</c>: <c>Presentation.FoundryHost</c>'s own <c>Program.cs</c> builds
+    /// a second, separate DI container (<c>AgentHost.CreateBuilder</c>) that this class's own hosted-service
+    /// instance never runs against, but which needs the identical check applied to whatever propagator
+    /// IT resolves. Reusing this method rather than a second hand-written copy avoids the exact failure
+    /// shape this repo has hit before: two independently-maintained copies of one security check
+    /// drifting apart (see the "Agent365" substring saga in this same PR's own history).
+    /// </para>
     /// </remarks>
-    private static void AssertPropagatorDoesNotCarryBaggage(
+    public static void AssertPropagatorDoesNotCarryBaggage(
         string propagatorLabel,
         IEnumerable<string>? fields,
         string leakDetail,

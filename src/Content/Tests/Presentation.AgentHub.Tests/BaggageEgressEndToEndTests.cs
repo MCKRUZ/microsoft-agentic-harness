@@ -61,6 +61,62 @@ public sealed class BaggageEgressEndToEndTests : IClassFixture<TestWebApplicatio
             + "tests alone could not catch");
     }
 
+    [Fact]
+    public async Task PropagateBaggageTrue_InboundRequestWithABaggageHeader_ExtractsTheCallerSuppliedBaggage()
+    {
+        // The discriminating positive case a security review asked for. The negative test above could,
+        // in principle, pass for the wrong reason — Activity.Current null on this host's telemetry
+        // path, the capturing middleware never actually running — and still report green. Flipping
+        // PropagateBaggage to true through the identical request shape and confirming baggage NOW
+        // reaches Activity.Baggage proves both the capturing middleware and this host's Activity
+        // pipeline are genuinely live, which is what makes the negative test's "empty" result mean
+        // something rather than being assumed. A mutation-test finding: reverting the production fix
+        // makes the FIRST test fail closed (the host refuses to boot) before it can even run — this
+        // test cannot be masked the same way, since PropagateBaggage=true gives the startup validator
+        // nothing to refuse.
+        // AppConfigHelper.LoadAppConfig() (what actually produces the AppConfig AddOpenTelemetry
+        // receives) builds its OWN, independent ConfigurationBuilder from appsettings.json, user
+        // secrets, and environment variables — it never reads whatever
+        // IWebHostBuilder.ConfigureAppConfiguration adds to the host's own IConfiguration. A
+        // ConfigureAppConfiguration-based override (tried first, confirmed to have zero effect via a
+        // diagnostic probe resolving the propagator directly) is therefore the wrong mechanism; the
+        // environment-variable double-underscore convention is the one channel LoadAppConfig() actually
+        // reads that a test can reach. Set and restored around the request so this mutation of
+        // process-global state cannot leak into a sibling test.
+        const string envVarName = "AppConfig__Observability__PropagateBaggage";
+        var originalEnvVar = Environment.GetEnvironmentVariable(envVarName);
+        Environment.SetEnvironmentVariable(envVarName, "true");
+
+        KeyValuePair<string, string?>[]? capturedBaggage = null;
+
+        try
+        {
+            using var client = _factory
+                .WithWebHostBuilder(builder => builder.ConfigureTestServices(services =>
+                    services.AddSingleton<IStartupFilter>(
+                        new BaggageCapturingStartupFilter(captured => capturedBaggage = captured))))
+                .CreateClient();
+
+            var request = new HttpRequestMessage(HttpMethod.Get, "/health/ai");
+            request.Headers.Add(
+                "baggage",
+                "agent.user_id=attacker-chosen,agent.conversation_id=victim-conversation-id");
+
+            await client.SendAsync(request);
+
+            capturedBaggage.Should().NotBeNull("the capturing middleware must have run for this request");
+            capturedBaggage.Should().Contain(
+                kvp => kvp.Key == "agent.user_id" && kvp.Value == "attacker-chosen",
+                "with PropagateBaggage explicitly opted in, baggage IS expected to flow through — "
+                + "proving the negative test above discriminates a real policy decision rather than "
+                + "passing vacuously");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(envVarName, originalEnvVar);
+        }
+    }
+
     /// <summary>
     /// Captures <see cref="Activity.Baggage"/> as the very first thing any request observes, before
     /// routing or authentication — <see cref="Activity.Current"/> is already fully populated by ASP.NET
