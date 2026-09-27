@@ -1,4 +1,5 @@
 using Application.AI.Common.Interfaces.Telemetry;
+using Application.AI.Common.Services.Governance;
 using Domain.Common.Config;
 using Domain.Common.Config.Observability;
 using Domain.Common.Helpers;
@@ -41,6 +42,26 @@ namespace Infrastructure.Observability.Agent365;
 /// </remarks>
 public sealed class Agent365TelemetryAttribution : IAgentTelemetryAttribution
 {
+    // Matches this repo's existing HasMaxLength(200) convention for a display-facing name (see
+    // ConversationDbContext). Nothing upstream of BeginTurn bounds either agentId or conversationId — a
+    // caller supplies both straight from an HTTP request body — so without this an arbitrarily long
+    // string gets stamped into a customer tenant's Agent 365 inventory, as either this agent's display
+    // name or its join key (#738). Applied to every caller-influenced string this class hands to
+    // BaggageBuilder, not only the one the issue happened to name — altitude finding on #738's own
+    // review: a bound applied to just agentName left conversationId, which travels the identical
+    // unvalidated path, exposed to the same failure. Truncated rather than rejected: an over-length
+    // value is a hygiene problem for the tenant's records, not a reason to drop attribution entirely.
+    private const int MaxBoundedValueLength = 200;
+
+    /// <summary>
+    /// Caps a caller-influenced value at <see cref="MaxBoundedValueLength"/> before it reaches
+    /// <c>BaggageBuilder</c>. Delegates to <see cref="BoundedText"/> rather than a hand-rolled slice —
+    /// the earlier cut used a bare <c>[..ceiling]</c>, which can split a UTF-16 surrogate pair into an
+    /// ill-formed string; <see cref="BoundedText"/> exists specifically because that shape had already
+    /// been reimplemented, with that exact gap, three times elsewhere in this repo.
+    /// </summary>
+    private static string Bound(string value) => BoundedText.Cap(value, MaxBoundedValueLength, "").Text;
+
     // Captured once rather than re-read per turn, deliberately. The exporter is wired into the
     // OpenTelemetry pipeline at composition time and the startup validator runs once, so both are
     // startup decisions. Re-reading the flag here would let the two diverge: switching Enabled on by
@@ -83,6 +104,13 @@ public sealed class Agent365TelemetryAttribution : IAgentTelemetryAttribution
     private readonly ResolvedIdentity? _hostDefault;
     private readonly Dictionary<string, ResolvedIdentity> _overrides;
 
+    // config.AgentName is exactly as construction-time-invariant as _canonicalTenantId and _hostDefault —
+    // precomputed here for the same reason: BeginTurn's hot-path discipline (see the class remark above
+    // this field) applies equally to this value, which the first cut of #738's bound left recomputing on
+    // every call. Only bounded once, never re-truncated per turn; null when AgentName is not configured,
+    // matching the blank-check BeginTurn already applies before using it.
+    private readonly string? _boundedConfiguredAgentName;
+
     /// <summary>
     /// Initializes a new instance of the <see cref="Agent365TelemetryAttribution"/> class.
     /// </summary>
@@ -106,6 +134,10 @@ public sealed class Agent365TelemetryAttribution : IAgentTelemetryAttribution
             : new ResolvedIdentity(
                 GuidId.Canonicalize(_config.AgentAppId)!,
                 CanonicalizeBlueprint(_config.BlueprintId));
+
+        _boundedConfiguredAgentName = string.IsNullOrWhiteSpace(_config.AgentName)
+            ? null
+            : Bound(_config.AgentName);
 
         // Same comparer Agents itself enforces in its setter — one lookup here has to agree with the one
         // FindOverride used to do, or an agent id that matched there would silently stop matching here.
@@ -165,9 +197,15 @@ public sealed class Agent365TelemetryAttribution : IAgentTelemetryAttribution
         // whichever caller asked first would serve that caller's exact casing to every later, distinct
         // caller of the same agent — a cross-caller integrity bug in the tenant's own governance record,
         // found by security review on the first cut of this cache.
-        var agentName = isHostDefault && !string.IsNullOrWhiteSpace(config.AgentName)
-            ? config.AgentName
-            : agentId;
+        // Bounded regardless of source (#738) — an operator-configured AgentName is trusted more than
+        // a caller-supplied agentId, but an absurdly long string is equally worth truncating in either
+        // case, and treating them differently here would be a distinction with no security benefit.
+        // The configured-name branch reads the precomputed _boundedConfiguredAgentName rather than
+        // re-bounding config.AgentName on every call — only the agentId fallback varies per caller and
+        // still needs a fresh Bound() call.
+        var agentName = isHostDefault && _boundedConfiguredAgentName is not null
+            ? _boundedConfiguredAgentName
+            : Bound(agentId);
 
         var builder = new BaggageBuilder()
             .TenantId(_canonicalTenantId)
@@ -180,10 +218,11 @@ public sealed class Agent365TelemetryAttribution : IAgentTelemetryAttribution
         }
 
         // Conversation id is Agent 365's primary join key for grouping a run's spans into a session.
-        // Guarded because an empty value would publish an empty join key rather than omitting it.
+        // Guarded because an empty value would publish an empty join key rather than omitting it. Bounded
+        // for the same reason as agentName above — it travels the identical unvalidated caller path.
         if (!string.IsNullOrWhiteSpace(conversationId))
         {
-            builder = builder.ConversationId(conversationId);
+            builder = builder.ConversationId(Bound(conversationId));
         }
 
         return builder.Build();

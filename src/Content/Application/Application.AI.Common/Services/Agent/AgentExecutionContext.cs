@@ -177,8 +177,9 @@ public sealed class AgentExecutionContext : IAgentExecutionContext, IDisposable
             // releasing it, a genuine leak in exchange for an unmeasured, currently-hypothetical win — no
             // shipped implementation of IAgentTelemetryAttribution does anything slower than a dictionary
             // lookup and a Baggage write. If a real implementation is ever measured to be slow here, the
-            // fix is to make ITS OWN wrapped work fast or cached (see Agent365TelemetryAttribution's
-            // per-agent identity cache, added for exactly this), not to loosen this lock.
+            // fix is to make ITS OWN wrapped work fast (see Agent365TelemetryAttribution's
+            // per-agent identity precompute, resolved once from config at construction rather than
+            // recomputed per call, for exactly this reason), not to loosen this lock.
             //
             // Republished on EVERY call, not only the first, even though the two values it carries
             // cannot have changed (the guard above rejects any change to agent or conversation).

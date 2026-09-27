@@ -1,13 +1,18 @@
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Services.Governance;
 using Azure.AI.AgentServer.Core;
 using Domain.AI.Skills;
+using Domain.Common.Config;
+using Infrastructure.Observability;
 using Microsoft.Agents.AI;
 using Microsoft.Agents.AI.Foundry.Hosting;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Options;
 using Presentation.Common.Extensions;
 
 namespace Presentation.FoundryHost;
@@ -112,7 +117,46 @@ public static class Program
             builder.Services.AddFoundryResponses(agent);
             builder.RegisterProtocol("responses", endpoints => endpoints.MapFoundryResponses());
 
+            // AgentHost.CreateBuilder builds its OWN, separate DI container — the comment above
+            // provider's construction already establishes this is deliberate. That means ASP.NET
+            // Core's own hosting bootstrap (inside AgentHost.CreateBuilder, before this line) captures
+            // whatever DistributedContextPropagator.Current is INTO THIS CONTAINER as its own
+            // singleton, the same mechanism CI's correctness-review and security-review gates found
+            // left the harness's main composition root's inbound requests unprotected — except here,
+            // GetServices(...) on line 57 above already ran AddOpenTelemetry and set Current correctly
+            // BEFORE this container's own bootstrap captured it, so this container gets the right
+            // value by construction order, not by coincidence. Asserted explicitly rather than relied
+            // upon implicitly: a code-review round on #738 found the implicit version indistinguishable
+            // from luck, since nothing here checked or enforced it. The explicit <DistributedContextPropagator>
+            // type argument matters here for the same reason it does in AddOpenTelemetry — see that
+            // method's own remarks.
+            builder.Services.Replace(
+                ServiceDescriptor.Singleton<DistributedContextPropagator>(DistributedContextPropagator.Current));
+
             var app = builder.Build();
+
+            // The Replace above is only as good as what THIS container actually resolves — assert it,
+            // for the same reason BaggageEgressStartupValidator asserts the main container's. That
+            // validator is a hosted service of the OTHER container (`provider`) and never runs against
+            // this one, and this container registers no hosted service of its own to catch a future
+            // regression here (a reordering of the two CreateBuilder calls, or the type-inference
+            // fragility the Replace call above's remarks describe). A security review of #738 found
+            // this gap: /responses is explicitly unauthenticated by this host's own design (see the
+            // trust-boundary comment above), making a silent reversion here the least-gated of any host
+            // this policy protects. Reuses BaggageEgressStartupValidator's own check rather than a
+            // second hand-written copy, so the two can never drift apart the way two independent copies
+            // of the same check have drifted in this PR's own history.
+            var servingPropagator = app.App.Services.GetRequiredService<DistributedContextPropagator>();
+            var propagateBaggage = provider.GetRequiredService<IOptionsMonitor<AppConfig>>()
+                .CurrentValue.Observability.PropagateBaggage;
+            if (!propagateBaggage)
+            {
+                BaggageEgressStartupValidator.AssertPropagatorDoesNotCarryBaggage(
+                    "System.Diagnostics.Activity (resolved from AgentHost's own DI container)",
+                    servingPropagator.Fields,
+                    "a caller-supplied baggage header on every inbound request to /responses",
+                    "the Replace() call above registers a trace-context-only propagator");
+            }
 
             // #478: AgentHost's own request loop never dispatches through ExecuteAgentTurnCommand —
             // every other host arms ToolAdmissionAccessor there, so without this, GovernedAIFunction's
