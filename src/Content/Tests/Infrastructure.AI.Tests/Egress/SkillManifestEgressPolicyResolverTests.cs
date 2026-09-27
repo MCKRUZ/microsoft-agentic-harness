@@ -402,15 +402,15 @@ public sealed class SkillManifestEgressPolicyResolverTests
     /// <summary>
     /// #618: an ephemeral skill published via <see cref="EphemeralSkillMetadataAccessor"/> — the
     /// shape a meta-harness eval candidate uses, since a candidate is never a registered
-    /// <see cref="ISkillMetadataRegistry"/> entry — is resolved WITHOUT ever looking itself up in the
-    /// registry. A strict mock with only <see cref="ISkillMetadataRegistry.Version"/> set up (read
-    /// unconditionally by every <c>ResolveFor</c> call since #709's cache-invalidation fix, regardless
-    /// of the ephemeral path) and everything else unconfigured proves the registry's skill-lookup
-    /// surface specifically is never touched for an ephemeral skill: before this fix, the resolver had
-    /// no ephemeral concept and would have gone straight to <c>TryGet</c>, hit the unconfigured strict
-    /// mock, and thrown — the failure mode this bug actually produced in production being silence (an
-    /// "unknown skill" warning and the harness-wide default), not a throw, only because the real
-    /// registry returns null instead of throwing.
+    /// <see cref="ISkillMetadataRegistry"/> entry — is resolved WITHOUT ever consulting the registry.
+    /// A strict mock with zero setups proves the registry is not touched at all — not <c>TryGet</c>,
+    /// and not <see cref="ISkillMetadataRegistry.Version"/> either, since <c>ResolveFor</c> defers
+    /// reading <c>Version</c> until just before the version-checked cache read (#709's
+    /// cache-invalidation fix), which the ephemeral path returns before ever reaching. Before this
+    /// fix, the resolver had no ephemeral concept and would have gone straight to <c>TryGet</c>,
+    /// hit the unconfigured strict mock, and thrown — the failure mode this bug actually produced in
+    /// production being silence (an "unknown skill" warning and the harness-wide default), not a
+    /// throw, only because the real registry returns null instead of throwing.
     /// </summary>
     [Fact]
     public async Task ResolveFor_EphemeralSkillActive_UsesItsOwnAllowlist_NeverConsultsRegistry()
@@ -424,7 +424,6 @@ public sealed class SkillManifestEgressPolicyResolverTests
         });
 
         var registry = new Mock<ISkillMetadataRegistry>(MockBehavior.Strict);
-        registry.Setup(r => r.Version).Returns(0L);
         var resolver = NewResolver(accessor, registry.Object);
 
         using var __ = EphemeralSkillMetadataAccessor.Begin(candidateSkill);
@@ -433,7 +432,6 @@ public sealed class SkillManifestEgressPolicyResolverTests
         var verdict = await policy.AllowAsync(
             new Uri("https://candidate.example.com/anything"), TestIdentity.Default, CancellationToken.None);
         verdict.Allowed.Should().BeTrue();
-        registry.Verify(r => r.Version, Times.AtLeastOnce);
         registry.VerifyNoOtherCalls();
     }
 
@@ -451,7 +449,6 @@ public sealed class SkillManifestEgressPolicyResolverTests
     {
         var accessor = new CurrentSkillAccessor();
         var registry = new Mock<ISkillMetadataRegistry>(MockBehavior.Strict);
-        registry.Setup(r => r.Version).Returns(0L);
         var resolver = NewResolver(accessor, registry.Object);
 
         using (accessor.BeginScope(["shared-name"]))
@@ -484,7 +481,6 @@ public sealed class SkillManifestEgressPolicyResolverTests
                 "via the shared skill-id cache");
         }
 
-        registry.Verify(r => r.Version, Times.AtLeastOnce);
         registry.VerifyNoOtherCalls();
     }
 }

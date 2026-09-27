@@ -147,18 +147,21 @@ public sealed class SkillManifestEgressPolicyResolver : IEgressPolicyResolver
     {
         ArgumentNullException.ThrowIfNull(identity);
 
-        var currentVersion = _skillRegistry.Version;
-        InvalidateIfSkillRegistryChanged(currentVersion);
-
         var skillIds = _currentSkill.CurrentSkillIds;
         if (skillIds.Count == 0)
             return _noSkillPolicy.Value;
 
         // #618: an ephemeral (eval-candidate) skill never touches _skillCache at all — see this
         // method's own remarks on why caching either concurrent candidate's built policy under a
-        // shared skill id would leak it to the other.
+        // shared skill id would leak it to the other. Neither this nor the no-skill path above reads
+        // _skillCache, so the version check below is deferred until just before the one path that does
+        // — this is a hot path (every governed outbound HTTP request), and both early returns above are
+        // common enough that paying for an atomic version check on every call would be pure waste here.
         if (skillIds.Any(EphemeralSkillMetadataAccessor.HasOverride))
             return BuildPolicyForSkills(skillIds);
+
+        var currentVersion = _skillRegistry.Version;
+        InvalidateIfSkillRegistryChanged(currentVersion);
 
         // Not GetOrAdd: a stale entry (see VersionedPolicy's remarks) must be treated as a miss even
         // though the key is present, which GetOrAdd's "return the existing value if the key exists"
