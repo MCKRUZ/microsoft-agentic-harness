@@ -16,6 +16,7 @@ using Domain.Common.Config;
 using Domain.Common.Config.AI;
 using Domain.Common.MetaHarness;
 using Microsoft.Agents.AI;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -166,8 +167,9 @@ public partial class AgentExecutionContextFactory
         // PromptComposition is enabled, the authoritative section composer reframes that same skill
         // content with identity + permission-rules sections within a token budget; per-turn dynamic
         // context (session state, memory) stays on the AIContextProvider rail, never baked in here.
+        var amendmentsBySkillId = await BuildAmendmentsBySkillIdAsync(skills);
         var instruction = SkillInstructionMerger.Merge(
-            skills, options.AdditionalContext, options.AgentInstructions, disclosedOnDemand);
+            skills, options.AdditionalContext, options.AgentInstructions, disclosedOnDemand, amendmentsBySkillId);
         if (_appConfig.CurrentValue.AI?.ContextManagement?.PromptComposition?.Enabled == true)
             instruction = await ComposeStaticSystemPromptAsync(agentName, instruction);
 
@@ -260,6 +262,80 @@ public partial class AgentExecutionContextFactory
             skills.Count, agentName, tools?.Count ?? 0, aiContextProviders?.Count ?? 0);
 
         return context;
+    }
+
+    /// <summary>
+    /// Loads learned instruction amendments (#695) for each skill, keyed by <see cref="SkillDefinition.Id"/>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <see cref="ISkillAmendmentProvider"/> is scoped (it resolves the ambient
+    /// tenant/owner-aware graph store), while this factory is a singleton — the same captive-dependency
+    /// constraint <see cref="ComposeStaticSystemPromptAsync"/> already works around. It is therefore
+    /// resolved per invocation from the current request scope via <see cref="IAmbientRequestScope"/>,
+    /// never taken as a constructor parameter (that shape was tried and rejected: it fails
+    /// <c>ValidateOnBuild</c> at startup with "Cannot consume scoped service ... from singleton", because
+    /// nothing here is a first-class per-request object the container could construct scoped-first).
+    /// </para>
+    /// <para>
+    /// Fails open per skill: a lookup failure for one skill is logged and skipped rather than failing the
+    /// whole turn — amendments are an enhancement to the static instructions, never a hard dependency of
+    /// building them. No ambient scope, no registered provider, or every skill amendment-free all return
+    /// <see langword="null"/>, so <see cref="SkillInstructionMerger.Merge"/> sees the same "nothing to
+    /// add" shape either way.
+    /// </para>
+    /// <para>
+    /// <strong>Cadence: per agent build, not per turn.</strong> This runs inside <c>MapToAgentContextAsync</c>,
+    /// which builds the static, per-conversation-cached <c>AIAgent</c> — <c>AgentConversationCache</c>
+    /// returns that same cached agent on every subsequent turn of an ongoing conversation without calling
+    /// back in here. A new amendment therefore takes effect for any brand-new conversation immediately,
+    /// and for an already-open conversation once its cache entry is rebuilt (idle eviction), not on the
+    /// very next turn of that specific conversation — the same cadence every other piece of this static
+    /// instruction (the skill's own body, the agent's own instructions) already has.
+    /// </para>
+    /// <para>
+    /// Fetches every skill's amendments concurrently rather than one at a time: a multi-skill agent pays
+    /// for the slowest single graph lookup, not the sum of all of them.
+    /// </para>
+    /// </remarks>
+    private async Task<IReadOnlyDictionary<string, IReadOnlyList<SkillAmendment>>?> BuildAmendmentsBySkillIdAsync(
+        IReadOnlyList<SkillDefinition> skills)
+    {
+        var scope = _serviceProvider.GetService<IAmbientRequestScope>()?.Current;
+        var provider = scope?.GetService<ISkillAmendmentProvider>();
+        if (provider is null)
+            return null;
+
+        var lookups = await Task.WhenAll(skills.Select(skill => FetchAmendmentsAsync(provider, skill.Id)));
+
+        var result = new Dictionary<string, IReadOnlyList<SkillAmendment>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (skillId, amendments) in lookups)
+        {
+            if (amendments.Count > 0)
+                result[skillId] = amendments;
+        }
+
+        return result.Count > 0 ? result : null;
+    }
+
+    /// <summary>
+    /// Fetches one skill's amendments, failing open: a lookup failure is logged and treated as "no
+    /// amendments" for that skill rather than aborting the concurrent fetch for every other skill.
+    /// </summary>
+    private async Task<(string SkillId, IReadOnlyList<SkillAmendment> Amendments)> FetchAmendmentsAsync(
+        ISkillAmendmentProvider provider, string skillId)
+    {
+        try
+        {
+            return (skillId, await provider.GetAmendmentsAsync(skillId));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex,
+                "Failed to load learned amendments for skill {SkillId}; continuing without them",
+                skillId);
+            return (skillId, []);
+        }
     }
 
     /// <summary>

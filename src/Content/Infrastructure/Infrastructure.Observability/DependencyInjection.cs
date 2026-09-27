@@ -1,4 +1,5 @@
 using Application.AI.Common.Interfaces;
+using Application.Common.Interfaces.Common;
 using Application.Common.Interfaces.Telemetry;
 using Application.Common.Logging;
 using Domain.Common.Config;
@@ -8,6 +9,7 @@ using Infrastructure.Observability.Persistence;
 using Infrastructure.Observability.Processors;
 using Infrastructure.Observability.Services;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -43,6 +45,42 @@ public static class DependencyInjection
     {
         // Observability pipeline configurator — adds processors and exporters at Order 300
         services.AddSingleton<ITelemetryConfigurator, ObservabilityTelemetryConfigurator>();
+
+        // Agent 365 turn attribution. Registered unconditionally rather than behind the Enabled flag,
+        // because it reads that flag itself and returns a shared no-op scope when it is off — so a
+        // host that has not opted in pays nothing, and there is no second place for the flag to be
+        // consulted and get it wrong. Registered with AddSingleton (not TryAdd) so it wins over
+        // Application.AI.Common's no-op default regardless of which layer registers first: the last
+        // registration is the one GetRequiredService resolves.
+        services.AddSingleton<Application.AI.Common.Interfaces.Telemetry.IAgentTelemetryAttribution,
+            Agent365.Agent365TelemetryAttribution>();
+
+        // Agent365StartupValidator's own dependency (#738: directory-permission enforcement). The real
+        // implementation lives in Infrastructure.AI, a project this one did not previously reference —
+        // found by code review: nothing made this registration self-sufficient, so a composition root
+        // that wires AddInfrastructureObservabilityDependencies() without also wiring
+        // AddInfrastructureAIDependencies() would fail to resolve the validator's constructor at host
+        // start. TryAddSingleton so whichever of the two DI methods runs first wins; both register the
+        // identical concrete type, so which one "wins" has no observable difference. Confirmed no
+        // circular project reference: Infrastructure.AI references only Application/Domain layers and
+        // its own sibling Infrastructure.AI.RAG, none of which lead back here.
+        services.TryAddSingleton<IOwnerOnlyDirectoryCreator, Infrastructure.AI.Helpers.OwnerOnlyDirectoryCreator>();
+
+        // Refuses to boot a host that enables Agent 365 export where the exporter cannot be wired.
+        // Registered unconditionally and no-ops when the feature is off, because its whole purpose is
+        // to catch a host that turned the feature on — a registration gated on the same flag it is
+        // checking would be the thing most likely to be missing.
+        // AddHostedService, matching the ~15 sibling registrations across the Infrastructure.AI DI
+        // partials. It uses TryAddEnumerable, so a composition that reaches this method twice registers
+        // the validator once — a plain AddSingleton would start it twice and duplicate both its log line
+        // and its throw path.
+        services.AddHostedService<Agent365.Agent365StartupValidator>();
+
+        // Re-asserts the host-wide baggage-egress policy at boot (#738). Registered unconditionally,
+        // gated only on ObservabilityConfig.PropagateBaggage itself — every host this policy protects,
+        // not only ones that also enable Agent 365. See its own remarks for why this moved out of
+        // Agent365StartupValidator.
+        services.AddHostedService<BaggageEgressStartupValidator>();
 
         // #457: the one ILocalLogRedactor implementation, closing the parity gap between the OTel
         // logging bridge's own redaction and every local ILoggerProvider sink. Application.Common's

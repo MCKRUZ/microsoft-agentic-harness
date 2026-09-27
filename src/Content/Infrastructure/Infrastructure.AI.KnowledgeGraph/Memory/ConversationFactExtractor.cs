@@ -7,8 +7,10 @@ using Application.AI.Common.Prompts.Exceptions;
 using Application.AI.Common.Prompts.Interfaces;
 using Domain.AI.KnowledgeGraph.Models;
 using Domain.AI.Prompts;
+using Domain.Common.Config.AI;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace Infrastructure.AI.KnowledgeGraph.Memory;
 
@@ -32,12 +34,11 @@ public sealed class ConversationFactExtractor : IConversationFactExtractor
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
     };
 
-    private const double DefaultMinConfidence = 0.7;
-
     private readonly IModelRouter _modelRouter;
     private readonly IPromptRegistry _promptRegistry;
     private readonly IPromptRenderer _promptRenderer;
     private readonly IPromptUsageRecorder _usageRecorder;
+    private readonly IOptions<KnowledgeBridgeConfig> _config;
     private readonly ILogger<ConversationFactExtractor> _logger;
 
     /// <summary>
@@ -47,24 +48,38 @@ public sealed class ConversationFactExtractor : IConversationFactExtractor
     /// <param name="promptRegistry">Versioned prompt registry; resolves the fact-extractor template.</param>
     /// <param name="promptRenderer">Renders the resolved template with variable substitution (Scriban).</param>
     /// <param name="usageRecorder">Stamps OTel / persists which prompt version was used per turn.</param>
+    /// <param name="config">
+    /// Knowledge-bridge configuration; <see cref="KnowledgeBridgeConfig.MinConfidence"/> is read on every
+    /// extraction so a caller-configured threshold is genuinely used, not silently ignored in favor of a
+    /// hardcoded default. <see cref="IOptions{TOptions}"/>, not <see cref="IOptionsMonitor{TOptions}"/>:
+    /// this type is registered as a fixed singleton snapshot at startup
+    /// (<c>Infrastructure.AI/DependencyInjection.cs</c>, matching <c>KnowledgeExtractionBehavior</c>'s own
+    /// dependency on the same config), with no <c>Configure&lt;KnowledgeBridgeConfig&gt;</c> binding
+    /// anywhere — so <see cref="IOptionsMonitor{TOptions}"/> would have nothing to monitor and would
+    /// silently fall back to an unconfigured default instead of the real value. A config change here does
+    /// require a redeploy, same as every other config this extractor reads.
+    /// </param>
     /// <param name="logger">Logger for recording extraction results and failures.</param>
     public ConversationFactExtractor(
         IModelRouter modelRouter,
         IPromptRegistry promptRegistry,
         IPromptRenderer promptRenderer,
         IPromptUsageRecorder usageRecorder,
+        IOptions<KnowledgeBridgeConfig> config,
         ILogger<ConversationFactExtractor> logger)
     {
         ArgumentNullException.ThrowIfNull(modelRouter);
         ArgumentNullException.ThrowIfNull(promptRegistry);
         ArgumentNullException.ThrowIfNull(promptRenderer);
         ArgumentNullException.ThrowIfNull(usageRecorder);
+        ArgumentNullException.ThrowIfNull(config);
         ArgumentNullException.ThrowIfNull(logger);
 
         _modelRouter = modelRouter;
         _promptRegistry = promptRegistry;
         _promptRenderer = promptRenderer;
         _usageRecorder = usageRecorder;
+        _config = config;
         _logger = logger;
     }
 
@@ -116,7 +131,7 @@ public sealed class ConversationFactExtractor : IConversationFactExtractor
             var response = await client.GetResponseAsync(rendered.Body, cancellationToken: cancellationToken);
 
             var json = response.Text ?? "[]";
-            var facts = ParseFacts(json, conversationId, turnNumber);
+            var facts = ParseFacts(json, conversationId, turnNumber, _config.Value.MinConfidence);
 
             _logger.LogDebug(
                 "Extracted {Count} facts from conversation {ConversationId} turn {Turn}",
@@ -134,7 +149,7 @@ public sealed class ConversationFactExtractor : IConversationFactExtractor
     }
 
     private static IReadOnlyList<ConversationFact> ParseFacts(
-        string json, string conversationId, int turnNumber)
+        string json, string conversationId, int turnNumber, double minConfidence)
     {
         if (!Application.AI.Common.Json.LlmJsonResponseParser.TryParseArray<List<RawFact>>(json, JsonOptions, out var rawFacts)
             || rawFacts is null or { Count: 0 })
@@ -144,7 +159,7 @@ public sealed class ConversationFactExtractor : IConversationFactExtractor
 
         var factIndex = 0;
         return rawFacts
-            .Where(f => f.Confidence >= DefaultMinConfidence)
+            .Where(f => f.Confidence >= minConfidence)
             .Select(f => new ConversationFact
             {
                 Key = $"{conversationId}:{turnNumber}:{factIndex++}",

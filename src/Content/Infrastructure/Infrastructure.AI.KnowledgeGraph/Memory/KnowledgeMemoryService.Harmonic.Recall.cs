@@ -91,18 +91,7 @@ public sealed partial class KnowledgeMemoryService
             return [];
 
         var nodes = await GetScopedTrustedMemoryNodesAsync(cancellationToken);
-
-        // Order by score, then by id — the id tiebreak keeps recall deterministic regardless of the graph
-        // backend's node enumeration order (GetAllNodesAsync is not order-guaranteed), so the same query
-        // returns the same facts run-to-run.
-        var seeds = nodes
-            .Select(n => (Node: n, Score: HarmonicMatchScore(queryTokens, n)))
-            .Where(x => x.Score > 0)
-            .OrderByDescending(x => x.Score)
-            .ThenBy(x => x.Node.Id, StringComparer.Ordinal)
-            .Take(maxResults)
-            .Select(x => x.Node)
-            .ToList();
+        var seeds = RankByScore(nodes, n => HarmonicMatchScore(queryTokens, n), maxResults);
 
         if (seeds.Count == 0)
             return seeds;

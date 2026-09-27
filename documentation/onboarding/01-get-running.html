@@ -88,6 +88,7 @@
                             ><span class="sidebar-link-num">11</span> Extending the Harness</a
                         >
                     </div>
+                    <div class="sidebar-group"><div class="sidebar-group-title">Deployment</div><a class="sidebar-link" href="18-self-hosted-docker.html"><span class="sidebar-link-num">18</span> Self-Hosted, Non-Azure Docker</a></div>
                     <div class="sidebar-group">
                         <div class="sidebar-group-title">Quality</div>
                         <a class="sidebar-link" href="13-evaluation.html"
@@ -105,6 +106,7 @@
                     </div>
                     <div class="sidebar-group">
                         <div class="sidebar-group-title">Other Guides</div>
+                        <a class="sidebar-link" href="showcase/index.html">&#8592; Capability Showcase</a>
                         <a class="sidebar-link" href="architecture/index.html">&#8592; Architecture Guide</a>
                         <a class="sidebar-link" href="agentic-harness-course/index.html">&#8592; Interactive Course</a>
                         <a class="sidebar-link" href="security/index.html">&#8592; Security Guide</a>
@@ -208,13 +210,17 @@
                             <div class="callout-title">One switch, many providers</div>
                             <p style="margin: 0">
                                 The <code>AI:AgentFramework:ClientType</code> setting picks the SDK path. The
-                                <code>AIAgentFrameworkClientType</code> enum has seven values:
+                                <code>AIAgentFrameworkClientType</code> enum has nine values:
                                 <code>AzureOpenAI</code>, <code>OpenAI</code>, <code>AzureAIInference</code>,
                                 <code>PersistentAgents</code>, <code>Anthropic</code>, <code>Echo</code> (a
-                                deterministic test client), and <code>FoundryResponses</code>. Then
-                                <code>Endpoint</code>, <code>DefaultDeployment</code>, and <code>ApiKey</code> point it
-                                at the chosen provider. Switching providers is a config change, not a code change.
-                                See <a href="architecture/02-compute-and-ai.html">Architecture &middot; Compute
+                                deterministic test client), <code>FoundryResponses</code>,
+                                <code>FoundryDirectResponses</code>, and <code>AnthropicDirect</code> (Claude via
+                                <code>api.anthropic.com</code> directly, no Azure relay — see
+                                <a href="02-configuration.html#section-ai-framework">Configuration &middot;
+                                Claude without Azure</a>). Then <code>Endpoint</code>, <code>DefaultDeployment</code>,
+                                and <code>ApiKey</code> point it at the chosen provider. Switching providers is a
+                                config change, not a code change. See
+                                <a href="architecture/02-compute-and-ai.html">Architecture &middot; Compute
                                 &amp; AI</a> for the full provider matrix.
                             </p>
                         </div>

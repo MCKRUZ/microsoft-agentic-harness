@@ -1,3 +1,4 @@
+using Application.AI.Common.Interfaces.Egress;
 using Domain.AI.Egress;
 using FluentAssertions;
 using Infrastructure.AI.Egress;
@@ -82,6 +83,90 @@ public sealed class JsonlEgressAuditWriterTests : IDisposable
         var lines = await File.ReadAllLinesAsync(_expectedFile);
         lines.Should().HaveCount(20);
         lines.Should().OnlyContain(l => l.Contains("\"allowed\":true"));
+    }
+
+    [Fact]
+    public async Task GetRecords_RoundTripsAllowAndDenyDecisions()
+    {
+        await _sut.AppendAsync(AllowDecision(), TestIdentity.Default, CancellationToken.None);
+        await _sut.AppendAsync(DenyDecision(), TestIdentity.Default, CancellationToken.None);
+
+        var result = await _sut.GetRecordsAsync(new EgressAuditQuery(), CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Should().HaveCount(2);
+        result.Value.Should().Contain(r => r.Allowed && r.Host == "api.github.com");
+        result.Value.Should().Contain(r => !r.Allowed && r.Host == "evil.example.com");
+    }
+
+    [Fact]
+    public async Task GetRecords_FiltersByAllowed()
+    {
+        await _sut.AppendAsync(AllowDecision(), TestIdentity.Default, CancellationToken.None);
+        await _sut.AppendAsync(DenyDecision(), TestIdentity.Default, CancellationToken.None);
+
+        var result = await _sut.GetRecordsAsync(new EgressAuditQuery { Allowed = false }, CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Should().ContainSingle(r => !r.Allowed);
+    }
+
+    [Fact]
+    public async Task GetRecords_FiltersByHost()
+    {
+        await _sut.AppendAsync(AllowDecision(), TestIdentity.Default, CancellationToken.None);
+        await _sut.AppendAsync(DenyDecision(), TestIdentity.Default, CancellationToken.None);
+
+        var result = await _sut.GetRecordsAsync(
+            new EgressAuditQuery { Host = "evil.example.com" }, CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Should().ContainSingle(r => r.Host == "evil.example.com");
+    }
+
+    [Fact]
+    public async Task GetRecords_FiltersByDateRange()
+    {
+        await _sut.AppendAsync(AllowDecision(), TestIdentity.Default, CancellationToken.None);
+
+        var result = await _sut.GetRecordsAsync(
+            new EgressAuditQuery { Start = DateTimeOffset.UtcNow.AddMinutes(1) }, CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task GetRecords_EmptyDirectory_ReturnsEmpty()
+    {
+        var result = await _sut.GetRecordsAsync(new EgressAuditQuery(), CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task GetRecords_CorruptLine_IsSkippedNotFailed()
+    {
+        await _sut.AppendAsync(AllowDecision(), TestIdentity.Default, CancellationToken.None);
+        await File.AppendAllTextAsync(_expectedFile, "not-json-and-not-chained\n");
+        await _sut.AppendAsync(DenyDecision(), TestIdentity.Default, CancellationToken.None);
+
+        var result = await _sut.GetRecordsAsync(new EgressAuditQuery(), CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Should().HaveCount(2);
+    }
+
+    [Fact]
+    public async Task GetRecords_ReturnsChronologicalOrder()
+    {
+        await _sut.AppendAsync(AllowDecision(), TestIdentity.Default, CancellationToken.None);
+        await _sut.AppendAsync(DenyDecision(), TestIdentity.Default, CancellationToken.None);
+
+        var result = await _sut.GetRecordsAsync(new EgressAuditQuery(), CancellationToken.None);
+
+        result.Value.Should().BeInAscendingOrder(r => r.Timestamp);
     }
 
     private static EgressDecision AllowDecision() => new()

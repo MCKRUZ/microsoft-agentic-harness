@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Application.AI.Common.Interfaces.Tools;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -51,6 +52,40 @@ public sealed class FirstPartyToolLookup
 {
     private readonly IServiceProvider _serviceProvider;
     private readonly HashSet<string> _registeredFirstPartyToolKeys;
+
+    // #651: memoizes a SUCCESSFUL key -> published-name resolution for the process lifetime.
+    //
+    // Why no invalidation is needed — the mapping is immutable once observed. Two facts carry that,
+    // and both are stated as the negative/structural claims they are rather than as a count, because a
+    // count is the part a future maintainer will re-measure over a different scope and mistrust:
+    //   * NO AddKeyedScoped<ITool> or AddKeyedTransient<ITool> registration exists anywhere in the
+    //     repo — every first-party tool is a keyed SINGLETON, so DI hands back one instance per key
+    //     for the life of the process. (The tools' own registration doc, and #521's entry in
+    //     CLAUDE.md's Common Mistakes, both say a keyed tool must stay singleton even when it needs
+    //     per-request state, so this is an enforced convention rather than a coincidence of today's
+    //     registrations.)
+    //   * Every ITool.Name implementation is expression-bodied over a const or a string literal —
+    //     including the one worth suspecting, ConnectorToolAdapter.Name => _connector.ToolName, where
+    //     each connector hard-codes the literal. None is settable, init-set, or derived from
+    //     configuration that could hot-reload.
+    // A value that cannot change needs no version key, no ambient-scope key, and no expiry: this is why
+    // the memo belongs HERE and not in a permission-rule provider, which would need its own cache with
+    // its own separately-argued invalidation rule (PluginPermissionRuleProvider already carries one;
+    // EnvelopePermissionRuleProvider was about to grow a second, which is what #651 asked for).
+    //
+    // ONLY successes are memoized, and that is a safety property, not an optimization detail:
+    //   * A name OUTSIDE the bounded registered-key set must never be memoized. Callers pass
+    //     caller-authored, unbounded names here (MCP tool names embed a per-run bundle id), so
+    //     memoizing misses would reintroduce exactly the unbounded, process-lifetime memory growth
+    //     this type's class remarks exist to prevent. A miss costs one HashSet probe; leave it live.
+    //   * A CONSTRUCTION FAILURE must never be memoized either. It is the one genuinely transient
+    //     outcome here, and caching it would permanently downgrade a security control (the caller
+    //     falls back to key-only Deny/grant coverage) for the rest of the process on the strength of
+    //     one bad moment. Retrying costs a DI probe that a healthy tool answers from its singleton.
+    // Keyed case-insensitively to match this type's own resolution semantics (#655) — "BASH" and
+    // "bash" resolve to one tool, so they share one memo entry.
+    private readonly ConcurrentDictionary<string, string> _publishedNameByKey =
+        new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>Initializes a new instance of the <see cref="FirstPartyToolLookup"/> class.</summary>
     /// <param name="serviceProvider">Root service provider, for bounded keyed-DI lookup.</param>
@@ -209,23 +244,67 @@ public sealed class FirstPartyToolLookup
     /// first-party resolution is possible or needed) OR constructing it throws.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// #626 code-review: originally duplicated near-verbatim between <c>PluginPermissionRuleProvider</c>
     /// (#612) and <c>EnvelopePermissionRuleProvider</c> (#626) — exactly the anti-pattern this type's
     /// own class remarks say it exists to prevent (#387: "found duplicated — twice"). Deliberately pure
     /// (no logging): a construction failure is a caller-specific concern (each rule provider names a
     /// different kind of manifest entry in its own log message), so each caller still wraps this with
     /// its own one-line log-on-failure — only the resolve-or-fall-back-to-key logic itself is shared.
+    /// </para>
+    /// <para>
+    /// <strong>A successful resolution is memoized for the process lifetime (#651), so a caller on a hot
+    /// path does not need a cache of its own.</strong> The per-call cost lands on
+    /// <c>CapabilityEnvelopeGrantResolver</c>, which is reached both from
+    /// <c>EnvelopePermissionRuleProvider</c> (via <c>ThreePhasePermissionResolver.CollectRulesAsync</c>,
+    /// which asks every rule provider for its rules on <em>every</em> tool-permission resolution) and
+    /// from <c>ToolInvocationGovernor.EnvelopeGrantsToolWhenArmed</c>'s independent re-confirmation, and
+    /// which re-expanded every granted/declared name on each of those calls. That is what #651 was
+    /// filed against, and it is why the fix belongs here: the alternative was a second bespoke
+    /// per-provider cache with its own separately-argued invalidation rule. The other caller,
+    /// <c>PluginPermissionRuleProvider</c>, already avoids the repeat cost a different way — it caches
+    /// its whole rule list against registry version counters (#612), so it reaches this method only on
+    /// a recompute, and it benefits from the memo across those recomputes rather than per call. The
+    /// mapping returned here cannot change once observed (see <see cref="_publishedNameByKey"/>), so
+    /// memoizing it needs no invalidation at all. A miss (unknown name) and a construction failure are
+    /// both deliberately NOT memoized — see that field's remarks for why each is a safety requirement
+    /// rather than an oversight.
+    /// </para>
     /// </remarks>
     public bool TryResolvePublishedName(string toolKey, out string publishedName, out Exception? constructionError)
     {
-        var tool = TryResolve(toolKey, out constructionError);
-        if (tool is not null)
+        // #651: a hit skips the DI probe AND the caller's own per-call caching concerns entirely —
+        // see _publishedNameByKey's remarks for why this mapping can never go stale.
+        //
+        // The null check is load-bearing, not defensive noise: ConcurrentDictionary.TryGetValue THROWS
+        // on a null key, whereas every pre-#651 path through this method reached the container inside
+        // TryResolve's catch-all and so honoured the documented "returns false" contract instead. A
+        // null key is reachable — PluginPermissionRuleProvider.EmitDeniedToolsRules forwards each
+        // DeniedTools entry unfiltered, and that list is operator-authored config bound from JSON
+        // (PluginDeclaration.DeniedTools), where ["bash", null] yields a null element that the
+        // nullable-reference annotation cannot prevent at runtime. Since ThreePhasePermissionResolver
+        // does not catch provider exceptions, letting it throw here would take down permission
+        // resolution for every tool call in the host. Skipping the memo for a null key leaves such a
+        // key on exactly its previous path, so this fixes the new crash without changing any existing
+        // behaviour (it still returns false, with the same construction error attached).
+        if (toolKey is not null && _publishedNameByKey.TryGetValue(toolKey, out var memoized))
         {
-            publishedName = tool.Name;
+            publishedName = memoized;
+            constructionError = null;
             return true;
         }
 
-        publishedName = toolKey;
+        // toolKey! asserts nothing new: the compiler only sees the null possibility because the guard
+        // above had to test for it, and TryResolve's catch-all has always been what handles it.
+        var tool = TryResolve(toolKey!, out constructionError);
+        if (tool is not null)
+        {
+            publishedName = tool.Name;
+            _publishedNameByKey[toolKey!] = publishedName;
+            return true;
+        }
+
+        publishedName = toolKey!;
         return false;
     }
 }

@@ -29,8 +29,7 @@ public sealed class ConfigController : ControllerBase
     {
         _appConfig = appConfig;
         _chatClientFactory = chatClientFactory;
-        _authDisabled = environment.IsDevelopment()
-            && configuration.GetValue<bool>("Auth:Disabled");
+        _authDisabled = Auth.AuthBypassPolicy.IsBypassed(environment, configuration);
     }
 
     /// <summary>

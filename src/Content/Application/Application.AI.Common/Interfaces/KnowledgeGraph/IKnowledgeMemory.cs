@@ -53,11 +53,21 @@ public interface IKnowledgeMemory
     /// </summary>
     /// <param name="query">The search query.</param>
     /// <param name="maxResults">Maximum number of results to return.</param>
+    /// <param name="entityType">
+    /// Optional exact-match filter on the node's <c>Type</c> (the tag stamped at write time by
+    /// <see cref="RememberAsync"/> — e.g. <c>"Fact"</c>, <c>"SkillTrainingMetaMemory"</c>). Matching is
+    /// case-insensitive. <see langword="null"/> (the default) preserves the original unfiltered
+    /// behavior: every kind of remembered node is eligible. This is what makes a memory kind such as
+    /// "Fact" first-class and separately queryable, without requiring a second store or a second write
+    /// path — everything still passes through the single write gate and the single quarantine chokepoint
+    /// on <see cref="RecallAsync"/> itself.
+    /// </param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>Matching graph nodes ordered by relevance.</returns>
     Task<IReadOnlyList<GraphNode>> RecallAsync(
         string query,
         int maxResults = 5,
+        string? entityType = null,
         CancellationToken cancellationToken = default);
 
     /// <summary>

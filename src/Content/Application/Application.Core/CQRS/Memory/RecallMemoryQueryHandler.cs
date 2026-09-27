@@ -31,7 +31,7 @@ public sealed class RecallMemoryQueryHandler
     public async Task<Result<IReadOnlyList<MemoryEntry>>> Handle(
         RecallMemoryQuery request, CancellationToken cancellationToken)
     {
-        var nodes = await _memory.RecallAsync(request.Query, request.MaxResults, cancellationToken);
+        var nodes = await _memory.RecallAsync(request.Query, request.MaxResults, request.EntityType, cancellationToken);
 
         // "content" is the property key KnowledgeMemoryService stamps fact content under; corpus
         // entity nodes matched by graph traversal carry no such property and project as empty.

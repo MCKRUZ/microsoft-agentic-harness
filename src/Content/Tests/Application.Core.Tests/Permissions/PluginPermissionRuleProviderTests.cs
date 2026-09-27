@@ -564,4 +564,42 @@ public sealed class PluginPermissionRuleProviderTests : IDisposable
 
         _registryMock.Verify(r => r.GetLoadedPlugins(), Times.Exactly(2));
     }
+
+    // --- Issue #709 security-review finding: this cache's own doc comment used to justify keying
+    // ONLY on IPluginRegistry.StateVersion by asserting ISkillMetadataRegistry "is one-shot with no
+    // invalidation" — #709 made that false. A skill added to (or removed from) a plugin's autonomy
+    // baseline after startup must be reflected without a restart, same as everywhere else that reads
+    // the skill registry.
+
+    [Fact]
+    public async Task GetRulesAsync_StateVersionUnchangedButSkillRegistryVersionChanges_Recomputes()
+    {
+        var declaration = new PluginDeclaration { Name = "p", AutonomyLevel = "Autonomous" };
+        _registryMock.Setup(r => r.GetLoadedPlugins()).Returns(new List<LoadedPlugin> { Loaded(declaration) });
+        _registryMock.Setup(r => r.StateVersion).Returns(1);
+        GivenPluginSkillDeclaresTools("p", "run_x");
+        var provider = CreateProvider();
+        _skillRegistryMock.SetupSequence(r => r.Version).Returns(1).Returns(2);
+
+        await provider.GetRulesAsync("any-agent");
+        await provider.GetRulesAsync("any-agent");
+
+        _registryMock.Verify(r => r.GetLoadedPlugins(), Times.Exactly(2));
+    }
+
+    [Fact]
+    public async Task GetRulesAsync_NeitherVersionChanges_DoesNotRecompute()
+    {
+        var declaration = new PluginDeclaration { Name = "p", AutonomyLevel = "Autonomous" };
+        _registryMock.Setup(r => r.GetLoadedPlugins()).Returns(new List<LoadedPlugin> { Loaded(declaration) });
+        _registryMock.Setup(r => r.StateVersion).Returns(1);
+        _skillRegistryMock.Setup(r => r.Version).Returns(1);
+        GivenPluginSkillDeclaresTools("p", "run_x");
+        var provider = CreateProvider();
+
+        await provider.GetRulesAsync("any-agent");
+        await provider.GetRulesAsync("any-agent");
+
+        _registryMock.Verify(r => r.GetLoadedPlugins(), Times.Once);
+    }
 }

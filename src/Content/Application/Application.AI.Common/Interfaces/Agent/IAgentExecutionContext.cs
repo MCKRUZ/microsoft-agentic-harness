@@ -112,6 +112,32 @@ public interface IAgentExecutionContext
     /// (updates turn number). Throws if called with a different agent, conversation, or
     /// call-once scope, which indicates a scope leak.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>This also publishes the turn's external governance attribution</strong>
+    /// (<see cref="Application.AI.Common.Interfaces.Telemetry.IAgentTelemetryAttribution"/>), on every
+    /// call, for the turn that call begins. It stays in effect until the next call or until the DI scope
+    /// owning this context is disposed, whichever comes first. Callers do not — and must not — publish
+    /// it themselves. Calling this once per turn is therefore required rather than merely permitted:
+    /// attribution is ambient to the async flow that publishes it, so a second turn in the same scope
+    /// that skipped this would export unattributed.
+    /// </para>
+    /// <para>
+    /// That binding is deliberate. Attribution used to be a second call a caller made next to this one,
+    /// and of the five places that establish an execution context only two made it (#737): plan runs,
+    /// sub-plans and direct tool invocations exported spans carrying no agent identity, which a
+    /// governance platform discards without reporting an error — so a tenant's agent inventory was
+    /// missing whole categories of activity with nothing anywhere to indicate it. A convention cannot
+    /// close that, because forgetting it produces no symptom; being unable to establish the context
+    /// <em>without</em> publishing attribution can, and does.
+    /// </para>
+    /// <para>
+    /// Consequence for call sites: initialize as early in the turn as the agent id and conversation id
+    /// are both known, not merely before the first governed tool call. Anything that emits spans before
+    /// this runs — loading skills, connecting MCP clients, resolving tools — is unattributed and
+    /// therefore invisible in the tenant's records.
+    /// </para>
+    /// </remarks>
     /// <param name="agentId">The executing agent's identifier.</param>
     /// <param name="conversationId">The conversation or session identifier.</param>
     /// <param name="turnNumber">The current turn number.</param>

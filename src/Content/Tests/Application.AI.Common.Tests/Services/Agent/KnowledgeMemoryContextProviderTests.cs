@@ -66,7 +66,7 @@ public class KnowledgeMemoryContextProviderTests
     public async Task RecallBlock_WithRelevantFacts_ReturnsOnlyTheRecalledFacts()
     {
         var memory = new Mock<IKnowledgeMemory>();
-        memory.Setup(m => m.RecallAsync("what theme do I like?", It.IsAny<int>(), It.IsAny<CancellationToken>()))
+        memory.Setup(m => m.RecallAsync("what theme do I like?", It.IsAny<int>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new[] { Fact("The user prefers dark mode."), Fact("The user is based in NYC.") });
         var sut = Build(memory.Object);
         var input = ContextWithUserMessage("what theme do I like?", instructions: "You are helpful.");
@@ -91,7 +91,7 @@ public class KnowledgeMemoryContextProviderTests
         var block = await sut.RecallBlockAsync(ContextWithUserMessage("anything"));
 
         block.Should().BeNull();
-        memory.Verify(m => m.RecallAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<CancellationToken>()), Times.Never);
+        memory.Verify(m => m.RecallAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -115,14 +115,14 @@ public class KnowledgeMemoryContextProviderTests
         var block = await sut.RecallBlockAsync(input);
 
         block.Should().BeNull();
-        memory.Verify(m => m.RecallAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<CancellationToken>()), Times.Never);
+        memory.Verify(m => m.RecallAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
     public async Task RecallBlock_NoRelevantFacts_ContributesNothing()
     {
         var memory = new Mock<IKnowledgeMemory>();
-        memory.Setup(m => m.RecallAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
+        memory.Setup(m => m.RecallAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(Array.Empty<GraphNode>());
         var sut = Build(memory.Object);
 
@@ -136,7 +136,7 @@ public class KnowledgeMemoryContextProviderTests
     {
         // Memory is an enhancement, never a hard dependency: a recall failure must not break the turn.
         var memory = new Mock<IKnowledgeMemory>();
-        memory.Setup(m => m.RecallAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
+        memory.Setup(m => m.RecallAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new InvalidOperationException("graph down"));
         var sut = Build(memory.Object);
 
@@ -149,7 +149,7 @@ public class KnowledgeMemoryContextProviderTests
     public async Task RecallBlock_NoExistingInstructions_StillReturnsOnlyTheBlock()
     {
         var memory = new Mock<IKnowledgeMemory>();
-        memory.Setup(m => m.RecallAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
+        memory.Setup(m => m.RecallAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new[] { Fact("Likes terse answers.") });
         var sut = Build(memory.Object);
 

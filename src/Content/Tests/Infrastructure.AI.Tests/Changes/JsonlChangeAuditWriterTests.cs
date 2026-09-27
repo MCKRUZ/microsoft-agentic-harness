@@ -75,6 +75,88 @@ public sealed class JsonlChangeAuditWriterTests : IDisposable
         line.Should().Contain("\"mode\":\"Shadow\"");
     }
 
+    [Fact]
+    public async Task GetRecordsAsync_RoundTripsAWrittenRecord()
+    {
+        var proposal = TestProposals.NewProposal();
+        await _sut.AppendAsync(proposal, NewDecision("policy", GateAction.Pass, "ok"), proposal.SubmittedBy, OrchestratorMode.Live, "corr-1", CancellationToken.None);
+
+        var result = await _sut.GetRecordsAsync(new ChangeAuditQuery(), CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Should().ContainSingle();
+        var record = result.Value![0];
+        record.ProposalId.Should().Be(proposal.Id);
+        record.GateKey.Should().Be("policy");
+        record.Decision.Should().Be(GateAction.Pass);
+        record.Mode.Should().Be("Live");
+        record.CorrelationId.Should().Be("corr-1");
+        record.AgentIdentity.Agent.Should().Be("agent-001");
+    }
+
+    [Fact]
+    public async Task GetRecordsAsync_FiltersByDateRange()
+    {
+        var proposal = TestProposals.NewProposal();
+        var early = NewDecision("gate-early", GateAction.Pass) with { Timestamp = TestProposals.DefaultTime };
+        var late = NewDecision("gate-late", GateAction.Pass) with { Timestamp = TestProposals.DefaultTime.AddDays(2) };
+        await _sut.AppendAsync(proposal, early, proposal.SubmittedBy, OrchestratorMode.Live, "c1", CancellationToken.None);
+        await _sut.AppendAsync(proposal, late, proposal.SubmittedBy, OrchestratorMode.Live, "c2", CancellationToken.None);
+
+        var result = await _sut.GetRecordsAsync(new ChangeAuditQuery
+        {
+            Start = TestProposals.DefaultTime.AddDays(1),
+        }, CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Should().ContainSingle(r => r.GateKey == "gate-late");
+    }
+
+    [Fact]
+    public async Task GetRecordsAsync_FiltersByProposalIdGateKeyAndDecision()
+    {
+        var proposalA = TestProposals.NewProposal();
+        // BlastRadius is not part of ChangeProposalIdDeriver's canonicalization (target, diff,
+        // submittedBy, submittedAt-bucket only), so varying it alone would not change the id —
+        // override the id explicitly to get two genuinely distinguishable proposals.
+        var proposalB = TestProposals.NewProposal(blastRadius: BlastRadius.Medium) with { Id = "proposal-b" };
+        proposalA.Id.Should().NotBe(proposalB.Id, "the two proposals must be distinguishable by id for this test to be meaningful");
+        await _sut.AppendAsync(proposalA, NewDecision("gate-1", GateAction.Pass), proposalA.SubmittedBy, OrchestratorMode.Live, "c1", CancellationToken.None);
+        await _sut.AppendAsync(proposalA, NewDecision("gate-2", GateAction.Fail), proposalA.SubmittedBy, OrchestratorMode.Live, "c2", CancellationToken.None);
+        await _sut.AppendAsync(proposalB, NewDecision("gate-1", GateAction.Pass), proposalB.SubmittedBy, OrchestratorMode.Live, "c3", CancellationToken.None);
+
+        var byProposal = await _sut.GetRecordsAsync(new ChangeAuditQuery { ProposalId = proposalA.Id }, CancellationToken.None);
+        byProposal.Value.Should().HaveCount(2);
+
+        var byGate = await _sut.GetRecordsAsync(new ChangeAuditQuery { ProposalId = proposalA.Id, GateKey = "gate-2" }, CancellationToken.None);
+        byGate.Value.Should().ContainSingle(r => r.Decision == GateAction.Fail);
+
+        var byDecision = await _sut.GetRecordsAsync(new ChangeAuditQuery { Decision = GateAction.Fail }, CancellationToken.None);
+        byDecision.Value.Should().ContainSingle(r => r.GateKey == "gate-2");
+    }
+
+    [Fact]
+    public async Task GetRecordsAsync_MissingFile_ReturnsEmpty()
+    {
+        var result = await _sut.GetRecordsAsync(new ChangeAuditQuery(), CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task GetRecordsAsync_CorruptedLine_SkipsItAndReturnsTheRest()
+    {
+        var proposal = TestProposals.NewProposal();
+        await _sut.AppendAsync(proposal, NewDecision("good", GateAction.Pass), proposal.SubmittedBy, OrchestratorMode.Live, "c1", CancellationToken.None);
+        await File.AppendAllTextAsync(_expectedFile, "not-valid-json\tabc\tdef\t999\n");
+
+        var result = await _sut.GetRecordsAsync(new ChangeAuditQuery(), CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Should().ContainSingle(r => r.GateKey == "good");
+    }
+
     private static GateDecision NewDecision(string key, GateAction action, string reason = "", string? evidenceHash = null) =>
         new()
         {

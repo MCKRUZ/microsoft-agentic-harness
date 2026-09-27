@@ -42,11 +42,21 @@ internal static class NestedSkillScanner
     /// producing an agent silently missing its own skills. An ordinary permission denial on an
     /// in-bounds directory is a different type and is still tolerated.
     /// </exception>
-    public static IReadOnlyList<SkillDefinition> Scan(
+    /// <returns>
+    /// The discovered skills, alongside whether an ordinary (non-sandbox-refusal) enumeration failure
+    /// occurred. That second value exists so a caller that RECONCILES this result against a previous
+    /// one (agent discovery, on a reload) can tell "this directory genuinely holds no skills" apart
+    /// from "we failed to see them this pass" — a distinction the skill list alone cannot make, and
+    /// the same distinction <c>AgentMetadataRegistry.Discover</c> already makes for agent-level
+    /// enumeration failures (issue #705: the two were not previously symmetric,
+    /// see <see cref="Infrastructure.AI.Agents.AgentMetadataRegistry"/>'s remarks on
+    /// <c>SyncAgentOwnedSkills</c>).
+    /// </returns>
+    public static (IReadOnlyList<SkillDefinition> Skills, bool HadScanErrors) Scan(
         string skillsRoot, SkillMetadataParser parser, ISkillFileReader fileReader, ILogger logger)
     {
         if (!fileReader.DirectoryExists(skillsRoot))
-            return [];
+            return ([], false);
 
         IReadOnlyList<string> skillDirs;
         try
@@ -61,7 +71,7 @@ internal static class NestedSkillScanner
             // an agent with none of its own skills instead of a startup failure. Best-effort
             // tolerance is for a malformed entry, not for being told the path is out of bounds.
             logger.LogWarning(ex, "Could not enumerate nested skills directory: {Path}", skillsRoot);
-            return [];
+            return ([], true);
         }
 
         var skills = new List<SkillDefinition>();
@@ -80,11 +90,14 @@ internal static class NestedSkillScanner
             catch (Exception ex) when (ex is not SkillPathRefusedException)
             {
                 // Same rule as the enumeration above: a malformed manifest is skipped, a refused
-                // one is not.
+                // one is not. Deliberately NOT counted in HadScanErrors — this repo's documented
+                // tolerance for one malformed SKILL.md among otherwise-healthy siblings is intact;
+                // that flag is specifically for "the scan itself may be incomplete," not "one entry
+                // in an otherwise-complete scan was bad."
                 logger.LogWarning(ex, "Failed to parse nested skill from {Path}", skillFile);
             }
         }
 
-        return skills;
+        return (skills, false);
     }
 }

@@ -2,6 +2,7 @@ using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Permissions;
 using Application.AI.Common.Interfaces.Plugins;
 using Application.AI.Common.Interfaces.Tools;
+using Application.AI.Common.Services.Governance;
 using Application.AI.Common.Services.Tools;
 using Domain.Common.Helpers;
 using Domain.AI.Governance;
@@ -87,18 +88,25 @@ public sealed class PluginPermissionRuleProvider : IPermissionRuleProvider
     // (ThreePhasePermissionResolver.CollectRulesAsync), and #612 makes it construct first-party
     // tools (see TryResolvePublishedName) to learn a name that can disagree with its DI key — doing
     // that unconditionally on every call turns an unverified-boundary state into unbounded repeated
-    // construction cost for as long as it persists. Cache the computed rule list, keyed on
-    // IPluginRegistry.StateVersion, so recomputation happens only when something that could change
-    // the result actually did.
+    // construction cost for as long as it persists. Cache the computed rule list, keyed on both
+    // IPluginRegistry.StateVersion and ISkillMetadataRegistry.Version (issue #709 security-review
+    // finding — see below), so recomputation happens only when something that could change the
+    // result actually did.
     //
-    // Correctness rests on two inputs to ComputeRules that are NOT covered by StateVersion, because
-    // both are immutable after this instance is constructed: FirstPartyToolLookup's registered-key
-    // set is built once at DI registration time, and ISkillMetadataRegistry has exactly one
-    // implementation (SkillMetadataRegistry), whose load is one-shot with no invalidation or
-    // config-change hook. If either ever gains a runtime-mutation path, this cache must be keyed on
+    // Correctness rests on one remaining input to ComputeRules NOT covered by either version:
+    // FirstPartyToolLookup's registered-key set is built once at DI registration time and immutable
+    // for the process lifetime. If it ever gains a runtime-mutation path, this cache must be keyed on
     // that too, or it will silently serve a stale autonomy baseline / tool-name resolution.
+    //
+    // ISkillMetadataRegistry.Version was NOT in this key before #709: this comment used to justify
+    // that gap by asserting the skill registry's "load is one-shot with no invalidation or
+    // config-change hook" — #709 made that statement false (it added a hot-reloadable, watcher- and
+    // operator-refreshable skill registry), which is exactly why a skill added to (or removed from) a
+    // Restricted/Supervised/Autonomous plugin after startup now needs to be reflected here without a
+    // restart, the same as everywhere else that reads this registry.
     private readonly Lock _cacheLock = new();
-    private long _cachedVersion = -1;
+    private long _cachedPluginVersion = -1;
+    private long _cachedSkillVersion = -1;
     private IReadOnlyList<ToolPermissionRule>? _cachedRules;
 
     /// <summary>
@@ -141,11 +149,12 @@ public sealed class PluginPermissionRuleProvider : IPermissionRuleProvider
     {
         // The rule set does not depend on agentId (every provider call site below is agent-agnostic),
         // so a single cache slot keyed only on registry state is correct for every caller.
-        var version = _registry.StateVersion;
+        var pluginVersion = _registry.StateVersion;
+        var skillVersion = _skillRegistry.Version;
 
         lock (_cacheLock)
         {
-            if (_cachedRules is not null && _cachedVersion == version)
+            if (_cachedRules is not null && _cachedPluginVersion == pluginVersion && _cachedSkillVersion == skillVersion)
                 return Task.FromResult(_cachedRules);
         }
 
@@ -160,11 +169,13 @@ public sealed class PluginPermissionRuleProvider : IPermissionRuleProvider
             // Guard against a slow thread overwriting a newer cache entry with an older one under
             // concurrent recomputation (correctness-review advisory) — not a correctness bug either
             // way (a stale version key just self-heals on the next call), but this avoids the
-            // needless repeat recompute.
-            if (version > _cachedVersion)
+            // needless repeat recompute. Two independent counters aren't totally ordered against each
+            // other, so "newer" means at least one dimension advanced past what's cached, not both.
+            if (pluginVersion > _cachedPluginVersion || skillVersion > _cachedSkillVersion)
             {
                 _cachedRules = rules;
-                _cachedVersion = version;
+                _cachedPluginVersion = pluginVersion;
+                _cachedSkillVersion = skillVersion;
             }
         }
 
@@ -331,8 +342,6 @@ public sealed class PluginPermissionRuleProvider : IPermissionRuleProvider
     /// </summary>
     private void AddDenyRuleWithPublishedNameCoverage(List<ToolPermissionRule> rules, string toolKey)
     {
-        rules.Add(DenyRule(toolKey));
-
         // OrdinalIgnoreCase: matches the runtime permission resolver's actual invocation-time
         // consumer, GlobPatternMatcher.IsMatch (correctness-review advisory) — an ordinal
         // case-sensitive comparison here would emit a harmless-but-redundant second Deny rule for a
@@ -340,9 +349,20 @@ public sealed class PluginPermissionRuleProvider : IPermissionRuleProvider
         // resolves ANY casing of a registered key to its canonical form before probing DI — a separate
         // question from how the resolved PUBLISHED NAME compares to the caller's ORIGINAL key, which is
         // what this line's own comparison governs.)
-        if (TryResolvePublishedName(toolKey, out var publishedName)
-            && !string.Equals(publishedName, toolKey, StringComparison.OrdinalIgnoreCase))
-            rules.Add(DenyRule(publishedName));
+        var diverges = TryResolvePublishedName(toolKey, out var publishedName)
+            && !string.Equals(publishedName, toolKey, StringComparison.OrdinalIgnoreCase);
+
+        // #652: both rules record the published name they share, so a consumer summarising rules can
+        // report one logical tool once. Routed through the shared rule rather than re-deriving
+        // `diverges ? published : null` here (/simplify finding): #652 was itself a mis-keyed
+        // grouping decision, and two independent definitions of "is this rule one of a pair" is the
+        // shape that lets a fix in one provider leave the defect standing in the other.
+        var groupingName = ToolNameForms.GroupingNameFor(diverges, publishedName);
+
+        rules.Add(DenyRule(toolKey, groupingName));
+
+        if (diverges)
+            rules.Add(DenyRule(publishedName, groupingName));
     }
 
     /// <summary>
@@ -395,13 +415,20 @@ public sealed class PluginPermissionRuleProvider : IPermissionRuleProvider
     /// A bypass-immune Deny rule for <paramref name="toolName"/> — the identical shape both the
     /// per-plugin <c>DeniedTools</c> loop and the unverified-boundary fail-closed response above need.
     /// </summary>
-    private static ToolPermissionRule DenyRule(string toolName) => new(
+    /// <param name="toolName">The name this rule matches on.</param>
+    /// <param name="publishedToolName">
+    /// #652: the published name shared by this rule and its sibling when <paramref name="toolName"/>
+    /// is one of two forms covering a single tool; null for a rule that stands alone, including every
+    /// rule from the unverified-boundary loop, which is deliberately key-only.
+    /// </param>
+    private static ToolPermissionRule DenyRule(string toolName, string? publishedToolName = null) => new(
         toolName,
         null,
         PermissionBehaviorType.Deny,
         PermissionRuleSource.PluginDeclaration,
         Priority: 1,
-        IsBypassImmune: true);
+        IsBypassImmune: true,
+        PublishedToolName: publishedToolName);
 
     /// <summary>
     /// Collects the distinct tool names declared by every skill attributed to

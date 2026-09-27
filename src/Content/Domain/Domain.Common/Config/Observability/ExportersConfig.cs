@@ -27,4 +27,11 @@ public class ExportersConfig
     /// Gets or sets the Prometheus metrics exporter configuration.
     /// </summary>
     public PrometheusExporterConfig Prometheus { get; set; } = new();
+
+    /// <summary>
+    /// Gets or sets the Microsoft Agent 365 trace exporter configuration, which surfaces this
+    /// agent's activity to the tenant's agent control plane. Opt-in; see
+    /// <see cref="Agent365ExporterConfig"/> for the tenant-side prerequisites.
+    /// </summary>
+    public Agent365ExporterConfig Agent365 { get; set; } = new();
 }

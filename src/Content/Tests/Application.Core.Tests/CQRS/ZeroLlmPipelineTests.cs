@@ -72,6 +72,11 @@ public sealed class ZeroLlmPipelineTests
         // scope must be established BEFORE AgentContextPropagationBehavior runs, since it is what
         // makes IAgentExecutionContext reachable from the singleton-lifetime ScriptedChatClientFactory.
         services.AddTransient(typeof(IPipelineBehavior<,>), typeof(AmbientRequestScopeBehavior<,>));
+        // AgentContextPropagationBehavior publishes turn attribution for external agent-governance
+        // platforms; the no-op is what a host without such an integration resolves.
+        services.AddSingleton<
+            Application.AI.Common.Interfaces.Telemetry.IAgentTelemetryAttribution,
+            Application.AI.Common.Services.Telemetry.NoOpAgentTelemetryAttribution>();
         services.AddTransient(typeof(IPipelineBehavior<,>), typeof(AgentContextPropagationBehavior<,>));
         services.AddScoped<IAgentExecutionContext, AppExecutionContext>();
         services.AddSingleton<IAmbientRequestScope, AmbientRequestScope>();
@@ -137,6 +142,9 @@ public sealed class ZeroLlmPipelineTests
         usageCaptureMock.Setup(c => c.TakeSnapshot())
             .Returns(new LlmUsageSnapshot(0, 0, 0, 0, null, 0m, 0m, Array.Empty<string>()));
         services.AddScoped<ILlmUsageCapture>(_ => usageCaptureMock.Object);
+
+        // Magentic supervisor turn runner — not under test here, just needed for DI resolution.
+        services.AddSingleton(new Mock<Application.Core.Orchestration.Magentic.IMagenticAgentTurnRunner>().Object);
 
         return (services.BuildServiceProvider(), log);
     }

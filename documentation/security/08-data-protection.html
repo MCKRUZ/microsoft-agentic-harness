@@ -354,12 +354,13 @@
                         that user's scope. The id space itself is partitioned.
                     </p>
 
-                    <h2 id="all-backends">Enforced in all three backends</h2>
+                    <h2 id="all-backends">Enforced in all three local backends</h2>
                     <p>
                         Isolation that only holds for the in-memory development store would be a trap: it would pass
                         every local test and then leak in production. The harness persists and filters
-                        <code>OwnerId</code>/<code>TenantId</code> in every backend, so the same record-level boundary
-                        holds whichever store you deploy.
+                        <code>OwnerId</code>/<code>TenantId</code> in every local backend, so the same record-level
+                        boundary holds whichever store you deploy — this guarantee is local-storage-only; see the
+                        callout below for the remote-memory exception.
                     </p>
 
                     <table>
@@ -400,6 +401,25 @@
                             </tr>
                         </tbody>
                     </table>
+
+                    <div class="callout callout-warn">
+                        <span class="callout-icon">!</span>
+                        <div class="callout-body">
+                            <div class="callout-title">Remote memory hosting is not yet covered by this guarantee</div>
+                            <p style="margin: 0">
+                                When <code>AppConfig:AI:RemoteMemory:Enabled</code> is <code>true</code>, recall is
+                                answered by an external avatar-hosting service whose contract does not currently
+                                filter by caller identity — two users of the same harness deployment can see each
+                                other's remote-stored facts via content search. This harness's own write-gate still
+                                scans everything it writes before it leaves this process, but it cannot verify
+                                content already sitting in the remote store from some other source. Until the remote
+                                contract enforces per-caller filtering and echoes a trust signal on recall, treat one
+                                <code>AvatarId</code> as a single shared trust boundary and provision a separate
+                                deployment per isolation boundary you need — enforced at startup via
+                                <code>RemoteMemoryConfig.AcknowledgeSharedRecallBoundary</code>.
+                            </p>
+                        </div>
+                    </div>
 
                     <h2 id="provenance">Provenance: making every fact attributable</h2>
                     <p>

@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
+using Application.AI.Common.Extensions;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.OpenTelemetry.Metrics;
 using Application.AI.Common.Pricing;
@@ -206,12 +207,9 @@ public sealed class CacheStatsEnrichingChatClient : DelegatingChatClient
         return new TokenCounts(
             usage.InputTokenCount ?? 0,
             usage.OutputTokenCount ?? 0,
-            GetAdditionalCount(usage, "cache_read_input_tokens"),
-            GetAdditionalCount(usage, "cache_creation_input_tokens"));
+            usage.GetCacheReadTokens(),
+            usage.GetCacheCreationTokens());
     }
-
-    private static long GetAdditionalCount(UsageDetails usage, string key)
-        => usage.AdditionalCounts?.TryGetValue(key, out var value) == true ? value : 0;
 
     /// <summary>Per-call token counts captured from the response usage.</summary>
     private readonly record struct TokenCounts(long Input, long Output, long CacheRead, long CacheWrite);

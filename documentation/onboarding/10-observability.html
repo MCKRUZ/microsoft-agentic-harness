@@ -22,11 +22,13 @@
                     <div class="sidebar-group"><div class="sidebar-group-title">Systems</div><a class="sidebar-link" href="05-skills.html"><span class="sidebar-link-num">05</span> Skills System</a><a class="sidebar-link" href="06-tools.html"><span class="sidebar-link-num">06</span> Tools &amp; Keyed DI</a><a class="sidebar-link" href="07-rag.html"><span class="sidebar-link-num">07</span> The RAG Pipeline</a><a class="sidebar-link" href="08-mcp.html"><span class="sidebar-link-num">08</span> MCP Server &amp; Client</a><a class="sidebar-link" href="16-generative-ui.html"><span class="sidebar-link-num">16</span> Generative UI &amp; Widgets</a><a class="sidebar-link" href="17-bundle-api.html"><span class="sidebar-link-num">17</span> Execution API (HTTP)</a></div>
                     <div class="sidebar-group"><div class="sidebar-group-title">Patterns</div><a class="sidebar-link" href="09-patterns.html"><span class="sidebar-link-num">09</span> Patterns You'll Use Daily</a><a class="sidebar-link" href="10-observability.html"><span class="sidebar-link-num">10</span> Observability &amp; Safety</a></div>
                     <div class="sidebar-group"><div class="sidebar-group-title">Building</div><a class="sidebar-link" href="11-extending.html"><span class="sidebar-link-num">11</span> Extending the Harness</a></div>
+                    <div class="sidebar-group"><div class="sidebar-group-title">Deployment</div><a class="sidebar-link" href="18-self-hosted-docker.html"><span class="sidebar-link-num">18</span> Self-Hosted, Non-Azure Docker</a></div>
                     <div class="sidebar-group"><div class="sidebar-group-title">Quality</div><a class="sidebar-link" href="13-evaluation.html"><span class="sidebar-link-num">13</span> Evaluation Framework</a><a class="sidebar-link" href="14-skill-training.html"><span class="sidebar-link-num">14</span> Skill Training</a></div>
                     <div class="sidebar-group"><div class="sidebar-group-title">Delivery</div><a class="sidebar-link" href="15-delivery-governance.html"><span class="sidebar-link-num">15</span> Delivery &amp; CI Governance</a></div>
                     <div class="sidebar-group"><div class="sidebar-group-title">Reference</div><a class="sidebar-link" href="12-reference.html"><span class="sidebar-link-num">12</span> Cheatsheet &amp; Glossary</a></div>
                     <div class="sidebar-group">
                         <div class="sidebar-group-title">Other Guides</div>
+                        <a class="sidebar-link" href="showcase/index.html">&#8592; Capability Showcase</a>
                         <a class="sidebar-link" href="architecture/index.html">&#8592; Architecture Guide</a>
                         <a class="sidebar-link" href="agentic-harness-course/index.html">&#8592; Interactive Course</a>
                         <a class="sidebar-link" href="security/index.html">&#8592; Security Guide</a>
@@ -148,6 +150,162 @@ docker run -d --name jaeger \
                         you a cheap, file-based tamper-evidence guarantee without a database — useful for governance
                         and compliance trails where "nobody quietly changed the record" needs to be demonstrable.
                     </p>
+
+                    <h3>Microsoft Agent 365 — putting agents on the tenant's radar</h3>
+                    <p>
+                        Everything above tells <em>you</em> what your agents did. None of it tells the
+                        <strong>organisation</strong> that your agents exist. To a tenant's IT and security teams, an
+                        agent built here is an unmanaged non-human actor — a "shadow agent" — no matter how well
+                        governed it is internally. <strong>Microsoft Agent 365</strong> is the tenant-side control
+                        plane that closes that gap: a central inventory of every agent, each with a real Microsoft
+                        Entra <em>agent identity</em>, and its activity flowing into Microsoft Defender, Microsoft
+                        Purview and the Microsoft 365 admin center.
+                    </p>
+                    <p>
+                        The harness ships this as an <strong>opt-in trace exporter</strong>. It is off by default and a
+                        host that omits the section registers none of it. Turn it on under
+                        <code>AppConfig.Observability.Exporters.Agent365</code>:
+                    </p>
+                    <div class="code-block">
+                        <div class="code-block-header"><span class="code-block-lang">json</span></div>
+                        <pre><code>"Observability": {
+  "WebTelemetryProjects": [ "Presentation.AgentHub" ],
+  "Exporters": {
+    "Agent365": {
+      "Enabled": true,
+      "AgentAppId": "00000000-0000-0000-0000-000000000000",
+      "TenantId":   "00000000-0000-0000-0000-000000000000",
+      "BlueprintId": null,
+
+      // Only for a host that runs several distinct agents. Keyed by the agent id
+      // carried on agent-scoped requests; unlisted agents use AgentAppId above.
+      "Agents": {
+        "researcher": { "AppId": "00000000-0000-0000-0000-000000000000" }
+      }
+    }
+  }
+}</code></pre>
+                    </div>
+                    <p>
+                        <code>AgentAppId</code> is the <code>appId</code> of the <em>agent identity</em> the host runs
+                        as — not the blueprint's, and not the object id. Both ids must be GUIDs, and a startup
+                        validator refuses to boot if they are not. That strictness is deliberate: Agent 365 does not
+                        return an error for a malformed agent id, it just shows the agent as unidentified, so startup
+                        is the only cheap place to catch it.
+                    </p>
+
+                    <p>
+                        <strong>What gets reported.</strong> Every execution path that establishes an agent context —
+                        an ordinary agent turn, an orchestrated task, a plan run, a sub-plan, and a directly invoked
+                        tool — reports under the right identity, and you do not have to do anything per path to make
+                        that true. Identity is published by the act of establishing the context itself and released
+                        when that context's scope ends, so a path cannot establish one and omit the attribution. That
+                        used to be a separate call each path made, and three of five paths did not make it: their
+                        spans reached the service carrying no agent identity, which Agent 365 discards <em>without
+                        reporting an error</em>, so those categories of activity were simply absent from the tenant's
+                        records with nothing to indicate it.
+                    </p>
+
+                    <p>
+                        <strong>What you have to do outside the harness.</strong>
+                        Registration is a <strong>provisioning</strong> step, not a runtime one — it creates Entra
+                        directory objects, needs a Global Administrator, and needs a named human <em>sponsor</em>
+                        accountable for the agent. The harness deliberately automates none of that; a running agent
+                        must never hold those privileges. An operator needs to:
+                    </p>
+                    <ul>
+                        <li>
+                            Register an <strong>agent identity blueprint</strong> in Entra and create an agent identity
+                            from it. Microsoft ships a CLI and coding-assistant skills for this. Rule of thumb: one
+                            blueprint per <em>credential boundary</em> — credentials live on the blueprint and are
+                            shared by every identity minted from it.
+                        </li>
+                        <li>
+                            Grant the blueprint <code>Agent365.Observability.OtelWrite</code> and have a tenant
+                            administrator <strong>consent</strong> to it once.
+                        </li>
+                        <li>
+                            <strong>Assign</strong> a <em>Microsoft 365 E7</em>, <em>Test - Microsoft 365 E7</em> or
+                            <em>Microsoft Agent 365 Frontier</em> licence to at least one user in the tenant.
+                        </li>
+                    </ul>
+                    <div class="callout callout-warn">
+                        <span class="callout-icon">!</span>
+                        <div class="callout-body">
+                            <div class="callout-title">Two failures that look like success</div>
+                            <p style="margin: 0">
+                                <strong>An unassigned licence discards everything silently.</strong> The SKU merely
+                                existing in the tenant is not enough — it must be assigned to a user. Until it is, the
+                                service accepts requests and throws the telemetry away, so the agent simply never
+                                appears. <strong>And a host that is not listed in
+                                <code>WebTelemetryProjects</code> cannot export at all</strong>, because the exporter
+                                attaches to a pipeline only that host shape builds. The harness refuses to boot in that
+                                case rather than letting you debug a missing dashboard row; today only
+                                <code>Presentation.AgentHub</code> lists itself, so ExecutionApi and FoundryHost must
+                                be added before they can export.
+                            </p>
+                        </div>
+                    </div>
+                    <div class="callout callout-info">
+                        <span class="callout-icon">i</span>
+                        <div class="callout-body">
+                            <div class="callout-title">This host does not propagate baggage across its boundary, by default</div>
+                            <p style="margin: 0">
+                                There are <strong>two independent baggage stores</strong> in .NET/OpenTelemetry, each
+                                with its own propagator — and this harness's own identity attribution (user id,
+                                conversation id, and Agent 365's tenant/agent/blueprint ids) rides the one most
+                                developers don't think to check: <code>System.Diagnostics.Activity.Baggage</code>, not
+                                OpenTelemetry's own <code>Baggage</code> API. A propagator that carries either would
+                                serialise that data onto every outbound HTTP call and accept a caller-supplied version
+                                on every inbound one — so <code>Observability:PropagateBaggage</code> governs
+                                <strong>both</strong> stores together, installing a trace-context-only propagator on
+                                each whenever it is <code>false</code> (the default), unconditionally, for
+                                <strong>every host</strong>, not only ones that enable Agent 365. Enabling Agent 365 no
+                                longer changes this behaviour itself; it depends on the same host-wide policy every
+                                other feature does. Set the flag to <code>true</code> only if this host has a
+                                deliberate, reviewed reason to use cross-process baggage — the harness then installs
+                                the standard trace-context-plus-baggage propagator explicitly on both stores, rather
+                                than leaving it to whatever happened to be ambient. A startup check re-asserts both
+                                propagators unconditionally (independent of whether Agent 365 is enabled) and refuses
+                                to boot if something re-registers baggage-carrying propagation afterwards; if Agent 365
+                                is also enabled while this flag is <code>true</code>, the harness logs a warning naming
+                                the egress, since that combination is materially riskier than either setting alone.
+                            </p>
+                        </div>
+                    </div>
+                    <div class="callout callout-info">
+                        <span class="callout-icon">i</span>
+                        <div class="callout-body">
+                            <div class="callout-title">Offline storage is off here, unlike the SDK default</div>
+                            <p style="margin: 0">
+                                Microsoft's exporter persists undeliverable spans to <code>LOCALAPPDATA</code> or
+                                <code>TEMP</code> by default and replays them in the background. Harness spans can
+                                carry prompts, tool arguments and model output, so the harness inverts that default —
+                                where such content lands is a deployment's decision, not a library's. The failure
+                                compounds too: while a tenant is unlicensed or unconsented <em>every</em> export fails,
+                                so <em>everything</em> would be written to disk rather than an occasional retry batch.
+                                Set <code>EnableOfflineStorage</code> plus an
+                                <code>OfflineStorageDirectory</code> you control to opt in — the harness creates that
+                                directory and enforces owner-only permissions on it itself (POSIX; a no-op on Windows,
+                                left to its inherited ACL) and refuses to boot if it cannot confirm the directory is
+                                secured, rather than merely documenting the requirement.
+                            </p>
+                        </div>
+                    </div>
+                    <div class="callout callout-warn">
+                        <span class="callout-icon">!</span>
+                        <div class="callout-body">
+                            <div class="callout-title">Not verified against a live tenant</div>
+                            <p style="margin: 0">
+                                This integration is proven by unit and composition tests and by inspecting spans
+                                locally with the console exporter — span shape, the required root
+                                <code>invoke_agent</code> span, and the agent/tenant attribution that is otherwise the
+                                silent failure. It has <strong>not</strong> been observed ingesting into a licensed
+                                Agent 365 tenant. Treat first-run ingestion, licensing and consent as unverified and
+                                check the Microsoft 365 admin center after your first turn.
+                            </p>
+                        </div>
+                    </div>
 
                     <h3>Deep-link endpoints for the dashboard</h3>
                     <p>

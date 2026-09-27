@@ -68,7 +68,15 @@ public static class SkillDiscoveryServiceCollectionExtensions
         services.AddSingleton<ISkillFileReader, SkillFileReader>();
         services.AddSingleton<IValidator<EgressManifest>, EgressManifestValidator>();
         services.AddSingleton<SkillMetadataParser>();
-        services.AddSingleton<ISkillMetadataRegistry, SkillMetadataRegistry>();
+
+        // Registered as the concrete type, with ISkillMetadataRegistry forwarded to the SAME
+        // singleton instance (issue #709), so a caller that also needs the reload seam
+        // (ISkillRegistryRefresher, registered by the caller — see AddInfrastructureAIDependencies)
+        // resolves the identical object every reader of the registry sees. Skills have no
+        // per-bundle-run overlay decorator the way agents do, so this is a direct forward, not
+        // routed around one.
+        services.AddSingleton<SkillMetadataRegistry>();
+        services.AddSingleton<ISkillMetadataRegistry>(sp => sp.GetRequiredService<SkillMetadataRegistry>());
 
         return services;
     }

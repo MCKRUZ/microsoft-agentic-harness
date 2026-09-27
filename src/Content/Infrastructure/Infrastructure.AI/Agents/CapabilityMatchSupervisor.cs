@@ -8,13 +8,10 @@ using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Routing;
 using Application.AI.Common.Interfaces.Skills;
 using Application.AI.Common.OpenTelemetry.Metrics;
-using Domain.AI.Agents;
-using Domain.AI.Escalation;
 using Domain.AI.Governance;
 using Domain.AI.Orchestration;
 using Domain.AI.Telemetry.Conventions;
 using Domain.Common.Config;
-using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -182,13 +179,7 @@ public sealed partial class CapabilityMatchSupervisor : ISupervisor, IDisposable
         // this tool falls back to when it does not name one.
         var selection = new AgentSelection
         {
-            SelectedAgent = new AgentCandidate
-            {
-                AgentId = target.Id,
-                AgentType = SubagentType.NamedAgent,
-                AutonomyLevel = AutonomyLevel.Supervised,
-                AvailableTools = []
-            },
+            SelectedAgent = AgentCandidateMapping.FromDefinition(target, AutonomyLevel.Supervised),
             ConfidenceScore = 1.0,
             Reasoning = "explicit target agent named by the caller"
         };

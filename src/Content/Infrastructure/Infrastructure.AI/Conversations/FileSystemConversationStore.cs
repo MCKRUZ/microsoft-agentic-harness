@@ -465,6 +465,45 @@ public sealed class FileSystemConversationStore : IConversationStore
     }
 
     /// <inheritdoc/>
+    public async Task<ConversationRecord?> ReassignAgentAsync(
+        string conversationId,
+        string callerId,
+        string agentName,
+        CancellationToken ct = default)
+    {
+        ConversationOwnership.RequireCallerId(callerId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(agentName);
+
+        var path = ResolveAndValidatePath(conversationId);
+
+        await _lock.WaitAsync(ct);
+        try
+        {
+            if (!File.Exists(path))
+                return null;
+
+            var json = await File.ReadAllTextAsync(path, ct);
+            var existing = JsonSerializer.Deserialize<ConversationRecord>(json, ConversationJson.Options);
+            if (existing is null) return null;
+
+            RequireOwner(conversationId, callerId, existing.UserId);
+
+            var updated = existing with
+            {
+                AgentName = agentName,
+                UpdatedAt = _timeProvider.GetUtcNow(),
+            };
+
+            await WriteAtomicLockedAsync(path, updated, ct);
+            return updated;
+        }
+        finally
+        {
+            _lock.Release();
+        }
+    }
+
+    /// <inheritdoc/>
     public async Task<ConversationRecord?> UpdateTelemetryAsync(
         string conversationId,
         string callerId,

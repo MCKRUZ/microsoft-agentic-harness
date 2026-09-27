@@ -5,7 +5,9 @@ using Application.AI.Common.Interfaces.SkillTraining;
 using Application.AI.Common.Services.ClaimVerification;
 using Application.AI.Common.Services.SkillTraining;
 using Domain.AI.ClaimVerification;
+using Domain.AI.Governance;
 using Domain.AI.SkillTraining;
+using Domain.Common;
 using Domain.Common.Config;
 using FluentAssertions;
 using MediatR;
@@ -841,6 +843,16 @@ public class TrainSkillCommandHandlerTests
         public void Log(string agentId, string action, string decision) => Entries.Add((agentId, action, decision));
         public bool VerifyChainIntegrity() => true;
         public int EntryCount => Entries.Count;
+
+        public Task<Result<IReadOnlyList<GovernanceAuditRecord>>> GetRecordsAsync(
+            GovernanceAuditQuery query, CancellationToken cancellationToken) =>
+            Task.FromResult(Result<IReadOnlyList<GovernanceAuditRecord>>.Success(Entries
+                .Select(e => new GovernanceAuditRecord
+                {
+                    Timestamp = DateTimeOffset.UtcNow, AgentId = e.AgentId, Action = e.Action, Decision = e.Decision,
+                })
+                .ToList()
+                .AsReadOnly() as IReadOnlyList<GovernanceAuditRecord>));
     }
 
     private sealed class NoOpMediator : IMediator

@@ -82,6 +82,12 @@ public sealed class AgentIdentityIntegrationTests
         services.AddMediatR(cfg =>
             cfg.RegisterServicesFromAssemblyContaining<AgentIdentityIntegrationTests>());
 
+        // AgentContextPropagationBehavior publishes turn attribution for external agent-governance
+        // platforms; the no-op is what a host without such an integration resolves.
+        services.AddSingleton<
+            Application.AI.Common.Interfaces.Telemetry.IAgentTelemetryAttribution,
+            Application.AI.Common.Services.Telemetry.NoOpAgentTelemetryAttribution>();
+
         services.AddTransient(
             typeof(IPipelineBehavior<,>),
             typeof(AgentContextPropagationBehavior<,>));
@@ -212,6 +218,9 @@ public sealed class AgentIdentityIntegrationTests
 
         services.AddMediatR(cfg =>
             cfg.RegisterServicesFromAssemblyContaining<AgentIdentityIntegrationTests>());
+        services.AddSingleton<
+            Application.AI.Common.Interfaces.Telemetry.IAgentTelemetryAttribution,
+            Application.AI.Common.Services.Telemetry.NoOpAgentTelemetryAttribution>();
         services.AddTransient(typeof(IPipelineBehavior<,>), typeof(AgentContextPropagationBehavior<,>));
         services.AddTransient(typeof(IPipelineBehavior<,>), typeof(AgentIdentityResolutionBehavior<,>));
 

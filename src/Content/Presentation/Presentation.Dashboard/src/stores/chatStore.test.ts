@@ -10,6 +10,8 @@ describe('chatStore', () => {
       status: 'idle',
       error: null,
       toolActivity: null,
+      autoRoute: false,
+      routedAgentName: null,
     });
   });
 
@@ -53,5 +55,19 @@ describe('chatStore', () => {
     expect(after.toolActivity).toBeNull();
     expect(after.open).toBe(true);
     expect(after.threadId).toBe('t1');
+  });
+
+  it('reset clears routedAgentName', () => {
+    useChatStore.setState({ routedAgentName: 'research-agent' });
+    useChatStore.getState().reset();
+    expect(useChatStore.getState().routedAgentName).toBeNull();
+  });
+
+  it('sets autoRoute and routedAgentName independently', () => {
+    const s = useChatStore.getState();
+    s.setAutoRoute(true);
+    expect(useChatStore.getState().autoRoute).toBe(true);
+    s.setRoutedAgentName('research-agent');
+    expect(useChatStore.getState().routedAgentName).toBe('research-agent');
   });
 });

@@ -255,5 +255,6 @@ public sealed class TokenBudgetBehaviorTests
         public string Response { get; init; } = string.Empty;
         public int InputTokens { get; init; }
         public int OutputTokens { get; init; }
+        public IReadOnlyList<string> SkillIds { get; init; } = [];
     }
 }

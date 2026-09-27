@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Globalization;
+using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using System.Text;
 using Domain.AI.Audit;
@@ -135,6 +136,36 @@ public sealed class HashChainedJsonlWriter : IDisposable
         ArgumentNullException.ThrowIfNull(line);
         var tabIndex = line.IndexOf(FieldSeparator);
         return tabIndex < 0 ? line : line[..tabIndex];
+    }
+
+    /// <summary>
+    /// Reads every payload in the chain, across all segments in append order, without verifying
+    /// hash links — use <see cref="VerifyChainAsync"/> for integrity checking. Blank lines are
+    /// skipped. Does not take the append semaphore (matching the two hand-written readers this
+    /// primitive replaces), so a concurrent append may or may not be visible in a given pass.
+    /// </summary>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The payload JSON of every persisted line, in append order.</returns>
+    public async IAsyncEnumerable<string> ReadAllPayloadsAsync(
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        foreach (var segmentPath in _orderedSegments())
+        {
+            if (!File.Exists(segmentPath))
+                continue;
+
+            await using var stream = new FileStream(
+                segmentPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            using var reader = new StreamReader(stream);
+
+            while (await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false) is { } line)
+            {
+                if (string.IsNullOrWhiteSpace(line))
+                    continue;
+
+                yield return ExtractPayload(line);
+            }
+        }
     }
 
     /// <summary>

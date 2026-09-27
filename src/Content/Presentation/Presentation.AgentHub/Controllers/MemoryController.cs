@@ -77,10 +77,14 @@ public sealed class MemoryController : ControllerBase
     /// </summary>
     /// <param name="query">Natural-language or keyword query.</param>
     /// <param name="maxResults">Maximum number of results (1–50). Default 5.</param>
+    /// <param name="entityType">
+    /// Optional exact-match filter on entity type (e.g. <c>"Fact"</c>) — pass this to search only that
+    /// one memory kind instead of everything the caller has remembered.
+    /// </param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>Matching memory entries (possibly empty).</returns>
     /// <response code="200">Search completed (may contain zero results).</response>
-    /// <response code="400">Missing query or out-of-range maxResults.</response>
+    /// <response code="400">Missing query, out-of-range maxResults, or invalid entityType.</response>
     /// <response code="401">Caller is not authenticated.</response>
     [HttpGet("search")]
     [ProducesResponseType(typeof(IReadOnlyList<MemoryEntry>), StatusCodes.Status200OK)]
@@ -89,12 +93,14 @@ public sealed class MemoryController : ControllerBase
     public async Task<IActionResult> Search(
         [FromQuery] string? query,
         [FromQuery] int maxResults = 5,
+        [FromQuery] string? entityType = null,
         CancellationToken cancellationToken = default)
     {
         var result = await _mediator.Send(new RecallMemoryQuery
         {
             Query = query ?? string.Empty,
-            MaxResults = maxResults
+            MaxResults = maxResults,
+            EntityType = entityType
         }, cancellationToken).ConfigureAwait(false);
 
         return result.IsSuccess ? Ok(result.Value) : MapFailure(result);

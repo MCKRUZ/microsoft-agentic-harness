@@ -1,3 +1,4 @@
+using Application.AI.Common.Interfaces;
 using Application.AI.Common.Middleware;
 using FluentAssertions;
 using Microsoft.Extensions.AI;
@@ -222,6 +223,73 @@ public class ObservabilityMiddlewareTests
                 null,
                 It.IsAny<Func<It.IsAnyType, Exception?, string>>()),
             Times.AtLeastOnce);
+    }
+
+    // Issue #592: Anthropic.SDK's IChatClient bridge builds its AdditionalCounts keys from
+    // nameof(Usage.CacheReadInputTokens)/nameof(Usage.CacheCreationInputTokens) — the literal C#
+    // property names, PascalCase — not the API's own snake_case wire field names. Reading only the
+    // snake_case spelling meant every Claude call (via Foundry or direct) silently reported zero
+    // cache savings. These two tests pin both spellings are read correctly, so a regression to a
+    // single-key lookup fails loudly instead of silently zeroing Anthropic's cache telemetry again.
+
+    [Fact]
+    public async Task GetResponseAsync_AnthropicShapedPascalCaseCacheKeys_RecordsNonZeroCacheCounts()
+    {
+        var innerClient = new Mock<IChatClient>();
+        var response = new ChatResponse([new ChatMessage(ChatRole.Assistant, "response")])
+        {
+            Usage = new UsageDetails
+            {
+                InputTokenCount = 100,
+                OutputTokenCount = 50,
+                AdditionalCounts = new AdditionalPropertiesDictionary<long>
+                {
+                    ["CacheReadInputTokens"] = 42,
+                    ["CacheCreationInputTokens"] = 7,
+                }
+            }
+        };
+        innerClient
+            .Setup(c => c.GetResponseAsync(It.IsAny<IEnumerable<ChatMessage>>(), It.IsAny<ChatOptions>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(response);
+
+        var usageCapture = new Mock<ILlmUsageCapture>();
+        var middleware = new ObservabilityMiddleware(
+            innerClient.Object, new Mock<ILogger<ObservabilityMiddleware>>().Object, usageCapture.Object);
+
+        await middleware.GetResponseAsync([new ChatMessage(ChatRole.User, "test")]);
+
+        usageCapture.Verify(c => c.Record(100, 50, 42, 7, It.IsAny<string?>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task GetResponseAsync_SnakeCaseCacheKeys_StillRecordsNonZeroCacheCounts()
+    {
+        var innerClient = new Mock<IChatClient>();
+        var response = new ChatResponse([new ChatMessage(ChatRole.Assistant, "response")])
+        {
+            Usage = new UsageDetails
+            {
+                InputTokenCount = 100,
+                OutputTokenCount = 50,
+                AdditionalCounts = new AdditionalPropertiesDictionary<long>
+                {
+                    ["cache_read_input_tokens"] = 42,
+                    ["cache_creation_input_tokens"] = 7,
+                }
+            }
+        };
+        innerClient
+            .Setup(c => c.GetResponseAsync(It.IsAny<IEnumerable<ChatMessage>>(), It.IsAny<ChatOptions>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(response);
+
+        var usageCapture = new Mock<ILlmUsageCapture>();
+        var middleware = new ObservabilityMiddleware(
+            innerClient.Object, new Mock<ILogger<ObservabilityMiddleware>>().Object, usageCapture.Object);
+
+        await middleware.GetResponseAsync([new ChatMessage(ChatRole.User, "test")]);
+
+        usageCapture.Verify(c => c.Record(100, 50, 42, 7, It.IsAny<string?>()), Times.Once);
     }
 
     private static IEnumerable<ChatMessage> Yield3Messages()

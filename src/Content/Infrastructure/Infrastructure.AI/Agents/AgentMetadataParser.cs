@@ -79,10 +79,86 @@ public sealed class AgentMetadataParser
             Skills = ParseSkills(yaml),
             AllowedTools = ParseList(yaml, "allowed-tools"),
             Instructions = instructions,
+            OrchestrationMode = ParseOrchestrationMode(yaml, agentFilePath),
+            Participants = ParseList(yaml, "participants"),
+            MagenticOptions = ParseMagenticOptions(yaml, agentFilePath),
             FilePath = agentFilePath,
             BaseDirectory = baseDirectory,
             LoadedAt = DateTime.UtcNow,
         };
+    }
+
+    /// <summary>
+    /// Parses the <c>orchestration:</c> frontmatter key. Any value other than the literal
+    /// <c>magentic</c> (including an absent key) is <see cref="AgentOrchestrationMode.Single"/> —
+    /// an unrecognised value is logged and treated as the safe default rather than refused, since
+    /// a typo here should degrade to "runs as a normal agent," not fail the whole manifest.
+    /// </summary>
+    private AgentOrchestrationMode ParseOrchestrationMode(string? frontmatter, string agentFilePath)
+    {
+        var value = ParseString(frontmatter, "orchestration");
+        if (value is null)
+            return AgentOrchestrationMode.Single;
+
+        if (value.Equals("magentic", StringComparison.OrdinalIgnoreCase))
+            return AgentOrchestrationMode.Magentic;
+
+        _logger.LogWarning(
+            "AGENT.md at {Path} has unrecognised orchestration: '{Value}'; treating as Single",
+            agentFilePath, value);
+        return AgentOrchestrationMode.Single;
+    }
+
+    /// <summary>
+    /// Parses the optional Magentic tuning frontmatter (<c>max-rounds</c>, <c>max-stalls</c>,
+    /// <c>max-resets</c>, <c>require-plan-signoff</c>). Returns <see langword="null"/> when none of
+    /// them are present, so a supervisor manifest that omits tuning entirely runs with MAF's own
+    /// defaults via <see cref="AgentDefinition.MagenticOptions"/> being null, not a
+    /// <see cref="MagenticAgentOptions"/> whose defaults happen to match.
+    /// </summary>
+    private MagenticAgentOptions? ParseMagenticOptions(string? frontmatter, string agentFilePath)
+    {
+        // minValue: 1 — a round/stall/reset ceiling of zero or negative is not a smaller ceiling, it's
+        // a nonsensical one that would otherwise reach MAF's WorkflowBuilder unvalidated and fail deep
+        // inside its coordination loop instead of degrading to "manifest didn't specify this."
+        var maxRounds = ParseIntOrWarn(frontmatter, "max-rounds", agentFilePath, minValue: 1);
+        var maxStalls = ParseIntOrWarn(frontmatter, "max-stalls", agentFilePath, minValue: 1);
+        var maxResets = ParseIntOrWarn(frontmatter, "max-resets", agentFilePath, minValue: 1);
+        var requirePlanSignoff = ParseBool(frontmatter, "require-plan-signoff");
+
+        if (maxRounds is null && maxStalls is null && maxResets is null && requirePlanSignoff is null)
+            return null;
+
+        return new MagenticAgentOptions
+        {
+            MaxRounds = maxRounds,
+            MaxStalls = maxStalls ?? 3,
+            MaxResets = maxResets,
+            RequirePlanSignoff = requirePlanSignoff ?? false,
+        };
+    }
+
+    /// <summary>
+    /// Parses an integer frontmatter key and logs a warning — naming the file, key, and rejected value
+    /// — when the raw frontmatter actually declared one but it didn't parse or fell below
+    /// <paramref name="minValue"/>. An absent key logs nothing, matching <see cref="ParseInt"/>'s own
+    /// silent-degrade contract for that case; only a value the author actually wrote and got wrong is
+    /// worth surfacing, the same distinction <see cref="ParseOrchestrationMode"/> already draws between
+    /// "unset" and "set to something we don't understand."
+    /// </summary>
+    private int? ParseIntOrWarn(string? frontmatter, string key, string agentFilePath, int minValue)
+    {
+        var raw = ParseString(frontmatter, key);
+        var parsed = ParseInt(frontmatter, key, minValue);
+
+        if (raw is not null && parsed is null)
+        {
+            _logger.LogWarning(
+                "AGENT.md at {Path} has {Key}: '{Value}', which is not a valid integer >= {MinValue}; ignoring it",
+                agentFilePath, key, raw, minValue);
+        }
+
+        return parsed;
     }
 
     /// <summary>
@@ -122,6 +198,32 @@ public sealed class AgentMetadataParser
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// Parses an integer-valued frontmatter key. Returns <see langword="null"/> when the key is
+    /// absent, its value doesn't parse as an integer, or it parses below <paramref name="minValue"/> —
+    /// the caller treats all three the same way (fall back to the framework default), so a malformed
+    /// or out-of-range value degrades safely rather than refusing the manifest or reaching whatever
+    /// consumes it unvalidated.
+    /// </summary>
+    private static int? ParseInt(string? frontmatter, string key, int minValue = int.MinValue)
+    {
+        var value = ParseString(frontmatter, key);
+        return value is not null && int.TryParse(value, out var parsed) && parsed >= minValue
+            ? parsed
+            : null;
+    }
+
+    /// <summary>
+    /// Parses a boolean-valued frontmatter key. Returns <see langword="null"/> when the key is
+    /// absent or its value isn't <c>true</c>/<c>false</c> — see <see cref="ParseInt"/> for why an
+    /// absent value and a malformed one are treated identically.
+    /// </summary>
+    private static bool? ParseBool(string? frontmatter, string key)
+    {
+        var value = ParseString(frontmatter, key);
+        return value is not null && bool.TryParse(value, out var parsed) ? parsed : null;
     }
 
     private static IReadOnlyList<string> ParseList(string? frontmatter, string key)

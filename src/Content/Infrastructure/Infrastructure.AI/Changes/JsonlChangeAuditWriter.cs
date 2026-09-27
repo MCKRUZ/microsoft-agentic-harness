@@ -5,6 +5,7 @@ using Application.AI.Common.Interfaces.Changes;
 using Domain.AI.Audit;
 using Domain.AI.Changes;
 using Domain.AI.Identity;
+using Domain.Common;
 using Domain.Common.Config;
 using Infrastructure.AI.Audit;
 using Microsoft.Extensions.Logging;
@@ -32,6 +33,14 @@ public sealed class JsonlChangeAuditWriter : IChangeAuditWriter, IVerifiableAudi
         Converters = { new JsonStringEnumConverter() }
     };
 
+    private static readonly JsonSerializerOptions DeserializeOptions = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
+        PropertyNameCaseInsensitive = true,
+        Converters = { new JsonStringEnumConverter() }
+    };
+
+    private readonly string _filePath;
     private readonly HashChainedJsonlWriter _chain;
     private readonly ILogger<JsonlChangeAuditWriter> _logger;
 
@@ -44,7 +53,8 @@ public sealed class JsonlChangeAuditWriter : IChangeAuditWriter, IVerifiableAudi
         ArgumentNullException.ThrowIfNull(logger);
 
         var dir = config.CurrentValue.AI.Changes.AuditStoragePath;
-        _chain = new HashChainedJsonlWriter(Path.Combine(dir, "changes.jsonl"), logger);
+        _filePath = Path.Combine(dir, "changes.jsonl");
+        _chain = new HashChainedJsonlWriter(_filePath, logger);
         _logger = logger;
     }
 
@@ -72,7 +82,7 @@ public sealed class JsonlChangeAuditWriter : IChangeAuditWriter, IVerifiableAudi
             ReviewerId = decision.ReviewerId,
             BlastRadius = proposal.BlastRadius,
             TargetKind = proposal.Target.Kind,
-            Mode = mode,
+            Mode = mode.ToString(),
             CorrelationId = correlationId,
             AgentIdentity = new ChangeAuditIdentity
             {
@@ -103,29 +113,53 @@ public sealed class JsonlChangeAuditWriter : IChangeAuditWriter, IVerifiableAudi
         _chain.VerifyChainAsync(cancellationToken);
 
     /// <inheritdoc />
+    public async Task<Result<IReadOnlyList<ChangeAuditRecord>>> GetRecordsAsync(
+        ChangeAuditQuery query, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+
+        var records = new List<ChangeAuditRecord>();
+
+        try
+        {
+            await foreach (var payload in _chain.ReadAllPayloadsAsync(cancellationToken).ConfigureAwait(false))
+            {
+                try
+                {
+                    var record = JsonSerializer.Deserialize<ChangeAuditRecord>(payload, DeserializeOptions);
+                    if (record is not null)
+                        records.Add(record);
+                }
+                catch (JsonException)
+                {
+                    _logger.LogWarning("Skipped corrupted change audit record in {FilePath}", _filePath);
+                }
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            _logger.LogError(ex, "Failed to read change audit records from {FilePath}", _filePath);
+            return Result<IReadOnlyList<ChangeAuditRecord>>.Fail($"Failed to read audit records: {ex.Message}");
+        }
+
+        var filtered = records.AsEnumerable();
+        if (query.Start.HasValue)
+            filtered = filtered.Where(r => r.Timestamp >= query.Start.Value);
+        if (query.End.HasValue)
+            filtered = filtered.Where(r => r.Timestamp <= query.End.Value);
+        if (!string.IsNullOrEmpty(query.ProposalId))
+            filtered = filtered.Where(r => r.ProposalId == query.ProposalId);
+        if (!string.IsNullOrEmpty(query.GateKey))
+            filtered = filtered.Where(r => r.GateKey == query.GateKey);
+        if (query.Decision.HasValue)
+            filtered = filtered.Where(r => r.Decision == query.Decision.Value);
+        if (!string.IsNullOrEmpty(query.CorrelationId))
+            filtered = filtered.Where(r => r.CorrelationId == query.CorrelationId);
+
+        var result = filtered.OrderBy(r => r.Timestamp).ToList();
+        return Result<IReadOnlyList<ChangeAuditRecord>>.Success(result.AsReadOnly());
+    }
+
+    /// <inheritdoc />
     public void Dispose() => _chain.Dispose();
-
-    private sealed record ChangeAuditRecord
-    {
-        public required DateTimeOffset Timestamp { get; init; }
-        public required string ProposalId { get; init; }
-        public required string GateKey { get; init; }
-        public required GateAction Decision { get; init; }
-        public string Reason { get; init; } = string.Empty;
-        public string? EvidenceHash { get; init; }
-        public string? ReviewerId { get; init; }
-        public required BlastRadius BlastRadius { get; init; }
-        public required ChangeTargetKind TargetKind { get; init; }
-        public required OrchestratorMode Mode { get; init; }
-        public required string CorrelationId { get; init; }
-        public required ChangeAuditIdentity AgentIdentity { get; init; }
-        public required long DurationMs { get; init; }
-    }
-
-    private sealed record ChangeAuditIdentity
-    {
-        public string? Tenant { get; init; }
-        public required string Agent { get; init; }
-        public required string Kind { get; init; }
-    }
 }

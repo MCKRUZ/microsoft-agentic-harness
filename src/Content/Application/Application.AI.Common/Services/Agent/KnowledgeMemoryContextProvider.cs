@@ -105,7 +105,7 @@ public sealed class KnowledgeMemoryContextProvider : AIContextProvider
             if (memory is null)
                 return null;
 
-            recalled = await memory.RecallAsync(query, MaxRecallResults, cancellationToken);
+            recalled = await memory.RecallAsync(query, MaxRecallResults, cancellationToken: cancellationToken);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

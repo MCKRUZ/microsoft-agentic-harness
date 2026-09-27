@@ -49,6 +49,13 @@ public static class SkillInstructionMerger
     /// <see cref="DisclosableSkillFactory.Create"/> returned, and register that same list with the
     /// provider — supplying an id the provider was not given drops those instructions entirely.
     /// </param>
+    /// <param name="amendmentsBySkillId">
+    /// Learned instruction amendments (from <see cref="Interfaces.Skills.ISkillAmendmentProvider"/>) keyed
+    /// by <see cref="SkillDefinition.Id"/>, appended after a skill's own instructions within that skill's
+    /// block — never as a separate block, so they still participate in the on-demand-disclosure omission
+    /// above (a skill whose body is deferred to <c>load_skill</c> defers its amendments too, since both are
+    /// the same Tier 2 content). Null or a skill with no entry contributes nothing.
+    /// </param>
     /// <returns>
     /// The merged instruction text, or an empty string when no agent instructions, skill instructions,
     /// or additional context are supplied.
@@ -57,7 +64,8 @@ public static class SkillInstructionMerger
         IReadOnlyList<SkillDefinition> skills,
         string? additionalContext,
         string? agentInstructions = null,
-        IReadOnlySet<string>? disclosedOnDemandSkillIds = null)
+        IReadOnlySet<string>? disclosedOnDemandSkillIds = null,
+        IReadOnlyDictionary<string, IReadOnlyList<SkillAmendment>>? amendmentsBySkillId = null)
     {
         ArgumentNullException.ThrowIfNull(skills);
 
@@ -76,12 +84,21 @@ public static class SkillInstructionMerger
             if (disclosedOnDemandSkillIds?.Contains(skill.Id) == true)
                 continue;
 
+            var body = skill.Instructions;
+            if (amendmentsBySkillId is not null
+                && amendmentsBySkillId.TryGetValue(skill.Id, out var amendments)
+                && amendments.Count > 0)
+            {
+                var learned = string.Join("\n", amendments.Select(a => $"- {a.Content}"));
+                body = $"{body}\n\n### Learned Amendments\n{learned}";
+            }
+
             // Headed by total skill count, not by how many bodies survive the filter above: when an agent
             // composes several skills the model benefits from the header even if only one body remains.
             if (skills.Count > 1)
-                parts.Add($"## Skill: {skill.Name}\n\n{skill.Instructions}");
+                parts.Add($"## Skill: {skill.Name}\n\n{body}");
             else
-                parts.Add(skill.Instructions);
+                parts.Add(body);
         }
 
         if (!string.IsNullOrEmpty(additionalContext))

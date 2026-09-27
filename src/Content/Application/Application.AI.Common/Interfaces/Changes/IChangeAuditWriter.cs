@@ -1,5 +1,6 @@
 using Domain.AI.Changes;
 using Domain.AI.Identity;
+using Domain.Common;
 
 namespace Application.AI.Common.Interfaces.Changes;
 
@@ -27,4 +28,13 @@ public interface IChangeAuditWriter
         OrchestratorMode mode,
         string correlationId,
         CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Queries change audit records matching the specified filters (#714 — prerequisite for
+    /// compliance reporting, #696).
+    /// </summary>
+    /// <param name="query">Filters narrowing which records to return.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    Task<Result<IReadOnlyList<ChangeAuditRecord>>> GetRecordsAsync(
+        ChangeAuditQuery query, CancellationToken cancellationToken);
 }

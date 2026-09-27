@@ -170,17 +170,9 @@ public sealed partial class KnowledgeMemoryService
 
         var selfId = MemoryNodeId(currentKey);
         var nodes = await GetScopedTrustedMemoryNodesAsync(cancellationToken);
+        var candidates = nodes.Where(n => n.Id != selfId);
 
-        return nodes
-            .Where(n => n.Id != selfId)
-            .Select(n => (Node: n, Score: TokenOverlap(candidateTokens, Tokenize(n.GetAbstraction()!))))
-            .Where(x => x.Score > 0)
-            .OrderByDescending(x => x.Score)
-            // Id tiebreak keeps candidate selection deterministic regardless of GetAllNodesAsync order.
-            .ThenBy(x => x.Node.Id, StringComparer.Ordinal)
-            .Take(topK)
-            .Select(x => x.Node)
-            .ToList();
+        return RankByScore(candidates, n => TokenOverlap(candidateTokens, Tokenize(n.GetAbstraction()!)), topK);
     }
 
     /// <summary>
@@ -199,17 +191,10 @@ public sealed partial class KnowledgeMemoryService
     /// large backends (the same caveat carried by <c>GetNodeCountAsync</c> and the retention scan). Recall is
     /// a hotter path than write, so that primitive is the primary scaling lever if node counts grow.
     /// </remarks>
-    private async Task<IReadOnlyList<GraphNode>> GetScopedTrustedMemoryNodesAsync(CancellationToken cancellationToken)
-    {
-        var all = await _graphStore.GetAllNodesAsync(cancellationToken);
-        var scopePrefix = $"memory:{ScopeKey()}:";
-
-        return all
-            .Where(n => n.Id.StartsWith(scopePrefix, StringComparison.Ordinal))
-            .Where(n => n.GetTrust() == MemoryTrust.Trusted)
-            .Where(n => n.GetAbstraction() is not null)
-            .ToList();
-    }
+    private Task<IReadOnlyList<GraphNode>> GetScopedTrustedMemoryNodesAsync(CancellationToken cancellationToken) =>
+        GetScopedMemoryNodesAsync(
+            n => n.GetTrust() == MemoryTrust.Trusted && n.GetAbstraction() is not null,
+            cancellationToken);
 
     /// <summary>
     /// Builds the abstraction stamped when a fact adopts a similar entry: the target's canonical primary
@@ -259,5 +244,25 @@ public sealed partial class KnowledgeMemoryService
         var intersection = a.Count(b.Contains);
         var union = a.Count + b.Count - intersection;
         return union == 0 ? 0 : (double)intersection / union;
+    }
+
+    /// <summary>
+    /// Ranks <paramref name="candidates"/> by <paramref name="scorer"/> descending, breaking ties by node
+    /// id for determinism regardless of the graph backend's enumeration order, and returns the top
+    /// <paramref name="take"/> that scored above zero. The shared ranking shape behind the #598
+    /// content-search fallback (<see cref="AppendContentSearchMatchesAsync"/>), harmonic recall's
+    /// abstraction/cue-anchor match (<see cref="RecallHarmonicAsync"/>), and consolidation candidate
+    /// selection (<see cref="FindConsolidationCandidatesAsync"/>).
+    /// </summary>
+    private static List<GraphNode> RankByScore(IEnumerable<GraphNode> candidates, Func<GraphNode, double> scorer, int take)
+    {
+        return candidates
+            .Select(n => (Node: n, Score: scorer(n)))
+            .Where(x => x.Score > 0)
+            .OrderByDescending(x => x.Score)
+            .ThenBy(x => x.Node.Id, StringComparer.Ordinal)
+            .Take(take)
+            .Select(x => x.Node)
+            .ToList();
     }
 }

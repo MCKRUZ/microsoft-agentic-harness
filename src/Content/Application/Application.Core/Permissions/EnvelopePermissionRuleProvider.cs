@@ -136,11 +136,14 @@ public sealed class EnvelopePermissionRuleProvider : IPermissionRuleProvider
         // compares against the published name), so the tool falls through to the closing Deny despite
         // being "granted" in config — a real functional defect masked as fail-closed-by-accident (see
         // this type's remarks on the closing Deny).
-        var grantedNames = _envelopeGrantResolver.ExpandWithPublishedNameCoverage(ValidGrants(envelope));
+        // #652: grouped rather than flattened, so each emitted rule can record the published name its
+        // forms share — the summary in PermissionRulesSectionProvider then reports one line per
+        // logical tool without having to resolve (and therefore construct) tools at prompt time.
+        var grantedForms = _envelopeGrantResolver.ExpandToNameForms(ValidGrants(envelope));
 
         var rules = new List<ToolPermissionRule>();
-        AddDeclaredButUngrantedDenyRules(rules, agentId, grantedNames);
-        AddAutonomyCeilingBaselineRules(rules, envelope, grantedNames);
+        AddDeclaredButUngrantedDenyRules(rules, agentId, grantedForms);
+        AddAutonomyCeilingBaselineRules(rules, envelope, grantedForms);
         AddClosingDenyRule(rules);
 
         return Task.FromResult<IReadOnlyList<ToolPermissionRule>>(rules);
@@ -156,17 +159,22 @@ public sealed class EnvelopePermissionRuleProvider : IPermissionRuleProvider
     /// though the tool IS genuinely granted under the other form.
     /// </summary>
     private void AddDeclaredButUngrantedDenyRules(
-        List<ToolPermissionRule> rules, string agentId, IReadOnlyList<string> grantedNames)
+        List<ToolPermissionRule> rules, string agentId, IReadOnlyList<ToolNameForms> grantedForms)
     {
-        var granted = new HashSet<string>(grantedNames, StringComparer.OrdinalIgnoreCase);
+        var granted = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var grant in grantedForms)
+        {
+            foreach (var form in grant.Forms)
+                granted.Add(form);
+        }
 
         foreach (var declaredName in EnumerateDeclaredTools(agentId))
         {
-            var declaredForms = _envelopeGrantResolver.ExpandWithPublishedNameCoverage([declaredName]);
-            if (declaredForms.Any(granted.Contains))
+            var declared = _envelopeGrantResolver.ExpandOne(declaredName);
+            if (declared.Forms.Any(granted.Contains))
                 continue;
 
-            foreach (var form in declaredForms)
+            foreach (var form in declared.Forms)
             {
                 rules.Add(new ToolPermissionRule(
                     form,
@@ -174,7 +182,8 @@ public sealed class EnvelopePermissionRuleProvider : IPermissionRuleProvider
                     PermissionBehaviorType.Deny,
                     PermissionRuleSource.CapabilityEnvelope,
                     Priority: DenyPriority,
-                    IsBypassImmune: true));
+                    IsBypassImmune: true,
+                    PublishedToolName: declared.GroupingName));
             }
         }
     }
@@ -189,20 +198,24 @@ public sealed class EnvelopePermissionRuleProvider : IPermissionRuleProvider
     /// CapabilityEnvelope.AutonomyCeiling; wiring the ceiling into live approval is a follow-up.
     /// </summary>
     private static void AddAutonomyCeilingBaselineRules(
-        List<ToolPermissionRule> rules, CapabilityEnvelope envelope, IReadOnlyList<string> grantedNames)
+        List<ToolPermissionRule> rules, CapabilityEnvelope envelope, IReadOnlyList<ToolNameForms> grantedForms)
     {
         var ceilingBehavior = envelope.AutonomyCeiling.ToDefaultPermissionBehavior();
 
-        foreach (var toolName in grantedNames)
+        foreach (var granted in grantedForms)
         {
-            rules.Add(new ToolPermissionRule(
-                toolName,
-                null,
-                ceilingBehavior,
-                PermissionRuleSource.CapabilityEnvelope,
-                Priority: BaselinePriority,
-                IsAuthoritativeBaseline: true,
-                BaselineTier: PermissionBaselineTier.GrantBoundary));
+            foreach (var toolName in granted.Forms)
+            {
+                rules.Add(new ToolPermissionRule(
+                    toolName,
+                    null,
+                    ceilingBehavior,
+                    PermissionRuleSource.CapabilityEnvelope,
+                    Priority: BaselinePriority,
+                    IsAuthoritativeBaseline: true,
+                    BaselineTier: PermissionBaselineTier.GrantBoundary,
+                    PublishedToolName: granted.GroupingName));
+            }
         }
     }
 

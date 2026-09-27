@@ -3,11 +3,14 @@ version: 1.0.0
 description: |
   Routing-accuracy scorecard. Feeds labeled inputs directly to the harness's classifying
   routers and asserts the predicted bucket against a gold label, isolating routing quality
-  from the end-to-end answer. Two routers are covered:
+  from the end-to-end answer. Three routers are covered:
     - query_type      → Domain.AI.RAG.Enums.QueryType
                         (SimpleLookup | MultiHop | GlobalThematic | Comparative | Adversarial)
     - task_complexity → Domain.AI.Routing.Enums.TaskComplexity
                         (Trivial | Simple | Moderate | Complex)
+    - request_intent  → Domain.AI.Routing.Enums.RequestIntent
+                        (Question | TaskExecution | CodeGeneration | CreativeContent |
+                         Research | Planning | Conversational | Other)
   Cases select a router via `invocation_overrides.target: "router:<key>"`; the routing_accuracy
   metric normalizes case/separators so labels like `MultiHop` / `multi_hop` all match.
 
@@ -386,5 +389,134 @@ cases:
     invocation_overrides:
       target: "router:task_complexity"
       tool_count: "12"
+    metrics:
+      - key: routing_accuracy
+
+  # ---------------------------------------------------------------------------
+  # request_intent router — Question
+  # ---------------------------------------------------------------------------
+  - id: ri-question-01
+    input: "What does DI stand for?"
+    expected_output: Question
+    tags: [routing, request_intent]
+    invocation_overrides:
+      target: "router:request_intent"
+    metrics:
+      - key: routing_accuracy
+
+  - id: ri-question-02
+    input: "How does the retry policy work?"
+    expected_output: Question
+    tags: [routing, request_intent]
+    invocation_overrides:
+      target: "router:request_intent"
+    metrics:
+      - key: routing_accuracy
+
+  # ---------------------------------------------------------------------------
+  # request_intent router — TaskExecution
+  # ---------------------------------------------------------------------------
+  - id: ri-task-01
+    input: "Deploy the latest build to staging."
+    expected_output: TaskExecution
+    tags: [routing, request_intent]
+    invocation_overrides:
+      target: "router:request_intent"
+    metrics:
+      - key: routing_accuracy
+
+  - id: ri-task-02
+    input: "Generate a spend report for last month."
+    expected_output: TaskExecution
+    tags: [routing, request_intent]
+    invocation_overrides:
+      target: "router:request_intent"
+    metrics:
+      - key: routing_accuracy
+
+  # ---------------------------------------------------------------------------
+  # request_intent router — CodeGeneration
+  # ---------------------------------------------------------------------------
+  - id: ri-code-01
+    input: "Add a null check to this method before it dereferences the argument."
+    expected_output: CodeGeneration
+    tags: [routing, request_intent]
+    invocation_overrides:
+      target: "router:request_intent"
+    metrics:
+      - key: routing_accuracy
+
+  - id: ri-code-02
+    input: "Refactor this class to remove the duplicated validation logic."
+    expected_output: CodeGeneration
+    tags: [routing, request_intent]
+    invocation_overrides:
+      target: "router:request_intent"
+    metrics:
+      - key: routing_accuracy
+
+  # ---------------------------------------------------------------------------
+  # request_intent router — CreativeContent
+  # ---------------------------------------------------------------------------
+  - id: ri-creative-01
+    input: "Write a short product announcement for the new dashboard."
+    expected_output: CreativeContent
+    tags: [routing, request_intent]
+    invocation_overrides:
+      target: "router:request_intent"
+    metrics:
+      - key: routing_accuracy
+
+  # ---------------------------------------------------------------------------
+  # request_intent router — Research
+  # ---------------------------------------------------------------------------
+  - id: ri-research-01
+    input: "Find prior art for this rate-limiting approach before we build it."
+    expected_output: Research
+    tags: [routing, request_intent]
+    invocation_overrides:
+      target: "router:request_intent"
+    metrics:
+      - key: routing_accuracy
+
+  - id: ri-research-02
+    input: "Compare these two vendors and summarize the tradeoffs."
+    expected_output: Research
+    tags: [routing, request_intent]
+    invocation_overrides:
+      target: "router:request_intent"
+    metrics:
+      - key: routing_accuracy
+
+  # ---------------------------------------------------------------------------
+  # request_intent router — Planning
+  # ---------------------------------------------------------------------------
+  - id: ri-planning-01
+    input: "Plan the migration from SQLite to PostgreSQL before we start writing code."
+    expected_output: Planning
+    tags: [routing, request_intent]
+    invocation_overrides:
+      target: "router:request_intent"
+    metrics:
+      - key: routing_accuracy
+
+  # ---------------------------------------------------------------------------
+  # request_intent router — Conversational
+  # ---------------------------------------------------------------------------
+  - id: ri-conversational-01
+    input: "Thanks, that's exactly what I needed."
+    expected_output: Conversational
+    tags: [routing, request_intent]
+    invocation_overrides:
+      target: "router:request_intent"
+    metrics:
+      - key: routing_accuracy
+
+  - id: ri-conversational-02
+    input: "Hi there!"
+    expected_output: Conversational
+    tags: [routing, request_intent]
+    invocation_overrides:
+      target: "router:request_intent"
     metrics:
       - key: routing_accuracy

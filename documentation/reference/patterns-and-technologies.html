@@ -134,6 +134,7 @@
                         <li><code>ToolOutputCompressionBehavior</code> — compresses large tool outputs by content type (post-execution)</li>
                         <li><code>KnowledgeExtractionBehavior</code> — extracts facts from conversation into the knowledge graph (post-turn, fire-and-forget)</li>
                         <li><code>WorkEpisodeCaptureBehavior</code> — captures work episodes for self-improving memory (post-turn, fire-and-forget)</li>
+                        <li><code>SkillEffectivenessTrackingBehavior</code> — records per-skill success/failure for procedural memory (post-turn, fire-and-forget)</li>
                         <li><code>PromptUsageTrackingBehavior</code> — records prompt cache hit/miss for cost analysis</li>
                     </ol>
                     <p>All behaviour files live under <code>src/Content/Application/Application.AI.Common/MediatRBehaviors/</code>.</p>
@@ -388,6 +389,15 @@ know the exact filename. Cite file paths in `path:line` form.</code></pre>
                         <li>Graph amendment: <code>Infrastructure.AI.KnowledgeGraph/Skills/GraphSkillAmendmentProvider.cs</code> (skills updated by learnings)</li>
                     </ul>
 
+                    <p>
+                        <code>SkillMetadataRegistry</code> parses <code>SKILL.md</code> files on first use and stays
+                        current afterward: a background watcher (<code>SkillManifestWatcherService</code>, gated by
+                        <code>AI:Skills:WatchForChanges</code>) picks up an added, edited, or removed manifest
+                        automatically, and a role-guarded operator endpoint
+                        (<code>POST /api/skill-registry/refresh</code>) can force an immediate rescan — the same
+                        no-restart model as the agent manifest registry below.
+                    </p>
+
                     <h3 id="plugin-system">Plugin system &amp; boundary governance</h3>
                     <p>
                         Plugins are filesystem directories with a <code>plugin.json</code> manifest declaring the skills
@@ -414,8 +424,11 @@ know the exact filename. Cite file paths in `path:line` form.</code></pre>
                     <p>
                         Agents declare themselves in <code>AGENT.md</code> — name, system-prompt fragments, the skills
                         they load, the MCP servers they connect to, the decision frameworks they follow. The
-                        <code>AgentMetadataRegistry</code> parses these at startup; the <code>AgentFactory</code>
-                        consumes them at turn-construction time.
+                        <code>AgentMetadataRegistry</code> parses these on first use and stays current afterward: a
+                        background watcher (<code>AI:Agents:WatchForChanges</code>) picks up an added, edited, or
+                        removed manifest automatically, and a role-guarded operator endpoint
+                        (<code>POST /api/agent-registry/refresh</code>) can force an immediate rescan. The
+                        <code>AgentFactory</code> consumes the registry's contents at turn-construction time.
                     </p>
 
                     <h3 id="tool-keyed-di">Tool registration via keyed DI</h3>
@@ -741,6 +754,17 @@ return quality.MaxScore switch
                         <li><code>Memory/ConversationFactExtractor.cs</code></li>
                         <li><code>Infrastructure.AI.RAG/GraphRag/CrossSessionMemoryStore.cs</code></li>
                     </ul>
+                    <p>
+                        As of the avatar-hosting migration (M3a), this pipeline can instead be answered by an
+                        external HTTP-hosted memory service — gated behind
+                        <code>AppConfig:AI:RemoteMemory:Enabled</code> (<code>Off</code> by default). When on,
+                        <code>Remote/RemoteConversationFactExtractor.cs</code> /
+                        <code>Remote/RemoteKnowledgeMemory.cs</code> replace the local implementations above, and
+                        <code>Infrastructure.AI.RAG/Remote/RemoteCrossSessionMemoryStore.cs</code> stands in as an
+                        always-empty store — the remote contract's cross-session endpoints are deliberately inert
+                        for this phase. See the security guide's data-protection chapter for the recall-isolation
+                        caveat this currently carries.
+                    </p>
 
                     <h3 id="harmonic-memory">Harmonic memory — abstraction + cue-anchor recall</h3>
                     <p>
@@ -762,8 +786,13 @@ return quality.MaxScore switch
                         lexical — no LLM on the recall path. The whole layer is a graduated, off-by-default toggle
                         (<code>Off</code> / <code>AbstractOnly</code> / <code>Full</code> under
                         <code>AppConfig:AI:HarmonicMemory</code>) because abstraction costs one to two LLM calls per
-                        write; <code>Off</code> is the byte-identical legacy path. The abstractor and consolidator ship as
-                        <code>NotConfigured</code> seams — the consumer supplies the agent-backed implementations.
+                        write; <code>Off</code> keeps the legacy write path unchanged, though legacy recall (used
+                        in every mode) now also falls back to a scoped content search over the caller's own
+                        memory nodes when a fact's key doesn't literally match the query — e.g.
+                        automatically-extracted facts keyed by conversation id. The abstractor and consolidator
+                        ship as <code>NotConfigured</code> seams — the consumer supplies the agent-backed
+                        implementations, and a startup guard fails host startup (rather than deferring to the
+                        first write) if <code>Mode</code> is raised without one registered.
                     </p>
                     <ul>
                         <li><code>Memory/KnowledgeMemoryService.Harmonic.cs</code> — write path (abstraction + consolidation)</li>
@@ -772,6 +801,12 @@ return quality.MaxScore switch
                         <li><code>Domain.AI/KnowledgeGraph/Models/GraphNodeMemoryExtensions.cs</code> — abstraction + cue anchors stored in node properties</li>
                         <li><code>Domain.Common/Config/AI/HarmonicMemory/HarmonicMemoryConfig.cs</code> — the mode toggle + cost/recall knobs</li>
                     </ul>
+                    <p>
+                        When remote memory hosting is enabled, these two seams are pre-wired to
+                        <code>Remote/RemoteMemoryAbstractor.cs</code> / <code>Remote/RemoteMemoryConsolidator.cs</code>
+                        instead of staying <code>NotConfigured</code> — safe no-op stand-ins, since the remote
+                        contract has no abstraction/consolidation endpoint yet.
+                    </p>
 
                     <h3 id="memory-decay">Memory decay tiers</h3>
                     <p>
@@ -1344,6 +1379,7 @@ await _store.SaveAsync(attestation, ct);</code></pre>
                         <li><code>OpenTelemetry.Exporter.OpenTelemetryProtocol</code> (OTLP — Tempo, Azure Monitor)</li>
                         <li><code>Azure.Monitor.OpenTelemetry.AspNetCore</code></li>
                         <li><code>OpenTelemetry.Instrumentation.AspNetCore</code> + <code>.Http</code> + <code>.EntityFrameworkCore</code></li>
+                        <li><code>Microsoft.OpenTelemetry</code> — opt-in Microsoft Agent 365 agent-activity export; sets the OpenTelemetry 1.18.0 floor for the solution</li>
                     </ul>
 
                     <p><strong>Persistence</strong></p>

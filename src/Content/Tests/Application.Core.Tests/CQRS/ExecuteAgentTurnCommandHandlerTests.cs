@@ -47,7 +47,8 @@ public class ExecuteAgentTurnCommandHandlerTests
             new NullContextSnapshotNotifier(),
             TimeProvider.System,
             NullLogger<ExecuteAgentTurnCommandHandler>.Instance,
-            new PassthroughToolCallReplayTreatment());
+            new PassthroughToolCallReplayTreatment(),
+            Mock.Of<Application.Core.Orchestration.Magentic.IMagenticAgentTurnRunner>());
     }
 
     private static ExecuteAgentTurnCommand CreateCommand(
@@ -86,6 +87,51 @@ public class ExecuteAgentTurnCommandHandlerTests
         result.Success.Should().BeTrue();
         result.Response.Should().Be("Agent response text");
         result.Error.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Handle_ValidRequest_PopulatesSkillIdsForEffectivenessTracking()
+    {
+        // #695: SkillEffectivenessTrackingBehavior attributes a turn's outcome to the skill(s) that
+        // ran it — this is the field it reads. With no registered AgentDefinition (the default in
+        // this fixture), AgentDefinition.ResolveSkillIds falls back to treating AgentName as the
+        // skill id directly.
+        var agent = new TestableAIAgent("Agent response text");
+        _agentCache
+            .Setup(c => c.GetOrCreateAsync(
+                It.IsAny<string>(),
+                It.IsAny<IReadOnlyList<string>>(),
+                It.IsAny<SkillAgentOptions>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(agent);
+
+        var result = await _handler.Handle(CreateCommand(agentName: "TestAgent"), CancellationToken.None);
+
+        result.SkillIds.Should().BeEquivalentTo(["TestAgent"]);
+    }
+
+    [Fact]
+    public async Task Handle_InternalErrorAfterSkillResolution_StillPopulatesSkillIds()
+    {
+        // The skillIds local is hoisted above the try specifically so a caught failure still reports
+        // which skill(s) the turn was attempting to run under — attribution matters for a failed
+        // outcome too. Reverting that hoist (declaring skillIds with `var` inside the try) would make
+        // this test fail to compile, and reverting to a fresh empty default inside the catch instead
+        // would make it fail at runtime.
+        var agent = TestableAIAgent.Throwing(new InvalidOperationException("boom"));
+        _agentCache
+            .Setup(c => c.GetOrCreateAsync(
+                It.IsAny<string>(),
+                It.IsAny<IReadOnlyList<string>>(),
+                It.IsAny<SkillAgentOptions>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(agent);
+
+        var result = await _handler.Handle(CreateCommand(agentName: "TestAgent"), CancellationToken.None);
+
+        result.Success.Should().BeFalse();
+        result.ErrorKind.Should().Be(AgentTurnErrorKind.Internal);
+        result.SkillIds.Should().BeEquivalentTo(["TestAgent"]);
     }
 
     [Fact]
@@ -260,7 +306,8 @@ public class ExecuteAgentTurnCommandHandlerTests
             new NullContextSnapshotNotifier(),
             TimeProvider.System,
             logger.Object,
-            new PassthroughToolCallReplayTreatment());
+            new PassthroughToolCallReplayTreatment(),
+            Mock.Of<Application.Core.Orchestration.Magentic.IMagenticAgentTurnRunner>());
 
         Application.AI.Common.Services.AgentTurnStreamSink.Current =
             new Application.AI.Common.Services.AgentTurnStreamSink(
@@ -351,7 +398,8 @@ public class ExecuteAgentTurnCommandHandlerTests
             new NullContextSnapshotNotifier(),
             TimeProvider.System,
             NullLogger<ExecuteAgentTurnCommandHandler>.Instance,
-            disabledTreatment.Object);
+            disabledTreatment.Object,
+            Mock.Of<Application.Core.Orchestration.Magentic.IMagenticAgentTurnRunner>());
 
         // Act
         var result = await handlerWithDisabledReplay.Handle(CreateCommand(), CancellationToken.None);
@@ -405,7 +453,8 @@ public class ExecuteAgentTurnCommandHandlerTests
             new NullContextSnapshotNotifier(),
             TimeProvider.System,
             NullLogger<ExecuteAgentTurnCommandHandler>.Instance,
-            cappedTreatment);
+            cappedTreatment,
+            Mock.Of<Application.Core.Orchestration.Magentic.IMagenticAgentTurnRunner>());
 
         // Act
         var result = await handler.Handle(CreateCommand(), CancellationToken.None);
@@ -892,6 +941,7 @@ public class ExecuteAgentTurnCommandHandlerTests
             TimeProvider.System,
             NullLogger<ExecuteAgentTurnCommandHandler>.Instance,
             new PassthroughToolCallReplayTreatment(),
+            Mock.Of<Application.Core.Orchestration.Magentic.IMagenticAgentTurnRunner>(),
             redactor.Object);
 
         var args = string.Empty;

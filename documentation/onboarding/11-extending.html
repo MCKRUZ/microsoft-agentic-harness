@@ -22,11 +22,13 @@
                     <div class="sidebar-group"><div class="sidebar-group-title">Systems</div><a class="sidebar-link" href="05-skills.html"><span class="sidebar-link-num">05</span> Skills System</a><a class="sidebar-link" href="06-tools.html"><span class="sidebar-link-num">06</span> Tools &amp; Keyed DI</a><a class="sidebar-link" href="07-rag.html"><span class="sidebar-link-num">07</span> The RAG Pipeline</a><a class="sidebar-link" href="08-mcp.html"><span class="sidebar-link-num">08</span> MCP Server &amp; Client</a><a class="sidebar-link" href="16-generative-ui.html"><span class="sidebar-link-num">16</span> Generative UI &amp; Widgets</a><a class="sidebar-link" href="17-bundle-api.html"><span class="sidebar-link-num">17</span> Execution API (HTTP)</a></div>
                     <div class="sidebar-group"><div class="sidebar-group-title">Patterns</div><a class="sidebar-link" href="09-patterns.html"><span class="sidebar-link-num">09</span> Patterns You'll Use Daily</a><a class="sidebar-link" href="10-observability.html"><span class="sidebar-link-num">10</span> Observability &amp; Safety</a></div>
                     <div class="sidebar-group"><div class="sidebar-group-title">Building</div><a class="sidebar-link" href="11-extending.html"><span class="sidebar-link-num">11</span> Extending the Harness</a></div>
+                    <div class="sidebar-group"><div class="sidebar-group-title">Deployment</div><a class="sidebar-link" href="18-self-hosted-docker.html"><span class="sidebar-link-num">18</span> Self-Hosted, Non-Azure Docker</a></div>
                     <div class="sidebar-group"><div class="sidebar-group-title">Quality</div><a class="sidebar-link" href="13-evaluation.html"><span class="sidebar-link-num">13</span> Evaluation Framework</a><a class="sidebar-link" href="14-skill-training.html"><span class="sidebar-link-num">14</span> Skill Training</a></div>
                     <div class="sidebar-group"><div class="sidebar-group-title">Delivery</div><a class="sidebar-link" href="15-delivery-governance.html"><span class="sidebar-link-num">15</span> Delivery &amp; CI Governance</a></div>
                     <div class="sidebar-group"><div class="sidebar-group-title">Reference</div><a class="sidebar-link" href="12-reference.html"><span class="sidebar-link-num">12</span> Cheatsheet &amp; Glossary</a></div>
                     <div class="sidebar-group">
                         <div class="sidebar-group-title">Other Guides</div>
+                        <a class="sidebar-link" href="showcase/index.html">&#8592; Capability Showcase</a>
                         <a class="sidebar-link" href="architecture/index.html">&#8592; Architecture Guide</a>
                         <a class="sidebar-link" href="agentic-harness-course/index.html">&#8592; Interactive Course</a>
                         <a class="sidebar-link" href="security/index.html">&#8592; Security Guide</a>
@@ -292,7 +294,7 @@ miss, you push back on premature abstractions, and you say what you mean.
 
                         <li class="step">
                             <div class="step-title">Verify the loader picks it up</div>
-                            <p>Restart the host. The skill loader will discover the new <code>SKILL.md</code> at startup. From the console UI, you can now route requests to <code>"code-reviewer"</code> as an <code>AgentName</code>.</p>
+                            <p>No restart needed — the harness watches skill paths for changes by default (<code>AI:Skills:WatchForChanges</code>) and picks up the new <code>SKILL.md</code> automatically within <code>ChangeDebounceMilliseconds</code> (500ms default). If <code>WatchForChanges</code> is disabled, or you want to confirm the change immediately, restart the host or call the operator refresh endpoint (<code>POST /api/skill-registry/refresh</code>). Either way, from the console UI you can now route requests to <code>"code-reviewer"</code> as an <code>AgentName</code>.</p>
                             <div class="callout callout-tip">
                                 <span class="callout-icon">✓</span>
                                 <div class="callout-body">
@@ -383,7 +385,7 @@ You are the team's automated code review assistant. For each pull request:
 
                         <li class="step">
                             <div class="step-title">Verify the agent loader picks it up</div>
-                            <p>Restart. The agent metadata registry now contains <code>code-review-bot</code>. Because this agent lists two skills, <code>AgentExecutionContextFactory</code> will merge both skills' instructions into the system prompt and combine both skills' tool lists. If <code>code-reviewer</code> declares <code>prerequisites: [git-history]</code>, the git-history skill's <code>CompletionTool</code> must be called before code-reviewer activates.</p>
+                            <p>No restart needed — the harness watches <code>agents/</code> for changes by default (<code>AI:Agents:WatchForChanges</code>) and picks up the new <code>AGENT.md</code> automatically within <code>ChangeDebounceMilliseconds</code> (500ms default). If <code>WatchForChanges</code> is disabled, or you want to confirm the change immediately, restart the host or call the operator refresh endpoint. Either way, the agent metadata registry now contains <code>code-review-bot</code>. Because this agent lists two skills, <code>AgentExecutionContextFactory</code> will merge both skills' instructions into the system prompt and combine both skills' tool lists. If <code>code-reviewer</code> declares <code>prerequisites: [git-history]</code>, the git-history skill's <code>CompletionTool</code> must be called before code-reviewer activates.</p>
                         </li>
 
                         <li class="step">

@@ -2,6 +2,7 @@ using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Bundles;
 using Application.AI.Common.Interfaces.DriftDetection;
 using Application.AI.Common.Interfaces.Escalation;
+using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Learnings;
 using MediatR;
 using Domain.Common.Config;
@@ -242,6 +243,12 @@ public sealed class DriftLearningsDiTests
         // rather than a Mock.Of<T>; the empty key set is fine since these tests don't exercise its content.
         services.AddSingleton(sp => new Application.AI.Common.Services.Tools.FirstPartyToolLookup(
             sp, new HashSet<string>()));
+        // SkillMetadataParser now depends on IMcpSecurityScanner to screen a skill manifest's MCP
+        // tool declarations for prompt-injection/exfiltration risk. The real composition root
+        // registers it via Infrastructure.AI.Governance's own DI module, called separately from
+        // AddInfrastructureAIDependencies — mirror that here so hosted-service enumeration can
+        // resolve SkillMetadataRegistry, which constructs SkillMetadataParser eagerly.
+        services.AddSingleton(Mock.Of<IMcpSecurityScanner>());
 
         // Register knowledge graph (provides IKnowledgeGraphStore for graph-backed stores)
         services.AddKnowledgeGraphDependencies(appConfig);

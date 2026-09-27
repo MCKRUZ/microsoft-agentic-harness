@@ -2,7 +2,6 @@ using System.Collections.Frozen;
 using System.Text;
 using Application.AI.Common.Interfaces.Agents;
 using Domain.AI.Agents;
-using Domain.AI.Governance;
 using Domain.AI.Orchestration;
 using Domain.AI.Routing.Models;
 using Domain.Common.Config;
@@ -256,12 +255,12 @@ public sealed class CapabilityMatchStrategy : ISupervisorStrategy
     /// </summary>
     private static SubagentType ClassifyTask(string taskDescription)
     {
-        var tokens = Tokenize(taskDescription);
+        var tokens = TextTokenizer.Tokenize(taskDescription);
 
-        var exploreCt = CountMatches(tokens, ExploreKeywords);
-        var planCt = CountMatches(tokens, PlanKeywords);
-        var verifyCt = CountMatches(tokens, VerifyKeywords);
-        var executeCt = CountMatches(tokens, ExecuteKeywords);
+        var exploreCt = TextTokenizer.CountMatches(tokens, ExploreKeywords);
+        var planCt = TextTokenizer.CountMatches(tokens, PlanKeywords);
+        var verifyCt = TextTokenizer.CountMatches(tokens, VerifyKeywords);
+        var executeCt = TextTokenizer.CountMatches(tokens, ExecuteKeywords);
 
         var maxCount = Math.Max(Math.Max(exploreCt, planCt), Math.Max(verifyCt, executeCt));
         if (maxCount == 0)
@@ -272,44 +271,5 @@ public sealed class CapabilityMatchStrategy : ISupervisorStrategy
         if (exploreCt == maxCount) return SubagentType.Explore;
         if (planCt == maxCount) return SubagentType.Plan;
         return SubagentType.Verify;
-    }
-
-    private static List<string> Tokenize(string text)
-    {
-        var tokens = new List<string>();
-        var start = -1;
-
-        for (var i = 0; i < text.Length; i++)
-        {
-            if (char.IsLetterOrDigit(text[i]))
-            {
-                if (start < 0) start = i;
-            }
-            else
-            {
-                if (start >= 0)
-                {
-                    tokens.Add(text[start..i]);
-                    start = -1;
-                }
-            }
-        }
-
-        if (start >= 0)
-            tokens.Add(text[start..]);
-
-        return tokens;
-    }
-
-    private static int CountMatches(List<string> tokens, FrozenSet<string> keywords)
-    {
-        var count = 0;
-        foreach (var token in tokens)
-        {
-            if (keywords.Contains(token))
-                count++;
-        }
-
-        return count;
     }
 }

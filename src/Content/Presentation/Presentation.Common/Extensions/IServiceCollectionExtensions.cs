@@ -292,6 +292,15 @@ public static class IServiceCollectionExtensions
             .ValidateFluentValidation<WorkflowSubmissionConfig, WorkflowSubmissionConfigValidator>()
             .ValidateOnStart();
 
+        // Recurring-schedule seam (#593): tick interval and per-owner schedule quota. Same posture
+        // as its neighbours — unconditional positivity rules over all-valid defaults, so hosts that
+        // omit the section keep booting, and a bad explicit value fails closed at startup instead of
+        // spinning the tick service or silently refusing every schedule.
+        services.AddOptions<Domain.Common.Config.AI.Schedules.ScheduleConfig>()
+            .Bind(configuration.GetSection("AppConfig:AI:Schedules"))
+            .ValidateFluentValidation<Domain.Common.Config.AI.Schedules.ScheduleConfig, Application.Core.Validation.ScheduleConfigValidator>()
+            .ValidateOnStart();
+
         // Direct tool-invocation bounds (request size, deadline, output ceiling, parameter count).
         // Same posture again, and it matters more here than for its siblings: two of these bounds fail
         // in ways the caller cannot diagnose. A non-positive output ceiling turns a successful tool
@@ -322,6 +331,25 @@ public static class IServiceCollectionExtensions
             .ValidateFluentValidation<Domain.Common.Config.AI.RAG.RagConfig, RagConfigValidator>()
             .ValidateOnStart();
 
+        // Remote memory hosting (avatar-hosting migration). Rules are conditional on Enabled and the
+        // class default is Enabled=false, so hosts that omit this section keep booting unaffected.
+        services.AddOptions<RemoteMemoryConfig>()
+            .Bind(configuration.GetSection("AppConfig:AI:RemoteMemory"))
+            .ValidateFluentValidation<RemoteMemoryConfig, RemoteMemoryConfigValidator>()
+            .ValidateOnStart();
+
+        // Agent 365 trace export (agent identity ids, S2S endpoint choice, offline store-and-forward).
+        // Rules are conditional on Enabled and the class defaults satisfy them, so hosts that omit the
+        // section keep booting. Failing closed matters unusually much here: every mistake this
+        // validator catches is otherwise SILENT. A non-GUID agent id does not error — the agent simply
+        // never appears, or appears unidentified, in the tenant's dashboards; and opting into offline
+        // storage without naming a directory would inherit the SDK's per-user temp path for spans that
+        // can carry prompts and tool arguments.
+        services.AddOptions<Agent365ExporterConfig>()
+            .Bind(configuration.GetSection("AppConfig:Observability:Exporters:Agent365"))
+            .ValidateFluentValidation<Agent365ExporterConfig, Agent365ExporterConfigValidator>()
+            .ValidateOnStart();
+
         return services;
     }
 
@@ -348,6 +376,10 @@ public static class IServiceCollectionExtensions
         bool includeHealthChecksUI = true)
     {
         var config = AppConfigHelper.LoadAppConfig();
+
+        // Captures which providers actually loaded (see HarnessConfigSourceReport's remarks for why
+        // this must read the root LoadAppConfig built, not a host's separate builder.Configuration).
+        services.AddSingleton(Configuration.HarnessConfigSourceReport.FromConfigurationRoot((IConfigurationRoot)config));
 
         services.RegisterConfigSections(config);
 

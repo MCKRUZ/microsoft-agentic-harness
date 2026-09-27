@@ -118,7 +118,9 @@ public sealed class ScriptedChatClientFactory(IAmbientRequestScope ambientScope,
             ?? throw new InvalidOperationException(
                 "ScriptedChatClientFactory could not resolve an agent id: the current ambient request " +
                 "scope has no IAgentExecutionContext registered. Register it (matching production's " +
-                "AddScoped<IAgentExecutionContext, AgentExecutionContext>()) in the test container.");
+                "AddScoped<IAgentExecutionContext, AgentExecutionContext>()) in the test container, " +
+                "along with an IAgentTelemetryAttribution — the real context takes one, and " +
+                "NoOpAgentTelemetryAttribution is the benign default.");
 
         return executionContext.AgentId;
     }

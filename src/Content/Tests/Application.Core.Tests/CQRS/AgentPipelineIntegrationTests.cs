@@ -49,6 +49,11 @@ public class AgentPipelineIntegrationTests
             cfg.RegisterServicesFromAssembly(typeof(RunConversationCommandHandler).Assembly));
 
         // Agent context propagation — the behavior that caused the double-init bug
+        // AgentContextPropagationBehavior publishes turn attribution for external agent-governance
+        // platforms; the no-op is what a host without such an integration resolves.
+        services.AddSingleton<
+            Application.AI.Common.Interfaces.Telemetry.IAgentTelemetryAttribution,
+            Application.AI.Common.Services.Telemetry.NoOpAgentTelemetryAttribution>();
         services.AddTransient(typeof(IPipelineBehavior<,>), typeof(AgentContextPropagationBehavior<,>));
 
         // Scoped agent execution context — real implementation, not mock
@@ -117,6 +122,10 @@ public class AgentPipelineIntegrationTests
         services.AddSingleton<IContextSnapshotComputer, DefaultContextSnapshotComputer>();
         services.AddSingleton<IContextSnapshotNotifier, NullContextSnapshotNotifier>();
         services.AddSingleton(TimeProvider.System);
+
+        // Magentic supervisor turn runner — not under test here (registryMock above never resolves a
+        // Magentic-mode AgentDefinition), so a mock only needs to satisfy DI resolution.
+        services.AddSingleton(new Mock<Application.Core.Orchestration.Magentic.IMagenticAgentTurnRunner>().Object);
 
         return services.BuildServiceProvider();
     }

@@ -6,6 +6,7 @@ name: Deploy Documentation to GitHub Pages
 #   /security/                 → documentation/security/          (Security Guide)
 #   /agentic-harness-course/   → documentation/agentic-harness-course/ (Interactive Course)
 #   /reference/                → documentation/reference/         (Reference Catalogue)
+#   /showcase/                 → documentation/showcase/          (Interactive Architecture Showcase)
 # This layout preserves the existing onboarding URL and matches the
 # relative link from onboarding → course (../agentic-harness-course/).
 # Onboarding's assets/ folder lands at the site root so sibling guides
@@ -27,6 +28,7 @@ on:
       - 'documentation/security/**'
       - 'documentation/agentic-harness-course/**'
       - 'documentation/reference/**'
+      - 'documentation/showcase/**'
       - '.github/workflows/pages.yml'
   workflow_dispatch:
 
@@ -68,6 +70,8 @@ jobs:
           cp -R documentation/agentic-harness-course/. _site/agentic-harness-course/
           mkdir -p _site/reference
           cp -R documentation/reference/. _site/reference/
+          mkdir -p _site/showcase
+          cp -R documentation/showcase/. _site/showcase/
 
       - name: Upload site as Pages artifact
         uses: actions/upload-pages-artifact@v3

@@ -1,13 +1,8 @@
 using System.Reflection;
 using FluentAssertions;
-using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.SignalR;
-using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
-using Moq;
-using Presentation.AgentHub;
 using Presentation.AgentHub.Hubs;
 using Xunit;
 
@@ -63,24 +58,5 @@ public sealed class HubRateLimitFilterWiringTests
             "the hub-method rate limiter is only effective if it is in the SignalR filter chain");
     }
 
-    private static ServiceProvider BuildProvider()
-    {
-        var configuration = new ConfigurationBuilder()
-            .AddInMemoryCollection(new Dictionary<string, string?>
-            {
-                // Dev-auth branch avoids the Azure Identity (Microsoft.Identity.Web) wiring,
-                // keeping this a focused DI/wiring test.
-                ["Auth:Disabled"] = "true",
-            })
-            .Build();
-
-        var environment = new Mock<IWebHostEnvironment>();
-        environment.SetupGet(e => e.EnvironmentName).Returns(Environments.Development);
-
-        var services = new ServiceCollection();
-        services.AddLogging();
-        services.AddAgentHubServices(configuration, environment.Object);
-
-        return services.BuildServiceProvider();
-    }
+    private static ServiceProvider BuildProvider() => AgentHubTestServiceProviderFactory.Build();
 }

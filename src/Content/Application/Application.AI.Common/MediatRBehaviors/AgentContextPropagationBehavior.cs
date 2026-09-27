@@ -42,6 +42,8 @@ public sealed class AgentContextPropagationBehavior<TRequest, TResponse>
         if (request is not IAgentScopedRequest agentRequest)
             return await next();
 
+        // This also publishes the turn's external governance attribution, which stays in effect for the
+        // life of the request scope — see Initialize's remarks. Nothing to do here beyond calling it.
         _executionContext.Initialize(
             agentRequest.AgentId,
             agentRequest.ConversationId,

@@ -106,27 +106,65 @@ public sealed class CapabilityEnvelopeGrantResolver
 
     /// <summary>
     /// Expands <paramref name="names"/> to also include each name's resolved, self-reported published
-    /// name when it names a first-party tool by DI key and the two disagree — flattened and
-    /// deduplicated case-insensitively, preserving first-seen order.
+    /// name when it names a first-party tool by DI key and the two disagree — keeping each tool's
+    /// name-forms grouped, so a caller emitting one rule per form can record that those rules
+    /// describe a single logical tool (#652). That pairing is knowable only here; recovering it later
+    /// would mean resolving the tool again.
     /// </summary>
-    public IReadOnlyList<string> ExpandWithPublishedNameCoverage(IReadOnlyCollection<string> names)
+    /// <remarks>
+    /// Deduplication is global across the whole input and case-insensitive: a form already
+    /// contributed by an earlier name is dropped, and a name whose every form was already contributed
+    /// yields no group at all. The flattened result is therefore exactly the name list the earlier
+    /// flat <c>ExpandWithPublishedNameCoverage</c> produced — same order, same dedup — so rule
+    /// coverage is unchanged by the grouping; that method was removed once its last caller moved
+    /// here, rather than kept as an untested convenience.
+    /// </remarks>
+    public IReadOnlyList<ToolNameForms> ExpandToNameForms(IReadOnlyCollection<string> names)
     {
         ArgumentNullException.ThrowIfNull(names);
 
-        var expanded = new List<string>(names.Count);
+        var groups = new List<ToolNameForms>(names.Count);
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var name in names)
         {
-            if (seen.Add(name))
-                expanded.Add(name);
+            var expanded = ExpandOne(name);
 
-            if (TryResolvePublishedName(name, out var publishedName)
-                && !string.Equals(publishedName, name, StringComparison.OrdinalIgnoreCase)
-                && seen.Add(publishedName))
-                expanded.Add(publishedName);
+            var forms = new List<string>(expanded.Forms.Count);
+            foreach (var form in expanded.Forms)
+            {
+                if (seen.Add(form))
+                    forms.Add(form);
+            }
+
+            // Every form was already contributed by an earlier name: no rules to emit for it.
+            if (forms.Count == 0)
+                continue;
+
+            groups.Add(expanded with { Forms = forms });
         }
 
-        return expanded;
+        return groups;
+    }
+
+    /// <summary>
+    /// The name-forms for a single name, with no cross-name deduplication — for a caller emitting
+    /// rules one declared/denied tool at a time, where routing a one-element collection through
+    /// <see cref="ExpandToNameForms"/> would allocate a list, a set and a result list per tool on a
+    /// path that runs for every tool-permission resolution (/simplify finding), and would return a
+    /// collection whose emptiness the caller then has to handle although it can never be empty.
+    /// </summary>
+    /// <param name="name">The declared, granted or denied name to expand.</param>
+    public ToolNameForms ExpandOne(string name)
+    {
+        var diverges = TryResolvePublishedName(name, out var publishedName)
+            && !string.Equals(publishedName, name, StringComparison.OrdinalIgnoreCase);
+
+        // PublishedName is the name the agent actually invokes the tool by, which is what a summary
+        // should show; when nothing diverges it is simply the name itself.
+        return diverges
+            ? new ToolNameForms(publishedName, [name, publishedName], Diverges: true)
+            : new ToolNameForms(name, [name], Diverges: false);
     }
 }
+

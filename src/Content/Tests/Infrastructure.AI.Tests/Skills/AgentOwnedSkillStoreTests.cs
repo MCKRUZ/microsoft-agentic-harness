@@ -103,4 +103,96 @@ public sealed class AgentOwnedSkillStoreTests
 
         act.Should().Throw<ArgumentException>();
     }
+
+    [Fact]
+    public void ReplaceAgentSkills_DropsASkillNoLongerInTheReplacementSet()
+    {
+        var store = new AgentOwnedSkillStore();
+        store.Register("agent-a", Skill("keep"));
+        store.Register("agent-a", Skill("drop"));
+
+        store.ReplaceAgentSkills("agent-a", [Skill("keep")]);
+
+        store.GetForAgent("agent-a").Select(s => s.Id).Should().BeEquivalentTo(["keep"]);
+        store.TryGet("agent-a", "drop").Should().BeNull();
+    }
+
+    [Fact]
+    public void ReplaceAgentSkills_EmptyReplacementSet_LeavesAgentWithNoSkills()
+    {
+        var store = new AgentOwnedSkillStore();
+        store.Register("agent-a", Skill("s1"));
+
+        store.ReplaceAgentSkills("agent-a", []);
+
+        store.GetForAgent("agent-a").Should().BeEmpty();
+    }
+
+    [Fact]
+    public void ReplaceAgentSkills_DoesNotAffectAnotherAgent()
+    {
+        var store = new AgentOwnedSkillStore();
+        store.Register("agent-a", Skill("a-skill"));
+        store.Register("agent-b", Skill("b-skill"));
+
+        store.ReplaceAgentSkills("agent-a", []);
+
+        store.GetForAgent("agent-b").Select(s => s.Id).Should().BeEquivalentTo(["b-skill"]);
+    }
+
+    [Fact]
+    public void ReplaceAgentSkills_BlankAgentId_Throws()
+    {
+        var store = new AgentOwnedSkillStore();
+
+        var act = () => store.ReplaceAgentSkills("  ", [Skill("s")]);
+
+        act.Should().Throw<ArgumentException>();
+    }
+
+    [Fact]
+    public void RemoveAgent_DropsEveryOwnedSkillForThatAgent()
+    {
+        var store = new AgentOwnedSkillStore();
+        store.Register("agent-a", Skill("s1"));
+        store.Register("agent-a", Skill("s2"));
+
+        store.RemoveAgent("agent-a");
+
+        store.GetForAgent("agent-a").Should().BeEmpty();
+        store.TryGet("agent-a", "s1").Should().BeNull();
+    }
+
+    [Fact]
+    public void RemoveAgent_DoesNotAffectAnotherAgent()
+    {
+        var store = new AgentOwnedSkillStore();
+        store.Register("agent-a", Skill("a-skill"));
+        store.Register("agent-b", Skill("b-skill"));
+
+        store.RemoveAgent("agent-a");
+
+        store.GetForAgent("agent-b").Select(s => s.Id).Should().BeEquivalentTo(["b-skill"]);
+    }
+
+    [Fact]
+    public void RemoveAgent_UnknownAgent_IsANoOp()
+    {
+        var store = new AgentOwnedSkillStore();
+
+        var act = () => store.RemoveAgent("nobody");
+
+        act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void RemoveAgent_NullOrWhitespaceAgentId_IsANoOp()
+    {
+        var store = new AgentOwnedSkillStore();
+        store.Register("agent-a", Skill("s1"));
+
+        store.RemoveAgent("  ");
+
+        store.GetForAgent("agent-a").Should().ContainSingle();
+    }
 }

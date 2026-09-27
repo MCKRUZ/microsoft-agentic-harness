@@ -1,4 +1,5 @@
 using System.Diagnostics.Metrics;
+using Application.AI.Common.Interfaces.Governance;
 using Domain.AI.Telemetry.Conventions;
 using Domain.Common.Config;
 using FluentAssertions;
@@ -176,6 +177,84 @@ public sealed class JsonlGovernanceAuditWriterTests : IDisposable
         sut.Log("agent-1", action, "allowed");
 
         failures.Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task GetRecordsAsync_EmptyStore_ReturnsEmptySuccess()
+    {
+        using var sut = NewWriter();
+
+        var result = await sut.GetRecordsAsync(new GovernanceAuditQuery(), CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task GetRecordsAsync_ReturnsRecordsWrittenByLog_InChronologicalOrder()
+    {
+        using var sut = NewWriter();
+        sut.Log("agent-1", "run_tests", "allowed");
+        sut.Log("agent-2", "iac_plan", "denied");
+
+        var result = await sut.GetRecordsAsync(new GovernanceAuditQuery(), CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Should().HaveCount(2);
+        result.Value![0].AgentId.Should().Be("agent-1");
+        result.Value[0].Action.Should().Be("run_tests");
+        result.Value[0].Decision.Should().Be("allowed");
+        result.Value[1].AgentId.Should().Be("agent-2");
+    }
+
+    [Fact]
+    public async Task GetRecordsAsync_FiltersByAgentId()
+    {
+        using var sut = NewWriter();
+        sut.Log("agent-1", "run_tests", "allowed");
+        sut.Log("agent-2", "iac_plan", "denied");
+
+        var result = await sut.GetRecordsAsync(
+            new GovernanceAuditQuery { AgentId = "agent-2" }, CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Should().ContainSingle(r => r.AgentId == "agent-2");
+    }
+
+    [Fact]
+    public async Task GetRecordsAsync_FiltersByDateRange_Inclusive()
+    {
+        using var sut = NewWriter();
+        sut.Log("agent-1", "run_tests", "allowed");
+        var afterFirst = DateTimeOffset.UtcNow;
+        await Task.Delay(10);
+        sut.Log("agent-2", "iac_plan", "denied");
+
+        var result = await sut.GetRecordsAsync(
+            new GovernanceAuditQuery { Start = afterFirst }, CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Should().ContainSingle(r => r.AgentId == "agent-2");
+    }
+
+    [Fact]
+    public async Task GetRecordsAsync_CorruptedLine_IsSkippedNotFatal()
+    {
+        using (var sut = NewWriter())
+        {
+            sut.Log("agent-1", "run_tests", "allowed");
+        }
+
+        // Corrupt the JSON payload in place while keeping the tab-delimited chain framing intact,
+        // so the line still parses as a chain record but fails to deserialize as GovernanceAuditRecord.
+        var corrupted = File.ReadAllText(_expectedFile).Replace("\"agent_id\":\"agent-1\"", "not json{{{");
+        File.WriteAllText(_expectedFile, corrupted);
+
+        using var reopened = NewWriter();
+        var result = await reopened.GetRecordsAsync(new GovernanceAuditQuery(), CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue("a corrupted line must be skipped, not fail the whole query");
+        result.Value.Should().BeEmpty();
     }
 
     /// <summary>

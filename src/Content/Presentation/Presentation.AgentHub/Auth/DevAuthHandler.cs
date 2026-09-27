@@ -6,8 +6,8 @@ using Microsoft.Extensions.Options;
 namespace Presentation.AgentHub.Auth;
 
 /// <summary>
-/// Development-only authentication handler that auto-authenticates every request
-/// as a synthetic "dev user". Never registered outside of Development + Auth:Disabled=true.
+/// Authentication handler that auto-authenticates every request as a synthetic "dev user".
+/// Only registered when <see cref="AuthBypassPolicy.IsBypassed"/> returns true.
 /// </summary>
 internal sealed class DevAuthHandler(
     IOptionsMonitor<AuthenticationSchemeOptions> options,
@@ -46,6 +46,12 @@ internal sealed class DevAuthHandler(
             // Harness.Drift.Operate must be granted separately from Harness.Drift.Read.
             new Claim(ClaimTypes.Role, Presentation.Common.Drift.DriftController.ReadRole),
             new Claim(ClaimTypes.Role, Presentation.Common.Drift.DriftController.OperateRole),
+            // Agent registry refresh (issue #705) — same reasoning as the Drift roles above: a real
+            // deployment must grant this separately from ordinary agent read access, but the dev
+            // principal holds it so the endpoint is exercisable locally.
+            new Claim(ClaimTypes.Role, Presentation.Common.AgentRegistry.AgentRegistryController.OperateRole),
+            // Skill registry refresh (issue #709) — same reasoning as agent registry refresh above.
+            new Claim(ClaimTypes.Role, Presentation.Common.SkillRegistry.SkillRegistryController.OperateRole),
         };
         var identity = new ClaimsIdentity(claims, Scheme.Name);
         var ticket = new AuthenticationTicket(new ClaimsPrincipal(identity), Scheme.Name);

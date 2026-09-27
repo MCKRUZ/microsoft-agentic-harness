@@ -27,7 +27,7 @@ namespace Infrastructure.AI.KnowledgeGraph;
 /// Dependency injection extensions for the knowledge graph infrastructure.
 /// Registers graph store backends with keyed DI for provider selection.
 /// </summary>
-public static class DependencyInjection
+public static partial class DependencyInjection
 {
     /// <summary>
     /// Adds knowledge graph infrastructure services to the service collection.
@@ -322,6 +322,11 @@ public static class DependencyInjection
                 sp.GetRequiredService<IKnowledgeGraphStore>(),
                 sp.GetRequiredService<Application.AI.Common.Interfaces.IAmbientRequestScope>(),
                 sp.GetRequiredService<ILogger<Memory.GraphEpisodicSegmentStore>>()));
+
+        // Remote memory hosting (avatar-hosting migration) — overrides the local defaults above
+        // when enabled. Called last so its registrations are the ones every GetService<T> call
+        // resolves for the seams it replaces.
+        AddRemoteMemoryDependencies(services, appConfig);
 
         return services;
     }

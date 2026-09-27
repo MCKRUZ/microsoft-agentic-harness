@@ -25,6 +25,7 @@ using Domain.Common.Config;
 using Domain.Common.Workflow;
 using Infrastructure.AI.Agents;
 using Infrastructure.AI.Audit;
+using Infrastructure.AI.BackgroundServices;
 using Infrastructure.AI.Bundles;
 using Infrastructure.AI.Compaction;
 using Infrastructure.AI.Compaction.Strategies;
@@ -102,10 +103,14 @@ public static partial class DependencyInjection
 
         // Owner-only directory creation — the internal OwnerOnlyDirectoryHelper's public DI-facing
         // seam for callers outside this assembly (Application.Core, Application.Common,
-        // Infrastructure.AI.RAG), which cannot see it directly (#671, #672, #673). No constructor
-        // dependencies (see the interface's own remarks on why), so this can never participate in an
-        // ILoggerFactory construction cycle regardless of what resolves it.
-        services.AddSingleton<IOwnerOnlyDirectoryCreator, Helpers.OwnerOnlyDirectoryCreator>();
+        // Infrastructure.AI.RAG, Infrastructure.Observability), which cannot see it directly (#671,
+        // #672, #673, #738). No constructor dependencies (see the interface's own remarks on why), so
+        // this can never participate in an ILoggerFactory construction cycle regardless of what
+        // resolves it. TryAdd, not Add: Infrastructure.Observability's own DI module also registers
+        // this interface (also via TryAdd) so either module can be wired first — a code review on #738
+        // found a plain Add here made that safety one-directional rather than order-independent, since
+        // whichever module ran second would add a redundant second descriptor instead of no-op'ing.
+        services.TryAddSingleton<IOwnerOnlyDirectoryCreator, Helpers.OwnerOnlyDirectoryCreator>();
 
         // Secret redaction — applied at all persistence boundaries (traces, snapshots, manifests)
         services.AddSingleton<ISecretRedactor, PatternSecretRedactor>();
@@ -229,6 +234,21 @@ public static partial class DependencyInjection
         // registered piecemeal, and why the reader is a separate sandbox from IFileSystemService.
         services.AddSkillDiscovery();
 
+        // Reload seam (#709, mirrors #705's IAgentRegistryRefresher) — same singleton instance
+        // ISkillMetadataRegistry resolves to (skills have no per-bundle-run overlay decorator the
+        // way agents do, so this is a direct forward, not routed around one), so an
+        // invalidate/refresh is immediately visible to every reader. Registered unconditionally:
+        // resolving it costs nothing until something actually calls Invalidate/Refresh — the
+        // watcher below is what does that automatically, and the operator refresh command does it
+        // on demand.
+        services.AddSingleton<ISkillRegistryRefresher>(sp => sp.GetRequiredService<SkillMetadataRegistry>());
+
+        // Automatic half of #709: watches the configured skill paths and invalidates the registry
+        // on change. Self-disables from AI:Skills:WatchForChanges (default true) — see
+        // SkillManifestWatcherService's own remarks for why it is safe to register unconditionally
+        // (no filesystem work happens before ExecuteAsync runs).
+        services.AddHostedService<SkillManifestWatcherService>();
+
         // The owned-skill store and agent registry are decorated so a bundle run can resolve its
         // ephemeral agent and owned skills from an ambient overlay ahead of the persistent registries,
         // without those definitions ever being written into them. The decorators are behaviour-neutral
@@ -241,6 +261,20 @@ public static partial class DependencyInjection
         services.AddSingleton<AgentMetadataRegistry>();
         services.AddSingleton<IAgentMetadataRegistry>(sp =>
             new OverlayAwareAgentMetadataRegistry(sp.GetRequiredService<AgentMetadataRegistry>()));
+
+        // Reload seam (#705) — same singleton instance IAgentMetadataRegistry resolves to (NOT the
+        // overlay decorator above: a reload is a host-level lifecycle operation, not something a
+        // per-bundle-run overlay participates in), so an invalidate/refresh is immediately visible
+        // to every reader. Registered unconditionally: resolving it costs nothing until something
+        // actually calls Invalidate/Refresh — the watcher below is what does that automatically, and
+        // the operator refresh command does it on demand.
+        services.AddSingleton<IAgentRegistryRefresher>(sp => sp.GetRequiredService<AgentMetadataRegistry>());
+
+        // Automatic half of #705: watches the configured agent paths and invalidates the registry on
+        // change. Self-disables from AI:Agents:WatchForChanges (default true) — see
+        // AgentManifestWatcherService's own remarks for why it is safe to register unconditionally
+        // (no filesystem work happens before ExecuteAsync runs).
+        services.AddHostedService<AgentManifestWatcherService>();
 
         // --- Bundle execution (staging) ---
         // Off by default (AI:BundleExecution:Enabled). The staging service is passive — it does nothing
@@ -389,6 +423,11 @@ public static partial class DependencyInjection
             new CapabilityMatchStrategy(sp.GetRequiredService<IOptionsMonitor<AppConfig>>()));
         services.AddSingleton<ISupervisor, CapabilityMatchSupervisor>();
 
+        // Second ISupervisorStrategy implementation, keyed separately — scores a cold, un-owned
+        // request by AGENT.md description/tag overlap instead of tool coverage. Consumed by
+        // IAgentRouter (front-door agent routing), registered below with the rest of routing.
+        services.AddKeyedSingleton<ISupervisorStrategy, AgentMatchStrategy>("agent-match");
+
         // --- Config discovery ---
 
         services.AddTransient<IConfigDiscoveryService, DirectoryWalkConfigDiscovery>();
@@ -477,6 +516,7 @@ public static partial class DependencyInjection
         // --- Planner and sandbox ---
 
         RegisterPlannerDbContext(services, appConfig);
+        RegisterScheduleDbContext(services, appConfig);
         RegisterPlannerServices(services);
         RegisterSandboxServices(services);
 
@@ -491,6 +531,10 @@ public static partial class DependencyInjection
 
         // --- Unified model routing ---
 
+        // ModelRouter falls back to this when AppConfig:AI:ModelRouting:Tiers has no entries
+        // (#599) — routing every call to the primary AgentFramework client instead of throwing
+        // "Sequence contains no elements" at the first routed call.
+        services.AddSingleton(Options.Create(appConfig.AI.AgentFramework));
         services.AddSingleton(Options.Create(appConfig.AI.ModelRouting));
         services.AddSingleton(Options.Create(appConfig.AI.KnowledgeBridge));
         services.AddSingleton<ITaskComplexityHeuristic, TaskComplexityHeuristic>();
@@ -500,6 +544,15 @@ public static partial class DependencyInjection
 
         // Eval probe exposing the task-complexity router to the routing-accuracy scorecard.
         services.AddSingleton<IRouterEvalProbe, TaskComplexityRouterProbe>();
+
+        // Request-intent classifier + front-door agent router. Sibling to the complexity
+        // classifier above — classifies WHAT KIND of request this is, consumed by
+        // IAgentRouter to help decide WHICH AGENT should own an incoming conversation.
+        services.AddSingleton<IRequestIntentClassifier, RequestIntentClassifier>();
+        services.AddSingleton<IAgentRouter, AgentRouter>();
+
+        // Eval probe exposing the request-intent classifier to the routing-accuracy scorecard.
+        services.AddSingleton<IRouterEvalProbe, RequestIntentRouterProbe>();
 
         // --- Tool output compression ---
 

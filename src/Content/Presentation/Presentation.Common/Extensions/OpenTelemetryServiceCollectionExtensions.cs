@@ -3,11 +3,14 @@ using Application.Common.Interfaces.Telemetry;
 using Domain.AI.Telemetry.Redaction;
 using Domain.Common.Config;
 using Domain.Common.Config.Observability;
+using Application.Common.Services.Telemetry;
 using Domain.Common.Telemetry;
 using Infrastructure.Observability.Processors;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
 using OpenTelemetry;
+using OpenTelemetry.Context.Propagation;
 using OpenTelemetry.Exporter;
 using OpenTelemetry.Instrumentation.AspNetCore;
 using OpenTelemetry.Instrumentation.Http;
@@ -42,9 +45,11 @@ public static class OpenTelemetryServiceCollectionExtensions
 {
     /// <summary>
     /// Configures the OpenTelemetry pipeline for the application. Enables Semantic Kernel,
-    /// Azure SDK, and GenAI content recording via AppContext switches, then delegates to
-    /// either <see cref="AddWebTelemetry"/> or <see cref="AddDesktopTelemetry"/> based
-    /// on whether the entry assembly appears in <c>appConfig.Observability.WebTelemetryProjects</c>.
+    /// Azure SDK, and GenAI content recording via AppContext switches, applies the host's
+    /// baggage-egress policy (see <see cref="ObservabilityConfig.PropagateBaggage"/>), then
+    /// delegates to either <see cref="AddWebTelemetry"/> or <see cref="AddDesktopTelemetry"/>
+    /// based on whether the entry assembly appears in
+    /// <c>appConfig.Observability.WebTelemetryProjects</c>.
     /// </summary>
     /// <param name="services">The service collection to configure.</param>
     /// <param name="appConfig">
@@ -65,13 +70,75 @@ public static class OpenTelemetryServiceCollectionExtensions
             "Microsoft.SemanticKernel.Experimental.GenAI.EnableOTelDiagnosticsSensitive",
             appConfig.Observability.EnableSensitiveTelemetry);
 
+        // Baggage egress policy (#738). Named and applied here — once, unconditionally, for both
+        // host shapes — rather than as a side effect of enabling one exporter. A propagator that
+        // also carries Baggage would serialise whatever this process's baggage holds (identity
+        // attribution, once an agent turn is underway) onto every outbound request and accept it
+        // from every inbound one. Trace-context-only is the default; a host that has a deliberate,
+        // reviewed reason to use cross-process baggage sets PropagateBaggage to opt back in.
+        //
+        // Both branches set explicitly, rather than treating "true" as merely skipping the
+        // suppression below. Measured directly: the untouched default before ANY host code runs is
+        // NoopTextMapPropagator, which propagates nothing at all — not baggage, not even trace
+        // context. Nothing else in this codebase, or in the hosting integration this method builds
+        // on, ever establishes the standard composite propagator; only this method does. So "just
+        // don't suppress it" would have left a host that opted IN to baggage propagation with no
+        // propagation whatsoever unless something upstream happened to have already set one — an
+        // ambient-state dependency, not a policy.
+        Sdk.SetDefaultTextMapPropagator(appConfig.Observability.PropagateBaggage
+            ? new CompositeTextMapPropagator([new TraceContextPropagator(), new BaggagePropagator()])
+            : new TraceContextPropagator());
+
+        // This process has a SECOND, independent baggage store — System.Diagnostics.Activity.Baggage,
+        // governed by DistributedContextPropagator.Current, not by anything OpenTelemetry owns. It is
+        // the one this harness actually writes identity into (AgUiRunHandler, ConversationOrchestrator,
+        // ExecuteAgentTurnCommandHandler, AgentExecutionContextFactory all call Activity.AddBaggage).
+        // Setting only the OTel propagator above left that leak fully open regardless of this flag's
+        // value — no OTel component ever touches DistributedContextPropagator. Same policy, same flag,
+        // the store this harness's own identity attribution actually rides.
+        DistributedContextPropagator.Current = appConfig.Observability.PropagateBaggage
+            ? DistributedContextPropagator.CreateDefaultPropagator()
+            : new BaggageSuppressingDistributedContextPropagator();
+
+        // Setting the static property above is NOT sufficient on a web host. ASP.NET Core's own
+        // hosting bootstrap (GenericWebHostBuilder, inside WebApplication.CreateBuilder — which runs
+        // BEFORE this method, since AddOpenTelemetry is called on builder.Services afterwards) already
+        // captured whatever DistributedContextPropagator.Current was AT THAT EARLIER MOMENT into its
+        // own DI container as a singleton (confirmed against the pinned ASP.NET Core source:
+        // GenericWebHostBuilder.cs calls services.TryAddSingleton(DistributedContextPropagator.Current)).
+        // Its request pipeline (HostingApplicationDiagnostics) takes that DI-resolved instance as a
+        // CONSTRUCTOR parameter and uses it to extract baggage from every INBOUND request — it never
+        // re-reads the static property per request. So the assignment above only affects OUTBOUND
+        // HttpClient calls (SocketsHttpHandler reads Current lazily when a handler is built); a host's
+        // stale, pre-swap propagator stayed wired for inbound header parsing regardless of this flag's
+        // value, and BaggageEgressStartupValidator's Current-only check passed while that stayed true.
+        // Found by CI's independent correctness-review and security-review gates, both citing the same
+        // root cause. Replacing the DI registration explicitly closes the inbound gap for every host
+        // whose ASP.NET Core container is built FROM the IServiceCollection this method configures — a
+        // desktop host has no pre-existing registration to replace, so this is a harmless no-op there.
+        // Presentation.FoundryHost is the one exception: AgentHost.CreateBuilder builds its OWN,
+        // separate DI container that never sees this services collection at all, so this line cannot
+        // reach it — see the matching, explicit Replace() call in that host's own Program.cs, added for
+        // the same reason and found by the same code-review round.
+        //
+        // The explicit <DistributedContextPropagator> type argument is load-bearing, not decoration:
+        // ServiceDescriptor.Singleton(TService instance) infers TService from the ARGUMENT
+        // EXPRESSION'S STATIC TYPE, which is this abstract base type only because
+        // DistributedContextPropagator.Current is declared as one. A security review measured the
+        // failure mode directly: rewriting this as `var p = new BaggageSuppressingDistributedContextPropagator(); services.Replace(ServiceDescriptor.Singleton(p));`
+        // — a completely natural-looking edit — infers the DERIVED type instead, so Replace matches
+        // nothing, silently degrades into Add, and leaves ASP.NET Core's original, baggage-carrying
+        // propagator as the first (and still resolved) registration. Pinning the type argument removes
+        // that fragility regardless of how the instance is later constructed.
+        services.Replace(
+            ServiceDescriptor.Singleton<DistributedContextPropagator>(DistributedContextPropagator.Current));
+
         // Register the shared resource builder as a singleton for consistent attributes
         var resourceBuilder = CreateResourceBuilder(appConfig);
         services.AddSingleton(resourceBuilder);
 
         var entryAssemblyName = Assembly.GetEntryAssembly()?.GetName().Name ?? "UnknownService";
-        var isWebProject = appConfig.Observability.WebTelemetryProjects
-            .Contains(entryAssemblyName, StringComparer.OrdinalIgnoreCase);
+        var isWebProject = appConfig.Observability.IsWebTelemetryHost(entryAssemblyName);
 
         if (isWebProject)
             services.AddWebTelemetry(appConfig);
@@ -129,6 +196,10 @@ public static class OpenTelemetryServiceCollectionExtensions
             });
 
         services.AddOpenTelemetry()
+            // Agent 365 trace export. No-op unless Observability:Exporters:Agent365:Enabled is set,
+            // and narrowed to that single target so it cannot duplicate the exporters and
+            // instrumentation the ITelemetryConfigurator chain below already registers.
+            .AddAgent365Exporter(appConfig)
             .WithTracing(builder =>
             {
                 // Base instrumentation + exporters configured pre-build
@@ -354,8 +425,15 @@ public static class OpenTelemetryServiceCollectionExtensions
     /// Configures the base tracer provider with the harness activity source,
     /// always-on sampling, and ASP.NET Core + HTTP client instrumentation.
     /// The <see cref="ResourceBuilder"/> is resolved from DI via
-    /// <see cref="TracerProviderBuilderExtensions.ConfigureResource"/>.
+    /// <c>TracerProviderBuilderExtensions.ConfigureResource</c>.
     /// </summary>
+    /// <remarks>
+    /// Deliberately plain text rather than a <c>cref</c>. Adding the Microsoft OpenTelemetry distro
+    /// package put a second set of tracer-provider builder extensions in scope, after which neither
+    /// the short nor the fully-qualified <c>cref</c> to <c>ConfigureResource</c> resolves and the
+    /// documentation build fails with CS1574. The referenced method is unchanged; only the ability to
+    /// link to it is.
+    /// </remarks>
     private static void ConfigureTracerProviderBuilder(TracerProviderBuilder builder, AppConfig appConfig)
     {
         builder

@@ -312,7 +312,7 @@ public sealed partial class CapabilityMatchSupervisor
                 ?? throw new InvalidOperationException(
                     $"Named delegation target '{selection.SelectedAgent.AgentId}' was validated at "
                     + "selection time but is no longer registered.");
-            var skillIds = target.Skills is { Count: > 0 } ? target.Skills : [target.Id];
+            var skillIds = AgentDefinition.ResolveSkillIds(target, target.Id);
             // #518 security-review finding: this scope gates SkillPrerequisiteMiddleware's tool
             // withholding — a capability gate, not a hint. An earlier version of this fix scoped it to
             // target.Id, stable but shared by EVERY caller who ever delegates to this agent — one

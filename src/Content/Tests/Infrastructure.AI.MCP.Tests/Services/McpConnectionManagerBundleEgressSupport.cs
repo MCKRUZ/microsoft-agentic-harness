@@ -7,6 +7,7 @@ using Application.AI.Common.Services.Sandbox;
 using Application.AI.Common.Services.Tools;
 using Domain.AI.Egress;
 using Domain.AI.Identity;
+using Domain.Common;
 using Domain.Common.Config;
 using Domain.Common.Config.AI.MCP;
 using Domain.Common.Config.AI.Sandbox;
@@ -128,6 +129,10 @@ internal static class McpConnectionManagerBundleEgressSupport
     {
         public Task AppendAsync(EgressDecision decision, AgentIdentity identity, CancellationToken cancellationToken) =>
             Task.CompletedTask;
+
+        public Task<Result<IReadOnlyList<EgressAuditRecord>>> GetRecordsAsync(
+            EgressAuditQuery query, CancellationToken cancellationToken) =>
+            Task.FromResult(Result<IReadOnlyList<EgressAuditRecord>>.Success(Array.Empty<EgressAuditRecord>()));
     }
 
     private sealed class AllowAllEgressPolicy : IEgressPolicy

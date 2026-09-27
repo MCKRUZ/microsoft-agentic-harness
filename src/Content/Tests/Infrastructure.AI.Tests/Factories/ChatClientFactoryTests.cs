@@ -1,4 +1,3 @@
-using Application.AI.Common.Interfaces;
 using Domain.Common.Config;
 using Domain.Common.Config.AI;
 using FluentAssertions;
@@ -68,21 +67,19 @@ public sealed class ChatClientFactoryTests : IDisposable
     }
 
     [Fact]
-    public void GetAvailableProviders_ReturnsAllClientTypes()
+    public void GetAvailableProviders_KeySetMatchesEveryEnumMember()
     {
+        // Guards the exact failure shape this repo's own CLAUDE.md records repeatedly: a new
+        // AIAgentFrameworkClientType member added without updating a hand-maintained "all values"
+        // list. GetAvailableProviders() now builds its dictionary from Enum.GetValues directly
+        // (see its own remarks), so this test is really asserting that stays true rather than
+        // reverting to a hand-typed list — the next added member is covered automatically only if
+        // it does.
         using var factory = CreateFactory();
 
         var providers = factory.GetAvailableProviders();
 
-        providers.Should().ContainKey(AIAgentFrameworkClientType.AzureOpenAI);
-        providers.Should().ContainKey(AIAgentFrameworkClientType.OpenAI);
-        providers.Should().ContainKey(AIAgentFrameworkClientType.AzureAIInference);
-        providers.Should().ContainKey(AIAgentFrameworkClientType.PersistentAgents);
-        providers.Should().ContainKey(AIAgentFrameworkClientType.Anthropic);
-        providers.Should().ContainKey(AIAgentFrameworkClientType.FoundryResponses);
-        providers.Should().ContainKey(AIAgentFrameworkClientType.FoundryDirectResponses);
-        providers.Should().ContainKey(AIAgentFrameworkClientType.Echo);
-        providers.Should().HaveCount(8);
+        providers.Keys.Should().BeEquivalentTo(Enum.GetValues<AIAgentFrameworkClientType>());
     }
 
     [Fact]

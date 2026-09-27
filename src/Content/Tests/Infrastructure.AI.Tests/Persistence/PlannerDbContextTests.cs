@@ -69,7 +69,7 @@ public sealed class PlannerDbContextTests : IDisposable
             .OrderBy(n => n, StringComparer.Ordinal)
             .ToArray();
 
-        // The planner owns exactly these five. Anything else in this list means an entity from
+        // The planner owns exactly these six. Anything else in this list means an entity from
         // another subsystem has been pulled into the planner's database — which is what happens
         // the moment this context goes back to configuring itself by scanning its whole assembly.
         entities.Should().BeEquivalentTo(

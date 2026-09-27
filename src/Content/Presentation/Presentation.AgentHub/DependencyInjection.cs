@@ -25,10 +25,12 @@ using Presentation.AgentHub.Planner;
 using Presentation.AgentHub.Config;
 using Presentation.AgentHub.Telemetry;
 using Domain.Common.Config;
+using Presentation.Common.AgentRegistry;
 using Presentation.Common.ChangeProposals;
 using Presentation.Common.Drift;
 using Presentation.Common.Escalations;
 using Presentation.Common.Governance;
+using Presentation.Common.SkillRegistry;
 using Microsoft.Extensions.Options;
 
 namespace Presentation.AgentHub;
@@ -73,7 +75,14 @@ public static class DependencyInjection
             .AddChangeProposalApi()
             // Deliberate opt-in: AgentHub runs the drift subsystem (stores, EWMA state,
             // escalation bridge), so pushed evaluations must land in this process.
-            .AddDriftApi();
+            .AddDriftApi()
+            // Deliberate opt-in: AgentHub owns the IAgentMetadataRegistry singleton live
+            // conversation turns resolve agents from, so an operator-triggered refresh must run
+            // against this process's own instance.
+            .AddAgentRegistryApi()
+            // Deliberate opt-in: AgentHub also owns the ISkillMetadataRegistry singleton live
+            // conversation turns resolve skills from (issue #709).
+            .AddSkillRegistryApi();
 
         // Surfaces a missing/invalid AI provider configuration via /health/ai. Additive to the
         // health checks registered in Presentation.Common — Degraded (not Unhealthy) because the
@@ -84,18 +93,32 @@ public static class DependencyInjection
             .AddCheck<HealthChecks.AiProviderHealthCheck>(
                 "ai_provider",
                 failureStatus: Microsoft.Extensions.Diagnostics.HealthChecks.HealthStatus.Degraded,
-                tags: ["ai"]);
+                tags: ["ai"])
+            // Composed-subsystems visibility for a self-hosted, non-Azure deployment (issue #591) —
+            // see /health/subsystems in Program.cs. Tagged "composition" only (not "ai"/"ready"):
+            // it never fails, it only reports.
+            .AddCheck<HealthChecks.ComposedSubsystemsHealthCheck>(
+                "composed_subsystems",
+                tags: ["composition"]);
 
-        var authDisabled = environment.IsDevelopment()
-            && configuration.GetValue<bool>("Auth:Disabled");
+        var bypassScheme = Auth.AuthBypassPolicy.GetBypassSchemeName(environment, configuration);
 
-        if (authDisabled)
+        if (bypassScheme == DevAuthHandler.SchemeName)
         {
-            // Dev bypass: auto-authenticates every request as a synthetic "dev user".
-            // Double-guarded: only active when IsDevelopment() AND Auth:Disabled=true.
+            // Local dev bypass: auto-authenticates every request as a synthetic, operator-capable
+            // "dev user". Gated by AuthBypassPolicy.GetBypassSchemeName — see its doc comment for
+            // why this handler is never used outside Development.
             services.AddAuthentication(DevAuthHandler.SchemeName)
                     .AddScheme<AuthenticationSchemeOptions, DevAuthHandler>(
                         DevAuthHandler.SchemeName, _ => { });
+        }
+        else if (bypassScheme == SelfHostedAuthHandler.SchemeName)
+        {
+            // Self-hosted, non-Azure deployment bypass (issue #591): auto-authenticates every
+            // request as a synthetic caller with NO elevated roles — deliberately not DevAuthHandler.
+            services.AddAuthentication(SelfHostedAuthHandler.SchemeName)
+                    .AddScheme<AuthenticationSchemeOptions, SelfHostedAuthHandler>(
+                        SelfHostedAuthHandler.SchemeName, _ => { });
         }
         else
         {
@@ -135,6 +158,13 @@ public static class DependencyInjection
 
         services.AddSingleton<KnowledgeScopeHubFilter>();
         services.AddSingleton<HubRateLimitFilter>();
+
+        // Validated eagerly, right here at composition time — not deferred into AddSignalR's
+        // options delegate, which only runs whenever something first resolves IOptions<HubOptions>
+        // (SignalR endpoint mapping, in a real host, but not guaranteed to be synchronous with
+        // this method the way a startup-time throw here is).
+        var signalRMaxReceiveMessageSizeBytes = ResolveSignalRMaxMessageSizeBytes(configuration);
+
         services.AddSignalR(options =>
             {
                 if (environment.IsDevelopment())
@@ -142,6 +172,14 @@ public static class DependencyInjection
 
                 options.ClientTimeoutInterval = TimeSpan.FromSeconds(120);
                 options.KeepAliveInterval = TimeSpan.FromSeconds(30);
+
+                // #603: SignalR's own 32KB default is too small for a legitimately large
+                // per-call payload (e.g. a full persona/system-prompt override sent through
+                // SetConversationSettings). Only override when explicitly configured — leaving
+                // this unset here preserves SignalR's 32KB default rather than forwarding a
+                // null, which SignalR reads as "no limit".
+                if (signalRMaxReceiveMessageSizeBytes is { } maxMessageSize)
+                    options.MaximumReceiveMessageSize = maxMessageSize;
 
                 // Establish per-invocation knowledge scope (user/tenant) from the authenticated
                 // caller — the SignalR-transport equivalent of KnowledgeScopeMiddleware.
@@ -436,6 +474,37 @@ public static class DependencyInjection
                     sp.GetRequiredService<SignalRSpanExporter>())));
 
         return services;
+    }
+
+    /// <summary>
+    /// Reads and validates <c>AppConfig:AgentHub:SignalRMaxReceiveMessageSizeBytes</c> (#603).
+    /// </summary>
+    /// <remarks>
+    /// Binds through <see cref="Config.AgentHubConfig"/> — the same
+    /// <c>configuration.GetSection(...).Get&lt;T&gt;() ?? new T()</c> shape this file already uses
+    /// for <c>PrometheusConfig</c> — rather than a hand-typed <c>GetValue&lt;long?&gt;</c> path
+    /// string: a rename of the property, or a restructure of the section, becomes a compile error
+    /// here instead of <c>GetValue</c> silently returning null and the validation going quietly
+    /// inert. Throws synchronously, as part of composing this host's services, so a misconfigured
+    /// value fails the host at startup rather than the first time something resolves
+    /// <c>IOptions&lt;HubOptions&gt;</c>.
+    /// </remarks>
+    private static long? ResolveSignalRMaxMessageSizeBytes(IConfiguration configuration)
+    {
+        var agentHubConfig = configuration.GetSection("AppConfig:AgentHub").Get<AgentHubConfig>()
+            ?? new AgentHubConfig();
+        var maxMessageSizeBytes = agentHubConfig.SignalRMaxReceiveMessageSizeBytes;
+
+        if (maxMessageSizeBytes is { } bytes && bytes <= 0)
+        {
+            throw new InvalidOperationException(
+                $"AppConfig:AgentHub:SignalRMaxReceiveMessageSizeBytes must be a positive number " +
+                $"of bytes when set (got {bytes}). Leave it unset to keep SignalR's 32KB default — " +
+                "0 is not 'unlimited' here, SignalR would apply it literally and reject every hub " +
+                "invocation.");
+        }
+
+        return maxMessageSizeBytes;
     }
 }
 

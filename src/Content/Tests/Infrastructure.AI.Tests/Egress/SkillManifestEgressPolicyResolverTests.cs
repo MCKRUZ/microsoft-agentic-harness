@@ -23,6 +23,20 @@ namespace Infrastructure.AI.Tests.Egress;
 /// </summary>
 public sealed class SkillManifestEgressPolicyResolverTests
 {
+    /// <summary>
+    /// Every test in this file cares about per-skill allowlist merging, not registry-version
+    /// invalidation (see <see cref="SkillManifestEgressPolicyResolverInvalidationTests"/> for that) —
+    /// a strict mock still needs <see cref="ISkillMetadataRegistry.Version"/> configured, since
+    /// <c>ResolveFor</c> reads it on every call (issue #709 security-review fix). A constant value is
+    /// correct here: nothing in these tests reloads the registry mid-test.
+    /// </summary>
+    private static Mock<ISkillMetadataRegistry> NewStrictRegistryMock()
+    {
+        var registry = new Mock<ISkillMetadataRegistry>(MockBehavior.Strict);
+        registry.SetupGet(r => r.Version).Returns(1L);
+        return registry;
+    }
+
     private static SkillDefinition SkillWithAllowlist(string id, params EgressAllowlistEntry[] entries)
     {
         return new SkillDefinition
@@ -67,7 +81,7 @@ public sealed class SkillManifestEgressPolicyResolverTests
             Ports = [443]
         });
 
-        var registry = new Mock<ISkillMetadataRegistry>(MockBehavior.Strict);
+        var registry = NewStrictRegistryMock();
         registry.Setup(r => r.TryGet("github-reader")).Returns(skill);
 
         var resolver = NewResolver(accessor, registry.Object,
@@ -118,7 +132,7 @@ public sealed class SkillManifestEgressPolicyResolverTests
             Host = "b.example.com", Schemes = ["https"], Ports = [443]
         });
 
-        var registry = new Mock<ISkillMetadataRegistry>(MockBehavior.Strict);
+        var registry = NewStrictRegistryMock();
         registry.Setup(r => r.TryGet("skill-a")).Returns(skillA);
         registry.Setup(r => r.TryGet("skill-b")).Returns(skillB);
 
@@ -162,7 +176,7 @@ public sealed class SkillManifestEgressPolicyResolverTests
         var skillTenAbc = SkillWithAllowlist("10abcdefghij", new EgressAllowlistEntry
         { Host = "set-b-only.example.com", Schemes = ["https"], Ports = [443] });
 
-        var registry = new Mock<ISkillMetadataRegistry>(MockBehavior.Strict);
+        var registry = NewStrictRegistryMock();
         registry.Setup(r => r.TryGet("2")).Returns(skillTwo);
         registry.Setup(r => r.TryGet("abcdefghij")).Returns(skillAbc);
         registry.Setup(r => r.TryGet("zzz")).Returns(skillZzz);
@@ -208,7 +222,7 @@ public sealed class SkillManifestEgressPolicyResolverTests
             Ports = [443]
         });
 
-        var registry = new Mock<ISkillMetadataRegistry>(MockBehavior.Strict);
+        var registry = NewStrictRegistryMock();
         // Setup once; assert the resolver doesn't ask twice.
         registry.Setup(r => r.TryGet("cached-skill")).Returns(skill);
 
@@ -231,7 +245,7 @@ public sealed class SkillManifestEgressPolicyResolverTests
     public async Task ResolveFor_NoSkillActive_FallsBackToDefaultOnlyPolicy()
     {
         var accessor = new CurrentSkillAccessor(); // no BeginScope — null current
-        var registry = new Mock<ISkillMetadataRegistry>(MockBehavior.Strict);
+        var registry = NewStrictRegistryMock();
 
         var resolver = NewResolver(accessor, registry.Object,
             new EgressAllowlistConfigEntry
@@ -264,7 +278,7 @@ public sealed class SkillManifestEgressPolicyResolverTests
         var accessor = new CurrentSkillAccessor();
         using var _ = accessor.BeginScope(["unknown-skill"]);
 
-        var registry = new Mock<ISkillMetadataRegistry>(MockBehavior.Strict);
+        var registry = NewStrictRegistryMock();
         registry.Setup(r => r.TryGet("unknown-skill")).Returns((SkillDefinition?)null);
 
         var resolver = NewResolver(accessor, registry.Object,
@@ -295,7 +309,7 @@ public sealed class SkillManifestEgressPolicyResolverTests
         var accessor = new CurrentSkillAccessor();
         using var _ = accessor.BeginScope(["empty-allowlist"]);
 
-        var registry = new Mock<ISkillMetadataRegistry>(MockBehavior.Strict);
+        var registry = NewStrictRegistryMock();
         registry.Setup(r => r.TryGet("empty-allowlist"))
             .Returns(SkillWithAllowlist("empty-allowlist"));
 
@@ -339,7 +353,7 @@ public sealed class SkillManifestEgressPolicyResolverTests
             Ports = [443]
         });
 
-        var registry = new Mock<ISkillMetadataRegistry>(MockBehavior.Strict);
+        var registry = NewStrictRegistryMock();
         registry.Setup(r => r.TryGet("<NO-SKILL>")).Returns(skill);
 
         var resolver = NewResolver(accessor, registry.Object,
@@ -388,12 +402,15 @@ public sealed class SkillManifestEgressPolicyResolverTests
     /// <summary>
     /// #618: an ephemeral skill published via <see cref="EphemeralSkillMetadataAccessor"/> — the
     /// shape a meta-harness eval candidate uses, since a candidate is never a registered
-    /// <see cref="ISkillMetadataRegistry"/> entry — is resolved WITHOUT ever consulting the registry.
-    /// A strict mock with zero setups proves the registry is not touched at all: before this fix, the
-    /// resolver had no ephemeral concept and would have gone straight to the registry, hit the
-    /// unconfigured strict mock, and thrown — the failure mode this bug actually produced in
-    /// production being silence (an "unknown skill" warning and the harness-wide default), not a
-    /// throw, only because the real registry returns null instead of throwing.
+    /// <see cref="ISkillMetadataRegistry"/> entry — is resolved WITHOUT ever looking itself up in the
+    /// registry. A strict mock with only <see cref="ISkillMetadataRegistry.Version"/> set up (read
+    /// unconditionally by every <c>ResolveFor</c> call since #709's cache-invalidation fix, regardless
+    /// of the ephemeral path) and everything else unconfigured proves the registry's skill-lookup
+    /// surface specifically is never touched for an ephemeral skill: before this fix, the resolver had
+    /// no ephemeral concept and would have gone straight to <c>TryGet</c>, hit the unconfigured strict
+    /// mock, and thrown — the failure mode this bug actually produced in production being silence (an
+    /// "unknown skill" warning and the harness-wide default), not a throw, only because the real
+    /// registry returns null instead of throwing.
     /// </summary>
     [Fact]
     public async Task ResolveFor_EphemeralSkillActive_UsesItsOwnAllowlist_NeverConsultsRegistry()
@@ -407,6 +424,7 @@ public sealed class SkillManifestEgressPolicyResolverTests
         });
 
         var registry = new Mock<ISkillMetadataRegistry>(MockBehavior.Strict);
+        registry.Setup(r => r.Version).Returns(0L);
         var resolver = NewResolver(accessor, registry.Object);
 
         using var __ = EphemeralSkillMetadataAccessor.Begin(candidateSkill);
@@ -415,6 +433,7 @@ public sealed class SkillManifestEgressPolicyResolverTests
         var verdict = await policy.AllowAsync(
             new Uri("https://candidate.example.com/anything"), TestIdentity.Default, CancellationToken.None);
         verdict.Allowed.Should().BeTrue();
+        registry.Verify(r => r.Version, Times.AtLeastOnce);
         registry.VerifyNoOtherCalls();
     }
 
@@ -432,6 +451,7 @@ public sealed class SkillManifestEgressPolicyResolverTests
     {
         var accessor = new CurrentSkillAccessor();
         var registry = new Mock<ISkillMetadataRegistry>(MockBehavior.Strict);
+        registry.Setup(r => r.Version).Returns(0L);
         var resolver = NewResolver(accessor, registry.Object);
 
         using (accessor.BeginScope(["shared-name"]))
@@ -464,6 +484,7 @@ public sealed class SkillManifestEgressPolicyResolverTests
                 "via the shared skill-id cache");
         }
 
+        registry.Verify(r => r.Version, Times.AtLeastOnce);
         registry.VerifyNoOtherCalls();
     }
 }

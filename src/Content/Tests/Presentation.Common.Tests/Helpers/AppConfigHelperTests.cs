@@ -1,4 +1,5 @@
 using FluentAssertions;
+using Microsoft.Extensions.Configuration;
 using Presentation.Common.Helpers;
 using Xunit;
 
@@ -133,5 +134,31 @@ public sealed class AppConfigHelperTests
         var config = AppConfigHelper.CreateManualAppConfig();
 
         config.Observability.WebTelemetryProjects.Should().Contain("Infrastructure.AI.MCPServer");
+    }
+
+    // -- ShouldLoadAzureConfigSources (issue #591) --
+
+    // isDebugBuild is passed explicitly rather than read via #if DEBUG so these assertions mean
+    // something in a Debug test run — a test that only ever saw isDebugBuild=true baked in from
+    // this assembly's own build configuration could not tell "the flag works" from "DEBUG always
+    // disables this anyway".
+
+    [Theory]
+    [InlineData(false, null, true)]
+    [InlineData(false, "false", true)]
+    [InlineData(false, "true", false)]
+    [InlineData(true, null, false)]
+    [InlineData(true, "false", false)]
+    [InlineData(true, "true", false)]
+    public void ShouldLoadAzureConfigSources_MatchesExpectedCombination(
+        bool isDebugBuild, string? disableFlag, bool expected)
+    {
+        var bootstrap = new ConfigurationBuilder()
+            .AddInMemoryCollection(disableFlag is null
+                ? []
+                : new Dictionary<string, string?> { ["DisableAzureConfigSources"] = disableFlag })
+            .Build();
+
+        AppConfigHelper.ShouldLoadAzureConfigSources(bootstrap, isDebugBuild).Should().Be(expected);
     }
 }

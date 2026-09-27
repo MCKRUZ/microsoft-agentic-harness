@@ -22,6 +22,12 @@ namespace Application.AI.Common.Extensions;
 /// <c>AppConfig:AI:HarmonicMemory:Mode</c> is <c>Off</c> (the default) — nothing resolves them until a
 /// consumer opts in — and throw with explicit guidance if reached without a real implementation.
 /// </para>
+/// <para>
+/// Also registers <see cref="HarmonicMemoryAbstractorStartupGuard"/>, which turns that same
+/// misconfiguration into a host-startup failure instead of a first-write failure inside a live
+/// conversation turn (#597). The guard resolves whatever <see cref="IMemoryAbstractor"/> the
+/// container ultimately produces, so it is unaffected by registration order.
+/// </para>
 /// </remarks>
 public static class HarmonicMemoryDependencyInjection
 {
@@ -34,6 +40,7 @@ public static class HarmonicMemoryDependencyInjection
 
         services.TryAddSingleton<IMemoryAbstractor, NotConfiguredMemoryAbstractor>();
         services.TryAddSingleton<IMemoryConsolidator, NotConfiguredMemoryConsolidator>();
+        services.AddHostedService<HarmonicMemoryAbstractorStartupGuard>();
 
         return services;
     }

@@ -19,5 +19,12 @@ public sealed class RecallMemoryQueryValidator : AbstractValidator<RecallMemoryQ
         RuleFor(x => x.MaxResults)
             .InclusiveBetween(1, MemoryValidationRules.MaxRecallResults)
                 .WithMessage($"MaxResults must be between 1 and {MemoryValidationRules.MaxRecallResults}.");
+
+        RuleFor(x => x.EntityType)
+            .MaximumLength(MemoryValidationRules.MaxEntityTypeLength)
+                .WithMessage($"EntityType must not exceed {MemoryValidationRules.MaxEntityTypeLength} characters.")
+            .Matches(MemoryValidationRules.EntityTypePattern)
+                .WithMessage("EntityType may only contain letters, digits, '_' and '-', starting with a letter.")
+            .When(x => x.EntityType is not null);
     }
 }

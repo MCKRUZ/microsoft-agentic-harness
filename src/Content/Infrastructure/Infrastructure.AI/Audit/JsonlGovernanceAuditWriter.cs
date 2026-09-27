@@ -3,7 +3,9 @@ using Application.AI.Common.Interfaces.Audit;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.OpenTelemetry.Metrics;
 using Domain.AI.Audit;
+using Domain.AI.Governance;
 using Domain.AI.Telemetry.Conventions;
+using Domain.Common;
 using Domain.Common.Config;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -59,6 +61,12 @@ public sealed class JsonlGovernanceAuditWriter : IGovernanceAuditService, IVerif
     {
         PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
         WriteIndented = false,
+    };
+
+    private static readonly JsonSerializerOptions DeserializeOptions = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
+        PropertyNameCaseInsensitive = true,
     };
 
     private readonly string _filePath;
@@ -172,15 +180,48 @@ public sealed class JsonlGovernanceAuditWriter : IGovernanceAuditService, IVerif
     public Task<AuditChainVerificationResult> VerifyChainAsync(CancellationToken cancellationToken) =>
         _chain.VerifyChainAsync(cancellationToken);
 
+    /// <inheritdoc />
+    public async Task<Result<IReadOnlyList<GovernanceAuditRecord>>> GetRecordsAsync(
+        GovernanceAuditQuery query, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+
+        var records = new List<GovernanceAuditRecord>();
+
+        try
+        {
+            await foreach (var payload in _chain.ReadAllPayloadsAsync(cancellationToken).ConfigureAwait(false))
+            {
+                try
+                {
+                    var record = JsonSerializer.Deserialize<GovernanceAuditRecord>(payload, DeserializeOptions);
+                    if (record is not null)
+                        records.Add(record);
+                }
+                catch (JsonException)
+                {
+                    _logger.LogWarning("Skipped corrupted governance audit record in {FilePath}", _filePath);
+                }
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            _logger.LogError(ex, "Failed to read governance audit records from {FilePath}", _filePath);
+            return Result<IReadOnlyList<GovernanceAuditRecord>>.Fail($"Failed to read audit records: {ex.Message}");
+        }
+
+        var filtered = records.AsEnumerable();
+        if (query.Start.HasValue)
+            filtered = filtered.Where(r => r.Timestamp >= query.Start.Value);
+        if (query.End.HasValue)
+            filtered = filtered.Where(r => r.Timestamp <= query.End.Value);
+        if (!string.IsNullOrEmpty(query.AgentId))
+            filtered = filtered.Where(r => r.AgentId == query.AgentId);
+
+        var result = filtered.OrderBy(r => r.Timestamp).ToList();
+        return Result<IReadOnlyList<GovernanceAuditRecord>>.Success(result.AsReadOnly());
+    }
+
     /// <inheritdoc cref="IDisposable.Dispose" />
     public void Dispose() => _chain.Dispose();
-
-    /// <summary>One governance decision record, serialized as a single hash-chained JSONL line.</summary>
-    private sealed record GovernanceAuditRecord
-    {
-        public required DateTimeOffset Timestamp { get; init; }
-        public required string AgentId { get; init; }
-        public required string Action { get; init; }
-        public required string Decision { get; init; }
-    }
 }
