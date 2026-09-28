@@ -181,7 +181,7 @@ if ($missing.Count -gt 0) {
       "not hours and runs no local AI reviewer, since correctness-review and security-review are " +
       "required, blocking CI checks on every PR regardless of what ran here first — running them " +
       "again locally only duplicates that coverage at a much higher cost in time and machine load. " +
-      "``run-gates.sh`` with no flags (the full AI-gated set) still works and still earns a " +
+      "``run-gates.sh --all`` (the full AI-gated set) still works and still earns a " +
       "receipt, for a diff small enough that's worth it. If this machine lacks the `claude` CLI or " +
       "`pwsh`, set RAILS_SKIP_RUN_GATES_RECEIPT=1 instead of the global bypass below"
   }

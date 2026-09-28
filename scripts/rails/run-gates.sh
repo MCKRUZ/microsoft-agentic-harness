@@ -59,14 +59,15 @@
 # repo must never be able to satisfy a gate.
 #
 # Usage:
-#   scripts/rails/run-gates.sh                  # every applicable gate
+#   scripts/rails/run-gates.sh                  # same as --fast (the default)
 #   scripts/rails/run-gates.sh --fast           # compile/test gates only, no AI reviewers
+#   scripts/rails/run-gates.sh --all            # every applicable gate, AI reviewers included
 #   scripts/rails/run-gates.sh --ai-only        # AI reviewers only
 #   scripts/rails/run-gates.sh --correctness    # one named gate (repeatable)
 #   scripts/rails/run-gates.sh --base develop   # diff against a different base
 #   scripts/rails/run-gates.sh --list           # show which gates apply and why
 #
-# --fast is the expected default before pushing (2026-08 change): it's minutes, not
+# --fast is the default when no gate is selected: it's minutes, not
 # hours, and touches nothing but dotnet/node — no local `claude` subprocess competing
 # with everything else on your machine while it runs. A clean --fast run (or --all)
 # earns the "run-gates" receipt review-gate.ps1 requires; the AI gates it skips
@@ -115,7 +116,7 @@ while [ $# -gt 0 ]; do
   shift
 done
 
-[ ${#SELECTED[@]} -eq 0 ] && SELECTED=(build test owasp docs-links grader correctness security docs-drift)
+[ ${#SELECTED[@]} -eq 0 ] && SELECTED=(build test owasp docs-links)
 
 # When --base was not given, resolve the default EXACTLY the way review-scope.ps1's
 # Resolve-ReviewBase does (prefer origin/main, fall back to main) — not a bare literal

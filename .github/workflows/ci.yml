@@ -173,28 +173,9 @@ jobs:
         if: '!cancelled()'
         run: npm run test
 
-  # Not a required check (see .github/rulesets/main-branch-protection.json) — this catches
-  # container-packaging drift (issue #591) before it reaches real hardware, but a build-only job
-  # with no test of its own shouldn't block a merge the way build-and-test does.
-  agenthub-container-build:
-    name: AgentHub container build (amd64 + arm64)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build (no push)
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: src/Content/Presentation/Presentation.AgentHub/Dockerfile
-          platforms: linux/amd64,linux/arm64
-          push: false
+  # The AgentHub container build lives in agenthub-container.yml. It was a 12-22 minute job here
+  # (QEMU-emulated arm64) running on every PR and every push to main, three times longer than
+  # build-and-test, for a check that is not required to merge.
 
   owasp-agentic-gate:
     name: OWASP Agentic Top-10 Gate

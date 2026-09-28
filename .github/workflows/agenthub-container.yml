@@ -1,0 +1,77 @@
+name: AgentHub container build
+
+# Not a required check (see .github/rulesets/main-branch-protection.json) — this catches
+# container-packaging drift (issue #591) before it reaches real hardware, but a build-only job
+# with no test of its own shouldn't block a merge the way build-and-test does.
+#
+# It used to be a job inside ci.yml, where it ran on every PR and every push to main with
+# arm64 emulated under QEMU (12-22 min, about three times build-and-test). Split out because that
+# cost bought very little:
+#   * `paths:` is safe here precisely because this is NOT a required check. The RAILS.md rule
+#     "never path-filter a required check" exists because a required check that doesn't report
+#     wedges the PR; a non-required one that doesn't report costs nothing.
+#   * A PR builds amd64 only. arm64 differs from amd64 only in the base image and the Dockerfile,
+#     so it is built on a PR only when the Dockerfile or this workflow changes, and always by the
+#     nightly run.
+#   * No push-to-main trigger. With the ruleset's strict up-to-date policy the merged tree is the
+#     tree the PR already built, so a post-merge rebuild re-proves nothing; the nightly run covers
+#     drift from the outside (base image updates).
+
+on:
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'skills/**'
+      - 'agents/**'
+      - '.github/workflows/agenthub-container.yml'
+  schedule:
+    - cron: '0 5 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agenthub-container-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  agenthub-container-build:
+    name: AgentHub container build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      # Both architectures unless this is a PR that leaves the Dockerfile alone.
+      - name: Choose platforms
+        id: platforms
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          platforms="linux/amd64,linux/arm64"
+          if [ "$EVENT" = "pull_request" ]; then
+            changed="$(git diff --name-only "origin/${BASE_REF}...HEAD")"
+            if ! grep -Eq '^(src/Content/Presentation/Presentation\.AgentHub/Dockerfile|\.github/workflows/agenthub-container\.yml)$' <<<"$changed"; then
+              platforms="linux/amd64"
+            fi
+          fi
+          echo "platforms=${platforms}" >> "$GITHUB_OUTPUT"
+          echo "Building for: ${platforms}"
+
+      - name: Set up QEMU
+        if: contains(steps.platforms.outputs.platforms, 'arm64')
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build (no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: src/Content/Presentation/Presentation.AgentHub/Dockerfile
+          platforms: ${{ steps.platforms.outputs.platforms }}
+          push: false

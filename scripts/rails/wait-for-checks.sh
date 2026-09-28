@@ -12,6 +12,12 @@
 # This polls `gh run list` instead, which does show re-queued runs, then prints the
 # checks table once everything has actually settled.
 #
+# Workflows whose only jobs are NOT required checks (see
+# .github/rulesets/main-branch-protection.json) are not waited on: they cannot block the merge,
+# and the container build in particular outlasts everything that can. Their result still shows in
+# the final table. A workflow that holds a required job (CI, security-review, correctness-review)
+# must never be listed here.
+#
 # Usage:
 #   scripts/rails/wait-for-checks.sh <branch> [pr-number] [poll-seconds]
 #
@@ -22,6 +28,7 @@ set -euo pipefail
 BRANCH="${1:?usage: wait-for-checks.sh <branch> [pr-number] [poll-seconds]}"
 PR="${2:-}"
 POLL_SECONDS="${3:-15}"
+NON_REQUIRED_WORKFLOWS='["AgentHub container build"]'
 
 if ! command -v gh >/dev/null 2>&1; then
   echo "wait-for-checks: gh CLI not found." >&2
@@ -31,8 +38,8 @@ fi
 echo "wait-for-checks: polling runs for branch '$BRANCH' every ${POLL_SECONDS}s..."
 
 while true; do
-  PENDING="$(gh run list --branch "$BRANCH" --json status \
-    --jq '[.[] | select(.status == "queued" or .status == "in_progress")] | length')"
+  PENDING="$(gh run list --branch "$BRANCH" --json status,workflowName \
+    --jq "${NON_REQUIRED_WORKFLOWS} as \$skip | [.[] | select((.status == \"queued\" or .status == \"in_progress\") and (.workflowName as \$w | \$skip | index(\$w) | not))] | length")"
 
   if [ "$PENDING" -eq 0 ]; then
     break
