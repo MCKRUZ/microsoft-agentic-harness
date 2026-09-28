@@ -17,6 +17,7 @@ them live, and how to prove they actually catch things.
 | **correctness-review** | `workflows/correctness-review.yml` | every PR; reviews when the diff touches `src/**` | **Blocks on a high-confidence defect** |
 | **grader** | `workflows/grader.yml` | every PR | Advisory comment |
 | **docs-drift** | `workflows/docs-drift-check.yml` | push to main | Advisory comment |
+| **AgentHub container build** | `workflows/agenthub-container.yml` | PRs touching `src/`, `skills/`, `agents/`; nightly | Advisory (not required). PRs build amd64 only unless the Dockerfile changes; nightly builds arm64 too |
 | **Stop gate** | `../.claude/hooks/stop-build-gate.ps1` | agent tries to finish locally | **Blocks** a red build |
 
 > **All four AI rails run on the Claude subscription, not metered API credits.** Every one of
@@ -52,8 +53,9 @@ applicability rules.
 
 ```bash
 scripts/rails/run-gates.sh --list          # which gates apply to this branch, and why
-scripts/rails/run-gates.sh                 # every applicable gate
+scripts/rails/run-gates.sh                 # same as --fast (the default)
 scripts/rails/run-gates.sh --fast          # compile/test gates only, no AI reviewers
+scripts/rails/run-gates.sh --all           # every applicable gate, AI reviewers included
 scripts/rails/run-gates.sh --correctness   # one named gate
 scripts/rails/run-gates.sh --docs-drift    # advisory: what docs this change staled
 ```
@@ -62,7 +64,7 @@ Note that the reviewers diff **committed** state (`<base>...HEAD`), exactly as C
 Running the gate with work still in the working tree reviews the previous commit and will
 happily report on code you have already changed — commit first, then run.
 
-**`--fast` is the expected default (2026-08 change).** `security-review` and
+**`--fast` is the default (2026-08 change; made the script's actual no-flag default 2026-09-28).** `security-review` and
 `correctness-review` are REQUIRED, blocking checks on every PR already — they run
 remotely regardless of what happened locally first, so they are the real enforcement
 boundary either way. Running the equivalent AI reviewers again locally, ahead of that,

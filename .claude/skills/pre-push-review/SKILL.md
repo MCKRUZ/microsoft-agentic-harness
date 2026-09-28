@@ -33,13 +33,15 @@ to remember.
    .jsx .html` — see `.claude/hooks/review-scope.ps1` for the authoritative list). If
    nothing reviewable changed, say so and stop.
 
-2. **Run `scripts/rails/run-gates.sh` with no flags** (equivalent to `--all`, against
-   `origin/main` — falling back to `main` only if `origin/main` doesn't resolve) from the
-   repo root. Fix anything it reports as `FAIL`, then re-run it — do not
-   move on to step 3 until it prints "All selected gates passed." A clean run writes its
-   own `run-gates` receipt automatically; you never write this one by hand. If `pwsh` or
-   the `claude` CLI isn't on this machine, say so and fall back to steps 3–6 plus a manual
-   note that the run-gates receipt could not be produced — do not fabricate one.
+2. **Run `scripts/rails/run-gates.sh` with no flags** (equivalent to `--fast`: build, test,
+   OWASP, docs-links; against `origin/main` — falling back to `main` only if `origin/main`
+   doesn't resolve) from the repo root. Do NOT pass `--all`: that adds local Opus
+   correctness/security reviewers, measured at 2.5+ hours, that duplicate CI's required
+   `correctness-review` and `security-review` checks. Fix anything it reports as `FAIL`,
+   then re-run it — do not move on to step 3 until it prints "All selected gates passed."
+   A clean run writes its own `run-gates` receipt automatically; you never write this one
+   by hand. If `pwsh` isn't on this machine, say so and fall back to steps 3–6 plus a
+   manual note that the run-gates receipt could not be produced — do not fabricate one.
 
 3. **Run `/code-review`** (Skill tool, skill `code-review`) against the current diff.
    Read its findings and fix anything HIGH or CRITICAL. If you changed code to fix a
