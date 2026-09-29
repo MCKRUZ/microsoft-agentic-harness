@@ -29,6 +29,7 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
     private readonly IMediator _mediator;
     private readonly IConversationStore _conversationStore;
     private readonly IConversationTurnLease _turnLease;
+    private readonly IAgentConversationCache _agentCache;
     private readonly ISessionHealthTracker _healthTracker;
     private readonly IObservabilityStore _observabilityStore;
     private readonly IConversationTelemetryRecorder _telemetryRecorder;
@@ -43,6 +44,7 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
         IMediator mediator,
         IConversationStore conversationStore,
         IConversationTurnLease turnLease,
+        IAgentConversationCache agentCache,
         ISessionHealthTracker healthTracker,
         IObservabilityStore observabilityStore,
         IConversationTelemetryRecorder telemetryRecorder,
@@ -56,6 +58,7 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
         _mediator = mediator;
         _conversationStore = conversationStore;
         _turnLease = turnLease;
+        _agentCache = agentCache;
         _healthTracker = healthTracker;
         _observabilityStore = observabilityStore;
         _telemetryRecorder = telemetryRecorder;
@@ -96,6 +99,33 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
             record.Id, callerId, _config.MaxHistoryMessages, ct) ?? [];
 
         return (record, history);
+    }
+
+    /// <inheritdoc />
+    public async Task<ConversationRecord?> ReassignAgentAsync(
+        string conversationId, string callerId, string agentName, CancellationToken ct)
+    {
+        // Held for the write AND the eviction, not just the write: this is what makes the pair
+        // atomic with respect to ordinary turn dispatch. SendMessageAsync (and its siblings) also
+        // acquire this same per-conversation lease before their own pre-lease-read agent name is
+        // used to fetch or build the cached agent, so no turn can observe the new agent name from
+        // the database while still being served the stale cached instance -- both the write and the
+        // cache state change happen, in full, before the lease is released.
+        await using var lease = await _turnLease.AcquireAsync(conversationId, ct);
+
+        var current = await _conversationStore.GetAsync(conversationId, callerId, ct);
+        if (current is null)
+            return null;
+
+        if (string.Equals(current.AgentName, agentName, StringComparison.Ordinal))
+            return current;
+
+        var updated = await _conversationStore.ReassignAgentAsync(conversationId, callerId, agentName, ct);
+        if (updated is null)
+            return null;
+
+        _agentCache.Evict(conversationId);
+        return updated;
     }
 
     /// <inheritdoc />
@@ -378,15 +408,16 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
     /// <see cref="DispatchTurnAsync"/>, and it has to be read there rather than here: retry and edit
     /// truncate and append <em>after</em> the lease is taken, so a record read at this point would
     /// carry a message count the turn has since changed. The one value taken from the pre-lease read
-    /// is <c>AgentName</c> — which <em>can</em> change now, via <c>IConversationStore.ReassignAgentAsync</c>
+    /// is <c>AgentName</c> — which <em>can</em> change now, via <see cref="ReassignAgentAsync"/>
     /// (<c>PATCH /conversations/{id}/agent</c>). Each caller of this method re-reads the record fresh
     /// on its own, so the staleness window this creates is bounded to one in-flight call: a
     /// reassignment landing between that call's own pre-lease read and its lease acquisition can still
     /// dispatch that one turn to the agent being reassigned away from. That is a narrow,
     /// millisecond-scale race, not the persistent staleness a stale <em>cache</em> entry would cause —
-    /// <see cref="Controllers.AgentsController.ReassignAgent"/> evicts the agent-conversation cache on success
-    /// specifically so the staleness does not compound past this one turn. Closing this narrower race
-    /// too would mean moving the <c>AgentName</c> read inside the lease, re-reading the whole record
+    /// <see cref="ReassignAgentAsync"/> evicts the agent-conversation cache itself, under the SAME
+    /// per-conversation lease this method acquires, specifically so the staleness does not compound
+    /// past this one turn and no concurrent dispatch can land between the write and the eviction.
+    /// Closing this narrower race too would mean moving the <c>AgentName</c> read inside the lease, re-reading the whole record
     /// under lock on every turn — a deliberate cost/consistency tradeoff this method exists to avoid,
     /// left as-is rather than fixed here.
     /// </para>

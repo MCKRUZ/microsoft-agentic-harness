@@ -33,6 +33,7 @@ public class ConversationOrchestratorTests
 {
     private readonly Mock<IMediator> _mediator = new();
     private readonly Mock<IConversationStore> _store = new();
+    private readonly Mock<IAgentConversationCache> _agentCache = new();
     private readonly Mock<ISessionHealthTracker> _healthTracker = new();
     private readonly Mock<IObservabilityStore> _obsStore = new();
     private readonly Mock<IConnectionTracker> _connectionTracker = new();
@@ -67,6 +68,7 @@ public class ConversationOrchestratorTests
             _mediator.Object,
             _store.Object,
             _turnLease,
+            _agentCache.Object,
             _healthTracker.Object,
             _obsStore.Object,
             // The real recorder over the mocked stores, not a mocked recorder. A mock would make every
@@ -1331,5 +1333,111 @@ public class ConversationOrchestratorTests
 
         chunks.Should().ContainSingle("the orchestrator forwards handler deltas without re-chunking");
         chunks[0].Should().Be(longDelta);
+    }
+
+    // ── ReassignAgent ─────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task ReassignAgentAsync_ConversationNotFound_ReturnsNullAndDoesNotWriteOrEvict()
+    {
+        _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync((ConversationRecord?)null);
+
+        var orchestrator = CreateOrchestrator();
+        var updated = await orchestrator.ReassignAgentAsync("c1", "user1", "new-agent", CancellationToken.None);
+
+        updated.Should().BeNull();
+        _store.Verify(s => s.ReassignAgentAsync(
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+        _agentCache.Verify(c => c.Evict(It.IsAny<string>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task ReassignAgentAsync_RequestedNameMatchesCurrent_SkipsWriteAndEviction()
+    {
+        // A no-op reassignment (client resending the same agentName, e.g. a "confirm current
+        // agent" control) must not discard a live, correctly-configured cached agent for no
+        // behavioral reason -- see the remarks on IConversationOrchestrator.ReassignAgentAsync.
+        var record = new ConversationRecord("c1", "same-agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []);
+        _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
+
+        var orchestrator = CreateOrchestrator();
+        var updated = await orchestrator.ReassignAgentAsync("c1", "user1", "same-agent", CancellationToken.None);
+
+        updated.Should().Be(record);
+        _store.Verify(s => s.ReassignAgentAsync(
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+        _agentCache.Verify(c => c.Evict(It.IsAny<string>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task ReassignAgentAsync_Success_WritesThenEvictsTheCachedAgent()
+    {
+        var record = new ConversationRecord("c1", "old-agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []);
+        var updatedRecord = record with { AgentName = "new-agent" };
+        _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
+        _store.Setup(s => s.ReassignAgentAsync("c1", "user1", "new-agent", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(updatedRecord);
+
+        var orchestrator = CreateOrchestrator();
+        var updated = await orchestrator.ReassignAgentAsync("c1", "user1", "new-agent", CancellationToken.None);
+
+        updated.Should().Be(updatedRecord);
+        _agentCache.Verify(c => c.Evict("c1"), Times.Once);
+    }
+
+    /// <summary>
+    /// Proves the fix for the race a code review caught in the first version of this feature: the
+    /// database write and the cache eviction happen as two separate steps, so without a shared lock
+    /// a turn racing the reassignment could read the newly-written agent name yet still be served
+    /// the stale cached agent (<see cref="IAgentConversationCache.GetOrCreateAsync"/> returns a
+    /// cache hit unconditionally, and eviction is not guaranteed to have run yet). Both operations
+    /// now happen while holding the same per-conversation turn lease
+    /// <see cref="IConversationOrchestrator.SendMessageAsync"/> acquires before dispatch, so a
+    /// concurrent turn cannot get between the write and the eviction
+    /// at all -- it blocks on the lease itself until the reassignment fully completes.
+    /// </summary>
+    [Fact]
+    public async Task ReassignAgentAsync_WhileInFlight_BlocksAConcurrentSendMessageFromDispatching()
+    {
+        var record = new ConversationRecord("c1", "old-agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []);
+        _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
+
+        var reassignmentEntered = new TaskCompletionSource();
+        var releaseReassignment = new TaskCompletionSource();
+        _store.Setup(s => s.ReassignAgentAsync("c1", "user1", "new-agent", It.IsAny<CancellationToken>()))
+            .Returns(async () =>
+            {
+                // Signals the test that this call is now running INSIDE the acquired lease, then
+                // holds the lease open until the test says to release it -- simulating the window
+                // between the store write and the cache eviction that used to be unsynchronized.
+                reassignmentEntered.SetResult();
+                await releaseReassignment.Task;
+                return record with { AgentName = "new-agent" };
+            });
+
+        var orchestrator = CreateOrchestrator();
+
+        var reassignTask = orchestrator.ReassignAgentAsync("c1", "user1", "new-agent", CancellationToken.None);
+        await reassignmentEntered.Task;
+
+        // A concurrent ordinary turn for the SAME conversation must still be blocked waiting for the
+        // lease the reassignment is holding -- it should never reach dispatch, so a short-lived token
+        // times it out rather than it completing or failing for any other reason.
+        using var sendCts = new CancellationTokenSource(TimeSpan.FromMilliseconds(300));
+        var sendAct = () => orchestrator.SendMessageAsync(
+            "conn1", "c1", Guid.NewGuid(), "Hello", "user1", null, sendCts.Token);
+
+        await sendAct.Should().ThrowAsync<OperationCanceledException>(
+            "a concurrent turn must block on the reassignment's held lease, not race past it");
+        _mediator.Verify(
+            m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()), Times.Never,
+            "the blocked turn must never reach dispatch while the reassignment still holds the lease");
+
+        releaseReassignment.SetResult();
+        var updated = await reassignTask;
+
+        updated!.AgentName.Should().Be("new-agent");
+        _agentCache.Verify(c => c.Evict("c1"), Times.Once);
     }
 }

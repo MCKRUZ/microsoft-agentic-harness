@@ -72,6 +72,22 @@ public interface IConversationOrchestrator
         Func<int, CancellationToken, Task>? onHistoryTruncated = null);
 
     /// <summary>
+    /// Rebinds the conversation to a different agent, synchronized under the same per-conversation
+    /// turn lease that guards ordinary message dispatch. That synchronization is load-bearing, not
+    /// incidental: writing the new agent name and evicting the cached agent are two separate steps,
+    /// and without a shared lock a turn racing this call could read the newly-written agent name from
+    /// the database yet still be served the stale cached agent, because <c>IAgentConversationCache</c>
+    /// returns a cache hit unconditionally and eviction has not necessarily run yet. A no-op
+    /// reassignment (the requested name already matches the conversation's current agent) writes
+    /// nothing and evicts nothing, so it does not discard a live, correctly-configured cached agent
+    /// for no behavioral reason.
+    /// </summary>
+    /// <returns>The updated record, or <see langword="null"/> if the conversation does not exist.</returns>
+    /// <exception cref="UnauthorizedAccessException">Caller does not own the conversation.</exception>
+    Task<ConversationRecord?> ReassignAgentAsync(
+        string conversationId, string callerId, string agentName, CancellationToken ct);
+
+    /// <summary>
     /// Validates that <paramref name="callerId"/> owns the conversation. Throws
     /// <see cref="InvalidOperationException"/> if not found, <see cref="UnauthorizedAccessException"/>
     /// if owned by a different user.

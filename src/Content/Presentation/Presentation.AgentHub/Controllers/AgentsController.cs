@@ -8,6 +8,7 @@ using Application.AI.Common.Models.Conversations;
 using Presentation.AgentHub.Config;
 using Presentation.Common.Extensions;
 using Presentation.AgentHub.DTOs;
+using Presentation.AgentHub.Interfaces;
 
 namespace Presentation.AgentHub.Controllers;
 
@@ -32,7 +33,7 @@ public sealed class AgentsController : ControllerBase
     private readonly IConversationStore _store;
     private readonly IAgentMetadataRegistry _agentRegistry;
     private readonly IAgentRouter _agentRouter;
-    private readonly IAgentConversationCache _agentCache;
+    private readonly IConversationOrchestrator _orchestrator;
     private readonly IOptionsMonitor<AgentHubConfig> _config;
     private readonly ILogger<AgentsController> _logger;
 
@@ -41,14 +42,14 @@ public sealed class AgentsController : ControllerBase
         IConversationStore store,
         IAgentMetadataRegistry agentRegistry,
         IAgentRouter agentRouter,
-        IAgentConversationCache agentCache,
+        IConversationOrchestrator orchestrator,
         IOptionsMonitor<AgentHubConfig> config,
         ILogger<AgentsController> logger)
     {
         _store = store;
         _agentRegistry = agentRegistry;
         _agentRouter = agentRouter;
-        _agentCache = agentCache;
+        _orchestrator = orchestrator;
         _config = config;
         _logger = logger;
     }
@@ -207,15 +208,14 @@ public sealed class AgentsController : ControllerBase
             agentName = selection.SelectedAgent.AgentId;
         }
 
-        var updated = await _store.ReassignAgentAsync(id, userId, agentName, ct);
+        // Delegated to the orchestrator, not done inline here: the database write and the agent
+        // cache eviction must happen under the same per-conversation turn lease that guards
+        // ordinary message dispatch, or a turn racing this call can read the newly-written agent
+        // name yet still be served the stale cached agent. See the remarks on
+        // IConversationOrchestrator.ReassignAgentAsync.
+        var updated = await _orchestrator.ReassignAgentAsync(id, userId, agentName, ct);
         if (updated is null)
             return NotFound();
-
-        // A prior turn may have left the OLD agent cached under this conversation id (30-minute
-        // sliding TTL) — without this, the next turn's GetOrCreateAsync returns the stale agent
-        // instead of rebuilding against the one just reassigned to, even though the database and
-        // this response both already say the conversation moved.
-        _agentCache.Evict(id);
 
         _logger.LogInformation(
             "Reassigned conversation {ConversationId} for user {UserId} to agent {AgentName}.",
