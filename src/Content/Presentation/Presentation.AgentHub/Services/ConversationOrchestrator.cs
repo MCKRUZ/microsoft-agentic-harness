@@ -24,7 +24,12 @@ namespace Presentation.AgentHub.Services;
 /// management, and metrics recording. Extracted from <see cref="AgentTelemetryHub"/>
 /// to make the business logic testable without a SignalR transport.
 /// </summary>
-public sealed class ConversationOrchestrator : IConversationOrchestrator
+/// <remarks>
+/// Split into partials by responsibility once this file passed the project's file-size
+/// convention — <see cref="ReassignAgentAsync"/> and its lease/cache-atomicity remarks live in
+/// <c>ConversationOrchestrator.ReassignAgent.cs</c>.
+/// </remarks>
+public sealed partial class ConversationOrchestrator : IConversationOrchestrator
 {
     private readonly IMediator _mediator;
     private readonly IConversationStore _conversationStore;
@@ -99,48 +104,6 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
             record.Id, callerId, _config.MaxHistoryMessages, ct) ?? [];
 
         return (record, history);
-    }
-
-    /// <inheritdoc />
-    public async Task<ConversationRecord?> ReassignAgentAsync(
-        string conversationId, string callerId, string agentName, CancellationToken ct)
-    {
-        // Read BEFORE acquiring the lease, not after -- IConversationTurnLease's own contract
-        // requires it: authorization happens via IConversationStore.GetAsync before ever touching
-        // the lease, because the durable implementation throws InvalidOperationException for a
-        // conversation it cannot find, and an unauthorized caller must never hold the lease even
-        // briefly -- doing so would stall the real owner's concurrent turn on this same conversation
-        // for no reason. This also settles the no-op check (a client resending the same agentName)
-        // without ever touching the lease or the cache for it, using the same case-insensitive
-        // comparison other agent-identifier checks in this codebase use.
-        var current = await _conversationStore.GetAsync(conversationId, callerId, ct);
-        if (current is null)
-            return null;
-
-        if (string.Equals(current.AgentName, agentName, StringComparison.OrdinalIgnoreCase))
-            return current;
-
-        // Held for the write AND the eviction, not just the write, and through the SAME
-        // WithTurnLeaseAsync every turn-producing method below uses -- not a second, hand-rolled
-        // copy of lease handling -- so a lease lost mid-reassignment is linked into the token
-        // driving both calls exactly like every other lease-holding operation here, instead of
-        // silently letting the write and eviction complete after another host has taken over.
-        // This is what makes the write and the cache eviction atomic with respect to ordinary turn
-        // dispatch: DispatchTurnAsync re-reads the record fresh from inside its OWN held lease
-        // before deciding which agent to fetch or build (see its dispatchAgentName), so a turn
-        // that raced this call for the lease and lost sees the reassignment's result in full once
-        // it finally acquires the lease itself -- it can no longer rebuild and re-cache the agent
-        // this call just reassigned away from using a value it captured before either lease was
-        // ever contested.
-        return await WithTurnLeaseAsync(conversationId, async leaseCt =>
-        {
-            var updated = await _conversationStore.ReassignAgentAsync(conversationId, callerId, agentName, leaseCt);
-            if (updated is null)
-                return null;
-
-            _agentCache.Evict(conversationId);
-            return updated;
-        }, ct);
     }
 
     /// <inheritdoc />
@@ -427,18 +390,19 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
     /// captured before the lease was even contested, and <c>AgentName</c> <em>can</em> change now, via
     /// <see cref="ReassignAgentAsync"/> (<c>PATCH /conversations/{id}/agent</c>) — so
     /// <see cref="DispatchTurnAsync"/> deliberately does NOT dispatch using that pre-lease value. It
-    /// re-reads <c>AgentName</c> fresh once it holds the lease (<c>dispatchAgentName</c>) and uses
-    /// that for both the actual dispatch and for resolving which agent the conversation cache builds
-    /// or serves. That is what closes the race completely, not just narrows it: since
+    /// re-reads <c>AgentName</c> fresh once it holds the lease (<c>dispatchAgentName</c>) — computed
+    /// first, before anything else in that method reads or reports on the agent — and uses it for the
+    /// actual dispatch, for resolving which agent the conversation cache builds or serves, and for
+    /// every telemetry tag, health-tracker call, and session-tracking call the rest of the method
+    /// makes. That last part matters beyond metrics hygiene: <c>EnsureSessionTrackedAsync</c>'s
+    /// agent name reaches <c>ConversationTelemetryRecorder.BeginAsync</c>, which persists it into the
+    /// durable <c>sessions</c> row on a conversation's first turn — tagging that row with a pre-lease
+    /// name would be real data corruption, not a metric quirk, so this is not treated as an
+    /// acceptable residual gap the way the pre-lease read itself is. Since
     /// <see cref="ReassignAgentAsync"/> writes and evicts under this same lease, a turn that raced a
-    /// reassignment for the lease and lost cannot dispatch to the agent it was reassigned away from,
-    /// and cannot re-populate the cache with that stale agent either — both would require dispatching
-    /// against a value read before the lease, which this method no longer does. The only staleness
-    /// that survives is cosmetic: telemetry tags and session-tracking calls made earlier in
-    /// <see cref="DispatchTurnAsync"/>, before the fresh read, still use the pre-lease name. Closing
-    /// that too would mean moving the <c>AgentName</c> read inside the lease, re-reading the whole record
-    /// under lock on every turn — a deliberate cost/consistency tradeoff this method exists to avoid,
-    /// left as-is rather than fixed here.
+    /// reassignment for the lease and lost cannot dispatch to, report on, or re-cache the agent it was
+    /// reassigned away from — all of that would require using a value read before the lease, which
+    /// this method no longer does anywhere.
     /// </para>
     /// <para>
     /// The lost-lease translation is the reason this cannot simply pass the linked token along and
@@ -475,17 +439,6 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
         string sessionKey, string conversationId, string agentName, string userMessage,
         string callerId, Func<string, CancellationToken, Task>? onChunk, CancellationToken ct)
     {
-        Activity.Current?.SetTag("agent.conversation_id", conversationId);
-        Activity.Current?.SetTag(AgentConventions.Name, agentName);
-        Activity.Current?.SetTag(UserConventions.UserId, callerId);
-        Activity.Current?.AddBaggage("agent.conversation_id", conversationId);
-        Activity.Current?.AddBaggage(UserConventions.UserId, callerId);
-
-        var telemetry = await EnsureSessionTrackedAsync(sessionKey, conversationId, agentName, callerId, ct);
-
-        var history = await _conversationStore.GetHistoryForDispatch(
-            conversationId, callerId, _config.MaxHistoryMessages, ct) ?? [];
-
         var updatedRecord = await _conversationStore.GetAsync(conversationId, callerId, ct);
 
         // Read fresh, under the lease, rather than trusting the caller's pre-lease-captured
@@ -496,7 +449,23 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
         // closes the cache side of the race the pre-lease-read remarks above describe: the dispatch
         // decision itself now always reflects whatever the database says at lease-acquisition time,
         // not what it said before the wait for the lease began.
+        //
+        // Used for telemetry (below) and session tracking too, not only the eventual dispatch --
+        // EnsureSessionTrackedAsync's agentName reaches ConversationTelemetryRecorder.BeginAsync,
+        // which persists it into the durable sessions row on a conversation's first turn. Tagging
+        // that row with the pre-lease name would be real data corruption, not a cosmetic metric.
         var dispatchAgentName = updatedRecord?.AgentName ?? agentName;
+
+        Activity.Current?.SetTag("agent.conversation_id", conversationId);
+        Activity.Current?.SetTag(AgentConventions.Name, dispatchAgentName);
+        Activity.Current?.SetTag(UserConventions.UserId, callerId);
+        Activity.Current?.AddBaggage("agent.conversation_id", conversationId);
+        Activity.Current?.AddBaggage(UserConventions.UserId, callerId);
+
+        var telemetry = await EnsureSessionTrackedAsync(sessionKey, conversationId, dispatchAgentName, callerId, ct);
+
+        var history = await _conversationStore.GetHistoryForDispatch(
+            conversationId, callerId, _config.MaxHistoryMessages, ct) ?? [];
 
         // Numbered from the conversation's turn count, not its message count. A message count advances
         // by two per turn, so the same conversation produced a different sequence over this transport
@@ -539,7 +508,7 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
         // SignalR-only deployment while the agent is generating — the same defect the split was for,
         // pointing the other way. It sits around the dispatch rather than the whole method because the
         // budget-exhausted return above never reaches a model.
-        var runTag = new TagList { { AgentConventions.Name, agentName } };
+        var runTag = new TagList { { AgentConventions.Name, dispatchAgentName } };
         OrchestrationMetrics.RunsActive.Add(1, runTag);
         try
         {
@@ -557,7 +526,7 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
         }
         catch (Exception ex)
         {
-            _healthTracker.RecordError(agentName);
+            _healthTracker.RecordError(dispatchAgentName);
             var kind = ex is AiProviderNotConfiguredException ? AgentTurnErrorKind.Configuration : AgentTurnErrorKind.Internal;
             return await HandleTurnErrorAsync(conversationId, callerId, ex, kind, ct);
         }
@@ -581,17 +550,17 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
                 throw new OperationCanceledException(ct);
             }
 
-            _healthTracker.RecordError(agentName);
+            _healthTracker.RecordError(dispatchAgentName);
             return await HandleTurnErrorAsync(conversationId, callerId,
                 new InvalidOperationException(result.Error ?? "Agent returned a failure result."),
                 result.ErrorKind, ct);
         }
 
-        var agentTag = new KeyValuePair<string, object?>(AgentConventions.Name, agentName);
+        var agentTag = new KeyValuePair<string, object?>(AgentConventions.Name, dispatchAgentName);
         if (result.ToolsInvoked.Count > 0)
             OrchestrationMetrics.ToolCalls.Add(result.ToolsInvoked.Count, agentTag);
 
-        _healthTracker.RecordSuccess(agentName);
+        _healthTracker.RecordSuccess(dispatchAgentName);
 
         // Fold this turn's tokens into the conversation-lifetime budget so a subsequent turn is
         // declined once the cumulative ceiling is crossed. No-op when the budget is disabled.
@@ -599,7 +568,7 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
             conversationId, result.InputTokens + result.OutputTokens, ct);
 
         var userTag = new KeyValuePair<string, object?>(UserConventions.UserId, callerId);
-        var userAgentTag = new KeyValuePair<string, object?>(AgentConventions.Name, agentName);
+        var userAgentTag = new KeyValuePair<string, object?>(AgentConventions.Name, dispatchAgentName);
         UserActivityMetrics.Turns.Add(1, userTag, userAgentTag);
 
         await RecordTurnAsync(sessionKey, telemetry, result, ct);
