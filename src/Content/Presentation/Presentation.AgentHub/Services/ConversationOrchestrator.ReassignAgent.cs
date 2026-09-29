@@ -13,24 +13,20 @@ public sealed partial class ConversationOrchestrator
         // the lease, because the durable implementation throws InvalidOperationException for a
         // conversation it cannot find, and an unauthorized caller must never hold the lease even
         // briefly -- doing so would stall the real owner's concurrent turn on this same conversation
-        // for no reason. This also settles the no-op check (a client resending the same agentName)
-        // without ever touching the lease or the cache for it, using the same case-insensitive
-        // comparison other agent-identifier checks in this codebase use.
+        // for no reason.
         var current = await _conversationStore.GetAsync(conversationId, callerId, ct);
         if (current is null)
             return null;
 
-        if (string.Equals(current.AgentName, agentName, StringComparison.OrdinalIgnoreCase))
-        {
-            // Deliberately not re-verified under the lease: doing so would mean every no-op
-            // reassignment pays the same lease-acquisition cost this fast path exists to avoid. The
-            // accepted gap is narrow and matches the pre-lease-read tradeoff already documented on
-            // WithTurnLeaseAsync -- if a different reassignment commits between this read and this
-            // return, the response can report a current-agent value that is no longer the true
-            // latest one. It never causes a wrong WRITE (this path never writes), only a possibly
-            // stale READ in the reply to a coincidental race between two reassignment calls.
-            return current;
-        }
+        // The write always happens, even when the requested name already matches the current one --
+        // every version of this call before this fix did too (it went straight to
+        // IConversationStore.ReassignAgentAsync with no equality check), and that write's UpdatedAt
+        // bump is what keeps this conversation sorted correctly in EfCoreConversationStore.ListAsync's
+        // OrderByDescending(UpdatedAt). Skipping the write on a same-name request would silently stop
+        // a coincidental same-agent PATCH from touching that ordering, changing behavior nothing asked
+        // to change. What's actually skipped on a genuine no-op is the cache eviction below -- there is
+        // no reason to discard a live, correctly-configured cached agent when nothing about it changed.
+        var isNoOp = string.Equals(current.AgentName, agentName, StringComparison.OrdinalIgnoreCase);
 
         // Held for the write AND the eviction, not just the write, and through the SAME
         // WithTurnLeaseAsync every turn-producing method uses -- not a second, hand-rolled copy of
@@ -50,7 +46,9 @@ public sealed partial class ConversationOrchestrator
             if (updated is null)
                 return null;
 
-            _agentCache.Evict(conversationId);
+            if (!isNoOp)
+                _agentCache.Evict(conversationId);
+
             return updated;
         }, ct);
     }

@@ -87,39 +87,48 @@ public sealed class ConversationOrchestratorReassignAgentTests
     }
 
     [Fact]
-    public async Task ReassignAgentAsync_RequestedNameMatchesCurrent_SkipsWriteAndEviction()
+    public async Task ReassignAgentAsync_RequestedNameMatchesCurrent_StillWritesButSkipsEviction()
     {
         // A no-op reassignment (client resending the same agentName, e.g. a "confirm current
         // agent" control) must not discard a live, correctly-configured cached agent for no
         // behavioral reason -- see the remarks on IConversationOrchestrator.ReassignAgentAsync.
+        // The WRITE still happens, though: every version of this call before this fix went
+        // straight to the store with no equality check at all, and that write's UpdatedAt bump is
+        // what keeps a conversation correctly sorted in the conversation list. Skipping the write
+        // entirely on a same-name request would silently change that ordering behavior.
         var record = new ConversationRecord("c1", "same-agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []);
         _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
+        _store.Setup(s => s.ReassignAgentAsync("c1", "user1", "same-agent", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(record);
 
         var orchestrator = CreateOrchestrator();
         var updated = await orchestrator.ReassignAgentAsync("c1", "user1", "same-agent", CancellationToken.None);
 
         updated.Should().Be(record);
-        _store.Verify(s => s.ReassignAgentAsync(
-            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+        _store.Verify(s => s.ReassignAgentAsync("c1", "user1", "same-agent", It.IsAny<CancellationToken>()), Times.Once);
         _agentCache.Verify(c => c.Evict(It.IsAny<string>()), Times.Never);
     }
 
     [Fact]
-    public async Task ReassignAgentAsync_RequestedNameMatchesCurrentByCaseOnly_SkipsWriteAndEviction()
+    public async Task ReassignAgentAsync_RequestedNameMatchesCurrentByCaseOnly_StillWritesButSkipsEviction()
     {
         // Same-name comparison is case-insensitive, matching the convention other agent-identifier
         // comparisons in this codebase use (e.g. CapabilityMatchSupervisor's target/calling-agent
         // check) -- a differently-cased resend of the same logical agent must not be treated as a
-        // real reassignment either.
+        // real reassignment for eviction purposes either, though the write (and its UpdatedAt bump)
+        // still happens exactly as it would for any other reassignment call.
         var record = new ConversationRecord("c1", "dashboard-agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []);
+        var updatedRecord = record with { AgentName = "Dashboard-Agent" };
         _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
+        _store.Setup(s => s.ReassignAgentAsync("c1", "user1", "Dashboard-Agent", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(updatedRecord);
 
         var orchestrator = CreateOrchestrator();
         var updated = await orchestrator.ReassignAgentAsync("c1", "user1", "Dashboard-Agent", CancellationToken.None);
 
-        updated.Should().Be(record);
+        updated.Should().Be(updatedRecord);
         _store.Verify(s => s.ReassignAgentAsync(
-            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+            "c1", "user1", "Dashboard-Agent", It.IsAny<CancellationToken>()), Times.Once);
         _agentCache.Verify(c => c.Evict(It.IsAny<string>()), Times.Never);
     }
 
