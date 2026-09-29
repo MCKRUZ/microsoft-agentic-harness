@@ -227,6 +227,52 @@ public sealed class McpConnectionManagerTransportTests
         return (ConcurrentDictionary<string, HttpClient>)field!.GetValue(manager)!;
     }
 
+    // -- Session-sharing security invariant (no live server needed; this is a shape guard, not a
+    // behavioral one — see the remarks on _clients for what it protects) --
+
+    /// <summary>
+    /// Pins the current, intentional key shape of every cache that holds a live, auth-bearing MCP
+    /// session or client: keyed by server name alone, with no caller/user/tenant dimension. This is
+    /// safe today only because no per-caller credential is ever attached to a cached session (see the
+    /// SECURITY INVARIANT remarks on <c>McpConnectionManager._clients</c>). If a future change ever
+    /// widens any of these keys to admit per-caller identity — exactly the fix Microsoft's Agent
+    /// Framework shipped upstream in PR #8425 for its own provider-backed MCP sessions — that change
+    /// must be a deliberate, reviewed decision, not an accidental side effect of an unrelated refactor.
+    /// This test exists to force that decision to be conscious: it fails the moment any of these three
+    /// caches stops being keyed by bare <see cref="string"/> server name.
+    /// </summary>
+    [Fact]
+    public void SharedCaches_AreKeyedByServerNameOnly()
+    {
+        AssertKeyedByServerNameOnly("_clients");
+        AssertKeyedByServerNameOnly("_entraClients");
+        AssertKeyedByServerNameOnly("_bundleEgressClients");
+
+        // _runScopedClients is deliberately NOT server-name-only: it is keyed by (ServerName, RunId)
+        // because the stdio transport is single-session and must never be shared across concurrent
+        // runs. That is a stronger isolation guarantee than the invariant this test protects, not a
+        // violation of it — pinned here so a reader doesn't mistake its different shape for a gap.
+        var runScopedField = typeof(McpConnectionManager)
+            .GetField("_runScopedClients", BindingFlags.NonPublic | BindingFlags.Instance);
+        var runScopedKeyType = runScopedField!.FieldType.GetGenericArguments()[0];
+        runScopedKeyType.Should().Be(typeof((string ServerName, string RunId)));
+
+        static void AssertKeyedByServerNameOnly(string fieldName)
+        {
+            var field = typeof(McpConnectionManager)
+                .GetField(fieldName, BindingFlags.NonPublic | BindingFlags.Instance);
+            field.Should().NotBeNull(
+                $"{fieldName} is expected to exist on McpConnectionManager as a shared session/client cache");
+
+            var keyType = field!.FieldType.GetGenericArguments()[0];
+            keyType.Should().Be(typeof(string),
+                $"{fieldName} must stay keyed by bare server name — widening its key to include caller " +
+                "identity is exactly the class of change this test exists to catch. If that change is " +
+                "intentional, update this test AND confirm every credential source that feeds a cached " +
+                "session is genuinely per-caller from here on, not still sourced from static config.");
+        }
+    }
+
     // -- Concurrent GetClientAsync --
 
     [Fact]

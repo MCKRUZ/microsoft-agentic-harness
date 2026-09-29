@@ -59,6 +59,17 @@ public sealed class McpConnectionManager : IAsyncDisposable
     // safe today because the two namespacing schemes never collide (host names are plain or
     // {pluginName}:{name}; bundle names are {bundleId GUID}:{name}). A future change that restructures
     // these into per-source caches should preserve that invariant, not merely mirror the field shapes.
+    //
+    // SECURITY INVARIANT — every session cached here (and in _entraClients / _bundleEgressClients below)
+    // is shared across every caller/conversation/agent in the process, keyed by server name alone. That is
+    // safe ONLY because no per-caller credential is ever attached to a cached session — every header added
+    // in ResolveHostConfiguredTransportHttpClient comes from static McpServerAuthConfig, and every Entra
+    // token is minted for the harness's own workload identity, never a caller's. If a future change ever
+    // introduces per-caller MCP credentials (on-behalf-of tokens, delegated auth), the cache key here MUST
+    // change to include caller identity — otherwise caller B silently inherits caller A's session, the
+    // exact class of bug Microsoft's Agent Framework fixed upstream in PR #8425 ("Scope provider-backed
+    // MCP sessions per invocation"). McpConnectionManagerTransportTests.SharedCaches_AreKeyedByServerNameOnly
+    // pins the current (intentional) key shape so that change can't happen by accident.
     private readonly ConcurrentDictionary<string, McpClient> _clients = new();
 
     /// <summary>
