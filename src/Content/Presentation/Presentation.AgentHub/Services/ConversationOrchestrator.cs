@@ -462,7 +462,8 @@ public sealed partial class ConversationOrchestrator : IConversationOrchestrator
         Activity.Current?.AddBaggage("agent.conversation_id", conversationId);
         Activity.Current?.AddBaggage(UserConventions.UserId, callerId);
 
-        var telemetry = await EnsureSessionTrackedAsync(sessionKey, conversationId, dispatchAgentName, callerId, ct);
+        var telemetry = await EnsureSessionTrackedAsync(
+            sessionKey, conversationId, dispatchAgentName, callerId, updatedRecord, ct);
 
         var history = await _conversationStore.GetHistoryForDispatch(
             conversationId, callerId, _config.MaxHistoryMessages, ct) ?? [];
@@ -611,7 +612,8 @@ public sealed partial class ConversationOrchestrator : IConversationOrchestrator
     /// </para>
     /// </remarks>
     private async Task<ConversationTelemetryState> EnsureSessionTrackedAsync(
-        string sessionKey, string conversationId, string agentName, string callerId, CancellationToken ct)
+        string sessionKey, string conversationId, string agentName, string callerId,
+        ConversationRecord? knownRecord, CancellationToken ct)
     {
         var tracked = _connectionTracker.Get(sessionKey);
 
@@ -637,8 +639,12 @@ public sealed partial class ConversationOrchestrator : IConversationOrchestrator
                 leaving.ObservabilitySessionId, SessionStatus.Completed, cancellationToken: ct);
         }
 
+        // knownRecord is the SAME record DispatchTurnAsync already fetched (fresh, under the lease)
+        // to compute dispatchAgentName -- passing it through here avoids a second, identical
+        // IConversationStore.GetAsync round-trip BeginAsync's LoadAsync fallback would otherwise
+        // make on every single turn.
         var state = await _telemetryRecorder.BeginAsync(
-            conversationId, callerId, agentName, knownRecord: null, ct);
+            conversationId, callerId, agentName, knownRecord, ct);
 
         // Debug, not warning: an empty id is what a host running without an observability database gets
         // on every turn, and that is a supported configuration. At warning level this filled the log of
