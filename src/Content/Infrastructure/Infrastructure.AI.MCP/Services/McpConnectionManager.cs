@@ -69,7 +69,10 @@ public sealed class McpConnectionManager : IAsyncDisposable
     // change to include caller identity — otherwise caller B silently inherits caller A's session, the
     // exact class of bug Microsoft's Agent Framework fixed upstream in PR #8425 ("Scope provider-backed
     // MCP sessions per invocation"). McpConnectionManagerTransportTests.SharedCaches_AreKeyedByServerNameOnly
-    // pins the current (intentional) key shape so that change can't happen by accident.
+    // pins the current key TYPE so a change that widens it to a composite (e.g. mirroring
+    // _runScopedClients below) can't happen by accident — it does NOT catch a caller identity folded into
+    // an unchanged string key, or caller scoping added via an ambient accessor mirroring
+    // BundleRunIdAccessor's pattern below; either of those still needs a human reading this comment.
     private readonly ConcurrentDictionary<string, McpClient> _clients = new();
 
     /// <summary>

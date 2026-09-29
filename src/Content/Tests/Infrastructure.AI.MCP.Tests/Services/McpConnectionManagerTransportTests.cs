@@ -231,45 +231,63 @@ public sealed class McpConnectionManagerTransportTests
     // behavioral one — see the remarks on _clients for what it protects) --
 
     /// <summary>
-    /// Pins the current, intentional key shape of every cache that holds a live, auth-bearing MCP
-    /// session or client: keyed by server name alone, with no caller/user/tenant dimension. This is
-    /// safe today only because no per-caller credential is ever attached to a cached session (see the
-    /// SECURITY INVARIANT remarks on <c>McpConnectionManager._clients</c>). If a future change ever
-    /// widens any of these keys to admit per-caller identity — exactly the fix Microsoft's Agent
-    /// Framework shipped upstream in PR #8425 for its own provider-backed MCP sessions — that change
-    /// must be a deliberate, reviewed decision, not an accidental side effect of an unrelated refactor.
-    /// This test exists to force that decision to be conscious: it fails the moment any of these three
-    /// caches stops being keyed by bare <see cref="string"/> server name.
+    /// Pins the current, intentional key TYPE of every cache that holds a live, auth-bearing MCP
+    /// session or client: a bare <see cref="string"/> (server name), not a composite that could carry
+    /// a caller/user/tenant dimension. This is safe today only because no per-caller credential is
+    /// ever attached to a cached session (see the SECURITY INVARIANT remarks on
+    /// <c>McpConnectionManager._clients</c>).
     /// </summary>
+    /// <remarks>
+    /// This is a type-shape guard, not a content guard — it catches the shape of change this
+    /// codebase's own <c>_runScopedClients</c> already demonstrates (widening a cache's key from
+    /// <see cref="string"/> to a tuple), which is the most natural way an engineer following existing
+    /// precedent in this file would add per-caller scoping. It does <b>not</b> catch a caller identity
+    /// concatenated into an otherwise-unchanged <see cref="string"/> key, and it does not catch caller
+    /// scoping introduced via an ambient accessor — this file's own <c>BundleRunIdAccessor</c> pattern
+    /// (an AsyncLocal read inside <c>RequiresRunScope</c>) is a working example of exactly that shape,
+    /// and a caller-identity equivalent would leave every cache's declared key type untouched while
+    /// still changing what gets shared. Neither of those is a defect this reflection-based test can
+    /// close: catching them needs a live-server behavioral test, which the rest of this file avoids by
+    /// design (every existing case here asserts on connection failure, not a successful session). A
+    /// human review of any change to <c>ResolveHostConfiguredTransportHttpClient</c>,
+    /// <c>EntraTokenAuthHandler.Create</c>, or the cache-key construction sites remains required if
+    /// per-caller MCP credentials are ever introduced — see the tracked gap Microsoft's Agent Framework
+    /// closed upstream for its own provider-backed MCP sessions (PR #8425, "Scope provider-backed MCP
+    /// sessions per invocation").
+    /// </remarks>
     [Fact]
     public void SharedCaches_AreKeyedByServerNameOnly()
     {
-        AssertKeyedByServerNameOnly("_clients");
-        AssertKeyedByServerNameOnly("_entraClients");
-        AssertKeyedByServerNameOnly("_bundleEgressClients");
+        AssertGenericDictionaryKeyType("_clients").Should().Be(typeof(string),
+            "_clients must stay keyed by bare server name — widening its key TYPE to a composite is one " +
+            "way this could be caught (this test exists for that case). A caller identity concatenated " +
+            "into the existing string key, or introduced via an ambient accessor mirroring " +
+            "BundleRunIdAccessor, would NOT be caught here and needs human review of every credential " +
+            "source that feeds a cached session.");
+        AssertGenericDictionaryKeyType("_entraClients").Should().Be(typeof(string),
+            "_entraClients must stay keyed by bare server name — see the _clients assertion above for why");
+        AssertGenericDictionaryKeyType("_bundleEgressClients").Should().Be(typeof(string),
+            "_bundleEgressClients must stay keyed by bare server name — see the _clients assertion above for why");
 
         // _runScopedClients is deliberately NOT server-name-only: it is keyed by (ServerName, RunId)
         // because the stdio transport is single-session and must never be shared across concurrent
         // runs. That is a stronger isolation guarantee than the invariant this test protects, not a
         // violation of it — pinned here so a reader doesn't mistake its different shape for a gap.
-        var runScopedField = typeof(McpConnectionManager)
-            .GetField("_runScopedClients", BindingFlags.NonPublic | BindingFlags.Instance);
-        var runScopedKeyType = runScopedField!.FieldType.GetGenericArguments()[0];
-        runScopedKeyType.Should().Be(typeof((string ServerName, string RunId)));
+        AssertGenericDictionaryKeyType("_runScopedClients").Should().Be(typeof((string ServerName, string RunId)));
 
-        static void AssertKeyedByServerNameOnly(string fieldName)
+        static Type AssertGenericDictionaryKeyType(string fieldName)
         {
             var field = typeof(McpConnectionManager)
                 .GetField(fieldName, BindingFlags.NonPublic | BindingFlags.Instance);
             field.Should().NotBeNull(
                 $"{fieldName} is expected to exist on McpConnectionManager as a shared session/client cache");
 
-            var keyType = field!.FieldType.GetGenericArguments()[0];
-            keyType.Should().Be(typeof(string),
-                $"{fieldName} must stay keyed by bare server name — widening its key to include caller " +
-                "identity is exactly the class of change this test exists to catch. If that change is " +
-                "intentional, update this test AND confirm every credential source that feeds a cached " +
-                "session is genuinely per-caller from here on, not still sourced from static config.");
+            var genericArgs = field!.FieldType.GetGenericArguments();
+            genericArgs.Should().NotBeEmpty(
+                $"{fieldName} is expected to stay a generic dictionary — if it ever becomes a non-generic " +
+                "type, that needs the same conscious review as changing its key type outright.");
+
+            return genericArgs[0];
         }
     }
 
