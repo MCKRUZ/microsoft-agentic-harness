@@ -128,7 +128,9 @@ public sealed partial class ConversationOrchestrator : IConversationOrchestrator
         string sessionKey, string conversationId, Guid userMessageId, string message, string callerId,
         Func<string, CancellationToken, Task>? onChunk, CancellationToken ct)
     {
-        var record = await _conversationStore.GetAsync(conversationId, callerId, ct)
+        // Existence/ownership check only -- DispatchTurnAsync resolves its own dispatch agent fresh,
+        // under the lease, rather than trusting whatever this pre-lease read saw.
+        _ = await _conversationStore.GetAsync(conversationId, callerId, ct)
             ?? throw new InvalidOperationException("Conversation not found.");
 
         return await WithTurnLeaseAsync(conversationId, async turnCt =>
@@ -138,8 +140,7 @@ public sealed partial class ConversationOrchestrator : IConversationOrchestrator
                 MessageRole.User, message, DateTimeOffset.UtcNow);
             await _conversationStore.AppendMessageAsync(conversationId, callerId, userMsg, turnCt);
 
-            return await DispatchTurnAsync(
-                sessionKey, conversationId, record.AgentName, message, callerId, onChunk, turnCt);
+            return await DispatchTurnAsync(sessionKey, conversationId, message, callerId, onChunk, turnCt);
         }, ct);
     }
 
@@ -193,7 +194,9 @@ public sealed partial class ConversationOrchestrator : IConversationOrchestrator
         Func<string, CancellationToken, Task>? onChunk, CancellationToken ct,
         Func<int, CancellationToken, Task>? onHistoryTruncated = null)
     {
-        var record = await _conversationStore.GetAsync(conversationId, callerId, ct)
+        // Existence/ownership check only -- DispatchTurnAsync resolves its own dispatch agent fresh,
+        // under the lease, rather than trusting whatever this pre-lease read saw.
+        _ = await _conversationStore.GetAsync(conversationId, callerId, ct)
             ?? throw new InvalidOperationException("Conversation not found.");
 
         return await WithTurnLeaseAsync(conversationId, async turnCt =>
@@ -212,7 +215,7 @@ public sealed partial class ConversationOrchestrator : IConversationOrchestrator
             await SignalHistoryTruncatedAsync(onHistoryTruncated, truncated.Messages.Count, turnCt);
 
             var outcome = await DispatchTurnAsync(
-                sessionKey, conversationId, record.AgentName, last.Content, callerId, onChunk, turnCt);
+                sessionKey, conversationId, last.Content, callerId, onChunk, turnCt);
 
             return outcome with { HistoryKeepCount = truncated.Messages.Count };
         }, ct);
@@ -225,7 +228,9 @@ public sealed partial class ConversationOrchestrator : IConversationOrchestrator
         Func<string, CancellationToken, Task>? onChunk, CancellationToken ct,
         Func<int, CancellationToken, Task>? onHistoryTruncated = null)
     {
-        var record = await _conversationStore.GetAsync(conversationId, callerId, ct)
+        // Existence/ownership check only -- DispatchTurnAsync resolves its own dispatch agent fresh,
+        // under the lease, rather than trusting whatever this pre-lease read saw.
+        _ = await _conversationStore.GetAsync(conversationId, callerId, ct)
             ?? throw new InvalidOperationException("Conversation not found.");
 
         return await WithTurnLeaseAsync(conversationId, async turnCt =>
@@ -248,7 +253,7 @@ public sealed partial class ConversationOrchestrator : IConversationOrchestrator
             await SignalHistoryTruncatedAsync(onHistoryTruncated, truncated.Messages.Count, turnCt);
 
             var outcome = await DispatchTurnAsync(
-                sessionKey, conversationId, record.AgentName, newContent, callerId, onChunk, turnCt);
+                sessionKey, conversationId, newContent, callerId, onChunk, turnCt);
 
             return outcome with { HistoryKeepCount = truncated.Messages.Count };
         }, ct);
@@ -386,11 +391,13 @@ public sealed partial class ConversationOrchestrator : IConversationOrchestrator
     /// turn reads from the record is already read under the lease, inside
     /// <see cref="DispatchTurnAsync"/>, and it has to be read there rather than here: retry and edit
     /// truncate and append <em>after</em> the lease is taken, so a record read at this point would
-    /// carry a message count the turn has since changed. The caller passes an <c>agentName</c> it
-    /// captured before the lease was even contested, and <c>AgentName</c> <em>can</em> change now, via
-    /// <see cref="ReassignAgentAsync"/> (<c>PATCH /conversations/{id}/agent</c>) — so
-    /// <see cref="DispatchTurnAsync"/> deliberately does NOT dispatch using that pre-lease value. It
-    /// re-reads <c>AgentName</c> fresh once it holds the lease (<c>dispatchAgentName</c>) — computed
+    /// carry a message count the turn has since changed. <c>AgentName</c> is different: it
+    /// <em>can</em> change mid-flight, via <see cref="ReassignAgentAsync"/>
+    /// (<c>PATCH /conversations/{id}/agent</c>), so <see cref="DispatchTurnAsync"/> does not accept
+    /// it as a parameter at all — every caller used to pass one captured before its own lease
+    /// acquisition, which made the stale value one call site away from being used by mistake rather
+    /// than structurally impossible to reach. It re-reads <c>AgentName</c> fresh once it holds the
+    /// lease (<c>dispatchAgentName</c>) — computed
     /// first, before anything else in that method reads or reports on the agent — and uses it for the
     /// actual dispatch, for resolving which agent the conversation cache builds or serves, and for
     /// every telemetry tag, health-tracker call, and session-tracking call the rest of the method
@@ -436,32 +443,35 @@ public sealed partial class ConversationOrchestrator : IConversationOrchestrator
     }
 
     private async Task<TurnOutcome> DispatchTurnAsync(
-        string sessionKey, string conversationId, string agentName, string userMessage,
+        string sessionKey, string conversationId, string userMessage,
         string callerId, Func<string, CancellationToken, Task>? onChunk, CancellationToken ct)
     {
-        var updatedRecord = await _conversationStore.GetAsync(conversationId, callerId, ct);
-
-        // Read fresh, under the lease, rather than trusting the caller's pre-lease-captured
-        // `agentName` parameter -- a reassignment that lands between that pre-lease read and this
-        // call's own lease acquisition (ReassignAgentAsync evicts the cache under the SAME lease)
-        // would otherwise leave THIS turn to rebuild and re-cache the agent it was reassigned away
-        // from, right after the eviction that was supposed to prevent exactly that. This is what
-        // closes the cache side of the race the pre-lease-read remarks above describe: the dispatch
-        // decision itself now always reflects whatever the database says at lease-acquisition time,
-        // not what it said before the wait for the lease began.
+        // The agent to dispatch to is resolved HERE, fresh under the lease, rather than accepted as
+        // a parameter a caller captured before the lease was ever contested -- a reassignment that
+        // lands between that pre-lease read and this call's own lease acquisition
+        // (ReassignAgentAsync evicts the cache under the SAME lease) would otherwise leave THIS turn
+        // to rebuild and re-cache the agent it was reassigned away from, right after the eviction
+        // that was supposed to prevent exactly that. Not accepting a caller-supplied name at all,
+        // rather than accepting one and remembering not to use it, is what makes that stale value
+        // structurally unreachable here instead of merely unused by convention.
         //
         // Used for telemetry (below) and session tracking too, not only the eventual dispatch --
         // EnsureSessionTrackedAsync's agentName reaches ConversationTelemetryRecorder.BeginAsync,
         // which persists it into the durable sessions row on a conversation's first turn. Tagging
-        // that row with the pre-lease name would be real data corruption, not a cosmetic metric.
-        //
-        // The `?? agentName` fallback only fires if the conversation vanishes in the narrow window
-        // between the caller's own earlier read and this one -- byte-identical to this method's
-        // pre-existing behavior for that case, not a new gap this change introduces. It is a real,
-        // separate gap that deletion doesn't hold this same lease at all (#758), so a conversation
-        // disappearing out from under an in-flight turn is already possible regardless of this
-        // fallback; closing it here without #758 would not actually close the underlying race.
-        var dispatchAgentName = updatedRecord?.AgentName ?? agentName;
+        // that row with a pre-lease name would be real data corruption, not a cosmetic metric.
+        var updatedRecord = await _conversationStore.GetAsync(conversationId, callerId, ct);
+        if (updatedRecord is null)
+        {
+            // The conversation existed when the caller made its own pre-lease read (that read would
+            // have thrown otherwise), and vanished in the narrow window between that and this lease
+            // acquisition. Deletion doesn't hold this same lease at all (#758), so this is a real,
+            // separate gap this method cannot close on its own -- but it is now an explicit failure
+            // outcome, not a silent fallback to a value nothing has captured for this call at all.
+            return await HandleTurnErrorAsync(conversationId, callerId,
+                new InvalidOperationException("Conversation not found."), AgentTurnErrorKind.Internal, ct);
+        }
+
+        var dispatchAgentName = updatedRecord.AgentName;
 
         Activity.Current?.SetTag("agent.conversation_id", conversationId);
         Activity.Current?.SetTag(AgentConventions.Name, dispatchAgentName);
