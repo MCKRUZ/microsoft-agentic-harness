@@ -8,6 +8,7 @@ using Presentation.AgentHub.Controllers;
 using System.Net;
 using System.Net.Http.Json;
 using Xunit;
+using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.AI;
 using Application.AI.Common.Interfaces.Routing;
 using Application.AI.Common.Models.Conversations;
@@ -32,7 +33,8 @@ public sealed class AgentsControllerReassignAgentTests : IClassFixture<TestWebAp
         _store = factory.Services.GetRequiredService<IConversationStore>();
     }
 
-    private HttpClient CreateClientAs(string userId, IAgentRouter? router = null)
+    private HttpClient CreateClientAs(
+        string userId, IAgentRouter? router = null, IAgentConversationCache? agentCache = null)
     {
         var client = _factory
             .WithWebHostBuilder(b => b.ConfigureTestServices(services =>
@@ -43,6 +45,11 @@ public sealed class AgentsControllerReassignAgentTests : IClassFixture<TestWebAp
                 {
                     services.RemoveAll<IAgentRouter>();
                     services.AddSingleton(router);
+                }
+                if (agentCache is not null)
+                {
+                    services.RemoveAll<IAgentConversationCache>();
+                    services.AddSingleton(agentCache);
                 }
             }))
             .CreateClient();
@@ -161,5 +168,30 @@ public sealed class AgentsControllerReassignAgentTests : IClassFixture<TestWebAp
 
         response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
         (await _store.GetAsync(record.Id, owner))!.AgentName.Should().Be("dashboard-agent");
+    }
+
+    /// <summary>
+    /// Reassigning a conversation to a different agent updates the database record, but a prior
+    /// turn may have left the OLD agent cached in <see cref="IAgentConversationCache"/> under this
+    /// conversation id (30-minute sliding TTL). If reassignment doesn't evict that entry, the next
+    /// turn's <c>GetOrCreateAsync</c> call returns the stale cached agent instead of rebuilding
+    /// against the new one — the API and the database both say the conversation moved, but it keeps
+    /// being answered by the agent it was reassigned away from.
+    /// </summary>
+    [Fact]
+    public async Task ReassignAgent_Success_EvictsTheAgentConversationCache()
+    {
+        var userId = $"reassign-evict-{Guid.NewGuid():N}";
+        var record = await _store.CreateAsync("dashboard-agent", userId);
+        var mockCache = new Mock<IAgentConversationCache>();
+        using var client = CreateClientAs(userId, agentCache: mockCache.Object);
+
+        var response = await client.PatchAsJsonAsync(
+            $"/api/conversations/{record.Id}/agent", new { agentName = "research-agent" });
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        mockCache.Verify(c => c.Evict(record.Id), Times.Once,
+            "reassignment must evict the cached agent so the next turn rebuilds against the new one " +
+            "instead of serving the stale agent for up to the 30-minute sliding TTL");
     }
 }

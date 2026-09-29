@@ -32,6 +32,7 @@ public sealed class AgentsController : ControllerBase
     private readonly IConversationStore _store;
     private readonly IAgentMetadataRegistry _agentRegistry;
     private readonly IAgentRouter _agentRouter;
+    private readonly IAgentConversationCache _agentCache;
     private readonly IOptionsMonitor<AgentHubConfig> _config;
     private readonly ILogger<AgentsController> _logger;
 
@@ -40,12 +41,14 @@ public sealed class AgentsController : ControllerBase
         IConversationStore store,
         IAgentMetadataRegistry agentRegistry,
         IAgentRouter agentRouter,
+        IAgentConversationCache agentCache,
         IOptionsMonitor<AgentHubConfig> config,
         ILogger<AgentsController> logger)
     {
         _store = store;
         _agentRegistry = agentRegistry;
         _agentRouter = agentRouter;
+        _agentCache = agentCache;
         _config = config;
         _logger = logger;
     }
@@ -207,6 +210,12 @@ public sealed class AgentsController : ControllerBase
         var updated = await _store.ReassignAgentAsync(id, userId, agentName, ct);
         if (updated is null)
             return NotFound();
+
+        // A prior turn may have left the OLD agent cached under this conversation id (30-minute
+        // sliding TTL) — without this, the next turn's GetOrCreateAsync returns the stale agent
+        // instead of rebuilding against the one just reassigned to, even though the database and
+        // this response both already say the conversation moved.
+        _agentCache.Evict(id);
 
         _logger.LogInformation(
             "Reassigned conversation {ConversationId} for user {UserId} to agent {AgentName}.",

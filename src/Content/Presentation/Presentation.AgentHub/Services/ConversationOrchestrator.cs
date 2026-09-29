@@ -378,8 +378,17 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
     /// <see cref="DispatchTurnAsync"/>, and it has to be read there rather than here: retry and edit
     /// truncate and append <em>after</em> the lease is taken, so a record read at this point would
     /// carry a message count the turn has since changed. The one value taken from the pre-lease read
-    /// is <c>AgentName</c>, which no operation on <see cref="IConversationStore"/> can change. If one
-    /// ever can, this becomes a stale read and the agent name must move to the late one too.
+    /// is <c>AgentName</c> — which <em>can</em> change now, via <c>IConversationStore.ReassignAgentAsync</c>
+    /// (<c>PATCH /conversations/{id}/agent</c>). Each caller of this method re-reads the record fresh
+    /// on its own, so the staleness window this creates is bounded to one in-flight call: a
+    /// reassignment landing between that call's own pre-lease read and its lease acquisition can still
+    /// dispatch that one turn to the agent being reassigned away from. That is a narrow,
+    /// millisecond-scale race, not the persistent staleness a stale <em>cache</em> entry would cause —
+    /// <see cref="Controllers.AgentsController.ReassignAgent"/> evicts the agent-conversation cache on success
+    /// specifically so the staleness does not compound past this one turn. Closing this narrower race
+    /// too would mean moving the <c>AgentName</c> read inside the lease, re-reading the whole record
+    /// under lock on every turn — a deliberate cost/consistency tradeoff this method exists to avoid,
+    /// left as-is rather than fixed here.
     /// </para>
     /// <para>
     /// The lost-lease translation is the reason this cannot simply pass the linked token along and
