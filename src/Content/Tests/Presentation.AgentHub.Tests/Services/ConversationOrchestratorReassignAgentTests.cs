@@ -132,6 +132,42 @@ public sealed class ConversationOrchestratorReassignAgentTests
         _agentCache.Verify(c => c.Evict(It.IsAny<string>()), Times.Never);
     }
 
+    /// <summary>
+    /// Proves the fix for a TOCTOU review caught in the no-op fast path: the no-op decision must be
+    /// made from state read INSIDE the lease, right before the write, not from the pre-lease
+    /// snapshot used for the earlier ownership/existence check. If a concurrent write changes the
+    /// agent between those two reads, a version comparing against the pre-lease snapshot would skip
+    /// eviction it should have performed -- reproducing the exact stale-cached-agent bug this whole
+    /// feature exists to close, just through a second reassignment call instead of a turn dispatch.
+    /// </summary>
+    [Fact]
+    public async Task ReassignAgentAsync_AgentChangesBetweenPreLeaseReadAndLeaseAcquisition_StillEvicts()
+    {
+        var preLeaseView = new ConversationRecord(
+            "c1", "requested-agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []);
+        var inLeaseView = preLeaseView with { AgentName = "someone-else-changed-it-to-this" };
+        var updatedRecord = preLeaseView with { AgentName = "requested-agent" };
+
+        // First GetAsync call (the pre-lease ownership/existence check) sees "requested-agent" --
+        // which, naively compared against the target below, would look like a no-op. The SECOND
+        // call (made from inside the lease, right before the write) sees a DIFFERENT agent, as if
+        // some other write landed in the gap between the two reads.
+        var callCount = 0;
+        _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(() => ++callCount == 1 ? preLeaseView : inLeaseView);
+        _store.Setup(s => s.ReassignAgentAsync("c1", "user1", "requested-agent", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(updatedRecord);
+
+        var orchestrator = CreateOrchestrator();
+        var updated = await orchestrator.ReassignAgentAsync("c1", "user1", "requested-agent", CancellationToken.None);
+
+        updated.Should().Be(updatedRecord);
+        _agentCache.Verify(c => c.Evict("c1"), Times.Once,
+            "the in-lease read shows the agent actually differs from the request, so this is a real " +
+            "reassignment and must evict -- a stale pre-lease-snapshot comparison would wrongly treat " +
+            "it as a no-op and skip eviction here");
+    }
+
     [Fact]
     public async Task ReassignAgentAsync_Success_WritesThenEvictsTheCachedAgent()
     {
