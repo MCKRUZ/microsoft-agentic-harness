@@ -454,6 +454,13 @@ public sealed partial class ConversationOrchestrator : IConversationOrchestrator
         // EnsureSessionTrackedAsync's agentName reaches ConversationTelemetryRecorder.BeginAsync,
         // which persists it into the durable sessions row on a conversation's first turn. Tagging
         // that row with the pre-lease name would be real data corruption, not a cosmetic metric.
+        //
+        // The `?? agentName` fallback only fires if the conversation vanishes in the narrow window
+        // between the caller's own earlier read and this one -- byte-identical to this method's
+        // pre-existing behavior for that case, not a new gap this change introduces. It is a real,
+        // separate gap that deletion doesn't hold this same lease at all (#758), so a conversation
+        // disappearing out from under an in-flight turn is already possible regardless of this
+        // fallback; closing it here without #758 would not actually close the underlying race.
         var dispatchAgentName = updatedRecord?.AgentName ?? agentName;
 
         Activity.Current?.SetTag("agent.conversation_id", conversationId);

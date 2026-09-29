@@ -1024,8 +1024,10 @@ public class ConversationOrchestratorTests
         // which happens before any dispatch. Both were present and both were dead; left in place they
         // suggest this test exercises a dispatch it never gets near.
         //
-        // The recorder reads the record again to decide whether to adopt a session. That read is the
-        // await sitting between the two gauge movements.
+        // DispatchTurnAsync reads the record again itself, fresh under the lease, to resolve
+        // dispatchAgentName before dispatch (and passes that same record through as BeginAsync's
+        // knownRecord, so the recorder no longer performs a read of its own here). That fresh read
+        // is the await sitting between the two gauge movements.
         _store.SetupSequence(s => s.GetAsync("c2", "user1", It.IsAny<CancellationToken>()))
             .ReturnsAsync(target)
             .ThrowsAsync(new ConversationAccessDeniedException());
