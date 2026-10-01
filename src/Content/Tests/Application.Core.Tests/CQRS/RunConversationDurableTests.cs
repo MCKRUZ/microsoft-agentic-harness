@@ -661,6 +661,25 @@ public sealed class RunConversationDurableTests
                 "captured when building the command before the lease was ever contested");
     }
 
+    /// <summary>
+    /// The conversation vanishing in the window between <see cref="IConversationStore.GetOrCreateAsync"/>
+    /// and this run's own fresh read (the same window #761's fix closes for a reassignment) must fail
+    /// the run explicitly, not propagate past the held lease or dispatch any turn against a value
+    /// nothing captured.
+    /// </summary>
+    [Fact]
+    public async Task Handle_DurableRun_ConversationVanishesAfterLeaseAcquisition_FailsWithoutDispatching()
+    {
+        var dispatched = CaptureDispatchedTurns();
+        _store.GetAsyncReturnsNull = true;
+
+        var result = await BuildSut().Handle(Durable(), CancellationToken.None);
+
+        result.Success.Should().BeFalse();
+        result.Error.Should().NotBeNullOrEmpty();
+        dispatched.Should().BeEmpty("a vanished conversation must fail before any turn is dispatched");
+    }
+
     [Fact]
     public async Task Handle_DurableRun_ReadsTheConversationsTotalsUnderTheLease()
     {
@@ -748,6 +767,9 @@ public sealed class RunConversationDurableTests
         /// </summary>
         public string AgentName { get; set; } = "TestAgent";
 
+        /// <summary>When set, <see cref="GetAsync"/> returns null -- the conversation vanished.</summary>
+        public bool GetAsyncReturnsNull { get; set; }
+
         /// <summary>The session a prior run opened for this conversation, if any.</summary>
         public Guid? ObservabilitySessionId { get; set; }
 
@@ -821,6 +843,9 @@ public sealed class RunConversationDurableTests
         {
             ct.ThrowIfCancellationRequested();
             GetSequences.Add(CallSequence.Next());
+
+            if (GetAsyncReturnsNull)
+                return Task.FromResult<ConversationRecord?>(null);
 
             return Task.FromResult<ConversationRecord?>(new ConversationRecord(
                 Id: conversationId,
