@@ -6,8 +6,10 @@ using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Skills;
 using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Interfaces.Traces;
+using Application.AI.Common.Services.Governance;
 using Domain.AI.Agents;
 using Domain.AI.Governance;
+using Domain.AI.Identity;
 using Domain.AI.Orchestration;
 using Domain.AI.Skills;
 using Domain.Common.Config;
@@ -18,6 +20,7 @@ using Infrastructure.AI.Agents;
 using Infrastructure.AI.Tests.Helpers;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Moq;
@@ -41,6 +44,7 @@ public sealed class CapabilityMatchSupervisorTests : IDisposable
     private readonly CapabilityMatchSupervisor _supervisor;
     private readonly Mock<IAgentExecutionContext> _delegatedContextMock;
     private readonly Mock<IToolCallAdmissionPipeline> _delegatedPipelineMock;
+    private readonly Mock<IAmbientRequestScope> _ambientScopeMock = new();
 
     private readonly SubagentDefinition _defaultDefinition = new()
     {
@@ -113,7 +117,8 @@ public sealed class CapabilityMatchSupervisorTests : IDisposable
             _completionTrackerMock.Object,
             _options,
             NullLogger<CapabilityMatchSupervisor>.Instance,
-            scopeFactory);
+            scopeFactory,
+            _ambientScopeMock.Object);
     }
 
     public void Dispose()
@@ -269,13 +274,31 @@ public sealed class CapabilityMatchSupervisorTests : IDisposable
     /// Proves the fix for #757: a delegated subagent's tool calls must be authorized against ITS
     /// OWN agent id, not the entry agent's (the gap <c>CapabilityMatchSupervisor.Escalation.cs</c>
     /// used to leave as an explicitly deferred follow-up). The subagent now runs inside a fresh
-    /// governance scope, Initialize()'d with the SELECTED agent's own id.
+    /// governance scope, Initialize()'d with the SELECTED agent's own id, AND that scope's own
+    /// pipeline -- not whatever pipeline the entry turn had already published -- is what the
+    /// delegated agent actually sees while it runs. A prior version of this test asserted only the
+    /// Initialize() call, which stays green even if the <c>ToolAdmissionAccessor.Begin(...)</c> wrap
+    /// around <c>agent.RunAsync</c> that actually closes the vulnerability is deleted.
     /// </summary>
     [Fact]
-    public async Task DelegateAsync_InitializesTheDelegatedAgentsOwnGovernanceContext()
+    public async Task DelegateAsync_InitializesTheDelegatedAgentsOwnGovernanceContextAndArmsItsPipeline()
     {
-        await _supervisor.DelegateAsync(
+        IToolCallAdmissionPipeline? observedDuringRun = null;
+        _agentFactoryMock
+            .Setup(f => f.CreateAgentAsync(It.IsAny<AgentExecutionContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new TestableAIAgent(_ =>
+            {
+                observedDuringRun = ToolAdmissionAccessor.Current;
+                return new AgentResponse(new ChatMessage(ChatRole.Assistant, "stub output"));
+            }));
+
+        var outerPipeline = Mock.Of<IToolCallAdmissionPipeline>();
+        using var outerScope = ToolAdmissionAccessor.Begin(outerPipeline);
+
+        var result = await _supervisor.DelegateAsync(
             "test task", ["tool_a"], AutonomyLevel.Supervised);
+
+        result.IsSuccess.Should().BeTrue();
 
         _delegatedContextMock.Verify(
             c => c.Initialize(
@@ -287,6 +310,203 @@ public sealed class CapabilityMatchSupervisorTests : IDisposable
             "the delegated subagent's tool calls must be authorized against its own agent id, " +
             "read from a governance context Initialize()'d for THIS delegation -- not the entry " +
             "agent's context, which this call must never touch");
+
+        observedDuringRun.Should().Be(_delegatedPipelineMock.Object,
+            "the delegated agent must run under its OWN admission pipeline while it executes, " +
+            "not whatever pipeline the entry turn had already published to the ambient");
+        observedDuringRun.Should().NotBe(outerPipeline);
+
+        ToolAdmissionAccessor.Current.Should().Be(outerPipeline,
+            "the ambient must be restored to the entry turn's own pipeline once the delegation returns");
+
+        _delegatedPipelineMock.Verify(p => p.Reset(), Times.Once,
+            "the delegated pipeline must be explicitly reset, matching every other call site that " +
+            "arms IToolCallAdmissionPipeline, so this one doesn't silently start relying on a " +
+            "fresh-scope-means-default-state invariant if scope lifetimes ever change");
+    }
+
+    /// <summary>
+    /// Proves the H1 fix: a call-once tool the parent turn already claimed must stay claimed for
+    /// every delegation it spawns. Re-minting the scope from the delegation id (the pre-fix
+    /// behavior) would let a delegation call a call-once tool again -- the identical rule
+    /// <c>SubPlanStepExecutor.PropagateGovernanceIdentity</c> documents for sub-plans.
+    /// </summary>
+    [Fact]
+    public async Task DelegateAsync_InheritsTheParentTurnsConversationIdAndCallOnceScope()
+    {
+        var parentContextMock = ArrangeAmbientParentContext();
+        parentContextMock.SetupGet(c => c.ConversationId).Returns("parent-conversation");
+        parentContextMock.SetupGet(c => c.CallOnceScopeId).Returns("parent-call-once-scope");
+
+        await _supervisor.DelegateAsync("test task", ["tool_a"], AutonomyLevel.Supervised);
+
+        _delegatedContextMock.Verify(
+            c => c.Initialize(
+                _defaultSelection.SelectedAgent.AgentId,
+                "parent-conversation",
+                It.IsAny<int>(),
+                "parent-call-once-scope"),
+            Times.Once,
+            "a call-once tool the parent turn already claimed must stay claimed across every " +
+            "delegation it spawns, not reset by a fresh per-delegation scope (#757 H1)");
+    }
+
+    /// <summary>
+    /// An empty-string ConversationId/CallOnceScopeId on the parent context must fall back to the
+    /// delegation id exactly as a null one does -- a bare `??` only catches null, and
+    /// IAgentExecutionContext enforces no non-empty invariant on either property.
+    /// </summary>
+    [Fact]
+    public async Task DelegateAsync_ParentHasEmptyConversationIdAndCallOnceScope_FallsBackToTheDelegationId()
+    {
+        var parentContextMock = ArrangeAmbientParentContext();
+        parentContextMock.SetupGet(c => c.ConversationId).Returns(string.Empty);
+        parentContextMock.SetupGet(c => c.CallOnceScopeId).Returns(string.Empty);
+
+        DelegationRecord? pending = null;
+        _storeMock
+            .Setup(s => s.AppendAsync(It.IsAny<DelegationRecord>(), It.IsAny<CancellationToken>()))
+            .Callback<DelegationRecord, CancellationToken>((r, _) => pending ??= r)
+            .Returns(Task.CompletedTask);
+
+        await _supervisor.DelegateAsync("test task", ["tool_a"], AutonomyLevel.Supervised);
+
+        pending.Should().NotBeNull();
+        _delegatedContextMock.Verify(
+            c => c.Initialize(
+                _defaultSelection.SelectedAgent.AgentId,
+                pending!.DelegationId.ToString(),
+                It.IsAny<int>(),
+                pending.DelegationId.ToString()),
+            Times.Once,
+            "an empty-string parent scope must not collapse call-once/attribution isolation " +
+            "across unrelated delegations that happen to share it");
+    }
+
+    /// <summary>
+    /// A delegation run outside any governed turn (no ambient parent context) has nothing to
+    /// inherit -- it must fall back to the delegation id, the pre-fix behavior, rather than throw
+    /// or leave the scope null.
+    /// </summary>
+    [Fact]
+    public async Task DelegateAsync_NoAmbientParentContext_FallsBackToTheDelegationId()
+    {
+        DelegationRecord? pending = null;
+        _storeMock
+            .Setup(s => s.AppendAsync(It.IsAny<DelegationRecord>(), It.IsAny<CancellationToken>()))
+            .Callback<DelegationRecord, CancellationToken>((r, _) => pending ??= r)
+            .Returns(Task.CompletedTask);
+
+        await _supervisor.DelegateAsync("test task", ["tool_a"], AutonomyLevel.Supervised);
+
+        pending.Should().NotBeNull();
+        _delegatedContextMock.Verify(
+            c => c.Initialize(
+                _defaultSelection.SelectedAgent.AgentId,
+                pending!.DelegationId.ToString(),
+                It.IsAny<int>(),
+                pending.DelegationId.ToString()),
+            Times.Once);
+    }
+
+    /// <summary>
+    /// Proves the M2 fix: when the parent turn carries a resolved workload identity (an A2A- or
+    /// identity-propagated caller), the delegated agent is authorized as that same real caller
+    /// instead of silently falling back to the host's own default identity.
+    /// </summary>
+    [Fact]
+    public async Task DelegateAsync_ParentCarriesWorkloadIdentity_PropagatesItToTheDelegatedContext()
+    {
+        var parentIdentity = new AgentIdentity { Id = "caller-principal", Kind = AgentIdentityKind.Development };
+        var parentContextMock = ArrangeAmbientParentContext();
+        parentContextMock.SetupGet(c => c.AgentIdentity).Returns(parentIdentity);
+
+        await _supervisor.DelegateAsync("test task", ["tool_a"], AutonomyLevel.Supervised);
+
+        _delegatedContextMock.Verify(c => c.SetIdentity(parentIdentity), Times.Once);
+    }
+
+    /// <summary>No ambient parent identity -- SetIdentity must not be called with a null/invented value.</summary>
+    [Fact]
+    public async Task DelegateAsync_ParentHasNoWorkloadIdentity_NeverCallsSetIdentity()
+    {
+        await _supervisor.DelegateAsync("test task", ["tool_a"], AutonomyLevel.Supervised);
+
+        _delegatedContextMock.Verify(
+            c => c.SetIdentity(It.IsAny<AgentIdentity>()), Times.Never);
+    }
+
+    /// <summary>
+    /// Wires a fresh <see cref="IAgentExecutionContext"/> mock as the parent turn's ambient context
+    /// and returns it so the caller can set up only the one property its test cares about.
+    /// </summary>
+    private Mock<IAgentExecutionContext> ArrangeAmbientParentContext()
+    {
+        var parentContextMock = new Mock<IAgentExecutionContext>();
+        var provider = new Mock<IServiceProvider>();
+        provider.Setup(p => p.GetService(typeof(IAgentExecutionContext))).Returns(parentContextMock.Object);
+        _ambientScopeMock.Setup(a => a.Current).Returns(provider.Object);
+        return parentContextMock;
+    }
+
+    /// <summary>
+    /// If governance setup throws AFTER the DI scope is opened (e.g. a misconfigured
+    /// IToolCallAdmissionPipeline registration) but before ArmDelegationGovernance hands the scope
+    /// back to its caller, nobody else holds a reference to dispose it -- it must dispose the scope
+    /// itself before propagating, or the scope (and the delegate's external governance attribution
+    /// Initialize() just published) leaks.
+    /// </summary>
+    [Fact]
+    public async Task DelegateAsync_GovernanceSetupThrowsAfterScopeOpens_DisposesTheScopeBeforePropagating()
+    {
+        var throwingContext = new Mock<IAgentExecutionContext>();
+        throwingContext
+            .Setup(c => c.Initialize(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<int>(), It.IsAny<string>()))
+            .Throws(new InvalidOperationException("simulated governance setup failure"));
+
+        var provider = new Mock<IServiceProvider>();
+        provider.Setup(p => p.GetService(typeof(IAgentExecutionContext))).Returns(throwingContext.Object);
+
+        var scopeMock = new Mock<IServiceScope>();
+        scopeMock.SetupGet(s => s.ServiceProvider).Returns(provider.Object);
+
+        var throwingFactory = new Mock<IServiceScopeFactory>();
+        throwingFactory.Setup(f => f.CreateScope()).Returns(scopeMock.Object);
+
+        var contextFactory = new AgentExecutionContextFactory(
+            NullLogger<AgentExecutionContextFactory>.Instance,
+            _options,
+            Mock.Of<IServiceProvider>(),
+            NullLoggerFactory.Instance,
+            Mock.Of<IToolChainBuilder>(),
+            Mock.Of<ISkillPrerequisiteResolver>(),
+            new UnsandboxedSkillFileReader(),
+            Infrastructure.AI.Tests.Planner.StepExecutors.PermissiveAdmission.PermissiveSanitizer(),
+            _agentRegistryMock.Object);
+
+        using var supervisorWithThrowingScope = new CapabilityMatchSupervisor(
+            _strategyMock.Object,
+            _storeMock.Object,
+            _profileRegistryMock.Object,
+            _toolResolverMock.Object,
+            _tierResolverMock.Object,
+            _auditServiceMock.Object,
+            contextFactory,
+            _agentFactoryMock.Object,
+            _agentRegistryMock.Object,
+            _completionTrackerMock.Object,
+            _options,
+            NullLogger<CapabilityMatchSupervisor>.Instance,
+            throwingFactory.Object,
+            Mock.Of<IAmbientRequestScope>());
+
+        var result = await supervisorWithThrowingScope.DelegateAsync(
+            "test task", ["tool_a"], AutonomyLevel.Supervised);
+
+        result.IsSuccess.Should().BeFalse();
+        scopeMock.Verify(s => s.Dispose(), Times.Once,
+            "a setup failure after the scope opened must still dispose it -- nothing else holds " +
+            "a reference once ArmDelegationGovernance never hands the scope back to its caller");
     }
 
     [Fact]

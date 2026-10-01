@@ -41,6 +41,7 @@ public sealed partial class CapabilityMatchSupervisor : ISupervisor, IDisposable
     private readonly IAgentMetadataRegistry _agentRegistry;
     private readonly ISkillCompletionTracker _completionTracker;
     private readonly IServiceScopeFactory _scopeFactory;
+    private readonly IAmbientRequestScope _ambientScope;
     private readonly IModelRouter? _modelRouter;
     private readonly IEscalationService? _escalationService;
     private readonly IOptionsMonitor<AppConfig> _options;
@@ -76,6 +77,12 @@ public sealed partial class CapabilityMatchSupervisor : ISupervisor, IDisposable
     /// and tool-admission pipeline are bound to ITS OWN agent id, not the entry agent's (#757) — see
     /// <see cref="ExecuteAgent"/>'s remarks.
     /// </param>
+    /// <param name="ambientScope">
+    /// Reads the parent turn's <see cref="IAgentExecutionContext"/> (#757) so a delegation can
+    /// inherit the parent's call-once scope, conversation id, and workload identity instead of
+    /// minting fresh ones — see <see cref="ExecuteAgent"/>'s remarks for why re-minting would bypass
+    /// call-once enforcement.
+    /// </param>
     /// <param name="modelRouter">Optional model router for complexity-aware agent selection.</param>
     /// <param name="escalationService">Optional escalation service for autonomy tier violations.</param>
     public CapabilityMatchSupervisor(
@@ -92,6 +99,7 @@ public sealed partial class CapabilityMatchSupervisor : ISupervisor, IDisposable
         IOptionsMonitor<AppConfig> options,
         ILogger<CapabilityMatchSupervisor> logger,
         IServiceScopeFactory scopeFactory,
+        IAmbientRequestScope ambientScope,
         IModelRouter? modelRouter = null,
         IEscalationService? escalationService = null)
     {
@@ -106,6 +114,7 @@ public sealed partial class CapabilityMatchSupervisor : ISupervisor, IDisposable
         _agentRegistry = agentRegistry;
         _completionTracker = completionTracker;
         _scopeFactory = scopeFactory;
+        _ambientScope = ambientScope;
         _options = options;
         _logger = logger;
         _modelRouter = modelRouter;

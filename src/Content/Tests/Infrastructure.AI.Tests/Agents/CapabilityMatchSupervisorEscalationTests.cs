@@ -45,6 +45,7 @@ public sealed class CapabilityMatchSupervisorEscalationTests : IDisposable
     private readonly CapabilityMatchSupervisor _supervisor;
     private readonly Mock<IAgentExecutionContext> _delegatedContextMock;
     private readonly Mock<IToolCallAdmissionPipeline> _delegatedPipelineMock;
+    private readonly Mock<IAmbientRequestScope> _ambientScopeMock = new();
 
     private readonly SubagentDefinition _defaultDefinition = new()
     {
@@ -113,6 +114,7 @@ public sealed class CapabilityMatchSupervisorEscalationTests : IDisposable
             _options,
             NullLogger<CapabilityMatchSupervisor>.Instance,
             scopeFactory,
+            _ambientScopeMock.Object,
             modelRouter: null,
             escalationService: _escalationServiceMock.Object);
     }
