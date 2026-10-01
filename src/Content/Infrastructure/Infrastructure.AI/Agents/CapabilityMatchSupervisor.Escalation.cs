@@ -313,7 +313,14 @@ public sealed partial class CapabilityMatchSupervisor
         // scope (below) without its cleanup — there is nothing yet to clean up. See
         // ArmDelegationGovernance's remarks for why conversation id, call-once scope, and workload
         // identity are inherited from the parent turn rather than re-minted from the delegation id.
+        //
+        // The scope is disposed via `await using` covering the REST OF THIS METHOD, not narrowed to
+        // just the RunAsync call below — CI's correctness-review caught an earlier, narrower version
+        // of this that leaked the scope if the agent-build step (immediately below) threw, since
+        // nothing had taken ownership of disposal yet at that point. Only the ADMISSION-PIPELINE
+        // ambient (ToolAdmissionAccessor.Begin) is narrowly scoped to the RunAsync call itself.
         var governance = ArmDelegationGovernance(selection.SelectedAgent.AgentId, pendingRecord.DelegationId);
+        await using var governanceScope = governance.Scope;
 
         // #518: a named-agent delegation (SubagentType.NamedAgent) has no ISubagentProfileRegistry
         // entry — GetProfile only knows the built-in profiles. Build the runnable agent the same way
@@ -397,12 +404,6 @@ public sealed partial class CapabilityMatchSupervisor
         AgentResponse response;
         try
         {
-            // The governance scope is held open for exactly this call, not the whole method —
-            // nothing before or after RunAsync needs the delegate's own IAgentExecutionContext or
-            // IToolCallAdmissionPipeline, so there is no reason to keep its external governance
-            // attribution (AgentExecutionContext.Initialize's BeginTurn) ambiently live any longer
-            // than the run it describes.
-            await using (governance.Scope)
             using (ToolAdmissionAccessor.Begin(governance.Pipeline))
             {
                 response = await agent.RunAsync(

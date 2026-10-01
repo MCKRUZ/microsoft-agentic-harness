@@ -509,6 +509,66 @@ public sealed class CapabilityMatchSupervisorTests : IDisposable
             "a reference once ArmDelegationGovernance never hands the scope back to its caller");
     }
 
+    /// <summary>
+    /// Proves the fix for the CI correctness-review finding on this PR: once
+    /// ArmDelegationGovernance hands the scope back, something must take ownership of disposing it
+    /// for the REST of ExecuteAgent, not just for the RunAsync call -- if the agent-build step
+    /// (which runs between ArmDelegationGovernance returning and RunAsync starting) throws, the
+    /// scope must still be disposed rather than leaked.
+    /// </summary>
+    [Fact]
+    public async Task DelegateAsync_AgentBuildThrows_StillDisposesTheGovernanceScope()
+    {
+        var provider = new Mock<IServiceProvider>();
+        provider.Setup(p => p.GetService(typeof(IAgentExecutionContext))).Returns(_delegatedContextMock.Object);
+        provider.Setup(p => p.GetService(typeof(IToolCallAdmissionPipeline))).Returns(_delegatedPipelineMock.Object);
+
+        var scopeMock = new Mock<IServiceScope>();
+        scopeMock.SetupGet(s => s.ServiceProvider).Returns(provider.Object);
+
+        var factory = new Mock<IServiceScopeFactory>();
+        factory.Setup(f => f.CreateScope()).Returns(scopeMock.Object);
+
+        _agentFactoryMock
+            .Setup(f => f.CreateAgentAsync(It.IsAny<AgentExecutionContext>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("simulated agent-build failure"));
+
+        var contextFactory = new AgentExecutionContextFactory(
+            NullLogger<AgentExecutionContextFactory>.Instance,
+            _options,
+            Mock.Of<IServiceProvider>(),
+            NullLoggerFactory.Instance,
+            Mock.Of<IToolChainBuilder>(),
+            Mock.Of<ISkillPrerequisiteResolver>(),
+            new UnsandboxedSkillFileReader(),
+            Infrastructure.AI.Tests.Planner.StepExecutors.PermissiveAdmission.PermissiveSanitizer(),
+            _agentRegistryMock.Object);
+
+        using var supervisorWithThrowingAgentBuild = new CapabilityMatchSupervisor(
+            _strategyMock.Object,
+            _storeMock.Object,
+            _profileRegistryMock.Object,
+            _toolResolverMock.Object,
+            _tierResolverMock.Object,
+            _auditServiceMock.Object,
+            contextFactory,
+            _agentFactoryMock.Object,
+            _agentRegistryMock.Object,
+            _completionTrackerMock.Object,
+            _options,
+            NullLogger<CapabilityMatchSupervisor>.Instance,
+            factory.Object,
+            Mock.Of<IAmbientRequestScope>());
+
+        var result = await supervisorWithThrowingAgentBuild.DelegateAsync(
+            "test task", ["tool_a"], AutonomyLevel.Supervised);
+
+        result.IsSuccess.Should().BeFalse();
+        scopeMock.Verify(s => s.Dispose(), Times.Once,
+            "the governance scope must be disposed even when the agent-build step between " +
+            "ArmDelegationGovernance returning and RunAsync starting throws");
+    }
+
     [Fact]
     public async Task DelegateAsync_RunsSubagentAndReturnsItsRealOutput()
     {
