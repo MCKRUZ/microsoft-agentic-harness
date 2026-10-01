@@ -1,5 +1,6 @@
 using Application.AI.Common.Factories;
 using Application.AI.Common.Interfaces;
+using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Agents;
 using Application.AI.Common.Interfaces.Escalation;
 using Application.AI.Common.Interfaces.Governance;
@@ -15,7 +16,6 @@ using Domain.Common.Config.AI.Governance;
 using Domain.Common.Config.AI.Orchestration;
 using Infrastructure.AI.Agents;
 using Infrastructure.AI.Tests.Helpers;
-using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -43,6 +43,8 @@ public sealed class CapabilityMatchSupervisorEscalationTests : IDisposable
     private readonly Mock<IEscalationService> _escalationServiceMock = new();
     private readonly IOptionsMonitor<AppConfig> _options;
     private readonly CapabilityMatchSupervisor _supervisor;
+    private readonly Mock<IAgentExecutionContext> _delegatedContextMock;
+    private readonly Mock<IToolCallAdmissionPipeline> _delegatedPipelineMock;
 
     private readonly SubagentDefinition _defaultDefinition = new()
     {
@@ -94,6 +96,9 @@ public sealed class CapabilityMatchSupervisorEscalationTests : IDisposable
             Infrastructure.AI.Tests.Planner.StepExecutors.PermissiveAdmission.PermissiveSanitizer(),
             _agentRegistryMock.Object);
 
+        var scopeFactory = FakeGovernanceScopeFactory.Create(
+            out _delegatedContextMock, out _delegatedPipelineMock);
+
         _supervisor = new CapabilityMatchSupervisor(
             _strategyMock.Object,
             _storeMock.Object,
@@ -107,6 +112,7 @@ public sealed class CapabilityMatchSupervisorEscalationTests : IDisposable
             Mock.Of<ISkillCompletionTracker>(),
             _options,
             NullLogger<CapabilityMatchSupervisor>.Instance,
+            scopeFactory,
             modelRouter: null,
             escalationService: _escalationServiceMock.Object);
     }

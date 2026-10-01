@@ -1,9 +1,12 @@
 using System.Diagnostics;
 using Application.AI.Common.Factories;
+using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Escalation;
+using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Traces;
 using Application.AI.Common.OpenTelemetry.Metrics;
 using Application.AI.Common.Services;
+using Application.AI.Common.Services.Governance;
 using Application.AI.Common.Services.Tools;
 using Domain.Common.Helpers;
 using Domain.AI.Agents;
@@ -14,6 +17,7 @@ using Domain.AI.Skills;
 using Domain.AI.Telemetry.Conventions;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
 namespace Infrastructure.AI.Agents;
@@ -369,17 +373,39 @@ public sealed partial class CapabilityMatchSupervisor
         // tool call), so without swapping the ambient here the subagent's tokens AND tool invocations
         // would fold into the ORCHESTRATOR turn's telemetry — it would report tool calls it never made.
         // A fresh capture scopes the subagent's work to this delegation and yields its real token cost.
-        // (Tool-invocation governance/progress ambients are intentionally left as-is; per-subagent
-        // governance re-scoping under enforcement is tracked as a follow-up — see the PR description.)
         var delegationUsage = new LlmUsageCapture(_options);
         var previousUsage = LlmUsageCapture.Current;
         LlmUsageCapture.Current = delegationUsage;
+
+        // #757: the subagent's tool calls must be authorized against ITS OWN AllowedToolsByAgentId,
+        // not the entry agent's. The entry turn already published its own IToolCallAdmissionPipeline
+        // onto the ToolAdmissionAccessor ambient for the whole turn (ExecuteAgentTurnCommandHandler),
+        // and a subagent running inside that same ambient without re-publishing would silently
+        // inherit it. A fresh DI scope gives this delegation its own IAgentExecutionContext —
+        // Initialize()'d with the delegated agent's own id, not the entry agent's — and a pipeline
+        // built from THAT context, mirroring RunOrchestratedTaskCommandHandler's identical pattern
+        // for its own sub-agent dispatches. The delegation id is the conversation/call-once scope,
+        // the same uniqueness guarantee namedDelegationScope above already relies on for skill
+        // prerequisites: no two delegations ever share one, so nothing here can leak between them.
+        using var governanceScope = _scopeFactory.CreateScope();
+        var delegatedContext = governanceScope.ServiceProvider.GetRequiredService<IAgentExecutionContext>();
+        delegatedContext.Initialize(
+            selection.SelectedAgent.AgentId,
+            conversationId: pendingRecord.DelegationId.ToString(),
+            turnNumber: 1,
+            callOnceScopeId: pendingRecord.DelegationId.ToString());
+        var delegatedAdmissionPipeline =
+            governanceScope.ServiceProvider.GetRequiredService<IToolCallAdmissionPipeline>();
+
         AgentResponse response;
         try
         {
-            response = await agent.RunAsync(
-                [new ChatMessage(ChatRole.User, pendingRecord.TaskDescription)],
-                cancellationToken: ct);
+            using (ToolAdmissionAccessor.Begin(delegatedAdmissionPipeline))
+            {
+                response = await agent.RunAsync(
+                    [new ChatMessage(ChatRole.User, pendingRecord.TaskDescription)],
+                    cancellationToken: ct);
+            }
         }
         finally
         {

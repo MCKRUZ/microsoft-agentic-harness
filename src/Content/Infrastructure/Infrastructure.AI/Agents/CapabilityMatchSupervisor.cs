@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using Application.AI.Common.Factories;
 using Application.AI.Common.Interfaces;
+using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Agents;
 using Application.AI.Common.Interfaces.Escalation;
 using Application.AI.Common.Interfaces.Governance;
@@ -39,6 +40,7 @@ public sealed partial class CapabilityMatchSupervisor : ISupervisor, IDisposable
     private readonly IAgentFactory _agentFactory;
     private readonly IAgentMetadataRegistry _agentRegistry;
     private readonly ISkillCompletionTracker _completionTracker;
+    private readonly IServiceScopeFactory _scopeFactory;
     private readonly IModelRouter? _modelRouter;
     private readonly IEscalationService? _escalationService;
     private readonly IOptionsMonitor<AppConfig> _options;
@@ -69,6 +71,11 @@ public sealed partial class CapabilityMatchSupervisor : ISupervisor, IDisposable
     /// </param>
     /// <param name="options">Application configuration for orchestration settings.</param>
     /// <param name="logger">Logger instance.</param>
+    /// <param name="scopeFactory">
+    /// Creates a fresh DI scope per delegated sub-agent so its <see cref="IAgentExecutionContext"/>
+    /// and tool-admission pipeline are bound to ITS OWN agent id, not the entry agent's (#757) — see
+    /// <see cref="ExecuteAgent"/>'s remarks.
+    /// </param>
     /// <param name="modelRouter">Optional model router for complexity-aware agent selection.</param>
     /// <param name="escalationService">Optional escalation service for autonomy tier violations.</param>
     public CapabilityMatchSupervisor(
@@ -84,6 +91,7 @@ public sealed partial class CapabilityMatchSupervisor : ISupervisor, IDisposable
         ISkillCompletionTracker completionTracker,
         IOptionsMonitor<AppConfig> options,
         ILogger<CapabilityMatchSupervisor> logger,
+        IServiceScopeFactory scopeFactory,
         IModelRouter? modelRouter = null,
         IEscalationService? escalationService = null)
     {
@@ -97,6 +105,7 @@ public sealed partial class CapabilityMatchSupervisor : ISupervisor, IDisposable
         _agentFactory = agentFactory;
         _agentRegistry = agentRegistry;
         _completionTracker = completionTracker;
+        _scopeFactory = scopeFactory;
         _options = options;
         _logger = logger;
         _modelRouter = modelRouter;

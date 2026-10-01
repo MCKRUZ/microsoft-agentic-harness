@@ -1,5 +1,6 @@
 using Application.AI.Common.Factories;
 using Application.AI.Common.Interfaces;
+using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Agents;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Skills;
@@ -17,7 +18,6 @@ using Infrastructure.AI.Agents;
 using Infrastructure.AI.Tests.Helpers;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
-using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Moq;
@@ -39,6 +39,8 @@ public sealed class CapabilityMatchSupervisorTests : IDisposable
     private readonly Mock<ISkillCompletionTracker> _completionTrackerMock = new();
     private readonly IOptionsMonitor<AppConfig> _options;
     private readonly CapabilityMatchSupervisor _supervisor;
+    private readonly Mock<IAgentExecutionContext> _delegatedContextMock;
+    private readonly Mock<IToolCallAdmissionPipeline> _delegatedPipelineMock;
 
     private readonly SubagentDefinition _defaultDefinition = new()
     {
@@ -95,6 +97,9 @@ public sealed class CapabilityMatchSupervisorTests : IDisposable
 
         SetupDefaults();
 
+        var scopeFactory = FakeGovernanceScopeFactory.Create(
+            out _delegatedContextMock, out _delegatedPipelineMock);
+
         _supervisor = new CapabilityMatchSupervisor(
             _strategyMock.Object,
             _storeMock.Object,
@@ -107,7 +112,8 @@ public sealed class CapabilityMatchSupervisorTests : IDisposable
             _agentRegistryMock.Object,
             _completionTrackerMock.Object,
             _options,
-            NullLogger<CapabilityMatchSupervisor>.Instance);
+            NullLogger<CapabilityMatchSupervisor>.Instance,
+            scopeFactory);
     }
 
     public void Dispose()
@@ -257,6 +263,30 @@ public sealed class CapabilityMatchSupervisorTests : IDisposable
                 It.Is<DelegationRecord>(r => r.State == DelegationState.Completed),
                 It.IsAny<CancellationToken>()),
             Times.Once());
+    }
+
+    /// <summary>
+    /// Proves the fix for #757: a delegated subagent's tool calls must be authorized against ITS
+    /// OWN agent id, not the entry agent's (the gap <c>CapabilityMatchSupervisor.Escalation.cs</c>
+    /// used to leave as an explicitly deferred follow-up). The subagent now runs inside a fresh
+    /// governance scope, Initialize()'d with the SELECTED agent's own id.
+    /// </summary>
+    [Fact]
+    public async Task DelegateAsync_InitializesTheDelegatedAgentsOwnGovernanceContext()
+    {
+        await _supervisor.DelegateAsync(
+            "test task", ["tool_a"], AutonomyLevel.Supervised);
+
+        _delegatedContextMock.Verify(
+            c => c.Initialize(
+                _defaultSelection.SelectedAgent.AgentId,
+                It.IsAny<string>(),
+                It.IsAny<int>(),
+                It.IsAny<string>()),
+            Times.Once,
+            "the delegated subagent's tool calls must be authorized against its own agent id, " +
+            "read from a governance context Initialize()'d for THIS delegation -- not the entry " +
+            "agent's context, which this call must never touch");
     }
 
     [Fact]
