@@ -157,7 +157,7 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 		// dispatches, logs, and reports telemetry/metrics using THIS read, never request.AgentName,
 		// so this run cannot resurrect the agent it was reassigned away from or re-cache it under the
 		// stale name (issue #761 -- the same race #700 closed for the SignalR hub path).
-		var dispatchRecord = await _conversationStore.GetAsync(request.ConversationId, ownerId, cancellationToken);
+		var dispatchRecord = await _conversationStore.GetAsync(request.ConversationId, ownerId, turnCts.Token);
 		if (dispatchRecord is null)
 		{
 			_logger.LogError(
