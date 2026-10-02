@@ -26,4 +26,9 @@ public sealed record ConversationTurnTelemetry(
     int CacheWrite,
     decimal CostUsd,
     int ToolCalls,
-    string? Model = null);
+    string? Model = null)
+{
+    /// <summary>Whether the turn cost anything — any tokens at all, or any money.</summary>
+    public bool HasSpend =>
+        InputTokens > 0 || OutputTokens > 0 || CacheRead > 0 || CacheWrite > 0 || CostUsd > 0m;
+}

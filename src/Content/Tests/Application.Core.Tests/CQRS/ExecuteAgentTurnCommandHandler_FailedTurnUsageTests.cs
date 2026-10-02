@@ -73,13 +73,25 @@ public sealed class ExecuteAgentTurnCommandHandler_FailedTurnUsageTests
             .ReturnsAsync(agent);
     }
 
+    private static readonly Guid SessionId = Guid.NewGuid();
+
     private static ExecuteAgentTurnCommand Command() => new()
     {
         AgentName = "TestAgent",
         UserMessage = "Hello",
         ConversationHistory = [],
         TurnNumber = 1,
+        ObservabilitySessionId = SessionId,
     };
+
+    private static void VerifyFailedAssistantRow(Mock<IObservabilityStore> observability, Times times, string? error = null) =>
+        observability.Verify(
+            o => o.RecordMessageAsync(
+                SessionId, 1, "assistant", "assistant_failed", It.Is<string?>(p => error == null || p == error),
+                It.IsAny<string?>(),
+                It.IsAny<int>(), It.IsAny<int>(), It.IsAny<int>(), It.IsAny<int>(), It.IsAny<decimal>(),
+                It.IsAny<decimal>(), It.IsAny<string[]?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()),
+            times);
 
     [Theory]
     [InlineData(AgentTurnErrorKind.Internal)]
@@ -140,6 +152,100 @@ public sealed class ExecuteAgentTurnCommandHandler_FailedTurnUsageTests
         result.Success.Should().BeFalse();
         result.InputTokens.Should().Be(900);
         result.OutputTokens.Should().Be(100);
+    }
+
+    [Theory]
+    [InlineData(AgentTurnErrorKind.Internal)]
+    [InlineData(AgentTurnErrorKind.Cancelled)]
+    public async Task Handle_FailureAfterSpending_WritesAFailedAssistantRowCarryingTheSpend(AgentTurnErrorKind kind)
+    {
+        // The session rollup and the budget both count this spend (#778, #780); the per-message rows are
+        // what a dashboard drills into, so the turn has to be visible there too, marked as failed.
+        ArrangeAgentThatSpendsThenFails(
+            kind == AgentTurnErrorKind.Cancelled ? new OperationCanceledException() : new InvalidOperationException("boom"));
+        var observability = new Mock<IObservabilityStore>();
+        using var cts = new CancellationTokenSource();
+        if (kind == AgentTurnErrorKind.Cancelled)
+            await cts.CancelAsync();
+
+        var result = await CreateHandler(CreateCapture(), observability).Handle(Command(), cts.Token);
+
+        observability.Verify(
+            o => o.RecordMessageAsync(
+                SessionId, 1, "assistant", "assistant_failed", result.Error, "test-model",
+                900, 100, 25, 5, It.IsAny<decimal>(), It.IsAny<decimal>(), null, result.Error,
+                // Never the caller's token: a disconnect cancels it, and the row is for exactly that turn.
+                It.Is<CancellationToken>(t => !t.CanBeCanceled)),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task Handle_FailureBeforeAnyModelCall_WritesNoFailedRow()
+    {
+        // Nothing was spent, so there is nothing to attribute — the same line the rollup draws.
+        var agent = new TestableAIAgent((_, _) => throw new InvalidOperationException("boom"));
+        _agentCache
+            .Setup(c => c.GetOrCreateAsync(
+                It.IsAny<string>(), It.IsAny<IReadOnlyList<string>>(), It.IsAny<SkillAgentOptions>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(agent);
+        var observability = new Mock<IObservabilityStore>();
+
+        await CreateHandler(CreateCapture(), observability).Handle(Command(), CancellationToken.None);
+
+        VerifyFailedAssistantRow(observability, Times.Never());
+    }
+
+    [Fact]
+    public async Task Handle_CompletedRowAlreadyWrittenThenALaterStepThrows_DoesNotWriteASecondRowForTheTurn()
+    {
+        // The completed turn's own row carries the spend. A failed row on top of it would double the turn
+        // in any per-message total, while the rollup and the budget count it once.
+        var agent = new TestableAIAgent((_, _) =>
+        {
+            LlmUsageCapture.Current!.Record(900, 100, 0, 0, "test-model");
+            LlmUsageCapture.Current!.RecordToolCall("a_tool");
+            return Task.FromResult(new Microsoft.Agents.AI.AgentResponse(
+                new Microsoft.Extensions.AI.ChatMessage(Microsoft.Extensions.AI.ChatRole.Assistant, "ok")));
+        });
+        _agentCache
+            .Setup(c => c.GetOrCreateAsync(
+                It.IsAny<string>(), It.IsAny<IReadOnlyList<string>>(), It.IsAny<SkillAgentOptions>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(agent);
+        var observability = new Mock<IObservabilityStore>();
+        observability
+            .Setup(o => o.RecordToolExecutionAsync(
+                It.IsAny<Guid>(), It.IsAny<Guid?>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<int>(),
+                It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<int?>(), It.IsAny<string?>(),
+                It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("observability store unavailable"));
+
+        var result = await CreateHandler(CreateCapture(), observability).Handle(Command(), CancellationToken.None);
+
+        result.Success.Should().BeFalse();
+        result.InputTokens.Should().Be(900);
+        VerifyFailedAssistantRow(observability, Times.Never());
+    }
+
+    [Fact]
+    public async Task Handle_TheFailedRowCannotBeWritten_StillReturnsTheFailureWithItsSpend()
+    {
+        // Recording is for the dashboards; it must not replace the outcome the caller has to act on.
+        ArrangeAgentThatSpendsThenFails(new InvalidOperationException("boom"));
+        var observability = new Mock<IObservabilityStore>();
+        observability
+            .Setup(o => o.RecordMessageAsync(
+                SessionId, 1, "assistant", "assistant_failed", It.IsAny<string?>(), It.IsAny<string?>(),
+                It.IsAny<int>(), It.IsAny<int>(), It.IsAny<int>(), It.IsAny<int>(), It.IsAny<decimal>(),
+                It.IsAny<decimal>(), It.IsAny<string[]?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("observability store unavailable"));
+
+        var result = await CreateHandler(CreateCapture(), observability).Handle(Command(), CancellationToken.None);
+
+        result.Success.Should().BeFalse();
+        result.ErrorKind.Should().Be(AgentTurnErrorKind.Internal);
+        result.InputTokens.Should().Be(900);
     }
 
     [Fact]

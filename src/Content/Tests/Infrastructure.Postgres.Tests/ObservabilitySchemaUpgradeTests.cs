@@ -246,6 +246,112 @@ public sealed class ObservabilitySchemaUpgradeTests
         }
     }
 
+    /// <summary>One message row with the given source, on a session of its own (the FK needs one).</summary>
+    private static string InsertMessageWithSource(string source) =>
+        $"""
+        WITH s AS (
+            INSERT INTO sessions (conversation_id, agent_name)
+            VALUES ('source-probe-{source}', 'ProbeAgent')
+            RETURNING id)
+        INSERT INTO session_messages (session_id, turn_index, role, source)
+        SELECT id, 1, 'assistant', '{source}' FROM s
+        """;
+
+    /// <summary>
+    /// Migration 007 (#780): a failed turn's per-message row is marked <c>assistant_failed</c>. Control and
+    /// treatment on the same database — the previous release must refuse the word, the migrated one accept it.
+    /// </summary>
+    [SkippableFact]
+    public async Task ADatabaseOnThePreviousRelease_RejectsAFailedAssistantRow_UntilTheMigrationRunnerReachesIt()
+    {
+        await using var schema = await MigrationTestSchema.CreateAsync();
+
+        var all = ObservabilityMigrations.Load();
+        var previousRelease = all.Where(s => s.Ordinal < 7).ToArray();
+        await schema.ApplyAsync(previousRelease, Ledger);
+
+        var rejected = await schema.TryExecuteAsync(InsertMessageWithSource("assistant_failed"));
+        Assert.NotNull(rejected);
+        Assert.Contains("session_messages_source_check", rejected!.ToString(), StringComparison.OrdinalIgnoreCase);
+
+        var applied = await schema.ApplyAsync(all, Ledger);
+        Assert.Equal(all.Count - previousRelease.Length, applied);
+
+        Assert.Null(await schema.TryExecuteAsync(InsertMessageWithSource("assistant_failed")));
+    }
+
+    [SkippableFact]
+    public async Task TheWidenedSourceConstraintStillRefusesAWordThatIsNotASource_AndKeepsTheOldOnes()
+    {
+        await using var schema = await MigrationTestSchema.CreateAsync();
+        await schema.ApplyAsync(ObservabilityMigrations.Load(), Ledger);
+
+        // Dropped and not re-added would pass the assertion above while having removed the guard.
+        var rejected = await schema.TryExecuteAsync(InsertMessageWithSource("assistant_exploded"));
+        Assert.NotNull(rejected);
+        Assert.Contains("session_messages_source_check", rejected!.ToString(), StringComparison.OrdinalIgnoreCase);
+
+        // Re-declaring the list is where an existing word gets dropped by accident.
+        foreach (var source in new[] { "user_message", "assistant_text", "assistant_mixed" })
+            Assert.Null(await schema.TryExecuteAsync(InsertMessageWithSource(source)));
+    }
+
+    /// <summary>
+    /// The control for migration 007's <c>pg_constraint</c> lookup: a database whose source CHECK carries a
+    /// name of the installation's own choosing. A hardcoded DROP would match nothing there, and the ADD would
+    /// then succeed, leaving two source constraints with the old narrow one still refusing the new word.
+    /// </summary>
+    [SkippableFact]
+    public async Task ADatabaseWhoseSourceConstraintWasHandNamed_IsStillBroughtForward()
+    {
+        await using var schema = await MigrationTestSchema.CreateAsync();
+
+        // `sessions` as the old schema has it, and `session_messages` with a hand-named source CHECK.
+        // The runner's baseline then no-ops over both (CREATE TABLE IF NOT EXISTS), as it does on a real
+        // database that predates the ledger.
+        await schema.ExecuteAsync(PreMigrationRunnerSchema);
+        await schema.ExecuteAsync(
+            """
+            CREATE TABLE session_messages (
+                id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                session_id UUID NOT NULL REFERENCES sessions (id) ON DELETE CASCADE,
+                turn_index INTEGER NOT NULL,
+                role       TEXT NOT NULL CHECK (role IN ('user','assistant','system','tool')),
+                source     TEXT,
+                content_preview TEXT,
+                content_full    TEXT,
+                model           TEXT,
+                input_tokens    INTEGER NOT NULL DEFAULT 0,
+                output_tokens   INTEGER NOT NULL DEFAULT 0,
+                cache_read      INTEGER NOT NULL DEFAULT 0,
+                cache_write     INTEGER NOT NULL DEFAULT 0,
+                cost_usd        NUMERIC(10,6) NOT NULL DEFAULT 0,
+                cache_hit_pct   NUMERIC(5,4) NOT NULL DEFAULT 0,
+                tool_names      TEXT[],
+                created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                CONSTRAINT session_messages_source_allowed CHECK (source IN (
+                    'user_message','assistant_text','assistant_tool',
+                    'assistant_mixed','tool_result','system_context','hook_injection'))
+            );
+            """);
+
+        var rejected = await schema.TryExecuteAsync(InsertMessageWithSource("assistant_failed"));
+        Assert.NotNull(rejected);
+        Assert.Contains("session_messages_source_allowed", rejected!.ToString(), StringComparison.OrdinalIgnoreCase);
+
+        await schema.ApplyAsync(ObservabilityMigrations.Load(), Ledger);
+
+        Assert.Null(await schema.TryExecuteAsync(InsertMessageWithSource("assistant_failed")));
+        Assert.Equal(1, await schema.ScalarAsync<long>(
+            """
+            SELECT COUNT(*) FROM pg_constraint con
+            JOIN pg_class rel ON rel.oid = con.conrelid
+            JOIN pg_namespace nsp ON nsp.oid = rel.relnamespace
+            WHERE rel.relname = 'session_messages' AND nsp.nspname = current_schema()
+              AND con.contype = 'c' AND pg_get_constraintdef(con.oid) ILIKE '%source%'
+            """));
+    }
+
     [SkippableFact]
     public async Task ABaselineOnlyDatabase_IsBroughtAllTheWayForward()
     {

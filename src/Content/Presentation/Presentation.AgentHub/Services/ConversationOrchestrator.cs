@@ -133,14 +133,15 @@ public sealed partial class ConversationOrchestrator : IConversationOrchestrator
         _ = await _conversationStore.GetAsync(conversationId, callerId, ct)
             ?? throw new InvalidOperationException("Conversation not found.");
 
-        return await WithTurnLeaseAsync(conversationId, async turnCt =>
+        return await WithTurnLeaseAsync(conversationId, async leased =>
         {
+            var turnCt = leased.Token;
             var userMsg = new ConversationMessage(
                 userMessageId == Guid.Empty ? Guid.NewGuid() : userMessageId,
                 MessageRole.User, message, DateTimeOffset.UtcNow);
             await _conversationStore.AppendMessageAsync(conversationId, callerId, userMsg, turnCt);
 
-            return await DispatchTurnAsync(sessionKey, conversationId, message, callerId, onChunk, turnCt);
+            return await DispatchTurnAsync(sessionKey, conversationId, message, callerId, onChunk, leased, turnCt);
         }, ct);
     }
 
@@ -199,8 +200,9 @@ public sealed partial class ConversationOrchestrator : IConversationOrchestrator
         _ = await _conversationStore.GetAsync(conversationId, callerId, ct)
             ?? throw new InvalidOperationException("Conversation not found.");
 
-        return await WithTurnLeaseAsync(conversationId, async turnCt =>
+        return await WithTurnLeaseAsync(conversationId, async leased =>
         {
+            var turnCt = leased.Token;
             var truncated = await _conversationStore.TruncateFromMessageAsync(
                     conversationId, callerId, assistantMessageId, turnCt)
                 ?? throw new InvalidOperationException("Conversation not found.");
@@ -215,7 +217,7 @@ public sealed partial class ConversationOrchestrator : IConversationOrchestrator
             await SignalHistoryTruncatedAsync(onHistoryTruncated, truncated.Messages.Count, turnCt);
 
             var outcome = await DispatchTurnAsync(
-                sessionKey, conversationId, last.Content, callerId, onChunk, turnCt);
+                sessionKey, conversationId, last.Content, callerId, onChunk, leased, turnCt);
 
             return outcome with { HistoryKeepCount = truncated.Messages.Count };
         }, ct);
@@ -233,8 +235,9 @@ public sealed partial class ConversationOrchestrator : IConversationOrchestrator
         _ = await _conversationStore.GetAsync(conversationId, callerId, ct)
             ?? throw new InvalidOperationException("Conversation not found.");
 
-        return await WithTurnLeaseAsync(conversationId, async turnCt =>
+        return await WithTurnLeaseAsync(conversationId, async leased =>
         {
+            var turnCt = leased.Token;
             var truncated = await _conversationStore.TruncateFromMessageAsync(
                     conversationId, callerId, userMessageId, turnCt)
                 ?? throw new InvalidOperationException("Conversation not found.");
@@ -253,7 +256,7 @@ public sealed partial class ConversationOrchestrator : IConversationOrchestrator
             await SignalHistoryTruncatedAsync(onHistoryTruncated, truncated.Messages.Count, turnCt);
 
             var outcome = await DispatchTurnAsync(
-                sessionKey, conversationId, newContent, callerId, onChunk, turnCt);
+                sessionKey, conversationId, newContent, callerId, onChunk, leased, turnCt);
 
             return outcome with { HistoryKeepCount = truncated.Messages.Count };
         }, ct);

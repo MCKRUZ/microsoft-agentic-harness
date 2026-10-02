@@ -144,6 +144,13 @@ public record AgentTurnResult : IAgentTurnResult
 	};
 
 	/// <summary>
+	/// What this turn cost, in the shape the shared telemetry recorder takes — the one place the result's
+	/// usage fields are mapped to it, so a completed and a failed turn cannot disagree about it.
+	/// </summary>
+	public ConversationTurnTelemetry ToTurnTelemetry() =>
+		new(InputTokens, OutputTokens, CacheRead, CacheWrite, CostUsd, ToolsInvoked.Count, Model);
+
+	/// <summary>
 	/// Snapshot of the per-invocation governance decisions the agent's tool calls passed through
 	/// this turn. Null when tool-invocation governance was not engaged. Lets evaluation grade the
 	/// agent's governance behaviour independently of task outcome.

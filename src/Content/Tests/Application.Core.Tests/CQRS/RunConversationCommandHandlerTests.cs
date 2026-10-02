@@ -19,6 +19,8 @@ public class RunConversationCommandHandlerTests
 {
     private readonly Mock<IMediator> _mediator = new();
     private readonly Mock<IConversationBudgetTracker> _budget = new();
+    private readonly Mock<IObservabilityStore> _observabilityStore = new();
+    private readonly Guid _sessionId = Guid.NewGuid();
     private readonly RunConversationCommandHandler _handler;
 
     public RunConversationCommandHandlerTests()
@@ -28,10 +30,15 @@ public class RunConversationCommandHandlerTests
             .Setup(b => b.GetStatusAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(ConversationBudgetStatus.Disabled);
 
+        _observabilityStore
+            .Setup(o => o.StartSessionAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(_sessionId);
+
         // Store and lease are strict about being unused here: every test in this class runs a
         // self-contained conversation (no ConversationOwnerId), and touching either would mean the
         // handler had silently taken the durable path. A throwing double says so immediately.
-        var observability = new Mock<IObservabilityStore>().Object;
+        var observability = _observabilityStore.Object;
         var strictStore = new Mock<IConversationStore>(MockBehavior.Strict).Object;
 
         _handler = new RunConversationCommandHandler(
@@ -212,6 +219,87 @@ public class RunConversationCommandHandlerTests
         await act.Should().ThrowAsync<OperationCanceledException>();
         _budget.Verify(
             b => b.RecordUsageAsync("conv-cancel-spend", 1000, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    private static AgentTurnResult FailedAfterSpending(AgentTurnErrorKind kind) => new()
+    {
+        Success = false,
+        Response = string.Empty,
+        UpdatedHistory = [],
+        Error = "boom",
+        ErrorKind = kind,
+        InputTokens = 900,
+        OutputTokens = 100,
+        CostUsd = 0.04m,
+    };
+
+    private void VerifyRollupCountedTheFailedTurn(Times times) =>
+        _observabilityStore.Verify(
+            o => o.UpdateSessionMetricsAsync(
+                _sessionId, 1, 0, 0, 900, 100, 0, 0, 0.04m, It.IsAny<decimal>(), It.IsAny<string?>(),
+                // Never the caller's token: a disconnect cancels it, and the rollup is for exactly that turn.
+                It.Is<CancellationToken>(t => !t.CanBeCanceled)),
+            times);
+
+    private static RunConversationCommand OneMessageRun(string id) => new()
+    {
+        AgentName = "TestAgent",
+        ConversationId = id,
+        UserMessages = ["one"]
+    };
+
+    [Theory]
+    [InlineData(AgentTurnErrorKind.Internal)]
+    [InlineData(AgentTurnErrorKind.Configuration)]
+    public async Task Handle_TurnFailsAfterSpending_AddsTheTurnToTheSessionRollup(AgentTurnErrorKind kind)
+    {
+        // #780: the budget gate trips on this spend, so the rollup the dashboards read must carry it too.
+        _mediator
+            .Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(FailedAfterSpending(kind));
+
+        var result = await _handler.Handle(OneMessageRun("conv-failed-rollup"), CancellationToken.None);
+
+        result.Success.Should().BeFalse();
+        VerifyRollupCountedTheFailedTurn(Times.Once());
+    }
+
+    [Fact]
+    public async Task Handle_TurnCancelledAfterSpending_AddsTheTurnToTheRollupBeforeAbortingQuietly()
+    {
+        using var cts = new CancellationTokenSource();
+        _mediator
+            .Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
+            .Returns(() =>
+            {
+                cts.Cancel();
+                return Task.FromResult(FailedAfterSpending(AgentTurnErrorKind.Cancelled));
+            });
+
+        var act = () => _handler.Handle(OneMessageRun("conv-cancel-rollup"), cts.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+        VerifyRollupCountedTheFailedTurn(Times.Once());
+    }
+
+    [Fact]
+    public async Task Handle_TurnFailsBeforeSpendingAnything_LeavesTheRollupAlone()
+    {
+        _mediator
+            .Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(FailedAfterSpending(AgentTurnErrorKind.Configuration) with
+            {
+                InputTokens = 0, OutputTokens = 0, CostUsd = 0m,
+            });
+
+        await _handler.Handle(OneMessageRun("conv-failed-nothing"), CancellationToken.None);
+
+        _observabilityStore.Verify(
+            o => o.UpdateSessionMetricsAsync(
+                It.IsAny<Guid>(), It.IsAny<int>(), It.IsAny<int>(), It.IsAny<int>(), It.IsAny<int>(),
+                It.IsAny<int>(), It.IsAny<int>(), It.IsAny<int>(), It.IsAny<decimal>(), It.IsAny<decimal>(),
+                It.IsAny<string?>(), It.IsAny<CancellationToken>()),
+            Times.Never);
     }
 
     /// <summary>

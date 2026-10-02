@@ -292,6 +292,136 @@ public class ConversationOrchestratorTests
             b => b.RecordUsageAsync("c1", 1000, It.IsAny<CancellationToken>()), Times.Once);
     }
 
+    private Guid ArrangeTurnReturning(AgentTurnResult result, CancellationTokenSource? cancelDuringTurn = null)
+    {
+        var record = new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []);
+        var sessionId = Guid.NewGuid();
+        _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
+        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", 20, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<ConversationMessage>());
+        _obsStore.Setup(s => s.StartSessionAsync("c1", "agent", null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(sessionId);
+        _mediator.Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
+            .Returns(() =>
+            {
+                cancelDuringTurn?.Cancel();
+                return Task.FromResult(result);
+            });
+        return sessionId;
+    }
+
+    private static AgentTurnResult FailedAfterSpending(AgentTurnErrorKind kind) => new()
+    {
+        Success = false,
+        Response = string.Empty,
+        UpdatedHistory = [],
+        Error = "failed",
+        ErrorKind = kind,
+        InputTokens = 900,
+        OutputTokens = 100,
+        CostUsd = 0.04m,
+    };
+
+    private void VerifyRollupCountedTheFailedTurn(Guid sessionId, Times times) =>
+        _obsStore.Verify(
+            s => s.UpdateSessionMetricsAsync(
+                sessionId, 1, 0, 0, 900, 100, 0, 0, 0.04m, It.IsAny<decimal>(), It.IsAny<string?>(),
+                // Never the caller's token: a disconnect cancels it, and the rollup is for exactly that turn.
+                It.Is<CancellationToken>(t => !t.CanBeCanceled)),
+            times);
+
+    [Theory]
+    [InlineData(AgentTurnErrorKind.Internal)]
+    [InlineData(AgentTurnErrorKind.Configuration)]
+    public async Task SendMessage_TurnFailsAfterSpending_AddsTheTurnToTheSessionRollup(AgentTurnErrorKind kind)
+    {
+        // #780: the budget gate trips on this spend, so the rollup the dashboards read must carry it too.
+        var sessionId = ArrangeTurnReturning(FailedAfterSpending(kind));
+
+        var outcome = await CreateOrchestrator().SendMessageAsync(
+            "conn1", "c1", Guid.NewGuid(), "Hello", "user1", null, CancellationToken.None);
+
+        outcome.Success.Should().BeFalse();
+        VerifyRollupCountedTheFailedTurn(sessionId, Times.Once());
+    }
+
+    [Fact]
+    public async Task SendMessage_LeaseLostDuringATurnThatSpent_DoesNotWriteTheRollup()
+    {
+        // The rollup is written absolute from this host's baseline; a host that has lost the conversation
+        // would overwrite what the host that holds it has since recorded. The spend is still charged to
+        // the budget (an increment), but not added to the rollup.
+        var lease = new ControllableTurnLease();
+        _turnLease = lease;
+        var sessionId = ArrangeTurnReturning(FailedAfterSpending(AgentTurnErrorKind.Cancelled));
+        _mediator.Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
+            .Returns(() =>
+            {
+                lease.Steal();
+                return Task.FromResult(FailedAfterSpending(AgentTurnErrorKind.Cancelled));
+            });
+
+        var act = () => CreateOrchestrator().SendMessageAsync(
+            "conn1", "c1", Guid.NewGuid(), "Hello", "user1", null, CancellationToken.None);
+
+        (await act.Should().ThrowAsync<InvalidOperationException>())
+            .WithMessage("This conversation was continued elsewhere*");
+        VerifyRollupCountedTheFailedTurn(sessionId, Times.Never());
+        _budget.Verify(b => b.RecordUsageAsync("c1", 1000, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task SendMessage_TurnFailsAfterSpending_ShowsTheSpendOnTheConnectionView()
+    {
+        // The active-conversation view reads the connection's mirror of the totals, not the rollup row.
+        ArrangeTurnReturning(FailedAfterSpending(AgentTurnErrorKind.Internal));
+        _connectionTracker.Setup(t => t.Get("conn1")).Returns(new ActiveConversationInfo(
+            "c1", "agent", "user1", DateTimeOffset.UtcNow, 0, Guid.NewGuid()));
+
+        await CreateOrchestrator().SendMessageAsync(
+            "conn1", "c1", Guid.NewGuid(), "Hello", "user1", null, CancellationToken.None);
+
+        _connectionTracker.Verify(
+            t => t.Track("conn1", It.Is<ActiveConversationInfo>(i =>
+                i.TurnCount == 1 && i.TotalInputTokens == 900 && i.TotalOutputTokens == 100
+                && i.TotalCostUsd == 0.04m)),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task SendMessage_TurnCancelledAfterSpending_AddsTheTurnToTheRollupBeforeAbortingQuietly()
+    {
+        using var cts = new CancellationTokenSource();
+        var sessionId = ArrangeTurnReturning(FailedAfterSpending(AgentTurnErrorKind.Cancelled), cts);
+
+        var act = () => CreateOrchestrator().SendMessageAsync(
+            "conn1", "c1", Guid.NewGuid(), "Hello", "user1", null, cts.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+        VerifyRollupCountedTheFailedTurn(sessionId, Times.Once());
+    }
+
+    [Fact]
+    public async Task SendMessage_TurnFailsBeforeSpendingAnything_LeavesTheRollupAlone()
+    {
+        // A configuration error before any model call has no cost to report; counting it as a turn
+        // would move the rollup's turn count on failures that have never moved it.
+        ArrangeTurnReturning(FailedAfterSpending(AgentTurnErrorKind.Configuration) with
+        {
+            InputTokens = 0, OutputTokens = 0, CostUsd = 0m,
+        });
+
+        await CreateOrchestrator().SendMessageAsync(
+            "conn1", "c1", Guid.NewGuid(), "Hello", "user1", null, CancellationToken.None);
+
+        _obsStore.Verify(
+            s => s.UpdateSessionMetricsAsync(
+                It.IsAny<Guid>(), It.IsAny<int>(), It.IsAny<int>(), It.IsAny<int>(), It.IsAny<int>(),
+                It.IsAny<int>(), It.IsAny<int>(), It.IsAny<int>(), It.IsAny<decimal>(), It.IsAny<decimal>(),
+                It.IsAny<string?>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
     [Fact]
     public async Task SendMessage_LeaseLostMidTurn_StopsTheTurnAndSaysWhy()
     {

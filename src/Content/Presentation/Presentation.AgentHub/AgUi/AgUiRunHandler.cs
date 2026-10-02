@@ -234,7 +234,7 @@ public sealed class AgUiRunHandler
             _writerAccessor.ThreadId = input.ThreadId;
             _writerAccessor.CallerId = callerId;
             await ExecuteRunAsync(
-                input, writer, leased, userMessage, callerId, telemetry, leasedTurn.Token);
+                input, writer, leased, userMessage, callerId, telemetry, leasedTurn, leasedTurn.Token);
         }
         catch (OperationCanceledException)
         {
@@ -276,6 +276,7 @@ public sealed class AgUiRunHandler
         AgUiMessage userMessage,
         string callerId,
         ConversationTelemetryState telemetry,
+        LeasedTurn leasedTurn,
         CancellationToken ct)
     {
         var userMessageText = userMessage.Content!;
@@ -381,6 +382,9 @@ public sealed class AgUiRunHandler
 
         if (!result.Success)
         {
+            // #780: into the session rollup; ahead of the cancelled branch, as the charge is.
+            await _telemetryRecorder.RecordFailedTurnAsync(telemetry, result.ToTurnTelemetry(), leasedTurn);
+
             // A cancelled turn (e.g. caller disconnect) is routine — abort like the
             // OperationCanceledException catch above instead of emitting a user-facing
             // error event, consistent with the SignalR transport.
@@ -415,12 +419,7 @@ public sealed class AgUiRunHandler
         // One call for what used to be an accumulate, a twelve-argument store write, a second store
         // write and a swallow — spelled out identically in three files, and drifted in four ways
         // between them (issue #280).
-        await _telemetryRecorder.RecordTurnAsync(
-            telemetry,
-            new ConversationTurnTelemetry(
-                result.InputTokens, result.OutputTokens, result.CacheRead, result.CacheWrite,
-                result.CostUsd, result.ToolsInvoked.Count, result.Model),
-            ct);
+        await _telemetryRecorder.RecordTurnAsync(telemetry, result.ToTurnTelemetry(), ct);
 
         var response = result.Response;
 
