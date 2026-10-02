@@ -712,6 +712,37 @@ public sealed class AgUiRunHandlerTests
         budget.Verify(b => b.RecordUsageAsync(threadId, 1000, It.IsAny<CancellationToken>()), Times.Once);
     }
 
+    [Fact]
+    public async Task HandleRunAsync_TheMessageBeingSent_IsNotAlsoInTheDispatchedHistory()
+    {
+        // #785: the user message is appended before the history window is read, so the window ends with
+        // it; the turn handler adds it again. Dispatching the window as-is sent it to the model twice.
+        const string threadId = "conv-once";
+        const string userId = "user-once";
+        var transcript = new List<ConversationMessage>
+        {
+            new(Guid.NewGuid(), MessageRole.User, "earlier", DateTimeOffset.UtcNow),
+            new(Guid.NewGuid(), MessageRole.Assistant, "reply", DateTimeOffset.UtcNow),
+            new(Guid.NewGuid(), MessageRole.User, "Hi", DateTimeOffset.UtcNow),
+        };
+        var (mediator, store) = SetupTurn(threadId, userId, MakeSuccessResult("ok"));
+        // The window as the real store answers it: the last N of a transcript that already holds "Hi".
+        store.Setup(s => s.GetHistoryForDispatch(threadId, userId, It.IsAny<int>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((string _, string _, int n, CancellationToken _) =>
+                (IReadOnlyList<ConversationMessage>?)transcript.TakeLast(Math.Max(0, n)).ToList());
+        ExecuteAgentTurnCommand? sent = null;
+        mediator.Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
+            .Callback<IRequest<AgentTurnResult>, CancellationToken>((c, _) => sent = (ExecuteAgentTurnCommand)c)
+            .ReturnsAsync(MakeSuccessResult("ok"));
+        var handler = BuildHandler(mediator, store);
+
+        using var ms = new MemoryStream();
+        await handler.HandleRunAsync(MakeInput(threadId, "Hi"), new AgUiEventWriter(ms), MakeUser(userId));
+
+        sent!.UserMessage.Should().Be("Hi");
+        sent.ConversationHistory.Select(m => m.Text).Should().Equal("earlier", "reply");
+    }
+
     private static AgentTurnResult FailedAfterSpending(AgentTurnErrorKind kind) => new()
     {
         Success = false,
