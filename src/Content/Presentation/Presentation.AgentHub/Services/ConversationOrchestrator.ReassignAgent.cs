@@ -13,8 +13,9 @@ public sealed partial class ConversationOrchestrator
         // the lease, because the durable implementation throws InvalidOperationException for a
         // conversation it cannot find, and an unauthorized caller must never hold the lease even
         // briefly -- doing so would stall the real owner's concurrent turn on this same conversation
-        // for no reason.
-        var current = await _conversationStore.GetAsync(conversationId, callerId, ct);
+        // for no reason. Only the owner and the bound agent are needed to decide that, so this reads
+        // the header, not the transcript (issue #762).
+        var current = await _conversationStore.GetAgentNameAsync(conversationId, callerId, ct);
         if (current is null)
             return null;
 
@@ -40,11 +41,11 @@ public sealed partial class ConversationOrchestrator
             // "did the agent actually change" from state read inside the same lease the write and
             // eviction happen under closes that window completely, the same way dispatchAgentName
             // closes it for ordinary turns.
-            var currentUnderLease = await _conversationStore.GetAsync(conversationId, callerId, leaseCt);
+            var currentUnderLease = await _conversationStore.GetAgentNameAsync(conversationId, callerId, leaseCt);
             if (currentUnderLease is null)
                 return null;
 
-            var isNoOp = string.Equals(currentUnderLease.AgentName, agentName, StringComparison.OrdinalIgnoreCase);
+            var isNoOp = string.Equals(currentUnderLease, agentName, StringComparison.OrdinalIgnoreCase);
 
             // The write always happens, even on a no-op -- every version of this call before this fix
             // went straight to IConversationStore.ReassignAgentAsync with no equality check at all,

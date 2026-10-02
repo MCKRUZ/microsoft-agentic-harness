@@ -99,6 +99,15 @@ public sealed class FileSystemConversationStore : IConversationStore
     }
 
     /// <inheritdoc/>
+    /// <remarks>
+    /// A conversation is one file holding header and transcript together, so there is no cheaper read
+    /// than loading it; this answers through <see cref="GetAsync"/> so the ownership check and the
+    /// legacy-record migration stay in one place. The saving the SQLite store gets is not on offer here.
+    /// </remarks>
+    public async Task<string?> GetAgentNameAsync(string conversationId, string callerId, CancellationToken ct = default) =>
+        (await GetAsync(conversationId, callerId, ct))?.AgentName;
+
+    /// <inheritdoc/>
     public async Task<IReadOnlyList<ConversationRecord>> ListAsync(string userId, CancellationToken ct = default)
     {
         ConversationOwnership.RequireCallerId(userId);

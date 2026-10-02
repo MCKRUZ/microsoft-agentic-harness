@@ -857,6 +857,8 @@ public sealed class RunConversationDurableTests
                 ObservabilitySessionId: ObservabilitySessionId,
                 Telemetry: Telemetry));
         }
+        public Task<string?> GetAgentNameAsync(string conversationId, string callerId, CancellationToken ct = default) =>
+            throw new NotSupportedException();
         public Task<IReadOnlyList<ConversationRecord>> ListAsync(string userId, CancellationToken ct = default) =>
             throw new NotSupportedException();
         public Task<ConversationRecord> CreateAsync(string agentName, string userId, string? conversationId = null, CancellationToken ct = default) =>

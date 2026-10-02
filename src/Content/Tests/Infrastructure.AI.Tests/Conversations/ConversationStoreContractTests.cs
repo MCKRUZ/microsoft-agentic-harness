@@ -84,6 +84,37 @@ public abstract class ConversationStoreContractTests
     }
 
     [Fact]
+    public async Task GetAgentNameAsync_ConversationOwnedByAnotherUser_IsRefused()
+    {
+        var record = await Store.CreateAsync("agent", Owner);
+
+        var act = () => Store.GetAgentNameAsync(record.Id, Stranger);
+
+        await act.Should().ThrowAsync<ConversationAccessDeniedException>();
+    }
+
+    [Fact]
+    public async Task GetAgentNameAsync_UnknownConversation_ReadsAsAbsentRatherThanRefused()
+    {
+        var result = await Store.GetAgentNameAsync($"missing-{Guid.NewGuid():N}", Stranger);
+
+        result.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task GetAgentNameAsync_ReturnsTheBoundAgentAndFollowsAReassignment()
+    {
+        var record = await Store.CreateAsync("first-agent", Owner);
+        await Store.AppendMessageAsync(record.Id, Owner, UserMessage("a transcript to skip"));
+
+        (await Store.GetAgentNameAsync(record.Id, Owner)).Should().Be("first-agent");
+
+        await Store.ReassignAgentAsync(record.Id, Owner, "second-agent");
+
+        (await Store.GetAgentNameAsync(record.Id, Owner)).Should().Be("second-agent");
+    }
+
+    [Fact]
     public async Task AppendMessage_ToAnotherUsersConversation_IsRefusedAndWritesNothing()
     {
         var record = await Store.CreateAsync("agent", Owner);
@@ -200,6 +231,7 @@ public abstract class ConversationStoreContractTests
         (string Name, Func<Task> Invoke)[] operations =
         [
             ("GetAsync", () => Store.GetAsync(record.Id, blank)),
+            ("GetAgentNameAsync", () => Store.GetAgentNameAsync(record.Id, blank)),
             ("ListAsync", () => Store.ListAsync(blank)),
             ("CreateAsync", () => Store.CreateAsync("agent", blank)),
             ("AppendMessageAsync", () => Store.AppendMessageAsync(record.Id, blank, UserMessage("x"))),

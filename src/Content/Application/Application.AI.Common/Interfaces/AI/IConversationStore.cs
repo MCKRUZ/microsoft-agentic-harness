@@ -55,6 +55,24 @@ public interface IConversationStore
     Task<ConversationRecord?> GetAsync(string conversationId, string callerId, CancellationToken ct = default);
 
     /// <summary>
+    /// Returns the name of the agent <paramref name="conversationId"/> is bound to, or <c>null</c> if
+    /// the conversation does not exist — without loading its transcript.
+    /// </summary>
+    /// <param name="conversationId">The conversation to read.</param>
+    /// <param name="callerId">The authenticated caller. Must be non-blank.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <remarks>
+    /// For callers that need to know who owns the conversation and which agent it is bound to, and
+    /// nothing else — chiefly the reassignment path, which reads before and after taking the turn
+    /// lease and would otherwise pay for the whole message history each time to compare one column.
+    /// Ownership is enforced exactly as <see cref="GetAsync"/> enforces it: a conversation owned by
+    /// someone else is refused, not reported as absent.
+    /// </remarks>
+    /// <exception cref="ArgumentException"><paramref name="callerId"/> is blank.</exception>
+    /// <exception cref="UnauthorizedAccessException">The conversation belongs to another user.</exception>
+    Task<string?> GetAgentNameAsync(string conversationId, string callerId, CancellationToken ct = default);
+
+    /// <summary>
     /// Returns all conversations owned by <paramref name="userId"/>.
     /// O(n) in the number of stored conversations — acceptable for POC scale.
     /// </summary>

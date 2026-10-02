@@ -74,8 +74,8 @@ public sealed class ConversationOrchestratorReassignAgentTests
     [Fact]
     public async Task ReassignAgentAsync_ConversationNotFound_ReturnsNullAndDoesNotWriteOrEvict()
     {
-        _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>()))
-            .ReturnsAsync((ConversationRecord?)null);
+        _store.Setup(s => s.GetAgentNameAsync("c1", "user1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync((string?)null);
 
         var orchestrator = CreateOrchestrator();
         var updated = await orchestrator.ReassignAgentAsync("c1", "user1", "new-agent", CancellationToken.None);
@@ -97,7 +97,7 @@ public sealed class ConversationOrchestratorReassignAgentTests
         // what keeps a conversation correctly sorted in the conversation list. Skipping the write
         // entirely on a same-name request would silently change that ordering behavior.
         var record = new ConversationRecord("c1", "same-agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []);
-        _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
+        _store.Setup(s => s.GetAgentNameAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync("same-agent");
         _store.Setup(s => s.ReassignAgentAsync("c1", "user1", "same-agent", It.IsAny<CancellationToken>()))
             .ReturnsAsync(record);
 
@@ -119,7 +119,7 @@ public sealed class ConversationOrchestratorReassignAgentTests
         // still happens exactly as it would for any other reassignment call.
         var record = new ConversationRecord("c1", "dashboard-agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []);
         var updatedRecord = record with { AgentName = "Dashboard-Agent" };
-        _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
+        _store.Setup(s => s.GetAgentNameAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync("dashboard-agent");
         _store.Setup(s => s.ReassignAgentAsync("c1", "user1", "Dashboard-Agent", It.IsAny<CancellationToken>()))
             .ReturnsAsync(updatedRecord);
 
@@ -143,18 +143,16 @@ public sealed class ConversationOrchestratorReassignAgentTests
     [Fact]
     public async Task ReassignAgentAsync_AgentChangesBetweenPreLeaseReadAndLeaseAcquisition_StillEvicts()
     {
-        var preLeaseView = new ConversationRecord(
+        var updatedRecord = new ConversationRecord(
             "c1", "requested-agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []);
-        var inLeaseView = preLeaseView with { AgentName = "someone-else-changed-it-to-this" };
-        var updatedRecord = preLeaseView with { AgentName = "requested-agent" };
 
-        // First GetAsync call (the pre-lease ownership/existence check) sees "requested-agent" --
+        // First read (the pre-lease ownership/existence check) sees "requested-agent" --
         // which, naively compared against the target below, would look like a no-op. The SECOND
-        // call (made from inside the lease, right before the write) sees a DIFFERENT agent, as if
+        // read (made from inside the lease, right before the write) sees a DIFFERENT agent, as if
         // some other write landed in the gap between the two reads.
         var callCount = 0;
-        _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>()))
-            .ReturnsAsync(() => ++callCount == 1 ? preLeaseView : inLeaseView);
+        _store.Setup(s => s.GetAgentNameAsync("c1", "user1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(() => ++callCount == 1 ? "requested-agent" : "someone-else-changed-it-to-this");
         _store.Setup(s => s.ReassignAgentAsync("c1", "user1", "requested-agent", It.IsAny<CancellationToken>()))
             .ReturnsAsync(updatedRecord);
 
@@ -173,7 +171,7 @@ public sealed class ConversationOrchestratorReassignAgentTests
     {
         var record = new ConversationRecord("c1", "old-agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []);
         var updatedRecord = record with { AgentName = "new-agent" };
-        _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
+        _store.Setup(s => s.GetAgentNameAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync("old-agent");
         _store.Setup(s => s.ReassignAgentAsync("c1", "user1", "new-agent", It.IsAny<CancellationToken>()))
             .ReturnsAsync(updatedRecord);
 
@@ -182,6 +180,29 @@ public sealed class ConversationOrchestratorReassignAgentTests
 
         updated.Should().Be(updatedRecord);
         _agentCache.Verify(c => c.Evict("c1"), Times.Once);
+    }
+
+    /// <summary>
+    /// The pre-lease check and the in-lease no-op decision need an owner and an agent name, never a
+    /// transcript. Hydrating the whole message history for each (issue #762) cost two extra loads on
+    /// every reassignment of a long conversation, to compare one column.
+    /// </summary>
+    [Fact]
+    public async Task ReassignAgentAsync_NeverLoadsTheTranscriptToDecideWhetherAnythingChanged()
+    {
+        var record = new ConversationRecord("c1", "old-agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []);
+        _store.Setup(s => s.GetAgentNameAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync("old-agent");
+        _store.Setup(s => s.ReassignAgentAsync("c1", "user1", "new-agent", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(record with { AgentName = "new-agent" });
+
+        var orchestrator = CreateOrchestrator();
+        await orchestrator.ReassignAgentAsync("c1", "user1", "new-agent", CancellationToken.None);
+
+        _store.Verify(s => s.GetAsync(
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never,
+            "the full-record read hydrates every message; the header-only read exists so this path does not");
+        _store.Verify(s => s.GetAgentNameAsync("c1", "user1", It.IsAny<CancellationToken>()), Times.Exactly(2),
+            "once before the lease for ownership/existence, once under it for the no-op decision");
     }
 
     /// <summary>
@@ -200,6 +221,7 @@ public sealed class ConversationOrchestratorReassignAgentTests
     {
         var record = new ConversationRecord("c1", "old-agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []);
         _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
+        _store.Setup(s => s.GetAgentNameAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync("old-agent");
 
         var reassignmentEntered = new TaskCompletionSource();
         var releaseReassignment = new TaskCompletionSource();
@@ -261,6 +283,8 @@ public sealed class ConversationOrchestratorReassignAgentTests
         var written = false;
         _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>()))
             .ReturnsAsync(() => written ? newRecord : oldRecord);
+        _store.Setup(s => s.GetAgentNameAsync("c1", "user1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(() => written ? "new-agent" : "old-agent");
         _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", 20, It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<ConversationMessage>());
         _obsStore.Setup(s => s.StartSessionAsync("c1", It.IsAny<string>(), null, It.IsAny<CancellationToken>()))
