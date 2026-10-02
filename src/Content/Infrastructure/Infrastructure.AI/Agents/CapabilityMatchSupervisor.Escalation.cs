@@ -398,7 +398,8 @@ public sealed partial class CapabilityMatchSupervisor
         // delegate's tokens and cost are folded back into the parent turn's capture (#756), so the
         // conversation budget, the per-turn budget and session telemetry all see what a delegating
         // turn really cost instead of only the entry agent's own calls. Done in the finally, so a
-        // delegation that fails or is cancelled after spending still charges what it spent.
+        // delegation that fails or is cancelled after spending still reaches the parent's capture
+        // (whether a failed PARENT turn then charges it is #778).
         //
         // This runs AFTER governance is armed (above), not before: the swap below has nothing
         // fallible between it and the try block that uses it, so a throw out of ArmDelegationGovernance
@@ -421,10 +422,19 @@ public sealed partial class CapabilityMatchSupervisor
         finally
         {
             LlmUsageCapture.Current = previousUsage;
-            usage = delegationUsage.TakeSnapshot();
-            previousUsage?.RecordDelegated(usage);
-            if (namedDelegationContext is not null)
-                await FinalizeNamedDelegationScopeAsync(namedDelegationContext, namedDelegationScope!, ct);
+
+            // Nested so neither step can strand the other: a throw while accounting must not skip the
+            // named delegation's scope cleanup, and a throw in cleanup must not lose the spend.
+            try
+            {
+                usage = delegationUsage.TakeSnapshot();
+                previousUsage?.RecordDelegated(usage);
+            }
+            finally
+            {
+                if (namedDelegationContext is not null)
+                    await FinalizeNamedDelegationScopeAsync(namedDelegationContext, namedDelegationScope!, ct);
+            }
         }
 
         stopwatch.Stop();

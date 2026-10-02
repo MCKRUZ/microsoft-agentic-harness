@@ -50,7 +50,9 @@ public interface ILlmUsageCapture
     /// <em>not</em> merged: the delegate runs with a capture of its own precisely so this turn does not
     /// report tool calls it never made, and <see cref="LlmUsageSnapshot.Calls"/> must stay this turn's own
     /// model calls because the context-bar reconciliation reads the last one (#517). The delegate's cost
-    /// is added as priced by the delegate, not re-priced under this turn's model. Because a delegate's
+    /// is added as priced by the delegate, not re-priced under this turn's model, so
+    /// <see cref="LlmUsageSnapshot.Model"/> still names this turn's own model even though the token
+    /// totals beside it now include a delegate that may have run on another. Because a delegate's
     /// snapshot already carries whatever <em>it</em> delegated, nested delegation accumulates upward.
     /// </remarks>
     void RecordDelegated(LlmUsageSnapshot delegated);
