@@ -240,10 +240,8 @@ public sealed class AgUiRunHandler
         {
             // A cancelled turn is routine when the client disconnected, and is not routine when the
             // lease was taken — telling them apart is the difference between a silent control and one
-            // whose effects can be seen. Both halves of the test matter: when the client has also
-            // disconnected, the disconnect is the honest explanation, and there is no longer a stream
-            // for the explanation to reach anyway. Same rule as
-            // ConversationOrchestrator.WithTurnLeaseAsync, deliberately.
+            // whose effects can be seen. The rule for which it was lives in LeasedTurn.LeaseWasLost,
+            // shared with every other path that runs a turn.
             if (leased.LeaseWasLost)
             {
                 _logger.LogWarning(

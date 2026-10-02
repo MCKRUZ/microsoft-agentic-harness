@@ -88,9 +88,24 @@ public sealed class LeasedTurnTests
         lease.Released.Should().BeTrue();
     }
 
+    [Fact]
+    public async Task AcquireAsync_SettingUpTheScopeThrows_ReleasesTheLeaseItAlreadyHolds()
+    {
+        var lease = new FakeLease { LostSignalThrows = true };
+
+        var act = async () => await LeasedTurn.AcquireAsync(lease, "c1", CancellationToken.None);
+
+        await act.Should().ThrowAsync<InvalidOperationException>();
+        lease.Released.Should().BeTrue(
+            "the caller never receives a scope to dispose, and a held durable lease keeps renewing " +
+            "until released — leaking it would block every later turn on the conversation");
+    }
+
     private sealed class FakeLease : IConversationTurnLease
     {
         private readonly CancellationTokenSource _lost = new();
+
+        public bool LostSignalThrows { get; init; }
 
         public string? AcquiredFor { get; private set; }
         public CancellationToken WaitToken { get; private set; }
@@ -108,7 +123,9 @@ public sealed class LeasedTurnTests
 
         private sealed class Handle(FakeLease owner) : IConversationTurnLeaseHandle
         {
-            public CancellationToken LeaseLost => owner._lost.Token;
+            public CancellationToken LeaseLost => owner.LostSignalThrows
+                ? throw new InvalidOperationException("lost signal unavailable")
+                : owner._lost.Token;
 
             public ValueTask DisposeAsync()
             {

@@ -59,7 +59,8 @@ public sealed class LeasedTurn : IAsyncDisposable
     /// Both halves of the test matter. When the caller has <em>also</em> cancelled, the disconnect
     /// is the honest explanation — and there is usually no longer a stream for the other
     /// explanation to reach — so a real disconnect that happens to race the loss is reported as a
-    /// disconnect, not as a lost lease.
+    /// disconnect, not as a lost lease. Read it <em>inside</em> the scope: a durable lease's
+    /// <see cref="IConversationTurnLeaseHandle.LeaseLost"/> throws once the handle is disposed.
     /// </remarks>
     public bool LeaseWasLost =>
         _lease.LeaseLost.IsCancellationRequested && !_callerToken.IsCancellationRequested;
@@ -84,8 +85,19 @@ public sealed class LeasedTurn : IAsyncDisposable
         ArgumentNullException.ThrowIfNull(turnLease);
 
         var lease = await turnLease.AcquireAsync(conversationId, ct);
-        var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, lease.LeaseLost);
-        return new LeasedTurn(lease, linked, ct);
+
+        try
+        {
+            var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, lease.LeaseLost);
+            return new LeasedTurn(lease, linked, ct);
+        }
+        catch
+        {
+            // The caller has no scope to dispose yet, and a durable lease keeps renewing until it is
+            // released — leaking it would block every later turn on the conversation until it expired.
+            await lease.DisposeAsync();
+            throw;
+        }
     }
 
     /// <inheritdoc />
