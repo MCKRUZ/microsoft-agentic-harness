@@ -64,12 +64,8 @@ public static class ConversationDispatchHistory
         var window = await store.GetHistoryForDispatch(
             conversationId, callerId, WindowIncludingInFlightMessage(maxPriorMessages), ct) ?? [];
 
-        var end = window.Count;
-        if (end > 0 && window[end - 1].Id == inFlightMessageId)
-        {
-            end--;
-        }
-        else if (end > 0)
+        var endsWithInFlightMessage = window.Count > 0 && window[^1].Id == inFlightMessageId;
+        if (window.Count > 0 && !endsWithInFlightMessage)
         {
             logger.LogWarning(
                 "The history window for conversation {ConversationId} does not end with the message being "
@@ -77,14 +73,15 @@ public static class ConversationDispatchHistory
                 conversationId, inFlightMessageId);
         }
 
-        // Never more than asked for, whichever way the window came back.
-        var start = Math.Max(0, end - Math.Max(0, maxPriorMessages));
-
-        return start == 0 && end == window.Count ? window : window.Skip(start).Take(end - start).ToList();
+        // TakeLast clamps to what was asked for, whichever way the window came back.
+        return window
+            .Take(window.Count - (endsWithInFlightMessage ? 1 : 0))
+            .TakeLast(Math.Max(0, maxPriorMessages))
+            .ToList();
     }
 
     // Saturating: int.MaxValue is a plausible "no limit", and one more than that wraps to a negative
     // window, which the store reads as none — every turn would silently lose all its history.
     private static int WindowIncludingInFlightMessage(int maxPriorMessages) =>
-        maxPriorMessages <= 0 ? 0 : maxPriorMessages == int.MaxValue ? int.MaxValue : maxPriorMessages + 1;
+        maxPriorMessages <= 0 ? 0 : (int)Math.Min(maxPriorMessages + 1L, int.MaxValue);
 }
