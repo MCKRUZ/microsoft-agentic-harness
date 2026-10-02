@@ -11,8 +11,7 @@ namespace Infrastructure.AI.Conversations;
 /// Shared by the two single-process pieces that serialise per conversation —
 /// <see cref="InProcessConversationTurnLease"/> and <see cref="FileSystemConversationStore"/> — so the
 /// reference-counting that makes eviction safe lives in one place rather than being re-derived in
-/// each. It is subtle enough to have gone wrong before: its predecessor kept an entry for every key
-/// the host had ever seen and was evicted only by a public method nothing called.
+/// each. <c>FileSystemHarnessCandidateRepository</c> still carries its own copy of the algorithm.
 /// </para>
 /// <para>
 /// <strong>Singleton per purpose.</strong> The whole mechanism is the shared dictionary; two instances
@@ -70,12 +69,8 @@ internal sealed class KeyedAsyncLock
     /// taking its reference: a releasing thread may evict that entry in between. Eviction sets
     /// <see cref="Entry.Evicted"/> under the entry's own lock, so a reserver that loses the race sees
     /// the flag and starts again against whatever is in the dictionary now — rather than waiting on a
-    /// semaphore no future acquirer will ever look up.
-    ///
-    /// What makes the retry <em>terminate</em> is that eviction removes the entry from the dictionary
-    /// under that same lock, so the next <c>GetOrAdd</c> cannot hand back the flagged one. Flagging
-    /// without removing turns this into a spin that never ends — measured, not theorised: dropping
-    /// the <c>TryRemove</c> hangs the test suite rather than failing an assertion.
+    /// semaphore no future acquirer will ever look up. The retry terminates because eviction also
+    /// removes the entry under that same lock; flagging without removing would spin forever.
     /// </remarks>
     private Entry Reserve(string key)
     {

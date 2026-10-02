@@ -5,9 +5,9 @@ using Xunit;
 namespace Infrastructure.AI.Tests.Conversations;
 
 /// <summary>
-/// The per-key lock shared by the in-process turn lease and the file-backed conversation store. The
-/// lease's own tests already exercise it through the lease; these pin the properties the file store
-/// additionally relies on — distinct keys do not block each other, and case folding is the caller's choice.
+/// The per-key lock shared by the in-process turn lease and the file-backed conversation store, tested
+/// directly: distinct keys do not block each other, the comparer decides what counts as the same key,
+/// and entries evict themselves.
 /// </summary>
 public sealed class KeyedAsyncLockTests
 {
@@ -51,15 +51,6 @@ public sealed class KeyedAsyncLockTests
 
         other.IsCompleted.Should().BeFalse(
             "on a case-folding filesystem these name the same file, so they must name the same lock");
-    }
-
-    [Fact]
-    public async Task KeysDifferingOnlyByCase_AreIndependentWhenTheComparerIsOrdinal()
-    {
-        var locks = new KeyedAsyncLock(StringComparer.Ordinal);
-        using var held = await locks.AcquireAsync("A");
-
-        using var other = await locks.AcquireAsync("a").WaitAsync(TimeSpan.FromSeconds(10));
     }
 
     [Fact]

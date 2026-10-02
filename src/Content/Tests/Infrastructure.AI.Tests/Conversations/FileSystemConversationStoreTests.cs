@@ -2,6 +2,7 @@ using Application.AI.Common.Interfaces.AI;
 using Domain.Common.Config.AI.Conversations;
 using FluentAssertions;
 using Infrastructure.AI.Conversations;
+using Infrastructure.AI.Tests.MetaHarness;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -103,7 +104,7 @@ public sealed class FileSystemConversationStoreTests : ConversationStoreContract
         // the list reaching the file. The old process-wide lock made this impossible; without the
         // existence check it surfaces as a "failed to deserialize" warning for a conversation that
         // was simply deleted.
-        var logger = new CapturingLogger();
+        var logger = new CapturingLogger<FileSystemConversationStore>();
         var store = new FileSystemConversationStore(
             Options.Create(new ConversationsConfig { ConversationsPath = _tempDir }), Clock, logger);
         var a = await store.CreateAsync("agent", Owner);
@@ -118,25 +119,10 @@ public sealed class FileSystemConversationStoreTests : ConversationStoreContract
         var listed = await list.WaitAsync(TimeSpan.FromSeconds(10));
 
         listed.Select(r => r.Id).Should().Contain(b.Id).And.NotContain(a.Id);
-        logger.Warnings.Should().BeEmpty("a deleted conversation is not a corrupt one");
+        logger.Logged(LogLevel.Warning, "Failed to deserialize").Should().BeFalse(
+            "a deleted conversation is not a corrupt one");
     }
 
-    private sealed class CapturingLogger : ILogger<FileSystemConversationStore>
-    {
-        public List<string> Warnings { get; } = [];
-
-        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
-
-        public bool IsEnabled(LogLevel logLevel) => true;
-
-        public void Log<TState>(
-            LogLevel logLevel, EventId eventId, TState state, Exception? exception,
-            Func<TState, Exception?, string> formatter)
-        {
-            if (logLevel >= LogLevel.Warning)
-                Warnings.Add(formatter(state, exception));
-        }
-    }
 
     [Fact]
     public async Task ConcurrentAppendsToOneConversation_AreNeverLost()

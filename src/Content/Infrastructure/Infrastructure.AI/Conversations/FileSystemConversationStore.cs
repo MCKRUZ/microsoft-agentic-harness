@@ -40,10 +40,7 @@ public sealed class FileSystemConversationStore : IConversationStore
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<FileSystemConversationStore> _logger;
 
-    /// <summary>
-    /// Holds <paramref name="conversationId"/>'s lock until the result is disposed. Exposed so tests can
-    /// stand in for that conversation being mid-I/O, using the store's own key derivation.
-    /// </summary>
+    /// <summary>Holds a conversation's lock until disposed, so tests can simulate it being mid-I/O.</summary>
     internal Task<IDisposable> HoldConversationAsync(string conversationId) =>
         _locks.AcquireAsync(ResolveAndValidatePath(conversationId));
 
@@ -121,14 +118,11 @@ public sealed class FileSystemConversationStore : IConversationStore
         {
             ct.ThrowIfCancellationRequested();
 
-            // Each file is read under its own conversation's lock, one at a time. That keeps a list
-            // from stalling every other conversation for the length of the scan, and from reading a
-            // file mid-write. It also has to cover the migration write below: a read-modify-write
-            // outside the lock could overwrite a message appended to this conversation in between.
+            // One file at a time under its own lock, so the migration write below cannot clobber a
+            // concurrent append and a read never lands mid-write.
             using (await _locks.AcquireAsync(file, ct))
             {
-                // Listed before the lock was taken, so a delete can have removed it since — the old
-                // process-wide lock made that impossible, this one does not.
+                // Deleted since the directory was listed.
                 if (!File.Exists(file))
                     continue;
 
