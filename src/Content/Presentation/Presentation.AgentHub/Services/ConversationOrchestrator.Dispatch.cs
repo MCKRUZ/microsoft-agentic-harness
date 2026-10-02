@@ -321,10 +321,28 @@ public sealed partial class ConversationOrchestrator
             // fresh under the turn lease) is the source of truth; refresh the tracked entry so
             // ConnectionsActive/ConversationDuration/TurnsPerConversation at disconnect or idle
             // cleanup — and the active-conversation view — report the agent the conversation
-            // actually belongs to now, not whatever it was first tracked under. Not a new
-            // connection becoming active, so the gauge below is deliberately untouched.
-            if (tracked.AgentName != agentName)
+            // actually belongs to now, not whatever it was first tracked under.
+            //
+            // OrdinalIgnoreCase, matching ReassignAgentAsync's own no-op check
+            // (ConversationOrchestrator.ReassignAgent.cs) — a pure casing change is a no-op there
+            // and must not be treated as a real reassignment here, or one agent's metrics would
+            // fragment across casing variants for no reason.
+            if (!string.Equals(tracked.AgentName, agentName, StringComparison.OrdinalIgnoreCase))
+            {
+                // The gauge moves with the entry it describes, exactly like the leaving-conversation
+                // case below: decrement the agent this connection is leaving, increment the one it is
+                // joining, both together and synchronously (no await between them or before the
+                // Track below) — this connection was already counted as active, it is only the AGENT
+                // tag that changed, so skipping either half would leave the counter permanently off
+                // by one for that agent, the identical defect the switch case's own comment (below)
+                // exists to avoid.
+                OrchestrationMetrics.ConnectionsActive.Add(
+                    -1, new TagList { { AgentConventions.Name, tracked.AgentName } });
+                OrchestrationMetrics.ConnectionsActive.Add(
+                    1, new TagList { { AgentConventions.Name, agentName } });
+
                 _connectionTracker.Track(sessionKey, tracked with { AgentName = agentName });
+            }
 
             return state;
         }

@@ -1132,8 +1132,55 @@ public class ConversationOrchestratorTests
             "pinned to whatever agent the connection first observed it under");
 
         probe.Net.Should().Be(0,
-            "refreshing the agent name for an already-tracked connection is not a new connection " +
-            "becoming active, so it must not double-count the gauge");
+            "the connection was already counted as active before this turn and still is after it, " +
+            "so the gauge's total must land back where it started");
+        probe.Measurements.Should().Be(2,
+            "a net of zero is not proof the gauge was rebalanced -- it is also what NO measurements " +
+            "at all would report. There must be exactly one decrement tagged agent-a and one " +
+            "increment tagged agent-b, or agent-a's own counter is left permanently off by one and " +
+            "never recovers");
+    }
+
+    /// <summary>
+    /// A pure casing change in the agent name is a no-op by <c>ReassignAgentAsync</c>'s own
+    /// definition (<c>ConversationOrchestrator.ReassignAgent.cs</c>) -- it must be treated as a
+    /// no-op here too, or one agent's metrics fragment across casing variants for no reason.
+    /// </summary>
+    [Fact]
+    public async Task SendMessage_DispatchAgentNameDiffersOnlyByCasing_DoesNotRefreshOrTouchTheGauge()
+    {
+        var sessionId = Guid.NewGuid();
+        var tracked = new ActiveConversationInfo(
+            "c1", "agent-a", "user1", DateTimeOffset.UtcNow, 1, sessionId);
+        _connectionTracker.Setup(t => t.Get("conn1")).Returns(tracked);
+
+        var record = new ConversationRecord("c1", "Agent-A", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, [])
+        {
+            ObservabilitySessionId = sessionId,
+        };
+        _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
+        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", 20, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<ConversationMessage>());
+
+        _mediator.Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new AgentTurnResult { Success = true, Response = "Hi", UpdatedHistory = [] });
+
+        var orchestrator = CreateOrchestrator();
+
+        using var probe = new GaugeProbe(OrchestrationConventions.ConnectionsActive);
+        await orchestrator.SendMessageAsync(
+            "conn1", "c1", Guid.NewGuid(), "Hello", "user1", null, CancellationToken.None);
+
+        // RecordTurnAsync's own Track call (turn count / LastActivityAt) still fires on every turn,
+        // regardless of this fix -- that is unrelated to #765. What must NOT happen is a refresh
+        // carrying the new casing: every Track call this turn must preserve the ORIGINAL casing.
+        _connectionTracker.Verify(
+            t => t.Track(It.IsAny<string>(), It.Is<ActiveConversationInfo>(i => i.AgentName == "Agent-A")),
+            Times.Never,
+            "a pure casing difference is the same agent by ReassignAgentAsync's own definition -- " +
+            "it must not refresh the tracked entry to the new casing or move the gauge");
+        probe.Measurements.Should().Be(0,
+            "the gauge must not be touched for a change that is a no-op by the system's own definition");
     }
 
     /// <summary>
