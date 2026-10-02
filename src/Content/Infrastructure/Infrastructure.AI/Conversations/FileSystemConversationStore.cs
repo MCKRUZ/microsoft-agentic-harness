@@ -13,13 +13,14 @@ namespace Infrastructure.AI.Conversations;
 /// File-system-backed conversation store. Each <see cref="ConversationRecord"/> is stored as a
 /// JSON file at <c>{ConversationsPath}/{conversationId}.json</c>.
 ///
-/// Thread safety: a single <see cref="SemaphoreSlim"/> serializes all file I/O. This is
-/// intentionally simple for POC scale. A production implementation should use
-/// per-conversation-id locking (e.g., AsyncKeyedLock) to allow concurrent operations
-/// across different conversations.
+/// Thread safety: file I/O is serialized per conversation, keyed by the conversation's resolved
+/// file path (compared case-insensitively — deliberately conservative: on a case-sensitive filesystem
+/// two ids differing only by case share a lock, which costs a little concurrency and nothing else).
+/// Operations on different conversations run concurrently; operations on one conversation queue behind each other.
+/// <see cref="ListAsync"/> takes each file's lock in turn rather than one lock for the whole scan.
 ///
 /// <para>
-/// <strong>Single-process only.</strong> That semaphore is in-process, so it serializes nothing
+/// <strong>Single-process only.</strong> That lock is in-process, so it serializes nothing
 /// between hosts. Two processes sharing one <c>ConversationsPath</c> can interleave writes to the
 /// shared <c>.tmp</c> staging file and move a torn record into place. This store is therefore fit
 /// for one host at a time — see <see cref="Domain.Common.Config.AI.Conversations.ConversationsConfig.ConversationsPath"/>.
@@ -35,9 +36,13 @@ namespace Infrastructure.AI.Conversations;
 public sealed class FileSystemConversationStore : IConversationStore
 {
     private readonly string _basePath;
-    private readonly SemaphoreSlim _lock = new(1, 1);
+    private readonly KeyedAsyncLock _locks = new(StringComparer.OrdinalIgnoreCase);
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<FileSystemConversationStore> _logger;
+
+    /// <summary>Holds a conversation's lock until disposed, so tests can simulate it being mid-I/O.</summary>
+    internal Task<IDisposable> HoldConversationAsync(string conversationId) =>
+        _locks.AcquireAsync(ResolveAndValidatePath(conversationId));
 
     /// <summary>
     /// Initialises the store, resolving <see cref="ConversationsConfig.ConversationsPath"/> to an
@@ -70,8 +75,7 @@ public sealed class FileSystemConversationStore : IConversationStore
 
         var path = ResolveAndValidatePath(conversationId);
 
-        await _lock.WaitAsync(ct);
-        try
+        using (await _locks.AcquireAsync(path, ct))
         {
             if (!File.Exists(path))
                 return null;
@@ -92,10 +96,6 @@ public sealed class FileSystemConversationStore : IConversationStore
             }
             return record;
         }
-        finally
-        {
-            _lock.Release();
-        }
     }
 
     /// <inheritdoc/>
@@ -112,15 +112,20 @@ public sealed class FileSystemConversationStore : IConversationStore
     {
         ConversationOwnership.RequireCallerId(userId);
 
-        await _lock.WaitAsync(ct);
-        try
-        {
-            var files = Directory.GetFiles(_basePath, "*.json");
-            var results = new List<ConversationRecord>();
+        var results = new List<ConversationRecord>();
 
-            foreach (var file in files)
+        foreach (var file in Directory.GetFiles(_basePath, "*.json"))
+        {
+            ct.ThrowIfCancellationRequested();
+
+            // One file at a time under its own lock, so the migration write below cannot clobber a
+            // concurrent append and a read never lands mid-write.
+            using (await _locks.AcquireAsync(file, ct))
             {
-                ct.ThrowIfCancellationRequested();
+                // Deleted since the directory was listed.
+                if (!File.Exists(file))
+                    continue;
+
                 try
                 {
                     var json = await File.ReadAllTextAsync(file, ct);
@@ -143,13 +148,9 @@ public sealed class FileSystemConversationStore : IConversationStore
                     _logger.LogWarning(ex, "Failed to deserialize conversation file {File}; skipping.", file);
                 }
             }
+        }
 
-            return results;
-        }
-        finally
-        {
-            _lock.Release();
-        }
+        return results;
     }
 
     /// <inheritdoc/>
@@ -174,8 +175,7 @@ public sealed class FileSystemConversationStore : IConversationStore
         // that conversation outright — the one create path that can destroy a transcript. Checking
         // under a separate acquisition would leave a window in which the conversation being replaced
         // is not the one whose owner was approved.
-        await _lock.WaitAsync(ct);
-        try
+        using (await _locks.AcquireAsync(path, ct))
         {
             if (File.Exists(path))
             {
@@ -186,10 +186,6 @@ public sealed class FileSystemConversationStore : IConversationStore
             }
 
             await WriteAtomicLockedAsync(path, record, ct);
-        }
-        finally
-        {
-            _lock.Release();
         }
 
         _logger.LogDebug("Created conversation {ConversationId} for user {UserId}.", id, userId);
@@ -214,8 +210,7 @@ public sealed class FileSystemConversationStore : IConversationStore
 
         var path = ResolveAndValidatePath(conversationId);
 
-        await _lock.WaitAsync(ct);
-        try
+        using (await _locks.AcquireAsync(path, ct))
         {
             if (File.Exists(path))
             {
@@ -252,10 +247,6 @@ public sealed class FileSystemConversationStore : IConversationStore
                 "Opened conversation {ConversationId} for user {UserId} (created).", conversationId, userId);
             return record;
         }
-        finally
-        {
-            _lock.Release();
-        }
     }
 
     /// <inheritdoc/>
@@ -290,8 +281,7 @@ public sealed class FileSystemConversationStore : IConversationStore
 
         var path = ResolveAndValidatePath(conversationId);
 
-        await _lock.WaitAsync(ct);
-        try
+        using (await _locks.AcquireAsync(path, ct))
         {
             if (!File.Exists(path))
                 throw new InvalidOperationException($"Conversation '{conversationId}' does not exist.");
@@ -335,10 +325,6 @@ public sealed class FileSystemConversationStore : IConversationStore
 
             await WriteAtomicLockedAsync(path, updated, ct);
         }
-        finally
-        {
-            _lock.Release();
-        }
     }
 
     /// <inheritdoc/>
@@ -348,8 +334,7 @@ public sealed class FileSystemConversationStore : IConversationStore
 
         var path = ResolveAndValidatePath(conversationId);
 
-        await _lock.WaitAsync(ct);
-        try
+        using (await _locks.AcquireAsync(path, ct))
         {
             if (!File.Exists(path))
                 return false;
@@ -388,10 +373,6 @@ public sealed class FileSystemConversationStore : IConversationStore
             File.Delete(path);
             return true;
         }
-        finally
-        {
-            _lock.Release();
-        }
     }
 
     /// <inheritdoc/>
@@ -405,8 +386,7 @@ public sealed class FileSystemConversationStore : IConversationStore
 
         var path = ResolveAndValidatePath(conversationId);
 
-        await _lock.WaitAsync(ct);
-        try
+        using (await _locks.AcquireAsync(path, ct))
         {
             if (!File.Exists(path))
                 return null;
@@ -429,10 +409,6 @@ public sealed class FileSystemConversationStore : IConversationStore
             await WriteAtomicLockedAsync(path, truncated, ct);
             return truncated;
         }
-        finally
-        {
-            _lock.Release();
-        }
     }
 
     /// <inheritdoc/>
@@ -446,8 +422,7 @@ public sealed class FileSystemConversationStore : IConversationStore
 
         var path = ResolveAndValidatePath(conversationId);
 
-        await _lock.WaitAsync(ct);
-        try
+        using (await _locks.AcquireAsync(path, ct))
         {
             if (!File.Exists(path))
                 return null;
@@ -467,10 +442,6 @@ public sealed class FileSystemConversationStore : IConversationStore
             await WriteAtomicLockedAsync(path, updated, ct);
             return updated;
         }
-        finally
-        {
-            _lock.Release();
-        }
     }
 
     /// <inheritdoc/>
@@ -485,8 +456,7 @@ public sealed class FileSystemConversationStore : IConversationStore
 
         var path = ResolveAndValidatePath(conversationId);
 
-        await _lock.WaitAsync(ct);
-        try
+        using (await _locks.AcquireAsync(path, ct))
         {
             if (!File.Exists(path))
                 return null;
@@ -506,10 +476,6 @@ public sealed class FileSystemConversationStore : IConversationStore
             await WriteAtomicLockedAsync(path, updated, ct);
             return updated;
         }
-        finally
-        {
-            _lock.Release();
-        }
     }
 
     /// <inheritdoc/>
@@ -524,8 +490,7 @@ public sealed class FileSystemConversationStore : IConversationStore
 
         var path = ResolveAndValidatePath(conversationId);
 
-        await _lock.WaitAsync(ct);
-        try
+        using (await _locks.AcquireAsync(path, ct))
         {
             if (!File.Exists(path))
                 return null;
@@ -545,10 +510,6 @@ public sealed class FileSystemConversationStore : IConversationStore
 
             await WriteAtomicLockedAsync(path, updated, ct);
             return updated;
-        }
-        finally
-        {
-            _lock.Release();
         }
     }
 
@@ -629,7 +590,7 @@ public sealed class FileSystemConversationStore : IConversationStore
 
     /// <summary>
     /// Writes <paramref name="record"/> atomically (tmp → move). Must be called while the
-    /// caller already holds <see cref="_lock"/>.
+    /// caller already holds <paramref name="targetPath"/>'s lock.
     /// Retries <see cref="System.IO.File.Move(string, string, bool)"/> up to 3 times on <see cref="UnauthorizedAccessException"/>
     /// to tolerate transient file locks from OneDrive, antivirus, or Windows Search.
     /// </summary>
