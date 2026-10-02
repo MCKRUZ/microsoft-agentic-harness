@@ -88,6 +88,22 @@ public sealed class LeasedTurnTests
         lease.Released.Should().BeTrue();
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task LeaseWasLost_ReadAfterDispose_ReturnsTheAnswerFromWhenTheScopeEnded(bool stolen)
+    {
+        var lease = new FakeLease();
+        var turn = await LeasedTurn.AcquireAsync(lease, "c1", CancellationToken.None);
+        if (stolen) lease.Steal();
+
+        await turn.DisposeAsync();
+
+        turn.LeaseWasLost.Should().Be(stolen,
+            "a durable handle's lost signal throws once disposed, so a catch or log that runs after " +
+            "the scope exits must still get an answer rather than an ObjectDisposedException");
+    }
+
     [Fact]
     public async Task AcquireAsync_SettingUpTheScopeThrows_ReleasesTheLeaseItAlreadyHolds()
     {
@@ -123,8 +139,10 @@ public sealed class LeasedTurnTests
 
         private sealed class Handle(FakeLease owner) : IConversationTurnLeaseHandle
         {
-            public CancellationToken LeaseLost => owner.LostSignalThrows
-                ? throw new InvalidOperationException("lost signal unavailable")
+            // Like the durable handle, whose signal source is disposed with it.
+            public CancellationToken LeaseLost =>
+                owner.LostSignalThrows ? throw new InvalidOperationException("lost signal unavailable")
+                : owner.Released ? throw new ObjectDisposedException(nameof(Handle))
                 : owner._lost.Token;
 
             public ValueTask DisposeAsync()

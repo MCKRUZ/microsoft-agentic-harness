@@ -32,6 +32,7 @@ public sealed class LeasedTurn : IAsyncDisposable
     private readonly IConversationTurnLeaseHandle _lease;
     private readonly CancellationTokenSource _turnTokenSource;
     private readonly CancellationToken _callerToken;
+    private bool? _lostAtDispose;
 
     private LeasedTurn(
         IConversationTurnLeaseHandle lease,
@@ -59,11 +60,12 @@ public sealed class LeasedTurn : IAsyncDisposable
     /// Both halves of the test matter. When the caller has <em>also</em> cancelled, the disconnect
     /// is the honest explanation — and there is usually no longer a stream for the other
     /// explanation to reach — so a real disconnect that happens to race the loss is reported as a
-    /// disconnect, not as a lost lease. Read it <em>inside</em> the scope: a durable lease's
-    /// <see cref="IConversationTurnLeaseHandle.LeaseLost"/> throws once the handle is disposed.
+    /// disconnect, not as a lost lease. A durable lease's
+    /// <see cref="IConversationTurnLeaseHandle.LeaseLost"/> throws once the handle is disposed, so
+    /// disposal captures the answer first and this property keeps returning it afterwards.
     /// </remarks>
     public bool LeaseWasLost =>
-        _lease.LeaseLost.IsCancellationRequested && !_callerToken.IsCancellationRequested;
+        _lostAtDispose ?? (_lease.LeaseLost.IsCancellationRequested && !_callerToken.IsCancellationRequested);
 
     /// <summary>
     /// Waits until this caller holds the turn lease for <paramref name="conversationId"/>, then
@@ -103,7 +105,15 @@ public sealed class LeasedTurn : IAsyncDisposable
     /// <inheritdoc />
     public async ValueTask DisposeAsync()
     {
-        _turnTokenSource.Dispose();
-        await _lease.DisposeAsync();
+        _lostAtDispose ??= LeaseWasLost;
+
+        try
+        {
+            _turnTokenSource.Dispose();
+        }
+        finally
+        {
+            await _lease.DisposeAsync();
+        }
     }
 }
