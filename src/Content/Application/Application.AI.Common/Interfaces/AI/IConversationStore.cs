@@ -62,11 +62,13 @@ public interface IConversationStore
     /// <param name="callerId">The authenticated caller. Must be non-blank.</param>
     /// <param name="ct">Cancellation token.</param>
     /// <remarks>
-    /// For callers that need to know who owns the conversation and which agent it is bound to, and
-    /// nothing else — chiefly the reassignment path, which reads before and after taking the turn
-    /// lease and would otherwise pay for the whole message history each time to compare one column.
-    /// Ownership is enforced exactly as <see cref="GetAsync"/> enforces it: a conversation owned by
-    /// someone else is refused, not reported as absent.
+    /// For callers that need an existence-and-ownership check and the bound agent, and nothing
+    /// else — chiefly the reassignment path, which reads before and after taking the turn lease and
+    /// would otherwise pay for the whole message history each time to compare one column. Ownership
+    /// is enforced exactly as <see cref="GetAsync"/> enforces it: a conversation owned by someone
+    /// else is refused, not reported as absent. An implementation whose storage cannot separate the
+    /// header from the transcript (a single file per conversation) may answer by loading it; the
+    /// saving is a property of the backend, the contract is only that the transcript is not required.
     /// </remarks>
     /// <exception cref="ArgumentException"><paramref name="callerId"/> is blank.</exception>
     /// <exception cref="UnauthorizedAccessException">The conversation belongs to another user.</exception>

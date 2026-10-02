@@ -220,6 +220,8 @@ public sealed class ConversationOrchestratorReassignAgentTests
     public async Task ReassignAgentAsync_WhileInFlight_BlocksAConcurrentSendMessageFromDispatching()
     {
         var record = new ConversationRecord("c1", "old-agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []);
+        // GetAsync is for the concurrent SendMessageAsync below, which still reads the full record;
+        // reassignment itself reads only the agent name.
         _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
         _store.Setup(s => s.GetAgentNameAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync("old-agent");
 
@@ -283,6 +285,8 @@ public sealed class ConversationOrchestratorReassignAgentTests
         var written = false;
         _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>()))
             .ReturnsAsync(() => written ? newRecord : oldRecord);
+        // Same write-driven view for the reassignment's own header reads; the GetAsync above serves the
+        // racing SendMessageAsync's full-record reads.
         _store.Setup(s => s.GetAgentNameAsync("c1", "user1", It.IsAny<CancellationToken>()))
             .ReturnsAsync(() => written ? "new-agent" : "old-agent");
         _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", 20, It.IsAny<CancellationToken>()))

@@ -147,6 +147,36 @@ public sealed class EfCoreConversationStoreTests : ConversationStoreContractTest
     }
 
     [Fact]
+    public async Task GetAgentNameAsync_DoesNotLoadTheTranscript()
+    {
+        // The whole point of the method (#762) is to skip the message history, and a mock cannot say
+        // whether the real store does. A message row whose ToolCallsJson is not JSON throws the moment
+        // it is hydrated — so a header-only read survives it and a full read does not. If this method
+        // ever starts going through GetAsync, or loads the messages, it fails here.
+        var record = await Store.CreateAsync("the-agent", Owner);
+
+        await using (var context = _contextFactory.CreateDbContext())
+        {
+            context.ConversationMessages.Add(new ConversationMessageEntity
+            {
+                ConversationId = record.Id,
+                MessageId = Guid.NewGuid(),
+                Role = MessageRole.Assistant,
+                Content = "unreadable on purpose",
+                Timestamp = Clock.GetUtcNow(),
+                ToolCallsJson = "{ this is not json",
+            });
+            await context.SaveChangesAsync();
+        }
+
+        var fullRead = () => Store.GetAsync(record.Id, Owner);
+        await fullRead.Should().ThrowAsync<System.Text.Json.JsonException>(
+            "the control: hydrating this transcript must fail, or the assertion below proves nothing");
+
+        (await Store.GetAgentNameAsync(record.Id, Owner)).Should().Be("the-agent");
+    }
+
+    [Fact]
     public async Task GetHistoryForDispatch_LegacyRowWithLiteralEmptyToolCallsJson_IsExcluded()
     {
         // #510's other half, and the only test that actually exercises it. ConversationMessage now

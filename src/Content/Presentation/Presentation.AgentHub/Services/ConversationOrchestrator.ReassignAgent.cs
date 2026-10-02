@@ -15,8 +15,8 @@ public sealed partial class ConversationOrchestrator
         // briefly -- doing so would stall the real owner's concurrent turn on this same conversation
         // for no reason. Only the owner and the bound agent are needed to decide that, so this reads
         // the header, not the transcript (issue #762).
-        var current = await _conversationStore.GetAgentNameAsync(conversationId, callerId, ct);
-        if (current is null)
+        var preLeaseAgentName = await _conversationStore.GetAgentNameAsync(conversationId, callerId, ct);
+        if (preLeaseAgentName is null)
             return null;
 
         // Held for the no-op determination, the write, AND the eviction -- not just the write -- and
@@ -32,7 +32,7 @@ public sealed partial class ConversationOrchestrator
         // from using a value it captured before either lease was ever contested.
         return await WithTurnLeaseAsync(conversationId, async leaseCt =>
         {
-            // Re-read fresh, under the lease, rather than reusing the pre-lease `current` above --
+            // Re-read fresh, under the lease, rather than reusing the pre-lease `preLeaseAgentName` above --
             // review caught a real race in an earlier version of this fix that compared the
             // REQUESTED name against a pre-lease snapshot: a second, concurrent reassignment (or an
             // interleaving turn dispatch that rebuilt and re-cached the agent for a DIFFERENT
