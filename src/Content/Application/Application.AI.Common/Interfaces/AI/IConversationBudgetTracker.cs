@@ -42,6 +42,11 @@ public interface IConversationBudgetTracker
     /// <param name="budgetKey">The opaque budget key the usage belongs to.</param>
     /// <param name="tokensUsed">Input+output tokens consumed by the turn. Non-negative; zero is a no-op.</param>
     /// <param name="cancellationToken">Cancels the accrual.</param>
+    /// <remarks>
+    /// A turn's usage includes what the sub-agents it delegated to spent: each delegation folds its
+    /// tokens into the delegating turn's <see cref="Interfaces.ILlmUsageCapture"/>, which is where every
+    /// caller reads this figure from, so a conversation cannot spend past its budget by delegating.
+    /// </remarks>
     Task RecordUsageAsync(string budgetKey, int tokensUsed, CancellationToken cancellationToken = default);
 
     /// <summary>

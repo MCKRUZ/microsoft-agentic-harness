@@ -394,6 +394,12 @@ public sealed partial class CapabilityMatchSupervisor
         // would fold into the ORCHESTRATOR turn's telemetry — it would report tool calls it never made.
         // A fresh capture scopes the subagent's work to this delegation and yields its real token cost.
         //
+        // That isolation covers tool calls and the per-call list, NOT spend: when the run ends the
+        // delegate's tokens and cost are folded back into the parent turn's capture (#756), so the
+        // conversation budget, the per-turn budget and session telemetry all see what a delegating
+        // turn really cost instead of only the entry agent's own calls. Done in the finally, so a
+        // delegation that fails or is cancelled after spending still charges what it spent.
+        //
         // This runs AFTER governance is armed (above), not before: the swap below has nothing
         // fallible between it and the try block that uses it, so a throw out of ArmDelegationGovernance
         // or the agent-build step above can never leave previousUsage stranded unrestored.
@@ -402,6 +408,7 @@ public sealed partial class CapabilityMatchSupervisor
         LlmUsageCapture.Current = delegationUsage;
 
         AgentResponse response;
+        LlmUsageSnapshot usage;
         try
         {
             using (ToolAdmissionAccessor.Begin(governance.Pipeline))
@@ -414,6 +421,8 @@ public sealed partial class CapabilityMatchSupervisor
         finally
         {
             LlmUsageCapture.Current = previousUsage;
+            usage = delegationUsage.TakeSnapshot();
+            previousUsage?.RecordDelegated(usage);
             if (namedDelegationContext is not null)
                 await FinalizeNamedDelegationScopeAsync(namedDelegationContext, namedDelegationScope!, ct);
         }
@@ -423,7 +432,6 @@ public sealed partial class CapabilityMatchSupervisor
         await RecordCompletion(pendingRecord, ct);
 
         var durationMs = stopwatch.ElapsedMilliseconds;
-        var usage = delegationUsage.TakeSnapshot();
 
         SupervisorMetrics.DelegationsTotal.Add(1,
             new(SupervisorConventions.SupervisorId, SupervisorId),
