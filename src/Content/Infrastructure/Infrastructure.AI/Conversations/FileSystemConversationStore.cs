@@ -14,8 +14,9 @@ namespace Infrastructure.AI.Conversations;
 /// JSON file at <c>{ConversationsPath}/{conversationId}.json</c>.
 ///
 /// Thread safety: file I/O is serialized per conversation, keyed by the conversation's resolved
-/// file path (compared case-insensitively, as a case-folding filesystem would). Operations on
-/// different conversations run concurrently; operations on one conversation queue behind each other.
+/// file path (compared case-insensitively — deliberately conservative: on a case-sensitive filesystem
+/// two ids differing only by case share a lock, which costs a little concurrency and nothing else).
+/// Operations on different conversations run concurrently; operations on one conversation queue behind each other.
 /// <see cref="ListAsync"/> takes each file's lock in turn rather than one lock for the whole scan.
 ///
 /// <para>
@@ -39,8 +40,12 @@ public sealed class FileSystemConversationStore : IConversationStore
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<FileSystemConversationStore> _logger;
 
-    /// <summary>The per-conversation lock table. Exposed so tests can hold one conversation's lock.</summary>
-    internal KeyedAsyncLock Locks => _locks;
+    /// <summary>
+    /// Holds <paramref name="conversationId"/>'s lock until the result is disposed. Exposed so tests can
+    /// stand in for that conversation being mid-I/O, using the store's own key derivation.
+    /// </summary>
+    internal Task<IDisposable> HoldConversationAsync(string conversationId) =>
+        _locks.AcquireAsync(ResolveAndValidatePath(conversationId));
 
     /// <summary>
     /// Initialises the store, resolving <see cref="ConversationsConfig.ConversationsPath"/> to an
@@ -122,6 +127,11 @@ public sealed class FileSystemConversationStore : IConversationStore
             // outside the lock could overwrite a message appended to this conversation in between.
             using (await _locks.AcquireAsync(file, ct))
             {
+                // Listed before the lock was taken, so a delete can have removed it since — the old
+                // process-wide lock made that impossible, this one does not.
+                if (!File.Exists(file))
+                    continue;
+
                 try
                 {
                     var json = await File.ReadAllTextAsync(file, ct);

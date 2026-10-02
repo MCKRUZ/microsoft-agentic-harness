@@ -2,6 +2,7 @@ using Application.AI.Common.Interfaces.AI;
 using Domain.Common.Config.AI.Conversations;
 using FluentAssertions;
 using Infrastructure.AI.Conversations;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Time.Testing;
@@ -45,9 +46,6 @@ public sealed class FileSystemConversationStoreTests : ConversationStoreContract
 
     private static readonly TimeSpan Settle = TimeSpan.FromMilliseconds(250);
 
-    private string LockKeyFor(string conversationId) =>
-        Path.GetFullPath(Path.Combine(_tempDir, $"{conversationId}.json"));
-
     [Fact]
     public async Task AHeldConversation_DoesNotBlockReadsOrWritesOnAnotherConversation()
     {
@@ -56,7 +54,7 @@ public sealed class FileSystemConversationStoreTests : ConversationStoreContract
         var a = await Store.CreateAsync("agent", Owner);
         var b = await Store.CreateAsync("agent", Owner);
 
-        using var held = await _store.Locks.AcquireAsync(LockKeyFor(a.Id));
+        using var held = await _store.HoldConversationAsync(a.Id);
 
         var read = await Store.GetAsync(b.Id, Owner).WaitAsync(TimeSpan.FromSeconds(10));
         await Store.AppendMessageAsync(b.Id, Owner, UserMessage("not blocked"))
@@ -69,7 +67,7 @@ public sealed class FileSystemConversationStoreTests : ConversationStoreContract
     public async Task AHeldConversation_QueuesOperationsOnItselfUntilReleased()
     {
         var a = await Store.CreateAsync("agent", Owner);
-        var held = await _store.Locks.AcquireAsync(LockKeyFor(a.Id));
+        var held = await _store.HoldConversationAsync(a.Id);
 
         var append = Store.AppendMessageAsync(a.Id, Owner, UserMessage("waits"));
         await Task.Delay(Settle);
@@ -87,7 +85,7 @@ public sealed class FileSystemConversationStoreTests : ConversationStoreContract
         // The listing's migration path rewrites a file it has just read; doing that outside the file's
         // lock could overwrite a message appended in between.
         var a = await Store.CreateAsync("agent", Owner);
-        var held = await _store.Locks.AcquireAsync(LockKeyFor(a.Id));
+        var held = await _store.HoldConversationAsync(a.Id);
 
         var list = Store.ListAsync(Owner);
         await Task.Delay(Settle);
@@ -96,6 +94,48 @@ public sealed class FileSystemConversationStoreTests : ConversationStoreContract
         held.Dispose();
 
         (await list.WaitAsync(TimeSpan.FromSeconds(10))).Select(r => r.Id).Should().Contain(a.Id);
+    }
+
+    [Fact]
+    public async Task ListAsync_ConversationDeletedAfterTheDirectoryWasListed_IsSkippedQuietly()
+    {
+        // The directory is enumerated before any lock is taken, so a delete can land between that and
+        // the list reaching the file. The old process-wide lock made this impossible; without the
+        // existence check it surfaces as a "failed to deserialize" warning for a conversation that
+        // was simply deleted.
+        var logger = new CapturingLogger();
+        var store = new FileSystemConversationStore(
+            Options.Create(new ConversationsConfig { ConversationsPath = _tempDir }), Clock, logger);
+        var a = await store.CreateAsync("agent", Owner);
+        var b = await store.CreateAsync("agent", Owner);
+        var held = await store.HoldConversationAsync(a.Id);
+
+        var list = store.ListAsync(Owner);
+        await Task.Delay(Settle);
+        File.Delete(Path.Combine(_tempDir, $"{a.Id}.json"));
+        held.Dispose();
+
+        var listed = await list.WaitAsync(TimeSpan.FromSeconds(10));
+
+        listed.Select(r => r.Id).Should().Contain(b.Id).And.NotContain(a.Id);
+        logger.Warnings.Should().BeEmpty("a deleted conversation is not a corrupt one");
+    }
+
+    private sealed class CapturingLogger : ILogger<FileSystemConversationStore>
+    {
+        public List<string> Warnings { get; } = [];
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            if (logLevel >= LogLevel.Warning)
+                Warnings.Add(formatter(state, exception));
+        }
     }
 
     [Fact]
