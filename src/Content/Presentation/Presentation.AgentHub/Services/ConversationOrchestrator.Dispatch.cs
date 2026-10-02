@@ -336,10 +336,8 @@ public sealed partial class ConversationOrchestrator
                 // tag that changed, so skipping either half would leave the counter permanently off
                 // by one for that agent, the identical defect the switch case's own comment (below)
                 // exists to avoid.
-                OrchestrationMetrics.ConnectionsActive.Add(
-                    -1, new TagList { { AgentConventions.Name, tracked.AgentName } });
-                OrchestrationMetrics.ConnectionsActive.Add(
-                    1, new TagList { { AgentConventions.Name, agentName } });
+                AdjustConnectionsActive(-1, tracked.AgentName);
+                AdjustConnectionsActive(1, agentName);
 
                 _connectionTracker.Track(sessionKey, tracked with { AgentName = agentName });
             }
@@ -356,8 +354,7 @@ public sealed partial class ConversationOrchestrator
         // the exact defect this split exists to remove, reintroduced by the split.
         if (leaving is not null)
         {
-            OrchestrationMetrics.ConnectionsActive.Add(
-                -1, new TagList { { AgentConventions.Name, leaving.AgentName } });
+            AdjustConnectionsActive(-1, leaving.AgentName);
         }
 
         _connectionTracker.Track(sessionKey, new ActiveConversationInfo(
@@ -369,9 +366,17 @@ public sealed partial class ConversationOrchestrator
 
         // A connection, not a session and not a conversation: this is the moment one starts watching a
         // conversation, and every decrement is a moment one stops.
-        OrchestrationMetrics.ConnectionsActive.Add(1, new TagList { { AgentConventions.Name, agentName } });
+        AdjustConnectionsActive(1, agentName);
         return state;
     }
+
+    /// <summary>
+    /// Moves the <c>ConnectionsActive</c> gauge by <paramref name="delta"/> for one agent tag — the
+    /// single place that shape is spelled out, after three independent review passes on #765 flagged
+    /// it as hand-copied at every call site above.
+    /// </summary>
+    private static void AdjustConnectionsActive(int delta, string agentName)
+        => OrchestrationMetrics.ConnectionsActive.Add(delta, new TagList { { AgentConventions.Name, agentName } });
 
     /// <summary>
     /// Records the turn against the conversation, and mirrors the new totals onto the connection view.
