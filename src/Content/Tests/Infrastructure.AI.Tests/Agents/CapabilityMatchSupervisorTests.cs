@@ -6,6 +6,7 @@ using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Skills;
 using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Interfaces.Traces;
+using Application.AI.Common.Services;
 using Application.AI.Common.Services.Governance;
 using Domain.AI.Agents;
 using Domain.AI.Governance;
@@ -268,6 +269,82 @@ public sealed class CapabilityMatchSupervisorTests : IDisposable
                 It.Is<DelegationRecord>(r => r.State == DelegationState.Completed),
                 It.IsAny<CancellationToken>()),
             Times.Once());
+    }
+
+    /// <summary>
+    /// #756: what a delegated sub-agent spends must reach the parent turn's usage capture — that
+    /// capture is where the conversation budget is charged from — while the sub-agent's tool calls and
+    /// per-call list stay out of it (the isolation #96 introduced).
+    /// </summary>
+    [Fact]
+    public async Task DelegateAsync_FoldsTheSubagentsSpendIntoTheParentTurnsCapture_ButNotItsToolsOrCalls()
+    {
+        var parentCapture = new LlmUsageCapture(_options);
+        var previous = LlmUsageCapture.Current;
+        LlmUsageCapture.Current = parentCapture;
+        try
+        {
+            _agentFactoryMock
+                .Setup(f => f.CreateAgentAsync(It.IsAny<AgentExecutionContext>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new TestableAIAgent(_ =>
+                {
+                    LlmUsageCapture.Current!.Record(1000, 200, 50, 10, "sub-model");
+                    LlmUsageCapture.Current.RecordToolCall("subagent_tool");
+                    return new AgentResponse(new ChatMessage(ChatRole.Assistant, "done"));
+                }));
+
+            var result = await _supervisor.DelegateAsync(
+                "test task", ["tool_a"], AutonomyLevel.Supervised);
+
+            result.TokensUsed.Should().Be(1200);
+            LlmUsageCapture.Current.Should().BeSameAs(parentCapture, "the ambient is restored after the run");
+
+            var parentUsage = parentCapture.TakeSnapshot();
+            parentUsage.InputTokens.Should().Be(1000);
+            parentUsage.OutputTokens.Should().Be(200);
+            parentUsage.CacheRead.Should().Be(50);
+            parentUsage.CacheWrite.Should().Be(10);
+            parentUsage.ToolNames.Should().BeEmpty("the parent turn must not report tool calls it never made");
+            parentUsage.Calls.Should().BeEmpty("the parent's per-call list feeds the context bar and stays its own");
+        }
+        finally
+        {
+            LlmUsageCapture.Current = previous;
+        }
+    }
+
+    /// <summary>
+    /// A delegation that fails after spending still spent: the fold happens in the finally, so a
+    /// sub-agent that throws mid-run cannot make its tokens disappear from the conversation's budget.
+    /// </summary>
+    [Fact]
+    public async Task DelegateAsync_SubagentThrowsAfterSpending_StillChargesTheParentTurn()
+    {
+        var parentCapture = new LlmUsageCapture(_options);
+        var previous = LlmUsageCapture.Current;
+        LlmUsageCapture.Current = parentCapture;
+        try
+        {
+            _agentFactoryMock
+                .Setup(f => f.CreateAgentAsync(It.IsAny<AgentExecutionContext>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new TestableAIAgent(_ =>
+                {
+                    LlmUsageCapture.Current!.Record(700, 100, 0, 0, "sub-model");
+                    throw new InvalidOperationException("sub-agent failed after spending");
+                }));
+
+            var result = await _supervisor.DelegateAsync(
+                "test task", ["tool_a"], AutonomyLevel.Supervised);
+
+            result.IsSuccess.Should().BeFalse();
+            var parentUsage = parentCapture.TakeSnapshot();
+            parentUsage.InputTokens.Should().Be(700);
+            parentUsage.OutputTokens.Should().Be(100);
+        }
+        finally
+        {
+            LlmUsageCapture.Current = previous;
+        }
     }
 
     /// <summary>

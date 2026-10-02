@@ -39,6 +39,23 @@ public interface ILlmUsageCapture
     void RecordToolResult(string? callId, string? stdout);
 
     /// <summary>
+    /// Folds the spend of a sub-agent this turn delegated to into this turn's totals, so tokens and
+    /// cost reach every consumer of <see cref="TakeSnapshot"/> — the conversation budget, the
+    /// per-turn budget, session telemetry — instead of vanishing with the delegate's own isolated
+    /// capture.
+    /// </summary>
+    /// <param name="delegated">The delegate's own snapshot, taken once its run has ended.</param>
+    /// <remarks>
+    /// Spend only. The delegate's tool names, tool invocations, and per-call list are deliberately
+    /// <em>not</em> merged: this turn must not report tool calls it never made, and
+    /// <see cref="LlmUsageSnapshot.Calls"/> must stay its own model calls because the context-bar
+    /// reconciliation reads the last one (#517). The delegate's cost is added as the delegate priced it,
+    /// so <see cref="LlmUsageSnapshot.Model"/> still names this turn's own model. A delegate's snapshot
+    /// already carries whatever it delegated, so nesting accumulates upward.
+    /// </remarks>
+    void RecordDelegated(LlmUsageSnapshot delegated);
+
+    /// <summary>
     /// Returns the accumulated usage since the last snapshot and resets counters.
     /// Call before <c>agent.RunAsync()</c> to clear stale data, then again after
     /// to capture the turn's totals.

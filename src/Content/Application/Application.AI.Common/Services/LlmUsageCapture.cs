@@ -36,6 +36,12 @@ public sealed class LlmUsageCapture : ILlmUsageCapture
     private int _cacheRead;
     private int _cacheWrite;
     private string? _model;
+
+    // Sub-agent snapshots folded in by RecordDelegated, kept apart from the counters above so the
+    // turn's own calls are still priced under its own model and a delegate's cost is added as it was
+    // already priced rather than recomputed.
+    private readonly List<LlmUsageSnapshot> _delegates = new();
+
     private readonly HashSet<string> _toolNames = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
@@ -80,6 +86,16 @@ public sealed class LlmUsageCapture : ILlmUsageCapture
             _cacheWrite += cacheWrite;
             _model ??= model;
             _calls.Add(new LlmCallUsage(inputTokens, outputTokens, cacheRead, cacheWrite, model));
+        }
+    }
+
+    public void RecordDelegated(LlmUsageSnapshot delegated)
+    {
+        ArgumentNullException.ThrowIfNull(delegated);
+
+        lock (_lock)
+        {
+            _delegates.Add(delegated);
         }
     }
 
@@ -152,9 +168,14 @@ public sealed class LlmUsageCapture : ILlmUsageCapture
             // back to the configured DefaultModel so cost is computed and the stored model
             // is meaningful instead of null — the cause of $0 cost on 216/217 prod messages.
             var model = _model ?? _defaultModel;
-            var cost = ComputeCost(_inputTokens, _outputTokens, _cacheRead, _cacheWrite, model);
-            var totalInput = _inputTokens + _cacheRead;
-            var cacheHitPct = totalInput > 0 ? (decimal)_cacheRead / totalInput : 0m;
+            var cost = ComputeCost(_inputTokens, _outputTokens, _cacheRead, _cacheWrite, model)
+                + _delegates.Sum(d => d.CostUsd);
+            var inputTokens = _inputTokens + _delegates.Sum(d => d.InputTokens);
+            var outputTokens = _outputTokens + _delegates.Sum(d => d.OutputTokens);
+            var cacheRead = _cacheRead + _delegates.Sum(d => d.CacheRead);
+            var cacheWrite = _cacheWrite + _delegates.Sum(d => d.CacheWrite);
+            var totalInput = inputTokens + cacheRead;
+            var cacheHitPct = totalInput > 0 ? (decimal)cacheRead / totalInput : 0m;
 
             var toolNames = _toolNames.Count > 0
                 ? (IReadOnlyList<string>)_toolNames.ToList()
@@ -172,7 +193,7 @@ public sealed class LlmUsageCapture : ILlmUsageCapture
                 : Array.Empty<LlmCallUsage>();
 
             var snapshot = new LlmUsageSnapshot(
-                _inputTokens, _outputTokens, _cacheRead, _cacheWrite,
+                inputTokens, outputTokens, cacheRead, cacheWrite,
                 model, cost, Math.Round(cacheHitPct, 4), toolNames)
             {
                 ToolInvocations = invocations,
@@ -183,6 +204,7 @@ public sealed class LlmUsageCapture : ILlmUsageCapture
             _outputTokens = 0;
             _cacheRead = 0;
             _cacheWrite = 0;
+            _delegates.Clear();
             _model = null;
             _toolNames.Clear();
             _invocations.Clear();
