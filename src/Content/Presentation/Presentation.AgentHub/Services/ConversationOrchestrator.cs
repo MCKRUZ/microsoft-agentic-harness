@@ -141,7 +141,8 @@ public sealed partial class ConversationOrchestrator : IConversationOrchestrator
                 MessageRole.User, message, DateTimeOffset.UtcNow);
             await _conversationStore.AppendMessageAsync(conversationId, callerId, userMsg, turnCt);
 
-            return await DispatchTurnAsync(sessionKey, conversationId, message, callerId, onChunk, leased, turnCt);
+            return await DispatchTurnAsync(
+                sessionKey, conversationId, message, userMsg.Id, callerId, onChunk, leased, turnCt);
         }, ct);
     }
 
@@ -217,7 +218,7 @@ public sealed partial class ConversationOrchestrator : IConversationOrchestrator
             await SignalHistoryTruncatedAsync(onHistoryTruncated, truncated.Messages.Count, turnCt);
 
             var outcome = await DispatchTurnAsync(
-                sessionKey, conversationId, last.Content, callerId, onChunk, leased, turnCt);
+                sessionKey, conversationId, last.Content, last.Id, callerId, onChunk, leased, turnCt);
 
             return outcome with { HistoryKeepCount = truncated.Messages.Count };
         }, ct);
@@ -256,7 +257,7 @@ public sealed partial class ConversationOrchestrator : IConversationOrchestrator
             await SignalHistoryTruncatedAsync(onHistoryTruncated, truncated.Messages.Count, turnCt);
 
             var outcome = await DispatchTurnAsync(
-                sessionKey, conversationId, newContent, callerId, onChunk, leased, turnCt);
+                sessionKey, conversationId, newContent, newUserMsg.Id, callerId, onChunk, leased, turnCt);
 
             return outcome with { HistoryKeepCount = truncated.Messages.Count };
         }, ct);

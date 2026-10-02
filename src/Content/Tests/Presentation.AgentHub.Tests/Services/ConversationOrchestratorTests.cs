@@ -675,8 +675,8 @@ public class ConversationOrchestratorTests
 
     // ── The dispatched message goes to the model once (#785) ─────────────
 
-    private static ConversationMessage Msg(MessageRole role, string text) =>
-        new(Guid.NewGuid(), role, text, DateTimeOffset.UtcNow);
+    private static ConversationMessage Msg(MessageRole role, string text, Guid? id = null) =>
+        new(id ?? Guid.NewGuid(), role, text, DateTimeOffset.UtcNow);
 
     /// <summary>
     /// A store whose history window behaves like the real one: the last N messages of a transcript that
@@ -711,11 +711,12 @@ public class ConversationOrchestratorTests
     {
         // The user message is appended before the window is read, so the window ends with it; the turn
         // handler adds the message again. Dispatching the window as-is sent it to the model twice.
-        ArrangeTranscript([Msg(MessageRole.User, "earlier"), Msg(MessageRole.Assistant, "reply"), Msg(MessageRole.User, "Hello")]);
+        var sending = Guid.NewGuid();
+        ArrangeTranscript([Msg(MessageRole.User, "earlier"), Msg(MessageRole.Assistant, "reply"), Msg(MessageRole.User, "Hello", sending)]);
         var sent = CaptureDispatchedCommand();
 
         await CreateOrchestrator().SendMessageAsync(
-            "conn1", "c1", Guid.NewGuid(), "Hello", "user1", null, CancellationToken.None);
+            "conn1", "c1", sending, "Hello", "user1", null, CancellationToken.None);
 
         sent().UserMessage.Should().Be("Hello");
         sent().ConversationHistory.Select(m => m.Text).Should().Equal("earlier", "reply");
@@ -726,13 +727,14 @@ public class ConversationOrchestratorTests
     {
         // Excluding the in-flight message must not cost the model one message of context: the window
         // is MaxHistoryMessages of PRIOR messages (20), not 20 including the one being sent.
+        var sending = Guid.NewGuid();
         var transcript = Enumerable.Range(1, 30).Select(i => Msg(MessageRole.Assistant, $"m{i}")).ToList();
-        transcript.Add(Msg(MessageRole.User, "Hello"));
+        transcript.Add(Msg(MessageRole.User, "Hello", sending));
         ArrangeTranscript(transcript);
         var sent = CaptureDispatchedCommand();
 
         await CreateOrchestrator().SendMessageAsync(
-            "conn1", "c1", Guid.NewGuid(), "Hello", "user1", null, CancellationToken.None);
+            "conn1", "c1", sending, "Hello", "user1", null, CancellationToken.None);
 
         sent().ConversationHistory.Should().HaveCount(20);
         sent().ConversationHistory.Last().Text.Should().Be("m30");
@@ -754,11 +756,12 @@ public class ConversationOrchestratorTests
     [Fact]
     public async Task EditAndResubmit_TheEditedMessage_IsNotAlsoInTheDispatchedHistory()
     {
-        ArrangeTranscript([Msg(MessageRole.Assistant, "reply"), Msg(MessageRole.User, "New content")]);
+        var edited = Guid.NewGuid();
+        ArrangeTranscript([Msg(MessageRole.Assistant, "reply"), Msg(MessageRole.User, "New content", edited)]);
         var sent = CaptureDispatchedCommand();
 
         await CreateOrchestrator().EditAndResubmitAsync(
-            "conn1", "c1", Guid.NewGuid(), Guid.NewGuid(), "New content", "user1", null, CancellationToken.None);
+            "conn1", "c1", Guid.NewGuid(), edited, "New content", "user1", null, CancellationToken.None);
 
         sent().UserMessage.Should().Be("New content");
         sent().ConversationHistory.Select(m => m.Text).Should().Equal("reply");

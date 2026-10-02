@@ -719,11 +719,12 @@ public sealed class AgUiRunHandlerTests
         // it; the turn handler adds it again. Dispatching the window as-is sent it to the model twice.
         const string threadId = "conv-once";
         const string userId = "user-once";
+        var sending = Guid.NewGuid();
         var transcript = new List<ConversationMessage>
         {
             new(Guid.NewGuid(), MessageRole.User, "earlier", DateTimeOffset.UtcNow),
             new(Guid.NewGuid(), MessageRole.Assistant, "reply", DateTimeOffset.UtcNow),
-            new(Guid.NewGuid(), MessageRole.User, "Hi", DateTimeOffset.UtcNow),
+            new(sending, MessageRole.User, "Hi", DateTimeOffset.UtcNow),
         };
         var (mediator, store) = SetupTurn(threadId, userId, MakeSuccessResult("ok"));
         // The window as the real store answers it: the last N of a transcript that already holds "Hi".
@@ -737,7 +738,8 @@ public sealed class AgUiRunHandlerTests
         var handler = BuildHandler(mediator, store);
 
         using var ms = new MemoryStream();
-        await handler.HandleRunAsync(MakeInput(threadId, "Hi"), new AgUiEventWriter(ms), MakeUser(userId));
+        await handler.HandleRunAsync(
+            MakeInput(threadId, "Hi", sending.ToString()), new AgUiEventWriter(ms), MakeUser(userId));
 
         sent!.UserMessage.Should().Be("Hi");
         sent.ConversationHistory.Select(m => m.Text).Should().Equal("earlier", "reply");

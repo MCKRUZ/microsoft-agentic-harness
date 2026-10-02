@@ -86,7 +86,7 @@ public sealed partial class ConversationOrchestrator
     }
 
     private async Task<TurnOutcome> DispatchTurnAsync(
-        string sessionKey, string conversationId, string userMessage,
+        string sessionKey, string conversationId, string userMessage, Guid userMessageId,
         string callerId, Func<string, CancellationToken, Task>? onChunk, LeasedTurn leased, CancellationToken ct)
     {
         // The agent to dispatch to is resolved HERE, fresh under the lease, rather than accepted as
@@ -127,7 +127,7 @@ public sealed partial class ConversationOrchestrator
 
         // The messages BEFORE the one being sent: it is already stored, and the turn handler adds it itself (#785).
         var history = await ConversationDispatchHistory.ReadPriorToAsync(
-            _conversationStore, conversationId, callerId, _config.MaxHistoryMessages, userMessage, ct);
+            _conversationStore, conversationId, callerId, _config.MaxHistoryMessages, userMessageId, _logger, ct);
 
         // Numbered from the conversation's turn count, not its message count. A message count advances
         // by two per turn, so the same conversation produced a different sequence over this transport

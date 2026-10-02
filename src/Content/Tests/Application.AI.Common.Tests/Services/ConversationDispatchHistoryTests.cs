@@ -2,6 +2,7 @@ using Application.AI.Common.Interfaces.AI;
 using Application.AI.Common.Models.Conversations;
 using Application.AI.Common.Services;
 using FluentAssertions;
+using Microsoft.Extensions.Logging;
 using Moq;
 
 namespace Application.AI.Common.Tests.Services;
@@ -13,9 +14,10 @@ namespace Application.AI.Common.Tests.Services;
 public sealed class ConversationDispatchHistoryTests
 {
     private readonly Mock<IConversationStore> _store = new();
+    private readonly CapturingLogger _logger = new();
 
-    private static ConversationMessage Msg(MessageRole role, string text) =>
-        new(Guid.NewGuid(), role, text, DateTimeOffset.UtcNow);
+    private static ConversationMessage Msg(MessageRole role, string text, Guid? id = null) =>
+        new(id ?? Guid.NewGuid(), role, text, DateTimeOffset.UtcNow);
 
     /// <summary>A store that answers like the real one: the last N messages of the transcript.</summary>
     private void Transcript(params ConversationMessage[] transcript) =>
@@ -24,52 +26,59 @@ public sealed class ConversationDispatchHistoryTests
             .ReturnsAsync((string _, string _, int n, CancellationToken _) =>
                 (IReadOnlyList<ConversationMessage>?)transcript.TakeLast(Math.Max(0, n)).ToList());
 
-    private Task<IReadOnlyList<ConversationMessage>> Read(int max, string userMessage) =>
-        ConversationDispatchHistory.ReadPriorToAsync(_store.Object, "c1", "u1", max, userMessage, CancellationToken.None);
+    private Task<IReadOnlyList<ConversationMessage>> Read(int max, Guid inFlight) =>
+        ConversationDispatchHistory.ReadPriorToAsync(
+            _store.Object, "c1", "u1", max, inFlight, _logger, CancellationToken.None);
 
     [Fact]
     public async Task ReadPriorToAsync_WindowEndsWithTheMessageBeingSent_ExcludesIt()
     {
-        Transcript(Msg(MessageRole.User, "a"), Msg(MessageRole.Assistant, "b"), Msg(MessageRole.User, "c"));
+        var sending = Msg(MessageRole.User, "c");
+        Transcript(Msg(MessageRole.User, "a"), Msg(MessageRole.Assistant, "b"), sending);
 
-        var prior = await Read(10, "c");
+        var prior = await Read(10, sending.Id);
 
         prior.Select(m => m.Content).Should().Equal("a", "b");
+        _logger.Warnings.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task ReadPriorToAsync_MatchesByIdNotByContent()
+    {
+        // A store that normalises text on write must not bring the duplicate back: the id is what the
+        // caller stored the message under.
+        var sending = Msg(MessageRole.User, "stored text differs from what was sent");
+        Transcript(Msg(MessageRole.Assistant, "b"), sending);
+
+        var prior = await Read(10, sending.Id);
+
+        prior.Select(m => m.Content).Should().Equal("b");
     }
 
     [Fact]
     public async Task ReadPriorToAsync_ReturnsTheFullRequestedNumberOfPriorMessages()
     {
         // Asking for 3 prior messages must not return 2 because the in-flight one used a slot.
+        var sending = Msg(MessageRole.User, "now");
         Transcript(Msg(MessageRole.Assistant, "1"), Msg(MessageRole.Assistant, "2"), Msg(MessageRole.Assistant, "3"),
-            Msg(MessageRole.Assistant, "4"), Msg(MessageRole.User, "now"));
+            Msg(MessageRole.Assistant, "4"), sending);
 
-        var prior = await Read(3, "now");
+        var prior = await Read(3, sending.Id);
 
         prior.Select(m => m.Content).Should().Equal("2", "3", "4");
     }
 
     [Fact]
-    public async Task ReadPriorToAsync_LastMessageIsNotAUserMessage_RemovesNothing()
+    public async Task ReadPriorToAsync_WindowDoesNotEndWithTheMessage_RemovesNothingAndSaysSo()
     {
-        // Only the in-flight message is excluded; an assistant reply with the same text is history.
-        Transcript(Msg(MessageRole.User, "a"), Msg(MessageRole.Assistant, "c"));
+        // Dropping the last message blindly would silently discard real history; the mismatch means a
+        // transport stopped storing the message before reading, which is worth a log line.
+        Transcript(Msg(MessageRole.User, "a"), Msg(MessageRole.Assistant, "b"));
 
-        var prior = await Read(10, "c");
+        var prior = await Read(10, Guid.NewGuid());
 
-        prior.Select(m => m.Content).Should().Equal("a", "c");
-    }
-
-    [Fact]
-    public async Task ReadPriorToAsync_LastUserMessageHasDifferentContent_RemovesNothing()
-    {
-        // If the store ever answers a window that does not end with the message being sent, dropping
-        // the last message would silently discard real history.
-        Transcript(Msg(MessageRole.Assistant, "a"), Msg(MessageRole.User, "something else"));
-
-        var prior = await Read(10, "c");
-
-        prior.Select(m => m.Content).Should().Equal("a", "something else");
+        prior.Select(m => m.Content).Should().Equal("a", "b");
+        _logger.Warnings.Should().ContainSingle();
     }
 
     [Fact]
@@ -77,7 +86,7 @@ public sealed class ConversationDispatchHistoryTests
     {
         Transcript(Msg(MessageRole.Assistant, "1"), Msg(MessageRole.Assistant, "2"), Msg(MessageRole.Assistant, "3"));
 
-        var prior = await Read(2, "not-in-the-window");
+        var prior = await Read(2, Guid.NewGuid());
 
         prior.Select(m => m.Content).Should().Equal("2", "3");
     }
@@ -89,12 +98,26 @@ public sealed class ConversationDispatchHistoryTests
     {
         // The store defines a non-positive window as none; asking for one more than that must not turn
         // zero into "the in-flight message", or minus one into something unbounded.
-        Transcript(Msg(MessageRole.User, "a"), Msg(MessageRole.Assistant, "b"), Msg(MessageRole.User, "c"));
+        var sending = Msg(MessageRole.User, "c");
+        Transcript(Msg(MessageRole.User, "a"), Msg(MessageRole.Assistant, "b"), sending);
 
-        var prior = await Read(max, "c");
+        var prior = await Read(max, sending.Id);
 
         prior.Should().BeEmpty();
         _store.Verify(s => s.GetHistoryForDispatch("c1", "u1", 0, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task ReadPriorToAsync_UnboundedWindow_DoesNotOverflowIntoNoHistory()
+    {
+        // int.MaxValue is a plausible "no limit"; one more than that wraps negative, which the store reads as none.
+        var sending = Msg(MessageRole.User, "c");
+        Transcript(Msg(MessageRole.User, "a"), Msg(MessageRole.Assistant, "b"), sending);
+
+        var prior = await Read(int.MaxValue, sending.Id);
+
+        prior.Select(m => m.Content).Should().Equal("a", "b");
+        _store.Verify(s => s.GetHistoryForDispatch("c1", "u1", int.MaxValue, It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -104,6 +127,23 @@ public sealed class ConversationDispatchHistoryTests
             .Setup(s => s.GetHistoryForDispatch("c1", "u1", It.IsAny<int>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync((IReadOnlyList<ConversationMessage>?)null);
 
-        (await Read(10, "c")).Should().BeEmpty();
+        (await Read(10, Guid.NewGuid())).Should().BeEmpty();
+    }
+
+    private sealed class CapturingLogger : ILogger
+    {
+        public List<string> Warnings { get; } = [];
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            if (logLevel == LogLevel.Warning)
+                Warnings.Add(formatter(state, exception));
+        }
     }
 }

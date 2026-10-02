@@ -292,12 +292,11 @@ public sealed class AgUiRunHandler
             DateTimeOffset.UtcNow);
         await _conversationStore.AppendMessageAsync(input.ThreadId, callerId, userMsg, ct);
 
-        // Load truncated history for dispatch (mirrors hub's MaxHistoryMessages).
-        // Use a reasonable default — the hub reads this from config; we use 50 here
-        // since AgUiRunHandler is not wired to AgentHubConfig directly.
-        // The messages BEFORE this one: it was just appended above, and the turn handler adds it itself (#785).
+        // Up to 50 PRIOR messages for dispatch. The hub reads its limit from AgentHubConfig (20 by
+        // default); AgUiRunHandler is not wired to that config, so this is its own constant. The message
+        // just appended above is excluded: the turn handler adds it itself (#785).
         var history = await ConversationDispatchHistory.ReadPriorToAsync(
-            _conversationStore, input.ThreadId, callerId, 50, userMessageText, ct);
+            _conversationStore, input.ThreadId, callerId, 50, userMsg.Id, _logger, ct);
 
         // Counted from the conversation's completed turns, not its message count. Per-turn observability
         // rows are keyed by conversation AND turn number, and the bundle-run path numbers the same
