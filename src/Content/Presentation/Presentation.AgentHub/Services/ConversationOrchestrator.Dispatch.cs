@@ -314,7 +314,36 @@ public sealed partial class ConversationOrchestrator
             _logger.LogDebug("No observability session for conversation {ConversationId}", conversationId);
 
         if (tracked?.ConversationId == conversationId)
+        {
+            // #765: the connection stayed on this conversation, but the conversation may have been
+            // reassigned to a different agent since this connection was last tracked (PATCH
+            // /conversations/{id}/agent). dispatchAgentName (the caller's `agentName`, resolved
+            // fresh under the turn lease) is the source of truth; refresh the tracked entry so
+            // ConnectionsActive/ConversationDuration/TurnsPerConversation at disconnect or idle
+            // cleanup — and the active-conversation view — report the agent the conversation
+            // actually belongs to now, not whatever it was first tracked under.
+            //
+            // OrdinalIgnoreCase, matching ReassignAgentAsync's own no-op check
+            // (ConversationOrchestrator.ReassignAgent.cs) — a pure casing change is a no-op there
+            // and must not be treated as a real reassignment here, or one agent's metrics would
+            // fragment across casing variants for no reason.
+            if (!string.Equals(tracked.AgentName, agentName, StringComparison.OrdinalIgnoreCase))
+            {
+                // The gauge moves with the entry it describes, exactly like the leaving-conversation
+                // case below: decrement the agent this connection is leaving, increment the one it is
+                // joining, both together and synchronously (no await between them or before the
+                // Track below) — this connection was already counted as active, it is only the AGENT
+                // tag that changed, so skipping either half would leave the counter permanently off
+                // by one for that agent, the identical defect the switch case's own comment (below)
+                // exists to avoid.
+                AdjustConnectionsActive(-1, tracked.AgentName);
+                AdjustConnectionsActive(1, agentName);
+
+                _connectionTracker.Track(sessionKey, tracked with { AgentName = agentName });
+            }
+
             return state;
+        }
 
         // The gauge counts entries in the tracker, so it moves where entries move — here, next to the
         // Track that replaces one, and not a moment earlier. Decrementing up beside EndSessionAsync
@@ -325,8 +354,7 @@ public sealed partial class ConversationOrchestrator
         // the exact defect this split exists to remove, reintroduced by the split.
         if (leaving is not null)
         {
-            OrchestrationMetrics.ConnectionsActive.Add(
-                -1, new TagList { { AgentConventions.Name, leaving.AgentName } });
+            AdjustConnectionsActive(-1, leaving.AgentName);
         }
 
         _connectionTracker.Track(sessionKey, new ActiveConversationInfo(
@@ -338,9 +366,17 @@ public sealed partial class ConversationOrchestrator
 
         // A connection, not a session and not a conversation: this is the moment one starts watching a
         // conversation, and every decrement is a moment one stops.
-        OrchestrationMetrics.ConnectionsActive.Add(1, new TagList { { AgentConventions.Name, agentName } });
+        AdjustConnectionsActive(1, agentName);
         return state;
     }
+
+    /// <summary>
+    /// Moves the <c>ConnectionsActive</c> gauge by <paramref name="delta"/> for one agent tag — the
+    /// single place that shape is spelled out, after three independent review passes on #765 flagged
+    /// it as hand-copied at every call site above.
+    /// </summary>
+    private static void AdjustConnectionsActive(int delta, string agentName)
+        => OrchestrationMetrics.ConnectionsActive.Add(delta, new TagList { { AgentConventions.Name, agentName } });
 
     /// <summary>
     /// Records the turn against the conversation, and mirrors the new totals onto the connection view.
