@@ -28,7 +28,8 @@ public sealed class ExecuteAgentTurnCommandHandler_FailedTurnUsageTests
 {
     private readonly Mock<IAgentConversationCache> _agentCache = new();
 
-    private ExecuteAgentTurnCommandHandler CreateHandler(LlmUsageCapture capture)
+    private ExecuteAgentTurnCommandHandler CreateHandler(
+        LlmUsageCapture capture, Mock<IObservabilityStore>? observability = null)
     {
         var registry = new Mock<IAgentMetadataRegistry>();
         registry.Setup(r => r.TryGet(It.IsAny<string>())).Returns((Domain.AI.Agents.AgentDefinition?)null);
@@ -40,7 +41,7 @@ public sealed class ExecuteAgentTurnCommandHandler_FailedTurnUsageTests
             registry.Object,
             new Mock<ISkillMetadataRegistry>().Object,
             new Application.AI.Common.Services.Context.ConversationRegistrationTracker(),
-            new Mock<IObservabilityStore>().Object,
+            (observability ?? new Mock<IObservabilityStore>()).Object,
             capture,
             new DefaultContextSnapshotComputer(),
             new NullContextSnapshotNotifier(),
@@ -117,6 +118,41 @@ public sealed class ExecuteAgentTurnCommandHandler_FailedTurnUsageTests
         var result = await CreateHandler(CreateCapture()).Handle(Command(), cts.Token);
 
         result.ErrorKind.Should().Be(AgentTurnErrorKind.Cancelled);
+        result.InputTokens.Should().Be(900);
+        result.OutputTokens.Should().Be(100);
+    }
+
+    [Fact]
+    public async Task Handle_RunSucceedsButRecordingTheTurnThrows_StillReportsWhatTheRunSpent()
+    {
+        // The run completed and drained the capture; a step after it (here the observability write)
+        // then throws. Reading the capture again at that point would find it empty and report zero for a
+        // turn that was fully paid for.
+        var agent = new TestableAIAgent((_, _) =>
+        {
+            LlmUsageCapture.Current!.Record(900, 100, 0, 0, "test-model");
+            return Task.FromResult(new Microsoft.Agents.AI.AgentResponse(
+                new Microsoft.Extensions.AI.ChatMessage(Microsoft.Extensions.AI.ChatRole.Assistant, "ok")));
+        });
+        _agentCache
+            .Setup(c => c.GetOrCreateAsync(
+                It.IsAny<string>(),
+                It.IsAny<IReadOnlyList<string>>(),
+                It.IsAny<SkillAgentOptions>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(agent);
+        var observability = new Mock<IObservabilityStore>();
+        observability
+            .Setup(o => o.RecordMessageAsync(
+                It.IsAny<Guid>(), It.IsAny<int>(), "assistant", It.IsAny<string>(), It.IsAny<string?>(),
+                It.IsAny<string?>(), It.IsAny<int>(), It.IsAny<int>(), It.IsAny<int>(), It.IsAny<int>(),
+                It.IsAny<decimal>(), It.IsAny<decimal>(), It.IsAny<string[]?>(), It.IsAny<string?>(),
+                It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("observability store unavailable"));
+
+        var result = await CreateHandler(CreateCapture(), observability).Handle(Command(), CancellationToken.None);
+
+        result.Success.Should().BeFalse();
         result.InputTokens.Should().Be(900);
         result.OutputTokens.Should().Be(100);
     }

@@ -355,7 +355,7 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 				// accounting) before the outcome is looked at: a turn that failed or was cancelled still
 				// paid for the model calls it made. The next loop iteration's gate decides whether the
 				// cumulative total has crossed the ceiling.
-				await _conversationBudget.RecordTurnUsageAsync(request.ConversationId, lastResult);
+				await _conversationBudget.RecordTurnUsageAsync(request.ConversationId, lastResult, _logger);
 
 				if (!lastResult.Success)
 				{

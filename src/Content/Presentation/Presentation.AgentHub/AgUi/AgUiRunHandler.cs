@@ -378,7 +378,7 @@ public sealed class AgUiRunHandler
 
         // Charged before the outcome is looked at: a turn that failed or was cancelled still paid for
         // the model calls it made, and the budget is what stops a conversation spending without limit.
-        await _conversationBudget.RecordTurnUsageAsync(input.ThreadId, result);
+        await _conversationBudget.RecordTurnUsageAsync(input.ThreadId, result, _logger);
 
         if (!result.Success)
         {

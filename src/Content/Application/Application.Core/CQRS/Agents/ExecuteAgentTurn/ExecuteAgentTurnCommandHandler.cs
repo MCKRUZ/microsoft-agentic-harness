@@ -102,6 +102,10 @@ public partial class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAge
 		// successful one. Stays empty if the turn fails before resolution reaches it.
 		IReadOnlyList<string> skillIds = [];
 
+		// Hoisted for the same reason: once the run succeeds the capture has been drained into this, and a
+		// later step that throws (recording the turn, say) must still report what the run spent.
+		LlmUsageSnapshot? takenUsage = null;
+
 		try
 		{
 			// AgentName from the hub is an agent id — resolve the declared skill ids from the
@@ -220,6 +224,7 @@ public partial class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAge
 
 			// Capture accumulated token usage from all LLM calls during this turn
 			var usage = _usageCapture.TakeSnapshot();
+			takenUsage = usage;
 
 			// Extract response text; tool names come from the ambient capture
 			var responseText = ExtractResponseText(response);
@@ -315,7 +320,7 @@ public partial class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAge
 				request.AgentName, request.TurnNumber);
 
 			return FailedTurn(
-				request, skillIds, "The agent turn was cancelled.", AgentTurnErrorKind.Cancelled);
+				request, skillIds, takenUsage, "The agent turn was cancelled.", AgentTurnErrorKind.Cancelled);
 		}
 		catch (Exception ex) when (FindConfigurationError(ex) is { } configError)
 		{
@@ -325,7 +330,7 @@ public partial class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAge
 
 			RecordTurnError(request.AgentName);
 
-			return FailedTurn(request, skillIds, configError.Message, AgentTurnErrorKind.Configuration);
+			return FailedTurn(request, skillIds, takenUsage, configError.Message, AgentTurnErrorKind.Configuration);
 		}
 		catch (Exception ex)
 		{
@@ -334,7 +339,8 @@ public partial class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAge
 			RecordTurnError(request.AgentName);
 
 			return FailedTurn(
-				request, skillIds, "An internal error occurred during the agent turn.", AgentTurnErrorKind.Internal);
+				request, skillIds, takenUsage, "An internal error occurred during the agent turn.",
+				AgentTurnErrorKind.Internal);
 		}
 	}
 
@@ -348,15 +354,18 @@ public partial class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAge
 	/// turns keep failing late spend without ever tripping its ceiling (#778). Reading the capture here
 	/// also leaves nothing behind in it for the next turn of the same scope to be charged for. The
 	/// capture is the scoped one every participant of this request shares, so a Magentic run that threw
-	/// partway reports its participants' spend too.
+	/// partway reports its participants' spend too. When the run itself completed and something after it
+	/// threw, the capture has already been drained into <paramref name="alreadyTaken"/>, which is used
+	/// instead of reading an empty capture.
 	/// </remarks>
 	private AgentTurnResult FailedTurn(
 		ExecuteAgentTurnCommand request,
 		IReadOnlyList<string> skillIds,
+		LlmUsageSnapshot? alreadyTaken,
 		string error,
 		AgentTurnErrorKind errorKind)
 	{
-		var usage = _usageCapture.TakeSnapshot();
+		var usage = alreadyTaken ?? _usageCapture.TakeSnapshot();
 
 		return new AgentTurnResult
 		{

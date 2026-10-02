@@ -239,8 +239,10 @@ public sealed class MagenticAgentTurnRunner : IMagenticAgentTurnRunner
 			_logger.LogError(
 				"Magentic turn for supervisor {AgentId} failed: {Errors}", supervisor.Id, rawError);
 
+			// A failed workflow has still paid for every manager and participant call it made, and the
+			// conversation budget is charged from this result (#778).
 			return Failure(userMessage, conversationHistory,
-				"The multi-agent workflow failed to complete.");
+				"The multi-agent workflow failed to complete.", usage);
 		}
 
 		var workflow = result.Value!;
@@ -422,7 +424,7 @@ public sealed class MagenticAgentTurnRunner : IMagenticAgentTurnRunner
 	}
 
 	private static AgentTurnResult Failure(
-		string userMessage, IReadOnlyList<ChatMessage> history, string error) =>
+		string userMessage, IReadOnlyList<ChatMessage> history, string error, LlmUsageSnapshot? usage = null) =>
 		new()
 		{
 			Success = false,
@@ -430,5 +432,11 @@ public sealed class MagenticAgentTurnRunner : IMagenticAgentTurnRunner
 			UpdatedHistory = [.. history, new ChatMessage(ChatRole.User, userMessage)],
 			Error = error,
 			ErrorKind = AgentTurnErrorKind.Internal,
+			InputTokens = usage?.InputTokens ?? 0,
+			OutputTokens = usage?.OutputTokens ?? 0,
+			CacheRead = usage?.CacheRead ?? 0,
+			CacheWrite = usage?.CacheWrite ?? 0,
+			CostUsd = usage?.CostUsd ?? 0m,
+			Model = usage?.Model,
 		};
 }
