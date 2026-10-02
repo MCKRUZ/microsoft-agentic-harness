@@ -318,6 +318,17 @@ public sealed class ObservabilitySchemaUpgradeTests
                 turn_index INTEGER NOT NULL,
                 role       TEXT NOT NULL CHECK (role IN ('user','assistant','system','tool')),
                 source     TEXT,
+                content_preview TEXT,
+                content_full    TEXT,
+                model           TEXT,
+                input_tokens    INTEGER NOT NULL DEFAULT 0,
+                output_tokens   INTEGER NOT NULL DEFAULT 0,
+                cache_read      INTEGER NOT NULL DEFAULT 0,
+                cache_write     INTEGER NOT NULL DEFAULT 0,
+                cost_usd        NUMERIC(10,6) NOT NULL DEFAULT 0,
+                cache_hit_pct   NUMERIC(5,4) NOT NULL DEFAULT 0,
+                tool_names      TEXT[],
+                created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 CONSTRAINT session_messages_source_allowed CHECK (source IN (
                     'user_message','assistant_text','assistant_tool',
                     'assistant_mixed','tool_result','system_context','hook_injection'))
