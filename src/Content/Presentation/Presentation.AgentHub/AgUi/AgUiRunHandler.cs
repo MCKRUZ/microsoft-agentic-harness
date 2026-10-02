@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Security.Claims;
+using Application.AI.Common.Extensions;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.AI;
 using Application.AI.Common.OpenTelemetry.Metrics;
@@ -375,6 +376,10 @@ public sealed class AgUiRunHandler
             AgentTurnStreamSink.Current = previousSink;
         }
 
+        // Charged before the outcome is looked at: a turn that failed or was cancelled still paid for
+        // the model calls it made, and the budget is what stops a conversation spending without limit.
+        await _conversationBudget.RecordTurnUsageAsync(input.ThreadId, result);
+
         if (!result.Success)
         {
             // A cancelled turn (e.g. caller disconnect) is routine — abort like the
@@ -407,11 +412,6 @@ public sealed class AgUiRunHandler
         UserActivityMetrics.Turns.Add(1,
             new KeyValuePair<string, object?>(UserConventions.UserId, callerId),
             new KeyValuePair<string, object?>(AgentConventions.Name, record.AgentName));
-
-        // Fold this turn's tokens into the conversation-lifetime budget so a subsequent run is
-        // declined once the cumulative ceiling is crossed. No-op when the budget is disabled.
-        await _conversationBudget.RecordUsageAsync(
-            input.ThreadId, result.InputTokens + result.OutputTokens, ct);
 
         // One call for what used to be an accumulate, a twelve-argument store write, a second store
         // write and a swallow — spelled out identically in three files, and drifted in four ways

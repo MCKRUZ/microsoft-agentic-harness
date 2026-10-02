@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Diagnostics.Metrics;
+using Application.AI.Common.Extensions;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.AI;
 using Application.AI.Common.Models.Conversations;
@@ -350,6 +351,12 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 
 				lastResult = await _mediator.Send(turnCommand, cancellationToken);
 
+				// Folded into the conversation-lifetime budget (mirrors the per-turn TokenBudgetBehavior's
+				// accounting) before the outcome is looked at: a turn that failed or was cancelled still
+				// paid for the model calls it made. The next loop iteration's gate decides whether the
+				// cumulative total has crossed the ceiling.
+				await _conversationBudget.RecordTurnUsageAsync(request.ConversationId, lastResult);
+
 				if (!lastResult.Success)
 				{
 					// A cancelled turn (e.g. caller disconnect) is routine, not a failure: route it into
@@ -371,7 +378,11 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 						Turns = turns,
 						FinalResponse = string.Empty,
 						TotalToolInvocations = partialShare.ToolCallCount,
-						TotalTokens = partialShare.InputTokens + partialShare.OutputTokens,
+						// The failed turn's own spend is not in the conversation totals (they advance only
+						// for a completed turn), but it was spent, and a plan run charges its own budget
+						// from this figure.
+						TotalTokens = partialShare.InputTokens + partialShare.OutputTokens
+							+ lastResult.InputTokens + lastResult.OutputTokens,
 						Error = $"Turn {index + 1} failed: {lastResult.Error}"
 					};
 				}
@@ -427,14 +438,6 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 					governanceTraces.Add(lastResult.Governance);
 
 				sessionModel ??= lastResult.Model;
-
-				// Fold this turn's input+output into the conversation-lifetime budget (mirrors the
-				// per-turn TokenBudgetBehavior's accounting). The next loop iteration's gate decides
-				// whether the cumulative total has crossed the ceiling.
-				await _conversationBudget.RecordUsageAsync(
-					request.ConversationId,
-					lastResult.InputTokens + lastResult.OutputTokens,
-					cancellationToken);
 
 				// One call for the accumulate and both writes — the observability rollup and the
 				// conversation's own copy of the same totals, always from one value so the two cannot

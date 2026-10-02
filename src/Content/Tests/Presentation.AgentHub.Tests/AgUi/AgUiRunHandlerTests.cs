@@ -681,6 +681,83 @@ public sealed class AgUiRunHandlerTests
         frames.Should().NotContain(f => EventType(f) == AgUiEventType.RunFinished);
     }
 
+    [Theory]
+    [InlineData(AgentTurnErrorKind.Internal)]
+    [InlineData(AgentTurnErrorKind.Configuration)]
+    public async Task HandleRunAsync_TurnFailsAfterSpending_StillChargesTheConversationBudget(AgentTurnErrorKind kind)
+    {
+        // #778: the run is reported as failed, but the model calls it made were already paid for.
+        const string threadId = "conv-failed-spend";
+        const string userId = "user-failed-spend";
+        var failed = new AgentTurnResult
+        {
+            Success = false,
+            Response = string.Empty,
+            UpdatedHistory = [],
+            Error = "failed",
+            ErrorKind = kind,
+            InputTokens = 900,
+            OutputTokens = 100,
+        };
+        var budget = new Mock<IConversationBudgetTracker>();
+        budget.Setup(b => b.GetStatusAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(ConversationBudgetStatus.Disabled);
+
+        var (mediator, store) = SetupTurn(threadId, userId, failed);
+        var handler = BuildHandler(mediator, store, budget: budget);
+
+        using var ms = new MemoryStream();
+        await handler.HandleRunAsync(MakeInput(threadId, "Hi"), new AgUiEventWriter(ms), MakeUser(userId));
+
+        budget.Verify(b => b.RecordUsageAsync(threadId, 1000, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task HandleRunAsync_TurnCancelledAfterSpending_StillChargesTheBudgetEvenThoughTheCallerIsGone()
+    {
+        const string threadId = "conv-cancel-spend";
+        const string userId = "user-cancel-spend";
+        var cancelled = new AgentTurnResult
+        {
+            Success = false,
+            Response = string.Empty,
+            UpdatedHistory = [],
+            ErrorKind = AgentTurnErrorKind.Cancelled,
+            InputTokens = 900,
+            OutputTokens = 100,
+        };
+        var budget = new Mock<IConversationBudgetTracker>();
+        budget.Setup(b => b.GetStatusAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(ConversationBudgetStatus.Disabled);
+        // A cancelled caller's token must not be what the accrual runs under: the spend happened. The
+        // mock behaves like a real tracker, which would abandon the write under a cancelled token.
+        var accrued = false;
+        budget.Setup(b => b.RecordUsageAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
+            .Returns((string _, int _, CancellationToken ct) =>
+            {
+                ct.ThrowIfCancellationRequested();
+                accrued = true;
+                return Task.CompletedTask;
+            });
+
+        var (mediator, store) = SetupTurn(threadId, userId, cancelled);
+        var handler = BuildHandler(mediator, store, budget: budget);
+
+        using var cts = new CancellationTokenSource();
+        mediator.Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
+            .Returns(() =>
+            {
+                cts.Cancel();
+                return Task.FromResult(cancelled);
+            });
+
+        using var ms = new MemoryStream();
+        await handler.HandleRunAsync(MakeInput(threadId, "Hi"), new AgUiEventWriter(ms), MakeUser(userId), cts.Token);
+
+        accrued.Should().BeTrue("the spend of a cancelled turn must be recorded, not abandoned with the caller");
+        budget.Verify(b => b.RecordUsageAsync(threadId, 1000, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
     [Fact]
     public async Task HandleRunAsync_HappyPath_EmitsFullEventSequence()
     {

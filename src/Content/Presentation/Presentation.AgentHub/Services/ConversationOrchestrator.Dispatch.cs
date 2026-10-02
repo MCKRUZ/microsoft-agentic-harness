@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using Application.AI.Common.Exceptions;
+using Application.AI.Common.Extensions;
 using Application.AI.Common.Interfaces.AI;
 using Application.AI.Common.OpenTelemetry.Metrics;
 using Application.AI.Common.Services;
@@ -196,6 +197,10 @@ public sealed partial class ConversationOrchestrator
             AgentTurnStreamSink.Current = previousSink;
         }
 
+        // Charged before the outcome is looked at: a turn that failed or was cancelled still paid for
+        // the model calls it made, and the budget is what stops a conversation spending without limit.
+        await _conversationBudget.RecordTurnUsageAsync(conversationId, result);
+
         if (!result.Success)
         {
             // A disconnect can also surface as a failed result: the handler catches the
@@ -221,11 +226,6 @@ public sealed partial class ConversationOrchestrator
             OrchestrationMetrics.ToolCalls.Add(result.ToolsInvoked.Count, agentTag);
 
         _healthTracker.RecordSuccess(dispatchAgentName);
-
-        // Fold this turn's tokens into the conversation-lifetime budget so a subsequent turn is
-        // declined once the cumulative ceiling is crossed. No-op when the budget is disabled.
-        await _conversationBudget.RecordUsageAsync(
-            conversationId, result.InputTokens + result.OutputTokens, ct);
 
         var userTag = new KeyValuePair<string, object?>(UserConventions.UserId, callerId);
         var userAgentTag = new KeyValuePair<string, object?>(AgentConventions.Name, dispatchAgentName);

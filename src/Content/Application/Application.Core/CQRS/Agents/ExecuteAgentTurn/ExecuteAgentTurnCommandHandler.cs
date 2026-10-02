@@ -314,15 +314,8 @@ public partial class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAge
 			_logger.LogInformation("Agent {AgentName} turn {TurnNumber} cancelled by caller",
 				request.AgentName, request.TurnNumber);
 
-			return new AgentTurnResult
-			{
-				Success = false,
-				Response = string.Empty,
-				UpdatedHistory = [.. request.ConversationHistory, new ChatMessage(ChatRole.User, request.UserMessage)],
-				Error = "The agent turn was cancelled.",
-				ErrorKind = AgentTurnErrorKind.Cancelled,
-				SkillIds = skillIds
-			};
+			return FailedTurn(
+				request, skillIds, "The agent turn was cancelled.", AgentTurnErrorKind.Cancelled);
 		}
 		catch (Exception ex) when (FindConfigurationError(ex) is { } configError)
 		{
@@ -332,15 +325,7 @@ public partial class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAge
 
 			RecordTurnError(request.AgentName);
 
-			return new AgentTurnResult
-			{
-				Success = false,
-				Response = string.Empty,
-				UpdatedHistory = [.. request.ConversationHistory, new ChatMessage(ChatRole.User, request.UserMessage)],
-				Error = configError.Message,
-				ErrorKind = AgentTurnErrorKind.Configuration,
-				SkillIds = skillIds
-			};
+			return FailedTurn(request, skillIds, configError.Message, AgentTurnErrorKind.Configuration);
 		}
 		catch (Exception ex)
 		{
@@ -348,16 +333,46 @@ public partial class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAge
 
 			RecordTurnError(request.AgentName);
 
-			return new AgentTurnResult
-			{
-				Success = false,
-				Response = string.Empty,
-				UpdatedHistory = [.. request.ConversationHistory, new ChatMessage(ChatRole.User, request.UserMessage)],
-				Error = "An internal error occurred during the agent turn.",
-				ErrorKind = AgentTurnErrorKind.Internal,
-				SkillIds = skillIds
-			};
+			return FailedTurn(
+				request, skillIds, "An internal error occurred during the agent turn.", AgentTurnErrorKind.Internal);
 		}
+	}
+
+	/// <summary>
+	/// Builds the result for a turn that did not complete, carrying whatever its model calls had
+	/// already spent.
+	/// </summary>
+	/// <remarks>
+	/// A turn that fails or is cancelled partway has still paid for the calls it made, and the
+	/// conversation budget is charged from this result — so reporting zero here let a conversation whose
+	/// turns keep failing late spend without ever tripping its ceiling (#778). Reading the capture here
+	/// also leaves nothing behind in it for the next turn of the same scope to be charged for. The
+	/// capture is the scoped one every participant of this request shares, so a Magentic run that threw
+	/// partway reports its participants' spend too.
+	/// </remarks>
+	private AgentTurnResult FailedTurn(
+		ExecuteAgentTurnCommand request,
+		IReadOnlyList<string> skillIds,
+		string error,
+		AgentTurnErrorKind errorKind)
+	{
+		var usage = _usageCapture.TakeSnapshot();
+
+		return new AgentTurnResult
+		{
+			Success = false,
+			Response = string.Empty,
+			UpdatedHistory = [.. request.ConversationHistory, new ChatMessage(ChatRole.User, request.UserMessage)],
+			Error = error,
+			ErrorKind = errorKind,
+			SkillIds = skillIds,
+			InputTokens = usage.InputTokens,
+			OutputTokens = usage.OutputTokens,
+			CacheRead = usage.CacheRead,
+			CacheWrite = usage.CacheWrite,
+			CostUsd = usage.CostUsd,
+			Model = usage.Model,
+		};
 	}
 
 	/// <summary>

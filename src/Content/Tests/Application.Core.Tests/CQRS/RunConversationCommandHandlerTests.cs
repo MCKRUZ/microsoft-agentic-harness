@@ -146,6 +146,86 @@ public class RunConversationCommandHandlerTests
             Times.Once);
     }
 
+    [Fact]
+    public async Task Handle_TurnFailsAfterSpending_StillChargesTheConversationAndReportsItInTheTotal()
+    {
+        // #778: the run fails, but the failing turn's model calls were already paid for. The plan runner
+        // charges its own budget from ConversationResult.TotalTokens, so the failed turn has to be in
+        // that figure too, not only in the conversation's budget.
+        _mediator
+            .Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new AgentTurnResult
+            {
+                Success = false,
+                Response = string.Empty,
+                UpdatedHistory = [],
+                Error = "boom",
+                ErrorKind = AgentTurnErrorKind.Internal,
+                InputTokens = 900,
+                OutputTokens = 100,
+            });
+
+        var result = await _handler.Handle(
+            new RunConversationCommand
+            {
+                AgentName = "TestAgent",
+                ConversationId = "conv-failed-spend",
+                UserMessages = ["one"]
+            },
+            CancellationToken.None);
+
+        result.Success.Should().BeFalse();
+        result.TotalTokens.Should().Be(1000);
+        _budget.Verify(
+            b => b.RecordUsageAsync("conv-failed-spend", 1000, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task Handle_TurnCancelledAfterSpending_StillChargesTheBudgetEvenThoughTheCallerIsGone()
+    {
+        using var cts = new CancellationTokenSource();
+        _mediator
+            .Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
+            .Returns(() =>
+            {
+                cts.Cancel();
+                return Task.FromResult(new AgentTurnResult
+                {
+                    Success = false,
+                    Response = string.Empty,
+                    UpdatedHistory = [],
+                    ErrorKind = AgentTurnErrorKind.Cancelled,
+                    InputTokens = 900,
+                    OutputTokens = 100,
+                });
+            });
+        // A cancelled caller's token must not be what the accrual runs under: the spend happened. The
+        // mock behaves like a real tracker, which would abandon the write under a cancelled token.
+        var accrued = false;
+        _budget
+            .Setup(b => b.RecordUsageAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
+            .Returns((string _, int _, CancellationToken ct) =>
+            {
+                ct.ThrowIfCancellationRequested();
+                accrued = true;
+                return Task.CompletedTask;
+            });
+
+        var act = () => _handler.Handle(
+            new RunConversationCommand
+            {
+                AgentName = "TestAgent",
+                ConversationId = "conv-cancel-spend",
+                UserMessages = ["one"]
+            },
+            cts.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+        accrued.Should().BeTrue("the spend of a cancelled turn must be recorded, not abandoned with the caller");
+        _budget.Verify(
+            b => b.RecordUsageAsync("conv-cancel-spend", 1000, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
     /// <summary>
     /// The budget spans the whole conversation, and a conversation now outlives one run and one host
     /// (issue #235). This handler used to release in a <c>finally</c>, which reset the accumulated
