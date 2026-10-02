@@ -382,6 +382,36 @@ public sealed class RunConversationDurableTests
     }
 
     [Fact]
+    public async Task Handle_LeaseLostDuringATurnThatSpent_DoesNotWriteTheRollup()
+    {
+        // #780: the rollup is written absolute from this run's baseline, so a run that has lost the
+        // conversation would overwrite what the host that now holds it has recorded since. The spend is
+        // still charged to the budget (an increment); it is just not added to the rollup.
+        SetupTurnCore(_ => new AgentTurnResult
+        {
+            Success = false,
+            Response = string.Empty,
+            UpdatedHistory = [],
+            ErrorKind = AgentTurnErrorKind.Cancelled,
+            InputTokens = 900,
+            OutputTokens = 100,
+            CostUsd = 0.04m,
+        });
+        _lease.LoseLeaseAfterTurns = 1;
+
+        var act = () => BuildSut().Handle(Durable("a"), CancellationToken.None);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+        _observability.Verify(
+            o => o.UpdateSessionMetricsAsync(
+                It.IsAny<Guid>(), It.IsAny<int>(), It.IsAny<int>(), It.IsAny<int>(), It.IsAny<int>(),
+                It.IsAny<int>(), It.IsAny<int>(), It.IsAny<int>(), It.IsAny<decimal>(), It.IsAny<decimal>(),
+                It.IsAny<string?>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+        _budget.Verify(b => b.RecordUsageAsync(ConversationId, 1000, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
     public async Task Handle_DurableRun_OpensTheConversationBeforeTakingItsLease()
     {
         // Order is a real constraint, not a preference: the durable lease claims an existing

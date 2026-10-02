@@ -53,6 +53,9 @@ public partial class ExecuteAgentTurnCommandHandler
 				request.AgentName, request.TurnNumber, result.Error);
 
 			RecordTurnError(request.AgentName);
+
+			// cacheHitPct 0 for the same reason as the completed-turn record below.
+			await RecordFailedAssistantMessageAsync(request, result, cacheHitPct: 0m);
 			return result;
 		}
 

@@ -712,6 +712,127 @@ public sealed class AgUiRunHandlerTests
         budget.Verify(b => b.RecordUsageAsync(threadId, 1000, It.IsAny<CancellationToken>()), Times.Once);
     }
 
+    private static AgentTurnResult FailedAfterSpending(AgentTurnErrorKind kind) => new()
+    {
+        Success = false,
+        Response = string.Empty,
+        UpdatedHistory = [],
+        Error = "failed",
+        ErrorKind = kind,
+        InputTokens = 900,
+        OutputTokens = 100,
+        CostUsd = 0.04m,
+    };
+
+    private static Mock<IObservabilityStore> ObservabilityWithSession(Guid sessionId)
+    {
+        var observability = new Mock<IObservabilityStore>();
+        observability.Setup(o => o.StartSessionAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(sessionId);
+        return observability;
+    }
+
+    private static void VerifyRollupCountedTheFailedTurn(Mock<IObservabilityStore> observability, Guid sessionId, Times times) =>
+        observability.Verify(
+            o => o.UpdateSessionMetricsAsync(
+                sessionId, 1, 0, 0, 900, 100, 0, 0, 0.04m, It.IsAny<decimal>(), It.IsAny<string?>(),
+                // Never the caller's token: a disconnect cancels it, and the rollup is for exactly that turn.
+                It.Is<CancellationToken>(t => !t.CanBeCanceled)),
+            times);
+
+    [Theory]
+    [InlineData(AgentTurnErrorKind.Internal)]
+    [InlineData(AgentTurnErrorKind.Configuration)]
+    public async Task HandleRunAsync_TurnFailsAfterSpending_AddsTheTurnToTheSessionRollup(AgentTurnErrorKind kind)
+    {
+        // #780: the budget gate trips on this spend, so the rollup the dashboards read must carry it too.
+        const string threadId = "conv-failed-rollup";
+        const string userId = "user-failed-rollup";
+        var sessionId = Guid.NewGuid();
+        var observability = ObservabilityWithSession(sessionId);
+        var (mediator, store) = SetupTurn(threadId, userId, FailedAfterSpending(kind));
+        var handler = BuildHandler(mediator, store, observability);
+
+        using var ms = new MemoryStream();
+        await handler.HandleRunAsync(MakeInput(threadId, "Hi"), new AgUiEventWriter(ms), MakeUser(userId));
+
+        VerifyRollupCountedTheFailedTurn(observability, sessionId, Times.Once());
+    }
+
+    [Fact]
+    public async Task HandleRunAsync_TurnCancelledAfterSpending_AddsTheTurnToTheRollupBeforeAbortingQuietly()
+    {
+        const string threadId = "conv-cancel-rollup";
+        const string userId = "user-cancel-rollup";
+        var sessionId = Guid.NewGuid();
+        var observability = ObservabilityWithSession(sessionId);
+        var cancelled = FailedAfterSpending(AgentTurnErrorKind.Cancelled);
+        var (mediator, store) = SetupTurn(threadId, userId, cancelled);
+        var handler = BuildHandler(mediator, store, observability);
+
+        using var cts = new CancellationTokenSource();
+        mediator.Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
+            .Returns(() =>
+            {
+                cts.Cancel();
+                return Task.FromResult(cancelled);
+            });
+
+        using var ms = new MemoryStream();
+        await handler.HandleRunAsync(MakeInput(threadId, "Hi"), new AgUiEventWriter(ms), MakeUser(userId), cts.Token);
+
+        VerifyRollupCountedTheFailedTurn(observability, sessionId, Times.Once());
+    }
+
+    [Fact]
+    public async Task HandleRunAsync_LeaseLostDuringATurnThatSpent_DoesNotWriteTheRollup()
+    {
+        // The rollup is written absolute from this host's baseline; a host that has lost the conversation
+        // would overwrite what the host that holds it has since recorded.
+        const string threadId = "conv-lost-rollup";
+        const string userId = "user-lost-rollup";
+        var sessionId = Guid.NewGuid();
+        var observability = ObservabilityWithSession(sessionId);
+        var lease = new ControllableTurnLease();
+        var cancelled = FailedAfterSpending(AgentTurnErrorKind.Cancelled);
+        var (mediator, store) = SetupTurn(threadId, userId, cancelled);
+        mediator.Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
+            .Returns(() =>
+            {
+                lease.Steal();
+                return Task.FromResult(cancelled);
+            });
+        var handler = BuildHandler(mediator, store, observability, turnLease: lease);
+
+        using var ms = new MemoryStream();
+        await handler.HandleRunAsync(MakeInput(threadId, "Hi"), new AgUiEventWriter(ms), MakeUser(userId));
+
+        VerifyRollupCountedTheFailedTurn(observability, sessionId, Times.Never());
+    }
+
+    [Fact]
+    public async Task HandleRunAsync_TurnFailsBeforeSpendingAnything_LeavesTheRollupAlone()
+    {
+        const string threadId = "conv-failed-nothing";
+        const string userId = "user-failed-nothing";
+        var observability = ObservabilityWithSession(Guid.NewGuid());
+        var (mediator, store) = SetupTurn(
+            threadId, userId,
+            FailedAfterSpending(AgentTurnErrorKind.Configuration) with { InputTokens = 0, OutputTokens = 0, CostUsd = 0m });
+        var handler = BuildHandler(mediator, store, observability);
+
+        using var ms = new MemoryStream();
+        await handler.HandleRunAsync(MakeInput(threadId, "Hi"), new AgUiEventWriter(ms), MakeUser(userId));
+
+        observability.Verify(
+            o => o.UpdateSessionMetricsAsync(
+                It.IsAny<Guid>(), It.IsAny<int>(), It.IsAny<int>(), It.IsAny<int>(), It.IsAny<int>(),
+                It.IsAny<int>(), It.IsAny<int>(), It.IsAny<int>(), It.IsAny<decimal>(), It.IsAny<decimal>(),
+                It.IsAny<string?>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
     [Fact]
     public async Task HandleRunAsync_TurnCancelledAfterSpending_StillChargesTheBudgetBeforeAbortingQuietly()
     {

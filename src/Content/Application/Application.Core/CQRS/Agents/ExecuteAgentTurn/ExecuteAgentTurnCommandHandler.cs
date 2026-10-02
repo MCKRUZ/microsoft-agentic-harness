@@ -105,6 +105,10 @@ public partial class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAge
 		// Hoisted likewise: the run's drained usage, for a later step that throws.
 		LlmUsageSnapshot? takenUsage = null;
 
+		// And whether the completed turn's own assistant row has been written, so a later step that throws
+		// does not add a second row for the same turn (see FailedTurnAsync).
+		var assistantRowWritten = false;
+
 		try
 		{
 			// AgentName from the hub is an agent id — resolve the declared skill ids from the
@@ -244,6 +248,7 @@ public partial class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAge
 				usage.CostUsd, usage.CacheHitPct,
 				toolsInvoked.Count > 0 ? toolsInvoked.ToArray() : null,
 				responseText, cancellationToken);
+			assistantRowWritten = true;
 
 			// Pair captured per-CallId invocations with the assistant message that
 			// requested them so the per-invocation deep-link can resolve back to
@@ -312,8 +317,8 @@ public partial class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAge
 			_logger.LogInformation("Agent {AgentName} turn {TurnNumber} cancelled by caller",
 				request.AgentName, request.TurnNumber);
 
-			return FailedTurn(
-				request, skillIds, takenUsage, "The agent turn was cancelled.", AgentTurnErrorKind.Cancelled);
+			return await FailedTurnAsync(
+				request, skillIds, takenUsage, assistantRowWritten, "The agent turn was cancelled.", AgentTurnErrorKind.Cancelled);
 		}
 		catch (Exception ex) when (FindConfigurationError(ex) is { } configError)
 		{
@@ -323,7 +328,7 @@ public partial class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAge
 
 			RecordTurnError(request.AgentName);
 
-			return FailedTurn(request, skillIds, takenUsage, configError.Message, AgentTurnErrorKind.Configuration);
+			return await FailedTurnAsync(request, skillIds, takenUsage, assistantRowWritten, configError.Message, AgentTurnErrorKind.Configuration);
 		}
 		catch (Exception ex)
 		{
@@ -331,35 +336,10 @@ public partial class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAge
 
 			RecordTurnError(request.AgentName);
 
-			return FailedTurn(
-				request, skillIds, takenUsage, "An internal error occurred during the agent turn.",
+			return await FailedTurnAsync(
+				request, skillIds, takenUsage, assistantRowWritten, "An internal error occurred during the agent turn.",
 				AgentTurnErrorKind.Internal);
 		}
-	}
-
-	/// <summary>
-	/// Builds the result for a turn that did not complete. A failed turn still reports what its model
-	/// calls spent (the budget is charged from the result); <paramref name="alreadyTaken"/> is used when
-	/// the run completed and drained the capture before a later step threw.
-	/// </summary>
-	private AgentTurnResult FailedTurn(
-		ExecuteAgentTurnCommand request,
-		IReadOnlyList<string> skillIds,
-		LlmUsageSnapshot? alreadyTaken,
-		string error,
-		AgentTurnErrorKind errorKind)
-	{
-		var usage = alreadyTaken ?? _usageCapture.TakeSnapshot();
-
-		return new AgentTurnResult
-		{
-			Success = false,
-			Response = string.Empty,
-			UpdatedHistory = [.. request.ConversationHistory, new ChatMessage(ChatRole.User, request.UserMessage)],
-			Error = error,
-			ErrorKind = errorKind,
-			SkillIds = skillIds,
-		}.WithUsage(usage);
 	}
 
 	/// <summary>

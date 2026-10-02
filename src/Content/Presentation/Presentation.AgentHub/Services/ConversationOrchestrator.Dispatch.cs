@@ -66,14 +66,14 @@ public sealed partial class ConversationOrchestrator
     /// </remarks>
     private async Task<T> WithTurnLeaseAsync<T>(
         string conversationId,
-        Func<CancellationToken, Task<T>> turn,
+        Func<LeasedTurn, Task<T>> turn,
         CancellationToken ct)
     {
         await using var leased = await LeasedTurn.AcquireAsync(_turnLease, conversationId, ct);
 
         try
         {
-            return await turn(leased.Token);
+            return await turn(leased);
         }
         catch (OperationCanceledException) when (leased.LeaseWasLost)
         {
@@ -87,7 +87,7 @@ public sealed partial class ConversationOrchestrator
 
     private async Task<TurnOutcome> DispatchTurnAsync(
         string sessionKey, string conversationId, string userMessage,
-        string callerId, Func<string, CancellationToken, Task>? onChunk, CancellationToken ct)
+        string callerId, Func<string, CancellationToken, Task>? onChunk, LeasedTurn leased, CancellationToken ct)
     {
         // The agent to dispatch to is resolved HERE, fresh under the lease, rather than accepted as
         // a parameter a caller captured before the lease was ever contested -- a reassignment that
@@ -202,6 +202,9 @@ public sealed partial class ConversationOrchestrator
 
         if (!result.Success)
         {
+            // #780: into the session rollup; ahead of the cancelled branch, as the charge is.
+            await RecordFailedTurnAsync(sessionKey, telemetry, result, leased);
+
             // A disconnect can also surface as a failed result: the handler catches the
             // cancellation internally and tags it Cancelled. Treat only that as routine —
             // keying on the kind (not ct.IsCancellationRequested) avoids reclassifying a
@@ -386,29 +389,36 @@ public sealed partial class ConversationOrchestrator
     private async Task<ConversationTelemetryState> RecordTurnAsync(
         string sessionKey, ConversationTelemetryState state, AgentTurnResult result, CancellationToken ct)
     {
-        var updated = await _telemetryRecorder.RecordTurnAsync(
-            state,
-            new ConversationTurnTelemetry(
-                result.InputTokens, result.OutputTokens, result.CacheRead, result.CacheWrite,
-                result.CostUsd, result.ToolsInvoked.Count, result.Model),
-            ct);
-
-        if (_connectionTracker.Get(sessionKey) is { } convInfo)
-        {
-            _connectionTracker.Track(sessionKey, convInfo with
-            {
-                LastActivityAt = DateTimeOffset.UtcNow,
-                TurnCount = updated.Totals.TurnCount,
-                ToolCallCount = updated.Totals.ToolCallCount,
-                TotalInputTokens = updated.Totals.InputTokens,
-                TotalOutputTokens = updated.Totals.OutputTokens,
-                TotalCacheRead = updated.Totals.CacheRead,
-                TotalCacheWrite = updated.Totals.CacheWrite,
-                TotalCostUsd = updated.Totals.CostUsd,
-            });
-        }
-
+        var updated = await _telemetryRecorder.RecordTurnAsync(state, result.ToTurnTelemetry(), ct);
+        MirrorTotalsOntoConnection(sessionKey, updated);
         return updated;
+    }
+
+    /// <summary>
+    /// The failed or cancelled counterpart of <see cref="RecordTurnAsync"/> (#780): adds the turn to the
+    /// conversation's totals when it spent anything, and mirrors them onto the connection view.
+    /// </summary>
+    private async Task RecordFailedTurnAsync(
+        string sessionKey, ConversationTelemetryState state, AgentTurnResult result, LeasedTurn leased) =>
+        MirrorTotalsOntoConnection(
+            sessionKey, await _telemetryRecorder.RecordFailedTurnAsync(state, result.ToTurnTelemetry(), leased));
+
+    private void MirrorTotalsOntoConnection(string sessionKey, ConversationTelemetryState updated)
+    {
+        if (_connectionTracker.Get(sessionKey) is not { } convInfo)
+            return;
+
+        _connectionTracker.Track(sessionKey, convInfo with
+        {
+            LastActivityAt = DateTimeOffset.UtcNow,
+            TurnCount = updated.Totals.TurnCount,
+            ToolCallCount = updated.Totals.ToolCallCount,
+            TotalInputTokens = updated.Totals.InputTokens,
+            TotalOutputTokens = updated.Totals.OutputTokens,
+            TotalCacheRead = updated.Totals.CacheRead,
+            TotalCacheWrite = updated.Totals.CacheWrite,
+            TotalCostUsd = updated.Totals.CostUsd,
+        });
     }
 
     private async Task<TurnOutcome> HandleTurnErrorAsync(

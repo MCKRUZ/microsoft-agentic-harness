@@ -117,7 +117,7 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 			// Self-contained: no store, no durable row, no PATCH endpoint can reach it
 			// concurrently, so request.AgentName is the only agent name that will ever exist
 			// for this run.
-			? RunAsync(request, transcript: null, request.AgentName, knownRecord: null, cancellationToken)
+			? RunAsync(request, transcript: null, request.AgentName, knownRecord: null, cancellationToken, leased: null)
 			: RunDurableAsync(request, cancellationToken);
 	}
 
@@ -185,7 +185,7 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 			replayPolicy,
 			_logger);
 
-		return await RunAsync(request, transcript, dispatchRecord.AgentName, dispatchRecord, leased.Token);
+		return await RunAsync(request, transcript, dispatchRecord.AgentName, dispatchRecord, leased.Token, leased);
 	}
 
 	private async Task<ConversationResult> RunAsync(
@@ -193,7 +193,8 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 		DurableTranscript? transcript,
 		string agentName,
 		ConversationRecord? knownRecord,
-		CancellationToken cancellationToken)
+		CancellationToken cancellationToken,
+		LeasedTurn? leased)
 	{
 		// Derived from the transcript rather than passed alongside it: the two are one piece of state,
 		// and a signature that took both would let a caller pass a seed with no transcript, or a window
@@ -358,6 +359,10 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 
 				if (!lastResult.Success)
 				{
+					// #780: into the conversation's totals and the rollup; ahead of the cancelled branch, as the charge is.
+					telemetry = await _telemetryRecorder.RecordFailedTurnAsync(telemetry, lastResult.ToTurnTelemetry(), leased);
+					conversationTotals = telemetry.Totals;
+
 					// A cancelled turn (e.g. caller disconnect) is routine, not a failure: route it into
 					// the OperationCanceledException handler below, which rethrows rather than returning
 					// a failed result and records the cancellation in the session's reason.
@@ -377,11 +382,9 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 						Turns = turns,
 						FinalResponse = string.Empty,
 						TotalToolInvocations = partialShare.ToolCallCount,
-						// The failed turn's own spend is not in the conversation totals (they advance only
-						// for a completed turn), but it was spent, and a plan run charges its own budget
-						// from this figure.
-						TotalTokens = partialShare.InputTokens + partialShare.OutputTokens
-							+ lastResult.InputTokens + lastResult.OutputTokens,
+						// Includes the failed turn's own spend, now that the conversation totals do (#780):
+						// a plan run charges its own budget from this figure.
+						TotalTokens = partialShare.InputTokens + partialShare.OutputTokens,
 						Error = $"Turn {index + 1} failed: {lastResult.Error}"
 					};
 				}

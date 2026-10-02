@@ -30,8 +30,9 @@ public sealed partial class ConversationOrchestrator
         // reassignment's result in full once it finally acquires the lease itself -- it can no
         // longer dispatch against, report on, or re-cache the agent this call just reassigned away
         // from using a value it captured before either lease was ever contested.
-        return await WithTurnLeaseAsync(conversationId, async leaseCt =>
+        return await WithTurnLeaseAsync(conversationId, async leased =>
         {
+            var leaseCt = leased.Token;
             // Re-read fresh, under the lease, rather than reusing the pre-lease `preLeaseAgentName` above --
             // review caught a real race in an earlier version of this fix that compared the
             // REQUESTED name against a pre-lease snapshot: a second, concurrent reassignment (or an
