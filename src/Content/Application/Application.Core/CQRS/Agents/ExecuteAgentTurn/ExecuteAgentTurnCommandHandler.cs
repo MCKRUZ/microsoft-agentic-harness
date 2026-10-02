@@ -102,6 +102,9 @@ public partial class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAge
 		// successful one. Stays empty if the turn fails before resolution reaches it.
 		IReadOnlyList<string> skillIds = [];
 
+		// Hoisted likewise: the run's drained usage, for a later step that throws.
+		LlmUsageSnapshot? takenUsage = null;
+
 		try
 		{
 			// AgentName from the hub is an agent id — resolve the declared skill ids from the
@@ -220,6 +223,7 @@ public partial class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAge
 
 			// Capture accumulated token usage from all LLM calls during this turn
 			var usage = _usageCapture.TakeSnapshot();
+			takenUsage = usage;
 
 			// Extract response text; tool names come from the ambient capture
 			var responseText = ExtractResponseText(response);
@@ -293,15 +297,9 @@ public partial class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAge
 				UpdatedHistory = updatedHistory,
 				ToolsInvoked = toolsInvoked,
 				ToolCalls = toolCalls,
-				InputTokens = usage.InputTokens,
-				OutputTokens = usage.OutputTokens,
-				CacheRead = usage.CacheRead,
-				CacheWrite = usage.CacheWrite,
-				CostUsd = usage.CostUsd,
-				Model = usage.Model,
 				Governance = _admissionPipeline.GetTrace(),
 				SkillIds = skillIds
-			};
+			}.WithUsage(usage);
 		}
 		catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
 		{
@@ -314,15 +312,8 @@ public partial class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAge
 			_logger.LogInformation("Agent {AgentName} turn {TurnNumber} cancelled by caller",
 				request.AgentName, request.TurnNumber);
 
-			return new AgentTurnResult
-			{
-				Success = false,
-				Response = string.Empty,
-				UpdatedHistory = [.. request.ConversationHistory, new ChatMessage(ChatRole.User, request.UserMessage)],
-				Error = "The agent turn was cancelled.",
-				ErrorKind = AgentTurnErrorKind.Cancelled,
-				SkillIds = skillIds
-			};
+			return FailedTurn(
+				request, skillIds, takenUsage, "The agent turn was cancelled.", AgentTurnErrorKind.Cancelled);
 		}
 		catch (Exception ex) when (FindConfigurationError(ex) is { } configError)
 		{
@@ -332,15 +323,7 @@ public partial class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAge
 
 			RecordTurnError(request.AgentName);
 
-			return new AgentTurnResult
-			{
-				Success = false,
-				Response = string.Empty,
-				UpdatedHistory = [.. request.ConversationHistory, new ChatMessage(ChatRole.User, request.UserMessage)],
-				Error = configError.Message,
-				ErrorKind = AgentTurnErrorKind.Configuration,
-				SkillIds = skillIds
-			};
+			return FailedTurn(request, skillIds, takenUsage, configError.Message, AgentTurnErrorKind.Configuration);
 		}
 		catch (Exception ex)
 		{
@@ -348,16 +331,35 @@ public partial class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAge
 
 			RecordTurnError(request.AgentName);
 
-			return new AgentTurnResult
-			{
-				Success = false,
-				Response = string.Empty,
-				UpdatedHistory = [.. request.ConversationHistory, new ChatMessage(ChatRole.User, request.UserMessage)],
-				Error = "An internal error occurred during the agent turn.",
-				ErrorKind = AgentTurnErrorKind.Internal,
-				SkillIds = skillIds
-			};
+			return FailedTurn(
+				request, skillIds, takenUsage, "An internal error occurred during the agent turn.",
+				AgentTurnErrorKind.Internal);
 		}
+	}
+
+	/// <summary>
+	/// Builds the result for a turn that did not complete. A failed turn still reports what its model
+	/// calls spent (the budget is charged from the result); <paramref name="alreadyTaken"/> is used when
+	/// the run completed and drained the capture before a later step threw.
+	/// </summary>
+	private AgentTurnResult FailedTurn(
+		ExecuteAgentTurnCommand request,
+		IReadOnlyList<string> skillIds,
+		LlmUsageSnapshot? alreadyTaken,
+		string error,
+		AgentTurnErrorKind errorKind)
+	{
+		var usage = alreadyTaken ?? _usageCapture.TakeSnapshot();
+
+		return new AgentTurnResult
+		{
+			Success = false,
+			Response = string.Empty,
+			UpdatedHistory = [.. request.ConversationHistory, new ChatMessage(ChatRole.User, request.UserMessage)],
+			Error = error,
+			ErrorKind = errorKind,
+			SkillIds = skillIds,
+		}.WithUsage(usage);
 	}
 
 	/// <summary>

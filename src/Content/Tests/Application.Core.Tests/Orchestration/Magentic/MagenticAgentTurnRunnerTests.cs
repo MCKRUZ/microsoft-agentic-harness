@@ -298,6 +298,33 @@ public sealed class MagenticAgentTurnRunnerTests
     }
 
     [Fact]
+    public async Task RunTurnAsync_WorkflowFailsAfterSpending_ReportsWhatTheWorkflowSpent()
+    {
+        // #778: a workflow that fails has still paid for every manager and participant call it made, and
+        // the conversation budget is charged from this result. This is the normal failure shape — the
+        // orchestrator returns a failed Result rather than throwing — so it cannot be left to the
+        // handler's catch blocks.
+        var supervisor = Supervisor("researcher");
+        _agentRegistry.Setup(r => r.TryGet("researcher")).Returns(Participant("researcher"));
+        _usageCapture
+            .Setup(c => c.TakeSnapshot())
+            .Returns(new LlmUsageSnapshot(900, 100, 25, 5, "gpt-4o", 0.5m, 0m, []));
+        _orchestrator
+            .Setup(o => o.RunAsync(It.IsAny<MagenticWorkflowRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result<MagenticWorkflowResult>.Fail("max stalls reached"));
+
+        var result = await CreateRunner().RunTurnAsync(
+            supervisor, "conv-1", "hello", [], MagenticTurnOverrides.None, CancellationToken.None);
+
+        result.Success.Should().BeFalse();
+        result.InputTokens.Should().Be(900);
+        result.OutputTokens.Should().Be(100);
+        result.CacheRead.Should().Be(25);
+        result.CacheWrite.Should().Be(5);
+        result.CostUsd.Should().Be(0.5m);
+    }
+
+    [Fact]
     public async Task RunTurnAsync_EmptyFinalOutputWithToolActivity_SynthesizesPlaceholderResponse()
     {
         // RunConversationCommandHandler's durable-transcript gate drops a turn whose Response is empty

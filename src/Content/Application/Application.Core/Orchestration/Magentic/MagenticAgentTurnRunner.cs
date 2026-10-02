@@ -239,8 +239,10 @@ public sealed class MagenticAgentTurnRunner : IMagenticAgentTurnRunner
 			_logger.LogError(
 				"Magentic turn for supervisor {AgentId} failed: {Errors}", supervisor.Id, rawError);
 
+			// A failed workflow still paid for every manager and participant call; the budget is charged
+			// from this result.
 			return Failure(userMessage, conversationHistory,
-				"The multi-agent workflow failed to complete.");
+				"The multi-agent workflow failed to complete.").WithUsage(usage);
 		}
 
 		var workflow = result.Value!;
@@ -271,14 +273,8 @@ public sealed class MagenticAgentTurnRunner : IMagenticAgentTurnRunner
 			Response = responseText,
 			UpdatedHistory = updatedHistory,
 			ToolsInvoked = usage.ToolNames,
-			InputTokens = usage.InputTokens,
-			OutputTokens = usage.OutputTokens,
-			CacheRead = usage.CacheRead,
-			CacheWrite = usage.CacheWrite,
-			CostUsd = usage.CostUsd,
-			Model = usage.Model,
 			Governance = _admissionPipeline.GetTrace(),
-		};
+		}.WithUsage(usage);
 	}
 
 	/// <summary>

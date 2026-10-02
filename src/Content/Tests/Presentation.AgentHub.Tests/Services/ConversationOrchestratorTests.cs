@@ -225,6 +225,73 @@ public class ConversationOrchestratorTests
             b => b.RecordUsageAsync("c1", It.IsAny<int>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 
+    [Theory]
+    [InlineData(AgentTurnErrorKind.Internal)]
+    [InlineData(AgentTurnErrorKind.Configuration)]
+    public async Task SendMessage_TurnFailsAfterSpending_StillChargesTheConversationBudget(AgentTurnErrorKind kind)
+    {
+        // #778: a failed turn's model calls were already paid for, so the conversation budget must see
+        // them — otherwise a conversation whose turns keep failing late spends without ever tripping it.
+        var record = new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []);
+        _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
+        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", 20, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<ConversationMessage>());
+        _obsStore.Setup(s => s.StartSessionAsync("c1", "agent", null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Guid.NewGuid());
+        _mediator.Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new AgentTurnResult
+            {
+                Success = false,
+                Response = string.Empty,
+                UpdatedHistory = [],
+                Error = "failed",
+                ErrorKind = kind,
+                InputTokens = 900,
+                OutputTokens = 100,
+            });
+
+        var orchestrator = CreateOrchestrator();
+        var outcome = await orchestrator.SendMessageAsync(
+            "conn1", "c1", Guid.NewGuid(), "Hello", "user1", null, CancellationToken.None);
+
+        outcome.Success.Should().BeFalse();
+        _budget.Verify(
+            b => b.RecordUsageAsync("c1", 1000, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task SendMessage_TurnCancelledAfterSpending_StillChargesTheBudgetBeforeAbortingQuietly()
+    {
+        var record = new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []);
+        _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
+        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", 20, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<ConversationMessage>());
+        _obsStore.Setup(s => s.StartSessionAsync("c1", "agent", null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Guid.NewGuid());
+        using var cts = new CancellationTokenSource();
+        _mediator.Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
+            .Returns(() =>
+            {
+                cts.Cancel();
+                return Task.FromResult(new AgentTurnResult
+                {
+                    Success = false,
+                    Response = string.Empty,
+                    UpdatedHistory = [],
+                    ErrorKind = AgentTurnErrorKind.Cancelled,
+                    InputTokens = 900,
+                    OutputTokens = 100,
+                });
+            });
+        var orchestrator = CreateOrchestrator();
+        var act = () => orchestrator.SendMessageAsync(
+            "conn1", "c1", Guid.NewGuid(), "Hello", "user1", null, cts.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+        _budget.Verify(
+            b => b.RecordUsageAsync("c1", 1000, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
     [Fact]
     public async Task SendMessage_LeaseLostMidTurn_StopsTheTurnAndSaysWhy()
     {
