@@ -112,7 +112,10 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 		// IsNullOrWhiteSpace test: an empty identity has been read as "everyone" in this codebase before,
 		// and treating it as "nobody in particular, carry on" is how that happens again.
 		return request.ConversationOwnerId is null
-			? RunAsync(request, transcript: null, cancellationToken)
+			// Self-contained: no store, no durable row, no PATCH endpoint can reach it
+			// concurrently, so request.AgentName is the only agent name that will ever exist
+			// for this run.
+			? RunAsync(request, transcript: null, request.AgentName, knownRecord: null, cancellationToken)
 			: RunDurableAsync(request, cancellationToken);
 	}
 
@@ -147,6 +150,31 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 		using var turnCts = CancellationTokenSource.CreateLinkedTokenSource(
 			cancellationToken, lease.LeaseLost);
 
+		// Read fresh, now that the lease is held, rather than trusting request.AgentName -- a
+		// reassignment (PATCH /conversations/{id}/agent) that writes a new agent name and evicts the
+		// cached AIAgent can land in the window between this run's command being built and this lease
+		// acquisition, uncontested, since this run has not yet asked for the lease. Everything below
+		// dispatches, logs, and reports telemetry/metrics using THIS read, never request.AgentName,
+		// so this run cannot resurrect the agent it was reassigned away from or re-cache it under the
+		// stale name (issue #761 -- the same race #700 closed for the SignalR hub path).
+		var dispatchRecord = await _conversationStore.GetAsync(request.ConversationId, ownerId, turnCts.Token);
+		if (dispatchRecord is null)
+		{
+			_logger.LogError(
+				"Conversation {ConversationId} not found when resolving its current agent after taking its turn lease.",
+				request.ConversationId);
+
+			return new ConversationResult
+			{
+				Success = false,
+				Turns = [],
+				FinalResponse = string.Empty,
+				TotalToolInvocations = 0,
+				TotalTokens = 0,
+				Error = "Conversation not found."
+			};
+		}
+
 		// Snapshotted once, here, deliberately — see DurableTranscript's own constructor remarks for why
 		// this run's replay policy must stay fixed rather than re-read live mid-run.
 		var replayPolicy = ToolCallReplayWindowPolicy.FromCurrentSettings(_toolCallReplayTreatment);
@@ -157,12 +185,14 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 			replayPolicy,
 			_logger);
 
-		return await RunAsync(request, transcript, turnCts.Token);
+		return await RunAsync(request, transcript, dispatchRecord.AgentName, dispatchRecord, turnCts.Token);
 	}
 
 	private async Task<ConversationResult> RunAsync(
 		RunConversationCommand request,
 		DurableTranscript? transcript,
+		string agentName,
+		ConversationRecord? knownRecord,
 		CancellationToken cancellationToken)
 	{
 		// Derived from the transcript rather than passed alongside it: the two are one piece of state,
@@ -185,7 +215,7 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 		}
 
 		_logger.LogInformation("Starting conversation with {AgentName}, {MessageCount} messages, max {MaxTurns} turns",
-			request.AgentName, request.UserMessages.Count, request.MaxTurns);
+			agentName, request.UserMessages.Count, request.MaxTurns);
 
 		var sw = Stopwatch.StartNew();
 		var turns = new List<TurnSummary>();
@@ -204,7 +234,7 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 		// has does not open a second, it restamps the first one's start time, and every duration derived
 		// from it then describes only the latest run (issue #255).
 		var telemetry = await _telemetryRecorder.BeginAsync(
-			request.ConversationId, request.ConversationOwnerId, request.AgentName, null, cancellationToken);
+			request.ConversationId, request.ConversationOwnerId, agentName, knownRecord, cancellationToken);
 
 		var dbSessionId = telemetry.SessionId;
 		var conversationTotals = telemetry.Totals;
@@ -215,7 +245,7 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 		// disagreeing about the same turns is the whole of issue #255.
 		var runBaseline = conversationTotals;
 
-		var agentTag = new KeyValuePair<string, object?>(AgentConventions.Name, request.AgentName);
+		var agentTag = new KeyValuePair<string, object?>(AgentConventions.Name, agentName);
 
 		// A run in flight, not a session: the session belongs to the conversation and outlives this run
 		// whenever the conversation is durable. Paired with the decrement in the finally below.
@@ -264,7 +294,7 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 			{
 				if (index >= request.MaxTurns)
 				{
-					_logger.LogWarning("Max turns ({MaxTurns}) reached for {AgentName}", request.MaxTurns, request.AgentName);
+					_logger.LogWarning("Max turns ({MaxTurns}) reached for {AgentName}", request.MaxTurns, agentName);
 					break;
 				}
 
@@ -296,14 +326,14 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 					await request.OnProgress(new TurnProgress
 					{
 						TurnNumber = index + 1,
-						AgentName = request.AgentName,
+						AgentName = agentName,
 						Status = "executing"
 					});
 				}
 
 				var turnCommand = new ExecuteAgentTurnCommand
 				{
-					AgentName = request.AgentName,
+					AgentName = agentName,
 					UserMessage = userMessage,
 
 					// The seed is used only by the first turn; from then on each turn carries the one
@@ -330,7 +360,7 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 						throw new OperationCanceledException(cancellationToken);
 
 					_logger.LogError("Conversation turn {Turn} failed for {AgentName}: {Error}",
-						index + 1, request.AgentName, lastResult.Error);
+						index + 1, agentName, lastResult.Error);
 
 					await EndRunSessionAsync(SessionStatus.Error, lastResult.Error);
 
@@ -429,7 +459,7 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 					await request.OnProgress(new TurnProgress
 					{
 						TurnNumber = index + 1,
-						AgentName = request.AgentName,
+						AgentName = agentName,
 						Status = "completed",
 						Response = lastResult.Response
 					});
@@ -493,7 +523,7 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 			// message to the session row (it can leak internal detail). End the
 			// session with a stable scrubbed status code and rethrow.
 			_logger.LogError(ex, "Conversation with {AgentName} failed with an unhandled exception",
-				request.AgentName);
+				agentName);
 			await EndRunSessionAsync(SessionStatus.Error, "conversation.unhandled_exception");
 			throw;
 		}

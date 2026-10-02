@@ -634,6 +634,52 @@ public sealed class RunConversationDurableTests
             "the store enforces ownership on this write like every other");
     }
 
+    /// <summary>
+    /// Proves the fix for #761: a reassignment (<c>PATCH /conversations/{id}/agent</c>) landing in the
+    /// window between this run's command being built and its own lease acquisition writes the new
+    /// agent name and evicts the cache before this run ever contends for the lease -- so every turn
+    /// this run dispatches, and every telemetry/metrics call it makes, must use the agent name read
+    /// fresh from the store after the lease is held, never <see cref="RunConversationCommand.AgentName"/>
+    /// as the caller set it when building the command.
+    /// </summary>
+    [Fact]
+    public async Task Handle_DurableRun_DispatchesToTheAgentNameReadFreshUnderTheLease_NotTheRequestsStaleOne()
+    {
+        var dispatched = CaptureDispatchedTurns();
+
+        // Simulates a reassignment that already landed by the time this run's own fresh read happens
+        // -- the command below still carries the OLD name, exactly as a caller that built it before
+        // the reassignment would.
+        _store.AgentName = "reassigned-agent";
+
+        var command = Durable() with { AgentName = "stale-agent" };
+        await BuildSut().Handle(command, CancellationToken.None);
+
+        dispatched.Should().ContainSingle()
+            .Which.AgentName.Should().Be("reassigned-agent",
+                "dispatch must use the agent name read fresh under the lease, not the one the caller " +
+                "captured when building the command before the lease was ever contested");
+    }
+
+    /// <summary>
+    /// The conversation vanishing in the window between <see cref="IConversationStore.GetOrCreateAsync"/>
+    /// and this run's own fresh read (the same window #761's fix closes for a reassignment) must fail
+    /// the run explicitly, not propagate past the held lease or dispatch any turn against a value
+    /// nothing captured.
+    /// </summary>
+    [Fact]
+    public async Task Handle_DurableRun_ConversationVanishesAfterLeaseAcquisition_FailsWithoutDispatching()
+    {
+        var dispatched = CaptureDispatchedTurns();
+        _store.GetAsyncReturnsNull = true;
+
+        var result = await BuildSut().Handle(Durable(), CancellationToken.None);
+
+        result.Success.Should().BeFalse();
+        result.Error.Should().NotBeNullOrEmpty();
+        dispatched.Should().BeEmpty("a vanished conversation must fail before any turn is dispatched");
+    }
+
     [Fact]
     public async Task Handle_DurableRun_ReadsTheConversationsTotalsUnderTheLease()
     {
@@ -713,6 +759,17 @@ public sealed class RunConversationDurableTests
         /// <summary>What the conversation has already spent, as a prior run left it.</summary>
         public TelemetryAccumulator? Telemetry { get; set; }
 
+        /// <summary>
+        /// The agent <see cref="GetAsync"/> reports as current. Defaults to the same name every
+        /// <see cref="Durable"/>/<see cref="SelfContained"/> command already carries, so existing
+        /// tests see no change. A test simulating a reassignment that lands between command
+        /// construction and the handler's own fresh read sets this to something else.
+        /// </summary>
+        public string AgentName { get; set; } = "TestAgent";
+
+        /// <summary>When set, <see cref="GetAsync"/> returns null -- the conversation vanished.</summary>
+        public bool GetAsyncReturnsNull { get; set; }
+
         /// <summary>The session a prior run opened for this conversation, if any.</summary>
         public Guid? ObservabilitySessionId { get; set; }
 
@@ -787,9 +844,12 @@ public sealed class RunConversationDurableTests
             ct.ThrowIfCancellationRequested();
             GetSequences.Add(CallSequence.Next());
 
+            if (GetAsyncReturnsNull)
+                return Task.FromResult<ConversationRecord?>(null);
+
             return Task.FromResult<ConversationRecord?>(new ConversationRecord(
                 Id: conversationId,
-                AgentName: "TestAgent",
+                AgentName: AgentName,
                 UserId: callerId,
                 CreatedAt: DateTimeOffset.UtcNow,
                 UpdatedAt: DateTimeOffset.UtcNow,
