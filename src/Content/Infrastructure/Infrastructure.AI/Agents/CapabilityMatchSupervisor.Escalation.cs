@@ -395,11 +395,9 @@ public sealed partial class CapabilityMatchSupervisor
         // A fresh capture scopes the subagent's work to this delegation and yields its real token cost.
         //
         // That isolation covers tool calls and the per-call list, NOT spend: when the run ends the
-        // delegate's tokens and cost are folded back into the parent turn's capture (#756), so the
-        // conversation budget, the per-turn budget and session telemetry all see what a delegating
-        // turn really cost instead of only the entry agent's own calls. Done in the finally, so a
-        // delegation that fails or is cancelled after spending still reaches the parent's capture
-        // (whether a failed PARENT turn then charges it is #778).
+        // delegate's tokens and cost are folded back into the parent turn's capture, so the budgets
+        // and session telemetry see what a delegating turn really cost. Done in the finally, so a
+        // delegation that fails or is cancelled after spending still counts.
         //
         // This runs AFTER governance is armed (above), not before: the swap below has nothing
         // fallible between it and the try block that uses it, so a throw out of ArmDelegationGovernance
