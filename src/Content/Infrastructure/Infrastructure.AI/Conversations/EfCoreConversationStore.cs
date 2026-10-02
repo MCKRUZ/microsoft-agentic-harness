@@ -103,8 +103,6 @@ public sealed class EfCoreConversationStore : IConversationStore
 
         await using var context = await _contextFactory.CreateDbContextAsync(ct);
 
-        // Two header columns and no message query: this exists so a caller that only needs the
-        // owner and the bound agent does not pay for the transcript GetAsync hydrates.
         var header = await context.Conversations
             .AsNoTracking()
             .Where(c => c.Id == conversationId)

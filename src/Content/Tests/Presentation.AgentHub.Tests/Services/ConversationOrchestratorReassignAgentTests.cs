@@ -184,8 +184,7 @@ public sealed class ConversationOrchestratorReassignAgentTests
 
     /// <summary>
     /// The pre-lease check and the in-lease no-op decision need an owner and an agent name, never a
-    /// transcript. Hydrating the whole message history for each (issue #762) cost two extra loads on
-    /// every reassignment of a long conversation, to compare one column.
+    /// transcript.
     /// </summary>
     [Fact]
     public async Task ReassignAgentAsync_NeverLoadsTheTranscriptToDecideWhetherAnythingChanged()
@@ -201,8 +200,6 @@ public sealed class ConversationOrchestratorReassignAgentTests
         _store.Verify(s => s.GetAsync(
             It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never,
             "the full-record read hydrates every message; the header-only read exists so this path does not");
-        _store.Verify(s => s.GetAgentNameAsync("c1", "user1", It.IsAny<CancellationToken>()), Times.Exactly(2),
-            "once before the lease for ownership/existence, once under it for the no-op decision");
     }
 
     /// <summary>

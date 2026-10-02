@@ -14,7 +14,7 @@ public sealed partial class ConversationOrchestrator
         // conversation it cannot find, and an unauthorized caller must never hold the lease even
         // briefly -- doing so would stall the real owner's concurrent turn on this same conversation
         // for no reason. Only the owner and the bound agent are needed to decide that, so this reads
-        // the header, not the transcript (issue #762).
+        // the header, not the transcript.
         var preLeaseAgentName = await _conversationStore.GetAgentNameAsync(conversationId, callerId, ct);
         if (preLeaseAgentName is null)
             return null;

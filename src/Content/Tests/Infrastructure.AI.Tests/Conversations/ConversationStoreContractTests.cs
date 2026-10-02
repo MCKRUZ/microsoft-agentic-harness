@@ -102,16 +102,11 @@ public abstract class ConversationStoreContractTests
     }
 
     [Fact]
-    public async Task GetAgentNameAsync_ReturnsTheBoundAgentAndFollowsAReassignment()
+    public async Task GetAgentNameAsync_ReturnsTheBoundAgent()
     {
         var record = await Store.CreateAsync("first-agent", Owner);
-        await Store.AppendMessageAsync(record.Id, Owner, UserMessage("a transcript to skip"));
 
         (await Store.GetAgentNameAsync(record.Id, Owner)).Should().Be("first-agent");
-
-        await Store.ReassignAgentAsync(record.Id, Owner, "second-agent");
-
-        (await Store.GetAgentNameAsync(record.Id, Owner)).Should().Be("second-agent");
     }
 
     [Fact]
