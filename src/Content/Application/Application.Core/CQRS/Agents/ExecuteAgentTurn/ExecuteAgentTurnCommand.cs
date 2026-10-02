@@ -1,3 +1,4 @@
+using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.MediatR;
 using Application.AI.Common.Models.Conversations;
 using Application.Common.Interfaces.MediatR;
@@ -130,6 +131,17 @@ public record AgentTurnResult : IAgentTurnResult
 	public int CacheWrite { get; init; }
 	public decimal CostUsd { get; init; }
 	public string? Model { get; init; }
+
+	/// <summary>Returns this result carrying <paramref name="usage"/>'s tokens, cost and model.</summary>
+	public AgentTurnResult WithUsage(LlmUsageSnapshot usage) => this with
+	{
+		InputTokens = usage.InputTokens,
+		OutputTokens = usage.OutputTokens,
+		CacheRead = usage.CacheRead,
+		CacheWrite = usage.CacheWrite,
+		CostUsd = usage.CostUsd,
+		Model = usage.Model,
+	};
 
 	/// <summary>
 	/// Snapshot of the per-invocation governance decisions the agent's tool calls passed through

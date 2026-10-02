@@ -197,8 +197,7 @@ public sealed partial class ConversationOrchestrator
             AgentTurnStreamSink.Current = previousSink;
         }
 
-        // Charged before the outcome is looked at: a turn that failed or was cancelled still paid for
-        // the model calls it made, and the budget is what stops a conversation spending without limit.
+        // Before the outcome is looked at: a failed or cancelled turn still spent.
         await _conversationBudget.RecordTurnUsageAsync(conversationId, result, _logger);
 
         if (!result.Success)

@@ -45,10 +45,8 @@ public interface IConversationBudgetTracker
     /// <remarks>
     /// A turn's usage includes what the sub-agents it delegated to spent: each delegation folds its
     /// tokens into the delegating turn's <see cref="Interfaces.ILlmUsageCapture"/>, which is where every
-    /// caller reads this figure from. A turn that fails or is cancelled partway still reports what it
-    /// spent, and the transports charge it through
-    /// <see cref="Extensions.ConversationBudgetTrackerExtensions.RecordTurnUsageAsync"/> rather than by
-    /// hand, so the outcome does not decide whether a turn is charged.
+    /// caller reads this figure from. A failed or cancelled turn reports and is charged for what it spent;
+    /// transports charge through <see cref="Extensions.ConversationBudgetTrackerExtensions.RecordTurnUsageAsync"/>.
     /// </remarks>
     Task RecordUsageAsync(string budgetKey, int tokensUsed, CancellationToken cancellationToken = default);
 

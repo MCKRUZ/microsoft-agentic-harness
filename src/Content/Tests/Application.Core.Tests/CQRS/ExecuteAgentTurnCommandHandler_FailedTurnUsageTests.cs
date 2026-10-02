@@ -81,45 +81,30 @@ public sealed class ExecuteAgentTurnCommandHandler_FailedTurnUsageTests
         TurnNumber = 1,
     };
 
-    [Fact]
-    public async Task Handle_InternalFailureAfterSpending_ReportsWhatTheTurnSpent()
+    [Theory]
+    [InlineData(AgentTurnErrorKind.Internal)]
+    [InlineData(AgentTurnErrorKind.Configuration)]
+    [InlineData(AgentTurnErrorKind.Cancelled)]
+    public async Task Handle_FailureAfterSpending_ReportsWhatTheTurnSpent(AgentTurnErrorKind kind)
     {
-        ArrangeAgentThatSpendsThenFails(new InvalidOperationException("boom"));
+        ArrangeAgentThatSpendsThenFails(kind switch
+        {
+            AgentTurnErrorKind.Configuration => new AiProviderNotConfiguredException("no endpoint"),
+            AgentTurnErrorKind.Cancelled => new OperationCanceledException(),
+            _ => new InvalidOperationException("boom"),
+        });
+        using var cts = new CancellationTokenSource();
+        if (kind == AgentTurnErrorKind.Cancelled)
+            await cts.CancelAsync();
 
-        var result = await CreateHandler(CreateCapture()).Handle(Command(), CancellationToken.None);
+        var result = await CreateHandler(CreateCapture()).Handle(Command(), cts.Token);
 
         result.Success.Should().BeFalse();
-        result.ErrorKind.Should().Be(AgentTurnErrorKind.Internal);
+        result.ErrorKind.Should().Be(kind);
         result.InputTokens.Should().Be(900);
         result.OutputTokens.Should().Be(100);
         result.CacheRead.Should().Be(25);
         result.CacheWrite.Should().Be(5);
-    }
-
-    [Fact]
-    public async Task Handle_ConfigurationFailureAfterSpending_ReportsWhatTheTurnSpent()
-    {
-        ArrangeAgentThatSpendsThenFails(new AiProviderNotConfiguredException("no endpoint"));
-
-        var result = await CreateHandler(CreateCapture()).Handle(Command(), CancellationToken.None);
-
-        result.ErrorKind.Should().Be(AgentTurnErrorKind.Configuration);
-        result.InputTokens.Should().Be(900);
-        result.OutputTokens.Should().Be(100);
-    }
-
-    [Fact]
-    public async Task Handle_CancelledAfterSpending_ReportsWhatTheTurnSpent()
-    {
-        ArrangeAgentThatSpendsThenFails(new OperationCanceledException());
-        using var cts = new CancellationTokenSource();
-        await cts.CancelAsync();
-
-        var result = await CreateHandler(CreateCapture()).Handle(Command(), cts.Token);
-
-        result.ErrorKind.Should().Be(AgentTurnErrorKind.Cancelled);
-        result.InputTokens.Should().Be(900);
-        result.OutputTokens.Should().Be(100);
     }
 
     [Fact]

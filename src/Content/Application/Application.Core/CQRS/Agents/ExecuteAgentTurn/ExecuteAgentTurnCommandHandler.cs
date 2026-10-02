@@ -102,8 +102,7 @@ public partial class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAge
 		// successful one. Stays empty if the turn fails before resolution reaches it.
 		IReadOnlyList<string> skillIds = [];
 
-		// Hoisted for the same reason: once the run succeeds the capture has been drained into this, and a
-		// later step that throws (recording the turn, say) must still report what the run spent.
+		// Hoisted likewise: the run's drained usage, for a later step that throws.
 		LlmUsageSnapshot? takenUsage = null;
 
 		try
@@ -298,15 +297,9 @@ public partial class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAge
 				UpdatedHistory = updatedHistory,
 				ToolsInvoked = toolsInvoked,
 				ToolCalls = toolCalls,
-				InputTokens = usage.InputTokens,
-				OutputTokens = usage.OutputTokens,
-				CacheRead = usage.CacheRead,
-				CacheWrite = usage.CacheWrite,
-				CostUsd = usage.CostUsd,
-				Model = usage.Model,
 				Governance = _admissionPipeline.GetTrace(),
 				SkillIds = skillIds
-			};
+			}.WithUsage(usage);
 		}
 		catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
 		{
@@ -345,19 +338,10 @@ public partial class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAge
 	}
 
 	/// <summary>
-	/// Builds the result for a turn that did not complete, carrying whatever its model calls had
-	/// already spent.
+	/// Builds the result for a turn that did not complete. A failed turn still reports what its model
+	/// calls spent (the budget is charged from the result); <paramref name="alreadyTaken"/> is used when
+	/// the run completed and drained the capture before a later step threw.
 	/// </summary>
-	/// <remarks>
-	/// A turn that fails or is cancelled partway has still paid for the calls it made, and the
-	/// conversation budget is charged from this result — so reporting zero here let a conversation whose
-	/// turns keep failing late spend without ever tripping its ceiling (#778). Reading the capture here
-	/// also leaves nothing behind in it for the next turn of the same scope to be charged for. The
-	/// capture is the scoped one every participant of this request shares, so a Magentic run that threw
-	/// partway reports its participants' spend too. When the run itself completed and something after it
-	/// threw, the capture has already been drained into <paramref name="alreadyTaken"/>, which is used
-	/// instead of reading an empty capture.
-	/// </remarks>
 	private AgentTurnResult FailedTurn(
 		ExecuteAgentTurnCommand request,
 		IReadOnlyList<string> skillIds,
@@ -375,13 +359,7 @@ public partial class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAge
 			Error = error,
 			ErrorKind = errorKind,
 			SkillIds = skillIds,
-			InputTokens = usage.InputTokens,
-			OutputTokens = usage.OutputTokens,
-			CacheRead = usage.CacheRead,
-			CacheWrite = usage.CacheWrite,
-			CostUsd = usage.CostUsd,
-			Model = usage.Model,
-		};
+		}.WithUsage(usage);
 	}
 
 	/// <summary>

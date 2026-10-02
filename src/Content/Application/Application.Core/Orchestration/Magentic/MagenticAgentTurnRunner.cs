@@ -239,10 +239,10 @@ public sealed class MagenticAgentTurnRunner : IMagenticAgentTurnRunner
 			_logger.LogError(
 				"Magentic turn for supervisor {AgentId} failed: {Errors}", supervisor.Id, rawError);
 
-			// A failed workflow has still paid for every manager and participant call it made, and the
-			// conversation budget is charged from this result (#778).
+			// A failed workflow still paid for every manager and participant call; the budget is charged
+			// from this result.
 			return Failure(userMessage, conversationHistory,
-				"The multi-agent workflow failed to complete.", usage);
+				"The multi-agent workflow failed to complete.").WithUsage(usage);
 		}
 
 		var workflow = result.Value!;
@@ -273,14 +273,8 @@ public sealed class MagenticAgentTurnRunner : IMagenticAgentTurnRunner
 			Response = responseText,
 			UpdatedHistory = updatedHistory,
 			ToolsInvoked = usage.ToolNames,
-			InputTokens = usage.InputTokens,
-			OutputTokens = usage.OutputTokens,
-			CacheRead = usage.CacheRead,
-			CacheWrite = usage.CacheWrite,
-			CostUsd = usage.CostUsd,
-			Model = usage.Model,
 			Governance = _admissionPipeline.GetTrace(),
-		};
+		}.WithUsage(usage);
 	}
 
 	/// <summary>
@@ -424,7 +418,7 @@ public sealed class MagenticAgentTurnRunner : IMagenticAgentTurnRunner
 	}
 
 	private static AgentTurnResult Failure(
-		string userMessage, IReadOnlyList<ChatMessage> history, string error, LlmUsageSnapshot? usage = null) =>
+		string userMessage, IReadOnlyList<ChatMessage> history, string error) =>
 		new()
 		{
 			Success = false,
@@ -432,11 +426,5 @@ public sealed class MagenticAgentTurnRunner : IMagenticAgentTurnRunner
 			UpdatedHistory = [.. history, new ChatMessage(ChatRole.User, userMessage)],
 			Error = error,
 			ErrorKind = AgentTurnErrorKind.Internal,
-			InputTokens = usage?.InputTokens ?? 0,
-			OutputTokens = usage?.OutputTokens ?? 0,
-			CacheRead = usage?.CacheRead ?? 0,
-			CacheWrite = usage?.CacheWrite ?? 0,
-			CostUsd = usage?.CostUsd ?? 0m,
-			Model = usage?.Model,
 		};
 }

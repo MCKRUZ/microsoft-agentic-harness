@@ -9,23 +9,13 @@ namespace Application.AI.Common.Extensions;
 /// </summary>
 /// <remarks>
 /// <para>
-/// Three transports each wrote this charge out by hand, on the success path only, so a turn that
-/// failed or was cancelled after its model calls had already been paid for charged nothing (#778).
-/// Putting the formula and the cancellation rule in one place is what stops a fourth transport, or a
-/// future edit to one of these, from reintroducing that.
+/// <strong>Never under the caller's token.</strong> A disconnecting client cancels the token the turn
+/// ran under, and that token on the write would abandon the spend of exactly the turn that was cut short.
 /// </para>
 /// <para>
-/// <strong>Never under the caller's token.</strong> A client that disconnects cancels the token the turn
-/// ran under, and that same cancelled token would make the accrual throw — losing the spend of exactly
-/// the turn that was cut short. The spend has already happened, so recording it is not something the
-/// caller's patience can veto. (A durable tracker's write is a single small statement; the cost of not
-/// cancelling it is negligible.)
-/// </para>
-/// <para>
-/// <strong>An accrual error never replaces a failed turn's outcome.</strong> For a turn that already
-/// failed or was cancelled, the caller has something specific to do with that outcome (route a
-/// cancellation quietly, report the failure); a tracker error there is logged and the outcome stands.
-/// For a successful turn the error propagates, as it always did.
+/// <strong>An accrual error never replaces a failed turn's outcome.</strong> The caller has something
+/// specific to do with a failure or cancellation, so a tracker error there is logged and the outcome
+/// stands. For a successful turn the error propagates.
 /// </para>
 /// </remarks>
 public static class ConversationBudgetTrackerExtensions
