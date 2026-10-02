@@ -314,7 +314,20 @@ public sealed partial class ConversationOrchestrator
             _logger.LogDebug("No observability session for conversation {ConversationId}", conversationId);
 
         if (tracked?.ConversationId == conversationId)
+        {
+            // #765: the connection stayed on this conversation, but the conversation may have been
+            // reassigned to a different agent since this connection was last tracked (PATCH
+            // /conversations/{id}/agent). dispatchAgentName (the caller's `agentName`, resolved
+            // fresh under the turn lease) is the source of truth; refresh the tracked entry so
+            // ConnectionsActive/ConversationDuration/TurnsPerConversation at disconnect or idle
+            // cleanup — and the active-conversation view — report the agent the conversation
+            // actually belongs to now, not whatever it was first tracked under. Not a new
+            // connection becoming active, so the gauge below is deliberately untouched.
+            if (tracked.AgentName != agentName)
+                _connectionTracker.Track(sessionKey, tracked with { AgentName = agentName });
+
             return state;
+        }
 
         // The gauge counts entries in the tracker, so it moves where entries move — here, next to the
         // Track that replaces one, and not a moment earlier. Decrementing up beside EndSessionAsync

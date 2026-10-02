@@ -1085,6 +1085,58 @@ public class ConversationOrchestratorTests
     }
 
     /// <summary>
+    /// Proves the fix for #765: a connection already tracked on this conversation must have its
+    /// tracked <see cref="ActiveConversationInfo.AgentName"/> refreshed when the conversation has
+    /// been reassigned to a different agent since the connection was last tracked -- not only when
+    /// the connection switches to a different conversation entirely.
+    /// </summary>
+    /// <remarks>
+    /// Before this fix, <c>EnsureSessionTrackedAsync</c> returned early whenever
+    /// <c>tracked.ConversationId == conversationId</c>, skipping the <c>Track</c> call that would
+    /// have refreshed <c>AgentName</c>. The connection then reported metrics (and, at
+    /// disconnect/idle-cleanup, its final tags) under the agent it was reassigned AWAY from, for the
+    /// rest of that connection's life on the conversation.
+    /// </remarks>
+    [Fact]
+    public async Task SendMessage_ConnectionAlreadyTrackedButConversationWasReassigned_RefreshesTrackedAgentName()
+    {
+        var sessionId = Guid.NewGuid();
+        var tracked = new ActiveConversationInfo(
+            "c1", "agent-a", "user1", DateTimeOffset.UtcNow, 1, sessionId);
+        _connectionTracker.Setup(t => t.Get("conn1")).Returns(tracked);
+
+        // The conversation was reassigned to agent-b since this connection was last tracked --
+        // DispatchTurnAsync's fresh, under-the-lease read reflects that.
+        var record = new ConversationRecord("c1", "agent-b", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, [])
+        {
+            ObservabilitySessionId = sessionId,
+        };
+        _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
+        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", 20, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<ConversationMessage>());
+
+        _mediator.Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new AgentTurnResult { Success = true, Response = "Hi", UpdatedHistory = [] });
+
+        var orchestrator = CreateOrchestrator();
+
+        using var probe = new GaugeProbe(OrchestrationConventions.ConnectionsActive);
+        await orchestrator.SendMessageAsync(
+            "conn1", "c1", Guid.NewGuid(), "Hello", "user1", null, CancellationToken.None);
+
+        _connectionTracker.Verify(
+            t => t.Track("conn1", It.Is<ActiveConversationInfo>(i =>
+                i.ConversationId == "c1" && i.AgentName == "agent-b")),
+            Times.Once,
+            "the tracked AgentName must follow the conversation's real, current agent -- not stay " +
+            "pinned to whatever agent the connection first observed it under");
+
+        probe.Net.Should().Be(0,
+            "refreshing the agent name for an already-tracked connection is not a new connection " +
+            "becoming active, so it must not double-count the gauge");
+    }
+
+    /// <summary>
     /// A conversation that already has a session and totals must be continued, not restarted.
     /// </summary>
     /// <remarks>
