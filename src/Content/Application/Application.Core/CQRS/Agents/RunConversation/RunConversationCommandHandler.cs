@@ -4,6 +4,7 @@ using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.AI;
 using Application.AI.Common.Models.Conversations;
 using Application.AI.Common.OpenTelemetry.Metrics;
+using Application.AI.Common.Services;
 using Application.Core.CQRS.Agents.ExecuteAgentTurn;
 using Domain.AI.Governance;
 using Domain.AI.Observability.Models;
@@ -146,9 +147,7 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 		await _conversationStore.GetOrCreateAsync(
 			request.AgentName, ownerId, request.ConversationId, cancellationToken);
 
-		await using var lease = await _turnLease.AcquireAsync(request.ConversationId, cancellationToken);
-		using var turnCts = CancellationTokenSource.CreateLinkedTokenSource(
-			cancellationToken, lease.LeaseLost);
+		await using var leased = await LeasedTurn.AcquireAsync(_turnLease, request.ConversationId, cancellationToken);
 
 		// Read fresh, now that the lease is held, rather than trusting request.AgentName -- a
 		// reassignment (PATCH /conversations/{id}/agent) that writes a new agent name and evicts the
@@ -157,7 +156,7 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 		// dispatches, logs, and reports telemetry/metrics using THIS read, never request.AgentName,
 		// so this run cannot resurrect the agent it was reassigned away from or re-cache it under the
 		// stale name (issue #761 -- the same race #700 closed for the SignalR hub path).
-		var dispatchRecord = await _conversationStore.GetAsync(request.ConversationId, ownerId, turnCts.Token);
+		var dispatchRecord = await _conversationStore.GetAsync(request.ConversationId, ownerId, leased.Token);
 		if (dispatchRecord is null)
 		{
 			_logger.LogError(
@@ -185,7 +184,7 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 			replayPolicy,
 			_logger);
 
-		return await RunAsync(request, transcript, dispatchRecord.AgentName, dispatchRecord, turnCts.Token);
+		return await RunAsync(request, transcript, dispatchRecord.AgentName, dispatchRecord, leased.Token);
 	}
 
 	private async Task<ConversationResult> RunAsync(

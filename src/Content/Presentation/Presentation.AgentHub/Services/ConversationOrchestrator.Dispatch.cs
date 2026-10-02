@@ -68,15 +68,13 @@ public sealed partial class ConversationOrchestrator
         Func<CancellationToken, Task<T>> turn,
         CancellationToken ct)
     {
-        await using var lease = await _turnLease.AcquireAsync(conversationId, ct);
-        using var turnCts = CancellationTokenSource.CreateLinkedTokenSource(ct, lease.LeaseLost);
+        await using var leased = await LeasedTurn.AcquireAsync(_turnLease, conversationId, ct);
 
         try
         {
-            return await turn(turnCts.Token);
+            return await turn(leased.Token);
         }
-        catch (OperationCanceledException)
-            when (lease.LeaseLost.IsCancellationRequested && !ct.IsCancellationRequested)
+        catch (OperationCanceledException) when (leased.LeaseWasLost)
         {
             _logger.LogWarning(
                 "Turn on conversation {ConversationId} stopped: another host took its lease.",

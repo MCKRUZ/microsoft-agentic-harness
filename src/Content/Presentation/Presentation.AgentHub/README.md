@@ -250,7 +250,7 @@ dotnet run --project src/Content/Presentation/Presentation.AgentHub
 
 1. Add the method to `AgentTelemetryHub` with `[Authorize]`
 2. Call `ValidateOwnershipAsync()` for conversation-scoped methods
-3. Lease the conversation's turn via `IConversationTurnLease`, and run the turn under a token linked to the handle's `LeaseLost` (see *Concurrency safety* above) — `ConversationOrchestrator.WithTurnLeaseAsync` already does both
+3. Lease the conversation's turn via `IConversationTurnLease`, and run the turn under a token linked to the handle's `LeaseLost` (see *Concurrency safety* above) — `LeasedTurn.AcquireAsync` (in `Application.AI.Common.Services`) does both, and `ConversationOrchestrator.WithTurnLeaseAsync` wraps it
 4. Emit server events via `Clients.Caller.SendAsync("EventName", payload)`
 
 ### Adding a New AG-UI Event Type
