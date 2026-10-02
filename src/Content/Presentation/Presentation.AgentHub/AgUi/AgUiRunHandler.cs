@@ -137,11 +137,11 @@ public sealed class AgUiRunHandler
 
         Activity.Current?.AddBaggage(UserConventions.UserId, callerId);
 
-        LeasedTurn leased;
+        LeasedTurn leasedTurn;
         try
         {
             // Blocks while another turn on this conversation is in flight — here or in another host.
-            leased = await LeasedTurn.AcquireAsync(_turnLease, input.ThreadId, ct);
+            leasedTurn = await LeasedTurn.AcquireAsync(_turnLease, input.ThreadId, ct);
         }
         catch (OperationCanceledException)
         {
@@ -156,9 +156,9 @@ public sealed class AgUiRunHandler
             return;
         }
 
-        await using (leased)
+        await using (leasedTurn)
         {
-            await RunLeasedTurnAsync(input, writer, leased, userMessage, callerId, ct);
+            await RunLeasedTurnAsync(input, writer, leasedTurn, userMessage, callerId, ct);
         }
     }
 
@@ -167,7 +167,7 @@ public sealed class AgUiRunHandler
     // -------------------------------------------------------------------------
 
     /// <summary>
-    /// Runs the turn while <paramref name="leased"/> is held: runs it under the token a lost lease
+    /// Runs the turn while <paramref name="leasedTurn"/> is held: runs it under the token a lost lease
     /// cancels, re-reads the conversation now that the turn is exclusive, dispatches, and
     /// reports each way the turn can end.
     /// </summary>
@@ -180,14 +180,13 @@ public sealed class AgUiRunHandler
     private async Task RunLeasedTurnAsync(
         RunAgentInput input,
         IAgUiEventWriter writer,
-        LeasedTurn leased,
+        LeasedTurn leasedTurn,
         AgUiMessage userMessage,
         string callerId,
         CancellationToken ct)
     {
-        // Losing the lease mid-turn has to stop the turn: leased.Token is the one a lost lease
+        // Losing the lease mid-turn has to stop the turn: leasedTurn.Token is the one a lost lease
         // cancels, so everything below runs under it rather than under the caller's own token.
-        var turnToken = leased.Token;
 
         // Names the agent this run was counted against, and by being non-null says that it was counted
         // at all. The gauge is incremented only once the conversation has been read — that is the first
@@ -202,9 +201,9 @@ public sealed class AgUiRunHandler
             // That was already true of the semaphore this replaces, but the turn ahead can now belong
             // to another host, so "nothing happened in between" is no longer a safe reading. The
             // SignalR path already re-reads inside its lock.
-            var leasedRecord = await _conversationStore.GetAsync(input.ThreadId, callerId, turnToken);
+            var leased = await _conversationStore.GetAsync(input.ThreadId, callerId, leasedTurn.Token);
 
-            if (leasedRecord is null)
+            if (leased is null)
             {
                 _logger.LogWarning(
                     "AG-UI run {RunId}: conversation {ThreadId} was deleted while this turn queued.",
@@ -218,7 +217,7 @@ public sealed class AgUiRunHandler
             // have advanced them — numbering from the stale copy would collide with a turn already
             // written.
             var telemetry = await _telemetryRecorder.BeginAsync(
-                input.ThreadId, callerId, leasedRecord.AgentName, leasedRecord, turnToken);
+                input.ThreadId, callerId, leased.AgentName, leased, leasedTurn.Token);
 
             // What this path can honestly count is a run, and it counts every one. It used to increment
             // the shared active-sessions gauge only when a session was opened, and never decrement it —
@@ -226,7 +225,7 @@ public sealed class AgUiRunHandler
             // conversation's open for the next one. So the number it contributed was "conversations
             // this transport has ever started", rising forever, added to two other transports' answers
             // to two other questions (issue #289). A run, by contrast, plainly ends: in the finally.
-            countedAgent = leasedRecord.AgentName;
+            countedAgent = leased.AgentName;
             OrchestrationMetrics.RunsActive.Add(
                 1, new TagList { { AgentConventions.Name, countedAgent } });
 
@@ -234,7 +233,7 @@ public sealed class AgUiRunHandler
             _writerAccessor.ThreadId = input.ThreadId;
             _writerAccessor.CallerId = callerId;
             await ExecuteRunAsync(
-                input, writer, leasedRecord, userMessage, callerId, telemetry, turnToken);
+                input, writer, leased, userMessage, callerId, telemetry, leasedTurn.Token);
         }
         catch (OperationCanceledException)
         {
@@ -242,7 +241,7 @@ public sealed class AgUiRunHandler
             // lease was taken — telling them apart is the difference between a silent control and one
             // whose effects can be seen. The rule for which it was lives in LeasedTurn.LeaseWasLost,
             // shared with every other path that runs a turn.
-            if (leased.LeaseWasLost)
+            if (leasedTurn.LeaseWasLost)
             {
                 _logger.LogWarning(
                     "AG-UI run {RunId}: turn stopped because the lease on conversation {ThreadId} was lost.",

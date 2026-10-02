@@ -148,7 +148,6 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 			request.AgentName, ownerId, request.ConversationId, cancellationToken);
 
 		await using var leased = await LeasedTurn.AcquireAsync(_turnLease, request.ConversationId, cancellationToken);
-		var turnToken = leased.Token;
 
 		// Read fresh, now that the lease is held, rather than trusting request.AgentName -- a
 		// reassignment (PATCH /conversations/{id}/agent) that writes a new agent name and evicts the
@@ -157,7 +156,7 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 		// dispatches, logs, and reports telemetry/metrics using THIS read, never request.AgentName,
 		// so this run cannot resurrect the agent it was reassigned away from or re-cache it under the
 		// stale name (issue #761 -- the same race #700 closed for the SignalR hub path).
-		var dispatchRecord = await _conversationStore.GetAsync(request.ConversationId, ownerId, turnToken);
+		var dispatchRecord = await _conversationStore.GetAsync(request.ConversationId, ownerId, leased.Token);
 		if (dispatchRecord is null)
 		{
 			_logger.LogError(
@@ -185,7 +184,7 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 			replayPolicy,
 			_logger);
 
-		return await RunAsync(request, transcript, dispatchRecord.AgentName, dispatchRecord, turnToken);
+		return await RunAsync(request, transcript, dispatchRecord.AgentName, dispatchRecord, leased.Token);
 	}
 
 	private async Task<ConversationResult> RunAsync(

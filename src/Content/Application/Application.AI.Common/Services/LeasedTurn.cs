@@ -8,13 +8,11 @@ namespace Application.AI.Common.Services;
 /// </summary>
 /// <remarks>
 /// <para>
-/// Every path that produces a turn on a conversation does the same three things: wait for the
-/// lease, link the handle's <see cref="IConversationTurnLeaseHandle.LeaseLost"/> into the token
-/// driving the turn, and — when that token fires — decide whether the cause was the lease or the
-/// caller. They used to be written out by hand at each of those paths (the SignalR orchestrator,
-/// the AG-UI run handler, the durable run handler), which meant a correction to any one of the
-/// three had to be noticed and re-applied to the others by whoever remembered they existed. This
-/// type is the single place the shape lives.
+/// Every path that produces a turn on a conversation — the SignalR orchestrator, the AG-UI run
+/// handler, the durable run handler — does the same three things: wait for the lease, link the
+/// handle's <see cref="IConversationTurnLeaseHandle.LeaseLost"/> into the token driving the turn,
+/// and, when that token fires, decide whether the cause was the lease or the caller. This type is
+/// the single place that shape lives, so a correction to it reaches every path.
 /// </para>
 /// <para>
 /// What it deliberately does <em>not</em> own is what to do about a lost lease. The SignalR path
@@ -31,16 +29,18 @@ public sealed class LeasedTurn : IAsyncDisposable
 {
     private readonly IConversationTurnLeaseHandle _lease;
     private readonly CancellationTokenSource _turnTokenSource;
+    private readonly CancellationToken _leaseLost;
     private readonly CancellationToken _callerToken;
-    private bool? _lostAtDispose;
 
     private LeasedTurn(
         IConversationTurnLeaseHandle lease,
         CancellationTokenSource turnTokenSource,
+        CancellationToken leaseLost,
         CancellationToken callerToken)
     {
         _lease = lease;
         _turnTokenSource = turnTokenSource;
+        _leaseLost = leaseLost;
         _callerToken = callerToken;
     }
 
@@ -60,12 +60,13 @@ public sealed class LeasedTurn : IAsyncDisposable
     /// Both halves of the test matter. When the caller has <em>also</em> cancelled, the disconnect
     /// is the honest explanation — and there is usually no longer a stream for the other
     /// explanation to reach — so a real disconnect that happens to race the loss is reported as a
-    /// disconnect, not as a lost lease. A durable lease's
-    /// <see cref="IConversationTurnLeaseHandle.LeaseLost"/> throws once the handle is disposed, so
-    /// disposal captures the answer first and this property keeps returning it afterwards.
+    /// disconnect, not as a lost lease. The handle's
+    /// <see cref="IConversationTurnLeaseHandle.LeaseLost"/> getter throws once a durable handle is
+    /// disposed, so the token is read once at acquisition; this property is then safe to read at
+    /// any point, including after the scope has been disposed.
     /// </remarks>
     public bool LeaseWasLost =>
-        _lostAtDispose ?? (_lease.LeaseLost.IsCancellationRequested && !_callerToken.IsCancellationRequested);
+        _leaseLost.IsCancellationRequested && !_callerToken.IsCancellationRequested;
 
     /// <summary>
     /// Waits until this caller holds the turn lease for <paramref name="conversationId"/>, then
@@ -90,8 +91,9 @@ public sealed class LeasedTurn : IAsyncDisposable
 
         try
         {
-            var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, lease.LeaseLost);
-            return new LeasedTurn(lease, linked, ct);
+            var leaseLost = lease.LeaseLost;
+            var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, leaseLost);
+            return new LeasedTurn(lease, linked, leaseLost, ct);
         }
         catch
         {
@@ -105,8 +107,6 @@ public sealed class LeasedTurn : IAsyncDisposable
     /// <inheritdoc />
     public async ValueTask DisposeAsync()
     {
-        _lostAtDispose ??= LeaseWasLost;
-
         try
         {
             _turnTokenSource.Dispose();
