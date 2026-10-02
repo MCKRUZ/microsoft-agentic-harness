@@ -316,6 +316,8 @@ public sealed class AgUiClientToolBridgeTests
 
         public Task<ConversationRecord?> GetAsync(string conversationId, string callerId, CancellationToken ct = default) =>
             throw new NotSupportedException();
+        public Task<string?> GetAgentNameAsync(string conversationId, string callerId, CancellationToken ct = default) =>
+            throw new NotSupportedException();
         public Task<IReadOnlyList<ConversationRecord>> ListAsync(string userId, CancellationToken ct = default) =>
             throw new NotSupportedException();
         public Task<ConversationRecord> CreateAsync(string agentName, string userId, string? conversationId = null, CancellationToken ct = default) =>

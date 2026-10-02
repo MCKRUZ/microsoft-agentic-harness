@@ -13,9 +13,10 @@ public sealed partial class ConversationOrchestrator
         // the lease, because the durable implementation throws InvalidOperationException for a
         // conversation it cannot find, and an unauthorized caller must never hold the lease even
         // briefly -- doing so would stall the real owner's concurrent turn on this same conversation
-        // for no reason.
-        var current = await _conversationStore.GetAsync(conversationId, callerId, ct);
-        if (current is null)
+        // for no reason. Only the owner and the bound agent are needed to decide that, so this reads
+        // the header, not the transcript.
+        var preLeaseAgentName = await _conversationStore.GetAgentNameAsync(conversationId, callerId, ct);
+        if (preLeaseAgentName is null)
             return null;
 
         // Held for the no-op determination, the write, AND the eviction -- not just the write -- and
@@ -31,7 +32,7 @@ public sealed partial class ConversationOrchestrator
         // from using a value it captured before either lease was ever contested.
         return await WithTurnLeaseAsync(conversationId, async leaseCt =>
         {
-            // Re-read fresh, under the lease, rather than reusing the pre-lease `current` above --
+            // Re-read fresh, under the lease, rather than reusing the pre-lease `preLeaseAgentName` above --
             // review caught a real race in an earlier version of this fix that compared the
             // REQUESTED name against a pre-lease snapshot: a second, concurrent reassignment (or an
             // interleaving turn dispatch that rebuilt and re-cached the agent for a DIFFERENT
@@ -40,11 +41,11 @@ public sealed partial class ConversationOrchestrator
             // "did the agent actually change" from state read inside the same lease the write and
             // eviction happen under closes that window completely, the same way dispatchAgentName
             // closes it for ordinary turns.
-            var currentUnderLease = await _conversationStore.GetAsync(conversationId, callerId, leaseCt);
+            var currentUnderLease = await _conversationStore.GetAgentNameAsync(conversationId, callerId, leaseCt);
             if (currentUnderLease is null)
                 return null;
 
-            var isNoOp = string.Equals(currentUnderLease.AgentName, agentName, StringComparison.OrdinalIgnoreCase);
+            var isNoOp = string.Equals(currentUnderLease, agentName, StringComparison.OrdinalIgnoreCase);
 
             // The write always happens, even on a no-op -- every version of this call before this fix
             // went straight to IConversationStore.ReassignAgentAsync with no equality check at all,

@@ -97,6 +97,26 @@ public sealed class EfCoreConversationStore : IConversationStore
     }
 
     /// <inheritdoc/>
+    public async Task<string?> GetAgentNameAsync(string conversationId, string callerId, CancellationToken ct = default)
+    {
+        ConversationOwnership.RequireCallerId(callerId);
+
+        await using var context = await _contextFactory.CreateDbContextAsync(ct);
+
+        var header = await context.Conversations
+            .AsNoTracking()
+            .Where(c => c.Id == conversationId)
+            .Select(c => new { c.UserId, c.AgentName })
+            .FirstOrDefaultAsync(ct);
+
+        if (header is null)
+            return null;
+
+        RequireOwner(conversationId, callerId, header.UserId);
+        return header.AgentName;
+    }
+
+    /// <inheritdoc/>
     public async Task<IReadOnlyList<ConversationRecord>> ListAsync(string userId, CancellationToken ct = default)
     {
         ConversationOwnership.RequireCallerId(userId);
