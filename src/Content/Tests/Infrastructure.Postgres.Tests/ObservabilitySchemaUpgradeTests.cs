@@ -346,8 +346,9 @@ public sealed class ObservabilitySchemaUpgradeTests
             """
             SELECT COUNT(*) FROM pg_constraint con
             JOIN pg_class rel ON rel.oid = con.conrelid
-            WHERE rel.relname = 'session_messages' AND con.contype = 'c'
-              AND pg_get_constraintdef(con.oid) ILIKE '%source%'
+            JOIN pg_namespace nsp ON nsp.oid = rel.relnamespace
+            WHERE rel.relname = 'session_messages' AND nsp.nspname = current_schema()
+              AND con.contype = 'c' AND pg_get_constraintdef(con.oid) ILIKE '%source%'
             """));
     }
 
