@@ -1,9 +1,13 @@
 using System.Diagnostics;
 using Application.AI.Common.Factories;
+using Application.AI.Common.Interfaces;
+using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Escalation;
+using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Traces;
 using Application.AI.Common.OpenTelemetry.Metrics;
 using Application.AI.Common.Services;
+using Application.AI.Common.Services.Governance;
 using Application.AI.Common.Services.Tools;
 using Domain.Common.Helpers;
 using Domain.AI.Agents;
@@ -14,6 +18,7 @@ using Domain.AI.Skills;
 using Domain.AI.Telemetry.Conventions;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
 namespace Infrastructure.AI.Agents;
@@ -298,6 +303,25 @@ public sealed partial class CapabilityMatchSupervisor
         Stopwatch stopwatch,
         CancellationToken ct)
     {
+        // #757: the subagent's tool calls must be authorized against ITS OWN governance identity —
+        // ToolInvocationGovernor's per-agent permission rules and denial rate-limiter key off
+        // IAgentExecutionContext.AgentId, and the entry turn already published its own
+        // IToolCallAdmissionPipeline onto the ToolAdmissionAccessor ambient for the whole turn
+        // (ExecuteAgentTurnCommandHandler), so a subagent running inside that same ambient without
+        // re-publishing would silently inherit it. Armed before the agent is even built (not after),
+        // so a setup failure here can never leave a named delegation's skill-prerequisite/trace-writer
+        // scope (below) without its cleanup — there is nothing yet to clean up. See
+        // ArmDelegationGovernance's remarks for why conversation id, call-once scope, and workload
+        // identity are inherited from the parent turn rather than re-minted from the delegation id.
+        //
+        // The scope is disposed via `await using` covering the REST OF THIS METHOD, not narrowed to
+        // just the RunAsync call below — CI's correctness-review caught an earlier, narrower version
+        // of this that leaked the scope if the agent-build step (immediately below) threw, since
+        // nothing had taken ownership of disposal yet at that point. Only the ADMISSION-PIPELINE
+        // ambient (ToolAdmissionAccessor.Begin) is narrowly scoped to the RunAsync call itself.
+        var governance = ArmDelegationGovernance(selection.SelectedAgent.AgentId, pendingRecord.DelegationId);
+        await using var governanceScope = governance.Scope;
+
         // #518: a named-agent delegation (SubagentType.NamedAgent) has no ISubagentProfileRegistry
         // entry — GetProfile only knows the built-in profiles. Build the runnable agent the same way
         // an ordinary turn does for an AGENT.md-registered agent (skill resolution, full context
@@ -369,17 +393,23 @@ public sealed partial class CapabilityMatchSupervisor
         // tool call), so without swapping the ambient here the subagent's tokens AND tool invocations
         // would fold into the ORCHESTRATOR turn's telemetry — it would report tool calls it never made.
         // A fresh capture scopes the subagent's work to this delegation and yields its real token cost.
-        // (Tool-invocation governance/progress ambients are intentionally left as-is; per-subagent
-        // governance re-scoping under enforcement is tracked as a follow-up — see the PR description.)
+        //
+        // This runs AFTER governance is armed (above), not before: the swap below has nothing
+        // fallible between it and the try block that uses it, so a throw out of ArmDelegationGovernance
+        // or the agent-build step above can never leave previousUsage stranded unrestored.
         var delegationUsage = new LlmUsageCapture(_options);
         var previousUsage = LlmUsageCapture.Current;
         LlmUsageCapture.Current = delegationUsage;
+
         AgentResponse response;
         try
         {
-            response = await agent.RunAsync(
-                [new ChatMessage(ChatRole.User, pendingRecord.TaskDescription)],
-                cancellationToken: ct);
+            using (ToolAdmissionAccessor.Begin(governance.Pipeline))
+            {
+                response = await agent.RunAsync(
+                    [new ChatMessage(ChatRole.User, pendingRecord.TaskDescription)],
+                    cancellationToken: ct);
+            }
         }
         finally
         {
@@ -415,6 +445,86 @@ public sealed partial class CapabilityMatchSupervisor
 
         var output = response.Text ?? string.Empty;
         return DelegationResult.Success(output, usage.InputTokens + usage.OutputTokens, durationMs);
+    }
+
+    /// <summary>
+    /// Opens a fresh DI scope for one delegation and arms it with the delegated agent's OWN
+    /// governance identity (#757) — kept as its own method so the exception-safety-sensitive
+    /// arm/Initialize/resolve sequence, including disposing the scope on a setup failure (see
+    /// the <c>catch</c> below), lives in exactly one place rather than inline in
+    /// <see cref="ExecuteAgent"/>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>Agent id is the delegated agent's own</strong> — that is the entire point of #757:
+    /// <see cref="Application.AI.Common.Services.Governance.ToolInvocationGovernor"/>'s per-agent
+    /// permission rules and denial rate-limiter must see the DELEGATE's id, not the entry agent's.
+    /// </para>
+    /// <para>
+    /// <strong>Conversation id, call-once scope, and workload identity are INHERITED from the
+    /// parent turn instead</strong>, via <see cref="IAmbientRequestScope"/> — re-minting any of them
+    /// from the delegation id would be wrong, not merely different:
+    /// </para>
+    /// <list type="bullet">
+    /// <item>A call-once tool the parent already claimed must stay claimed for every delegation it
+    /// spawns, or a delegation becomes a way to call it again — the identical rule
+    /// <c>SubPlanStepExecutor.PropagateGovernanceIdentity</c> documents for sub-plans, and the
+    /// reason <c>RunOrchestratedTaskCommandHandler</c> shares its own <c>ConversationId</c> across
+    /// every sub-agent it dispatches rather than minting a fresh one per dispatch.</item>
+    /// <item>Workload identity flows the same way so an A2A- or identity-propagated turn's delegate
+    /// is authorized as the real caller, not as the host's own default identity.</item>
+    /// </list>
+    /// <para>
+    /// Both fall back to the delegation id/no identity only when there is no ambient parent context
+    /// at all (a delegation run outside any governed turn) — narrower than the true scope is merely
+    /// inconvenient there, never a leak, since the delegation id is unique per call.
+    /// </para>
+    /// <para>
+    /// Note this is NOT the same mechanism <c>ArmGovernance</c>
+    /// (<c>DirectToolInvoker.Arming.cs</c>) uses for a direct tool invocation — that surface
+    /// deliberately mints a fresh, one-shot conversation id and omits call-once scope entirely,
+    /// because a direct invocation has no request-level session to inherit from. A delegation
+    /// does: it always runs inside a governed turn's scope.
+    /// </para>
+    /// </remarks>
+    private (AsyncServiceScope Scope, IToolCallAdmissionPipeline Pipeline) ArmDelegationGovernance(
+        string delegateAgentId, Guid delegationId)
+    {
+        var parentContext = _ambientScope.Current?.GetService<IAgentExecutionContext>();
+        var fallbackScope = delegationId.ToString();
+
+        var scope = _scopeFactory.CreateAsyncScope();
+        try
+        {
+            var delegatedContext = scope.ServiceProvider.GetRequiredService<IAgentExecutionContext>();
+            delegatedContext.Initialize(
+                delegateAgentId,
+                conversationId: string.IsNullOrEmpty(parentContext?.ConversationId)
+                    ? fallbackScope : parentContext.ConversationId,
+                turnNumber: 1,
+                callOnceScopeId: string.IsNullOrEmpty(parentContext?.CallOnceScopeId)
+                    ? fallbackScope : parentContext.CallOnceScopeId);
+            if (parentContext?.AgentIdentity is { } parentIdentity)
+                delegatedContext.SetIdentity(parentIdentity);
+
+            // Reset, not just resolved fresh: matches every other call site that arms this pipeline
+            // (DirectToolInvoker.Arming.cs, ExecuteAgentTurnCommandHandler, RunOrchestratedTaskCommandHandler,
+            // MagenticAgentTurnRunner, AgentEvaluationService) — harmless today since a brand-new scope
+            // can only resolve a pipeline already in default state, but explicit so this call site
+            // doesn't silently start relying on that invariant if scope lifetimes ever change.
+            var pipeline = scope.ServiceProvider.GetRequiredService<IToolCallAdmissionPipeline>();
+            pipeline.Reset();
+            return (scope, pipeline);
+        }
+        catch
+        {
+            // Nothing has handed the scope back to a caller yet, so nobody else will dispose it —
+            // a throw here (e.g. a misconfigured IToolCallAdmissionPipeline registration) would
+            // otherwise leak the scope, and with it the delegate's external governance attribution
+            // Initialize() just published (see AgentExecutionContext.Initialize's BeginTurn).
+            scope.Dispose();
+            throw;
+        }
     }
 
     /// <summary>
