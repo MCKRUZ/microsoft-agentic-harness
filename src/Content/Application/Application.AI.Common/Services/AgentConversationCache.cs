@@ -55,13 +55,9 @@ internal sealed class AgentConversationCache : IAgentConversationCache
             if (cached.Fingerprint.Matches(fingerprint))
                 return cached.Agent;
 
-            // The turn asks for something other than what this agent was built for — a per-run
-            // deployment override, a changed manifest. Nothing wrote settings, so nobody evicted;
-            // fall through and build the requested one. The old entry is deliberately NOT dropped
-            // first: the Set calls below replace it (finalising the old trace writer on the way), so a
-            // failed build — a bad deployment name, say — leaves the working agent in place rather than
-            // the conversation with none. Never Evict here: the conversation carries on, so its
-            // unlocked skills and registration history stay.
+            // Not dropped before the build: the Set calls below replace it (finalising the old trace
+            // writer), so a failed build leaves the working agent in place. Never Evict here — the
+            // conversation carries on, so its unlocked skills and registration history stay.
             _logger.LogDebug(
                 "Rebuilding agent for conversation {ConversationId}: build inputs changed since it was cached",
                 conversationId);

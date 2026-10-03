@@ -141,12 +141,8 @@ public sealed class AgentConversationCacheTests
     [Fact]
     public async Task GetOrCreateAsync_SameConversationDifferentSkills_BuildsTheRequestedSkillSet()
     {
-        // A hit is honoured only when the request still matches what the agent was built for (#788).
-        // Before that, the cache was keyed solely by conversation id and a hit returned the cached
-        // agent without looking at the requested skills at all — which is why plan steps each need
-        // their own id (PlanRunKeys.StepConversationId): two steps sharing one would have silently
-        // run under the first step's agent. A mismatch is now a rebuild instead, so sharing an id is
-        // merely wasteful rather than wrong; the per-step ids stay for budget and eviction isolation.
+        // A hit is honoured only when the request still matches what the agent was built for (#788);
+        // a mismatch is a rebuild, not a silent run under the first request's agent.
         var first = await _cache.GetOrCreateAsync("conv-shared", [ValidateSkillId], new SkillAgentOptions());
 
         var second = await _cache.GetOrCreateAsync(
@@ -174,7 +170,8 @@ public sealed class AgentConversationCacheTests
 
     /// <summary>
     /// One variant per build-affecting option, each differing from <see cref="BaseOptions"/> in exactly
-    /// that member — so dropping a comparison from the fingerprint fails the case that names it.
+    /// that member. A new member is compared by default (the fingerprint derives from the record), so
+    /// this lists the ones worth pinning, not a completeness contract.
     /// </summary>
     public static TheoryData<string, SkillAgentOptions> ChangedBuildInputs() => new()
     {
@@ -214,58 +211,25 @@ public sealed class AgentConversationCacheTests
         second.Should().NotBeSameAs(first, $"{changed} is a build input, so a hit would serve a stale agent");
     }
 
-    [Fact]
-    public void ChangedBuildInputs_CoversEverySkillAgentOptionsMemberNotExplicitlyExempt()
+    public static TheoryData<string[]?, string[]?> EquivalentAllowedTools() => new()
     {
-        // The fingerprint mirrors SkillAgentOptions by hand. Without this, a member added later that
-        // the factory bakes into the agent would be left out of it, and a turn changing it would be
-        // served the stale agent — the #788 bug again, with every other test green.
-        string[] exempt =
-        [
-            nameof(SkillAgentOptions.AdditionalTools),
-            nameof(SkillAgentOptions.MiddlewareTypes),
-            nameof(SkillAgentOptions.AdditionalProperties),
-            nameof(SkillAgentOptions.TraceScope),
-        ];
+        // The tool list is a ceiling intersected with the skills' allowlist: order carries no
+        // meaning, and null and empty both mean "no ceiling declared".
+        { ["Read", "Write"], ["Write", "Read"] },
+        { null, [] },
+    };
 
-        var members = typeof(SkillAgentOptions)
-            .GetProperties(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance)
-            .Select(p => p.Name)
-            .Where(name => name != "EqualityContract")
-            .Except(exempt);
-        var covered = ChangedBuildInputs().Select(row => (string)row[0]);
-
-        covered.Should().BeEquivalentTo(members,
-            "every build-affecting SkillAgentOptions member needs a fingerprint entry and a case above; " +
-            "a member that cannot be compared by value belongs in the exempt list, with the type docs updated");
-    }
-
-    [Fact]
-    public async Task GetOrCreateAsync_AllowedToolsReordered_IsTheSameBuild()
+    [Theory]
+    [MemberData(nameof(EquivalentAllowedTools))]
+    public async Task GetOrCreateAsync_EquivalentAllowedTools_IsTheSameBuild(string[]? first, string[]? second)
     {
-        // The tool list is a ceiling intersected with the skills' allowlist: order carries no meaning,
-        // so a manifest that lists the same tools differently must not cost a rebuild.
-        var first = await _cache.GetOrCreateAsync(
-            "conv-order", [ValidateSkillId], new SkillAgentOptions { AllowedTools = ["Read", "Write"] });
+        var a = await _cache.GetOrCreateAsync(
+            "conv-tools", [ValidateSkillId], new SkillAgentOptions { AllowedTools = first });
 
-        var second = await _cache.GetOrCreateAsync(
-            "conv-order", [ValidateSkillId], new SkillAgentOptions { AllowedTools = ["Write", "Read"] });
+        var b = await _cache.GetOrCreateAsync(
+            "conv-tools", [ValidateSkillId], new SkillAgentOptions { AllowedTools = second });
 
-        second.Should().BeSameAs(first);
-    }
-
-    [Fact]
-    public async Task GetOrCreateAsync_NoAllowedToolsDeclaredAsNullOrEmpty_IsTheSameBuild()
-    {
-        // Null and empty both mean "no ceiling declared" (SkillAgentOptions.AllowedTools), so an agent
-        // that flips between them across turns must not be rebuilt for it.
-        var first = await _cache.GetOrCreateAsync(
-            "conv-tools", [ValidateSkillId], new SkillAgentOptions { AllowedTools = null });
-
-        var second = await _cache.GetOrCreateAsync(
-            "conv-tools", [ValidateSkillId], new SkillAgentOptions { AllowedTools = [] });
-
-        second.Should().BeSameAs(first);
+        b.Should().BeSameAs(a, "an equivalent tool ceiling must not cost a rebuild");
     }
 
     [Fact]

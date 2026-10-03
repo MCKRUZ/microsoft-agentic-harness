@@ -1,71 +1,65 @@
-using System.Globalization;
 using Domain.AI.Skills;
 
 namespace Application.AI.Common.Services;
 
 /// <summary>
-/// The per-turn inputs that decide what an agent is built as, captured so
-/// <see cref="AgentConversationCache"/> can tell a cached agent that still matches the request from
-/// one that was built for something else.
+/// What an agent was built from, kept beside it in <see cref="AgentConversationCache"/> so a later
+/// request that asks for something else is rebuilt rather than served the stale agent.
 /// </summary>
 /// <remarks>
 /// <para>
-/// Covers the scalar and list-valued <see cref="SkillAgentOptions"/> members plus the skill ids:
-/// everything <c>ExecuteAgentTurnCommandHandler</c> derives from the conversation's settings, the
-/// agent definition and an AG-UI run's per-run deployment override. Comparison is by value, so two
-/// separately built but equal option sets match. A null and an empty
-/// <see cref="SkillAgentOptions.AllowedTools"/> both mean "no ceiling declared" and compare equal, and
-/// the tool list is compared as a set (it is a ceiling intersected with the skills' allowlist, so its
-/// order carries no meaning); skill ids stay ordered because merge order is meaningful.
+/// Derived from <see cref="SkillAgentOptions"/> itself rather than a hand-kept list of its members:
+/// the record's own value equality compares every scalar, so a member added later is part of the
+/// comparison by default and forgetting it costs an extra rebuild, never a stale agent. Only what
+/// record equality cannot compare is normalised out of the key and handled here:
+/// <see cref="SkillAgentOptions.AllowedTools"/> (a list, compared by reference) is held separately as a
+/// sorted set — it is a ceiling intersected with the skills' allowlist, so order carries no meaning and
+/// null and empty both mean "no ceiling" — and the skill ids stay ordered, because merge order matters.
 /// </para>
 /// <para>
-/// <strong>Cost model.</strong> One entry is held per conversation, so a conversation whose requests
-/// alternate between two build shapes — an AG-UI run with a per-run deployment override, then one
-/// without — rebuilds on every flip, each time replacing the execution context and starting a new
-/// trace. Retaining both variants would mean keying entries by fingerprint too, with matching
-/// eviction; that is not done because alternating shapes are the exception.
-/// </para>
-/// <para>
-/// <strong>Deliberately not part of identity:</strong> <see cref="SkillAgentOptions.AdditionalTools"/>,
+/// <strong>Not part of identity:</strong> <see cref="SkillAgentOptions.AdditionalTools"/>,
 /// <see cref="SkillAgentOptions.MiddlewareTypes"/>, <see cref="SkillAgentOptions.AdditionalProperties"/>
-/// and <see cref="SkillAgentOptions.TraceScope"/>. They are object-valued, have no value equality, and
-/// <see cref="SkillAgentOptions.TraceScope"/> is minted fresh per run, so including them would make
-/// every turn a miss. No caller of the cache sets them; one that starts to must widen this type
-/// rather than rely on a hit honouring them.
+/// and <see cref="SkillAgentOptions.TraceScope"/> — object-valued, and the trace scope is minted fresh
+/// per run, so comparing them would make every turn a miss. No caller of the cache sets them; one that
+/// starts to must widen this type rather than rely on a hit honouring them. A new list- or
+/// object-valued member would compare by reference and so rebuild every turn, which is the visible
+/// signal to normalise it here too.
+/// </para>
+/// <para>
+/// One entry is held per conversation, so a conversation alternating between two build shapes (an
+/// AG-UI run with a per-run deployment override, then one without) rebuilds on every flip.
 /// </para>
 /// </remarks>
 internal sealed class AgentBuildFingerprint
 {
+    private readonly SkillAgentOptions _options;
     private readonly string[] _skillIds;
     private readonly string[] _allowedTools;
-    private readonly string?[] _scalars;
 
-    private AgentBuildFingerprint(string[] skillIds, string[] allowedTools, string?[] scalars)
+    private AgentBuildFingerprint(SkillAgentOptions options, string[] skillIds, string[] allowedTools)
     {
+        _options = options;
         _skillIds = skillIds;
         _allowedTools = allowedTools;
-        _scalars = scalars;
     }
 
     /// <summary>Captures the build-affecting inputs of one request.</summary>
     public static AgentBuildFingerprint From(IReadOnlyList<string> skillIds, SkillAgentOptions options)
         => new(
+            options with
+            {
+                AllowedTools = null,
+                AdditionalTools = null,
+                MiddlewareTypes = null,
+                AdditionalProperties = null,
+                TraceScope = null,
+            },
             [.. skillIds],
-            options.AllowedTools is null ? [] : [.. options.AllowedTools.Order(StringComparer.Ordinal)],
-            [
-                options.AgentNameOverride,
-                options.DeploymentName,
-                options.AgentId,
-                options.FrameworkType?.ToString(),
-                options.AdditionalContext,
-                options.AgentInstructions,
-                options.OwningAgentId,
-                options.Temperature?.ToString("R", CultureInfo.InvariantCulture),
-            ]);
+            options.AllowedTools is null ? [] : [.. options.AllowedTools.Order(StringComparer.Ordinal)]);
 
     /// <summary>Whether <paramref name="other"/> was captured from the same build inputs.</summary>
     public bool Matches(AgentBuildFingerprint other)
-        => _scalars.AsSpan().SequenceEqual(other._scalars)
+        => _options == other._options
            && _skillIds.AsSpan().SequenceEqual(other._skillIds)
            && _allowedTools.AsSpan().SequenceEqual(other._allowedTools);
 }
