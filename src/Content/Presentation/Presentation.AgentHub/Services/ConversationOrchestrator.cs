@@ -110,18 +110,14 @@ public sealed partial class ConversationOrchestrator : IConversationOrchestrator
     public async Task SetSettingsAsync(
         string conversationId, ConversationSettings settings, string callerId, CancellationToken ct)
     {
-        // Header-only ownership check before the lease, exactly as a reassignment does: the update would
-        // refuse a foreign caller anyway, but not before that caller had held the lease and stalled the
-        // owner's concurrent turn on this conversation.
+        // Same shape as ReassignAgentAsync: a header-only ownership check so a foreign caller never holds
+        // the lease, then write and invalidate under it — a turn re-reads the record under the lease, so it
+        // sees the old settings or the new ones, never a stale agent. The cached agent bakes its settings in
+        // and a hit never re-reads them (#786); invalidated rather than evicted so unlocked skills survive.
+        // Redundant once the cache rebuilds when its build inputs change (#788).
         _ = await _conversationStore.GetAgentNameAsync(conversationId, callerId, ct)
             ?? throw new InvalidOperationException("Conversation not found.");
 
-        // Written AND evicted under the turn lease, for the reason ReassignAgentAsync is: a turn re-reads
-        // the record under the lease, so it either runs entirely before this change or rebuilds from the
-        // new settings. The cached agent bakes in the deployment, temperature and prompt override it was
-        // built with, and a cache hit never reads them again (#786) — without the eviction the change is
-        // ignored until the sliding entry expires, which a busy conversation keeps pushing back.
-        // Invalidated, not evicted: the conversation carries on, so the skills it has unlocked stay unlocked.
         var updated = await WithTurnLeaseAsync(conversationId, async leased =>
         {
             var record = await _conversationStore.UpdateSettingsAsync(

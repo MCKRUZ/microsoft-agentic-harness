@@ -24,13 +24,23 @@ internal sealed class ControllableTurnLease : IConversationTurnLease
     /// <summary>Whether the handle handed out by this lease was disposed.</summary>
     internal bool Released { get; private set; }
 
+    /// <summary>How many times the lease was acquired — zero proves a call never took it.</summary>
+    internal int Acquisitions { get; private set; }
+
+    /// <summary>Whether the lease is held right now, so a test can ask "under the lease?".</summary>
+    internal bool Held => Acquisitions > 0 && !Released;
+
     /// <summary>Simulates another host taking this conversation's lease mid-turn.</summary>
     internal void Steal() => _lost.Cancel();
 
     /// <inheritdoc />
     public Task<IConversationTurnLeaseHandle> AcquireAsync(
-        string conversationId, CancellationToken ct = default) =>
-        Task.FromResult<IConversationTurnLeaseHandle>(new Handle(this));
+        string conversationId, CancellationToken ct = default)
+    {
+        Acquisitions++;
+        Released = false;
+        return Task.FromResult<IConversationTurnLeaseHandle>(new Handle(this));
+    }
 
     private sealed class Handle(ControllableTurnLease owner) : IConversationTurnLeaseHandle
     {

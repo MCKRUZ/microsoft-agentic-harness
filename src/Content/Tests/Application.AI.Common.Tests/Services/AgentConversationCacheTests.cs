@@ -174,26 +174,17 @@ public sealed class AgentConversationCacheTests
     }
 
     [Fact]
-    public async Task Invalidate_NextRequestBuildsAFreshAgent()
+    public async Task Invalidate_DropsTheAgentAndItsContext_SoTheNextRequestBuildsAFreshOne()
     {
         var first = await _cache.GetOrCreateAsync("conv-inv", [ValidateSkillId], new SkillAgentOptions());
+        _cache.TryGetContext("conv-inv").Should().NotBeNull();
 
         _cache.Invalidate("conv-inv");
-        var second = await _cache.GetOrCreateAsync("conv-inv", [ValidateSkillId], new SkillAgentOptions());
 
+        _cache.TryGetContext("conv-inv").Should().BeNull();
+        var second = await _cache.GetOrCreateAsync("conv-inv", [ValidateSkillId], new SkillAgentOptions());
         second.Should().NotBeSameAs(first, "a settings change must reach the next turn's agent (#786)");
         _cache.TryGetContext("conv-inv").Should().NotBeNull("the rebuilt agent brings its own context");
-    }
-
-    [Fact]
-    public async Task Invalidate_DropsTheAgentAndItsContext()
-    {
-        await _cache.GetOrCreateAsync("conv-inv-ctx", [ValidateSkillId], new SkillAgentOptions());
-        _cache.TryGetContext("conv-inv-ctx").Should().NotBeNull();
-
-        _cache.Invalidate("conv-inv-ctx");
-
-        _cache.TryGetContext("conv-inv-ctx").Should().BeNull();
     }
 
     [Fact]

@@ -176,58 +176,13 @@ public class ConversationOrchestratorTests
         await act.Should().ThrowAsync<InvalidOperationException>();
     }
 
-    /// <summary>A lease that says whether it is held right now, so a test can ask "under the lease?".</summary>
-    private sealed class ObservableTurnLease : IConversationTurnLease
-    {
-        public bool Held { get; private set; }
-
-        public int Acquisitions { get; private set; }
-
-        public Task<IConversationTurnLeaseHandle> AcquireAsync(string conversationId, CancellationToken ct = default)
-        {
-            Held = true;
-            Acquisitions++;
-            return Task.FromResult<IConversationTurnLeaseHandle>(new Handle(this));
-        }
-
-        private sealed class Handle(ObservableTurnLease owner) : IConversationTurnLeaseHandle
-        {
-            public CancellationToken LeaseLost => CancellationToken.None;
-
-            public ValueTask DisposeAsync()
-            {
-                owner.Held = false;
-                return ValueTask.CompletedTask;
-            }
-        }
-    }
-
-    [Fact]
-    public async Task SetSettings_ValidOwner_InvalidatesTheCachedAgentSoTheNewSettingsApply()
-    {
-        // The cached agent was built with the old deployment, temperature and prompt override, and a
-        // cache hit never looks at them again (#786) — so without this the change is ignored until the
-        // 30-minute sliding entry expires, which a busy conversation keeps pushing back.
-        var record = new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []);
-        _store.Setup(s => s.GetAgentNameAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync("agent");
-        _store.Setup(s => s.UpdateSettingsAsync("c1", "user1", It.IsAny<ConversationSettings>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(record);
-
-        await CreateOrchestrator().SetSettingsAsync(
-            "c1", new ConversationSettings("gpt-4o", 0.2f, "be terse"), "user1", CancellationToken.None);
-
-        _agentCache.Verify(c => c.Invalidate("c1"), Times.Once);
-        _agentCache.Verify(c => c.Evict(It.IsAny<string>()), Times.Never,
-            "a settings change is not the end of the conversation: its unlocked skills must survive");
-    }
-
     [Fact]
     public async Task SetSettings_WritesAndInvalidatesUnderTheTurnLease_AndInvalidatesAfterTheWrite()
     {
-        // Same atomicity as a reassignment: a turn racing this call re-reads the record under the lease,
-        // so it either runs before the change entirely or rebuilds from the new settings — it can never
-        // rebuild and re-cache the OLD settings right after the eviction.
-        var lease = new ObservableTurnLease();
+        // The cached agent bakes in the settings it was built with and a hit never re-reads them (#786),
+        // so the change needs an invalidation. Under the lease, like a reassignment: a racing turn re-reads
+        // the record there, so it runs before the change or rebuilds from it, never re-caches the old one.
+        var lease = new ControllableTurnLease();
         _turnLease = lease;
         var record = new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []);
         var events = new List<string>();
@@ -242,6 +197,8 @@ public class ConversationOrchestratorTests
 
         events.Should().Equal("write(held=True)", "invalidate(held=True)");
         lease.Held.Should().BeFalse("the lease is released once the change is complete");
+        _agentCache.Verify(c => c.Evict(It.IsAny<string>()), Times.Never,
+            "a settings change is not the end of the conversation: its unlocked skills must survive");
     }
 
     [Fact]
@@ -271,7 +228,7 @@ public class ConversationOrchestratorTests
     [Fact]
     public async Task SetSettings_NotFound_TakesNoLeaseAndInvalidatesNothing()
     {
-        var lease = new ObservableTurnLease();
+        var lease = new ControllableTurnLease();
         _turnLease = lease;
         _store.Setup(s => s.GetAgentNameAsync("missing", "user1", It.IsAny<CancellationToken>()))
             .ReturnsAsync((string?)null);
@@ -289,7 +246,7 @@ public class ConversationOrchestratorTests
     {
         // An unauthorized caller must never hold the lease, even briefly: that would stall the real
         // owner's concurrent turn on this conversation for no reason.
-        var lease = new ObservableTurnLease();
+        var lease = new ControllableTurnLease();
         _turnLease = lease;
         _store.Setup(s => s.GetAgentNameAsync("c1", "intruder", It.IsAny<CancellationToken>()))
             .ThrowsAsync(new ConversationAccessDeniedException());
