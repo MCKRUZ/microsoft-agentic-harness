@@ -1,3 +1,4 @@
+using System.Globalization;
 using Domain.AI.Skills;
 
 namespace Application.AI.Common.Services;
@@ -12,7 +13,8 @@ namespace Application.AI.Common.Services;
 /// Covers the scalar and list-valued <see cref="SkillAgentOptions"/> members plus the skill ids:
 /// everything <c>ExecuteAgentTurnCommandHandler</c> derives from the conversation's settings, the
 /// agent definition and an AG-UI run's per-run deployment override. Comparison is by value, so two
-/// separately built but equal option sets match.
+/// separately built but equal option sets match. A null and an empty
+/// <see cref="SkillAgentOptions.AllowedTools"/> both mean "no ceiling declared" and compare equal.
 /// </para>
 /// <para>
 /// <strong>Deliberately not part of identity:</strong> <see cref="SkillAgentOptions.AdditionalTools"/>,
@@ -28,14 +30,11 @@ internal sealed class AgentBuildFingerprint : IEquatable<AgentBuildFingerprint>
     private readonly string[] _skillIds;
     private readonly string[] _allowedTools;
     private readonly string?[] _scalars;
-    private readonly bool _hasAllowedTools;
 
-    private AgentBuildFingerprint(
-        string[] skillIds, string[] allowedTools, bool hasAllowedTools, string?[] scalars)
+    private AgentBuildFingerprint(string[] skillIds, string[] allowedTools, string?[] scalars)
     {
         _skillIds = skillIds;
         _allowedTools = allowedTools;
-        _hasAllowedTools = hasAllowedTools;
         _scalars = scalars;
     }
 
@@ -44,9 +43,6 @@ internal sealed class AgentBuildFingerprint : IEquatable<AgentBuildFingerprint>
         => new(
             [.. skillIds],
             options.AllowedTools is null ? [] : [.. options.AllowedTools],
-            // Null ("no ceiling declared") and empty are the same to the factory, but keeping the
-            // distinction costs nothing and avoids deciding that here.
-            options.AllowedTools is not null,
             [
                 options.AgentNameOverride,
                 options.DeploymentName,
@@ -55,13 +51,12 @@ internal sealed class AgentBuildFingerprint : IEquatable<AgentBuildFingerprint>
                 options.AdditionalContext,
                 options.AgentInstructions,
                 options.OwningAgentId,
-                options.Temperature?.ToString("R", System.Globalization.CultureInfo.InvariantCulture),
+                options.Temperature?.ToString("R", CultureInfo.InvariantCulture),
             ]);
 
     /// <inheritdoc />
     public bool Equals(AgentBuildFingerprint? other)
         => other is not null
-           && _hasAllowedTools == other._hasAllowedTools
            && _scalars.AsSpan().SequenceEqual(other._scalars)
            && _skillIds.AsSpan().SequenceEqual(other._skillIds)
            && _allowedTools.AsSpan().SequenceEqual(other._allowedTools);
@@ -70,5 +65,12 @@ internal sealed class AgentBuildFingerprint : IEquatable<AgentBuildFingerprint>
     public override bool Equals(object? obj) => Equals(obj as AgentBuildFingerprint);
 
     /// <inheritdoc />
-    public override int GetHashCode() => HashCode.Combine(_skillIds.Length, _allowedTools.Length);
+    public override int GetHashCode()
+    {
+        var hash = new HashCode();
+        foreach (var value in _scalars) hash.Add(value);
+        foreach (var id in _skillIds) hash.Add(id);
+        foreach (var tool in _allowedTools) hash.Add(tool);
+        return hash.ToHashCode();
+    }
 }

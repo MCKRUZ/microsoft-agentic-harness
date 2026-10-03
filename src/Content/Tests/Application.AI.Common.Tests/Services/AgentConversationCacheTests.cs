@@ -172,6 +172,77 @@ public sealed class AgentConversationCacheTests
         _cache.TryGetContext("conv-deploy")!.DeploymentName.Should().Be("gpt-4o-mini");
     }
 
+    /// <summary>
+    /// One variant per build-affecting option, each differing from <see cref="BaseOptions"/> in exactly
+    /// that member — so dropping a comparison from the fingerprint fails the case that names it.
+    /// </summary>
+    public static TheoryData<string, SkillAgentOptions> ChangedBuildInputs() => new()
+    {
+        { nameof(SkillAgentOptions.AgentNameOverride), BaseOptions with { AgentNameOverride = "other" } },
+        { nameof(SkillAgentOptions.DeploymentName), BaseOptions with { DeploymentName = "other" } },
+        { nameof(SkillAgentOptions.AgentId), BaseOptions with { AgentId = "other" } },
+        { nameof(SkillAgentOptions.FrameworkType), BaseOptions with { FrameworkType = AIAgentFrameworkClientType.OpenAI } },
+        { nameof(SkillAgentOptions.AdditionalContext), BaseOptions with { AdditionalContext = "other" } },
+        { nameof(SkillAgentOptions.AgentInstructions), BaseOptions with { AgentInstructions = "other" } },
+        { nameof(SkillAgentOptions.OwningAgentId), BaseOptions with { OwningAgentId = "other" } },
+        { nameof(SkillAgentOptions.Temperature), BaseOptions with { Temperature = 0.9f } },
+        { nameof(SkillAgentOptions.AllowedTools), BaseOptions with { AllowedTools = ["Read", "Write"] } },
+    };
+
+    private static SkillAgentOptions BaseOptions => new()
+    {
+        AgentNameOverride = "base",
+        DeploymentName = "gpt-4o",
+        AgentId = "base",
+        FrameworkType = AIAgentFrameworkClientType.AzureOpenAI,
+        AdditionalContext = "base",
+        AgentInstructions = "base",
+        OwningAgentId = "base",
+        Temperature = 0.2f,
+        AllowedTools = ["Read"],
+    };
+
+    [Theory]
+    [MemberData(nameof(ChangedBuildInputs))]
+    public async Task GetOrCreateAsync_AnyBuildAffectingOptionChanges_RebuildsTheAgent(
+        string changed, SkillAgentOptions variant)
+    {
+        var first = await _cache.GetOrCreateAsync("conv-theory", [ValidateSkillId], BaseOptions);
+
+        var second = await _cache.GetOrCreateAsync("conv-theory", [ValidateSkillId], variant);
+
+        second.Should().NotBeSameAs(first, $"{changed} is a build input, so a hit would serve a stale agent");
+    }
+
+    [Fact]
+    public async Task GetOrCreateAsync_NoAllowedToolsDeclaredAsNullOrEmpty_IsTheSameBuild()
+    {
+        // Null and empty both mean "no ceiling declared" (SkillAgentOptions.AllowedTools), so an agent
+        // that flips between them across turns must not be rebuilt for it.
+        var first = await _cache.GetOrCreateAsync(
+            "conv-tools", [ValidateSkillId], new SkillAgentOptions { AllowedTools = null });
+
+        var second = await _cache.GetOrCreateAsync(
+            "conv-tools", [ValidateSkillId], new SkillAgentOptions { AllowedTools = [] });
+
+        second.Should().BeSameAs(first);
+    }
+
+    [Fact]
+    public async Task GetOrCreateAsync_RebuildFails_KeepsTheAgentThatWasWorking()
+    {
+        // The stale entry is replaced only once its replacement exists. A request that cannot be built
+        // (here: a skill the registry does not know) must not leave the conversation with no agent.
+        var first = await _cache.GetOrCreateAsync("conv-fail", [ValidateSkillId], new SkillAgentOptions());
+
+        var act = () => _cache.GetOrCreateAsync("conv-fail", ["no-such-skill"], new SkillAgentOptions());
+        await act.Should().ThrowAsync<Exception>();
+
+        _cache.TryGetContext("conv-fail").Should().NotBeNull();
+        var again = await _cache.GetOrCreateAsync("conv-fail", [ValidateSkillId], new SkillAgentOptions());
+        again.Should().BeSameAs(first);
+    }
+
     [Fact]
     public async Task GetOrCreateAsync_SameConversationSameInputs_StillReusesTheAgent()
     {

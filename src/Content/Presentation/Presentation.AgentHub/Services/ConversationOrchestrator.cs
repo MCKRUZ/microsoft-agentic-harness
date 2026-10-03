@@ -114,7 +114,9 @@ public sealed partial class ConversationOrchestrator : IConversationOrchestrator
         // the lease, then write and invalidate under it — a turn re-reads the record under the lease, so it
         // sees the old settings or the new ones, never a stale agent. The cached agent bakes its settings in
         // and a hit never re-reads them (#786); invalidated rather than evicted so unlocked skills survive.
-        // Redundant once the cache rebuilds when its build inputs change (#788).
+        // Since #788 the cache also notices changed build inputs on its own, so this no longer decides
+        // correctness; it is kept so the superseded agent's execution trace is finalised now, under the
+        // lease, rather than whenever the next turn happens to arrive.
         _ = await _conversationStore.GetAgentNameAsync(conversationId, callerId, ct)
             ?? throw new InvalidOperationException("Conversation not found.");
 

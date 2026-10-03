@@ -7,12 +7,13 @@ namespace Domain.AI.Planner;
 /// <remarks>
 /// <para>
 /// <strong>Why these must be different.</strong> A conversation id is heavily overloaded downstream —
-/// it is the sole key of <c>IAgentConversationCache</c> (which returns a cached agent on a hit and
-/// ignores the requested skills and options entirely), the key of <c>ISkillCompletionTracker</c>, and
-/// the observability session key. Sharing one id across concurrent plan steps therefore makes a step
-/// silently run under a different step's agent — different skills, instructions, allowed tools, and
-/// deployment — and lets whichever step finishes first evict the cache entry and clear the skill
-/// tracking of steps still in flight. Every step consequently gets its own conversation id.
+/// it is the sole key of <c>IAgentConversationCache</c> (which rebuilds the agent whenever a request's
+/// skills or options differ from the cached one), the key of <c>ISkillCompletionTracker</c>, and
+/// the observability session key. Sharing one id across concurrent plan steps therefore has the steps
+/// repeatedly replace each other's agent and execution context mid-run — different skills,
+/// instructions, allowed tools, and deployment — and lets whichever step finishes first evict the
+/// cache entry and clear the skill tracking of steps still in flight. Every step consequently gets its
+/// own conversation id.
 /// </para>
 /// <para>
 /// <strong>Why the budget key is separate.</strong> Steps each get their own conversation id, so spend

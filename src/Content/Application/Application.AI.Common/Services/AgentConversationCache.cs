@@ -57,12 +57,14 @@ internal sealed class AgentConversationCache : IAgentConversationCache
 
             // The turn asks for something other than what this agent was built for — a per-run
             // deployment override, a changed manifest. Nothing wrote settings, so nobody evicted;
-            // drop the stale agent and fall through to build the requested one. Invalidate, never
-            // Evict: the conversation carries on, so its unlocked skills and registration history stay.
+            // fall through and build the requested one. The old entry is deliberately NOT dropped
+            // first: the Set calls below replace it (finalising the old trace writer on the way), so a
+            // failed build — a bad deployment name, say — leaves the working agent in place rather than
+            // the conversation with none. Never Evict here: the conversation carries on, so its
+            // unlocked skills and registration history stay.
             _logger.LogDebug(
                 "Rebuilding agent for conversation {ConversationId}: build inputs changed since it was cached",
                 conversationId);
-            Invalidate(conversationId);
         }
 
         // Flow the conversation id into the agent build so the skill-prerequisite middleware
