@@ -203,7 +203,7 @@ public class ConversationOrchestratorTests
     }
 
     [Fact]
-    public async Task SetSettings_ValidOwner_EvictsTheCachedAgentSoTheNewSettingsApply()
+    public async Task SetSettings_ValidOwner_InvalidatesTheCachedAgentSoTheNewSettingsApply()
     {
         // The cached agent was built with the old deployment, temperature and prompt override, and a
         // cache hit never looks at them again (#786) — so without this the change is ignored until the
@@ -216,11 +216,13 @@ public class ConversationOrchestratorTests
         await CreateOrchestrator().SetSettingsAsync(
             "c1", new ConversationSettings("gpt-4o", 0.2f, "be terse"), "user1", CancellationToken.None);
 
-        _agentCache.Verify(c => c.Evict("c1"), Times.Once);
+        _agentCache.Verify(c => c.Invalidate("c1"), Times.Once);
+        _agentCache.Verify(c => c.Evict(It.IsAny<string>()), Times.Never,
+            "a settings change is not the end of the conversation: its unlocked skills must survive");
     }
 
     [Fact]
-    public async Task SetSettings_WritesAndEvictsUnderTheTurnLease_AndEvictsAfterTheWrite()
+    public async Task SetSettings_WritesAndInvalidatesUnderTheTurnLease_AndInvalidatesAfterTheWrite()
     {
         // Same atomicity as a reassignment: a turn racing this call re-reads the record under the lease,
         // so it either runs before the change entirely or rebuilds from the new settings — it can never
@@ -233,17 +235,17 @@ public class ConversationOrchestratorTests
         _store.Setup(s => s.UpdateSettingsAsync("c1", "user1", It.IsAny<ConversationSettings>(), It.IsAny<CancellationToken>()))
             .Callback(() => events.Add($"write(held={lease.Held})"))
             .ReturnsAsync(record);
-        _agentCache.Setup(c => c.Evict("c1")).Callback(() => events.Add($"evict(held={lease.Held})"));
+        _agentCache.Setup(c => c.Invalidate("c1")).Callback(() => events.Add($"invalidate(held={lease.Held})"));
 
         await CreateOrchestrator().SetSettingsAsync(
             "c1", new ConversationSettings(null, 0.2f, null), "user1", CancellationToken.None);
 
-        events.Should().Equal("write(held=True)", "evict(held=True)");
+        events.Should().Equal("write(held=True)", "invalidate(held=True)");
         lease.Held.Should().BeFalse("the lease is released once the change is complete");
     }
 
     [Fact]
-    public async Task SetSettings_LeaseLostDuringTheWrite_StopsTheWriteAndEvictsNothing()
+    public async Task SetSettings_LeaseLostDuringTheWrite_StopsTheWriteAndInvalidatesNothing()
     {
         // The write runs under the lease's linked token, so a lease another host takes mid-write stops it
         // here rather than letting this host change settings on a conversation it no longer holds.
@@ -263,11 +265,11 @@ public class ConversationOrchestratorTests
 
         (await act.Should().ThrowAsync<InvalidOperationException>())
             .WithMessage("This conversation was continued elsewhere*");
-        _agentCache.Verify(c => c.Evict(It.IsAny<string>()), Times.Never);
+        _agentCache.Verify(c => c.Invalidate(It.IsAny<string>()), Times.Never);
     }
 
     [Fact]
-    public async Task SetSettings_NotFound_TakesNoLeaseAndEvictsNothing()
+    public async Task SetSettings_NotFound_TakesNoLeaseAndInvalidatesNothing()
     {
         var lease = new ObservableTurnLease();
         _turnLease = lease;
@@ -279,7 +281,7 @@ public class ConversationOrchestratorTests
 
         await act.Should().ThrowAsync<InvalidOperationException>();
         lease.Acquisitions.Should().Be(0, "a conversation that does not exist has nothing to lease");
-        _agentCache.Verify(c => c.Evict(It.IsAny<string>()), Times.Never);
+        _agentCache.Verify(c => c.Invalidate(It.IsAny<string>()), Times.Never);
     }
 
     [Fact]
@@ -299,11 +301,11 @@ public class ConversationOrchestratorTests
         lease.Acquisitions.Should().Be(0);
         _store.Verify(s => s.UpdateSettingsAsync(
             It.IsAny<string>(), It.IsAny<string>(), It.IsAny<ConversationSettings>(), It.IsAny<CancellationToken>()), Times.Never);
-        _agentCache.Verify(c => c.Evict(It.IsAny<string>()), Times.Never);
+        _agentCache.Verify(c => c.Invalidate(It.IsAny<string>()), Times.Never);
     }
 
     [Fact]
-    public async Task SetSettings_ConversationVanishesBeforeTheWrite_EvictsNothing()
+    public async Task SetSettings_ConversationVanishesBeforeTheWrite_InvalidatesNothing()
     {
         _store.Setup(s => s.GetAgentNameAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync("agent");
         _store.Setup(s => s.UpdateSettingsAsync("c1", "user1", It.IsAny<ConversationSettings>(), It.IsAny<CancellationToken>()))
@@ -313,7 +315,7 @@ public class ConversationOrchestratorTests
             "c1", new ConversationSettings(null, null, null), "user1", CancellationToken.None);
 
         await act.Should().ThrowAsync<InvalidOperationException>();
-        _agentCache.Verify(c => c.Evict(It.IsAny<string>()), Times.Never);
+        _agentCache.Verify(c => c.Invalidate(It.IsAny<string>()), Times.Never);
     }
 
     // ── SendMessage ──────────────────────────────────────────────────────

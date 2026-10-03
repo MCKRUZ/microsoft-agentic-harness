@@ -121,13 +121,14 @@ public sealed partial class ConversationOrchestrator : IConversationOrchestrator
         // new settings. The cached agent bakes in the deployment, temperature and prompt override it was
         // built with, and a cache hit never reads them again (#786) — without the eviction the change is
         // ignored until the sliding entry expires, which a busy conversation keeps pushing back.
+        // Invalidated, not evicted: the conversation carries on, so the skills it has unlocked stay unlocked.
         var updated = await WithTurnLeaseAsync(conversationId, async leased =>
         {
             var record = await _conversationStore.UpdateSettingsAsync(
                     conversationId, callerId, settings, leased.Token)
                 ?? throw new InvalidOperationException("Conversation not found.");
 
-            _agentCache.Evict(conversationId);
+            _agentCache.Invalidate(conversationId);
             return record;
         }, ct);
 
