@@ -25,6 +25,9 @@ internal sealed class AgentConversationCache : IAgentConversationCache
 
     private static string ContextCacheKey(string conversationId) => $"{conversationId}::context";
 
+    /// <summary>A cached agent together with the build inputs it was made from.</summary>
+    private sealed record CachedAgent(AIAgent Agent, AgentBuildFingerprint Fingerprint);
+
     public AgentConversationCache(
         IMemoryCache cache,
         IAgentFactory agentFactory,
@@ -45,8 +48,22 @@ internal sealed class AgentConversationCache : IAgentConversationCache
         SkillAgentOptions options,
         CancellationToken cancellationToken = default)
     {
-        if (_cache.TryGetValue(conversationId, out AIAgent? cached) && cached is not null)
-            return cached;
+        var fingerprint = AgentBuildFingerprint.From(skillIds, options);
+
+        if (_cache.TryGetValue(conversationId, out CachedAgent? cached) && cached is not null)
+        {
+            if (cached.Fingerprint.Equals(fingerprint))
+                return cached.Agent;
+
+            // The turn asks for something other than what this agent was built for — a per-run
+            // deployment override, a changed manifest. Nothing wrote settings, so nobody evicted;
+            // drop the stale agent and fall through to build the requested one. Invalidate, never
+            // Evict: the conversation carries on, so its unlocked skills and registration history stay.
+            _logger.LogDebug(
+                "Rebuilding agent for conversation {ConversationId}: build inputs changed since it was cached",
+                conversationId);
+            Invalidate(conversationId);
+        }
 
         // Flow the conversation id into the agent build so the skill-prerequisite middleware
         // can scope completion tracking to this conversation. The factory reads it from
@@ -60,7 +77,7 @@ internal sealed class AgentConversationCache : IAgentConversationCache
             skillIds, scopedOptions, cancellationToken);
 
         var entryOptions = new MemoryCacheEntryOptions { SlidingExpiration = SlidingExpiration };
-        _cache.Set(conversationId, built.Agent, entryOptions);
+        _cache.Set(conversationId, new CachedAgent(built.Agent, fingerprint), entryOptions);
 
         // The context carries this run's trace writer when execution tracing is on, and that writer
         // owns a file handle and a semaphore that must be released. Finalising it on the cache
