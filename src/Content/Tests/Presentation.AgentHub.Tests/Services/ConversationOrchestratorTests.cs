@@ -94,7 +94,7 @@ public class ConversationOrchestratorTests
             .ReturnsAsync((ConversationRecord?)null);
         _store.Setup(s => s.CreateAsync("agent", "user1", null, It.IsAny<CancellationToken>()))
             .ReturnsAsync(expected);
-        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", 20, It.IsAny<CancellationToken>()))
+        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", It.IsAny<int>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<ConversationMessage>());
 
         var orchestrator = CreateOrchestrator();
@@ -113,7 +113,7 @@ public class ConversationOrchestratorTests
         var existing = new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []);
         _store.Setup(s => s.GetOrCreateAsync("agent", "user1", "c1", It.IsAny<CancellationToken>()))
             .ReturnsAsync(existing);
-        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", 20, It.IsAny<CancellationToken>()))
+        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", It.IsAny<int>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<ConversationMessage>());
 
         var orchestrator = CreateOrchestrator();
@@ -183,7 +183,7 @@ public class ConversationOrchestratorTests
     {
         var record = new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []);
         _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
-        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", 20, It.IsAny<CancellationToken>()))
+        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", It.IsAny<int>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<ConversationMessage>());
 
         _obsStore.Setup(s => s.StartSessionAsync("c1", "agent", null, It.IsAny<CancellationToken>()))
@@ -234,7 +234,7 @@ public class ConversationOrchestratorTests
         // them — otherwise a conversation whose turns keep failing late spends without ever tripping it.
         var record = new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []);
         _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
-        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", 20, It.IsAny<CancellationToken>()))
+        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", It.IsAny<int>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<ConversationMessage>());
         _obsStore.Setup(s => s.StartSessionAsync("c1", "agent", null, It.IsAny<CancellationToken>()))
             .ReturnsAsync(Guid.NewGuid());
@@ -264,7 +264,7 @@ public class ConversationOrchestratorTests
     {
         var record = new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []);
         _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
-        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", 20, It.IsAny<CancellationToken>()))
+        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", It.IsAny<int>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<ConversationMessage>());
         _obsStore.Setup(s => s.StartSessionAsync("c1", "agent", null, It.IsAny<CancellationToken>()))
             .ReturnsAsync(Guid.NewGuid());
@@ -297,7 +297,7 @@ public class ConversationOrchestratorTests
         var record = new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []);
         var sessionId = Guid.NewGuid();
         _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
-        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", 20, It.IsAny<CancellationToken>()))
+        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", It.IsAny<int>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<ConversationMessage>());
         _obsStore.Setup(s => s.StartSessionAsync("c1", "agent", null, It.IsAny<CancellationToken>()))
             .ReturnsAsync(sessionId);
@@ -434,7 +434,7 @@ public class ConversationOrchestratorTests
 
         var record = new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []);
         _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
-        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", 20, It.IsAny<CancellationToken>()))
+        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", It.IsAny<int>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<ConversationMessage>());
         _obsStore.Setup(s => s.StartSessionAsync("c1", "agent", null, It.IsAny<CancellationToken>()))
             .ReturnsAsync(Guid.NewGuid());
@@ -471,7 +471,7 @@ public class ConversationOrchestratorTests
 
         var record = new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []);
         _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
-        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", 20, It.IsAny<CancellationToken>()))
+        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", It.IsAny<int>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<ConversationMessage>());
         _obsStore.Setup(s => s.StartSessionAsync("c1", "agent", null, It.IsAny<CancellationToken>()))
             .ReturnsAsync(Guid.NewGuid());
@@ -497,7 +497,7 @@ public class ConversationOrchestratorTests
     {
         var record = new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []);
         _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
-        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", 20, It.IsAny<CancellationToken>()))
+        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", It.IsAny<int>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<ConversationMessage>());
         _obsStore.Setup(s => s.StartSessionAsync("c1", "agent", null, It.IsAny<CancellationToken>()))
             .ReturnsAsync(Guid.NewGuid());
@@ -525,7 +525,7 @@ public class ConversationOrchestratorTests
     {
         var record = new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []);
         _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
-        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", 20, It.IsAny<CancellationToken>()))
+        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", It.IsAny<int>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<ConversationMessage>());
 
         _obsStore.Setup(s => s.StartSessionAsync("c1", "agent", null, It.IsAny<CancellationToken>()))
@@ -549,7 +549,7 @@ public class ConversationOrchestratorTests
     {
         var record = new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []);
         _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
-        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", 20, It.IsAny<CancellationToken>()))
+        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", It.IsAny<int>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<ConversationMessage>());
 
         _obsStore.Setup(s => s.StartSessionAsync("c1", "agent", null, It.IsAny<CancellationToken>()))
@@ -572,7 +572,7 @@ public class ConversationOrchestratorTests
     {
         var record = new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []);
         _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
-        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", 20, It.IsAny<CancellationToken>()))
+        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", It.IsAny<int>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<ConversationMessage>());
 
         _obsStore.Setup(s => s.StartSessionAsync("c1", "agent", null, It.IsAny<CancellationToken>()))
@@ -603,7 +603,7 @@ public class ConversationOrchestratorTests
             "Anthropic client is not configured. Set AppConfig:AI:AgentFramework:Endpoint and ApiKey.";
         var record = new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []);
         _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
-        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", 20, It.IsAny<CancellationToken>()))
+        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", It.IsAny<int>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<ConversationMessage>());
         _obsStore.Setup(s => s.StartSessionAsync("c1", "agent", null, It.IsAny<CancellationToken>()))
             .ReturnsAsync(Guid.NewGuid());
@@ -633,7 +633,7 @@ public class ConversationOrchestratorTests
             "Anthropic client is not configured. Set AppConfig:AI:AgentFramework:Endpoint and ApiKey.";
         var record = new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []);
         _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
-        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", 20, It.IsAny<CancellationToken>()))
+        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", It.IsAny<int>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<ConversationMessage>());
         _obsStore.Setup(s => s.StartSessionAsync("c1", "agent", null, It.IsAny<CancellationToken>()))
             .ReturnsAsync(Guid.NewGuid());
@@ -673,6 +673,100 @@ public class ConversationOrchestratorTests
             "a refused turn must not leave the attacker's message in someone else's transcript");
     }
 
+    // ── The dispatched message goes to the model once (#785) ─────────────
+
+    private static ConversationMessage Msg(MessageRole role, string text, Guid? id = null) =>
+        new(id ?? Guid.NewGuid(), role, text, DateTimeOffset.UtcNow);
+
+    /// <summary>
+    /// A store whose history window behaves like the real one: the last N messages of a transcript that
+    /// ALREADY contains the user message being sent. A stub that returned an empty window is what let
+    /// the message be sent twice unnoticed.
+    /// </summary>
+    private void ArrangeTranscript(IReadOnlyList<ConversationMessage> transcript)
+    {
+        var record = new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []);
+        _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
+        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", It.IsAny<int>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((string _, string _, int n, CancellationToken _) =>
+                (IReadOnlyList<ConversationMessage>?)transcript.TakeLast(Math.Max(0, n)).ToList());
+        _store.Setup(s => s.TruncateFromMessageAsync("c1", "user1", It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, transcript));
+        _obsStore.Setup(s => s.StartSessionAsync("c1", "agent", null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Guid.NewGuid());
+    }
+
+    /// <summary>Records the command the orchestrator dispatches; read it after the turn has run.</summary>
+    private Func<ExecuteAgentTurnCommand> CaptureDispatchedCommand()
+    {
+        ExecuteAgentTurnCommand? sent = null;
+        _mediator.Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
+            .Callback<IRequest<AgentTurnResult>, CancellationToken>((c, _) => sent = (ExecuteAgentTurnCommand)c)
+            .ReturnsAsync(new AgentTurnResult { Success = true, Response = "ok", UpdatedHistory = [] });
+        return () => sent!;
+    }
+
+    [Fact]
+    public async Task SendMessage_TheMessageBeingSent_IsNotAlsoInTheDispatchedHistory()
+    {
+        // The user message is appended before the window is read, so the window ends with it; the turn
+        // handler adds the message again. Dispatching the window as-is sent it to the model twice.
+        var sending = Guid.NewGuid();
+        ArrangeTranscript([Msg(MessageRole.User, "earlier"), Msg(MessageRole.Assistant, "reply"), Msg(MessageRole.User, "Hello", sending)]);
+        var sent = CaptureDispatchedCommand();
+
+        await CreateOrchestrator().SendMessageAsync(
+            "conn1", "c1", sending, "Hello", "user1", null, CancellationToken.None);
+
+        sent().UserMessage.Should().Be("Hello");
+        sent().ConversationHistory.Select(m => m.Text).Should().Equal("earlier", "reply");
+    }
+
+    [Fact]
+    public async Task SendMessage_LongTranscript_StillDispatchesTheFullConfiguredWindowOfPriorMessages()
+    {
+        // Excluding the in-flight message must not cost the model one message of context: the window
+        // is MaxHistoryMessages of PRIOR messages (20), not 20 including the one being sent.
+        var sending = Guid.NewGuid();
+        var transcript = Enumerable.Range(1, 30).Select(i => Msg(MessageRole.Assistant, $"m{i}")).ToList();
+        transcript.Add(Msg(MessageRole.User, "Hello", sending));
+        ArrangeTranscript(transcript);
+        var sent = CaptureDispatchedCommand();
+
+        await CreateOrchestrator().SendMessageAsync(
+            "conn1", "c1", sending, "Hello", "user1", null, CancellationToken.None);
+
+        sent().ConversationHistory.Should().HaveCount(20);
+        sent().ConversationHistory.Last().Text.Should().Be("m30");
+    }
+
+    [Fact]
+    public async Task RetryFromMessage_TheRetriedMessage_IsNotAlsoInTheDispatchedHistory()
+    {
+        ArrangeTranscript([Msg(MessageRole.Assistant, "reply"), Msg(MessageRole.User, "Original")]);
+        var sent = CaptureDispatchedCommand();
+
+        await CreateOrchestrator().RetryFromMessageAsync(
+            "conn1", "c1", Guid.NewGuid(), "user1", null, CancellationToken.None);
+
+        sent().UserMessage.Should().Be("Original");
+        sent().ConversationHistory.Select(m => m.Text).Should().Equal("reply");
+    }
+
+    [Fact]
+    public async Task EditAndResubmit_TheEditedMessage_IsNotAlsoInTheDispatchedHistory()
+    {
+        var edited = Guid.NewGuid();
+        ArrangeTranscript([Msg(MessageRole.Assistant, "reply"), Msg(MessageRole.User, "New content", edited)]);
+        var sent = CaptureDispatchedCommand();
+
+        await CreateOrchestrator().EditAndResubmitAsync(
+            "conn1", "c1", Guid.NewGuid(), edited, "New content", "user1", null, CancellationToken.None);
+
+        sent().UserMessage.Should().Be("New content");
+        sent().ConversationHistory.Select(m => m.Text).Should().Equal("reply");
+    }
+
     // ── RetryFromMessage ─────────────────────────────────────────────────
 
     [Fact]
@@ -684,7 +778,7 @@ public class ConversationOrchestratorTests
         _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
         _store.Setup(s => s.TruncateFromMessageAsync("c1", "user1", It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, [userMsg]));
-        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", 20, It.IsAny<CancellationToken>()))
+        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", It.IsAny<int>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<ConversationMessage> { userMsg });
 
         _obsStore.Setup(s => s.StartSessionAsync("c1", "agent", null, It.IsAny<CancellationToken>()))
@@ -715,7 +809,7 @@ public class ConversationOrchestratorTests
         _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
         _store.Setup(s => s.TruncateFromMessageAsync("c1", "user1", It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, [userMsg]));
-        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", 20, It.IsAny<CancellationToken>()))
+        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", It.IsAny<int>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<ConversationMessage> { userMsg });
         _obsStore.Setup(s => s.StartSessionAsync("c1", "agent", null, It.IsAny<CancellationToken>()))
             .ReturnsAsync(Guid.NewGuid());
@@ -764,7 +858,7 @@ public class ConversationOrchestratorTests
         _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
         _store.Setup(s => s.TruncateFromMessageAsync("c1", "user1", It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []));
-        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", 20, It.IsAny<CancellationToken>()))
+        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", It.IsAny<int>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<ConversationMessage>());
 
         _obsStore.Setup(s => s.StartSessionAsync("c1", "agent", null, It.IsAny<CancellationToken>()))
@@ -793,7 +887,7 @@ public class ConversationOrchestratorTests
         _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
         _store.Setup(s => s.TruncateFromMessageAsync("c1", "user1", It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []));
-        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", 20, It.IsAny<CancellationToken>()))
+        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", It.IsAny<int>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<ConversationMessage>());
         _obsStore.Setup(s => s.StartSessionAsync("c1", "agent", null, It.IsAny<CancellationToken>()))
             .ReturnsAsync(Guid.NewGuid());
@@ -829,7 +923,7 @@ public class ConversationOrchestratorTests
         _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
         _store.Setup(s => s.TruncateFromMessageAsync("c1", "user1", It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, [userMsg]));
-        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", 20, It.IsAny<CancellationToken>()))
+        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", It.IsAny<int>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<ConversationMessage> { userMsg });
         _obsStore.Setup(s => s.StartSessionAsync("c1", "agent", null, It.IsAny<CancellationToken>()))
             .ReturnsAsync(Guid.NewGuid());
@@ -881,7 +975,7 @@ public class ConversationOrchestratorTests
         _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
         _store.Setup(s => s.TruncateFromMessageAsync("c1", "user1", It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, [userMsg]));
-        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", 20, It.IsAny<CancellationToken>()))
+        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", It.IsAny<int>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<ConversationMessage> { userMsg });
         _obsStore.Setup(s => s.StartSessionAsync("c1", "agent", null, It.IsAny<CancellationToken>()))
             .ReturnsAsync(Guid.NewGuid());
@@ -1182,7 +1276,7 @@ public class ConversationOrchestratorTests
         // Both halves asserted: an untouched gauge nets to zero too.
         var record = new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []);
         _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
-        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", 20, It.IsAny<CancellationToken>()))
+        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", It.IsAny<int>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<ConversationMessage>());
         _connectionTracker.Setup(t => t.Get("conn1")).Returns((ActiveConversationInfo?)null);
         _mediator.Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
@@ -1263,7 +1357,7 @@ public class ConversationOrchestratorTests
     {
         var record = new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []);
         _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
-        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", 20, It.IsAny<CancellationToken>()))
+        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", It.IsAny<int>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<ConversationMessage>());
 
         var sessionId = Guid.NewGuid();
@@ -1309,7 +1403,7 @@ public class ConversationOrchestratorTests
             ObservabilitySessionId = sessionId,
         };
         _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
-        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", 20, It.IsAny<CancellationToken>()))
+        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", It.IsAny<int>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<ConversationMessage>());
 
         _mediator.Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
@@ -1356,7 +1450,7 @@ public class ConversationOrchestratorTests
             ObservabilitySessionId = sessionId,
         };
         _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
-        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", 20, It.IsAny<CancellationToken>()))
+        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", It.IsAny<int>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<ConversationMessage>());
 
         _mediator.Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
@@ -1403,7 +1497,7 @@ public class ConversationOrchestratorTests
                 CacheRead: 200, CacheWrite: 100, CostUsd: 1.25m),
         };
         _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
-        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", 20, It.IsAny<CancellationToken>()))
+        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", It.IsAny<int>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<ConversationMessage>());
 
         // A brand-new connection, exactly as after a reconnect: it knows nothing about the conversation.
@@ -1461,7 +1555,7 @@ public class ConversationOrchestratorTests
             Telemetry = TelemetryAccumulator.Zero with { TurnCount = 4 },
         };
         _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
-        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", 20, It.IsAny<CancellationToken>()))
+        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", It.IsAny<int>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<ConversationMessage>());
         _connectionTracker.Setup(t => t.Get("conn1")).Returns((ActiveConversationInfo?)null);
 
@@ -1485,7 +1579,7 @@ public class ConversationOrchestratorTests
     {
         var record = new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []);
         _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
-        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", 20, It.IsAny<CancellationToken>()))
+        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", It.IsAny<int>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<ConversationMessage>());
         _obsStore.Setup(s => s.StartSessionAsync("c1", "agent", null, It.IsAny<CancellationToken>()))
             .ReturnsAsync(Guid.NewGuid());
@@ -1524,7 +1618,7 @@ public class ConversationOrchestratorTests
         // dropping must still be recorded — not silently reclassified as a disconnect.
         var record = new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []);
         _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
-        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", 20, It.IsAny<CancellationToken>()))
+        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", It.IsAny<int>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<ConversationMessage>());
         _obsStore.Setup(s => s.StartSessionAsync("c1", "agent", null, It.IsAny<CancellationToken>()))
             .ReturnsAsync(Guid.NewGuid());
@@ -1554,7 +1648,7 @@ public class ConversationOrchestratorTests
     {
         var record = new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []);
         _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
-        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", 20, It.IsAny<CancellationToken>()))
+        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", It.IsAny<int>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<ConversationMessage>());
         _obsStore.Setup(s => s.StartSessionAsync("c1", "agent", null, It.IsAny<CancellationToken>()))
             .ReturnsAsync(Guid.NewGuid());
@@ -1583,7 +1677,7 @@ public class ConversationOrchestratorTests
         // unlike a client disconnect.
         var record = new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []);
         _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
-        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", 20, It.IsAny<CancellationToken>()))
+        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", It.IsAny<int>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<ConversationMessage>());
         _obsStore.Setup(s => s.StartSessionAsync("c1", "agent", null, It.IsAny<CancellationToken>()))
             .ReturnsAsync(Guid.NewGuid());
@@ -1604,7 +1698,7 @@ public class ConversationOrchestratorTests
     {
         var record = new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []);
         _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
-        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", 20, It.IsAny<CancellationToken>()))
+        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", It.IsAny<int>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<ConversationMessage>());
 
         _obsStore.Setup(s => s.StartSessionAsync("c1", "agent", null, It.IsAny<CancellationToken>()))

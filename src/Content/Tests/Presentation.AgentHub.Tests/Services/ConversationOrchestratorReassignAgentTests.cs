@@ -286,7 +286,7 @@ public sealed class ConversationOrchestratorReassignAgentTests
         // racing SendMessageAsync's full-record reads.
         _store.Setup(s => s.GetAgentNameAsync("c1", "user1", It.IsAny<CancellationToken>()))
             .ReturnsAsync(() => written ? "new-agent" : "old-agent");
-        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", 20, It.IsAny<CancellationToken>()))
+        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", It.IsAny<int>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<ConversationMessage>());
         _obsStore.Setup(s => s.StartSessionAsync("c1", It.IsAny<string>(), null, It.IsAny<CancellationToken>()))
             .ReturnsAsync(Guid.NewGuid());
