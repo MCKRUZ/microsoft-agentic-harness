@@ -110,10 +110,23 @@ public sealed partial class ConversationOrchestrator : IConversationOrchestrator
     public async Task SetSettingsAsync(
         string conversationId, ConversationSettings settings, string callerId, CancellationToken ct)
     {
-        // No ownership pre-read: the update refuses a conversation the caller does not own, and
-        // answers null for one that does not exist — the two outcomes the pre-read used to produce.
-        var updated = await _conversationStore.UpdateSettingsAsync(conversationId, callerId, settings, ct)
+        // Same shape as ReassignAgentAsync: a header-only ownership check so a foreign caller never holds
+        // the lease, then write and invalidate under it — a turn re-reads the record under the lease, so it
+        // sees the old settings or the new ones, never a stale agent. The cached agent bakes its settings in
+        // and a hit never re-reads them (#786); invalidated rather than evicted so unlocked skills survive.
+        // Redundant once the cache rebuilds when its build inputs change (#788).
+        _ = await _conversationStore.GetAgentNameAsync(conversationId, callerId, ct)
             ?? throw new InvalidOperationException("Conversation not found.");
+
+        var updated = await WithTurnLeaseAsync(conversationId, async leased =>
+        {
+            var record = await _conversationStore.UpdateSettingsAsync(
+                    conversationId, callerId, settings, leased.Token)
+                ?? throw new InvalidOperationException("Conversation not found.");
+
+            _agentCache.Invalidate(conversationId);
+            return record;
+        }, ct);
 
         _logger.LogInformation(
             "Updated conversation {ConversationId} settings (deployment={Deployment}, temperature={Temperature}, promptOverride={HasPrompt}).",

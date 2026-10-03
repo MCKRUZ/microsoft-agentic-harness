@@ -152,7 +152,7 @@ public class ConversationOrchestratorTests
     public async Task SetSettings_ValidOwner_UpdatesSettings()
     {
         var record = new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []);
-        _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
+        _store.Setup(s => s.GetAgentNameAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync("agent");
         _store.Setup(s => s.UpdateSettingsAsync("c1", "user1", It.IsAny<ConversationSettings>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(record);
 
@@ -174,6 +174,105 @@ public class ConversationOrchestratorTests
         var act = () => orchestrator.SetSettingsAsync("missing", new ConversationSettings(null, null, null), "user1", CancellationToken.None);
 
         await act.Should().ThrowAsync<InvalidOperationException>();
+    }
+
+    [Fact]
+    public async Task SetSettings_WritesAndInvalidatesUnderTheTurnLease_AndInvalidatesAfterTheWrite()
+    {
+        // The cached agent bakes in the settings it was built with and a hit never re-reads them (#786),
+        // so the change needs an invalidation. Under the lease, like a reassignment: a racing turn re-reads
+        // the record there, so it runs before the change or rebuilds from it, never re-caches the old one.
+        var lease = new ControllableTurnLease();
+        _turnLease = lease;
+        var record = new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []);
+        var events = new List<string>();
+        _store.Setup(s => s.GetAgentNameAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync("agent");
+        _store.Setup(s => s.UpdateSettingsAsync("c1", "user1", It.IsAny<ConversationSettings>(), It.IsAny<CancellationToken>()))
+            .Callback(() => events.Add($"write(held={lease.Held})"))
+            .ReturnsAsync(record);
+        _agentCache.Setup(c => c.Invalidate("c1")).Callback(() => events.Add($"invalidate(held={lease.Held})"));
+
+        await CreateOrchestrator().SetSettingsAsync(
+            "c1", new ConversationSettings(null, 0.2f, null), "user1", CancellationToken.None);
+
+        events.Should().Equal("write(held=True)", "invalidate(held=True)");
+        lease.Held.Should().BeFalse("the lease is released once the change is complete");
+        _agentCache.Verify(c => c.Evict(It.IsAny<string>()), Times.Never,
+            "a settings change is not the end of the conversation: its unlocked skills must survive");
+    }
+
+    [Fact]
+    public async Task SetSettings_LeaseLostDuringTheWrite_StopsTheWriteAndInvalidatesNothing()
+    {
+        // The write runs under the lease's linked token, so a lease another host takes mid-write stops it
+        // here rather than letting this host change settings on a conversation it no longer holds.
+        var lease = new ControllableTurnLease();
+        _turnLease = lease;
+        _store.Setup(s => s.GetAgentNameAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync("agent");
+        _store.Setup(s => s.UpdateSettingsAsync("c1", "user1", It.IsAny<ConversationSettings>(), It.IsAny<CancellationToken>()))
+            .Returns<string, string, ConversationSettings, CancellationToken>((_, _, _, writeCt) =>
+            {
+                lease.Steal();
+                writeCt.ThrowIfCancellationRequested();
+                return Task.FromResult<ConversationRecord?>(null);
+            });
+
+        var act = () => CreateOrchestrator().SetSettingsAsync(
+            "c1", new ConversationSettings(null, 0.2f, null), "user1", CancellationToken.None);
+
+        (await act.Should().ThrowAsync<InvalidOperationException>())
+            .WithMessage("This conversation was continued elsewhere*");
+        _agentCache.Verify(c => c.Invalidate(It.IsAny<string>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task SetSettings_NotFound_TakesNoLeaseAndInvalidatesNothing()
+    {
+        var lease = new ControllableTurnLease();
+        _turnLease = lease;
+        _store.Setup(s => s.GetAgentNameAsync("missing", "user1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync((string?)null);
+
+        var act = () => CreateOrchestrator().SetSettingsAsync(
+            "missing", new ConversationSettings(null, null, null), "user1", CancellationToken.None);
+
+        await act.Should().ThrowAsync<InvalidOperationException>();
+        lease.Acquisitions.Should().Be(0, "a conversation that does not exist has nothing to lease");
+        _agentCache.Verify(c => c.Invalidate(It.IsAny<string>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task SetSettings_AnotherUsersConversation_IsRefusedBeforeTheLeaseIsTaken()
+    {
+        // An unauthorized caller must never hold the lease, even briefly: that would stall the real
+        // owner's concurrent turn on this conversation for no reason.
+        var lease = new ControllableTurnLease();
+        _turnLease = lease;
+        _store.Setup(s => s.GetAgentNameAsync("c1", "intruder", It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new ConversationAccessDeniedException());
+
+        var act = () => CreateOrchestrator().SetSettingsAsync(
+            "c1", new ConversationSettings(null, null, null), "intruder", CancellationToken.None);
+
+        await act.Should().ThrowAsync<ConversationAccessDeniedException>();
+        lease.Acquisitions.Should().Be(0);
+        _store.Verify(s => s.UpdateSettingsAsync(
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<ConversationSettings>(), It.IsAny<CancellationToken>()), Times.Never);
+        _agentCache.Verify(c => c.Invalidate(It.IsAny<string>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task SetSettings_ConversationVanishesBeforeTheWrite_InvalidatesNothing()
+    {
+        _store.Setup(s => s.GetAgentNameAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync("agent");
+        _store.Setup(s => s.UpdateSettingsAsync("c1", "user1", It.IsAny<ConversationSettings>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((ConversationRecord?)null);
+
+        var act = () => CreateOrchestrator().SetSettingsAsync(
+            "c1", new ConversationSettings(null, null, null), "user1", CancellationToken.None);
+
+        await act.Should().ThrowAsync<InvalidOperationException>();
+        _agentCache.Verify(c => c.Invalidate(It.IsAny<string>()), Times.Never);
     }
 
     // ── SendMessage ──────────────────────────────────────────────────────

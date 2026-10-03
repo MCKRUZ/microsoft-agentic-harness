@@ -40,4 +40,18 @@ public interface IAgentConversationCache
     /// Call when the conversation ends to release the agent promptly.
     /// </summary>
     void Evict(string conversationId);
+
+    /// <summary>
+    /// Drops the built agent and its context so the next turn rebuilds them from current inputs,
+    /// while the conversation carries on: its skill-prerequisite progress and registration history
+    /// are kept.
+    /// </summary>
+    /// <remarks>
+    /// For a change that alters what the agent is built from but not what the conversation has done —
+    /// its settings changing, for example. <see cref="Evict"/> is the end-of-conversation form: it also
+    /// forgets which skills the conversation has unlocked, so using it for a mid-conversation rebuild
+    /// would lock them all again. The dropped context's execution trace is finalised as usual and the
+    /// rebuilt agent starts a new one.
+    /// </remarks>
+    void Invalidate(string conversationId);
 }

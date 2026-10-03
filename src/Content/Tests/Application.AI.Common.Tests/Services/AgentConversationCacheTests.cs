@@ -1,5 +1,6 @@
 using Application.AI.Common.Factories;
 using Application.AI.Common.Interfaces;
+using Application.AI.Common.Interfaces.Context;
 using Application.AI.Common.Interfaces.Skills;
 using Application.AI.Common.Interfaces.Traces;
 using Application.AI.Common.Services;
@@ -170,6 +171,53 @@ public sealed class AgentConversationCacheTests
             "conv-b", [ValidateSkillId, DeploySkillId], new SkillAgentOptions());
 
         second.Should().NotBeSameAs(first);
+    }
+
+    [Fact]
+    public async Task Invalidate_DropsTheAgentAndItsContext_SoTheNextRequestBuildsAFreshOne()
+    {
+        var first = await _cache.GetOrCreateAsync("conv-inv", [ValidateSkillId], new SkillAgentOptions());
+        _cache.TryGetContext("conv-inv").Should().NotBeNull();
+
+        _cache.Invalidate("conv-inv");
+
+        _cache.TryGetContext("conv-inv").Should().BeNull();
+        var second = await _cache.GetOrCreateAsync("conv-inv", [ValidateSkillId], new SkillAgentOptions());
+        second.Should().NotBeSameAs(first, "a settings change must reach the next turn's agent (#786)");
+        _cache.TryGetContext("conv-inv").Should().NotBeNull("the rebuilt agent brings its own context");
+    }
+
+    [Fact]
+    public async Task Invalidate_KeepsWhatTheConversationHasUnlocked_WhereEvictForgetsIt()
+    {
+        // A temperature tweak mid-conversation rebuilds the agent but is not the end of the
+        // conversation: skills already unlocked by their prerequisites must stay unlocked.
+        await _cache.GetOrCreateAsync("conv-keep", [ValidateSkillId, DeploySkillId], new SkillAgentOptions());
+        _completionTracker.MarkCompleted("conv-keep", ValidateSkillId);
+
+        _cache.Invalidate("conv-keep");
+
+        _completionTracker.IsCompleted("conv-keep", ValidateSkillId).Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Invalidate_KeepsTheRegistrationHistory_WhereEvictForgetsIt()
+    {
+        // The registration history is what makes the next snapshot a DIFF against the previous one.
+        var snapshot = new RegistrationSnapshot("prompt", [], [], [], []);
+        _registrationTracker.DiffAndUpdate("conv-reg", snapshot);
+        await _cache.GetOrCreateAsync("conv-reg", [ValidateSkillId], new SkillAgentOptions());
+
+        // Control, same instrument: an eviction DOES forget it, so the same snapshot reads as new.
+        _cache.Evict("conv-reg");
+        _registrationTracker.DiffAndUpdate("conv-reg", snapshot).SystemPromptIsNew.Should().BeTrue();
+
+        // Treatment: re-register, then invalidate — the same snapshot afterwards is not new.
+        await _cache.GetOrCreateAsync("conv-reg", [ValidateSkillId], new SkillAgentOptions());
+        _cache.Invalidate("conv-reg");
+
+        _registrationTracker.DiffAndUpdate("conv-reg", snapshot).SystemPromptIsNew.Should().BeFalse(
+            "an unchanged prompt after a rebuild is not new");
     }
 
     [Fact]

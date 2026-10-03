@@ -80,10 +80,15 @@ internal sealed class AgentConversationCache : IAgentConversationCache
     public AgentExecutionContext? TryGetContext(string conversationId)
         => _cache.TryGetValue(ContextCacheKey(conversationId), out AgentExecutionContext? ctx) ? ctx : null;
 
-    public void Evict(string conversationId)
+    public void Invalidate(string conversationId)
     {
         _cache.Remove(conversationId);
         _cache.Remove(ContextCacheKey(conversationId));
+    }
+
+    public void Evict(string conversationId)
+    {
+        Invalidate(conversationId);
         _registrationTracker.Evict(conversationId);
         // Clear skill-prerequisite completion state keyed by this conversation so a re-created
         // conversation reusing the same id starts with no unlocked skills and no leaked entries.
