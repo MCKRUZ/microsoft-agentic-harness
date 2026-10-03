@@ -24,10 +24,10 @@ namespace Infrastructure.AI.Tests.Planner.StepExecutors;
 /// <remarks>
 /// <para>
 /// <strong>Conversation id must be per step.</strong> It is the sole key of
-/// <c>IAgentConversationCache</c> — a hit returns the cached agent and ignores the requested skills
-/// and options entirely — as well as the skill-completion and observability-session key. Sharing one
-/// id across steps makes a step run under another step's agent and lets the first step to finish
-/// evict state belonging to steps still in flight.
+/// <c>IAgentConversationCache</c> — which rebuilds the agent whenever a request's skills or options
+/// differ from the cached one — as well as the skill-completion and observability-session key. Sharing
+/// one id across steps has concurrent steps replace each other's agent mid-run and lets the first step
+/// to finish evict state belonging to steps still in flight.
 /// </para>
 /// <para>
 /// <strong>The run budget uses the REAL <see cref="InProcessConversationBudgetTracker"/>.</strong> A mocked
@@ -138,8 +138,8 @@ public sealed class LlmCallStepExecutorRunIdentityTests : IDisposable
     public async Task ExecuteAsync_ParallelStepsWithDifferentDeployments_EachGetTheirOwnConversationId()
     {
         // BLOCKING-1: with MaxParallelSteps defaulting to 10, concurrent LlmCall steps are normal. If
-        // both steps share a conversation id, the second gets a cache HIT and silently runs under the
-        // first step's agent — its skills, instructions, tools and deployment.
+        // both steps share a conversation id, each rebuilds the cached agent out from under the other
+        // (their deployments differ), and whichever finishes first evicts state the other still needs.
         var sut = BuildExecutor(RealTracker(ceiling: 0), tokensPerStep: 0);
         var researcher = Step("S1", "researcher");
         var classifier = Step("S2", "classifier");

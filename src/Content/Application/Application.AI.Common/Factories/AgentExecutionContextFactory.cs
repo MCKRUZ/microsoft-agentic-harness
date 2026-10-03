@@ -287,10 +287,11 @@ public partial class AgentExecutionContextFactory
     /// <para>
     /// <strong>Cadence: per agent build, not per turn.</strong> This runs inside <c>MapToAgentContextAsync</c>,
     /// which builds the static, per-conversation-cached <c>AIAgent</c> — <c>AgentConversationCache</c>
-    /// returns that same cached agent on every subsequent turn of an ongoing conversation without calling
-    /// back in here. A new amendment therefore takes effect for any brand-new conversation immediately,
-    /// and for an already-open conversation once its cache entry is rebuilt (idle eviction), not on the
-    /// very next turn of that specific conversation — the same cadence every other piece of this static
+    /// returns that same cached agent on every subsequent turn of an ongoing conversation that asks for
+    /// the same build inputs, without calling back in here. A new amendment therefore takes effect for
+    /// any brand-new conversation immediately, and for an already-open conversation once its cache entry
+    /// is rebuilt (idle eviction, or a turn whose build inputs changed), not on the very next turn of
+    /// that specific conversation — the same cadence every other piece of this static
     /// instruction (the skill's own body, the agent's own instructions) already has.
     /// </para>
     /// <para>
