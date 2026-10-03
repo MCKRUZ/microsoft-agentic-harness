@@ -11,8 +11,8 @@ namespace Application.AI.Common.Interfaces;
 /// <remarks>
 /// The agent is created on the first turn (cache miss) and reused for later turns in the same
 /// conversation <em>as long as each turn still asks for what it was built for</em>: a turn whose
-/// skills or build-affecting options differ (a per-run deployment override, a changed agent
-/// manifest) rebuilds the agent rather than being served the stale one. Callers must serialise
+/// skills or build-affecting options differ (a per-run deployment override, changed AGENT.md
+/// instructions or tool ceiling; an edit to a skill's own SKILL.md is not detected) rebuilds the agent rather than being served the stale one. Callers must serialise
 /// requests for one conversation (the AgentHub turn lease does) — a get-or-rebuild is not atomic, so
 /// overlapping requests with different inputs would replace each other's agent. Explicit eviction via
 /// <see cref="Evict"/> should be called when the conversation ends; a 30-minute sliding TTL handles
@@ -25,9 +25,9 @@ public interface IAgentConversationCache
     /// <paramref name="skillIds"/> and <paramref name="options"/>; otherwise builds and caches a new
     /// one, replacing any stale entry without forgetting the conversation's skill-completion state.
     /// Multiple skill IDs are merged into a single agent execution context.
-    /// <see cref="SkillAgentOptions.AdditionalTools"/>, <see cref="SkillAgentOptions.MiddlewareTypes"/>,
-    /// <see cref="SkillAgentOptions.AdditionalProperties"/> and <see cref="SkillAgentOptions.TraceScope"/>
-    /// are not compared, so a hit does not honour a change to them.
+    /// A request that sets <see cref="SkillAgentOptions.AdditionalTools"/>,
+    /// <see cref="SkillAgentOptions.MiddlewareTypes"/> or <see cref="SkillAgentOptions.AdditionalProperties"/>
+    /// is never served from the cache, since those cannot be compared; it always rebuilds.
     /// </summary>
     Task<AIAgent> GetOrCreateAsync(
         string conversationId,

@@ -12,6 +12,7 @@ using Domain.AI.Skills;
 using Domain.Common.Config;
 using Domain.Common.Config.AI;
 using FluentAssertions;
+using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Caching.Distributed;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.DependencyInjection;
@@ -230,6 +231,27 @@ public sealed class AgentConversationCacheTests
             "conv-tools", [ValidateSkillId], new SkillAgentOptions { AllowedTools = second });
 
         b.Should().BeSameAs(a, "an equivalent tool ceiling must not cost a rebuild");
+    }
+
+    public static TheoryData<string, SkillAgentOptions> UncomparableInputs() => new()
+    {
+        { nameof(SkillAgentOptions.AdditionalTools), new() { AdditionalTools = [AIFunctionFactory.Create(() => 1, "probe")] } },
+        { nameof(SkillAgentOptions.MiddlewareTypes), new() { MiddlewareTypes = [typeof(object)] } },
+        { nameof(SkillAgentOptions.AdditionalProperties), new() { AdditionalProperties = new Dictionary<string, object> { ["k"] = "v" } } },
+    };
+
+    [Theory]
+    [MemberData(nameof(UncomparableInputs))]
+    public async Task GetOrCreateAsync_RequestSetsAnUncomparableMember_IsNeverServedFromTheCache(
+        string member, SkillAgentOptions options)
+    {
+        // These cannot be compared by value, so a hit could silently ignore a change to tooling or
+        // middleware. Failing safe means rebuilding — even for two identical requests.
+        var first = await _cache.GetOrCreateAsync("conv-uncomparable", [ValidateSkillId], options);
+
+        var second = await _cache.GetOrCreateAsync("conv-uncomparable", [ValidateSkillId], options);
+
+        second.Should().NotBeSameAs(first, $"{member} is set, so the request is never reused");
     }
 
     [Fact]

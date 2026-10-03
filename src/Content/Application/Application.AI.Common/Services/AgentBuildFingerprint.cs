@@ -17,13 +17,13 @@ namespace Application.AI.Common.Services;
 /// null and empty both mean "no ceiling" — and the skill ids stay ordered, because merge order matters.
 /// </para>
 /// <para>
-/// <strong>Not part of identity:</strong> <see cref="SkillAgentOptions.AdditionalTools"/>,
-/// <see cref="SkillAgentOptions.MiddlewareTypes"/>, <see cref="SkillAgentOptions.AdditionalProperties"/>
-/// and <see cref="SkillAgentOptions.TraceScope"/> — object-valued, and the trace scope is minted fresh
-/// per run, so comparing them would make every turn a miss. No caller of the cache sets them; one that
-/// starts to must widen this type rather than rely on a hit honouring them. A new list- or
-/// object-valued member would compare by reference and so rebuild every turn, which is the visible
-/// signal to normalise it here too.
+/// <strong>Fail-safe for what cannot be compared:</strong> <see cref="SkillAgentOptions.AdditionalTools"/>,
+/// <see cref="SkillAgentOptions.MiddlewareTypes"/> and <see cref="SkillAgentOptions.AdditionalProperties"/>
+/// are object-valued, so a request that sets any of them is never reused — it rebuilds every turn rather
+/// than risk a hit that ignores a change to tooling or middleware. No caller of the cache sets them
+/// today. <see cref="SkillAgentOptions.TraceScope"/> is ignored outright: it is minted fresh per run and
+/// is not a build input. A new list- or object-valued member would compare by reference and so also
+/// rebuild every turn, which is the visible signal to normalise it here.
 /// </para>
 /// <para>
 /// One entry is held per conversation, so a conversation alternating between two build shapes (an
@@ -35,12 +35,15 @@ internal sealed class AgentBuildFingerprint
     private readonly SkillAgentOptions _options;
     private readonly string[] _skillIds;
     private readonly string[] _allowedTools;
+    private readonly bool _hasUncomparableInputs;
 
-    private AgentBuildFingerprint(SkillAgentOptions options, string[] skillIds, string[] allowedTools)
+    private AgentBuildFingerprint(
+        SkillAgentOptions options, string[] skillIds, string[] allowedTools, bool hasUncomparableInputs)
     {
         _options = options;
         _skillIds = skillIds;
         _allowedTools = allowedTools;
+        _hasUncomparableInputs = hasUncomparableInputs;
     }
 
     /// <summary>Captures the build-affecting inputs of one request.</summary>
@@ -55,11 +58,16 @@ internal sealed class AgentBuildFingerprint
                 TraceScope = null,
             },
             [.. skillIds],
-            options.AllowedTools is null ? [] : [.. options.AllowedTools.Order(StringComparer.Ordinal)]);
+            options.AllowedTools is null ? [] : [.. options.AllowedTools.Order(StringComparer.Ordinal)],
+            options.AdditionalTools is { Count: > 0 }
+                || options.MiddlewareTypes is { Count: > 0 }
+                || options.AdditionalProperties is { Count: > 0 });
 
     /// <summary>Whether <paramref name="other"/> was captured from the same build inputs.</summary>
     public bool Matches(AgentBuildFingerprint other)
-        => _options == other._options
+        => !_hasUncomparableInputs
+           && !other._hasUncomparableInputs
+           && _options == other._options
            && _skillIds.AsSpan().SequenceEqual(other._skillIds)
            && _allowedTools.AsSpan().SequenceEqual(other._allowedTools);
 }
