@@ -110,10 +110,26 @@ public sealed partial class ConversationOrchestrator : IConversationOrchestrator
     public async Task SetSettingsAsync(
         string conversationId, ConversationSettings settings, string callerId, CancellationToken ct)
     {
-        // No ownership pre-read: the update refuses a conversation the caller does not own, and
-        // answers null for one that does not exist — the two outcomes the pre-read used to produce.
-        var updated = await _conversationStore.UpdateSettingsAsync(conversationId, callerId, settings, ct)
+        // Header-only ownership check before the lease, exactly as a reassignment does: the update would
+        // refuse a foreign caller anyway, but not before that caller had held the lease and stalled the
+        // owner's concurrent turn on this conversation.
+        _ = await _conversationStore.GetAgentNameAsync(conversationId, callerId, ct)
             ?? throw new InvalidOperationException("Conversation not found.");
+
+        // Written AND evicted under the turn lease, for the reason ReassignAgentAsync is: a turn re-reads
+        // the record under the lease, so it either runs entirely before this change or rebuilds from the
+        // new settings. The cached agent bakes in the deployment, temperature and prompt override it was
+        // built with, and a cache hit never reads them again (#786) — without the eviction the change is
+        // ignored until the sliding entry expires, which a busy conversation keeps pushing back.
+        var updated = await WithTurnLeaseAsync(conversationId, async leased =>
+        {
+            var record = await _conversationStore.UpdateSettingsAsync(
+                    conversationId, callerId, settings, leased.Token)
+                ?? throw new InvalidOperationException("Conversation not found.");
+
+            _agentCache.Evict(conversationId);
+            return record;
+        }, ct);
 
         _logger.LogInformation(
             "Updated conversation {ConversationId} settings (deployment={Deployment}, temperature={Temperature}, promptOverride={HasPrompt}).",
