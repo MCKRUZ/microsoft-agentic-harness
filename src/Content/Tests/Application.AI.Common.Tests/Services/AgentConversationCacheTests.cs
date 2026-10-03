@@ -215,6 +215,46 @@ public sealed class AgentConversationCacheTests
     }
 
     [Fact]
+    public void ChangedBuildInputs_CoversEverySkillAgentOptionsMemberNotExplicitlyExempt()
+    {
+        // The fingerprint mirrors SkillAgentOptions by hand. Without this, a member added later that
+        // the factory bakes into the agent would be left out of it, and a turn changing it would be
+        // served the stale agent — the #788 bug again, with every other test green.
+        string[] exempt =
+        [
+            nameof(SkillAgentOptions.AdditionalTools),
+            nameof(SkillAgentOptions.MiddlewareTypes),
+            nameof(SkillAgentOptions.AdditionalProperties),
+            nameof(SkillAgentOptions.TraceScope),
+        ];
+
+        var members = typeof(SkillAgentOptions)
+            .GetProperties(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance)
+            .Select(p => p.Name)
+            .Where(name => name != "EqualityContract")
+            .Except(exempt);
+        var covered = ChangedBuildInputs().Select(row => (string)row[0]);
+
+        covered.Should().BeEquivalentTo(members,
+            "every build-affecting SkillAgentOptions member needs a fingerprint entry and a case above; " +
+            "a member that cannot be compared by value belongs in the exempt list, with the type docs updated");
+    }
+
+    [Fact]
+    public async Task GetOrCreateAsync_AllowedToolsReordered_IsTheSameBuild()
+    {
+        // The tool list is a ceiling intersected with the skills' allowlist: order carries no meaning,
+        // so a manifest that lists the same tools differently must not cost a rebuild.
+        var first = await _cache.GetOrCreateAsync(
+            "conv-order", [ValidateSkillId], new SkillAgentOptions { AllowedTools = ["Read", "Write"] });
+
+        var second = await _cache.GetOrCreateAsync(
+            "conv-order", [ValidateSkillId], new SkillAgentOptions { AllowedTools = ["Write", "Read"] });
+
+        second.Should().BeSameAs(first);
+    }
+
+    [Fact]
     public async Task GetOrCreateAsync_NoAllowedToolsDeclaredAsNullOrEmpty_IsTheSameBuild()
     {
         // Null and empty both mean "no ceiling declared" (SkillAgentOptions.AllowedTools), so an agent

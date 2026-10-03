@@ -52,7 +52,7 @@ internal sealed class AgentConversationCache : IAgentConversationCache
 
         if (_cache.TryGetValue(conversationId, out CachedAgent? cached) && cached is not null)
         {
-            if (cached.Fingerprint.Equals(fingerprint))
+            if (cached.Fingerprint.Matches(fingerprint))
                 return cached.Agent;
 
             // The turn asks for something other than what this agent was built for — a per-run
