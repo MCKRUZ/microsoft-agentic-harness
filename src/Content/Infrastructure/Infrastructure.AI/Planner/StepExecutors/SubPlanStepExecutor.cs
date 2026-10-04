@@ -19,8 +19,9 @@ namespace Infrastructure.AI.Planner.StepExecutors;
 /// <em>identity</em> does not flow by itself: <see cref="IAgentExecutionContext"/> is DI-scoped and the
 /// child runs in a fresh scope, whose context would otherwise be empty — and the tool-invocation
 /// governor fails closed on identity-less tool calls whenever an envelope is ambient. This executor
-/// therefore re-stamps the parent's identity onto the child scope, so the child is governed as the same
-/// principal: granted tools keep working, denied tools stay denied.
+/// therefore re-stamps the parent's identity onto the child scope — agent id and, when the parent
+/// carries one, workload identity — so the child is governed as the same principal: granted tools keep
+/// working, denied tools stay denied.
 /// </remarks>
 public sealed class SubPlanStepExecutor : IPlanStepExecutor
 {
@@ -167,7 +168,11 @@ public sealed class SubPlanStepExecutor : IPlanStepExecutor
         var childAgentContext = childServices.GetRequiredService<IAgentExecutionContext>();
         childAgentContext.Initialize(
             _agentContext.AgentId,
-            _agentContext.ConversationId ?? childPlanId.Value.ToString(),
+            // Empty counts as missing, not just null: IAgentExecutionContext enforces no non-empty
+            // invariant, and an empty id inherited as-is would pool unrelated children under one key.
+            string.IsNullOrEmpty(_agentContext.ConversationId)
+                ? childPlanId.Value.ToString()
+                : _agentContext.ConversationId,
             _agentContext.TurnNumber ?? 1,
             // Inherit the parent's call-once scope, not derive a new one from the child plan id.
             // A call-once tool declared "once per conversation/run" must mean once across the whole
@@ -175,6 +180,12 @@ public sealed class SubPlanStepExecutor : IPlanStepExecutor
             // would let a sub-plan step call a call-once tool the parent already claimed, silently
             // defeating the guarantee for every plan that delegates to a nested plan.
             callOnceScopeId: _agentContext.CallOnceScopeId);
+
+        // The workload identity travels too, for the same reason the agent id does: the child is the
+        // same principal as the parent. Without it an A2A- or identity-propagated caller's sub-plan
+        // would be authorized as the host's own default identity. Delegation does the same.
+        if (_agentContext.AgentIdentity is { } workloadIdentity)
+            childAgentContext.SetIdentity(workloadIdentity);
     }
 
     private async Task<PlanId?> ResolveChildPlanId(SubPlanConfig config, CancellationToken ct)

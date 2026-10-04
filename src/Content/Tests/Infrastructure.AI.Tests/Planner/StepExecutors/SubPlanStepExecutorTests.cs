@@ -206,16 +206,14 @@ public sealed class SubPlanStepExecutorTests
             Times.Never);
     }
 
-    // The two tests below pin CURRENT behaviour that differs from delegation
-    // (CapabilityMatchSupervisor.ArmDelegationGovernance) and looks like drift rather than intent (#770).
-    // They exist so the move onto the shared arming helper is provably behaviour-preserving; the
-    // follow-up commit that fixes the drift flips both, and its diff shows exactly what changed.
+    // Sub-plans match delegation (CapabilityMatchSupervisor.ArmDelegationGovernance) on these two (#770):
+    // an empty conversation id is missing, and the workload identity travels with the agent id.
 
     [Fact]
-    public async Task ExecuteAsync_ParentEmptyConversationId_IsInheritedAsIsRatherThanFallingBack()
+    public async Task ExecuteAsync_ParentEmptyConversationId_FallsBackToTheChildPlanId()
     {
-        // `??` only catches null, so an empty-string parent conversation id is stamped onto the child
-        // as-is. Delegation treats empty as missing and falls back to a unique id.
+        // `??` only catches null; an empty-string parent id inherited as-is would pool unrelated
+        // children under one key. Empty is treated as missing, as delegation does.
         _parentAgentContext.SetupGet(c => c.AgentId).Returns("caller-agent");
         _parentAgentContext.SetupGet(c => c.ConversationId).Returns(string.Empty);
         _parentAgentContext.SetupGet(c => c.TurnNumber).Returns(3);
@@ -226,18 +224,35 @@ public sealed class SubPlanStepExecutorTests
             CreateStep(new SubPlanConfig { ChildPlanId = childPlanId }),
             new Dictionary<PlanStepId, string>(), CancellationToken.None);
 
-        childAgentContext.Verify(c => c.Initialize("caller-agent", string.Empty, 3, null), Times.Once);
+        childAgentContext.Verify(
+            c => c.Initialize("caller-agent", childPlanId.Value.ToString(), 3, null), Times.Once);
     }
 
     [Fact]
-    public async Task ExecuteAsync_ParentCarriesWorkloadIdentity_IsNotPropagatedToTheChild()
+    public async Task ExecuteAsync_ParentCarriesWorkloadIdentity_PropagatesItToTheChild()
     {
-        // Delegation propagates the parent's workload identity so the child is authorized as the real
-        // caller rather than the host's default; a sub-plan child currently is not.
+        // The child is the same principal as the parent. Without this an A2A- or identity-propagated
+        // caller's sub-plan is authorized as the host's own default identity.
+        var identity = new AgentIdentity { Id = "caller-principal", Kind = AgentIdentityKind.Development };
         _parentAgentContext.SetupGet(c => c.AgentId).Returns("caller-agent");
         _parentAgentContext.SetupGet(c => c.ConversationId).Returns("conv-1");
-        _parentAgentContext.SetupGet(c => c.AgentIdentity)
-            .Returns(new AgentIdentity { Id = "caller-principal", Kind = AgentIdentityKind.Development });
+        _parentAgentContext.SetupGet(c => c.AgentIdentity).Returns(identity);
+
+        var (sut, childAgentContext, childPlanId) = BuildExecutorWithChildScope();
+
+        await sut.ExecuteAsync(
+            CreateStep(new SubPlanConfig { ChildPlanId = childPlanId }),
+            new Dictionary<PlanStepId, string>(), CancellationToken.None);
+
+        childAgentContext.Verify(c => c.SetIdentity(identity), Times.Once);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_ParentHasNoWorkloadIdentity_NeverCallsSetIdentityOnTheChild()
+    {
+        // Control for the test above: no parent identity means nothing is invented for the child.
+        _parentAgentContext.SetupGet(c => c.AgentId).Returns("caller-agent");
+        _parentAgentContext.SetupGet(c => c.ConversationId).Returns("conv-1");
 
         var (sut, childAgentContext, childPlanId) = BuildExecutorWithChildScope();
 
