@@ -29,11 +29,12 @@ namespace Infrastructure.AI.Planner.StepExecutors;
 /// <para>
 /// <strong>Two identities, deliberately separate — see <see cref="PlanRunKeys"/>.</strong> Each step
 /// gets its <em>own</em> conversation id. A conversation id is not just a budget key: it is the sole
-/// key of <c>IAgentConversationCache</c>, which returns a cached agent on a hit and ignores the
-/// requested skills and options, so sharing one id across steps would make a step run under another
-/// step's agent (with <c>MaxParallelSteps</c> defaulting to 10, concurrent steps are the normal case)
-/// and would let the first step to finish evict the cache and clear skill tracking for steps still
-/// running. Cross-step spend is instead accumulated against a separate run-level budget key.
+/// key of <c>IAgentConversationCache</c>, which rebuilds the agent whenever a request's skills or
+/// options differ from the cached one, so sharing one id across steps would have concurrent steps
+/// (with <c>MaxParallelSteps</c> defaulting to 10, the normal case) repeatedly replace each other's
+/// agent and execution context mid-run, and would let the first step to finish evict the cache and
+/// clear skill tracking for steps still running. Cross-step spend is instead accumulated against a
+/// separate run-level budget key.
 /// </para>
 /// <para>
 /// <strong>Each step's conversation runs in its own DI scope.</strong> The conversation is dispatched

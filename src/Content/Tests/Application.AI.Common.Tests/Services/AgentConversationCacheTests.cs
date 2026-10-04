@@ -12,6 +12,7 @@ using Domain.AI.Skills;
 using Domain.Common.Config;
 using Domain.Common.Config.AI;
 using FluentAssertions;
+using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Caching.Distributed;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.DependencyInjection;
@@ -139,25 +140,162 @@ public sealed class AgentConversationCacheTests
     }
 
     [Fact]
-    public async Task GetOrCreateAsync_SameConversationId_ReturnsCachedAgentWithoutConsultingSkills()
+    public async Task GetOrCreateAsync_SameConversationDifferentSkills_BuildsTheRequestedSkillSet()
     {
-        // The cache is keyed SOLELY by conversation id: a hit short-circuits before the requested
-        // skills or options are looked at AT ALL. The second request here asks for "deploy" on its
-        // own, which is an invalid skill set — building it throws because its "validate" prerequisite
-        // is absent (see GetOrCreateAsync_SkillWithPrerequisites_ResolvesScopeWithoutThrowing). That
-        // it returns an agent anyway, rather than throwing, proves the requested skills were never
-        // examined.
-        //
-        // This is why concurrent plan steps must never share a conversation id: the second step gets
-        // a cache HIT and silently runs under the first step's agent — its skills, instructions,
-        // allowed tools and deployment. Proven here against the real cache so the plan engine's
-        // per-step id derivation (PlanRunKeys.StepConversationId) has a demonstrated reason to exist.
+        // A hit is honoured only when the request still matches what the agent was built for (#788);
+        // a mismatch is a rebuild, not a silent run under the first request's agent.
         var first = await _cache.GetOrCreateAsync("conv-shared", [ValidateSkillId], new SkillAgentOptions());
 
-        var second = await _cache.GetOrCreateAsync("conv-shared", [DeploySkillId], new SkillAgentOptions());
+        var second = await _cache.GetOrCreateAsync(
+            "conv-shared", [ValidateSkillId, DeploySkillId], new SkillAgentOptions());
 
-        second.Should().BeSameAs(first,
-            "a cache hit returns the existing agent even for a skill set that could not have been built");
+        second.Should().NotBeSameAs(first, "the second request asked for a different skill set");
+        _cache.TryGetContext("conv-shared")!.SkillIds.Should().Equal(ValidateSkillId, DeploySkillId);
+    }
+
+    [Fact]
+    public async Task GetOrCreateAsync_SameConversationNewDeployment_BuildsTheAgentForTheNewDeployment()
+    {
+        // #788: AG-UI's per-run DeploymentOverride is what lets one call route to a different model.
+        // It changes with no settings write, so there is no moment to Invalidate — the cache has to
+        // notice the build inputs changed itself.
+        var first = await _cache.GetOrCreateAsync(
+            "conv-deploy", [ValidateSkillId], new SkillAgentOptions { DeploymentName = "gpt-4o" });
+
+        var second = await _cache.GetOrCreateAsync(
+            "conv-deploy", [ValidateSkillId], new SkillAgentOptions { DeploymentName = "gpt-4o-mini" });
+
+        second.Should().NotBeSameAs(first, "the override asked for a different model");
+        _cache.TryGetContext("conv-deploy")!.DeploymentName.Should().Be("gpt-4o-mini");
+    }
+
+    /// <summary>
+    /// One variant per build-affecting option, each differing from <see cref="BaseOptions"/> in exactly
+    /// that member. A new member is compared by default (the fingerprint derives from the record), so
+    /// this lists the ones worth pinning, not a completeness contract.
+    /// </summary>
+    public static TheoryData<string, SkillAgentOptions> ChangedBuildInputs() => new()
+    {
+        { nameof(SkillAgentOptions.AgentNameOverride), BaseOptions with { AgentNameOverride = "other" } },
+        { nameof(SkillAgentOptions.DeploymentName), BaseOptions with { DeploymentName = "other" } },
+        { nameof(SkillAgentOptions.AgentId), BaseOptions with { AgentId = "other" } },
+        { nameof(SkillAgentOptions.FrameworkType), BaseOptions with { FrameworkType = AIAgentFrameworkClientType.OpenAI } },
+        { nameof(SkillAgentOptions.AdditionalContext), BaseOptions with { AdditionalContext = "other" } },
+        { nameof(SkillAgentOptions.AgentInstructions), BaseOptions with { AgentInstructions = "other" } },
+        { nameof(SkillAgentOptions.OwningAgentId), BaseOptions with { OwningAgentId = "other" } },
+        { nameof(SkillAgentOptions.Temperature), BaseOptions with { Temperature = 0.9f } },
+        { nameof(SkillAgentOptions.AllowedTools), BaseOptions with { AllowedTools = ["Read", "Write"] } },
+    };
+
+    private static SkillAgentOptions BaseOptions => new()
+    {
+        AgentNameOverride = "base",
+        DeploymentName = "gpt-4o",
+        AgentId = "base",
+        FrameworkType = AIAgentFrameworkClientType.AzureOpenAI,
+        AdditionalContext = "base",
+        AgentInstructions = "base",
+        OwningAgentId = "base",
+        Temperature = 0.2f,
+        AllowedTools = ["Read"],
+    };
+
+    [Theory]
+    [MemberData(nameof(ChangedBuildInputs))]
+    public async Task GetOrCreateAsync_AnyBuildAffectingOptionChanges_RebuildsTheAgent(
+        string changed, SkillAgentOptions variant)
+    {
+        var first = await _cache.GetOrCreateAsync("conv-theory", [ValidateSkillId], BaseOptions);
+
+        var second = await _cache.GetOrCreateAsync("conv-theory", [ValidateSkillId], variant);
+
+        second.Should().NotBeSameAs(first, $"{changed} is a build input, so a hit would serve a stale agent");
+    }
+
+    public static TheoryData<string[]?, string[]?> EquivalentAllowedTools() => new()
+    {
+        // The tool list is a ceiling intersected with the skills' allowlist: order carries no
+        // meaning, and null and empty both mean "no ceiling declared".
+        { ["Read", "Write"], ["Write", "Read"] },
+        { null, [] },
+    };
+
+    [Theory]
+    [MemberData(nameof(EquivalentAllowedTools))]
+    public async Task GetOrCreateAsync_EquivalentAllowedTools_IsTheSameBuild(string[]? first, string[]? second)
+    {
+        var a = await _cache.GetOrCreateAsync(
+            "conv-tools", [ValidateSkillId], new SkillAgentOptions { AllowedTools = first });
+
+        var b = await _cache.GetOrCreateAsync(
+            "conv-tools", [ValidateSkillId], new SkillAgentOptions { AllowedTools = second });
+
+        b.Should().BeSameAs(a, "an equivalent tool ceiling must not cost a rebuild");
+    }
+
+    public static TheoryData<string, SkillAgentOptions> UncomparableInputs() => new()
+    {
+        { nameof(SkillAgentOptions.AdditionalTools), new() { AdditionalTools = [AIFunctionFactory.Create(() => 1, "probe")] } },
+        { nameof(SkillAgentOptions.MiddlewareTypes), new() { MiddlewareTypes = [typeof(object)] } },
+        { nameof(SkillAgentOptions.AdditionalProperties), new() { AdditionalProperties = new Dictionary<string, object> { ["k"] = "v" } } },
+    };
+
+    [Theory]
+    [MemberData(nameof(UncomparableInputs))]
+    public async Task GetOrCreateAsync_RequestSetsAnUncomparableMember_IsNeverServedFromTheCache(
+        string member, SkillAgentOptions options)
+    {
+        // These cannot be compared by value, so a hit could silently ignore a change to tooling or
+        // middleware. Failing safe means rebuilding — even for two identical requests.
+        var first = await _cache.GetOrCreateAsync("conv-uncomparable", [ValidateSkillId], options);
+
+        var second = await _cache.GetOrCreateAsync("conv-uncomparable", [ValidateSkillId], options);
+
+        second.Should().NotBeSameAs(first, $"{member} is set, so the request is never reused");
+    }
+
+    [Fact]
+    public async Task GetOrCreateAsync_RebuildFails_KeepsTheAgentThatWasWorking()
+    {
+        // The stale entry is replaced only once its replacement exists. A request that cannot be built
+        // (here: a skill the registry does not know) must not leave the conversation with no agent.
+        var first = await _cache.GetOrCreateAsync("conv-fail", [ValidateSkillId], new SkillAgentOptions());
+
+        var act = () => _cache.GetOrCreateAsync("conv-fail", ["no-such-skill"], new SkillAgentOptions());
+        await act.Should().ThrowAsync<Exception>();
+
+        _cache.TryGetContext("conv-fail").Should().NotBeNull();
+        var again = await _cache.GetOrCreateAsync("conv-fail", [ValidateSkillId], new SkillAgentOptions());
+        again.Should().BeSameAs(first);
+    }
+
+    [Fact]
+    public async Task GetOrCreateAsync_SameConversationSameInputs_StillReusesTheAgent()
+    {
+        // Control for the test above, same instrument: identical build inputs must keep the
+        // per-turn reuse the cache exists for.
+        var first = await _cache.GetOrCreateAsync(
+            "conv-same", [ValidateSkillId], new SkillAgentOptions { DeploymentName = "gpt-4o", Temperature = 0.2f });
+
+        var second = await _cache.GetOrCreateAsync(
+            "conv-same", [ValidateSkillId], new SkillAgentOptions { DeploymentName = "gpt-4o", Temperature = 0.2f });
+
+        second.Should().BeSameAs(first);
+    }
+
+    [Fact]
+    public async Task GetOrCreateAsync_RebuildOnChangedInputs_KeepsWhatTheConversationHasUnlocked()
+    {
+        // A rebuild is Invalidate-shaped, not Evict-shaped: the conversation carries on, so skills
+        // already unlocked by their prerequisites must stay unlocked.
+        await _cache.GetOrCreateAsync(
+            "conv-rebuild", [ValidateSkillId, DeploySkillId], new SkillAgentOptions { DeploymentName = "gpt-4o" });
+        _completionTracker.MarkCompleted("conv-rebuild", ValidateSkillId);
+
+        await _cache.GetOrCreateAsync(
+            "conv-rebuild", [ValidateSkillId, DeploySkillId], new SkillAgentOptions { DeploymentName = "gpt-4o-mini" });
+
+        _completionTracker.IsCompleted("conv-rebuild", ValidateSkillId).Should().BeTrue();
     }
 
     [Fact]
