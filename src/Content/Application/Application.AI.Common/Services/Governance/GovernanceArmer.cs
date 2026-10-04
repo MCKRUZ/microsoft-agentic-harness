@@ -59,7 +59,7 @@ public static class GovernanceArmer
             agentId,
             policy.MintConversationId
                 ? Guid.NewGuid().ToString()
-                : InheritOrFallback(parent?.ConversationId, fallbackScopeId, nameof(policy.MintConversationId)),
+                : InheritOrFallback(parent?.ConversationId, fallbackScopeId, "conversation id"),
             policy.InheritTurnNumber ? parent?.TurnNumber ?? 1 : 1,
             ResolveCallOnceScope(policy, parent, fallbackScopeId));
 
@@ -98,21 +98,21 @@ public static class GovernanceArmer
             CallOnceScopeSource.Omit => null,
             CallOnceScopeSource.InheritAsIs => parent?.CallOnceScopeId,
             CallOnceScopeSource.InheritOrFallback =>
-                InheritOrFallback(parent?.CallOnceScopeId, fallbackScopeId, nameof(policy.CallOnceScope)),
+                InheritOrFallback(parent?.CallOnceScopeId, fallbackScopeId, "call-once scope"),
             _ => throw new ArgumentOutOfRangeException(
                 nameof(policy), policy.CallOnceScope, "Unknown call-once scope source."),
         };
 
     // Empty counts as missing, not just null: IAgentExecutionContext enforces no non-empty invariant,
     // and an empty id inherited as-is would pool unrelated children under one key.
-    private static string InheritOrFallback(string? parentValue, string? fallbackScopeId, string policyMember)
+    private static string InheritOrFallback(string? parentValue, string? fallbackScopeId, string what)
     {
         if (!string.IsNullOrEmpty(parentValue))
             return parentValue;
 
         return string.IsNullOrEmpty(fallbackScopeId)
             ? throw new ArgumentException(
-                $"A fallback scope id is required: the policy's {policyMember} inherits from the parent, "
+                $"A fallback scope id is required: this policy inherits the {what} from the parent, "
                 + "which may supply nothing.",
                 nameof(fallbackScopeId))
             : fallbackScopeId;

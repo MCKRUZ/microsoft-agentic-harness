@@ -491,16 +491,18 @@ public sealed partial class CapabilityMatchSupervisor
     /// is authorized as the real caller, not as the host's own default identity.</item>
     /// </list>
     /// <para>
-    /// Both fall back to the delegation id/no identity only when there is no ambient parent context
-    /// at all (a delegation run outside any governed turn) — narrower than the true scope is merely
+    /// Both fall back to the delegation id wherever the parent turn supplies none — no ambient parent
+    /// at all (a delegation run outside any governed turn), or a parent whose id is null or empty — and
+    /// no workload identity is stamped when the parent has none. Narrower than the true scope is merely
     /// inconvenient there, never a leak, since the delegation id is unique per call.
     /// </para>
     /// <para>
-    /// Note this is NOT the same mechanism <c>ArmGovernance</c>
-    /// (<c>DirectToolInvoker.Arming.cs</c>) uses for a direct tool invocation — that surface
-    /// deliberately mints a fresh, one-shot conversation id and omits call-once scope entirely,
-    /// because a direct invocation has no request-level session to inherit from. A delegation
-    /// does: it always runs inside a governed turn's scope.
+    /// Both this and a direct tool invocation arm their scope through <see cref="GovernanceArmer"/>; they
+    /// differ in policy. <see cref="GovernanceArmingPolicy.DirectInvocation"/> mints a fresh, one-shot
+    /// conversation id and omits call-once scope entirely, because a direct invocation has no
+    /// request-level session to inherit from. A delegation
+    /// (<see cref="GovernanceArmingPolicy.Delegation"/>) does: it always runs inside a governed turn's
+    /// scope.
     /// </para>
     /// </remarks>
     private (AsyncServiceScope Scope, IToolCallAdmissionPipeline Pipeline) ArmDelegationGovernance(

@@ -73,9 +73,11 @@ public sealed partial class DirectToolInvoker
     /// The arm/authorize/catch skeleton every direct-invocation surface runs, whatever kind of tool
     /// it turns out to be (#481) — extracted so <c>RunArmedAsync</c> and
     /// <c>DirectToolInvoker.Mcp.cs</c>'s <c>RunMcpArmedAsync</c> share the one implementation rather
-    /// than each re-deriving it by hand (#494). <see cref="ArmGovernance"/> was already extracted for
-    /// exactly this reason but stopped one level too shallow — the scope creation, the arm, the
-    /// three-arm catch ladder, and the trace log around all of it were still duplicated.
+    /// than each re-deriving it by hand (#494). <see cref="ArmGovernance"/> was extracted first (#481)
+    /// for exactly this reason but stopped one level too shallow — the scope creation, the arm, the
+    /// three-arm catch ladder, and the trace log around all of it were still duplicated. Its
+    /// context-initialisation half now lives in <see cref="GovernanceArmer"/> (#770), shared with
+    /// sub-plans and delegation.
     /// </summary>
     /// <param name="request">Everything this invocation needs to arm — see <see cref="ArmingRequest"/>.</param>
     /// <param name="cancellationToken">The caller's own token — see the first catch arm for why it

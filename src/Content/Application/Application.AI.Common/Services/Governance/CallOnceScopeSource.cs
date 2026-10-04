@@ -13,8 +13,10 @@ public enum CallOnceScopeSource
     Omit,
 
     /// <summary>
-    /// The parent's scope, passed through unchanged — a null parent scope stays null. A call-once tool
-    /// the parent already claimed stays claimed in the child.
+    /// The parent's scope, passed through unchanged — a null parent scope stays null, and an empty one
+    /// stays empty (unlike the conversation id, where empty counts as missing; sub-plans have always
+    /// behaved this way and no reachable caller supplies an empty call-once scope). A call-once tool the
+    /// parent already claimed stays claimed in the child.
     /// </summary>
     InheritAsIs,
 

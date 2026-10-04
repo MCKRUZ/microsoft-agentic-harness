@@ -109,6 +109,7 @@ public sealed class GovernanceArmerTests
     [InlineData(CallOnceScopeSource.Omit, "parent-scope", null)]
     [InlineData(CallOnceScopeSource.InheritAsIs, "parent-scope", "parent-scope")]
     [InlineData(CallOnceScopeSource.InheritAsIs, null, null)]
+    [InlineData(CallOnceScopeSource.InheritAsIs, "", "")]
     [InlineData(CallOnceScopeSource.InheritOrFallback, "parent-scope", "parent-scope")]
     [InlineData(CallOnceScopeSource.InheritOrFallback, null, "fallback")]
     [InlineData(CallOnceScopeSource.InheritOrFallback, "", "fallback")]
