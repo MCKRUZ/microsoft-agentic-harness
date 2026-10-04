@@ -98,9 +98,9 @@ public sealed partial class DirectToolInvoker
         {
             // Identity and envelope. Both must be in place before AuthorizeAsync — see the type
             // remarks for what the governor reads, and when. The conversation-id and
-            // callOnceScopeId choices ArmGovernance makes are documented on ArmGovernance itself,
-            // not repeated here — this method only calls it (#494: the repeat was stale
-            // documentation left behind when ArmGovernance was first extracted).
+            // callOnceScopeId choices are documented on GovernanceArmingPolicy.DirectInvocation, not
+            // repeated here — this method only calls ArmGovernance (#494: the repeat was stale
+            // documentation left behind when the arming was first extracted).
             var (admissionPipeline, grantedEnvelope, armedAdmission) =
                 ArmGovernance(scope.ServiceProvider, request.AgentId, request.Envelope);
             using var _grantedEnvelope = grantedEnvelope;

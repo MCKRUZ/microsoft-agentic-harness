@@ -272,6 +272,20 @@ public sealed class GovernanceArmerTests
         }
     }
 
+    [Fact]
+    public void Arm_UnknownCallOnceSource_ThrowsBeforeTheContextIsInitialised()
+    {
+        // A CallOnceScopeSource member added without a case must fail loudly, and must do so before
+        // anything is stamped onto the child — a half-initialised context cannot be re-initialised.
+        var act = () => GovernanceArmer.Arm(
+            ChildServices(), "agent", Policy(mint: true, callOnce: (CallOnceScopeSource)99));
+
+        act.Should().Throw<ArgumentOutOfRangeException>();
+        _child.Verify(
+            c => c.Initialize(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<int>(), It.IsAny<string?>()),
+            Times.Never);
+    }
+
     // ---- arguments ------------------------------------------------------------------------------
 
     [Fact]

@@ -23,6 +23,15 @@ namespace Application.AI.Common.Services.Governance;
 /// ambient accessor</strong>: that is <see cref="ArmedGovernance.Activate"/>, called around the work
 /// itself. Callers that also publish other ambient state (a capability envelope) do so themselves.
 /// </para>
+/// <para>
+/// <strong>Deliberately not callers:</strong> sites that own the request scope rather than opening a
+/// child one — <c>AgentContextPropagationBehavior</c> (seeds the request's context),
+/// <c>ExecuteAgentTurnCommandHandler</c>, <c>RunOrchestratedTaskCommandHandler</c>,
+/// <c>AgentEvaluationService</c> and the FoundryHost middleware — and <c>PlanRunExecutor</c>, which
+/// mints a fresh scope but arms the capability envelope and calls the scoped pipeline directly. A
+/// Magentic participant (#769) is the intended next caller. Whether <c>PlanRunExecutor</c> should
+/// propagate workload identity is an open question, not settled by this helper.
+/// </para>
 /// </remarks>
 public static class GovernanceArmer
 {
@@ -73,7 +82,7 @@ public static class GovernanceArmer
             pipeline.Reset();
         }
 
-        return new ArmedGovernance(context, pipeline, agentId);
+        return new ArmedGovernance(pipeline);
     }
 
     private static string ResolveConversationId(

@@ -1,4 +1,3 @@
-using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Governance;
 
 namespace Application.AI.Common.Services.Governance;
@@ -12,19 +11,7 @@ public sealed class ArmedGovernance
 {
     private readonly IToolCallAdmissionPipeline? _pipeline;
 
-    internal ArmedGovernance(
-        IAgentExecutionContext context, IToolCallAdmissionPipeline? pipeline, string agentId)
-    {
-        Context = context;
-        _pipeline = pipeline;
-        AgentId = agentId;
-    }
-
-    /// <summary>The child scope's execution context, already initialised.</summary>
-    public IAgentExecutionContext Context { get; }
-
-    /// <summary>The agent id the child was initialised under.</summary>
-    public string AgentId { get; }
+    internal ArmedGovernance(IToolCallAdmissionPipeline? pipeline) => _pipeline = pipeline;
 
     /// <summary>
     /// The child scope's admission pipeline, reset and ready. Throws when the policy did not resolve
